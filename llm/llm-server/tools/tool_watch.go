@@ -52,9 +52,9 @@ func (WatchResourceTool) Description() string {
 Register a background watch that polls a read-only source on a fixed interval and notifies the user when a predicate matches or the watch expires. Use when the user wants async follow-up ("ping me when X is done", "check back in N minutes") or when an action you took has an outcome only verifiable later.
 
 CRITICAL:
-  - source_config.tool_name MUST be a primitive *_execute tool (shell_execute, kubectl_execute, github_execute, aws_execute, gcloud_execute, postgres_query_execute, events_execute). NEVER a sub-agent (kubectl, github, postgres, events) — those load conversation history and fail in background polls.
+  - source_config.tool_name MUST be a primitive *_execute tool (shell_execute, kubectl_execute, github_execute, gitlab_execute, aws_execute, gcloud_execute, postgres_query_execute, events_execute). NEVER a sub-agent (kubectl, github, gitlab, postgres, events) — those load conversation history and fail in background polls.
   - source_config.tool_input MUST be a JSON object, not a bare string. Wrong: "tool_input": "gh run view 12345". Right: "tool_input": { "command": "gh run view 12345" }.
-  - If the command uses an integration (gh, aws, gcloud, az, psql, ...), use the MATCHING *_execute tool (github_execute for gh, aws_execute for aws, ...) AND carry the same tool_config_name the action used — a bare shell_execute can't resolve which integration's credentials to inject when the tenant has more than one, so the poll fails auth.
+  - If the command uses an integration (gh, glab, aws, gcloud, az, psql, ...), use the MATCHING *_execute tool (github_execute for gh, gitlab_execute for glab, aws_execute for aws, ...) AND carry the same tool_config_name the action used — a bare shell_execute can't resolve which integration's credentials to inject when the tenant has more than one, so the poll fails auth.
   - The polled command must be idempotent and read-only.
 
 Required fields: source_kind ("tool" | "sql"), source_config, predicate_kind ("regex" | "substring" | "llm_judge"), predicate_expr, poll_interval_sec, max_duration_sec. Optional: predicate_negate (true for "wait until X disappears").

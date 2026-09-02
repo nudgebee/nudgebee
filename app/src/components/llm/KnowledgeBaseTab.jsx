@@ -1,33 +1,33 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { Box, Typography, Alert } from '@mui/material';
 import { Label } from '@ui/Label';
-import CustomTable from '@shared/tables/CustomTable2';
+import { Chip } from '@ui/Chip';
+import CustomTable from '@shared/tables/CustomTable';
 import { Input } from '@ui/Input';
 import Tooltip from '@ui/Tooltip';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import HistoryIcon from '@mui/icons-material/History';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
-import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
-import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
-import AttachFileOutlinedIcon from '@mui/icons-material/AttachFileOutlined';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import Loader from '@shared/Loader';
 import { toast as snackbar } from '@ui/Toast';
 import Text from '@shared/format/Text';
 import { Button } from '@ui/Button';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import { EmptyState } from '@ui/EmptyState';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { UploadIcon, EditIcon, DeleteIconRed as deleteIcon, serviceNowIcon, jiraIcon, ManualTriggerIconBlue } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 import WidgetCard from '@ui/WidgetCard';
-import CustomTabs from '@shared/CustomTabs';
+import Tabs from '@shared/navigation/Tabs';
+import { MemoryTable } from '@components/llm/MemoryTable';
+import ScopeChip from '@components/llm/ScopeChip';
 import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/kbLoadHistoryFormat';
 
-const MAX_CONTENT_LENGTH = 10000;
+const MAX_CONTENT_LENGTH = 5000;
 
 const formatExactDate = (dateString) => {
   if (!dateString) return '-';
@@ -59,39 +59,76 @@ const formatDate = (dateString) => {
   return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
-const KnowledgeBaseCard = ({ knowledgeBase, onEdit, onDelete, onRetrigger, onViewHistory, hasAccess }) => {
-  const MENU_ITEMS = [
-    // Retrigger only for integration KBs — manual KBs have no external source to re-sync
-    ...(knowledgeBase.kb_type === 'integration'
-      ? [
-          {
-            label: 'Retrigger',
-            value: 'retrigger',
-            icon: RefreshIcon,
-            // An archived KB's integration is disabled — nothing to re-sync.
-            disabled: knowledgeBase.status === 'processing' || knowledgeBase.status === 'archived',
-          },
-        ]
-      : []),
-    {
-      label: 'Load History',
-      value: 'history',
-      icon: HistoryIcon,
-    },
-    // Delete: manual KBs, or archived integration KBs (their integration is
-    // disabled, so the sync won't recreate the row).
-    ...(knowledgeBase.kb_type === 'manual' || knowledgeBase.status === 'archived'
-      ? [
-          {
-            label: 'Delete',
-            value: 'delete',
-            icon: deleteIcon,
-            disabled: !hasAccess,
-          },
-        ]
-      : []),
-  ];
+// Integration logo for a KB row/card, based on its source.
+const getIntegrationLogo = (knowledgeBase) => {
+  if (knowledgeBase.kb_type === 'manual') {
+    return ManualTriggerIconBlue;
+  }
+  if (!knowledgeBase.kb_source) {
+    return null;
+  }
+  switch (knowledgeBase.kb_source) {
+    case 'servicenow':
+      return serviceNowIcon;
+    case 'confluence':
+      return jiraIcon;
+    default:
+      return null;
+  }
+};
 
+// Status → Label tone mapping.
+const getKbStatusTone = (status) =>
+  status === 'active' ? 'success' : status === 'processing' ? 'warning' : status === 'error' ? 'critical' : 'neutral';
+
+// Three-dots menu items for a KB (retrigger / history / delete), gated by type + access.
+const getKbMenuItems = (knowledgeBase, hasAccess) => [
+  // Retrigger only for integration KBs — manual KBs have no external source to re-sync
+  ...(knowledgeBase.kb_type === 'integration'
+    ? [
+        {
+          label: 'Retrigger',
+          value: 'retrigger',
+          icon: RefreshIcon,
+          // An archived KB's integration is disabled — nothing to re-sync.
+          disabled: knowledgeBase.status === 'processing' || knowledgeBase.status === 'archived',
+        },
+      ]
+    : []),
+  {
+    label: 'Load History',
+    value: 'history',
+    icon: HistoryIcon,
+  },
+  // Delete: manual KBs, or archived integration KBs (their integration is
+  // disabled, so the sync won't recreate the row).
+  ...(knowledgeBase.kb_type === 'manual' || knowledgeBase.status === 'archived'
+    ? [
+        {
+          label: 'Delete',
+          value: 'delete',
+          icon: deleteIcon,
+          disabled: !hasAccess,
+        },
+      ]
+    : []),
+];
+
+// Status pill (with error tooltip) — shared by the card and table views.
+const KbStatusLabel = ({ knowledgeBase }) =>
+  knowledgeBase.status === 'error' && knowledgeBase.error_message ? (
+    <Tooltip title={knowledgeBase.error_message} placement='top'>
+      <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+        <Label text={knowledgeBase.status} tone='critical' />
+      </Box>
+    </Tooltip>
+  ) : (
+    <Label text={knowledgeBase.status} tone={getKbStatusTone(knowledgeBase.status)} />
+  );
+KbStatusLabel.propTypes = { knowledgeBase: PropTypes.object };
+
+// Edit button (manual KBs) + three-dots menu — shared by the card and table views.
+const KnowledgeBaseActions = ({ knowledgeBase, onEdit, onDelete, onRetrigger, onViewHistory, hasAccess }) => {
   const handleMenuClick = (item) => {
     if (item.value === 'edit') {
       onEdit(knowledgeBase);
@@ -104,245 +141,33 @@ const KnowledgeBaseCard = ({ knowledgeBase, onEdit, onDelete, onRetrigger, onVie
     }
   };
 
-  // Get integration logo based on kb_source
-  const getIntegrationLogo = () => {
-    if (knowledgeBase.kb_type === 'manual') {
-      return ManualTriggerIconBlue;
-    }
-
-    if (!knowledgeBase.kb_source) {
-      return null;
-    }
-
-    switch (knowledgeBase.kb_source) {
-      case 'servicenow':
-        return serviceNowIcon;
-      case 'confluence':
-        return jiraIcon;
-      default:
-        return null;
-    }
-  };
-
-  const integrationLogo = getIntegrationLogo();
-
   return (
-    <WidgetCard sx={{ p: ds.space[4], mt: 0 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', flexDirection: 'column', alignItems: 'flex-start', height: '100%' }}>
-        <Box sx={{ flex: 1, width: '100%' }}>
-          {/* Primary: Name + icon */}
-          <Box sx={{ display: 'flex', flexDirection: 'row', gap: ds.space[2], mb: ds.space.mul(0, 3), justifyContent: 'space-between' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-              {integrationLogo && (
-                <SafeIcon src={integrationLogo} alt={knowledgeBase.kb_source || 'integration'} width={24} height={24} style={{ flexShrink: 0 }} />
-              )}
-              <Typography
-                sx={{
-                  fontSize: 'var(--ds-text-body-lg)',
-                  fontWeight: 'var(--ds-font-weight-semibold)',
-                  color: 'var(--ds-gray-700)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {knowledgeBase.name}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexShrink: 0 }}>
-              {knowledgeBase.status === 'error' && knowledgeBase.error_message ? (
-                <Tooltip title={knowledgeBase.error_message} placement='top'>
-                  <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
-                    <Label text={knowledgeBase.status} tone='critical' />
-                  </Box>
-                </Tooltip>
-              ) : (
-                <Label
-                  text={knowledgeBase.status}
-                  tone={
-                    knowledgeBase.status === 'active'
-                      ? 'success'
-                      : knowledgeBase.status === 'processing'
-                      ? 'warning'
-                      : knowledgeBase.status === 'error'
-                      ? 'critical'
-                      : 'neutral'
-                  }
-                />
-              )}
-              {hasAccess && knowledgeBase.kb_type === 'manual' && (
-                <Button
-                  tone='ghost'
-                  size='sm'
-                  icon={<SafeIcon src={EditIcon} alt='Edit' width={14} height={14} />}
-                  onClick={() => onEdit(knowledgeBase)}
-                  aria-label='Edit knowledge base'
-                />
-              )}
-              <ThreeDotsMenu
-                menuItems={MENU_ITEMS}
-                data={knowledgeBase}
-                onMenuClick={handleMenuClick}
-                sx={{ p: ds.space[1], '& .MuiSvgIcon-root': { fontSize: 'var(--ds-text-title)' } }}
-              />
-            </Box>
-          </Box>
-
-          {/* Secondary: Description — most useful context */}
-          {knowledgeBase.description ? (
-            <Typography
-              sx={{
-                fontSize: 'var(--ds-text-small)',
-                color: 'var(--ds-gray-400)',
-                fontWeight: 'var(--ds-font-weight-regular)',
-                mb: ds.space[3],
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                lineHeight: '1.4',
-              }}
-            >
-              {knowledgeBase.description}
-            </Typography>
-          ) : (
-            <Box sx={{ mb: ds.space.mul(0, 7) }} />
-          )}
-
-          {/* KB metadata — compact icon rows */}
-          {(() => {
-            const hasDocs = knowledgeBase.document_count != null && knowledgeBase.document_count > 0;
-            const hasLoaded = !!knowledgeBase.last_loaded_at;
-            const visibleCount = 1 + (hasDocs ? 1 : 0) + (hasLoaded ? 1 : 0);
-            return (
-              <Box
-                sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: ds.space.mul(0, 3),
-                  mb: ds.space[2],
-                  py: ds.space.mul(0, 5),
-                  px: ds.space[3],
-                  borderRadius: ds.radius.md,
-                  backgroundColor: 'var(--ds-background-200)',
-                }}
-              >
-                {/* Row 1: Format · Docs · Loaded — equal-width columns, only present fields shown */}
-                <Box sx={{ display: 'grid', gridTemplateColumns: `repeat(${visibleCount}, 1fr)`, alignItems: 'center', gap: ds.space[4] }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>
-                    <DescriptionOutlinedIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-gray-400)' }} />
-                    <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-400)' }}>
-                      Format:{' '}
-                      <Box component='span' sx={{ color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                        {knowledgeBase.format || '—'}
-                      </Box>
-                    </Typography>
-                  </Box>
-                  {hasDocs && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>
-                      <StorageOutlinedIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-gray-400)' }} />
-                      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-400)' }}>
-                        Docs:{' '}
-                        <Box component='span' sx={{ color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                          {knowledgeBase.document_count}
-                        </Box>
-                      </Typography>
-                    </Box>
-                  )}
-                  {hasLoaded && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>
-                      <AccessTimeOutlinedIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-gray-400)' }} />
-                      <Tooltip title={formatExactDate(knowledgeBase.last_loaded_at)} placement='top'>
-                        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-400)', cursor: 'default' }}>
-                          Loaded:{' '}
-                          <Box component='span' sx={{ color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                            {formatDate(knowledgeBase.last_loaded_at)}
-                          </Box>
-                        </Typography>
-                      </Tooltip>
-                    </Box>
-                  )}
-                </Box>
-
-                {/* Row 2: File (only when present) */}
-                {knowledgeBase.fileName && (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), minWidth: 0 }}>
-                    <AttachFileOutlinedIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-gray-400)', flexShrink: 0 }} />
-                    <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-400)', flexShrink: 0 }}>File:</Typography>
-                    <Text value={knowledgeBase.fileName} showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }} />
-                  </Box>
-                )}
-              </Box>
-            );
-          })()}
-
-          {/* Failure reason — keep the *why* visible on the card (and after an
-              edit) so users don't have to open Load History to diagnose. */}
-          {knowledgeBase.status === 'error' && knowledgeBase.error_message && (
-            <Alert
-              severity='error'
-              sx={{
-                mt: ds.space[2],
-                py: 0,
-                px: ds.space[2],
-                fontSize: 'var(--ds-text-small)',
-                alignItems: 'center',
-                '& .MuiAlert-message': {
-                  display: '-webkit-box',
-                  WebkitLineClamp: 3,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  wordBreak: 'break-word',
-                },
-              }}
-            >
-              {knowledgeBase.error_message}
-            </Alert>
-          )}
-        </Box>
-        {/* Footer: Updated (primary) + Created (secondary) */}
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: ds.space[4], width: '100%' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Updated</Typography>
-            <Tooltip title={formatExactDate(knowledgeBase.updated_at)} placement='top'>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 400, color: 'var(--ds-gray-700)', cursor: 'default' }}>
-                {formatDate(knowledgeBase.updated_at)}
-              </Typography>
-            </Tooltip>
-            {knowledgeBase.updated_by?.display_name && (
-              <>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }}>by</Typography>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' }}>
-                  {knowledgeBase.updated_by.display_name}
-                </Typography>
-              </>
-            )}
-          </Box>
-          <Tooltip
-            title={
-              formatExactDate(knowledgeBase.created_at) +
-              (knowledgeBase.created_by?.display_name ? ` by ${knowledgeBase.created_by.display_name}` : '')
-            }
-            placement='top'
-          >
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', cursor: 'default' }}>
-              Created {formatDate(knowledgeBase.created_at)}
-            </Typography>
-          </Tooltip>
-        </Box>
-      </Box>
-    </WidgetCard>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexShrink: 0 }}>
+      {hasAccess && knowledgeBase.kb_type === 'manual' && (
+        <Button
+          tone='ghost'
+          size='sm'
+          icon={<SafeIcon src={EditIcon} alt='Edit' width={14} height={14} />}
+          onClick={() => onEdit(knowledgeBase)}
+          aria-label='Edit knowledge base'
+        />
+      )}
+      <ThreeDotsMenu
+        menuItems={getKbMenuItems(knowledgeBase, hasAccess)}
+        data={knowledgeBase}
+        onMenuClick={handleMenuClick}
+        sx={{ p: ds.space[1], '& .MuiSvgIcon-root': { fontSize: 'var(--ds-text-title)' } }}
+      />
+    </Box>
   );
 };
-
-KnowledgeBaseCard.propTypes = {
-  knowledgeBase: PropTypes.object.isRequired,
-  onEdit: PropTypes.func.isRequired,
-  onDelete: PropTypes.func.isRequired,
-  onRetrigger: PropTypes.func.isRequired,
-  onViewHistory: PropTypes.func.isRequired,
-  hasAccess: PropTypes.bool.isRequired,
+KnowledgeBaseActions.propTypes = {
+  knowledgeBase: PropTypes.object,
+  onEdit: PropTypes.func,
+  onDelete: PropTypes.func,
+  onRetrigger: PropTypes.func,
+  onViewHistory: PropTypes.func,
+  hasAccess: PropTypes.bool,
 };
 
 const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, loading }) => {
@@ -386,15 +211,30 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
     return true;
   };
 
+  const readAndSetFile = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      if (text.trim().length > MAX_CONTENT_LENGTH) {
+        snackbar.error(
+          `File content is ${text
+            .trim()
+            .length.toLocaleString()} characters — over the ${MAX_CONTENT_LENGTH.toLocaleString()}-character limit. Please shorten it.`
+        );
+        setSelectedFile(null);
+        setFileContent('');
+        return;
+      }
+      setSelectedFile(file);
+      setFileContent(text);
+    };
+    reader.readAsText(file);
+  };
+
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
     if (file && validateFile(file)) {
-      setSelectedFile(file);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setFileContent(e.target.result);
-      };
-      reader.readAsText(file);
+      readAndSetFile(file);
     }
     // Reset file input
     if (fileInputRef.current) {
@@ -428,12 +268,7 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
 
     const file = e.dataTransfer.files[0];
     if (file && validateFile(file)) {
-      setSelectedFile(file);
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        setFileContent(ev.target.result);
-      };
-      reader.readAsText(file);
+      readAndSetFile(file);
     }
   };
 
@@ -476,24 +311,8 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
     });
   };
 
-  let contentCounterColor = 'var(--ds-gray-500)';
-  if (!isEditWithOverflow) {
-    if (content.length >= MAX_CONTENT_LENGTH) contentCounterColor = 'var(--ds-red-600)';
-    else if (content.length >= MAX_CONTENT_LENGTH * 0.9) contentCounterColor = 'var(--ds-amber-500)';
-  }
-
-  let contentWarning = <span />;
-  if (!isEditWithOverflow) {
-    if (content.length >= MAX_CONTENT_LENGTH) {
-      contentWarning = (
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)' }}>
-          {MAX_CONTENT_LENGTH.toLocaleString()}-character limit reached. For larger content, upload a .txt file instead.
-        </Typography>
-      );
-    } else if (content.length >= MAX_CONTENT_LENGTH * 0.9) {
-      contentWarning = <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-500)' }}>Approaching limit</Typography>;
-    }
-  }
+  const contentOverBy = content.length - MAX_CONTENT_LENGTH;
+  const contentOverLimit = !fileContent && !isEditWithOverflow && contentOverBy > 0;
 
   return (
     <Modal open={open} handleClose={onClose} title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'} width='md'>
@@ -741,7 +560,7 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
               </Typography>
             ) : (
               <Text
-                value='Maximum file size: 5MB'
+                value={`Max ${MAX_CONTENT_LENGTH.toLocaleString()} characters · up to 5MB`}
                 sx={{
                   fontSize: 'var(--ds-text-caption)',
                   color: 'var(--ds-gray-500)',
@@ -787,31 +606,45 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
           >
             Content
           </Typography>
-          <Input
-            type='textarea'
-            minRows={8}
-            maxRows={15}
-            placeholder={
-              fileContent ? 'File content will be used — remove the file to type manually' : 'Paste or type your knowledge base content here...'
-            }
-            value={fileContent ? '' : content}
-            onChange={(next) => !fileContent && setContent(isEditWithOverflow ? next : next.slice(0, MAX_CONTENT_LENGTH))}
-            disabled={!!fileContent}
-          />
-          {!fileContent && (
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: ds.space[1] }}>
-              {contentWarning}
-              <Typography
-                sx={{
-                  fontSize: 'var(--ds-text-caption)',
-                  color: contentCounterColor,
-                  fontWeight: !isEditWithOverflow && content.length >= MAX_CONTENT_LENGTH * 0.9 ? 600 : 400,
-                }}
+          <Box sx={{ position: 'relative' }}>
+            <Input
+              type='textarea'
+              minRows={8}
+              maxRows={15}
+              placeholder={
+                fileContent ? 'File content will be used — remove the file to type manually' : 'Paste or type your knowledge base content here...'
+              }
+              value={fileContent ? '' : content}
+              onChange={(next) => !fileContent && setContent(next)}
+              disabled={!!fileContent}
+            />
+            {contentOverLimit && (
+              <Tooltip
+                title={`Content is ${contentOverBy.toLocaleString()} character(s) over the ${MAX_CONTENT_LENGTH.toLocaleString()} limit`}
+                placement='top'
               >
-                {isEditWithOverflow ? `${content.length} chars` : `${content.length} / ${MAX_CONTENT_LENGTH}`}
-              </Typography>
-            </Box>
-          )}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    bottom: ds.space[2],
+                    right: ds.space[3],
+                    px: ds.space[2],
+                    py: '2px',
+                    borderRadius: ds.radius.sm,
+                    backgroundColor: 'var(--ds-red-500)',
+                    color: 'var(--ds-background-100)',
+                    fontSize: 'var(--ds-text-caption)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    lineHeight: 1.4,
+                    cursor: 'default',
+                    userSelect: 'none',
+                  }}
+                >
+                  -{contentOverBy.toLocaleString()}
+                </Box>
+              </Tooltip>
+            )}
+          </Box>
         </Box>
 
         {/* Action Buttons */}
@@ -825,7 +658,7 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
           <Button tone='secondary' size='md' onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button tone='primary' size='md' onClick={handleSubmit} loading={loading} disabled={loading || !name.trim()}>
+          <Button tone='primary' size='md' onClick={handleSubmit} loading={loading} disabled={loading || !name.trim() || contentOverLimit}>
             {editKnowledgeBase ? 'Update' : 'Create'}
           </Button>
         </Box>
@@ -920,6 +753,12 @@ KBLoadHistoryModal.propTypes = {
 };
 
 const KnowledgeBaseTab = ({ accountId }) => {
+  // Tenant-wide read-only mode: when no accountId is in scope (b-Cortex
+  // opened from the global sidebar where the page has no current
+  // account), fetch every KB the caller can read across the tenant. The
+  // backend handler routes empty account_id to a tenant-wide read and
+  // row-filters by HasAccountAccess; the UI hides write affordances.
+  const isTenantWide = !accountId;
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [knowledgeBases, setKnowledgeBases] = useState([]);
@@ -931,22 +770,21 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [historyKB, setHistoryKB] = useState(null);
   const [activeTab, setActiveTab] = useState('integration');
 
-  const hasAccess = hasWriteAccess(accountId);
+  // In tenant-wide mode every write affordance is hidden — writes always
+  // require the per-account context, so we never paint Create / Edit /
+  // Delete / Retrigger when the caller has no account to act in.
+  const hasAccess = !isTenantWide && hasWriteAccess(accountId);
 
   // silent = background poll: skip the full-page spinner and error toasts.
   // isStale lets an account-scoped caller discard a response that resolved after
   // the account changed; mutation-driven refreshes leave it at the default and
   // always apply.
   const fetchKnowledgeBases = async (silent = false, isStale = () => false) => {
-    if (!accountId) {
-      setError('Account ID is required');
-      setLoading(false);
-      return;
-    }
-
     try {
       if (!silent) setLoading(true);
-      const response = await apiKnowledgeBase.getKnowledgeBases(accountId);
+      // Empty accountId is intentional in tenant-wide mode — the backend
+      // routes that to ListKnowledgebasesForTenant + ACL row-filtering.
+      const response = await apiKnowledgeBase.getKnowledgeBases(accountId || '');
       if (isStale()) return;
       if (response.errors && response.errors.length > 0) {
         if (!silent) {
@@ -980,9 +818,10 @@ const KnowledgeBaseTab = ({ accountId }) => {
   }, [accountId]);
 
   // Poll every 60s so async KB status changes (processing -> active) appear
-  // without a manual reload.
+  // without a manual reload. Skipped in tenant-wide mode — that surface is
+  // read-only, so the per-row status doesn't transition under the user.
   useEffect(() => {
-    if (!accountId) return undefined;
+    if (isTenantWide) return undefined;
     let cancelled = false;
     const intervalId = setInterval(() => fetchKnowledgeBases(true, () => cancelled), 60000);
     return () => {
@@ -990,7 +829,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
       clearInterval(intervalId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId]);
+  }, [accountId, isTenantWide]);
 
   const handleCreate = () => {
     setSelectedKnowledgeBase(null);
@@ -1047,6 +886,149 @@ const KnowledgeBaseTab = ({ accountId }) => {
     setHistoryKB(knowledgeBase);
     setHistoryModalOpen(true);
   };
+
+  // Memoised column definitions.
+  //
+  // handleEdit / handleRetrigger close over `accountId` (via the
+  // apiKnowledgeBase calls), so the deps include accountId — switching
+  // accounts must rebuild the handlers, otherwise the row actions fire
+  // against the previous account. hasAccess is derived from accountId
+  // (hasWriteAccess(accountId)) and added explicitly so the memo also
+  // tracks role-only flips against the same account.
+  //
+  // The handler functions themselves are intentionally omitted: they're
+  // re-declared on every render (recreated by React, not memoised), so
+  // including them would invalidate the memo every render and defeat the
+  // optimisation. eslint-disable below suppresses exhaustive-deps for
+  // exactly this reason.
+  const columns = useMemo(
+    () => [
+      {
+        key: 'name',
+        label: 'Name',
+        type: 'text-short',
+        wrap: true,
+        render: (kb) => {
+          const logo = getIntegrationLogo(kb);
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
+              {logo && <SafeIcon src={logo} alt={kb.kb_source || 'integration'} width={18} height={18} style={{ flexShrink: 0 }} />}
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-body)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  color: 'var(--ds-gray-700)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {kb.name}
+              </Typography>
+            </Box>
+          );
+        },
+      },
+      { key: 'status', label: 'Status', type: 'status', render: (kb) => <KbStatusLabel knowledgeBase={kb} /> },
+      {
+        key: 'document_count',
+        label: 'Docs',
+        type: 'count',
+        render: (kb) => (
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
+            {kb.document_count != null ? kb.document_count : '—'}
+          </Typography>
+        ),
+      },
+      ...(isTenantWide
+        ? [
+            {
+              key: 'account_name',
+              label: 'Account',
+              type: 'text-short',
+              render: (kb) => {
+                // Grouped tenant-wide rows carry `accounts` (one entry per
+                // member of the integration cluster); single-row KBs fall
+                // back to the per-row account_name.
+                const accounts = kb.accounts && kb.accounts.length > 0 ? kb.accounts : [{ id: kb.account_id, name: kb.account_name }];
+                const MAX_VISIBLE = 3;
+                const visible = accounts.slice(0, MAX_VISIBLE);
+                const overflow = accounts.length - visible.length;
+                const fullList = accounts.map((a) => a.name || a.id || '—').join(', ');
+                return (
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1], alignItems: 'center' }}>
+                    {visible.map((a) => (
+                      <Chip key={a.id || a.name} tone='neutral' size='2xs' variant='tag'>
+                        {a.name || a.id || '—'}
+                      </Chip>
+                    ))}
+                    {overflow > 0 && (
+                      <Tooltip title={fullList} placement='top'>
+                        <Box component='span' sx={{ display: 'inline-flex', cursor: 'default' }}>
+                          <Chip tone='info' size='2xs' variant='count'>
+                            +{overflow}
+                          </Chip>
+                        </Box>
+                      </Tooltip>
+                    )}
+                    {accounts.length === 0 && <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>—</Typography>}
+                  </Box>
+                );
+              },
+            },
+          ]
+        : []),
+      {
+        key: 'created_at',
+        label: 'Added',
+        type: 'date',
+        render: (kb) =>
+          kb.created_at ? (
+            <Tooltip
+              title={
+                // Grouped tenant-wide rows show the most recent creation across
+                // member accounts (#33339), so label it as such to avoid
+                // implying a single provisioning event.
+                (isTenantWide ? 'Last added ' : '') +
+                formatExactDate(kb.created_at) +
+                (kb.created_by?.display_name ? ` by ${kb.created_by.display_name}` : '')
+              }
+              placement='top'
+            >
+              <Box component='span' sx={{ cursor: 'help' }}>
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>{formatDate(kb.created_at)}</Typography>
+              </Box>
+            </Tooltip>
+          ) : (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }}>—</Typography>
+          ),
+      },
+      // Actions column is omitted entirely in tenant-wide mode — every
+      // write requires per-account context, so we don't paint affordances
+      // the user can't act on.
+      ...(isTenantWide
+        ? []
+        : [
+            {
+              key: 'actions',
+              label: '',
+              type: 'actions',
+              render: (kb) => (
+                <KnowledgeBaseActions
+                  knowledgeBase={kb}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  onRetrigger={handleRetrigger}
+                  onViewHistory={handleViewHistory}
+                  hasAccess={hasAccess}
+                />
+              ),
+            },
+          ]),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers intentionally omitted, see docstring above
+    [hasAccess, accountId, isTenantWide]
+  );
 
   const handleFormSubmit = async (data) => {
     try {
@@ -1132,23 +1114,28 @@ const KnowledgeBaseTab = ({ accountId }) => {
         sx={{ py: ds.space[4], px: ds.space.mul(1, 5), mt: 0, mb: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}
       >
         <Box>
-          <Typography
-            sx={{
-              fontSize: 'var(--ds-text-body-lg)',
-              color: 'var(--ds-gray-700)',
-              fontWeight: 'var(--ds-font-weight-semibold)',
-              fontFamily: 'var(--ds-font-display)',
-            }}
-          >
-            Knowledge Base
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[1] }}>
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-body-lg)',
+                color: 'var(--ds-gray-700)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                fontFamily: 'var(--ds-font-display)',
+              }}
+            >
+              Knowledge Base
+            </Typography>
+            <ScopeChip accountId={accountId} />
+          </Box>
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
               color: 'var(--ds-gray-500)',
             }}
           >
-            Account-scoped document library with AI semantic search-upload docs, map to agents, and they'll automatically search when needed.
+            {isTenantWide
+              ? 'Viewing all knowledge bases across this tenant. Switch to an account-scoped page to create, edit, or retrigger a knowledge base.'
+              : "Account-scoped document library with AI semantic search-upload docs, map to agents, and they'll automatically search when needed."}
           </Typography>
         </Box>
         {hasAccess && (
@@ -1160,56 +1147,71 @@ const KnowledgeBaseTab = ({ accountId }) => {
 
       {/* Empty State */}
       {knowledgeBases.length === 0 && (
-        <Box
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            py: ds.space[7],
-            px: ds.space[5],
-            marginBottom: ds.space[3],
-            border: `1px dashed var(--ds-gray-300)`,
-            borderRadius: ds.radius.lg,
-            backgroundColor: 'var(--ds-background-200)',
-          }}
-        >
-          <Typography
-            sx={{
-              fontSize: 'var(--ds-text-body)',
-              color: 'var(--ds-gray-700)',
-              mb: ds.space[2],
-            }}
-          >
-            No knowledge bases found
-          </Typography>
-          <Typography
-            sx={{
-              fontSize: 'var(--ds-text-small)',
-              color: 'var(--ds-gray-500)',
-              mb: ds.space[4],
-              textAlign: 'center',
-            }}
-          >
-            Create a knowledge base to provide the AI with account-specific documentation and context.
-          </Typography>
-          {hasAccess && (
-            <Button tone='secondary' size='sm' onClick={handleCreate}>
-              Create Knowledge Base
-            </Button>
-          )}
-        </Box>
+        <EmptyState
+          surface
+          size='section'
+          illustration='first-time'
+          title='No knowledge bases found'
+          description='Create a knowledge base to provide the AI with account-specific documentation and context.'
+          sx={{ marginBottom: ds.space[3] }}
+        />
       )}
 
       {/* Knowledge Base List — tabbed by source */}
       {knowledgeBases.length > 0 &&
         (() => {
-          const integrationKBs = knowledgeBases.filter((kb) => kb.kb_type === 'integration');
-          const userKBs = knowledgeBases.filter((kb) => kb.kb_type === 'manual');
+          // Tenant-wide rollup: integration-backed KBs (ServiceNow,
+          // Confluence, etc.) get provisioned once per account, so a
+          // tenant operator sees N near-identical rows. Collapse by
+          // (integration_id, name) into a single logical row that lists
+          // the member accounts as chips. Custom (no integration_id)
+          // and per-account views keep one row per KB.
+          const groupedKBs = isTenantWide
+            ? (() => {
+                const grouped = new Map();
+                const standalone = [];
+                for (const kb of knowledgeBases) {
+                  if (!kb.integration_id) {
+                    standalone.push(kb);
+                    continue;
+                  }
+                  const key = `${kb.integration_id}|${kb.name}`;
+                  const existing = grouped.get(key);
+                  if (existing) {
+                    // Defensive dedup — if an account ends up with two KBs
+                    // sharing the same (integration_id, name) (backfill
+                    // drift, migration bug), skip the duplicate account so
+                    // the Account-chip column doesn't surface the same name
+                    // twice and React doesn't warn about duplicate keys.
+                    if (!existing.accounts.some((acc) => acc.id === kb.account_id)) {
+                      existing.accounts.push({ id: kb.account_id, name: kb.account_name });
+                    }
+                    // "Added" for a grouped row = the most recent creation
+                    // across member accounts (deterministic; #33339). Without
+                    // this the row inherited whichever member the backend
+                    // returned first, so the same KB showed different times in
+                    // the tenant rollup vs a per-account view. Keep created_by
+                    // aligned with the chosen timestamp so the tooltip stays
+                    // coherent.
+                    if (kb.created_at && (!existing.created_at || new Date(kb.created_at) > new Date(existing.created_at))) {
+                      existing.created_at = kb.created_at;
+                      existing.created_by = kb.created_by;
+                    }
+                  } else {
+                    grouped.set(key, { ...kb, accounts: [{ id: kb.account_id, name: kb.account_name }] });
+                  }
+                }
+                return [...grouped.values(), ...standalone];
+              })()
+            : knowledgeBases;
+          const integrationKBs = groupedKBs.filter((kb) => kb.kb_type === 'integration');
+          const userKBs = groupedKBs.filter((kb) => kb.kb_type === 'manual');
           const visibleKBs = activeTab === 'integration' ? integrationKBs : userKBs;
+          // columns lives at component scope via useMemo so CustomTable
+          // gets a stable reference across renders.
           return (
             <Box sx={{ mt: ds.space[2] }}>
-              <CustomTabs
+              <Tabs
                 value={activeTab}
                 onChange={(val) => setActiveTab(val)}
                 variant='secondary'
@@ -1222,25 +1224,13 @@ const KnowledgeBaseTab = ({ accountId }) => {
                   ],
                 }}
               />
-              {visibleKBs.length === 0 ? (
-                <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', textAlign: 'center', py: ds.space[6] }}>
-                  No {activeTab === 'integration' ? 'integration' : 'user'} knowledge bases yet.
-                </Typography>
-              ) : (
-                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: ds.space[3], mt: ds.space[2] }}>
-                  {visibleKBs.map((kb) => (
-                    <KnowledgeBaseCard
-                      key={kb.id}
-                      knowledgeBase={kb}
-                      onEdit={handleEdit}
-                      onDelete={handleDelete}
-                      onRetrigger={handleRetrigger}
-                      onViewHistory={handleViewHistory}
-                      hasAccess={hasAccess}
-                    />
-                  ))}
-                </Box>
-              )}
+              <Box sx={{ mt: ds.space[2] }}>
+                <MemoryTable
+                  columns={columns}
+                  rows={visibleKBs}
+                  emptyText={`No ${activeTab === 'integration' ? 'integration' : 'user'} knowledge bases yet.`}
+                />
+              </Box>
             </Box>
           );
         })()}
@@ -1261,11 +1251,13 @@ const KnowledgeBaseTab = ({ accountId }) => {
       <Modal
         open={deleteModalOpen}
         handleClose={() => {
+          if (submitting) return;
           setDeleteModalOpen(false);
           setSelectedKnowledgeBase(null);
         }}
         title={`Delete Knowledge Base: ${selectedKnowledgeBase?.name || ''}`}
         width='sm'
+        loader={submitting}
         actionButtons={
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], py: ds.space[3], px: ds.space[5] }}>
             <Button
@@ -1328,7 +1320,9 @@ const KnowledgeBaseTab = ({ accountId }) => {
 };
 
 KnowledgeBaseTab.propTypes = {
-  accountId: PropTypes.string.isRequired,
+  // Optional: empty / unset means tenant-wide read-only mode (b-Cortex
+  // opened from the global sidebar, no current account in scope).
+  accountId: PropTypes.string,
 };
 
 export default KnowledgeBaseTab;

@@ -24,8 +24,8 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
-    "@types/node": "^26.1.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
     "cross-env": "^10.1.0",
     "dotenv": "^16.6.1",
     "ts-node": "^10.9.2",
@@ -36,8 +36,8 @@
   },
   "dependencies": {
     "@axe-core/playwright": "^4.12.1",
-    "axios": "^1.18.1",
-    "googleapis": "^173.0.0",
+    "axios": "^1.19.0",
+    "googleapis": "^174.0.1",
     "node-fetch": "^3.3.2"
   }
 }

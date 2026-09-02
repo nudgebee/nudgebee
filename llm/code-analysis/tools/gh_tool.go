@@ -14,6 +14,7 @@ import (
 )
 
 type GHTool struct {
+	repoScopeGuard
 	workspaceDir         string
 	githubToken          string
 	restrictPROperations bool
@@ -129,6 +130,13 @@ func (t *GHTool) Execute(ctx context.Context, input map[string]any) core.NBToolR
 	repoHelper := NewRepositoryHelper()
 	repoDir := repoHelper.GetWorkingDirectoryWithInjection(input, t.workspaceDir)
 
+	// Refuse to report on another repository's pull requests. The same guard runs
+	// in the cli tool; both are needed, since the specialist agents hold both and
+	// `gh api repos/o/r/pulls/1` is the shortest path to the wrong answer.
+	if blocked, reason := t.checkCommand(ghCommandForScopeCheck(args), repoDir); blocked {
+		return core.CreateErrorResponse(reason, reason)
+	}
+
 	// `gh pr edit` resolves the PR via a GraphQL query that includes Projects
 	// (classic). On orgs where classic projects are disabled this query returns
 	// a fatal "Projects (classic) is being deprecated" error and gh exits 1 —
@@ -156,9 +164,24 @@ func (t *GHTool) Execute(ctx context.Context, input map[string]any) core.NBToolR
 
 	err := cmd.Run()
 	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		// The observation (second argument) is what gets persisted on the
+		// tool-call row and shown in the UI. It used to be the bare string
+		// "GitHub CLI command execution failed", so 44 consecutive
+		// authentication failures were indistinguishable from any other gh
+		// error and the cause stayed invisible for months. Carry the real
+		// stderr — it is the difference between "gh is broken" and "gh is
+		// unauthenticated".
+		observation := "GitHub CLI command execution failed"
+		if detail != "" {
+			observation += ": " + detail
+		}
 		return core.CreateErrorResponse(
 			fmt.Sprintf("gh command failed: %v\nStderr: %s", err, stderr.String()),
-			"GitHub CLI command execution failed",
+			observation,
 		)
 	}
 

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"nudgebee/code-analysis-agent/agents"
 	"nudgebee/code-analysis-agent/common"
@@ -104,8 +105,14 @@ type AgenticAnalyzeRequest struct {
 	// Mode controls whether the agent is allowed to mutate code. "explore"
 	// (default) is read-only Q&A / RCA; "fix" enables the CodeFixerAgent and
 	// PR creation. When unset, RaisePR is used as a back-compat fallback.
-	Mode             string `json:"mode,omitempty"`
-	RaisePR          bool   `json:"raise_pr,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	RaisePR bool   `json:"raise_pr,omitempty"`
+	// BaseDiff is an optional unified diff previously produced for this SAME
+	// fix (e.g. an earlier propose-mode run's git_diff). The fix pipeline
+	// verifies it against the current code and adapts it instead of
+	// re-deriving the fix from scratch. May arrive truncated; treated as
+	// authoritative intent, never blindly applied.
+	BaseDiff         string `json:"base_diff,omitempty"`
 	EventId          string `json:"event_id,omitempty"`
 	RecommendationId string `json:"recommendation_id,omitempty"`
 	// WorkflowId is the originating workflow definition id. When set, the PR
@@ -147,6 +154,20 @@ type LLMConfigOverride struct {
 	ApiVersion  string `json:"api_version,omitempty"`
 	ApiType     string `json:"api_type,omitempty"`
 	Region      string `json:"region,omitempty"`
+	// AccessKey/SecretKey/SessionToken are the AWS static credentials for
+	// Bedrock, which authenticates with a SigV4 credential triple instead of a
+	// single API key. llm-server sends them only as a complete pair. Like the
+	// API key, they are plaintext and must never be logged.
+	AccessKey    string `json:"access_key,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	SessionToken string `json:"session_token,omitempty"`
+	// Tiers carries the model-tier resolution from llm-server's existing layered
+	// config (ENV-tier + tenant DB; ModelTier taxonomy): "reasoning", "retrieval",
+	// "summary". Mapping here: retrieval → router+fixer (mechanical execution),
+	// summary → review, reasoning → the specialist (run model). A forwarded tier
+	// wins over this pod's AGENT_MODEL_* env, which remains the local/dev
+	// fallback. Same provider/credentials as the run model.
+	Tiers map[string]string `json:"tiers,omitempty"`
 }
 
 func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
@@ -154,13 +175,16 @@ func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
 		return config.LLMOverride{}
 	}
 	return config.LLMOverride{
-		Provider:    o.Provider,
-		Model:       o.Model,
-		ApiKey:      o.ApiKey,
-		ApiEndpoint: o.ApiEndpoint,
-		ApiVersion:  o.ApiVersion,
-		ApiType:     o.ApiType,
-		Region:      o.Region,
+		Provider:     o.Provider,
+		Model:        o.Model,
+		ApiKey:       o.ApiKey,
+		ApiEndpoint:  o.ApiEndpoint,
+		ApiVersion:   o.ApiVersion,
+		ApiType:      o.ApiType,
+		Region:       o.Region,
+		AccessKey:    o.AccessKey,
+		SecretKey:    o.SecretKey,
+		SessionToken: o.SessionToken,
 	}
 }
 
@@ -293,8 +317,65 @@ type TokenUsage struct {
 	CompletionTokens    int    `json:"completion_tokens"`
 	TotalTokens         int    `json:"total_tokens"`
 	CachedContentTokens int    `json:"cached_content_tokens"`
+	ThinkingTokens      int    `json:"thinking_tokens"`
 	Model               string `json:"model"`
 	Provider            string `json:"provider"`
+	// Calls carries one record per LLM API call so the consumer can price
+	// each call at its own long-context tier — pricing the run aggregate
+	// tiers nearly every run into Gemini's >200K surcharge (see llm-server
+	// recordCodeAnalysisTokenUsage). Omitted when the client was shared and
+	// the slice cannot be attributed to this request alone.
+	Calls        []llm.TokenUsageCall `json:"calls,omitempty"`
+	CallsDropped int                  `json:"calls_dropped,omitempty"`
+}
+
+// collectTokenUsage assembles the response token usage from the run client:
+// the aggregate as a delta from the pre-analysis snapshot, plus the per-call
+// records. Returns nil when nothing was spent.
+func collectTokenUsage(client *llm.Client, tokensBefore *llm.TokenUsage, logger *common.Logger) *TokenUsage {
+	if client == nil {
+		return nil
+	}
+	tokensAfter := client.SnapshotTokenUsage()
+	delta := llm.TokenUsageDelta(tokensBefore, tokensAfter)
+	if delta.TotalTokens <= 0 {
+		return nil
+	}
+	tu := &TokenUsage{
+		PromptTokens:        delta.PromptTokens,
+		CompletionTokens:    delta.CompletionTokens,
+		TotalTokens:         delta.TotalTokens,
+		CachedContentTokens: delta.CachedContentTokens,
+		ThinkingTokens:      delta.ThinkingTokens,
+		Model:               delta.Model,
+		Provider:            delta.Provider,
+	}
+	// Per-call records are attributable to this request only when the client
+	// started this request at zero (fresh per-request client — the normal
+	// case). A non-zero snapshot means a shared client whose slice mixes
+	// requests: omit calls so the consumer falls back to the aggregate row
+	// rather than double-counting.
+	if tokensBefore == nil || tokensBefore.TotalTokens == 0 {
+		tu.Calls, tu.CallsDropped = client.SnapshotCalls()
+	} else if logger != nil {
+		logger.Log(common.EventAnalysisComplete, "Shared LLM client detected — omitting per-call usage records", map[string]any{
+			"tokens_before": tokensBefore.TotalTokens,
+		})
+	}
+	if logger != nil {
+		logger.Log(common.EventAnalysisComplete, "Token usage collected for final response", map[string]any{
+			"total_tokens":          delta.TotalTokens,
+			"prompt_tokens":         delta.PromptTokens,
+			"completion_tokens":     delta.CompletionTokens,
+			"cached_content_tokens": delta.CachedContentTokens,
+			"thinking_tokens":       delta.ThinkingTokens,
+			"call_records":          len(tu.Calls),
+			"calls_dropped":         tu.CallsDropped,
+			"model":                 delta.Model,
+			"provider":              delta.Provider,
+		})
+	}
+	return tu
 }
 
 type ToolInvocation struct {
@@ -368,9 +449,20 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 		defer cancel()
 
 		response, err := ah.HandleAgenticAnalyze(ctx, req)
-		if err != nil {
+		switch {
+		case err != nil:
 			common.FailAnalysis(analysisID, err.Error())
-		} else {
+		case response != nil && response.Error != "":
+			// HandleAgenticAnalyze folds an analysis error into the response body
+			// and returns a nil error (its synchronous callers rely on that). Keyed
+			// on Error rather than Success: a followup that ran and legitimately
+			// reported ExecutionStatus "failed" carries a real AgentResponse the
+			// PR-lifecycle cron still needs, and must stay "completed". Without this
+			// branch a run that never started is stored as completed, so /status
+			// reports success and the failure appears in no log at all.
+			log.Printf("ERROR: analysis %s failed: %s", analysisID, response.Error)
+			common.FailAnalysis(analysisID, response.Error)
+		default:
 			common.CompleteAnalysis(analysisID, response)
 		}
 
@@ -432,6 +524,22 @@ func (ah *AgenticAnalyzeHandler) resolveClients(req AgenticAnalyzeRequest, logge
 	cfg := ah.config
 	if req.LLMConfig != nil {
 		cfg = ah.config.CloneWithLLMOverride(req.LLMConfig.toConfigOverride())
+		// Model tiers resolved by llm-server's layered config (ENV-tier + tenant
+		// DB) win over this pod's AGENT_MODEL_* env fallback. retrieval drives the
+		// mechanical roles (router, fixer); summary drives review; reasoning is
+		// the specialist's tier and equals the forwarded run model.
+		if tiers := req.LLMConfig.Tiers; tiers != nil {
+			if m := tiers["retrieval"]; m != "" {
+				cfg.Agent.ModelRouter = m
+				cfg.Agent.ModelFixer = m
+			}
+			if m := tiers["summary"]; m != "" {
+				cfg.Agent.ModelReview = m
+			}
+			if m := tiers["reasoning"]; m != "" {
+				cfg.LLM.Model = m
+			}
+		}
 	}
 	client, err := llm.NewClient(cfg)
 	if err != nil {
@@ -485,7 +593,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 
 	// PR followup mode — route to PRFollowupAgent instead of orchestrator
 	if req.Followup && req.PRURL != "" {
-		return ah.performFollowupAnalysis(ctx, cfg, client, req, logger, resolvedCreds)
+		return ah.performFollowupAnalysis(ctx, cfg, client, tokensBefore, req, logger, resolvedCreds)
 	}
 
 	// Configure all agents with the logger
@@ -592,6 +700,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		EnableQueryRefinement: true,
 		Mode:                  req.Mode,
 		RaisePR:               req.RaisePR,
+		BaseDiff:              req.BaseDiff,
 		EventId:               req.EventId,
 		RecommendationId:      req.RecommendationId,
 		Skills:                req.Skills,
@@ -644,8 +753,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 
 	// Try to parse with custom handling for PR info
 	agentResponse, err := ah.parseAgentResponse(agentResponseStr)
-	parseFailed := err != nil
-	if parseFailed {
+	if err != nil {
 		responsePreview := agentResponseStr
 		if len(agentResponseStr) > 500 {
 			responsePreview = agentResponseStr[:500] + "..."
@@ -653,31 +761,42 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		logger.Error(common.EventResultParsed, "Failed to parse agent response", err, map[string]any{
 			"response_preview": responsePreview,
 		})
-		// If parsing fails, create a fallback response
-		agentResponse = &AnalysisResult{
-			Title:              "Analysis Response Parse Error",
-			Description:        "The code analysis agent completed execution but the response could not be parsed properly. This may indicate a formatting issue in the agent's output. Manual review of the logs and repository may be required to determine the actual issue.",
-			FilePath:           "unknown",
-			LineNumber:         0,
-			ErrorMessage:       "Failed to parse agent response",
-			OriginalCode:       "Parse error occurred",
-			FixedCode:          "Manual investigation required",
-			GitDiff:            "--- a/unknown\n+++ b/unknown\n@@ -0,0 +0,0 @@\n Parse error",
-			Commits:            []CommitInfo{{Hash: "unknown", Author: "unknown", Date: "unknown"}},
-			AutoMatedFixPRInfo: nil,
+		// Fail the run instead of synthesising a result.
+		//
+		// This used to return a fabricated AnalysisResult — file_path "unknown",
+		// fixed_code "Manual investigation required", and a git_diff of
+		// "--- a/unknown +++ b/unknown @@ -0,0 +0,0 @@ Parse error" — stored as a
+		// SUCCESS. The invented diff was the worst part: a diff-shaped string in
+		// the field a consumer applies. The worst measured case discarded 28
+		// minutes and 133k output tokens this way and reported success, so the
+		// failure was invisible to anything reading status.
+		//
+		// When the run ends on a control message rather than a submission, that
+		// message IS the diagnosis and the parse failure is noise on top of it:
+		// the agent hands back prose, so JSON parsing fails on its first
+		// character and reports "invalid character 'T'" — burying, say, a
+		// contract-validation failure or "BLOCKED: identical submit_analysis
+		// call executed 3 times" behind a parser complaint, and costing whoever
+		// reads it a trip through the logs to recover a message we already had.
+		//
+		// Detected by the absence of any JSON object rather than by matching
+		// known prefixes: the set of control messages grows, and each new one
+		// would otherwise silently fall back to the misleading parser error.
+		if text := strings.TrimSpace(agentResponseStr); text != "" && !strings.Contains(text, "{") {
+			return nil, fmt.Errorf("agent ended without a structured submission: %s", text)
 		}
+		// The preview goes in the error because it is the only surviving evidence
+		// of what the model actually produced.
+		return nil, fmt.Errorf("agent response could not be parsed as a structured analysis: %w (response preview: %s)", err, responsePreview)
 	}
 
 	// Validate relevance using LLM: Check if the agent response addresses the user's actual request.
-	// Skip on parse-error fallback: that synthetic AnalysisResult is a formatting failure, not an
-	// off-topic analysis. Running the relevance check against it always returns "not relevant"
-	// (because "Manual investigation required" never matches a user's specific issue), which then
-	// trips the upstream irrelevance marker — causing llm-server to cache "not relevant" in the
-	// per-message retry guard and permanently lock out retries that could have recovered.
+	// A parse failure no longer reaches this point — it returns an error above rather than
+	// substituting a synthetic result, which is what used to make this check misfire: the
+	// placeholder never matched a user's specific issue, so it always came back "not relevant",
+	// tripped the upstream irrelevance marker, and locked out retries that could have recovered.
 	var relevanceCheck *RelevanceCheckResult
-	if !parseFailed {
-		relevanceCheck, err = ah.validateResponseRelevanceWithLLM(ctx, client, agentResponse, req, logger)
-	}
+	relevanceCheck, err = ah.validateResponseRelevanceWithLLM(ctx, client, agentResponse, req, logger)
 	if err != nil {
 		logger.Error(common.EventAnalysisFailure, "Failed to validate response relevance", err, nil)
 	} else if relevanceCheck != nil && !relevanceCheck.IsRelevant {
@@ -726,32 +845,9 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	logger.AnalysisComplete(agentResponse, len(toolInvocations))
 	logger.FinalAnswer(agentResponse, "agent")
 
-	// Collect per-request token usage by computing delta from the pre-analysis snapshot.
-	// For a fresh per-request client the delta equals the total; for the shared
-	// default client it isolates THIS analysis's contribution.
-	var tokenUsage *TokenUsage
-	if client != nil {
-		tokensAfter := client.SnapshotTokenUsage()
-		delta := llm.TokenUsageDelta(tokensBefore, tokensAfter)
-		if delta.TotalTokens > 0 {
-			tokenUsage = &TokenUsage{
-				PromptTokens:        delta.PromptTokens,
-				CompletionTokens:    delta.CompletionTokens,
-				TotalTokens:         delta.TotalTokens,
-				CachedContentTokens: delta.CachedContentTokens,
-				Model:               delta.Model,
-				Provider:            delta.Provider,
-			}
-			logger.Log(common.EventAnalysisComplete, "Token usage collected for final response", map[string]any{
-				"total_tokens":          delta.TotalTokens,
-				"prompt_tokens":         delta.PromptTokens,
-				"completion_tokens":     delta.CompletionTokens,
-				"cached_content_tokens": delta.CachedContentTokens,
-				"model":                 delta.Model,
-				"provider":              delta.Provider,
-			})
-		}
-	}
+	// Collect per-request token usage (aggregate delta + per-call records) from
+	// the pre-analysis snapshot.
+	tokenUsage := collectTokenUsage(client, tokensBefore, logger)
 
 	response := &AgenticAnalyzeResponse{
 		Success:         true,
@@ -1266,6 +1362,18 @@ func (ah *AgenticAnalyzeHandler) normalizeAndValidateRequest(req *AgenticAnalyze
 		log.Printf("WARN: Request has empty logs - analysis will be code-only (tenant=%s, repo=%s)", req.Tenant, req.GitRepository.URL)
 	}
 
+	// Cap the base diff; never reject — a truncated or malformed diff still
+	// works as a free-form hint the prompts label accordingly. Back the cut
+	// off to a rune boundary so a multi-byte character is never split.
+	const maxBaseDiffBytes = 128 * 1024
+	if len(req.BaseDiff) > maxBaseDiffBytes {
+		cut := maxBaseDiffBytes
+		for cut > 0 && !utf8.RuneStart(req.BaseDiff[cut]) {
+			cut--
+		}
+		req.BaseDiff = req.BaseDiff[:cut] + "\n[base_diff truncated]"
+	}
+
 	return nil
 }
 
@@ -1725,7 +1833,7 @@ type ToolTrackable interface {
 
 // performFollowupAnalysis handles PR followup mode — routes to PRFollowupAgent
 // to address CI failures and review comments on existing PRs/MRs.
-func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cfg *config.Config, client *llm.Client, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
+func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cfg *config.Config, client *llm.Client, tokensBefore *llm.TokenUsage, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
 	startTime := time.Now()
 
 	prNumber, err := agents.ParsePRNumber(req.PRURL)
@@ -1775,13 +1883,22 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 		// provider-appropriate username) so origin carries auth for the followup
 		// agent's subsequent pushes — the same shared primitive the orchestrator push
 		// path uses, so both PR flows authenticate identically.
-		cloneURL := git.InjectTokenIntoURL(req.GitRepository.URL, gitToken)
+		cloneURL, urlErr := git.InjectTokenIntoURL(req.GitRepository.URL, gitToken)
+		if urlErr != nil {
+			return nil, fmt.Errorf("refusing to clone an invalid repository URL for followup: %w", urlErr)
+		}
+
+		// --branch is passed unconditionally here, so the name has to be a real ref.
+		if branchErr := git.ValidateBranchName(branch); branchErr != nil {
+			return nil, fmt.Errorf("refusing to clone with an invalid branch name for followup: %w", branchErr)
+		}
 
 		cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "50", "--branch", branch, cloneURL, workspaceDir)
 		cloneOutput, cloneErr := cloneCmd.CombinedOutput()
 		if cloneErr != nil {
+			// git echoes the clone URL back, which carries the token.
 			logger.Error(common.EventAnalysisFailure, "Failed to clone repo for followup", cloneErr, map[string]any{
-				"output": string(cloneOutput),
+				"output": git.RedactURLCredentials(string(cloneOutput)),
 			})
 			return nil, fmt.Errorf("failed to clone repo for followup: %w", cloneErr)
 		}
@@ -1863,5 +1980,8 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 			URL:    req.GitRepository.URL,
 			Branch: branch,
 		},
+		// Followup runs previously reported no usage at all — every followup
+		// looked free in llm_conversation_token_usage.
+		TokenUsage: collectTokenUsage(client, tokensBefore, logger),
 	}, nil
 }

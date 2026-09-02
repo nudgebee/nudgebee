@@ -130,7 +130,12 @@ export function makeExternalTooltip(formatValue: TooltipValueFormatter) {
     const multi = points.length > 1 && numericTotal > 0;
     const rows: TooltipRow[] = points.map((dp: any) => {
       const ds = dp.dataset ?? {};
-      const color = (Array.isArray(ds.backgroundColor) ? ds.backgroundColor[dp.dataIndex] : ds.backgroundColor) || ds.borderColor || '#ccc';
+      // backgroundColor may be a Chart.js scriptable function (e.g. a canvas gradient
+      // builder) rather than a CSS color string — that can't be used as an inline
+      // style, so fall back to borderColor (always a plain string here) instead of
+      // stringifying the function.
+      const bg = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[dp.dataIndex] : ds.backgroundColor;
+      const color = (typeof bg === 'string' ? bg : undefined) ?? (typeof ds.borderColor === 'string' ? ds.borderColor : undefined) ?? '#ccc';
       const label = ds.label || dp.label || '';
       return { color, label, value: formatValue(dp.raw, label), share: multi ? (Number(dp.raw) || 0) / numericTotal : undefined };
     });
@@ -138,8 +143,29 @@ export function makeExternalTooltip(formatValue: TooltipValueFormatter) {
     el.innerHTML = renderTable(title, rows, total);
 
     const rect = chart.canvas.getBoundingClientRect();
-    const left = rect.left + window.pageXOffset + tooltip.caretX + 12;
-    const top = rect.top + window.pageYOffset + tooltip.caretY + 12;
+    const preferredLeft = rect.left + window.pageXOffset + tooltip.caretX + 12;
+    const preferredTop = rect.top + window.pageYOffset + tooltip.caretY + 12;
+
+    // Clamp horizontally so the tooltip never pushes the document past the
+    // viewport width (it would otherwise widen the page and add a scrollbar
+    // whenever a chart near the right edge is hovered). Flip to the left of
+    // the cursor if there isn't room on the right.
+    const viewportRight = window.pageXOffset + document.documentElement.clientWidth;
+    const tooltipWidth = el.offsetWidth;
+    let left = preferredLeft;
+    if (left + tooltipWidth > viewportRight) {
+      left = rect.left + window.pageXOffset + tooltip.caretX - tooltipWidth - 12;
+    }
+    left = Math.max(window.pageXOffset + 4, left);
+
+    // Vertically, slide rather than flip: keep the tooltip anchored just below the
+    // caret when it fits, otherwise nudge it up just enough to stay inside the
+    // viewport instead of jumping to the opposite side of the cursor.
+    const viewportBottom = window.pageYOffset + document.documentElement.clientHeight;
+    const tooltipHeight = el.offsetHeight;
+    let top = Math.min(preferredTop, viewportBottom - tooltipHeight - 4);
+    top = Math.max(window.pageYOffset + 4, top);
+
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
     el.style.opacity = '1';

@@ -90,34 +90,10 @@ func (l LLMAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptAgentLlm, request.AccountId,
+	systemPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptAgentLlm, request.AccountId,
 		now, sourceInfo, accountInstructions)
-	if systemPrompt == "" {
-		systemPrompt = fmt.Sprintf(`
-		<instructions>
-			Current Date & Time (UTC): %s
-			%s
-			%s
-			You are a seasoned technology expert with deep experience in software engineering and infrastructure operations.
-			IMPORTANT: You MUST include ALL relevant data from the provided context in your response. Provide complete and comprehensive answers.
-			CRITICAL: Check context for remediation state. If tool="remediation_generate" or text contains "Proposed"/"Can Do"/"AWAITING": use future tense ("I can...", "Would you like me to..."). If tool="remediation_execute" or stdout/stderr present: use past tense ("I executed...", "Applied..."). Default to future tense if unclear.
-			Process and include ALL data passed to you in the context - do not truncate or skip relevant information.
-			If the context contains tables, statistics, or structured data, include it in your response when relevant.
-			AVOID making assumptions or fabricating information not present in the context.
-			AVOID unnecessary repetition or explanation of self-explanatory information.
-
-			Primary Instruction:
-			- If context is provided (in the <context> tag), prioritize it. Include ALL relevant data from the context.
-			- If context is empty, use your expert knowledge within the SRE/DevOps/Development domain.
-		</instructions>
-		<output_format>
-			Respond using professional Markdown:
-			- Tables: Use for metrics, statistics, and structured data.
-			- Code Blocks: Use triple backticks for logs, JSON, and source code.
-			- Lists: Use for recommendations or itemized findings.
-			- Data Integrity: Preserve the original structure, headers, and rows of all provided data.
-		</output_format>
-		`, now, sourceInfo, accountInstructions)
+	if err != nil {
+		return NBAgentResponse{}, fmt.Errorf("LLMAgent.Execute: loading system prompt: %w", err)
 	}
 
 	// Summary-shaped prompt only for the Summary tier. Reasoning calls keep the

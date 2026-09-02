@@ -286,6 +286,143 @@ func TestGetDetailedTokenInfo_CacheReadHandling_ProviderConventions(t *testing.T
 	}
 }
 
+// Every provider must have its usage keys read, because a provider whose naming
+// nobody reads records zero tokens and therefore zero cost — silently, with no
+// error anywhere. That is how provider=openai logged 89 calls at zero.
+//
+// The clients use three different conventions for the same two numbers:
+//
+//	InputTokens/OutputTokens         huggingface (in-house), anthropic
+//	input_tokens/output_tokens       bedrock, googleai, vertexai, vertexai_endpoint
+//	PromptTokens/CompletionTokens    azure (in-house), openai, custom
+//
+// Each case below uses the keys that provider's client actually emits, so adding
+// a provider without wiring its naming fails here rather than in the cost report.
+func TestGetDetailedTokenInfo_ReadsEveryProviderUsageNaming(t *testing.T) {
+	tests := []struct {
+		provider       string
+		generationInfo map[string]any
+		wantInput      int
+		wantOutput     int
+	}{
+		{
+			provider:       "huggingface (in-house)",
+			generationInfo: map[string]any{"InputTokens": 1000, "OutputTokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "anthropic",
+			generationInfo: map[string]any{"input_tokens": 1000, "output_tokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "bedrock",
+			generationInfo: map[string]any{"input_tokens": 1000, "output_tokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			// googleai emits both conventions; input_tokens is checked first and
+			// is the one carrying its cache-inclusive semantics.
+			provider: "googleai",
+			generationInfo: map[string]any{
+				"input_tokens": 1000, "output_tokens": 500,
+				"PromptTokens": 1000, "CompletionTokens": 500,
+				"NonCachedInputTokens": 1000,
+			},
+			wantInput: 1000, wantOutput: 500,
+		},
+		{
+			provider:       "vertexai_endpoint",
+			generationInfo: map[string]any{"input_tokens": 1000, "output_tokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "azure (in-house)",
+			generationInfo: map[string]any{"PromptTokens": 1000, "CompletionTokens": 500},
+			wantInput:      1000, wantOutput: 500,
+		},
+		{
+			provider:       "openai / custom (langchaingo)",
+			generationInfo: map[string]any{"PromptTokens": 1000, "CompletionTokens": 500, "TotalTokens": 1500},
+			wantInput:      1000, wantOutput: 500,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			resp := &llms.ContentResponse{
+				Choices: []*llms.ContentChoice{{GenerationInfo: tc.generationInfo}},
+			}
+			info := getDetailedTokenInfo(resp, nil)
+			assert.Equal(t, tc.wantInput, info.InputTokens, "input tokens unread for %s", tc.provider)
+			assert.Equal(t, tc.wantOutput, info.OutputTokens, "output tokens unread for %s", tc.provider)
+		})
+	}
+}
+
+// OpenAI reports cached tokens as a SUBSET of prompt_tokens, the same convention
+// Google AI uses — but langchaingo's OpenAI client emits no NonCachedInputTokens
+// marker, so the marker check alone would let the additive branch fire and inflate
+// input ~2x on every cache hit. That is the Gemini double-count, reintroduced for
+// openai/azure/custom. InputTokens must stay exactly prompt_tokens.
+func TestGetDetailedTokenInfo_OpenAICachedTokensAreNotDoubleCounted(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"PromptTokens":       10000, // total, already includes the 8000 cached
+		"CompletionTokens":   500,
+		"PromptCachedTokens": 8000,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 10000, info.InputTokens, "prompt_tokens already includes cached; must NOT become 18000")
+	assert.Equal(t, 8000, info.CacheReadTokens, "cache reads must be surfaced so the cached rate applies")
+	assert.Equal(t, 500, info.OutputTokens)
+	// OpenAI bills no separate cache write, unlike Anthropic's 1.25x creation rate.
+	assert.Equal(t, 0, info.CacheCreationTokens)
+}
+
+// The Anthropic convention must be untouched by the OpenAI branch: there
+// input_tokens is the fresh portion only, so cache reads still get added.
+func TestGetDetailedTokenInfo_AnthropicStillAddsCacheRead(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"input_tokens":         1500, // fresh only
+		"output_tokens":        100,
+		"CacheReadInputTokens": 20000,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 21500, info.InputTokens, "Anthropic input_tokens is fresh-only; total = fresh + cache_read")
+	assert.Equal(t, 20000, info.CacheReadTokens)
+}
+
+// A provider-specific cache field must win over the generic OpenAI one when both
+// somehow appear, so the more precise number is the one billed.
+func TestGetDetailedTokenInfo_ProviderCacheFieldBeatsOpenAIField(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"PromptTokens":         10000,
+		"CompletionTokens":     100,
+		"CacheReadInputTokens": 7000,
+		"PromptCachedTokens":   9999,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 7000, info.CacheReadTokens)
+}
+
+// Precedence is load-bearing where a client emits more than one convention:
+// the in-house naming carries the cache semantics getDetailedTokenInfo relies on.
+func TestGetDetailedTokenInfo_InHouseNamingWinsOverOpenAI(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"InputTokens": 111, "OutputTokens": 222,
+		"PromptTokens": 999, "CompletionTokens": 999,
+	}}}}
+	info := getDetailedTokenInfo(resp, nil)
+	assert.Equal(t, 111, info.InputTokens)
+	assert.Equal(t, 222, info.OutputTokens)
+}
+
 // TestResolveThinkingBudget guards the per-ModelTier thinking-token cap and its
 // global-override precedence.
 func TestResolveThinkingBudget(t *testing.T) {
@@ -371,13 +508,28 @@ func (m *optionCapturingLLMModel) Call(ctx context.Context, prompt string, optio
 	return resp.Choices[0].Content, nil
 }
 
-// TestThinkingBudget_SkippedWhenCallerSetExplicitLevel guards that the
-// auto-applied ThinkingBudget does not fire for callers that already set an
-// explicit ThinkingLevel — only auto-defaulted calls should get capped.
-func TestThinkingBudget_SkippedWhenCallerSetExplicitLevel(t *testing.T) {
+// TestThinkingBudget_AppliedForCallerSetExplicitLevel pins a DELIBERATE
+// REVERSAL of the previous contract.
+//
+// This test used to assert the opposite — that an explicit caller-set
+// ThinkingLevel suppressed the budget entirely, on the reasoning that "only
+// auto-defaulted calls should get capped". Production showed that leaves the
+// fast-task paths (scratchpad summarizer, memory extract/vote/rerank,
+// classification, acknowledgment, image utils) completely unbounded: measured
+// on gemini-3.5-flash, such calls ran to ~62.9k thinking tokens — the model's
+// own ceiling — for 250-300s, several emitting a single output token. The
+// scratchpad summarizer asking for ThinkingLevelFastTask ("think as little as
+// possible") was the call that thought the most.
+//
+// A level is only a hint the provider may exceed, so it is now paired with a
+// numeric ceiling derived from that level (resolveThinkingBudgetForLevel).
+// Sending both is safe: googleai forwards only the budget when both are
+// present, because Gemini rejects a request carrying both.
+func TestThinkingBudget_AppliedForCallerSetExplicitLevel(t *testing.T) {
 	origProvider := config.Config.LlmProvider
 	origModel := config.Config.LlmModel
 	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	origNative := config.Config.LlmThinkingLevelNativeEnabled
 	config.Config.LlmProvider = "googleai"
 	config.Config.LlmModel = "gemini-3-flash-preview"
 	config.Config.LlmThinkingBudgetReasoning = 16000
@@ -385,25 +537,129 @@ func TestThinkingBudget_SkippedWhenCallerSetExplicitLevel(t *testing.T) {
 		config.Config.LlmProvider = origProvider
 		config.Config.LlmModel = origModel
 		config.Config.LlmThinkingBudgetReasoning = origReasoning
+		config.Config.LlmThinkingLevelNativeEnabled = origNative
 	})
 
 	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "summarize this")}
 
-	t.Run("explicit caller-set level: no budget applied, level preserved", func(t *testing.T) {
+	// Native level ON (the default): Gemini 3 receives its level and NO budget, because
+	// googleai suppresses the level whenever a budget is present. Sending the budget is
+	// what kept every Gemini 3 call on the parameter Google documents as back-compat.
+	t.Run("gemini 3: level reaches the wire, budget withheld", func(t *testing.T) {
+		config.Config.LlmThinkingLevelNativeEnabled = true
 		fake := &optionCapturingLLMModel{}
 		withFakeLLMModel(t, fake)
 		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "summary_agent", false, messages, true, WithThinkingLevel(ThinkingLevelFastTask))
 		assert.NoError(t, err)
-		_, hasBudget := fake.lastOptions.Metadata["ThinkingBudget"]
-		assert.False(t, hasBudget, "explicit caller-set ThinkingLevel must not get a ThinkingBudget applied on top")
-		assert.Equal(t, ThinkingLevelFastTask, fake.lastOptions.Metadata["ThinkingLevel"])
+		assert.Nil(t, fake.lastOptions.Metadata["ThinkingBudget"],
+			"a budget would suppress the level in googleai, which is the whole defect")
+		assert.Equal(t, ThinkingLevelFastTask, fake.lastOptions.Metadata["ThinkingLevel"],
+			"the caller's level must survive to the wire")
 	})
 
-	t.Run("no explicit level: budget auto-applied (this fix's actual target)", func(t *testing.T) {
+	t.Run("gemini 3 auto path: level applied, no budget", func(t *testing.T) {
+		config.Config.LlmThinkingLevelNativeEnabled = true
 		fake := &optionCapturingLLMModel{}
 		withFakeLLMModel(t, fake)
 		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "logs", false, messages, true)
 		assert.NoError(t, err)
-		assert.Equal(t, 16000, fake.lastOptions.Metadata["ThinkingBudget"])
+		assert.Nil(t, fake.lastOptions.Metadata["ThinkingBudget"])
+		assert.NotEmpty(t, fake.lastOptions.Metadata["ThinkingLevel"])
+	})
+
+	// Flag off restores the legacy pairing exactly, so rollback is a config flip.
+	t.Run("flag off: legacy budget pairing restored", func(t *testing.T) {
+		config.Config.LlmThinkingLevelNativeEnabled = false
+		fake := &optionCapturingLLMModel{}
+		withFakeLLMModel(t, fake)
+		_, err := GenerateAndTrackLLMContent(gemini3ReasoningContext(), "", "", "", "", "summary_agent", false, messages, true, WithThinkingLevel(ThinkingLevelFastTask))
+		assert.NoError(t, err)
+		assert.Equal(t, 2048, fake.lastOptions.Metadata["ThinkingBudget"],
+			"disabling the flag must reproduce the pre-change behaviour byte for byte")
+	})
+}
+
+// TestResolveThinkingBudgetForLevel pins the level→budget mapping added after a
+// production incident: calls carrying an explicit ThinkingLevel bypassed the
+// budget entirely (llm_common.go took the else branch, which only clamped the
+// level), so a "fast task" scratchpad-compression call ran to ~62.9k thinking
+// tokens and 250-300s. A level is a hint the provider may exceed; these bounds
+// make it a ceiling while still honouring the caller's stated intent.
+func TestResolveThinkingBudgetForLevel(t *testing.T) {
+	origGlobal := config.Config.LlmProviderThinkingBudget
+	origRetrieval := config.Config.LlmThinkingBudgetRetrieval
+	origReasoning := config.Config.LlmThinkingBudgetReasoning
+	t.Cleanup(func() {
+		config.Config.LlmProviderThinkingBudget = origGlobal
+		config.Config.LlmThinkingBudgetRetrieval = origRetrieval
+		config.Config.LlmThinkingBudgetReasoning = origReasoning
+	})
+	config.Config.LlmProviderThinkingBudget = -1
+	config.Config.LlmThinkingBudgetRetrieval = 8000
+	config.Config.LlmThinkingBudgetReasoning = 16000
+
+	t.Run("a low/fast-task level gets far less than the tier ceiling", func(t *testing.T) {
+		got := resolveThinkingBudgetForLevel(ThinkingLevelFastTask, ModelTierRetrieval)
+		assert.Equal(t, 2048, got,
+			"fast task asked to think as little as possible — it must not get the full tier allowance")
+		assert.Less(t, got, resolveThinkingBudget(ModelTierRetrieval))
+	})
+
+	t.Run("levels scale monotonically", func(t *testing.T) {
+		minimal := resolveThinkingBudgetForLevel("minimal", ModelTierReasoning)
+		low := resolveThinkingBudgetForLevel("low", ModelTierReasoning)
+		medium := resolveThinkingBudgetForLevel("medium", ModelTierReasoning)
+		high := resolveThinkingBudgetForLevel("high", ModelTierReasoning)
+		assert.Less(t, minimal, low)
+		assert.Less(t, low, medium)
+		assert.Less(t, medium, high)
+	})
+
+	t.Run("the tier ceiling always wins over a higher level", func(t *testing.T) {
+		// "high" maps to 16384, but a Retrieval-tier agent may not exceed 8000.
+		assert.Equal(t, 8000, resolveThinkingBudgetForLevel("high", ModelTierRetrieval))
+	})
+
+	t.Run("case and whitespace do not defeat the mapping", func(t *testing.T) {
+		assert.Equal(t, 2048, resolveThinkingBudgetForLevel("  LOW  ", ModelTierRetrieval))
+	})
+
+	t.Run("unrecognized level still gets bounded by the tier", func(t *testing.T) {
+		assert.Equal(t, 8000, resolveThinkingBudgetForLevel("enthusiastic", ModelTierRetrieval))
+	})
+
+	t.Run("a deliberately uncapped tier is not re-capped via the level", func(t *testing.T) {
+		config.Config.LlmThinkingBudgetRetrieval = 0 // operator opt-out per config docs
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel("low", ModelTierRetrieval),
+			"config 0 means the operator uncapped this tier; a level must not reintroduce a cap")
+		config.Config.LlmThinkingBudgetRetrieval = 8000
+	})
+
+	t.Run("none means no thinking config at all, never a positive budget", func(t *testing.T) {
+		// ClampThinkingLevelForModel returns "none" for flash-lite, which cannot
+		// think. Falling through to the tier budget would attach a positive
+		// ceiling to a non-thinking model — isThinkingModel matches the
+		// `gemini-3` prefix, so gemini-3.5-flash-lite would receive it. Live
+		// path: memory_extractor / acknowledgment_agent / vote_subject pass an
+		// explicit level and run predominantly on flash-lite. Caught in review
+		// by gemini-code-assist on PR #36172.
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel(ThinkingLevelNone, ModelTierRetrieval))
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel("  NONE  ", ModelTierReasoning),
+			"case and whitespace must not defeat the none guard")
+	})
+
+	t.Run("clamping a level to none on flash-lite yields no budget", func(t *testing.T) {
+		// End-to-end shape of the regression: the caller asks for fast-task, the
+		// clamp downgrades it to "none" for this model, and the result must be
+		// no budget rather than the tier ceiling.
+		clamped := ClampThinkingLevelForModel("gemini-3.5-flash-lite", ThinkingLevelFastTask)
+		assert.Equal(t, ThinkingLevelNone, clamped)
+		assert.Equal(t, -1, resolveThinkingBudgetForLevel(clamped, ModelTierRetrieval))
+	})
+
+	t.Run("global override caps the level mapping", func(t *testing.T) {
+		config.Config.LlmProviderThinkingBudget = 100
+		assert.Equal(t, 100, resolveThinkingBudgetForLevel("high", ModelTierReasoning))
+		config.Config.LlmProviderThinkingBudget = -1
 	})
 }

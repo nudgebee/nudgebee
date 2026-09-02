@@ -109,13 +109,13 @@ func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 
 	// A category-less tool agent must NOT inherit the parent's Reasoning tier;
 	// it is stamped with the Retrieval default instead.
-	resetCtx := applyAgentModelTier(parentCtx, catTestAgent{})
+	resetCtx := applyAgentModelTier(parentCtx, catTestAgent{}, NBAgentRequest{})
 	assert.Equal(t, ModelTierRetrieval, modelTierFromContext(resetCtx),
 		"category-less agent overrides the inherited tier → Retrieval default")
 
 	// A categorised agent stamps its own tier even over an inherited one.
 	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
-		got := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: tier})
+		got := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: tier}, NBAgentRequest{})
 		assert.Equal(t, tier, modelTierFromContext(got),
 			"declared category %s must be stamped onto the context", tier)
 	}
@@ -123,8 +123,8 @@ func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 	// Defensive guards: must not panic on a nil ctx or a zero-value
 	// RequestContext whose internal context.Context is nil (e.g. planner stubs).
 	assert.NotPanics(t, func() {
-		assert.Nil(t, applyAgentModelTier(nil, catTestAgent{}))
-		zero := applyAgentModelTier(&security.RequestContext{}, catTestCategorisedAgent{category: ModelTierReasoning})
+		assert.Nil(t, applyAgentModelTier(nil, catTestAgent{}, NBAgentRequest{}))
+		zero := applyAgentModelTier(&security.RequestContext{}, catTestCategorisedAgent{category: ModelTierReasoning}, NBAgentRequest{})
 		assert.Equal(t, ModelTierReasoning, modelTierFromContext(zero),
 			"zero-value ctx falls back to context.Background() and still stamps the tier")
 	})
@@ -156,7 +156,7 @@ func TestApplyAgentModelTier_E2E_CategoryLessResolvesRetrievalNotPro(t *testing.
 
 	// The fix: a category-less agent is stamped the Retrieval default → resolves
 	// the retrieval-tier model, not the inherited pro model.
-	fixedCtx := applyAgentModelTier(parentCtx, catTestAgent{})
+	fixedCtx := applyAgentModelTier(parentCtx, catTestAgent{}, NBAgentRequest{})
 	resFixed, err := ResolveLLMConfig(fixedCtx, "", "kubectl", "")
 	assert.NoError(t, err)
 	assert.Equal(t, "qwen-retrieval", resFixed.Model,
@@ -165,7 +165,7 @@ func TestApplyAgentModelTier_E2E_CategoryLessResolvesRetrievalNotPro(t *testing.
 
 	// A genuinely reasoning-tier agent still opts into pro — the fix does not
 	// downgrade agents that declare the category.
-	catCtx := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: ModelTierReasoning})
+	catCtx := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: ModelTierReasoning}, NBAgentRequest{})
 	resCat, err := ResolveLLMConfig(catCtx, "", "kubectl", "")
 	assert.NoError(t, err)
 	assert.Equal(t, "gemini-3.1-pro-preview", resCat.Model,
@@ -1293,5 +1293,51 @@ func TestConversationTierOverrides_GetSkipsHalfSet(t *testing.T) {
 	}
 	if _, ok := c.Get("missing"); ok {
 		t.Fatalf("missing tier key must not be returned")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// detachedRequestContext — background writes keep attribution
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The token-usage write runs in the background, so its context must outlive the
+// request. Detaching it with context.Background() also dropped every value, which
+// is why every successful row was persisted with model_tier NULL while only the
+// failure path (which reads attribution before detaching) carried a tier.
+func TestDetachedRequestContext_KeepsAttributionDropsCancellation(t *testing.T) {
+	goCtx, cancel := context.WithCancel(context.Background())
+	goCtx = context.WithValue(goCtx, ContextKeyModelTier, ModelTierReasoning)
+	goCtx = context.WithValue(goCtx, ContextKeyTaskType, taskTypeInvestigation)
+	parent := security.NewRequestContext(goCtx, nil, slog.Default(), nil, nil)
+
+	detached := detachedRequestContext(parent)
+
+	// Cancelling the request must not cancel the background write.
+	cancel()
+	assert.Error(t, parent.GetContext().Err(), "parent should be cancelled")
+	assert.NoError(t, detached.GetContext().Err(), "detached context must survive request cancellation")
+
+	// ...but the attribution the record is built from must survive.
+	tier, taskType := tierAttributionForRecord(detached)
+	if assert.NotNil(t, tier, "model_tier must survive detachment — NULL here is the bug this guards") {
+		assert.Equal(t, string(ModelTierReasoning), *tier)
+	}
+	if assert.NotNil(t, taskType) {
+		assert.Equal(t, taskTypeInvestigation, *taskType)
+	}
+}
+
+// Guards the nil-parent paths: a nil RequestContext and a zero-value one (whose
+// internal context.Context is nil) must not panic — context.WithoutCancel panics
+// on a nil parent.
+func TestDetachedRequestContext_NilSafe(t *testing.T) {
+	assert.Nil(t, detachedRequestContext(nil))
+
+	zero := detachedRequestContext(&security.RequestContext{})
+	if assert.NotNil(t, zero) {
+		assert.NotNil(t, zero.GetContext())
+		tier, taskType := tierAttributionForRecord(zero)
+		assert.Nil(t, tier)
+		assert.Nil(t, taskType)
 	}
 }

@@ -77,7 +77,7 @@ type workspaceManager struct {
 }
 
 func NewWorkspaceManager() WorkspaceManager {
-	return NewWorkspaceManagerWithTimeout(60 * time.Second)
+	return NewWorkspaceManagerWithTimeout(config.WorkspaceHTTPClientTimeout)
 }
 
 func NewWorkspaceManagerWithTimeout(timeout time.Duration) WorkspaceManager {
@@ -214,9 +214,6 @@ func (w *workspaceManager) WaitForReady(ctx *security.RequestContext, accountId 
 		ctx.GetLogger().Error("workspace: accountId is required for wait")
 		return fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return fmt.Errorf("workspace feature is disabled")
-	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -296,9 +293,6 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for creation")
 		return fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return fmt.Errorf("workspace feature is disabled")
 	}
 
 	logger := ctx.GetLogger()
@@ -413,6 +407,24 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 				RunAsGroup:   &runAsGroup,
 				RunAsNonRoot: &runAsNonRoot,
 			},
+			// GKE resolves metadata.google.internal to the real metadata IP
+			// (169.254.169.254) inside pods, but the NetworkPolicy blackholes
+			// that IP to prevent IMDS credential theft — silently dropping
+			// packets instead of refusing the connection. Every cloud CLI
+			// credential path that resolves this hostname before connecting
+			// (not just the ones gated by gcloud's own CLOUDSDK_CORE_CHECK_GCE_METADATA
+			// property) then hangs for ~15-18s per call waiting out its own
+			// connect timeout/retries. Overriding it to loopback here makes
+			// the connection fail instantly instead, matching how it already
+			// behaves everywhere the hostname simply doesn't resolve (e.g. any
+			// machine outside GCP). Nothing in this pod relies on reaching real
+			// metadata — the NetworkPolicy already blocks it unconditionally.
+			HostAliases: []corev1.HostAlias{
+				{
+					IP:        "127.0.0.1",
+					Hostnames: []string{"metadata.google.internal"},
+				},
+			},
 			Containers: []corev1.Container{
 				{
 					Name:            "workspace-server",
@@ -452,6 +464,15 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						{
 							Name:  ENV_NB_RELAY_SERVER_ENDPOINT,
 							Value: config.Config.RelayServerEndpoint,
+						},
+						{
+							// Raises the in-pod command execution deadline (see
+							// LlmServerWorkspaceCommandTimeout doc comment) from
+							// code-analysis's hardcoded 30s fallback. Commands like
+							// `gcloud logging read` over wide time windows routinely
+							// need more than 30s and were getting SIGKILLed mid-flight.
+							Name:  "SERVER_WRITE_TIMEOUT",
+							Value: config.Config.LlmServerWorkspaceCommandTimeout,
 						},
 					},
 				},
@@ -539,6 +560,26 @@ func ParseExtraEnv(s string) []corev1.EnvVar {
 	return envs
 }
 
+// LLMSecretEnvVars returns the minimal LLM configuration keys a code-analysis
+// pod may read from the shared secret. It intentionally excludes application
+// infrastructure credentials and the encryption master key.
+func LLMSecretEnvVars(secretName string) []corev1.EnvVar {
+	optional := true
+	ref := func(key string) corev1.EnvVar {
+		return corev1.EnvVar{Name: key, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  key,
+			Optional:             &optional,
+		}}}
+	}
+	return []corev1.EnvVar{
+		ref("LLM_PROVIDER"), ref("LLM_MODEL_NAME"), ref("LLM_PROVIDER_API_KEY"),
+		ref("LLM_PROVIDER_API_ENDPOINT"), ref("LLM_PROVIDER_REGION"),
+		ref("LLM_PROVIDER_API_VERSION"), ref("LLM_PROVIDER_API_TYPE"),
+		ref("LLM_PROVIDER_MAX_RETRIES"), ref("BASE_URL"),
+	}
+}
+
 func buildWorkspaceResources() corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
@@ -559,9 +600,6 @@ func (w *workspaceManager) IsWorkspaceExists(ctx *security.RequestContext, accou
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for exists check")
 		return false, fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return false, fmt.Errorf("workspace feature is disabled")
 	}
 
 	clientset, err := getKubeClient(100, 200)
@@ -649,9 +687,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 		ctx.GetLogger().Error("workspace: accountId is required for termination")
 		return fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return fmt.Errorf("workspace feature is disabled")
-	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -689,11 +724,12 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 }
 
 // CleanupStaleWorkspaces deletes workspace pods running an outdated image.
-// Called on startup to ensure all workspaces use the current code-agent image.
+// Called on startup AND on a periodic leader schedule: the lazy-create path is
+// optimistic (a healthy pod's image is never re-checked), so without the
+// periodic sweep a long-lived pod keeps serving a stale image until its first
+// API failure — observed to delay code-analysis fixes by nearly two weeks.
+// Deleted pods are recreated lazily by CreateWorkspace on next use.
 func CleanupStaleWorkspaces(ctx context.Context) {
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return
-	}
 	// Skip cleanup when running outside K8s (local development).
 	// Only treat rest.ErrNotInCluster as "not in K8s"; log other errors as warnings.
 	if _, err := rest.InClusterConfig(); err != nil {
@@ -727,9 +763,12 @@ func CleanupStaleWorkspaces(ctx context.Context) {
 		if podImage == "" || podImage != currentImage {
 			slog.Info("workspace: deleting stale workspace pod", "pod", pod.Name, "pod_image", podImage, "current_image", currentImage)
 			gracePeriod := int64(0)
-			_ = clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+			if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &gracePeriod,
-			})
+			}); err != nil && !errors.IsNotFound(err) {
+				slog.Warn("workspace: failed to delete stale workspace pod; it keeps serving the old image until the next sweep",
+					"pod", pod.Name, "error", err)
+			}
 		}
 	}
 }
@@ -814,9 +853,6 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for direct execution")
 		return "", fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return "", fmt.Errorf("workspace feature is disabled")
 	}
 
 	logger := ctx.GetLogger()
@@ -959,9 +995,6 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
 	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return nil, fmt.Errorf("workspace feature is disabled")
-	}
 
 	logger := ctx.GetLogger()
 	logger.Debug("workspace: calling API", "method", method, "endpoint", endpoint, "account_id", accountId)
@@ -1083,9 +1116,6 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any, httpClient *http.Client) ([]byte, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return nil, fmt.Errorf("workspace feature is disabled")
 	}
 
 	logger := ctx.GetLogger()
@@ -1230,9 +1260,6 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any) (io.ReadCloser, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
-	}
-	if !config.Config.LlmServerWorkspaceEnabled {
-		return nil, fmt.Errorf("workspace feature is disabled")
 	}
 
 	// Prepare request body

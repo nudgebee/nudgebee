@@ -166,7 +166,20 @@ func validateRelayAccountAccess(reqPayload *relayProxyRequest, sc *security.Secu
 	actionName, _ = reqPayload.Body["action_name"].(string)
 	permission := requiredPermission(actionName)
 
-	if !sc.HasAccountAccess(accountId, permission) {
+	// Authorize via a built-in account role OR a dynamic-RBAC k8s custom grant
+	// (relay_forward_request is re-homed to the k8s module — see
+	// app/src/lib/permissionCatalog.ts). Reads accept k8s:Read (CanReadAccountData
+	// also covers the built-in Read path); mutating action_names require k8s:Write
+	// or a built-in Update role, so a k8s:Read-only holder can list but never
+	// mutate. The account in the request body is enforced here, which is what lets
+	// the gateway admit an account-scoped k8s grant (ACCOUNT_ENFORCED_ACTIONS).
+	var allowed bool
+	if permission == security.SecurityAccessTypeRead {
+		allowed = sc.CanReadAccountData(accountId, "k8s")
+	} else {
+		allowed = sc.HasAccountAccess(accountId, permission) || sc.HasScopedPermission(accountId, "k8s", "Write")
+	}
+	if !allowed {
 		return "", "", errors.New("access denied")
 	}
 	return accountId, actionName, nil

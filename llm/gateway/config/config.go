@@ -35,24 +35,26 @@ type Configuration struct {
 
 	// Per-provider API keys for the key-based providers — set any subset to serve
 	// them simultaneously (the passthrough routes by endpoint, so one key each).
-	// For a cloud provider needing structured creds (Bedrock/Vertex/Azure), use the
-	// LLM_PROVIDER_* block below instead.
-	AnthropicAPIKey string `mapstructure:"gateway_anthropic_api_key"`
-	OpenAIAPIKey    string `mapstructure:"gateway_openai_api_key"`
-	GeminiAPIKey    string `mapstructure:"gateway_gemini_api_key"`
+	// HuggingFace is served only through the generic /v1 endpoint (Bifrost's HF
+	// provider has no native passthrough), so it has no /huggingface mount.
+	// For a cloud provider needing structured creds (Bedrock/Vertex/Azure) or a custom
+	// OpenAI-compatible endpoint, configure it as a per-tenant (or platform-scoped) LLM
+	// integration — the gateway resolves those. The gateway intentionally has NO shared
+	// LLM_PROVIDER_* block: reusing llm-server's env coupled the two services' config
+	// (and let a gateway-only change silently affect llm-server), so it was removed. The
+	// gateway's operator credentials are these GATEWAY_*_API_KEY keys; everything else
+	// (cloud, custom endpoints, per-tenant BYO) comes from integrations.
+	AnthropicAPIKey   string `mapstructure:"gateway_anthropic_api_key"`
+	OpenAIAPIKey      string `mapstructure:"gateway_openai_api_key"`
+	GeminiAPIKey      string `mapstructure:"gateway_gemini_api_key"`
+	HuggingFaceAPIKey string `mapstructure:"gateway_huggingface_api_key"`
 
-	// Operator default / cloud provider credential — mirrors llm-server's
-	// LLM_PROVIDER_* env convention. Use for a single provider or a cloud provider
-	// (Bedrock/Vertex/Azure) needing structured creds; the per-provider keys above
-	// take precedence for the key-based providers. Cloud fields (access/secret/
-	// session) feed BedrockKeyConfig; api_key feeds the Value for api-key providers.
-	LlmProvider             string `mapstructure:"llm_provider"`
-	LlmProviderApiKey       string `mapstructure:"llm_provider_api_key"`
-	LlmProviderApiEndpoint  string `mapstructure:"llm_provider_api_endpoint"`
-	LlmProviderRegion       string `mapstructure:"llm_provider_region"`
-	LlmProviderAccessKey    string `mapstructure:"llm_provider_access_key"`
-	LlmProviderSecretKey    string `mapstructure:"llm_provider_secret_key"`
-	LlmProviderSessionToken string `mapstructure:"llm_provider_session_token"`
+	// AllowPrivateEndpoints, when true, lets endpoints resolve to RFC1918 PRIVATE IPs — for
+	// a gateway deployed inside a private cluster reaching its own internal model servers
+	// (self-hosted vLLM, k8s service DNS). Default FALSE: a public/multi-tenant gateway must
+	// NOT egress to private networks (SSRF). Link-local/cloud-metadata (169.254.x) stays
+	// blocked regardless of this flag, at both Test-Connection and request-dial time.
+	AllowPrivateEndpoints bool `mapstructure:"gateway_allow_private_endpoints"`
 
 	// Metastore (Postgres): virtual keys, identity, pricing catalog.
 	GatewayDBURL        string `mapstructure:"gateway_db_url"`
@@ -120,6 +122,11 @@ type Configuration struct {
 	BodyMaxBytes            int64 `mapstructure:"gateway_body_max_bytes"`
 	BodyTTLHours            int   `mapstructure:"gateway_body_ttl_hours"`
 	BodyCleanupIntervalMins int   `mapstructure:"gateway_body_cleanup_interval_minutes"`
+	// BodyPurgeGraceHours is how long past a body's expiry the row is kept before it
+	// is HARD-deleted (irreversible; this is the step that reclaims storage). The same
+	// cleanup loop soft-deletes at expiry, then purges rows past expiry+grace. The grace
+	// is a safety buffer on an irreversible delete. 0 = purge as soon as expired.
+	BodyPurgeGraceHours int `mapstructure:"gateway_body_purge_grace_hours"`
 
 	// Capture — session correlation + structure-only attributes.
 	// SessionHeader: request header a client sets to group requests into a
@@ -156,6 +163,10 @@ type Configuration struct {
 	// llm_gateway_routing_rules, refreshed every RoutingRefreshSeconds.
 	RoutingConfig         string `mapstructure:"gateway_routing_config"`
 	RoutingRefreshSeconds int    `mapstructure:"gateway_routing_refresh_seconds"`
+	// TiersEnabled ships the platform tier aliases (nb-fast/cheap/smart). Default true;
+	// set false to disable tiering deployment-wide — the defaults are not loaded and
+	// nb-* names resolve to nothing (a clean "unknown model" 400 on the generic endpoint).
+	TiersEnabled bool `mapstructure:"gateway_tiers_enabled"`
 
 	// OpenTelemetry.
 	OtelTracesExporter              string `mapstructure:"otel_traces_exporter"`
@@ -180,13 +191,8 @@ var keyDefaults = map[string]any{
 	"gateway_anthropic_api_key":             "",
 	"gateway_openai_api_key":                "",
 	"gateway_gemini_api_key":                "",
-	"llm_provider":                          "anthropic",
-	"llm_provider_api_key":                  "",
-	"llm_provider_api_endpoint":             "",
-	"llm_provider_region":                   "us-west-2",
-	"llm_provider_access_key":               "",
-	"llm_provider_secret_key":               "",
-	"llm_provider_session_token":            "",
+	"gateway_huggingface_api_key":           "",
+	"gateway_allow_private_endpoints":       false,
 	"gateway_db_url":                        "",
 	"gateway_db_max_connections":            20,
 	"gateway_db_min_connections":            2,
@@ -217,6 +223,7 @@ var keyDefaults = map[string]any{
 	"gateway_capture_admin_calls":           false,
 	"gateway_routing_config":                "",
 	"gateway_routing_refresh_seconds":       30,
+	"gateway_tiers_enabled":                 true,
 	"gateway_default_user_cost_limit":       0.0,   // per-user cost guardrail; 0 = disabled
 	"gateway_default_user_cost_period":      "day", // minute|hour|day|month
 	"gateway_egress_filter_mode":            "",    // off|detect|enforce|redact (outbound secret scan)
@@ -224,6 +231,7 @@ var keyDefaults = map[string]any{
 	"gateway_body_max_bytes":                1048576, // 1 MiB per body
 	"gateway_body_ttl_hours":                168,     // 7 days
 	"gateway_body_cleanup_interval_minutes": 60,
+	"gateway_body_purge_grace_hours":        24, // hard-delete this long after expiry
 	"otel_traces_exporter":                  "",
 	"otel_metrics_exporter":                 "",
 

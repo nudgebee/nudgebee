@@ -556,9 +556,9 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 		node, _ := row["node"].(string)
 		if node == "" {
 			// The fs-scan pins the Job to this node to reuse the node-local image.
-			// Without it the Job schedules anywhere and IfNotPresent falls back to a
-			// registry pull (fails for private registries). Skip; a later cycle picks
-			// it up once discovery has populated the node.
+			// Without it the Job schedules anywhere and the pull-policy-Never
+			// container can never start. Skip; a later cycle picks it up once
+			// discovery has populated the node.
 			ctx.GetLogger().Warn("image_scanner: skipping image with no node", "image", img, "account_id", accountId)
 			continue
 		}
@@ -683,6 +683,12 @@ WHERE ksw.is_active IS TRUE
 		}
 		workloads = append(workloads, d)
 	}
+	// clearRecommendationData already archived this account's health-check
+	// recommendations, so a truncated read here would drop them permanently.
+	if err := rows.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating workloads for health check recommendations", "error", err)
+		return err
+	}
 
 	if len(workloads) == 0 {
 		ctx.GetLogger().Info("No workloads found for health check recommendations")
@@ -788,6 +794,32 @@ WHERE ksw.is_active IS TRUE
 	return nil
 }
 
+// countActiveAgentsForAccount counts the agents that reported in for an account
+// within the last day.
+//
+// The cursor lives and dies inside this function on purpose. Its callers run
+// multi-minute per-account work (agent poll, log fetch, image scan, an HTTP call
+// to ml-k8s-server) inside a loop over every account, so a defer placed there
+// would only fire when the whole loop is done — pinning one pooled Metastore
+// connection per account for the rest of the run.
+func countActiveAgentsForAccount(ctx *security.RequestContext, dbms *database.DatabaseManager, accountID string) (int, error) {
+	response, err := dbms.Db.Queryx("select id from agent where last_connected_at > now() - interval '1 DAY' and cloud_account_id= $1", accountID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if cerr := response.Close(); cerr != nil {
+			ctx.GetLogger().Error("error closing response", "error", cerr)
+		}
+	}()
+
+	count := 0
+	for response.Next() {
+		count++
+	}
+	return count, nil
+}
+
 func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecommendationRequest) (GenerateRecommendationResponse, error) {
 	t0 := time.Now()
 	defer func() {
@@ -864,24 +896,13 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 			)
 		}
 
-		response, err := dbms.Db.Queryx("select id from agent where last_connected_at > now() - interval '1 DAY' and cloud_account_id= $1", accountId)
+		count, err := countActiveAgentsForAccount(ctx, dbms, accountId)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
 				ctx.GetLogger().Info("No active agent found for account", "account_id", accountId)
 			}
 			return GenerateRecommendationResponse{}, err
-		}
-		defer func() {
-			err := response.Close()
-			if err != nil {
-				ctx.GetLogger().Error("error closing response", "error", err)
-			}
-		}()
-
-		count := 0
-		for response.Next() {
-			count++
 		}
 		if count == 0 {
 			ctx.GetLogger().Info("No active agent found for account", "account_id", accountId)
@@ -954,6 +975,14 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 					}
 				}
 			} else {
+				if metricsProvider == "ES" {
+					esCfg, esErr := observability.ElasticsearchRightsizingConfig(accountCtx, accountId)
+					if esErr != nil {
+						accountCtx.GetLogger().Error("error getting elasticsearch config for volume rightsizing", "error", esErr, "account_id", accountId)
+					} else {
+						request.Elasticsearch = esCfg
+					}
+				}
 				if _, err := ml.TriggerVolumeRightsizing(accountCtx, request); err != nil {
 					accountCtx.GetLogger().Error("error triggering volume rightsizing", "error", err, "account_id", accountId, "metrics_provider", metricsProvider)
 				}
@@ -1003,24 +1032,13 @@ func GenerateSecurityRecommendation(ctx *security.RequestContext, request Genera
 	}
 
 	for _, accountId := range request.AccountId {
-		response, err := dbms.Db.Queryx("select id from agent where last_connected_at > now() - interval '1 DAY' and cloud_account_id= $1", accountId)
+		count, err := countActiveAgentsForAccount(ctx, dbms, accountId)
 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				ctx.GetLogger().Debug("No active agent found for account", "account_id", accountId)
 			}
 			return GenerateRecommendationResponse{}, err
-		}
-		defer func() {
-			err := response.Close()
-			if err != nil {
-				ctx.GetLogger().Error("error closing response", "error", err)
-			}
-		}()
-
-		count := 0
-		for response.Next() {
-			count++
 		}
 		if count == 0 {
 			ctx.GetLogger().Info("No active agent found for account", "account_id", accountId)

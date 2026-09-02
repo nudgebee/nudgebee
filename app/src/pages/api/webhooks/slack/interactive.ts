@@ -50,7 +50,13 @@ export default async function trigger(req: NextApiRequest, res: NextApiResponse)
       console.error('WEBHOOK SIGNATURE MISMATCH');
       return res.status(401).send('Error: Signature mismatch security error');
     }
-    res.status(200).send('OK');
+    // Empty ack, not a literal "OK" body: for legacy interactive_message
+    // actions, Slack renders whatever non-empty text this synchronous
+    // response contains as the message's new content. Sending 'OK' here
+    // was committing that text as the message itself, not just showing a
+    // generic loading placeholder -- the async chat.update below was always
+    // racing to overwrite content Slack had already applied, not a fallback.
+    res.status(200).end();
     const endpoint = process.env.NOTIFICATION_SERVICE_URL ?? 'http://notifications:80';
 
     const response = await axios.post(endpoint + '/webhooks/slack/interactive', JSON.parse(req.body.payload), {

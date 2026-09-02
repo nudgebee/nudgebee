@@ -214,7 +214,14 @@ func (c *toolCache) set(accountId string, tools []NBTool) {
 	slog.Info(logCacheSet, "account_id", accountId, "tools_count", len(tools))
 }
 
+func (c *toolCache) delete(accountId string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	delete(c.data, accountId)
+}
+
 func invalidateLocalCaches(accountId string) {
+	toolCacheInstance.delete(accountId)
 	enabledToolsCacheInstance.delete(accountId)
 	toolDtoCacheInstance.delete(accountId)
 	customToolDtoCacheInstance.delete(accountId)
@@ -466,7 +473,12 @@ func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBT
 	}
 
 	finalTools = append(finalTools, ListCustomNbTool(accountId, ToolStatusEnabled)...)
-	finalTools = append(finalTools, ListMCPIntegrationTools(accountId)...)
+	// Per-account tools with dynamic names: MCP integrations, and the account's
+	// AI-invocable automations. Enumerating the automations here is what makes
+	// them *discoverable* rather than merely resolvable — search_tools and the
+	// agent tool-lists read this function, and a tool nobody can enumerate is a
+	// tool the model never learns exists.
+	finalTools = append(finalTools, ListAccountSourcedTools(accountId)...)
 	enabledToolsCacheInstance.set(accountId, finalTools)
 	return finalTools
 }
@@ -1165,9 +1177,10 @@ func GetCustomNbTool(accountId string, name string) (NBTool, bool) {
 		return tool, true
 	}
 
-	// Slow path: Refresh cache and try again
-	// ListCustomNbTool triggers a DB load if cache is missing
-	_ = ListCustomNbTool(accountId, "")
+	// Slow path: Refresh cache directly from DB and try again
+	if tools := loadCustomNbToolsFromDB(accountId); tools != nil {
+		toolCacheInstance.set(accountId, tools)
+	}
 
 	return toolCacheInstance.getFromCache(accountId, name)
 }

@@ -99,15 +99,9 @@ type FieldKind = 'select' | 'array' | 'datetime' | 'text';
 
 const resolveFieldKind = (type: string, isUserField: boolean): FieldKind => {
   if (type === 'select' || isUserField) return 'select';
-  if (type === 'array' || type === 'multicheckboxes') return 'array';
+  if (type === 'array' || type === 'multiselect') return 'array';
   if (type === 'datepicker' || type === 'datetime') return 'datetime';
   return 'text';
-};
-
-const wrapStoredValue = (fieldKey: string, type: string, value: any): any => {
-  // Jira custom fields expect the { id: value } shape on the wire.
-  const wrapAsId = type === 'select' && fieldKey.startsWith('customfield_') && typeof value === 'string' && value;
-  return wrapAsId ? { id: value } : value;
 };
 
 interface SelectFieldProps {
@@ -155,7 +149,7 @@ const SelectField: React.FC<SelectFieldProps> = ({
         previousTasks={previousTasks}
         workflowInputs={workflowInputs}
         workflowConfigs={workflowConfigs}
-        onSearch={isUserField ? (q: string) => onSearchField(fieldKey, q) : undefined}
+        onSearch={isUserField && fieldMeta.autoCompleteUrl ? (q: string) => onSearchField(fieldKey, q) : undefined}
       />
     </Box>
   </Box>
@@ -271,17 +265,9 @@ const getCurrentAdditionalFields = (localData: Record<string, any>): Record<stri
 };
 
 const buildHandleChange =
-  (
-    fieldKey: string,
-    fieldMeta: TicketFieldMeta,
-    localData: Record<string, any>,
-    isUserField: boolean,
-    onDataChange: (field: string, value: any) => void
-  ) =>
-  (value: any) => {
+  (fieldKey: string, localData: Record<string, any>, isUserField: boolean, onDataChange: (field: string, value: any) => void) => (value: any) => {
     const currentAdditional = getCurrentAdditionalFields(localData);
-    const storedValue = wrapStoredValue(fieldKey, fieldMeta.type, value);
-    onDataChange('additional_fields', { ...currentAdditional, [fieldKey]: storedValue });
+    onDataChange('additional_fields', { ...currentAdditional, [fieldKey]: value });
     // Editing a user field also clears the legacy top-level mirror so next save is clean.
     if (isUserField && localData?.[fieldKey] !== undefined) {
       onDataChange(fieldKey, '');
@@ -316,7 +302,7 @@ const PlatformFieldItem: React.FC<PlatformFieldItemProps> = ({
   const displayOptions = resolveDisplayOptions(dynamicOptions, resolvedValue, isUserField);
   const kind = resolveFieldKind(fieldMeta.type, isUserField);
 
-  const handleChange = buildHandleChange(fieldKey, fieldMeta, localData, isUserField, onDataChange);
+  const handleChange = buildHandleChange(fieldKey, localData, isUserField, onDataChange);
   const handleArrayChange = buildHandleArrayChange(dynamicOptions, handleChange);
 
   if (kind === 'select') {

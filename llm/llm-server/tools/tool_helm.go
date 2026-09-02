@@ -2,7 +2,6 @@ package tools
 
 import (
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -49,6 +48,24 @@ func (m HelmExecuteTool) Description() string {
 		`
 }
 
+// ToolPrompt implements core.NBToolPromptProvider — the how-to guidance a delegate
+// sub-agent needs when this tool is named directly (post-3c, no wrapping helm agent
+// to flatten). Mirrors what HelmAgent.GetSystemPrompt() carries today; kept as flat
+// lines so it slots into the existing "Guidelines for the specialist tools above"
+// section that delegate_agent already emits from flattenAgentGuidance.
+func (m HelmExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Kubernetes Interaction:** Always use `helm` to interact with the cluster. Avoid other shell commands unless essential for formatting or context and explicitly requested by the user.",
+		"**Namespace Awareness:** Never assume a namespace. Always specify it using `-n <namespace>` or use `--all-namespaces` for cluster-wide queries. If the user doesn't provide a namespace, ask for clarification.",
+		"**Large Data Optimization:** When output is voluminous, pipe through `grep`, `tail`, `head`, or other formatting tools for readability.",
+		"You can ONLY use helm to interact with the cluster.",
+		"Executes Helm commands (e.g., `helm list`, `helm history`, `helm status`). Input: a valid Helm command. Output: data returned by the Helm CLI.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) to process the helm output.",
+		"Example — list all releases: `helm list --all`",
+		"Example — list all releases in default namespace: `helm list -n default`",
+	}
+}
+
 func (m HelmExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
@@ -66,75 +83,47 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 
 	nbRequestContext.Ctx.GetLogger().Info("helm: executing executeShellCommand tool call", "query", input.Command)
 	command := strings.TrimSpace(input.Command)
-	if !strings.HasPrefix(command, "helm") {
-		command = "helm " + command
-	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			// Pipeline-tail no-match reclassification (issue #32240).
-			// Same as kubectl_execute: `helm list -A | grep <name>` with
-			// no match exits 1 and surfaces as an opaque failure. Reuse
-			// the helpers from tool_shell.go (PR #32007).
-			if isNoMatchExit(err, command) {
-				nbRequestContext.Ctx.GetLogger().Info("helm: reclassified pipeline-tail no-match as success", "command", command)
-				return successResponseNoMatches(nbRequestContext, response)
-			}
-			nbRequestContext.Ctx.GetLogger().Error("helm: unable to execute shell script", "error", err.Error(), "command", command)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "helm", "helm <command> --help"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		// Wrap in JSON to be consistent with non-workspace mode
-		outputformat := map[string]string{
-			"stdout": response,
-		}
-		outputformatBytes, err := common.MarshalJson(outputformat)
-		if err != nil {
-			// Marshal failure is an internal serialization bug, not a CLI error —
-			// leave as raw passthrough (no CLI help suggestion would apply).
-			nbRequestContext.Ctx.GetLogger().Error("helm: unable to marshal response", "error", err.Error())
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-		response = string(outputformatBytes)
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobHelm, command, nbRequestContext.AccountId, map[string]any{}, false)
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("helm: unable to execute shell script", "error", err.Error())
-		responseData := ""
-		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
-			}
+		// Pipeline-tail no-match reclassification (issue #32240).
+		// Same as kubectl_execute: `helm list -A | grep <name>` with
+		// no match exits 1 and surfaces as an opaque failure. Reuse
+		// the helpers from tool_shell.go (PR #32007).
+		if isNoMatchExit(err, command) {
+			nbRequestContext.Ctx.GetLogger().Info("helm: reclassified pipeline-tail no-match as success", "command", command)
+			return successResponseNoMatches(nbRequestContext, response)
+		}
+		nbRequestContext.Ctx.GetLogger().Error("helm: unable to execute shell script", "error", err.Error(), "command", command)
+		if response == "" {
+			response = err.Error()
 		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(response, "", "helm", "helm <command> --help"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data := response.(string)
+	outputformat := map[string]string{
+		"stdout": response,
+	}
+	outputformatBytes, err := common.MarshalJson(outputformat)
+	if err != nil {
+		// Marshal failure is an internal serialization bug, not a CLI error —
+		// leave as raw passthrough (no CLI help suggestion would apply).
+		nbRequestContext.Ctx.GetLogger().Error("helm: unable to marshal response", "error", err.Error())
+		return core.NBToolResponse{
+			Data:   response,
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+	response = string(outputformatBytes)
+
 	return core.NBToolResponse{
-		Data:   data,
+		Data:   response,
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil

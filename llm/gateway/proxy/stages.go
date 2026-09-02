@@ -126,6 +126,29 @@ func credResolver() CredResolver {
 	return credResolverHook
 }
 
+// customProviderHook resolves a tenant's custom OpenAI-compatible upstream (an
+// llm_gateway integration) for an addressed model: the lane to route it on (vLLM) and a
+// per-request DirectKey carrying the upstream's base URL + token. ok=false means the
+// model is not a configured custom upstream. Registered by the EE providers package;
+// nil on the OSS build (no custom upstreams).
+// The urlPath return overrides the vLLM lane's request path (set on the Bifrost context by
+// the resolver stage); it is empty for an ordinary custom endpoint and non-empty only for a
+// vertex_openai upstream that must dial Vertex's openapi path.
+var customProviderHook func(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, bool)
+
+// RegisterCustomProviderResolver registers the custom-upstream resolver (EE).
+func RegisterCustomProviderResolver(fn func(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, bool)) {
+	customProviderHook = fn
+}
+
+// resolveCustomProvider consults the registered custom-upstream resolver, if any.
+func resolveCustomProvider(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, bool) {
+	if customProviderHook == nil {
+		return "", schemas.Key{}, "", false
+	}
+	return customProviderHook(tenantID, model)
+}
+
 // resolverStage injects the tenant's provider credential for THIS request. When one
 // is found it is set on the Bifrost context under BifrostContextKeyDirectKey, which
 // core honors directly (bypassing the operator key pool); otherwise the request
@@ -135,6 +158,17 @@ type resolverStage struct{ creds CredResolver }
 func (resolverStage) Name() string { return "resolver" }
 
 func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
+	// A custom-upstream key resolved before the pipeline (llm_gateway integration) wins:
+	// inject it verbatim (it carries its own base URL) and skip the normal lookup. A
+	// vertex_openai upstream also carries a path override so the vLLM lane dials Vertex's
+	// openapi endpoint instead of the default /v1/chat/completions.
+	if rc.DirectKey != nil {
+		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, *rc.DirectKey)
+		if rc.DirectKeyURLPath != "" {
+			rc.Bctx.SetValue(schemas.BifrostContextKeyURLPath, rc.DirectKeyURLPath)
+		}
+		return false, nil
+	}
 	if key, ok := s.creds.Resolve(rc.Ctx, rc.Provider, rc.Identity); ok {
 		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		return false, nil

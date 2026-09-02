@@ -116,6 +116,9 @@ func SendNotification(ctx *security.RequestContext, request SendImNotificationRe
 		ctx.GetLogger().Error("notifications: unable to send notifications", "error", err)
 		return SendImNotificationResponse{}, errors.New("notifications: unable to send request")
 	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -240,6 +243,14 @@ type JoinChannelRequest struct {
 	AccountID string `json:"account_id" validate:"required"`
 	TeamID    string `json:"team_id,omitempty"`
 	Text      string `json:"text,omitempty"`
+	// BindAccount permanently binds this channel to AccountID so future @mentions
+	// skip the account picker. Opt-in — most join_channel callers don't want this.
+	BindAccount bool `json:"bind_account,omitempty"`
+	// BindSessionID keys the Redis session and, with BindAccount, the durable
+	// conversation binding too. Pass {{ event.fingerprint }} to keep future
+	// @mentions in the same investigation conversation. Empty falls back to a
+	// generated UUID for Redis only — never forwarded as bind_session_id.
+	BindSessionID string `json:"-"`
 }
 
 // GetThreadMessagesRequest represents a request to read thread messages
@@ -545,12 +556,22 @@ func JoinChannel(ctx *security.RequestContext, request JoinChannelRequest) (map[
 		"Content-Type": "application/json",
 	}
 
+	sessionID := request.BindSessionID
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
 	requestBody := map[string]any{
-		"platform":   request.Platform,
-		"account_id": request.AccountID,
-		"tenant_id":  ctx.GetSecurityContext().GetTenantId(),
-		"channel_id": request.ChannelID,
-		"session_id": uuid.NewString(),
+		"platform":     request.Platform,
+		"account_id":   request.AccountID,
+		"tenant_id":    ctx.GetSecurityContext().GetTenantId(),
+		"channel_id":   request.ChannelID,
+		"session_id":   sessionID,
+		"bind_account": request.BindAccount,
+	}
+	if request.BindSessionID != "" {
+		// Never the generated fallback above — lets notifications-server tell a
+		// real conversation key apart from an opaque UUID.
+		requestBody["bind_session_id"] = request.BindSessionID
 	}
 
 	if request.TeamID != "" {

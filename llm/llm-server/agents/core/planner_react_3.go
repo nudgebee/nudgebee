@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	nbprompts "nudgebee/llm/prompts"
@@ -45,9 +44,18 @@ type NBReActPlanner3 struct {
 		feedback string
 		answer   string
 	}
-	tools          []toolcore.NBTool
-	enableCritique bool
-	Notebook       string
+
+	// consecutiveNotebookOnlyTurns counts back-to-back turns whose only content
+	// was a notebook update (no action / final answer). It bounds the notebook-only
+	// recovery so a model that keeps "remembering" instead of answering cannot spin.
+	// Reset to 0 on any turn that produces a real action or final answer. Turn-scoped
+	// and intentionally NOT persisted across resume (a resumed conversation starts
+	// fresh). Cap in maxConsecutiveNotebookOnlyTurns.
+	consecutiveNotebookOnlyTurns    int
+	maxConsecutiveNotebookOnlyTurns int
+	tools                           []toolcore.NBTool
+	enableCritique                  bool
+	Notebook                        string
 
 	// hypothesisModeEnabled mirrors the prompt-build gate (top-level +
 	// notebook-enabled investigation orchestrator). Carried on the planner so
@@ -583,7 +591,14 @@ func (o *NBReActPlanner3) llmCompressScratchpad(scratchpad string, maxChars int,
 
 	targetLen := targetSummaryLen
 
-	prompt := prompts_repo.GetPrompt(prompts_repo.PromptScratchpadContextSummarizer, len(olderPortion), olderPortion, targetLen)
+	// Fail safe rather than silently: compressing under an empty instruction would
+	// return junk in place of real scratchpad history, so keep the uncompressed
+	// portion instead. The caller's char budget still applies downstream.
+	prompt, promptErr := nbprompts.GetPromptStrict(o.ctx.GetContext(), nbprompts.PromptScratchpadContextSummarizer, o.request.AccountId, len(olderPortion), olderPortion, targetLen)
+	if promptErr != nil {
+		o.ctx.GetLogger().Error("reactagent3: scratchpad summarizer prompt failed to load, leaving scratchpad uncompressed", "error", promptErr)
+		return scratchpad
+	}
 
 	timeoutCtx, cancel := context.WithTimeout(
 		context.WithValue(context.WithoutCancel(o.ctx.GetContext()), ContextKeyModelTier, ModelTierSummary),
@@ -918,11 +933,53 @@ func (o *NBReActPlanner3) parseOutputInternal(contentResp *llms.ContentResponse,
 		}
 	}
 
+	// A turn whose only content was a notebook update (the model "remembering" a
+	// finding, with no tool action and no final answer) is NOT malformed — it is a
+	// legitimate step that simply produced no forward action. Signal it distinctly
+	// so the caller nudges the model to continue rather than running the generic
+	// reformat-retry loop (which mislabels it as malformed and burns MaxRetries).
+	// processNotebookUpdate above already captured the content for notebook-enabled
+	// agents; lean gets it back transiently via the nudge's prior-content echo.
+	if o.isNotebookOnlyOutput(output) {
+		return nil, nil, ErrNotebookOnlyTurn
+	}
+
 	// All stages failed — return diagnostic error for retry prompt
 	if reason != "" {
 		return nil, nil, fmt.Errorf("%w: %s", ErrParseFailure, reason)
 	}
 	return nil, nil, ErrParseFailure
+}
+
+// isNotebookOnlyOutput reports whether the model's output consisted solely of a
+// notebook update — an inline <update_notebook> tag or an update_notebook-style
+// tool call (see isNotebookToolName) — with no executable action and no final
+// answer. It is only consulted after tryExtractResponse has already failed to
+// find any action/answer, so a present notebook signal means the turn was
+// notebook-only. Kept conservative: it matches the observed real-world variants
+// (a <tool_name>update_notebook</tool_name> action and the inline tag) without
+// trying to parse partial/truncated XML.
+func (o *NBReActPlanner3) isNotebookOnlyOutput(output string) bool {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "<update_notebook") {
+		return true
+	}
+	if toolName := common.XmlExtractTagContent(output, "tool_name"); toolName != "" && isNotebookToolName(toolName) {
+		return true
+	}
+	// Tool-name-as-tag variant: <action><update_notebook>...</update_notebook></action>.
+	for _, tag := range []string{"action", "thought_action"} {
+		block := strings.ToLower(common.XmlExtractTagContent(output, tag))
+		if block == "" {
+			continue
+		}
+		for _, nb := range []string{"update_notebook", "notebook_update", "create_notebook", "write_notebook", "save_notebook", "edit_notebook"} {
+			if strings.Contains(block, "<"+nb+">") || strings.Contains(block, "<"+nb+" ") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tryExtractResponse attempts to extract actions or final answers from the output.
@@ -1712,17 +1769,33 @@ func (o *NBReActPlanner3) Plan(
 			logger.Info("reactagent3: output parsed", "duration", time.Since(parseStart).String(), "actionsCount", len(actions), "isParallel", len(actions) > 1)
 			finish = finish1
 			if err != nil {
-				logger.Warn("reactagent3: failed to parse llm output", "error", err, "data", result.Choices[0].Content)
-				if !errors.Is(err, ErrParseFailure) {
-					lastErr = err
-					break
+				if errors.Is(err, ErrNotebookOnlyTurn) {
+					// A valid notebook step: the model recorded a finding but emitted no
+					// action or final answer. Not malformed — handle in-place with a
+					// single context-aware nudge (bounded by maxConsecutiveNotebookOnlyTurns)
+					// instead of the reformat-retry loop that would mislabel it.
+					actions, finish, err = o.handleNotebookOnlyTurn(mcList, result, intermediateSteps)
+					if err != nil {
+						lastErr = err
+						break
+					}
+				} else {
+					logger.Warn("reactagent3: failed to parse llm output", "error", err, "data", result.Choices[0].Content)
+					if !errors.Is(err, ErrParseFailure) {
+						lastErr = err
+						break
+					}
+					// Retry with reformat prompts
+					actions, finish, err = o.retryParsing(mcList, result, intermediateSteps, err)
+					if err != nil {
+						lastErr = err
+						break
+					}
 				}
-				// Retry with reformat prompts
-				actions, finish, err = o.retryParsing(mcList, result, intermediateSteps, err)
-				if err != nil {
-					lastErr = err
-					break
-				}
+			} else {
+				// A turn that produced a real action or final answer clears the
+				// consecutive notebook-only counter.
+				o.consecutiveNotebookOnlyTurns = 0
 			}
 
 			if finish == nil {
@@ -1747,13 +1820,23 @@ func (o *NBReActPlanner3) Plan(
 			// slowing down sub-agents like kubectl, logs, etc.
 			topLevel := o.isTopLevelAgent()
 			isInvestigation := IsInvestigationRequestTask(o.request.Query)
-			critiqueAllowed := o.enableCritique || (config.Config.LlmServerReActCritiqueEnabled && topLevel && isInvestigation)
+			// A top-level answer that ran NO tools and then claims it could not get
+			// the data is a refusal, not an answer. Short live-state questions ("get
+			// me pod count in X") classify as Query, so the refusal ships. Critique
+			// those too: the extra call only happens on a path that already produced
+			// nothing.
+			// Steps THIS turn, not conversation-wide: a resumed conversation carries
+			// prior turns' steps, which would mask a follow-up that ran no tools.
+			noToolRefusal := topLevel && len(intermediateSteps)-o.turnStartStepIndex == 0 &&
+				looksLikeCapabilityRefusal(finish.Data)
+			critiqueAllowed := o.enableCritique ||
+				(config.Config.LlmServerReActCritiqueEnabled && topLevel && (isInvestigation || noToolRefusal))
 			if agent, ok := o.nbAgent.(NBAgentReActPlannerCritiqueSupport); ok {
 				critiqueAllowed = critiqueAllowed && agent.CritiqueEnabled()
 			}
 
 			if !critiqueAllowed {
-				logger.Info("reactagent3: skipping critique", "enableCritique", o.enableCritique, "isTopLevel", topLevel, "isInvestigation", isInvestigation, "autoCritiqueEnabled", config.Config.LlmServerReActCritiqueEnabled)
+				logger.Info("reactagent3: skipping critique", "enableCritique", o.enableCritique, "isTopLevel", topLevel, "isInvestigation", isInvestigation, "noToolRefusal", noToolRefusal, "autoCritiqueEnabled", config.Config.LlmServerReActCritiqueEnabled)
 				return nil, finish, nil
 			}
 
@@ -1802,13 +1885,42 @@ func (o *NBReActPlanner3) Plan(
 
 		summaryResult, summaryErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, summaryMessages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
 		if summaryErr != nil || len(summaryResult.Choices) == 0 {
-			return nil, &NBAgentPlannerFinishAction{Data: scratchpad}, nil
+			// The summarization retry also failed — often deterministically, since
+			// it re-embeds the same scratchpad (and thus the same offending
+			// content, e.g. an egressfilter-blocked secret) that caused the
+			// original failure. Surface a clear, user-safe message instead of the
+			// raw scratchpad: XmlExtractCDATA (executor_planner.go) only extracts
+			// the FIRST <thought><![CDATA[...]]></thought> block in a multi-step
+			// scratchpad, which silently returns intermediateSteps[0]'s reasoning
+			// as if it were the final answer — indistinguishable from a real one.
+			errToClassify := summaryErr
+			if errToClassify == nil {
+				errToClassify = lastErr
+			}
+			if msg, blocked := egressBlockedMessage(errToClassify); blocked {
+				return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
+			}
+			if classified := classifyUserFacingLLMError(errToClassify); classified != nil {
+				return nil, nil, classified
+			}
+			return nil, &NBAgentPlannerFinishAction{
+				Data:   "I gathered some evidence but was unable to synthesize a final answer. Please try again or rephrase your question.",
+				Status: ConversationStatusFailed,
+			}, nil
 		}
 		return nil, &NBAgentPlannerFinishAction{Data: summaryResult.Choices[0].Content}, nil
 	}
 
 	if lastErr != nil && len(intermediateSteps) == 0 {
 		logger.Error("reactagent3: agent failed without making any tool calls", "error", lastErr)
+		// EgressFilter enforce block: the secret never reached the provider.
+		// Surface the user-safe block message AS THE RESPONSE (audit id +
+		// remediation hint, no value echo) rather than a generic internal
+		// error. The message contains BlockedMessageMarker, so the executor
+		// still treats this step as a non-answer (see executor.go).
+		if msg, blocked := egressBlockedMessage(lastErr); blocked {
+			return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
+		}
 		// Surface a clear cause for known failure modes (429/quota, oversized
 		// request, transient outage) by throwing a typed, HTTP-coded error —
 		// the executor reports it as a failed turn with the clean message. Only
@@ -1845,7 +1957,19 @@ func (o *NBReActPlanner3) Plan(
 		if summaryErr == nil && len(summaryResult.Choices) > 0 {
 			return nil, &NBAgentPlannerFinishAction{Data: summaryResult.Choices[0].Content}, nil
 		}
-		return nil, &NBAgentPlannerFinishAction{Data: scratchpad}, nil
+		// Same rationale as the lastErr!=nil branch above: never fall back to the
+		// raw scratchpad (XmlExtractCDATA silently mis-extracts intermediateSteps[0]'s
+		// reasoning from it as if it were the final answer).
+		if msg, blocked := egressBlockedMessage(summaryErr); blocked {
+			return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
+		}
+		if classified := classifyUserFacingLLMError(summaryErr); classified != nil {
+			return nil, nil, classified
+		}
+		return nil, &NBAgentPlannerFinishAction{
+			Data:   "I ran out of reasoning steps before reaching a confident final answer. Please try again, possibly with a narrower question.",
+			Status: ConversationStatusFailed,
+		}, nil
 	}
 
 	return nil, nil, lastErr
@@ -1935,6 +2059,90 @@ STRICT CONSTRAINTS:
 	return nil, nil, originalErr
 }
 
+// handleNotebookOnlyTurn processes a turn whose only content was a notebook
+// update — the model recorded a finding but emitted no tool action or final
+// answer. This is a legitimate "remember this" step, NOT a malformed response,
+// so it must not run the reformat-retry loop (which would mislabel it and burn
+// MaxRetries). It issues ONE context-aware nudge asking the model to continue
+// (next action) or finalize (<final_answer>), echoing the model's own prior
+// output back so a lean turn — which does not persist the notebook — does not
+// lose what it just recorded. Consecutive occurrences are bounded by
+// maxConsecutiveNotebookOnlyTurns: at the cap the nudge hard-demands a final
+// answer, and if the model STILL only updates the notebook a parse failure is
+// surfaced so the caller falls back to scratchpad summarization (a bounded
+// answer) rather than looping.
+func (o *NBReActPlanner3) handleNotebookOnlyTurn(
+	mcList []llms.MessageContent,
+	result *llms.ContentResponse,
+	intermediateSteps []NBAgentPlannerToolActionStep,
+) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
+	logger := o.ctx.GetLogger()
+	o.consecutiveNotebookOnlyTurns++
+
+	forceFinal := o.consecutiveNotebookOnlyTurns >= o.maxConsecutiveNotebookOnlyTurns
+	refining := o.refinementAttempts > 0
+	logger.Info("reactagent3: notebook-only turn — nudging to continue",
+		"consecutive", o.consecutiveNotebookOnlyTurns, "force_final", forceFinal, "refining", refining)
+	MetricsCritiqueDecision(o.nbAgent.GetName(), "notebook_only", o.consecutiveNotebookOnlyTurns)
+
+	priorContent := ""
+	if len(result.Choices) > 0 {
+		priorContent = result.Choices[0].Content
+	}
+
+	nudgeMessages := make([]llms.MessageContent, len(mcList))
+	copy(nudgeMessages, mcList)
+	if priorContent != "" {
+		nudgeMessages = append(nudgeMessages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextContent{Text: priorContent}},
+		})
+	}
+	nudgeMessages = append(nudgeMessages, llms.MessageContent{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextContent{Text: notebookOnlyNudge(refining, forceFinal)}},
+	})
+
+	nudgeResult, nudgeErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, nudgeMessages, true, llms.WithTemperature(0.0))
+	if nudgeErr != nil || len(nudgeResult.Choices) == 0 || nudgeResult.Choices[0].Content == "" {
+		logger.Warn("reactagent3: notebook-only nudge llm call failed — falling back to summarization", "error", nudgeErr)
+		return nil, nil, ErrParseFailure
+	}
+
+	actions, finish, err := o.parseOutput(nudgeResult, intermediateSteps)
+	if err == nil {
+		o.consecutiveNotebookOnlyTurns = 0 // real forward progress
+		return actions, finish, nil
+	}
+	if errors.Is(err, ErrNotebookOnlyTurn) && !forceFinal {
+		// Still only a notebook update, but under the cap — nudge once more. Pass
+		// the accumulated nudgeMessages (not the original mcList) so the prior
+		// notebook response and its nudge stay in context — essential in lean mode,
+		// where the notebook content is not persisted and would otherwise be lost.
+		return o.handleNotebookOnlyTurn(nudgeMessages, nudgeResult, intermediateSteps)
+	}
+	// At/over the cap, or a genuine parse failure: surface a parse failure so the
+	// caller breaks to scratchpad summarization instead of spinning.
+	logger.Warn("reactagent3: notebook-only recovery exhausted — falling back to summarization", "consecutive", o.consecutiveNotebookOnlyTurns)
+	return nil, nil, ErrParseFailure
+}
+
+// notebookOnlyNudge builds the corrective instruction for a notebook-only turn.
+// It acknowledges the saved notebook (so the model does not re-record it) and
+// asks for forward progress, tuned to context: during refinement or once the
+// consecutive cap is reached it hard-demands a <final_answer>; otherwise it
+// allows either the next tool action or a final answer.
+func notebookOnlyNudge(refining, forceFinal bool) string {
+	switch {
+	case forceFinal:
+		return "Your notebook has been saved. You have updated it repeatedly without answering. You MUST now respond with a <final_answer> block containing your complete answer based on the evidence already gathered. Do NOT update the notebook again."
+	case refining:
+		return "Your notebook has been saved. You are refining your final answer — respond now with a <final_answer> block that addresses the critique feedback. Do NOT update the notebook again; deliver the answer."
+	default:
+		return "Your notebook has been saved. Continue the investigation: either issue your next tool action in a <thought_action> block, or provide your <final_answer> if the investigation is complete. Do NOT repeat the notebook update."
+	}
+}
+
 // runCritique runs the critique LLM to evaluate the final answer quality.
 // Returns (decision, feedback). Empty decision means critique failed — accept the answer.
 func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, logger interface {
@@ -1943,9 +2151,17 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	Error(msg string, args ...any)
 	Debug(msg string, args ...any)
 }) (string, string) {
+	// Same fail-safe as the format error below: critiquing under an empty instruction
+	// would reject or accept answers on no basis at all, so skip the gate and accept
+	// rather than let a missing prompt silently decide quality.
+	critiquerPrompt, critiquerErr := nbprompts.GetPromptStrict(o.ctx.GetContext(), nbprompts.PromptReactCritiquer, o.request.AccountId)
+	if critiquerErr != nil {
+		logger.Error("reactagent3: critiquer prompt failed to load, accepting answer", "error", critiquerErr)
+		return "", ""
+	}
 	critiquePrompt := prompts.NewPromptTemplate(
-		prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer),
-		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
+		critiquerPrompt,
+		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "tools_invoked", "hypothesis_mode_enabled", "sdg_grounding_enabled", "notebook", "today"},
 	)
 	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
 		"input":                   input,
@@ -1956,7 +2172,6 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 		"question_type":           lo.Ternary(IsInvestigationRequestTask(o.request.Query), "investigation", "query"),
 		"tool_names":              reActPromptToolNames(o.tools),
 		"tool_descriptions":       reActPromptToolDescriptions(o.tools),
-		"shell_tool_enabled":      config.Config.LlmServerShellToolEnabled && HasShellTool(o.tools),
 		"tools_invoked":           extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled": o.hypothesisModeEnabled,
 		"sdg_grounding_enabled":   config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
@@ -2108,13 +2323,15 @@ func resolveReact3RoleModes(request NBAgentRequest) (orchestratorMode, executorM
 }
 
 // reActCreatePrompt3 builds the chat prompt template for the react_3 planner.
-func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsIn []toolcore.NBTool, conversationContext string, previousMessages []prompts.MessageFormatter, request NBAgentRequest, agent NBAgent) (prompts.ChatPromptTemplate, []toolcore.NBTool) {
+func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsIn []toolcore.NBTool, conversationContext string, previousMessages []prompts.MessageFormatter, request NBAgentRequest, agent NBAgent) (prompts.ChatPromptTemplate, []toolcore.NBTool, error) {
 	tools := make([]toolcore.NBTool, len(toolsIn))
 	copy(tools, toolsIn)
 
-	reactBasePrompt := nbprompts.GetPrompt(ctx.GetContext(), nbprompts.PromptReact3Base, request.AccountId)
-	if reactBasePrompt == "" {
-		reactBasePrompt = prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	reactBasePrompt, reactBaseErr := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptReact3Base, request.AccountId)
+	if reactBaseErr != nil {
+		// This prompt backs every ReAct agent. Planning with an empty base is not a
+		// degraded run, it is a broken one — fail construction instead.
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading base prompt: %w", reactBaseErr)
 	}
 
 	// hypothesis_mode_enabled fences the heavier hypothesis-driven investigation
@@ -2134,11 +2351,23 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// ContextKeyPromptVariant the cache key uses keeps the prompt shape and its
 	// cache slot in lockstep. executorMode is untouched (only top-level turns get
 	// the lean variant, and a top-level turn is never an executor sub-agent).
-	if promptVariantFromCtx(ctx) == promptVariantLean {
+	promptVariant := promptVariantFromCtx(ctx)
+	if promptVariant == promptVariantLean {
 		notebookEnabled = false
 		hypothesisModeEnabled = false
 		orchestratorMode = false
 	}
+
+	// is_investigation gates the investigation-only RCA answer-format spec
+	// (Causality Chain / Evidence / Root-Cause framework) in planner_react_3_base.txt.
+	// A top-level query turn carries a query variant (lean OR query) and drops the
+	// spec so a simple question is not answered as an investigation; investigations
+	// and sub-agents carry variant "" and keep it. Derived from the already-stamped
+	// variant (applyPromptVariant) — the single classification source — so the prompt
+	// content and its cache slot never disagree. Mirrors the formatter's programmatic
+	// gate (executor_response_formatter.go), which prose-instruction alone could not
+	// reliably enforce.
+	isInvestigation := promptVariant != promptVariantLean && promptVariant != promptVariantQuery
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -2150,13 +2379,12 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 			[]string{
 				"tool_names",
 				"tool_descriptions",
-				"workspace_enabled",
-				"shell_tool_enabled",
 				"delegate_agent_enabled",
 				"notebook_enabled",
 				"hypothesis_mode_enabled",
 				"orchestrator_mode",
 				"executor_mode",
+				"is_investigation",
 				"conversation_context_enabled",
 				"context_management_rules",
 				"time_handling_rules",
@@ -2229,6 +2457,13 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: agentPrompt})
 	}
 
+	// First name for greeting personalisation, top-level turns only (sub-agents
+	// don't greet). Human-message → per-user, cache-safe. "" when name unknown.
+	userContextBlock := ""
+	if request.ParentAgentId == "" || request.ParentAgentId == request.AgentId {
+		userContextBlock = renderUserContextBlock(ctx)
+	}
+
 	// Move all dynamic context to the final Human message so the system prefix is stable.
 	// today is placed here (not in the system message) so the cached system prefix
 	// does not expire on date rollover.
@@ -2241,16 +2476,20 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{.kb_prestep_content}}
 {{.skill_lists_menu}}
 {{.global_preferences_block}}
+{{.user_context_block}}
 <task_context>
 **Previous Conversation Context:** {{.conversation_context}}
 **Previous Messages (History):**
 {{.history}}
+{{.evidence_index}}
 </task_context>
 
 {{if .notebook}}<notebook_content>
 {{.notebook}}
 </notebook_content>
 {{end}}
+{{.memory_context_block}}
+{{.channel_context_block}}
 <question>{{.input}}</question>
 
 {{.scratchpad}}`
@@ -2259,12 +2498,16 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"today",
 		"conversation_context",
 		"history",
+		"evidence_index",
 		"input",
 		"scratchpad",
 		"notebook",
 		"global_preferences_block",
+		"user_context_block",
 		"kb_prestep_content",
 		"skill_lists_menu",
+		"memory_context_block",
+		"channel_context_block",
 	}))
 
 	tools = FilterTools(tools, request.Capabilities)
@@ -2272,38 +2515,78 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	tmpl := prompts.NewChatPromptTemplate(messageFormatters)
 
 	previousMessageStr := messageFormatterToString(previousMessages)
+	// Shared fragments are spliced into every planner prompt, so a missing one
+	// silently removes a whole rules block from the system message. This function
+	// returns an error, so load them strictly and refuse to build a partial prompt.
+	contextContinuity, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptContextContinuity, request.AccountId)
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptContextContinuity fragment: %w", err)
+	}
+	timeHandlingRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptTimeHandlingRules, request.AccountId)
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptTimeHandlingRules fragment: %w", err)
+	}
+	dataProtectionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptDataProtectionRules, request.AccountId)
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptDataProtectionRules fragment: %w", err)
+	}
+	codeAnalysisRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptCodeAnalysisRules, request.AccountId)
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptCodeAnalysisRules fragment: %w", err)
+	}
+	securityRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptSecurityRules, request.AccountId)
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptSecurityRules fragment: %w", err)
+	}
+	memoryConsumptionRules, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptMemoryConsumptionRules, request.AccountId)
+	if err != nil {
+		return prompts.ChatPromptTemplate{}, nil, fmt.Errorf("reactagent3: loading PromptMemoryConsumptionRules fragment: %w", err)
+	}
 	tmpl.PartialVariables = map[string]any{
 		// System message template vars (stable — cached across conversations)
 		"tool_names":                   reActPromptToolNames(tools),
 		"tool_descriptions":            reActPromptToolDescriptions(tools),
-		"workspace_enabled":            config.Config.LlmServerWorkspaceEnabled,
-		"shell_tool_enabled":           config.Config.LlmServerShellToolEnabled && HasShellTool(tools),
 		"delegate_agent_enabled":       HasDelegateAgentTool(tools),
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"is_investigation":             isInvestigation,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
-		"context_management_rules":     prompts_repo.GetPrompt(prompts_repo.PromptContextContinuity),
-		"time_handling_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
-		"data_protection_rules":        prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
-		"code_analysis_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
-		"security_rules":               prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
-		"memory_consumption_rules":     "",
+		"context_management_rules":     contextContinuity,
+		"time_handling_rules":          timeHandlingRules,
+		"data_protection_rules":        dataProtectionRules,
+		"code_analysis_rules":          codeAnalysisRules,
+		"security_rules":               securityRules,
+		"memory_consumption_rules":     memoryConsumptionRules,
 		"async_completion_rules":       asyncCompletionRules(agent),
 		// Human message template vars (dynamic — change per conversation/iteration)
-		"today":                    time.Now().Format("January 02, 2006"),
-		"history":                  previousMessageStr,
-		"conversation_context":     conversationContext,
+		"today":                time.Now().Format("January 02, 2006"),
+		"history":              previousMessageStr,
+		"conversation_context": conversationContext,
+		// FS evidence recall (flag-gated): an always-visible list of the exact
+		// workspace files earlier tool calls saved, so the model greps them by
+		// real name instead of re-fetching or hallucinating a filename. Empty
+		// (renders nothing) when the flag is off or no files exist.
+		"evidence_index":           fetchEvidenceIndex(ctx, request),
 		"scratchpad":               "", // default; overridden per-iteration in fullInputs
 		"global_preferences_block": renderGlobalPreferencesBlock(request.AccountPrompt),
+		"user_context_block":       userContextBlock,
 		// KB pre-step output — empty on the legacy path; populated into the human
 		// message (above the scratchpad, so compression never drops it) when the
 		// KB pre-step is enabled.
 		"kb_prestep_content": request.KBPrestepContent,
 		"skill_lists_menu":   request.SkillListsMenu,
+		// Memories are reference material, not the agent's own working state —
+		// rendered as a framed block beside the channel context rather than
+		// seeded into the notebook, where they carried the authority of prior
+		// findings.
+		"memory_context_block": renderMemoryContextBlock(request.MemoryContext),
+		// Sits above the question so context compression never trims it away
+		// before the model reads what it is meant to be grounded in.
+		"channel_context_block": renderChannelContextBlock(request.ChannelContext),
 	}
-	return tmpl, tools
+	return tmpl, tools, nil
 }
 
 // NewReActAgent3 initializes a new instance of the react_3 planner.
@@ -2325,7 +2608,10 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		},
 	}
 
-	prompt, tools := reActCreatePrompt3(ctx, systemMessage, nbAgent.GetSupportedTools(ctx), request.ConversationContext, extraMessages, request, nbAgent)
+	prompt, tools, err := reActCreatePrompt3(ctx, systemMessage, SupportedToolsForRequest(ctx, nbAgent, request), request.ConversationContext, extraMessages, request, nbAgent)
+	if err != nil {
+		return nil, err
+	}
 
 	// Lean turn: read the same ContextKeyPromptVariant the prompt build and cache
 	// key use, so the runtime notebook/hypothesis gating stays consistent with the
@@ -2333,23 +2619,66 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	leanMode := promptVariantFromCtx(ctx) == promptVariantLean
 
 	return &NBReActPlanner3{
-		ctx:                   ctx,
-		llm:                   model,
-		prompt:                prompt,
-		request:               request,
-		nbAgent:               nbAgent,
-		summaryToolName:       summaryToolName,
-		retryConfig:           retryConfig,
-		refinementAttempts:    0,
-		maxRefinementAttempts: 2,
-		tools:                 tools,
-		enableCritique:        request.EnableCritique,
-		Notebook:              initialNotebook,
-		leanMode:              leanMode,
-		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent) && !leanMode,
+		ctx:                             ctx,
+		llm:                             model,
+		prompt:                          prompt,
+		request:                         request,
+		nbAgent:                         nbAgent,
+		summaryToolName:                 summaryToolName,
+		retryConfig:                     retryConfig,
+		refinementAttempts:              0,
+		maxRefinementAttempts:           2,
+		maxConsecutiveNotebookOnlyTurns: 2,
+		tools:                           tools,
+		enableCritique:                  request.EnableCritique,
+		Notebook:                        initialNotebook,
+		leanMode:                        leanMode,
+		hypothesisModeEnabled:           resolveHypothesisModeEnabled(request, nbAgent) && !leanMode,
 		// -1 sentinels mean "no notebook update yet observed".
 		notebookLastUpdateTurn:  -1,
 		notebookFirstUpdateTurn: -1,
 		compressionTracker:      NewCompressionTracker(),
 	}, nil
+}
+
+// looksLikeCapabilityRefusal reports whether a final answer is the model saying
+// it could not do the work, rather than an answer to the question. Paired with
+// "no tool ran" it identifies the failure mode where a model emits a
+// well-formed <final_answer> declining to act — which the executor would
+// otherwise return to the user as a legitimate result.
+//
+// Deliberately narrow: it only runs when zero tools executed on a top-level
+// agent, so a genuine "no matching resources found" answer (which follows a
+// tool call) is never affected.
+func looksLikeCapabilityRefusal(answer string) bool {
+	a := strings.ToLower(answer)
+	if a == "" {
+		return false
+	}
+	for _, marker := range capabilityRefusalMarkers {
+		if strings.Contains(a, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// capabilityRefusalMarkers is built once at package init rather than rebuilt
+// on every call.
+var capabilityRefusalMarkers = []string{
+	// Claims of inability.
+	"unable to", "can't retrieve", "cannot retrieve", "can\u2019t retrieve",
+	"can't provide", "cannot provide", "can\u2019t provide",
+	"not available", "unavailable", "no tool", "without querying",
+	"no command was executed", "no tool was executed", "no query was executed",
+	"no cluster query", "cannot execute", "can't execute",
+	// Announcements of an action that was never taken. A final answer that
+	// says it WILL query is a <thought_action> the model failed to emit —
+	// with zero tools run, it is as empty as an outright refusal.
+	"i need to query", "i need to run", "i need to retrieve", "i need to check",
+	"i will query", "i will run", "i will retrieve", "i will fetch", "i will check",
+	"i'll query", "i'll run", "i'll retrieve", "i'll fetch", "i'll check",
+	"i\u2019ll query", "i\u2019ll run", "i\u2019ll retrieve", "i\u2019ll fetch", "i\u2019ll check",
+	"i'm retrieving", "i am retrieving", "i\u2019m retrieving",
+	"don't yet have", "do not yet have", "don\u2019t yet have",
 }

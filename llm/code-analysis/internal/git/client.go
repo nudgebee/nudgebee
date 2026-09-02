@@ -152,7 +152,10 @@ func (gc *GitClient) CloneRepository(ctx context.Context, repoURL string, creds 
 
 	if creds != nil && creds.Token != "" {
 		// --- Token-based HTTPS ---
-		authRepoURL := gc.transformRepoURLWithToken(repoURL, creds.Token)
+		authRepoURL, err := gc.transformRepoURLWithToken(repoURL, creds.Token)
+		if err != nil {
+			return "", fmt.Errorf("refusing to set remote to an invalid repository URL: %w", err)
+		}
 		cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "remote", "set-url", "origin", authRepoURL)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			gc.logger.Log(common.EventStepFailure, "Failed to set authenticated remote URL", map[string]any{
@@ -167,7 +170,7 @@ func (gc *GitClient) CloneRepository(ctx context.Context, repoURL string, creds 
 	return repoDir, nil
 }
 
-func (gc *GitClient) transformRepoURLWithToken(repoURL, token string) string {
+func (gc *GitClient) transformRepoURLWithToken(repoURL, token string) (string, error) {
 	return InjectTokenIntoURL(repoURL, token)
 }
 
@@ -183,32 +186,52 @@ func (gc *GitClient) transformRepoURLWithToken(repoURL, token string) string {
 // Provider is inferred from the host substring "gitlab", matching the rest of this
 // package; self-hosted GitLab on a non-"gitlab" host falls back to the GitHub
 // username form (a pre-existing repo-wide convention).
-func InjectTokenIntoURL(repoURL, token string) string {
+// It fails closed: a repoURL that is not a well-formed repository URL yields an error
+// rather than being handed back unchanged. Returning the input was how a chain-of-thought
+// blob survived all the way to a `git push` command line (#35703).
+func InjectTokenIntoURL(repoURL, token string) (string, error) {
+	if err := ValidateRepoURL(repoURL); err != nil {
+		return "", err
+	}
+	// scp-form remotes authenticate over SSH, and with no token there is nothing to
+	// embed — in both cases the validated URL is already the right target.
+	//
+	// http:// is deliberately excluded: embedding a token there would send the
+	// credential in cleartext. Note the asymmetry with StripURLUserinfo and
+	// RedactURLCredentials, which DO cover http:// — a helper that removes credentials
+	// must match every scheme one could appear under, while a helper that adds one
+	// should match as few as possible. A plaintext remote can still be cloned; it just
+	// never gets a token attached.
 	if token == "" || !strings.HasPrefix(repoURL, "https://") {
-		return repoURL
+		return repoURL, nil
 	}
 	u, err := url.Parse(repoURL)
 	if err != nil {
-		return repoURL
+		return "", fmt.Errorf("parse repository URL: %w", err)
 	}
 	tokenUser := "x-access-token"
 	if strings.Contains(repoURL, "gitlab") {
 		tokenUser = "oauth2"
 	}
 	u.User = url.UserPassword(tokenUser, token)
-	return u.String()
+	return u.String(), nil
 }
 
-// StripURLUserinfo removes any embedded "user:pass@" from an HTTPS URL, returning
-// the URL unchanged if it is not HTTPS or cannot be parsed. Used to keep tokens out
-// of logs when echoing an authenticated push target.
+// StripURLUserinfo removes any embedded "user:pass@" from an HTTP(S) URL. Used to keep
+// tokens out of logs when echoing an authenticated push target.
+//
+// A value that carries a scheme but cannot be parsed is reported as a placeholder
+// rather than echoed: returning the input unchanged would defeat the whole point of
+// the helper for exactly the malformed, token-bearing strings it exists to redact.
+// Values with no HTTP(S) scheme (scp-form remotes, plain remote names like "origin")
+// cannot embed userinfo of this shape and are passed through.
 func StripURLUserinfo(repoURL string) string {
-	if !strings.HasPrefix(repoURL, "https://") {
+	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
 		return repoURL
 	}
 	u, err := url.Parse(repoURL)
 	if err != nil {
-		return repoURL
+		return "<unparseable-url>"
 	}
 	u.User = nil
 	return u.String()
@@ -621,10 +644,71 @@ func lockForRepo(repoKey string) chan struct{} {
 	return ch
 }
 
+// ensureRemoteTracking makes each named branch resolvable as origin/<branch> in a bare
+// base repo, by adding it to the remote's fetch refspec and fetching it.
+//
+// It widens the refspec one branch at a time rather than to refs/heads/*, so the
+// agent's `git branch -a` view stays limited to branches the request actually asked
+// for. Failures are logged and tolerated: a missing base branch should degrade the
+// merge-conflict view, not fail the whole analysis.
+func (gc *GitClient) ensureRemoteTracking(ctx context.Context, baseDir string, branches ...string) {
+	seen := map[string]struct{}{}
+	for _, branch := range branches {
+		if branch == "" {
+			continue
+		}
+		if _, dup := seen[branch]; dup {
+			continue
+		}
+		seen[branch] = struct{}{}
+
+		if len(branch) > 0 && branch[0] == '-' {
+			gc.logger.Log(common.EventStepFailure, "Invalid branch name starting with dash", map[string]any{"branch": branch})
+			continue
+		}
+
+		addBr := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-branches", "--add", "origin", branch)
+		if out, err := addBr.CombinedOutput(); err != nil {
+			gc.logger.Log(common.EventStepFailure, "Failed to add branch to refspec", map[string]any{
+				"error": err.Error(), "output": string(out), "branch": branch,
+			})
+			continue
+		}
+		fetchCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "fetch", "origin", branch)
+		if out, err := fetchCmd.CombinedOutput(); err != nil {
+			gc.logger.Log(common.EventStepFailure, "Failed to fetch remote-tracking branch", map[string]any{
+				"error": err.Error(), "output": string(out), "branch": branch,
+			})
+		}
+	}
+}
+
 // CloneOrReuseRepository clones a repo to a persistent base directory or reuses an existing clone.
 // It creates a git worktree for the requested branch in worktreeDir for session isolation.
 // Returns a CloneResult pointing to the worktree path.
-func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string, creds *credentials.ResolvedCredentials, branch string, worktreeDir string) (*CloneResult, error) {
+//
+// extraBranches names additional branches to make available as origin/<name> — pass the
+// base branch when the caller needs to diff or merge against it (reproducing a PR merge
+// conflict needs both sides). They are fetched explicitly rather than by widening the
+// refspec to everything, which would undo the narrowing described below.
+func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string, creds *credentials.ResolvedCredentials, branch string, worktreeDir string, extraBranches ...string) (*CloneResult, error) {
+	// An empty branch means "clone the default branch" and is supported throughout this
+	// function, so only non-empty names are checked. A name that would be read by git as
+	// an option is refused before it reaches any argv.
+	if branch != "" {
+		if err := ValidateBranchName(branch); err != nil {
+			return nil, fmt.Errorf("invalid branch name: %w", err)
+		}
+	}
+	for _, extra := range extraBranches {
+		if extra == "" {
+			continue
+		}
+		if err := ValidateBranchName(extra); err != nil {
+			return nil, fmt.Errorf("invalid base branch name: %w", err)
+		}
+	}
+
 	repoKey := repoKeyFromURL(repoURL)
 	baseDir := filepath.Join(gc.workspaceDir, "repos", repoKey)
 
@@ -652,7 +736,11 @@ func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string,
 	// Build authenticated URL for HTTPS repos
 	authURL := repoURL
 	if creds != nil && creds.Token != "" {
-		authURL = gc.transformRepoURLWithToken(repoURL, creds.Token)
+		authenticated, err := gc.transformRepoURLWithToken(repoURL, creds.Token)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to clone an invalid repository URL: %w", err)
+		}
+		authURL = authenticated
 	}
 
 	// The bare clone is single-branch by construction and grows on demand —
@@ -671,6 +759,10 @@ func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string,
 			gc.logger.Log(common.EventStepFailure, "Failed to update remote URL", map[string]any{"error": err.Error(), "output": string(out)})
 		}
 		if branch != "" {
+			if len(branch) > 0 && branch[0] == '-' {
+				gc.logger.Log(common.EventStepFailure, "Invalid branch name starting with dash", map[string]any{"branch": branch})
+				return nil, fmt.Errorf("invalid branch name: %s", branch)
+			}
 			// Add this branch to the refspec list (no-op if already present)
 			addBr := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-branches", "--add", "origin", branch)
 			if out, err := addBr.CombinedOutput(); err != nil {
@@ -710,6 +802,19 @@ func (gc *GitClient) CloneOrReuseRepository(ctx context.Context, repoURL string,
 			return nil, fmt.Errorf("bare clone failed: %s: %w", string(out), err)
 		}
 		gc.logger.Log(common.EventStepComplete, "Bare clone completed", map[string]any{"base_dir": baseDir})
+
+		// `git clone --bare` writes branches to refs/heads/* and configures no fetch
+		// refspec, so refs/remotes/origin/* is empty and `origin/<branch>` does not
+		// resolve. The worktree checkout then silently fell back to HEAD and
+		// `git merge origin/<base>` could not reproduce a PR merge conflict. Establish
+		// the remote-tracking refspec for exactly the branches this request needs.
+		gc.ensureRemoteTracking(ctx, baseDir, append([]string{branch}, extraBranches...)...)
+	}
+
+	// On the reuse path the requested branch is already handled above; make sure any
+	// additional branches the caller asked for are present too.
+	if len(extraBranches) > 0 {
+		gc.ensureRemoteTracking(ctx, baseDir, extraBranches...)
 	}
 
 	// Determine the ref to check out
@@ -820,7 +925,10 @@ func (gc *GitClient) configureGitCredentials(repoDir, repoURL string, creds *cre
 	// For HTTPS with token, configure the remote URL with embedded credentials
 	// GitHub: https://x-access-token:<token>@github.com/owner/repo.git
 	// GitLab: https://oauth2:<token>@gitlab.com/group/project.git
-	authenticatedURL := InjectTokenIntoURL(repoURL, creds.Token)
+	authenticatedURL, err := InjectTokenIntoURL(repoURL, creds.Token)
+	if err != nil {
+		return fmt.Errorf("refusing to configure remote with an invalid repository URL: %w", err)
+	}
 
 	// Update the remote URL using git command
 	cmd := exec.Command("git", "remote", "set-url", "origin", authenticatedURL)

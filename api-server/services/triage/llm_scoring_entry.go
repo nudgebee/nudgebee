@@ -35,7 +35,11 @@ const mintTimeout = 2 * time.Minute
 // v3: reasoning is constrained to be class-generic (no cluster/node/pod/instance/timestamp) and the
 // concrete cluster name is dropped from the classifier context, so a cached verdict served across
 // clusters no longer carries the minting instance's cluster/job identity into downstream consumers.
-const classificationPromptVersion = 3
+// v4: workload_criticality is no longer rendered into the prompt. It is a per-WORKLOAD fact and this
+// verdict is cached per signal class (shared by every workload of the same name, tenant-wide), so
+// baking it in served one workload's tier to all of them and made operator overrides invisible to
+// scoring. It is now applied deterministically at score time instead.
+const classificationPromptVersion = 4
 
 // ComputeScoreLLM scores an event via its cached per-class verdict + the deterministic policy.
 // On cache miss it scores with a conservative fallback verdict and (best-effort, off the hot
@@ -80,8 +84,9 @@ func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event) (*Sc
 		envCategory = getEnvironmentCategory(ctx, db, *event.CloudAccountId)
 	}
 	recurrenceCount := getOccurrenceCount(ctx, db, event.Id)
+	tier := resolveEventCriticality(ctx, db, event)
 
-	score, priority, factors := computeVerdictScore(verdict, envCategory, recurrenceCount)
+	score, priority, factors := computeVerdictScore(verdict, envCategory, recurrenceCount, tier)
 	factors["class_key"] = classKey
 	factors["verdict_lookup"] = lookup
 	if len(guardrails) > 0 {
@@ -106,6 +111,41 @@ func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event) (*Sc
 		Factors:    factors,
 		Confidence: verdict.Confidence,
 	}, nil
+}
+
+// resolveEventCriticality looks up the business criticality of the workload this event is about.
+//
+// This runs per event, on the scoring path, and that placement is the point. Criticality used to
+// reach scoring only as text in the classifier prompt — but that verdict is cached per signal class
+// (keyed on aggregation_key + finding_type + subject_owner, tenant-wide), so one workload's tier was
+// served to every workload sharing the NAME, and a tier change never invalidated the cache. Resolving
+// it here makes it per-workload again and makes an operator's override take effect on the very next
+// event instead of never.
+//
+// Cost is one indexed lookup on (cloud_account_id, cloud_resource_id) against a table holding tens of
+// rows per account. The ~70% of events that already carry a cloud_resource_id use it directly and
+// never touch k8s_workloads at all; only the name-based remainder pays for the extra resolution.
+// Best-effort: an unresolvable workload scores exactly as it does today.
+func resolveEventCriticality(ctx context.Context, db *sqlx.DB, event *models.Event) workloadTier {
+	if db == nil || event == nil || event.CloudAccountId == nil {
+		return workloadTier{}
+	}
+	crid := ""
+	if event.CloudResourceId != nil {
+		crid = *event.CloudResourceId
+	}
+	if crid == "" {
+		// No reliable key on the event — fall back to resolving the workload by name.
+		var f workloadFacts
+		if crid, f = resolveEventWorkload(ctx, db, event); !f.found || crid == "" {
+			return workloadTier{}
+		}
+	}
+	wc, ok := resolveWorkloadCriticality(ctx, db, *event.CloudAccountId, crid)
+	if !ok {
+		return workloadTier{}
+	}
+	return workloadTier{level: wc.Criticality, source: wc.Source}
 }
 
 // correlationDampening returns the cascade adjustment for an event from its strongest recorded
@@ -396,7 +436,6 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 // renderWorkloadFacts) over the workload name when deciding blast/intrinsic. Kept general — it
 // teaches how to read the facts, never a specific workload or incident.
 const groundingGuidance = "## Grounding — PREFER OBSERVED FACTS over the workload's name:\n" +
-	"- workload_criticality is this workload's resolved business criticality; source=user is an operator's explicit declaration and is AUTHORITATIVE — honor it for intrinsic/blast (critical/high => raise, low => damp). source=fact_signal is derived from topology and should be weighed as strong evidence.\n" +
 	"- customer_facing=true means the workload is actually ingress/LoadBalancer-backed (a user-facing request path); set blast=customer_facing unless it is genuinely a control-plane component. A false value means it is NOT directly user-facing.\n" +
 	"- dependency_fan_in is how many services are observed to depend on this workload; a large value means it is a shared dependency — raise blast above single_workload (a datastore/queue/cache with many dependents leans data_durability or control_plane). A handful of callers is ordinary; reserve the escalation for genuine hubs.\n" +
 	"- declared_criticality_label is the operator's OWN tiering declaration — treat it as authoritative for intrinsic/blast.\n" +

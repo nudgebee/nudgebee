@@ -4,13 +4,19 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
-	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
+// Every case below gates its account read with CanReadAccountData(account,
+// "metrics") rather than HasAccountAccess: the latter recognises built-in scoped
+// roles ONLY, so a custom-role holder whose `metrics:Read` grant had already
+// cleared the gateway was then refused here, with no role they could be given
+// short of account_admin. It adds the dynamic-RBAC arm (tenant-global grant +
+// account-in-tenant, or an account-scoped grant) and still starts from
+// HasAccountAccess, so built-in roles are unchanged.
 func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 	if err != nil {
@@ -38,12 +44,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
-		resp, err := observability.FetchMetricsQuery(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (any, error) {
+			return observability.FetchMetricsQuery(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -70,12 +78,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
-		resp, err := observability.FetchMetricsList(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputMetrics, error) {
+			return observability.FetchMetricsList(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -102,12 +112,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
-		resp, err := observability.FetchMetricLabelsList(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputMetricLabels, error) {
+			return observability.FetchMetricLabelsList(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -133,12 +145,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
-		resp, err := observability.FetchMetricLabelValues(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() ([]observability.OutputMetricsLabelValues, error) {
+			return observability.FetchMetricLabelValues(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -168,12 +182,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
-		resp, err := observability.FetchMetricUtilisation(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (observability.OutputMetricQuery, error) {
+			return observability.FetchMetricUtilisation(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -209,12 +225,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("workload is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
-		resp, err := observability.FetchMetricSeries(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetadataActionTimeout, func() (observability.MetricSeriesResult, error) {
+			return observability.FetchMetricSeries(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
@@ -249,11 +267,13 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
-		resp, err := observability.GetMetricsQuery(ctx, request)
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (any, error) {
+			return observability.GetMetricsQuery(ctx, request)
+		})
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

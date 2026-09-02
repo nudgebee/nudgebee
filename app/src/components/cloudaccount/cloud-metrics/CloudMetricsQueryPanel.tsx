@@ -10,6 +10,7 @@ import { Input as DsInput } from '@ui/Input';
 import { ds } from '@utils/colors';
 import apiCloudAccount from '@api1/cloud-account';
 import observability from '@api1/observability';
+import { SERVICE_TO_RESOURCE_TYPES } from './serviceResourceTypes';
 
 export interface CloudMetricsQueryParams {
   serviceName: string;
@@ -32,10 +33,6 @@ interface UseCloudMetricsQueryPanelResult {
 }
 
 const STATISTIC_OPTIONS = ['Average', 'Sum', 'Maximum', 'Minimum'].map((s) => ({ label: s, value: s }));
-
-const SERVICE_TO_RESOURCE_TYPES: Record<string, string> = {
-  AmazonEC2: 'compute-instance',
-};
 
 export function useCloudMetricsQueryPanel({
   provider: _provider,

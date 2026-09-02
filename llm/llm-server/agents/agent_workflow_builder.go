@@ -15,6 +15,7 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,10 +28,14 @@ var uuidRegex = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}
 // outputRefRegex matches {{ Tasks['task-id'].output.fieldname }} patterns for schema-driven validation.
 var outputRefRegex = regexp.MustCompile(`Tasks\[['"]([^'"]+)['"]\]\.output\.(\w+)`)
 
+// Plan revisions are unlimited. A previous maxPlanAttempts=3 cap silently auto-built once
+// exceeded, which surfaced as "the third Request Changes skipped the approval step and started
+// the build" (#34098). Building is the user's call, however many revisions it takes, so the
+// builder now always returns to the approval prompt. state.PlanAttempts is still counted for
+// logging, but nothing gates on it.
 const (
 	PlanApprovalOptionApprove = "Approve and Build"
 	PlanApprovalOptionChanges = "Request Changes"
-	maxPlanAttempts           = 3
 )
 
 // turnIntent is the result of classifyTurnIntent — what the user wants this turn.
@@ -195,6 +200,51 @@ func safeChoiceContent(completion *llms.ContentResponse) (string, error) {
 	return strings.TrimSpace(completion.Choices[0].Content), nil
 }
 
+// maxPlanChars caps the plan offered for approval. One reported plan reached 99,799 characters —
+// a single kubectl fragment repeated 636 times until generation hit its ceiling and stopped
+// mid-token — and the approval card rendered all of it with an "Approve and Build" button
+// (#35392). Legitimate plans observed on dev run to a few thousand characters, so this leaves
+// roughly six times the headroom of anything real while still catching a runaway by an order of
+// magnitude.
+const maxPlanChars = 24000
+
+// errPlanIncomplete marks a plan that must not be shown to the user. Sentinel so the caller can
+// tell "the model produced something unusable" (retryable) from a transport failure.
+var errPlanIncomplete = errors.New("plan is incomplete")
+
+// safePlanContent returns the plan text only when generation finished cleanly and produced
+// something of sane size.
+//
+// A plan is the one artifact the user is asked to read and approve, and approving a truncated one
+// is not a no-op: the build proceeds from a plan whose own prose describes tasks that were never
+// written, producing (in the reported case) a one-task automation presented as a four-task one.
+// Both failure modes are detectable before the approval card is ever rendered:
+//
+//   - the provider reports why it stopped, so hitting the output ceiling is a fact rather than an
+//     inference from length, and
+//   - length alone still catches a runaway that happened to fit inside the ceiling.
+func safePlanContent(completion *llms.ContentResponse) (string, error) {
+	plan, err := safeChoiceContent(completion)
+	if err != nil {
+		return "", err
+	}
+
+	stopReason := strings.ToLower(strings.TrimSpace(completion.Choices[0].StopReason))
+	// Providers spell this differently: OpenAI "length", Anthropic "max_tokens", Gemini
+	// "MAX_TOKENS". Match on the substring so a new provider spelling does not silently pass.
+	if strings.Contains(stopReason, "max_tokens") || strings.Contains(stopReason, "length") {
+		return "", fmt.Errorf("%w: generation stopped at the output limit (stop_reason=%q) after %d characters",
+			errPlanIncomplete, stopReason, len(plan))
+	}
+
+	if len(plan) > maxPlanChars {
+		return "", fmt.Errorf("%w: %d characters exceeds the %d-character limit for a reviewable plan",
+			errPlanIncomplete, len(plan), maxPlanChars)
+	}
+
+	return plan, nil
+}
+
 // ClarifyingQuestion represents a single question to ask the user before planning.
 type ClarifyingQuestion struct {
 	Question string   `json:"question"`
@@ -249,11 +299,24 @@ type WorkflowBuilderAgent struct {
 	// Transient per-loop: reset at the top of runToolLoop, not persisted in state.
 	loopFinalized bool
 
+	// finalizedSnapshot is the definition as it stood at the last finalize call in this loop.
+	// Used to tell a legitimate re-finalize (the model changed something and finalized again)
+	// from the thrash of re-finalizing an unchanged definition. Transient per-loop: reset in
+	// runToolLoop alongside loopFinalized.
+	finalizedSnapshot string
+
 	// changeSummary is the agent-authored explanation of WHAT it changed and WHY, captured from the
 	// finalize tool call and surfaced in the build/edit summary so the user sees the reasoning/approach
 	// behind a change — not just "has been updated". Transient per-request (set during runToolLoop, read
 	// in finalizeWithAutoSave); the agent is built fresh per turn so it never leaks across turns.
 	changeSummary string
+
+	// triggerShapeRejections counts how many times this build has been handed a malformed trigger
+	// (see triggerShapeIssues). Drives the escalation in triggerShapeMessage — the second offence
+	// gets the corrected object to copy rather than another explanation — and caps the in-loop
+	// correction of a raw-JSON answer so a model that will not fix its shape fails loudly instead
+	// of spending every remaining iteration on it. Transient per-loop: reset in runToolLoop.
+	triggerShapeRejections int
 }
 
 func newWorkflowBuilderAgent(accountId string) *WorkflowBuilderAgent {
@@ -349,6 +412,29 @@ func getWorkflowSchema() string {
   "timeout": "5m",                    // string duration (optional)
   "hooks": {...}                      // *Hooks (optional)
 }
+
+## TRIGGER STRUCTURE:
+{
+  "type": "string (required)",        // one of: manual, schedule, webhook, event, optimization
+  "params": {},                       // map[string]any — EVERY trigger setting lives in here
+  "layout": {"x": 0, "y": 0}          // optional canvas position
+}
+"type" and "params" are the ONLY keys you may write on a trigger. A trigger setting placed
+at the top level instead of inside "params" is DISCARDED when the definition is decoded,
+which produces a trigger that can never fire. The "Requires params:" lists below name the
+keys that go INSIDE "params" — they are never trigger-level keys.
+
+  WRONG: {"type": "webhook", "integration_name": "my-hook", "filter": "..."}
+  RIGHT: {"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}
+
+  WRONG: {"type": "schedule", "cron": "0 9 * * *"}
+  RIGHT: {"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}
+
+  WRONG: {"type": "event", "event_type": "alert"}
+  RIGHT: {"type": "event", "params": {"event_type": "alert"}}
+
+"manual" is the ONLY type that takes no params — {"type": "manual"} is complete as written.
+Do not generalise from it to the other four types.
 
 ## TRIGGER TYPES:
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
@@ -761,7 +847,18 @@ func (a *WorkflowBuilderAgent) handleIntentAndPlan(ctx *security.RequestContext,
 // generatePlanAndAskApproval generates a plan and returns a WAITING response for user approval.
 func (a *WorkflowBuilderAgent) generatePlanAndAskApproval(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (core.NBAgentResponse, error) {
 	plan, err := a.generatePlan(ctx, request, intent, clarificationContext)
+	if errors.Is(err, errPlanIncomplete) {
+		// Truncation is usually a one-off: the model wandered into a repetition loop and ran out
+		// of room. Regenerating costs one call and recovers it. What must not happen is the
+		// unusable plan reaching the approval card, so a second failure is surfaced rather than
+		// rendered with an "Approve and Build" button next to it (#35392).
+		ctx.GetLogger().Warn("workflow_builder: discarding an unusable plan, regenerating", "error", err)
+		plan, err = a.generatePlan(ctx, request, intent, clarificationContext)
+	}
 	if err != nil {
+		if errors.Is(err, errPlanIncomplete) {
+			ctx.GetLogger().Error("workflow_builder: plan still unusable after regenerating", "error", err)
+		}
 		return core.NBAgentResponse{}, fmt.Errorf("plan generation failed: %w", err)
 	}
 
@@ -826,25 +923,12 @@ func (a *WorkflowBuilderAgent) handlePlanApproval(ctx *security.RequestContext, 
 }
 
 // handleFeedback incorporates user feedback, regenerates the plan, and asks for approval again.
+// It always returns to the approval prompt — there is no revision cap, so a build only ever starts
+// from an explicit "Approve and Build" (#34098).
 func (a *WorkflowBuilderAgent) handleFeedback(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	feedback := strings.TrimSpace(request.Query)
 	a.state.Feedback = feedback
 	a.state.PlanAttempts++
-
-	// If we've exceeded max plan attempts, incorporate latest feedback then auto-build.
-	if a.state.PlanAttempts > maxPlanAttempts {
-		ctx.GetLogger().Info("workflow_builder: max plan attempts reached, auto-building with latest feedback", "attempts", a.state.PlanAttempts)
-		originalRequest := request
-		originalRequest.Query = a.state.OriginalQuery
-		// Regenerate plan with the latest feedback so the auto-build uses an up-to-date plan.
-		plan, err := a.regeneratePlan(ctx, originalRequest, a.state.Intent, a.state.Plan, feedback)
-		if err != nil {
-			ctx.GetLogger().Warn("workflow_builder: plan regeneration failed on auto-build, using previous plan", "error", err)
-			plan = a.state.Plan
-		}
-		a.state.Plan = plan
-		return a.buildAndValidate(ctx, originalRequest, a.state.Intent, a.state.Plan)
-	}
 
 	// Regenerate plan incorporating feedback
 	originalRequest := request
@@ -1305,7 +1389,10 @@ REGRESSION PREVENTION:
 - When fixing one task, do NOT change other tasks unless directly affected.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: the params.account_id MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above. NEVER use the display name. The runbook server validates account_id as a UUID and will reject the save with "invalid input syntax for type uuid" otherwise.`, intent, planSection, schema)
+- MANY task types take an optional params.account_id — the CLI tasks (k8s.cli, cloud.*.cli) but also tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever you set it, not just to CLI tasks. Call get_task_schema if you are unsure whether a task takes one.
+- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely. Do not set it just to be explicit.
+- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
+- NEVER point account_id at a config: "{{ Configs.some_account_id }}" is NOT acceptable. It is a value the builder already knows, and deferring it either saves the automation INACTIVE until someone creates the config, or resolves to a placeholder string at run time. Inline the UUID or omit the parameter.`, intent, planSection, schema)
 }
 
 // getEditSystemPrompt returns the system prompt for the unified agentic edit loop. It covers BOTH
@@ -1376,7 +1463,9 @@ core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: params.account_id MUST be a UUID. If you see a non-UUID value (e.g. a display name), replace it with the matching UUID from the account environment. The runbook server rejects non-UUID account_id values.`, errorSection, targetSection, schema)
+- MANY task types take an optional params.account_id, not just the CLI tasks: tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever it appears.
+- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the account environment, or delete the parameter if the task should run against the automation's own account.
+- account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.`, errorSection, targetSection, schema)
 }
 
 // buildAndValidate builds the workflow JSON from the approved plan using the agentic tool loop.
@@ -1577,6 +1666,175 @@ func walkTasksAndResolveAccountIds(tasks []interface{}, nameToId map[string]stri
 			walkTasksAndResolveAccountIds(nested, nameToId, unresolved)
 		}
 	}
+}
+
+// resolveAccountIdsInWorkingWorkflow runs resolveCloudAccountIds against the in-progress
+// definition and writes the result back, so a display name is corrected inside the tool loop
+// rather than at save time. Returns the actionable "unrecognized account_id" error when a value
+// is neither a UUID nor a configured account name; marshalling failures are non-fatal (the
+// definition is left untouched and the server produces the error path, as before).
+func (a *WorkflowBuilderAgent) resolveAccountIdsInWorkingWorkflow(ctx *security.RequestContext) error {
+	raw, err := json.Marshal(a.state.WorkingWorkflow)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: could not marshal working automation for account resolution", "error", err)
+		return nil
+	}
+
+	resolved, err := a.resolveCloudAccountIds(ctx, string(raw))
+	if err != nil {
+		return err
+	}
+
+	var updated map[string]interface{}
+	if err := json.Unmarshal([]byte(resolved), &updated); err != nil {
+		ctx.GetLogger().Warn("workflow_builder: could not re-read resolved automation, leaving it unchanged", "error", err)
+		return nil
+	}
+	a.state.WorkingWorkflow = updated
+	return nil
+}
+
+// lintCloudAccountIds reports tasks that SET an `account_id` to a value that will not resolve to
+// an account at run time. Deliberately task-type agnostic: 41 task types across tickets, dbms,
+// observability, scripting, github and rabbitmq declare an account-typed parameter, not just the
+// four cloud-CLI types, and any of them can be handed an unusable value.
+//
+// It does NOT require account_id to be present. The parameter is `Required: false` in every task
+// schema and the engine defaults it to the automation's own account
+// (`accountId := taskCtx.GetAccountID()`, e.g. runbook-server internal/tasks/k8s/cli.go:35), which
+// is precisely the account the user picked. Omitting it is correct, not a dropped field.
+//
+// What is caught is a value that is present, non-empty, and unusable:
+//
+//   - a `{{ Configs.<key> }}` reference whose config holds a non-UUID value. This is the shape
+//     observed live (#35391): it renders to something like "<TODO: set value>", which is
+//     non-empty, so the engine's default never kicks in and the task runs against a garbage id.
+//   - a `{{ Configs.<key> }}` reference to a config that does not exist. checkMissingConfigs saves
+//     these INACTIVE with a "create these configs" message (#31490) rather than letting the
+//     placeholder reach runtime — so this is not silent breakage, but it is still a dead-on-arrival
+//     automation for a value the builder already had in hand, and it is cheaper to fix in-loop.
+//
+// A reference that resolves to a UUID today is left alone — a working indirection, not this bug.
+// A display name is not checked here; resolveAccountIdsInWorkingWorkflow has already swapped it
+// for a UUID or failed with its own message by the time this runs.
+func (a *WorkflowBuilderAgent) lintCloudAccountIds(ctx *security.RequestContext, workflow map[string]interface{}) []string {
+	var tasks []interface{}
+	if def, ok := workflow["definition"].(map[string]interface{}); ok {
+		tasks, _ = def["tasks"].([]interface{})
+	}
+	if tasks == nil {
+		tasks, _ = workflow["tasks"].([]interface{})
+	}
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	// Only pay for the configs fetch when a template is actually in play. `available` is false
+	// when the config API could not be read at all — the template checks are then skipped
+	// entirely, because "we could not look it up" must not be reported as "it does not exist".
+	var configValues map[string]string
+	var configsFetched bool
+	lookupConfig := func(key string) (value string, found bool, available bool) {
+		if !configsFetched {
+			configsFetched = true
+			if ctx != nil {
+				values, err := fetchConfigValues(ctx, a.accountId)
+				if err != nil {
+					ctx.GetLogger().Warn("workflow_builder: lintCloudAccountIds: config API unreachable, skipping template checks", "error", err)
+				}
+				configValues = values
+			}
+		}
+		if configValues == nil {
+			return "", false, false
+		}
+		value, found = configValues[key]
+		return value, found, true
+	}
+
+	var issues []string
+	walkTasksAndLintAccountIds(tasks, lookupConfig, &issues)
+	return issues
+}
+
+// configTemplateKey extracts `foo` from `{{ Configs.foo }}` (any spacing). Returns "" when the
+// value is not a lone Configs reference — a composed expression is not something this lint can
+// evaluate, so it is left alone.
+var configTemplateKey = regexp.MustCompile(`^\{\{\s*Configs\.([A-Za-z0-9_.-]+)\s*\}\}$`)
+
+func walkTasksAndLintAccountIds(tasks []interface{}, lookupConfig func(string) (value string, found bool, available bool), issues *[]string) {
+	for _, rawTask := range tasks {
+		task, ok := rawTask.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		taskType, _ := task["type"].(string)
+		if taskType == "" {
+			taskType = "<untyped>"
+		}
+		taskId, _ := task["id"].(string)
+		if taskId == "" {
+			taskId = "<unnamed>"
+		}
+
+		params, _ := task["params"].(map[string]interface{})
+		accountId, _ := params["account_id"].(string)
+
+		// An absent or empty account_id is the engine's "use the automation's own account"
+		// default, which is the right account. Only a value that was actually set can be wrong.
+		if accountId = strings.TrimSpace(accountId); accountId != "" && configTemplateKey.MatchString(accountId) {
+			key := configTemplateKey.FindStringSubmatch(accountId)[1]
+			value, found, available := lookupConfig(key)
+			switch {
+			case !available:
+				// Configs could not be read; stay silent rather than guess.
+			case !found:
+				*issues = append(*issues, fmt.Sprintf(
+					"task '%s' (%s) sets `account_id` to %s, but no config named %q exists — the automation would save INACTIVE until someone creates it",
+					taskId, taskType, accountId, key))
+			case !isValidUUID(strings.TrimSpace(value)):
+				*issues = append(*issues, fmt.Sprintf(
+					"task '%s' (%s) sets `account_id` to %s, but config %q holds %q, which is not an account UUID",
+					taskId, taskType, accountId, key, value))
+			}
+		}
+
+		if nested, ok := task["tasks"].([]interface{}); ok {
+			walkTasksAndLintAccountIds(nested, lookupConfig, issues)
+		}
+	}
+}
+
+func cloudAccountLintMessage(issues []string) string {
+	return "Validation FAILED (account binding): the structure is valid but these tasks set an `account_id` that will not resolve:\n- " +
+		strings.Join(issues, "\n- ") +
+		"\n\nFix with modify_task, either way:\n" +
+		"- Set `account_id` to the literal UUID shown as id=<uuid> for that account in the ACCOUNT ENVIRONMENT block, or\n" +
+		"- Remove `account_id` entirely if the task should run against the automation's own account — the parameter is " +
+		"optional and defaults to exactly that.\n" +
+		"Do not use a display name and do not point it at a config. Then call validate again."
+}
+
+// fetchConfigValues returns the account's configs as key → value. Separate from
+// fetchExistingConfigKeys, which only needs the key set.
+func fetchConfigValues(ctx *security.RequestContext, accountId string) (map[string]string, error) {
+	resp, err := tools.DoRunbookRequest("GET", "configs", nil, accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return nil, err
+	}
+	var configs []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(resp, &configs); err != nil {
+		return nil, fmt.Errorf("failed to parse configs response: %w", err)
+	}
+	values := map[string]string{}
+	for _, c := range configs {
+		values[c.Key] = c.Value
+	}
+	return values, nil
 }
 
 // isValidUUID returns true if s parses as a UUID. Used to distinguish
@@ -2146,14 +2404,14 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 	}
 
 	// 3. Default observability providers (log + metrics)
-	if logProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "logs"); err == nil && logProvider.Provider != "" {
+	if logProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "logs", ""); err == nil && logProvider.Provider != "" {
 		parts = append(parts, "Default log provider: "+logProvider.Provider+" (use observability.logs — query syntax depends on provider)")
 	}
-	if metricProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "metrics"); err == nil && metricProvider.Provider != "" {
+	if metricProvider, err := services_server.GetObservabilityProvider(*ctx, a.accountId, "metrics", ""); err == nil && metricProvider.Provider != "" {
 		parts = append(parts, "Default metrics provider: "+metricProvider.Provider+" (use observability.metrics)")
 	}
 
-	currentContext := a.currentContextSection()
+	currentContext := a.currentContextSection(ctx)
 	if len(parts) == 0 {
 		return currentContext
 	}
@@ -2174,28 +2432,73 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 
 // currentContextSection returns a prompt block naming the cluster/cloud-account the user is
 // currently viewing, instructing prompts to default to it instead of asking which account/cluster
-// to target (#30162). Returns "" when no current context was supplied (behavior then unchanged).
-func (a *WorkflowBuilderAgent) currentContextSection() string {
-	if a.currentCluster == "" && a.currentClusterId == "" {
-		return ""
+// to target (#30162). Returns "" only when the agent has no account at all.
+func (a *WorkflowBuilderAgent) currentContextSection(ctx *security.RequestContext) string {
+	label := a.currentCluster
+	id := a.currentClusterId
+
+	// Fall back to the account the agent is already scoped to. QueryConfig.CurrentCluster*
+	// only arrives from surfaces that render the global cluster dropdown, and the Create
+	// Automation dialog is not one of them — its request carries the chosen account as
+	// account_id and nothing else (#35391). Without this fallback the "do NOT ask" rule below
+	// never reaches the prompt from that surface, so the builder asks which cluster to use
+	// even though the user already picked one, and then targets whatever it was answered with.
+	if label == "" && id == "" {
+		id = a.accountId
+		label = a.ownAccountName(ctx)
 	}
 
-	label := a.currentCluster
+	if label == "" && id == "" {
+		return ""
+	}
 	if label == "" {
-		label = a.currentClusterId
+		label = id
 	}
 	idSuffix := ""
-	if a.currentClusterId != "" {
-		idSuffix = fmt.Sprintf(" (account_id=%s)", a.currentClusterId)
+	if id != "" && id != label {
+		// When the display name could not be resolved the label already IS the id; appending the
+		// suffix would render `"<uuid>" (account_id=<uuid>)` at the model.
+		idSuffix = fmt.Sprintf(" (account_id=%s)", id)
 	}
 
 	return fmt.Sprintf(
 		"\n\nCURRENT CONTEXT: The user is already working inside the cluster/account \"%s\"%s. "+
 			"Do NOT ask the user which account, cluster, or workspace to use. "+
-			"For a task that needs an `account_id` (k8s.cli, cloud.*.cli), default to THIS account/cluster when it fits the task's provider; "+
-			"otherwise pick the appropriate configured account from the ACCOUNT ENVIRONMENT above without asking. "+
+			"Tasks default to THIS account already — the optional `account_id` parameter (which many task types accept, "+
+			"not only the CLI ones) falls back to it when omitted, so leave it out unless a task must target a different account. "+
+			"When a task genuinely needs a different one, pick it from the ACCOUNT ENVIRONMENT above without asking, and write "+
+			"its UUID as a literal string — NEVER the display name, and NEVER a `{{ Configs.<key> }}` template. "+
 			"Only ask if no suitable account is configured.",
 		label, idSuffix)
+}
+
+// ownAccountName returns the display name of the agent's own cloud account, or "" when it cannot
+// be resolved. Used to label the current-context block with a name the user recognises rather
+// than a bare UUID.
+//
+// Takes no account parameter on purpose. ListAllToolConfigs' argument is the *scoping* account —
+// it resolves that account's tenant and lists the tenant's cloud accounts — so it must be the
+// agent's own account, not a lookup target. A version that accepted an arbitrary id to look up
+// would read as though that id also belonged in the scoping position, which would scope a listing
+// to a caller-supplied account and fail outright for any id that is not a cloud_accounts row.
+func (a *WorkflowBuilderAgent) ownAccountName(ctx *security.RequestContext) string {
+	if ctx == nil || a.accountId == "" {
+		return ""
+	}
+	allConfigs, err := toolcore.ListAllToolConfigs(ctx, a.accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: ownAccountName: ListAllToolConfigs failed", "error", err)
+		return ""
+	}
+	for _, cfg := range allConfigs {
+		if !cloudAccountConfigTypes[strings.ToLower(cfg.Schema.ConfigType)] {
+			continue
+		}
+		if strings.EqualFold(cloudAccountId(cfg), a.accountId) {
+			return cfg.Name
+		}
+	}
+	return ""
 }
 
 // fetchTaskTypeNames fetches registered task type names from the runbook server.
@@ -2253,6 +2556,11 @@ func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) 
 func getWorkflowPlanningContext() string {
 	return `
 TRIGGER TYPES AND THEIR REQUIRED PARAMETERS:
+A trigger is {"type": "<type>", "params": {...}}. Every key listed as "Requires:" or
+"Optional:" below belongs INSIDE "params" — never at the top level of the trigger, where
+it is silently discarded. E.g. a webhook trigger is
+{"type": "webhook", "params": {"integration_name": "my-hook"}}, NOT
+{"type": "webhook", "integration_name": "my-hook"}.
 - "manual" → No params allowed. User runs the automation from the UI on demand. User-supplied inputs are read in tasks via {{ Inputs.<key> }}.
 - "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
 - "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
@@ -2560,7 +2868,7 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 		return "", err
 	}
 
-	return safeChoiceContent(completion)
+	return safePlanContent(completion)
 }
 
 // regeneratePlan creates an updated plan incorporating user feedback.
@@ -2626,7 +2934,7 @@ RULES:
 		return "", err
 	}
 
-	return safeChoiceContent(completion)
+	return safePlanContent(completion)
 }
 
 // coerceWorkflowTypes walks the workflow JSON map and converts float64 values
@@ -2672,8 +2980,8 @@ func getWorkflowToolDescriptions() string {
 	tools := []workflowToolDef{
 		{
 			Name:        "init_workflow",
-			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER TYPES and getWorkflowPlanningContext for required params per type).",
-			Params:      `{"name": "string", "triggers": [{"type": "manual"}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
+			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params.",
+			Params:      `{"name": "string", "triggers": [{"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
 		},
 		{
 			Name:        "add_task",
@@ -2722,7 +3030,7 @@ func getWorkflowToolDescriptions() string {
 		},
 		{
 			Name:        "finalize",
-			Description: "Finalize and return the complete automation JSON. Call this only after validate returns OK. ALWAYS pass change_summary: 1-3 plain-language sentences explaining WHAT you changed/built and WHY (the approach and reasoning), so the user understands the change instead of only seeing that it happened.",
+			Description: "Mark the automation complete and return its JSON. Call this ONCE, only after validate returns OK. This tool does NOT save by itself and does not return an automation id, so calling it again changes nothing. ALWAYS pass change_summary: 1-3 plain-language sentences explaining WHAT you changed/built and WHY (the approach and reasoning), so the user understands the change instead of only seeing that it happened.",
 			Params:      `{"change_summary": "Added a dedup guard so a repeat event with the same fingerprint, subject name, and namespace reuses the existing incident channel instead of creating a new one."}`,
 		},
 		{
@@ -2746,7 +3054,7 @@ func getWorkflowToolDescriptions() string {
 
 // toolInitWorkflow initializes the working workflow with name, triggers, and inputs.
 // If a workflow is already loaded with tasks, it refuses to silently overwrite them.
-func (a *WorkflowBuilderAgent) toolInitWorkflow(args map[string]interface{}) string {
+func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, args map[string]interface{}) string {
 	name, _ := args["name"].(string)
 	if name == "" {
 		return "Error: 'name' is required"
@@ -2768,6 +3076,18 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(args map[string]interface{}) str
 	}
 
 	if triggers, ok := args["triggers"].([]interface{}); ok && len(triggers) > 0 {
+		// Refuse a trigger the server cannot decode rather than storing it verbatim: every key
+		// outside `type` is dropped on decode, which used to save a trigger that could never fire
+		// and report it as success (#35383). Rejecting here keeps the working workflow untouched,
+		// so nothing half-formed is left behind for finalize to persist.
+		if issues := triggerShapeIssues(triggers); len(issues) > 0 {
+			a.triggerShapeRejections++
+			if ctx != nil {
+				ctx.GetLogger().Warn("workflow_builder: rejected malformed trigger shape from init_workflow",
+					"automation", name, "issue_count", len(issues), "attempt", a.triggerShapeRejections, "issues", issues)
+			}
+			return triggerShapeMessage(issues, a.triggerShapeRejections)
+		}
 		definition["triggers"] = triggers
 	} else {
 		definition["triggers"] = []interface{}{map[string]interface{}{"type": "manual"}}
@@ -2790,14 +3110,14 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(args map[string]interface{}) str
 }
 
 // toolAddTask adds a task to the working workflow.
-func (a *WorkflowBuilderAgent) toolAddTask(args map[string]interface{}) string {
+func (a *WorkflowBuilderAgent) toolAddTask(ctx *security.RequestContext, args map[string]interface{}) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized. Call init_workflow first."
 	}
 
 	taskId, _ := args["id"].(string)
 	if taskId == "" {
-		return "Error: task 'id' is required"
+		return missingKeyError(ctx, "add_task", "id", args)
 	}
 	taskType, _ := args["type"].(string)
 	if taskType == "" {
@@ -2878,14 +3198,14 @@ func (a *WorkflowBuilderAgent) toolGetTask(args map[string]interface{}) string {
 }
 
 // toolModifyTask replaces a task's definition in the working workflow.
-func (a *WorkflowBuilderAgent) toolModifyTask(args map[string]interface{}) string {
+func (a *WorkflowBuilderAgent) toolModifyTask(ctx *security.RequestContext, args map[string]interface{}) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
 
 	taskId, _ := args["task_id"].(string)
 	if taskId == "" {
-		return "Error: 'task_id' is required"
+		return missingKeyError(ctx, "modify_task", "task_id", args)
 	}
 
 	definition, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{})
@@ -3277,7 +3597,7 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 		if result := findInList(wrapped.Tasks); result != "" {
 			return result
 		}
-		return fmt.Sprintf("Task type '%s' not found in available types. Check the type name and try again.", taskType)
+		return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the types listed under REGISTERED TASK TYPES in your instructions — do not invent type names.", taskType)
 	}
 
 	// Try bare array
@@ -3288,7 +3608,7 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 		}
 	}
 
-	return fmt.Sprintf("Task type '%s' not found in available types. Check the type name and try again.", taskType)
+	return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the types listed under REGISTERED TASK TYPES in your instructions — do not invent type names.", taskType)
 }
 
 // getEventTriggerSchemaReference returns the authoritative, hand-maintained reference for what an
@@ -3434,6 +3754,221 @@ var knownEventTriggerFields = map[string]bool{
 // free-form and cannot be linted statically).
 var eventFieldRefRegex = regexp.MustCompile(`\bevent\.([a-zA-Z_][a-zA-Z0-9_]*)`)
 
+// triggerTopLevelKeys is the complete set of keys a trigger object may carry. Source of truth:
+// model.Trigger in runbook-server/internal/model/workflow.go — `type`, `params`, `internal`,
+// `layout`. `internal` and `layout` are here because stored definitions carry them and fix mode
+// hydrates a stored definition verbatim; rejecting them would make every saved webhook automation
+// un-editable. A trigger type that gains a fifth key must be added here.
+var triggerTopLevelKeys = map[string]bool{
+	"type":     true,
+	"params":   true,
+	"internal": true,
+	"layout":   true,
+}
+
+// triggerShapeIssues reports every trigger the model wrote in a shape the runbook server cannot
+// decode. It checks SHAPE ONLY — whether a given type supplies the params it requires is the
+// server's call (#35384), so the two layers never second-guess each other.
+//
+// This exists because roughly one in four non-manual triggers arrived "flat"
+// (`{"type":"webhook","integration_name":"x"}`) instead of nested under `params`, and everything
+// outside `type` is dropped when the definition is decoded — saving a trigger that can never fire
+// (#35383). Deliberately a single rule (only the four keys above are legal) rather than a repair
+// pass for the one malformation we happened to observe: a model can emit `config: {...}`,
+// `parameters: {...}`, a doubly-nested `params.params`, or a bare string, and a normaliser would
+// silently turn several of those into structured junk. Rejecting and echoing the input back lets
+// the model diff what it sent against what was wanted, which generalises to shapes nobody listed.
+func triggerShapeIssues(triggers []interface{}) []string {
+	var issues []string
+	for i, rt := range triggers {
+		label := fmt.Sprintf("trigger %d", i+1)
+
+		t, ok := rt.(map[string]interface{})
+		if !ok {
+			issues = append(issues, fmt.Sprintf("%s is %T, not an object. A trigger is {\"type\": \"...\", \"params\": {...}}.", label, rt))
+			continue
+		}
+
+		triggerType, _ := t["type"].(string)
+		if strings.TrimSpace(triggerType) == "" {
+			issues = append(issues, fmt.Sprintf("%s has no \"type\". Valid types: manual, schedule, webhook, event, optimization.", label))
+			continue
+		}
+
+		if raw, present := t["params"]; present && raw != nil {
+			if _, isMap := raw.(map[string]interface{}); !isMap {
+				issues = append(issues, fmt.Sprintf("%s has \"params\" as %T; it must be an object: {\"type\": %q, \"params\": {...}}.", label, raw, triggerType))
+				continue
+			}
+		}
+
+		var stray []string
+		for k := range t {
+			if !triggerTopLevelKeys[k] {
+				stray = append(stray, k)
+			}
+		}
+		if len(stray) == 0 {
+			continue
+		}
+		sort.Strings(stray)
+
+		sent, _ := json.Marshal(t)
+		expected, _ := json.Marshal(nestStrayTriggerKeys(t))
+		issues = append(issues, fmt.Sprintf(
+			"%s puts %s at the top level, where the server discards them — the trigger would never fire.\n  You sent: %s\n  Expected: %s",
+			label, strings.Join(quoteAll(stray), ", "), sent, expected))
+	}
+	return issues
+}
+
+// nestStrayTriggerKeys returns a copy of the trigger with its stray top-level keys moved under
+// `params`. Used ONLY to render the corrected form inside an error message — the working workflow
+// is never mutated, so a stored trigger's server-managed `internal` block can never be buried
+// inside `params` by this code path.
+func nestStrayTriggerKeys(t map[string]interface{}) map[string]interface{} {
+	fixed := map[string]interface{}{}
+	params := map[string]interface{}{}
+	if existing, ok := t["params"].(map[string]interface{}); ok {
+		for k, v := range existing {
+			params[k] = v
+		}
+	}
+	for k, v := range t {
+		switch {
+		case k == "params":
+			// merged above
+		case triggerTopLevelKeys[k]:
+			fixed[k] = v
+		default:
+			params[k] = v
+		}
+	}
+	if len(params) > 0 {
+		fixed["params"] = params
+	}
+	return fixed
+}
+
+// missingKeyError reports a tool call rejected for a missing required key, naming the keys that
+// WERE supplied — in the log for us, and in the tool result for the model.
+//
+// The bare "Error: task 'id' is required" it replaces was undiagnosable: a run where 11 of 18
+// add_task calls failed identically left no record of what the model actually sent, so there was
+// no way to tell a renamed key from a nested payload from a non-string value (#35390). Echoing the
+// received keys back is the same tactic the trigger-shape guard uses — the model can diff what it
+// sent against what was wanted, which beats repeating a demand it has already failed to meet.
+func missingKeyError(ctx *security.RequestContext, tool, wanted string, args map[string]interface{}) string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	if ctx != nil {
+		ctx.GetLogger().Warn("workflow_builder: rejected tool call with a missing required key",
+			"tool", tool, "missing_key", wanted, "received_keys", keys)
+	}
+
+	// The key can be present and still rejected — an empty string, or a value that is not a
+	// string at all. Saying "requires \"id\" at the top level" while listing "id" among the keys
+	// received reads as a contradiction, and a model that cannot tell which of the three
+	// failures it hit is liable to re-send the same payload. Name the actual one.
+	if value, present := args[wanted]; present {
+		if str, isString := value.(string); isString && strings.TrimSpace(str) == "" {
+			return fmt.Sprintf("Error: %s received %q but it was empty. You sent: %s. Re-send with a non-empty %q.",
+				tool, wanted, strings.Join(quoteAll(keys), ", "), wanted)
+		}
+		return fmt.Sprintf("Error: %s requires %q to be a string; you sent %T. You sent: %s. Re-send with %q as a string.",
+			tool, wanted, value, strings.Join(quoteAll(keys), ", "), wanted)
+	}
+
+	if len(keys) == 0 {
+		return fmt.Sprintf("Error: %s requires %q, and no parameters were received at all. Send the tool input as a JSON object: {%q: \"...\", ...}.", tool, wanted, wanted)
+	}
+	return fmt.Sprintf("Error: %s requires %q at the top level, and it was not among the keys you sent: %s. Re-send the call with %q as a top-level string key.",
+		tool, wanted, strings.Join(quoteAll(keys), ", "), wanted)
+}
+
+// quoteAll wraps each string in double quotes so key lists read as JSON keys in error messages.
+func quoteAll(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, strconv.Quote(k))
+	}
+	return out
+}
+
+// triggerShapeMessage renders the tool-result error for malformed triggers. On the second offence
+// in the same build it stops explaining and hands over the exact object to send, so a model that
+// misread the first correction cannot burn further iterations on the same mistake.
+func triggerShapeMessage(issues []string, attempt int) string {
+	var sb strings.Builder
+	sb.WriteString("Error: the automation was NOT initialized — ")
+	if len(issues) == 1 {
+		sb.WriteString("a trigger is not in the expected shape.\n\n")
+	} else {
+		fmt.Fprintf(&sb, "%d triggers are not in the expected shape.\n\n", len(issues))
+	}
+	sb.WriteString(strings.Join(issues, "\n\n"))
+	sb.WriteString("\n\nA trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\".")
+	if attempt >= 2 {
+		sb.WriteString("\n\nThis is the second malformed trigger in this build. Copy the \"Expected\" object above exactly as written and call init_workflow again — do not rewrite it.")
+	} else {
+		sb.WriteString("\nFix the trigger(s) and call init_workflow again.")
+	}
+	return sb.String()
+}
+
+// maxTriggerShapeCorrections bounds how many times one build may be sent back to fix a trigger's
+// shape. Two is deliberate: the first correction explains, the second hands over the exact object
+// to copy (triggerShapeMessage), and a model that ignores both is not going to be talked round —
+// better to let the save fail loudly against the server's own validation than to spend every
+// remaining iteration re-explaining.
+const maxTriggerShapeCorrections = 2
+
+// triggerShapeCorrection inspects a workflow-JSON answer the model wants to return directly and,
+// when its triggers are malformed, returns the correction to feed back into the loop. Returns ""
+// when the answer is fine, is not workflow JSON, or the correction budget is spent.
+//
+// The tool path is covered by toolInitWorkflow, but a model may skip the tools entirely and emit
+// the whole definition as its final answer — resolveToolLoopOutcome persists that verbatim. Doing
+// the check here rather than after the loop means the fix costs one more iteration of the budget
+// already allocated, instead of a second full tool loop.
+func (a *WorkflowBuilderAgent) triggerShapeCorrection(ctx *security.RequestContext, answer string) string {
+	if a.triggerShapeRejections >= maxTriggerShapeCorrections {
+		return ""
+	}
+
+	var wf map[string]interface{}
+	if err := json.Unmarshal([]byte(answer), &wf); err != nil {
+		return ""
+	}
+	var triggers []interface{}
+	if def, ok := wf["definition"].(map[string]interface{}); ok {
+		triggers, _ = def["triggers"].([]interface{})
+	}
+	if triggers == nil {
+		triggers, _ = wf["triggers"].([]interface{})
+	}
+	if len(triggers) == 0 {
+		return ""
+	}
+
+	issues := triggerShapeIssues(triggers)
+	if len(issues) == 0 {
+		return ""
+	}
+
+	a.triggerShapeRejections++
+	if ctx != nil {
+		ctx.GetLogger().Warn("workflow_builder: rejected malformed trigger shape in direct workflow answer",
+			"issue_count", len(issues), "attempt", a.triggerShapeRejections, "issues", issues)
+	}
+	return triggerShapeMessage(issues, a.triggerShapeRejections) +
+		"\n\nRe-send the complete automation JSON with the trigger(s) corrected."
+}
+
 // lintEventTriggers inspects each event-trigger filter for the mistakes that make a trigger silently
 // never fire — patterns observed across real builder output: `Inputs.event` used in a filter (filters
 // read `event.*` at root), references to non-existent top-level fields (e.g. event.reason /
@@ -3459,6 +3994,14 @@ func lintEventTriggers(workflow map[string]interface{}) []string {
 			continue
 		}
 		params, _ := t["params"].(map[string]interface{})
+		// An event trigger with no params at all matches nothing and can never fire. This used to
+		// fall through the empty-filter skip below — the lint stayed silent on exactly the shape it
+		// exists to catch (#35383). Narrow on purpose: only a missing/empty params block is an
+		// issue here. An empty *filter* is fine when event_type carries the match.
+		if len(params) == 0 {
+			issues = append(issues, "event trigger has no params — it needs at least one of `event_type` or `filter` under `params`, or it will never fire.")
+			continue
+		}
 		filter, _ := params["filter"].(string)
 		if strings.TrimSpace(filter) == "" {
 			continue
@@ -3499,6 +4042,21 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 
 	// Apply type coercion before validation
 	coerceWorkflowTypes(a.state.WorkingWorkflow)
+
+	// Resolve cloud-account display names → UUIDs BEFORE the server sees the definition.
+	// This same swap runs again at save time, but the save is too late to help the loop: the
+	// runbook server validates account_id as a Postgres uuid, so a display name reaches
+	// validate as `invalid input syntax for type uuid: "k8s-dev" (22P02)` — an error the model
+	// cannot act on, and whose observed recovery was to delete account_id entirely (#35391).
+	if resolveErr := a.resolveAccountIdsInWorkingWorkflow(ctx); resolveErr != nil {
+		return fmt.Sprintf("Validation FAILED: %s\n\nFix the `account_id` on the named task(s) with modify_task, then call validate again.", resolveErr.Error())
+	}
+
+	// Local account lint: a cloud-CLI task with no resolvable account saves as an automation
+	// that looks live and runs against nothing. The server accepts both shapes (#35391).
+	if accountIssues := a.lintCloudAccountIds(ctx, a.state.WorkingWorkflow); len(accountIssues) > 0 {
+		return cloudAccountLintMessage(accountIssues)
+	}
 
 	// Local event-trigger lint: the server validates structure but accepts filters that reference
 	// non-existent fields (which save as ACTIVE-but-dead). Surface those so the agent fixes them.
@@ -3741,7 +4299,14 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	var args map[string]interface{}
 	if toolInput != "" {
 		if err := json.Unmarshal([]byte(toolInput), &args); err != nil {
-			// Try to handle non-JSON inputs
+			// Try to handle non-JSON inputs. Log first: this branch used to swallow the
+			// payload whole, so a run where every add_task failed with "task 'id' is
+			// required" left no way to tell a malformed <tool_input> from a wrong key
+			// name (#35390). The preview is capped because a task payload can be large.
+			if ctx != nil {
+				ctx.GetLogger().Warn("workflow_builder: tool input is not valid JSON, wrapping as {\"input\": ...}",
+					"tool", toolName, "error", err, "input_preview", core.TruncateHead(toolInput, 500))
+			}
 			args = map[string]interface{}{"input": toolInput}
 		}
 	}
@@ -3751,13 +4316,13 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "init_workflow":
-		return a.toolInitWorkflow(args)
+		return a.toolInitWorkflow(ctx, args)
 	case "add_task":
-		return a.toolAddTask(args)
+		return a.toolAddTask(ctx, args)
 	case "get_task":
 		return a.toolGetTask(args)
 	case "modify_task":
-		return a.toolModifyTask(args)
+		return a.toolModifyTask(ctx, args)
 	case "delete_task":
 		return a.toolDeleteTask(args)
 	case "list_tasks":
@@ -3778,7 +4343,21 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 		}
 		// finalize is the loop's commit point: only a finalized loop may persist
 		// mutated working state (see resolveToolLoopOutcome).
+		//
+		// Re-finalizing an unchanged definition is a no-op that reads as success, which is
+		// how one build spent nine calls in 31 seconds re-marshalling the same 2520 bytes
+		// (#35390). The result is deliberately not the JSON: an identical reply is exactly
+		// what invites another identical call.
+		snapshot := a.workflowSnapshot()
+		if a.loopFinalized && snapshot != "" && snapshot == a.finalizedSnapshot {
+			if ctx != nil {
+				ctx.GetLogger().Warn("workflow_builder: repeated finalize on an unchanged automation", "mode", a.state.Mode)
+			}
+			return "Error: this automation was already finalized and nothing has changed since. finalize does not save " +
+				"by itself, so calling it again changes nothing. Emit your <final_answer> now."
+		}
 		a.loopFinalized = true
+		a.finalizedSnapshot = snapshot
 		return a.toolFinalize()
 	case "list_executions":
 		return a.toolListExecutions(ctx, args)
@@ -3824,6 +4403,9 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
 	// Fresh commit marker for this loop — set only by a finalize tool call.
 	a.loopFinalized = false
+	a.finalizedSnapshot = ""
+	// Fresh correction budget per loop, so an edit turn is not penalised by a build turn.
+	a.triggerShapeRejections = 0
 
 	// Fetch task types once for all get_task_schema calls and schema-driven validation
 	tasksResp, _ := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
@@ -3917,6 +4499,13 @@ RULES:
 			finalContent = strings.TrimPrefix(finalContent, "```")
 			finalContent = strings.TrimSuffix(finalContent, "```")
 			finalContent = strings.TrimSpace(finalContent)
+			if correction := a.triggerShapeCorrection(ctx, finalContent); correction != "" {
+				messages = append(messages,
+					llms.TextParts(llms.ChatMessageTypeAI, finalContent),
+					llms.TextParts(llms.ChatMessageTypeHuman, correction),
+				)
+				continue
+			}
 			return finalContent, nil
 		}
 
@@ -3928,7 +4517,15 @@ RULES:
 			// No tool call and no final answer — check if content looks like raw JSON (workflow).
 			// Validate strictly: must be valid JSON with both "name" and "definition" keys.
 			if isRawWorkflowJSON(content) {
-				return strings.TrimSpace(content), nil
+				raw := strings.TrimSpace(content)
+				if correction := a.triggerShapeCorrection(ctx, raw); correction != "" {
+					messages = append(messages,
+						llms.TextParts(llms.ChatMessageTypeAI, raw),
+						llms.TextParts(llms.ChatMessageTypeHuman, correction),
+					)
+					continue
+				}
+				return raw, nil
 			}
 
 			// Nudge the LLM to use a tool or finish

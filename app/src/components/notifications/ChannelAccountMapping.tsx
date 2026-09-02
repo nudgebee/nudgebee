@@ -13,8 +13,11 @@ import { toast as snackbar } from '@ui/Toast';
 import apiNotifications from '@api1/notification';
 import apiDashboard from '@api1/home';
 import apiAccount from '@api1/account';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage } from '@lib/auth';
 import { ds } from 'src/utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (accountProvider: string) => <CloudProviderIcon cloud_provider={accountProvider} width='14px' height='14px' />;
 
 interface ChannelAccountMappingProps {
   provider: string;
@@ -55,7 +58,15 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     try {
       const response = await apiDashboard.getCloudAccounts();
       if (Array.isArray(response)) {
-        setCloudAccounts(response.map((item: any) => ({ label: item.account_name, value: item.id, id: item.id, provider: item.cloud_provider })));
+        setCloudAccounts(
+          response.map((item: any) => ({
+            label: item.account_name,
+            value: item.id,
+            id: item.id,
+            provider: item.cloud_provider,
+            group: item.cloud_provider || 'Other',
+          }))
+        );
       }
     } catch (error) {
       console.error('Error loading cloud accounts:', error);
@@ -119,7 +130,11 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
 
   const loadMessagingPlatform = useCallback(async () => {
     try {
-      const response: any = await apiAccount.getMessagingPlatform(provider);
+      // Union of legacy messaging_platforms and the new integrations storage — the
+      // same source the parent tile gates isConfigured on. Reading the legacy table
+      // alone (getMessagingPlatform) left messagingPlatform null for integration-only
+      // installs, so Save failed with "Messaging platform not loaded".
+      const response: any = await apiAccount.getMessagingInstallations(provider);
       if (response?.data && response.data.length > 0) {
         setMessagingPlatform(response.data[0]);
       }
@@ -154,7 +169,7 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
   }, [isConfigured, loadMappings]);
 
   const getMenuItems = () => {
-    if (!hasWriteAccess()) return [];
+    if (!canManage('messagingplatforms', 'Write')) return [];
     return [
       { label: 'Delete', id: 'delete' },
       { label: 'Edit', id: 'edit' },
@@ -364,6 +379,8 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
             required
             value={selectedAccount}
             options={cloudAccounts}
+            grouped
+            groupIcon={renderAccountGroupIcon}
             onChange={(next) => setSelectedAccount(next)}
             disabled={isLoadingAccounts}
             placeholder={isLoadingAccounts ? 'Loading…' : 'Select cloud account'}
@@ -412,7 +429,7 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
         <ListingLayout id={`${provider}-channel-account-mappings`}>
           <ListingLayout.Toolbar
             actions={
-              hasWriteAccess() ? (
+              canManage('messagingplatforms', 'Write') ? (
                 <DsButton id='add-mapping-btn' tone='primary' size='md' onClick={() => setOpenModal(true)}>
                   Add Mapping
                 </DsButton>

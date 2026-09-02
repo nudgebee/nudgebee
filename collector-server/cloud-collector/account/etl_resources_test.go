@@ -13,6 +13,26 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestResolveGCPCrawlRegions proves the region set fed to the GCP crawl: the
+// billing input contributes a region no service has been crawled in yet
+// (europe-west3), duplicates collapse across sources, and every non-region
+// value — "global", the multi-region "us", and the zone "us-central1-c" — is
+// dropped so it never reaches the non-graceful per-region crawl.
+func TestResolveGCPCrawlRegions(t *testing.T) {
+	got := resolveGCPCrawlRegions(
+		[]string{"us-central1", "us"},                       // per-service (unfiltered: carries multi-region "us")
+		[]string{"us-central1", "asia-south1"},              // cross-service footprint
+		[]string{"europe-west3", "global", "us-central1-c"}, // billing: a new region + junk + a zone
+	)
+	assert.ElementsMatch(t, []string{"us-central1", "asia-south1", "europe-west3"}, got)
+}
+
+func TestResolveGCPCrawlRegionsEmpty(t *testing.T) {
+	assert.Empty(t, resolveGCPCrawlRegions(nil, nil, nil))
+	// Only junk in → nothing crawlable out.
+	assert.Empty(t, resolveGCPCrawlRegions([]string{"global", "us"}, nil, []string{"eu"}))
+}
+
 func TestStoreResourcesAwsEc2(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {
 		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")

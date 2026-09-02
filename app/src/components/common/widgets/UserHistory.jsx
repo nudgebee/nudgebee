@@ -29,12 +29,16 @@ export function UserHistory({ accountId, module }) {
     if (!module) {
       return;
     }
+    let cancelled = false;
     const offset = limit * (page - 1);
     setHistoryData([]);
     setLoading(true);
     apiUser
       .getHistory({ accountId, module, limit, offset })
       .then((res) => {
+        if (cancelled) {
+          return;
+        }
         let rows = res?.data?.users_create_history?.map((h) => {
           let response = [];
           let queries = '';
@@ -63,8 +67,14 @@ export function UserHistory({ accountId, module }) {
         setHistoryData(rows);
       })
       .finally(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, module, limit, page]);
 
   return (

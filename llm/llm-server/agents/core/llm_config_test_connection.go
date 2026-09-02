@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/azure"
 	"nudgebee/llm/llms/bedrock"
@@ -296,6 +297,9 @@ func splitFallbacks(raw string) []string {
 var providerScopedKeys = []string{
 	cfgKeyAPIKey, cfgKeyAPIEndpoint, cfgKeyAPIVersion, cfgKeyAPIType,
 	cfgKeyRegion, cfgKeyAccessKey, cfgKeySecretKey, cfgKeySessionToken,
+	llmAuthTypeKey, llmOAuthTokenURLKey, llmOAuthClientIDKey,
+	llmOAuthClientSecretKey, llmOAuthScopeKey, llmExtraHeadersKey,
+	llmDeploymentNameKey,
 }
 
 // buildScopedCfg returns the effective config for a tier/agent probe target.
@@ -328,9 +332,14 @@ func buildScopedCfg(global map[string]string, provider, model string, scoped fun
 // tierScopedKey maps a generic provider-scoped key (llm_provider_<x>) to its
 // per-tier variant (llm_tier_<x>_<tier>), matching the per-tier resolvers in
 // llm_config.go. Derived from the shared llm_provider_/llm_tier_ naming so new
-// provider-scoped keys are picked up without editing this.
+// provider-scoped keys are picked up without editing this. Auth keys
+// (llm_auth_type, llm_oauth_*, llm_extra_headers) follow the resolver's
+// llm_ → llm_tier_ substitution instead (llm_tier_auth_type_<tier> etc.).
 func tierScopedKey(generic, tier string) string {
-	return "llm_tier_" + strings.TrimPrefix(generic, "llm_provider_") + "_" + tier
+	if strings.HasPrefix(generic, "llm_provider_") {
+		return "llm_tier_" + strings.TrimPrefix(generic, "llm_provider_") + "_" + tier
+	}
+	return strings.Replace(generic, "llm_", "llm_tier_", 1) + "_" + tier
 }
 
 // credFingerprint is a stable string over a target's provider-scoped fields,
@@ -349,6 +358,8 @@ func buildLLMFromConfig(provider, model string, cfg map[string]string) (llms.Mod
 	switch provider {
 	case "openai":
 		return newOpenAIFromConfig(model, cfg)
+	case ProviderCustom:
+		return newCustomFromConfig(model, cfg)
 	case "azure":
 		return newAzureFromConfig(model, cfg)
 	case "anthropic":
@@ -370,35 +381,125 @@ func buildLLMFromConfig(provider, model string, cfg map[string]string) (llms.Mod
 }
 
 func newOpenAIFromConfig(model string, cfg map[string]string) (llms.Model, error) {
+	// OAuth / extra headers are custom-provider-only for now; the plain
+	// openai provider probes with its static key.
+	var authClient *http.Client
+	token := cfg[cfgKeyAPIKey]
+	if strings.EqualFold(cfg[cfgKeyProvider], ProviderCustom) {
+		var oauthMode bool
+		var err error
+		authClient, oauthMode, err = probeAuthHTTPClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if oauthMode && token == "" {
+			// Placeholder: llmAuthTransport replaces the auth header with the
+			// fresh bearer, but the client constructor requires a non-empty token.
+			token = "oauth-managed"
+		}
+	}
 	opts := []openai.Option{
-		openai.WithToken(cfg[cfgKeyAPIKey]),
+		openai.WithToken(token),
 		openai.WithModel(model),
 		openai.WithResponseFormat(&openai.ResponseFormat{Type: "text"}),
 	}
 	if ep := cfg[cfgKeyAPIEndpoint]; ep != "" {
 		opts = append(opts, openai.WithBaseURL(ep))
 	}
+	// Probe/runtime parity (mirrors getOpenAILLM): Azure-shaped gateways need
+	// the api-type + api-version URL grammar, and a deployment segment that can
+	// differ from the body's model name — otherwise Test Connection probes a
+	// different URL than conversations use.
+	apiType := openai.APITypeOpenAI
+	switch strings.ToLower(cfg[cfgKeyAPIType]) {
+	case "azure":
+		apiType = openai.APITypeAzure
+	case "azure_ad":
+		apiType = openai.APITypeAzureAD
+	}
+	opts = append(opts, openai.WithAPIType(apiType))
+	if apiType == openai.APITypeAzure || apiType == openai.APITypeAzureAD {
+		// The client constructor requires an embeddings model on Azure api
+		// types (the runtime always passes one from env). The probe never
+		// embeds, so a placeholder keeps construction failures from masking
+		// the real gateway response.
+		opts = append(opts, openai.WithEmbeddingModel("probe-unused"))
+		if v := cfg[cfgKeyAPIVersion]; v != "" {
+			opts = append(opts, openai.WithAPIVersion(v))
+		}
+		if deployment := strings.TrimSpace(cfg[llmDeploymentNameKey]); deployment != "" && deployment != model {
+			opts = append(opts, openai.WithModel(deployment))
+			authClient = wrapDeploymentBodyModel(authClient, model)
+		}
+	}
+	// OAuth/header client (nil in static mode) rides as the sanitizer's base,
+	// mirroring getOpenAILLM.
+	opts = append(opts, openai.WithHTTPClient(newOpenAIHTTPClient(wrapProbeURLLogging(authClient))))
 	return openai.New(opts...)
 }
 
+// probeURLLoggingTransport logs the final wire URL each probe request hits, so
+// a failing Test Connection can be checked against the exact endpoint —
+// including the deployment segment and api-version on azure-shaped gateways.
+type probeURLLoggingTransport struct{ base http.RoundTripper }
+
+func (t *probeURLLoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	slog.Info("llm connectivity test: probing endpoint", "method", req.Method, "url", req.URL.String())
+	return base.RoundTrip(req)
+}
+
+func wrapProbeURLLogging(inner *http.Client) *http.Client {
+	out := &http.Client{Timeout: defaultLLMHTTPTimeout}
+	if inner != nil {
+		clone := *inner
+		out = &clone
+	}
+	out.Transport = &probeURLLoggingTransport{base: out.Transport}
+	return out
+}
+
+// newCustomFromConfig mirrors the runtime's getCustomLLM: the OpenAI client
+// pointed at a caller-supplied base URL. The endpoint is required rather than
+// defaulted — without this guard a config missing it would probe
+// api.openai.com, so a user holding a valid OpenAI key would see the test pass
+// and the runtime then fail.
+func newCustomFromConfig(model string, cfg map[string]string) (llms.Model, error) {
+	if strings.TrimSpace(cfg[cfgKeyAPIEndpoint]) == "" {
+		return nil, fmt.Errorf("llm provider %q requires llm_provider_api_endpoint (e.g. https://openrouter.ai/api/v1)", ProviderCustom)
+	}
+	return newOpenAIFromConfig(model, cfg)
+}
+
 func newAzureFromConfig(model string, cfg map[string]string) (llms.Model, error) {
-	return azure.New(
+	opts := []azure.Option{
 		azure.WithToken(cfg[cfgKeyAPIKey]),
 		azure.WithAPIVersion(cfg[cfgKeyAPIVersion]),
 		azure.WithBaseURL(cfg[cfgKeyAPIEndpoint]),
 		azure.WithModel(model),
-	)
+	}
+	return azure.New(opts...)
 }
 
 func newAnthropicFromConfig(model string, cfg map[string]string) (llms.Model, error) {
 	opts := []anthropic.Option{
 		anthropic.WithToken(cfg[cfgKeyAPIKey]),
 		anthropic.WithModel(model),
+		// Compose the cache rewrite under the temperature sanitizer, same as runtime.
+		anthropic.WithHTTPClient(newAnthropicHTTPClient(anthropicCacheHTTPClient())),
 	}
 	if ep := cfg[cfgKeyAPIEndpoint]; ep != "" {
 		opts = append(opts, anthropic.WithBaseURL(ep))
 	}
-	return anthropic.New(opts...)
+	llm, err := anthropic.New(opts...)
+	if err != nil {
+		return nil, err
+	}
+	// Claude 5 responses lead with a thinking choice; promote the text choice.
+	return wrapAnthropicChoiceNormalizer(llm), nil
 }
 
 func newHuggingFaceFromConfig(model string, cfg map[string]string) (llms.Model, error) {

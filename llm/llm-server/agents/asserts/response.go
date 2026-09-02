@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -116,11 +117,9 @@ func ResponseLength(t *testing.T, resp core.NBAgentResponse, minBytes, maxBytes 
 	return ok
 }
 
-// truncate trims s to max bytes for inclusion in error messages so test
-// logs stay readable when a 50KB response fails an assertion.
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "...[truncated]"
+	return common.TruncateHead(s, max) + "...[truncated]"
 }

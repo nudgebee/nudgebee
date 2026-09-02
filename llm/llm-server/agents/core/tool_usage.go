@@ -143,7 +143,7 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 		FROM llm_conversation_tool_calls tc
 		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
 		CROSS JOIN LATERAL (SELECT %s AS duration_seconds) d
-		WHERE %s AND NULLIF(tc.tool_name, '') IS NOT NULL
+		WHERE %s AND tc.metadata->>'parent_tool_call_id' IS NULL AND NULLIF(tc.tool_name, '') IS NOT NULL
 		GROUP BY tc.tool_name`, toolDurationExpr, where)
 
 	var opScans []toolUsageScan
@@ -172,8 +172,8 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 				THEN tc.child_agent_id::uuid
 				ELSE NULL
 			END
-		LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider
-		WHERE %s AND NULLIF(tc.child_agent_id, '') IS NOT NULL AND NULLIF(tc.tool_name, '') IS NOT NULL
+		LEFT JOIN llm_model_pricing p ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL
+		WHERE %s AND tc.metadata->>'parent_tool_call_id' IS NULL AND NULLIF(tc.child_agent_id, '') IS NOT NULL AND NULLIF(tc.tool_name, '') IS NOT NULL
 		GROUP BY tc.tool_name`, perCallCostExpr, where)
 
 	var costScans []toolCostScan
@@ -409,7 +409,7 @@ func (chat *ConversationDao) ListToolCalls(filter UsageMetricsFilter, toolName s
 		FROM llm_conversation_tool_calls tc
 		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
 		LEFT JOIN llm_conversation_agent a ON a.id = tc.agent_id
-		WHERE %s%s
+		WHERE %s%s AND tc.metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY tc.created_at DESC%s`,
 		toolDurationExpr, toolCallTextCap, toolCallTextCap, toolCallTextCap, where, extra, limitClause)
 

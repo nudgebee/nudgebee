@@ -84,7 +84,8 @@ func gcCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
@@ -130,7 +131,8 @@ func gcGet(c *gin.Context, context *security.RequestContext, payload map[string]
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
@@ -175,7 +177,8 @@ func gcList(c *gin.Context, context *security.RequestContext, payload map[string
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
@@ -212,7 +215,8 @@ func gcUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
@@ -257,7 +261,8 @@ func gcDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}

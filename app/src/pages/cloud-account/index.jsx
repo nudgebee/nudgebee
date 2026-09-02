@@ -63,7 +63,7 @@ const CloudAccount = () => {
   }, [router.query.accountId]);
 
   const handleIntegrateClick = () => {
-    router.push('/user-management#integrations');
+    router.push('/user-management?integration=account#integrations');
   };
 
   if (loading) {

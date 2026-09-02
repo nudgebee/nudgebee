@@ -254,6 +254,7 @@ export const useTaskFormData = (currentTaskDefinition: any, selectedActionType: 
               value: item.id,
               cloud_provider: item.cloud_provider,
               account_type: item.account_type,
+              group: item.cloud_provider || 'Other',
             }));
           setCloudAccounts(accounts);
         }

@@ -17,7 +17,7 @@ import { Banner } from '@ui/Banner';
 import { Label } from '@ui/Label';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { EmptyState } from '@ui/EmptyState';
-import { listToolCalls, toolStatusesFor, type ToolCallRow, type ToolStatusGroup } from '@api1/ai-cost';
+import { listToolCalls, toolStatusesFor, TOOL_TYPE_LABEL, type ToolCallRow, type ToolStatusGroup } from '@api1/ai-cost';
 import type { CostFilters } from '../types';
 
 interface ToolCallsModalProps {
@@ -35,6 +35,7 @@ interface ToolCallsModalProps {
 
 const STATUS_OPTIONS: { value: ToolStatusGroup; label: string }[] = [
   { value: 'all', label: 'All' },
+  { value: 'success', label: 'Success' },
   { value: 'errors', label: 'Errors' },
   { value: 'in_progress', label: 'In-progress' },
 ];
@@ -176,6 +177,7 @@ export function ToolCallsModal({
         startDate: `${filters.startDate}T00:00:00Z`,
         endDate: `${filters.endDate}T23:59:59Z`,
         sources: filters.sources ?? [],
+        userId: filters.userId,
         toolName,
         statuses: toolStatusesFor(status),
         limit: 200,
@@ -192,7 +194,7 @@ export function ToolCallsModal({
       cancelled = true;
       controller.abort();
     };
-  }, [open, toolName, accountId, filters.startDate, filters.endDate, sourcesKey, status]);
+  }, [open, toolName, accountId, filters.startDate, filters.endDate, sourcesKey, status, filters.userId]);
 
   const openRun = (r: ToolCallRow) => {
     onSelectRun(r.conversation_id, r.account_id, r.agent_id);
@@ -202,6 +204,12 @@ export function ToolCallsModal({
   const tableData = React.useMemo(() => state.rows.map((r) => toRow(r, openRun)), [state.rows]);
   const showEmpty = !state.loading && !state.error && state.rows.length === 0;
 
+  // The count reflects the active status filter — on the Errors tab these are the
+  // tool's failures, not its total invocations, so label them as such (otherwise
+  // "N invocations" reads as the tool's whole call count and contradicts the card).
+  const countNoun = status === 'errors' ? 'error' : status === 'in_progress' ? 'in-progress invocation' : 'invocation';
+  const countLabel = `${state.rows.length} ${countNoun}${state.rows.length === 1 ? '' : 's'}`;
+
   return (
     <Modal
       open={open}
@@ -209,12 +217,12 @@ export function ToolCallsModal({
       width='lg'
       maxHeight='85vh'
       title={toolName || 'Tool'}
-      subtitle={toolType ? `tool_type: ${toolType}` : undefined}
+      subtitle={toolType ? TOOL_TYPE_LABEL[toolType] : undefined}
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
           <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-            {state.rows.length} invocation{state.rows.length === 1 ? '' : 's'} · newest first · click a conversation to open the full run
+            {countLabel} · newest first · click a conversation to open the full run
           </Box>
           <ToggleGroup
             selection='single'

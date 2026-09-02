@@ -56,6 +56,14 @@ class SlackClient(WebClient):
         client = WebClient(token=token)
         return client.conversations_replies(channel=channel_id, ts=thread_ts, **kwargs)
 
+    def conversations_info(self, *, token, channel_id=None, **kwargs):
+        client = WebClient(token=token)
+        return client.conversations_info(channel=channel_id, **kwargs)
+
+    def team_info(self, *, token, team_id=None, **kwargs):
+        client = WebClient(token=token)
+        return client.team_info(team=team_id, **kwargs)
+
     def conversations_join(self, *, token, channel_id=None, **kwargs):
         client = WebClient(token=token)
         return client.conversations_join(channel=channel_id, **kwargs)
@@ -75,6 +83,18 @@ class SlackClient(WebClient):
     def conversations_open(self, *, token, users=None, **kwargs):
         client = WebClient(token=token)
         return client.conversations_open(users=users, **kwargs)
+
+    def start_stream(self, *, token, channel_id=None, thread_ts=None, **kwargs):
+        client = WebClient(token=token)
+        return client.chat_startStream(channel=channel_id, thread_ts=thread_ts, **kwargs)
+
+    def append_stream(self, *, token, channel_id=None, ts=None, **kwargs):
+        client = WebClient(token=token)
+        return client.chat_appendStream(channel=channel_id, ts=ts, **kwargs)
+
+    def stop_stream(self, *, token, channel_id=None, ts=None, **kwargs):
+        client = WebClient(token=token)
+        return client.chat_stopStream(channel=channel_id, ts=ts, **kwargs)
 
     def chat_update(self, *, token, channel_id=None, ts=None, **kwargs):
         client = WebClient(token=token)

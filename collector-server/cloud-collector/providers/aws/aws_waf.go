@@ -1,7 +1,6 @@
 package aws
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
@@ -34,7 +33,14 @@ func (a *awsWAF) GetLogGroupName(ctx providers.CloudProviderContext, account pro
 }
 
 func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account providers.Account, region string) ([]providers.Resource, error) {
-	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	// All API calls below run on the request context so the caller's sync
+	// budget bounds them. The list loops swallow API errors by design (log and
+	// move on to the next resource kind) — but a context-cancellation error
+	// must NOT be swallowed: returning partial results with a nil error would
+	// let the zero/partial-items archival path in StoreResources treat an
+	// aborted fetch as ground truth and archive live resources.
+	callCtx := ctx.GetContext()
+	cfg, err := getAwsConfigFromAccount(callCtx, account)
 	if err != nil {
 		ctx.GetLogger().Error("failed to create aws session", "error", err, "accountNumber", account.AccountNumber, "region", region)
 		return []providers.Resource{}, err
@@ -72,12 +78,15 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 		// List Web ACLs
 		var nextMarker *string
 		for {
-			result, err := svc.ListWebACLs(context.TODO(), &wafv2.ListWebACLsInput{
+			result, err := svc.ListWebACLs(callCtx, &wafv2.ListWebACLsInput{
 				Scope:      scope,
 				NextMarker: nextMarker,
 				Limit:      aws.Int32(100),
 			})
 			if err != nil {
+				if cerr := callCtx.Err(); cerr != nil {
+					return resources, cerr
+				}
 				ctx.GetLogger().Error("failed to fetch WAF web ACLs", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
 				break
 			}
@@ -89,12 +98,15 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 				}
 
 				// Get detailed information about the Web ACL
-				detailResult, err := svc.GetWebACL(context.TODO(), &wafv2.GetWebACLInput{
+				detailResult, err := svc.GetWebACL(callCtx, &wafv2.GetWebACLInput{
 					Id:    webACL.Id,
 					Name:  webACL.Name,
 					Scope: scope,
 				})
 				if err != nil {
+					if cerr := callCtx.Err(); cerr != nil {
+						return resources, cerr
+					}
 					ctx.GetLogger().Warn("failed to describe web ACL", "error", err, "webACLId", *webACL.Id)
 					continue
 				}
@@ -103,7 +115,7 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 
 				// Get tags for the Web ACL
 				if webACL.ARN != nil {
-					tagsResult, err := svc.ListTagsForResource(context.TODO(), &wafv2.ListTagsForResourceInput{
+					tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
 						ResourceARN: webACL.ARN,
 					})
 					if err != nil {
@@ -121,7 +133,7 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 
 				// Get logging configuration
 				if webACL.ARN != nil {
-					loggingResult, err := svc.GetLoggingConfiguration(context.TODO(), &wafv2.GetLoggingConfigurationInput{
+					loggingResult, err := svc.GetLoggingConfiguration(callCtx, &wafv2.GetLoggingConfigurationInput{
 						ResourceArn: webACL.ARN,
 					})
 					if err != nil {
@@ -133,7 +145,7 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 
 				// Get associated resources
 				if webACL.ARN != nil {
-					resourcesResult, err := svc.ListResourcesForWebACL(context.TODO(), &wafv2.ListResourcesForWebACLInput{
+					resourcesResult, err := svc.ListResourcesForWebACL(callCtx, &wafv2.ListResourcesForWebACLInput{
 						WebACLArn: webACL.ARN,
 					})
 					if err != nil {
@@ -194,12 +206,15 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 		// List IP Sets
 		nextMarker = nil
 		for {
-			result, err := svc.ListIPSets(context.TODO(), &wafv2.ListIPSetsInput{
+			result, err := svc.ListIPSets(callCtx, &wafv2.ListIPSetsInput{
 				Scope:      scope,
 				NextMarker: nextMarker,
 				Limit:      aws.Int32(100),
 			})
 			if err != nil {
+				if cerr := callCtx.Err(); cerr != nil {
+					return resources, cerr
+				}
 				ctx.GetLogger().Error("failed to fetch WAF IP sets", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
 				break
 			}
@@ -211,12 +226,15 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 				}
 
 				// Get detailed information
-				detailResult, err := svc.GetIPSet(context.TODO(), &wafv2.GetIPSetInput{
+				detailResult, err := svc.GetIPSet(callCtx, &wafv2.GetIPSetInput{
 					Id:    ipSet.Id,
 					Name:  ipSet.Name,
 					Scope: scope,
 				})
 				if err != nil {
+					if cerr := callCtx.Err(); cerr != nil {
+						return resources, cerr
+					}
 					ctx.GetLogger().Warn("failed to describe IP set", "error", err, "ipSetId", *ipSet.Id)
 					continue
 				}
@@ -225,7 +243,7 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 
 				// Get tags for the IP Set
 				if ipSet.ARN != nil {
-					tagsResult, err := svc.ListTagsForResource(context.TODO(), &wafv2.ListTagsForResourceInput{
+					tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
 						ResourceARN: ipSet.ARN,
 					})
 					if err != nil {
@@ -270,12 +288,15 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 		// List Regex Pattern Sets
 		nextMarker = nil
 		for {
-			result, err := svc.ListRegexPatternSets(context.TODO(), &wafv2.ListRegexPatternSetsInput{
+			result, err := svc.ListRegexPatternSets(callCtx, &wafv2.ListRegexPatternSetsInput{
 				Scope:      scope,
 				NextMarker: nextMarker,
 				Limit:      aws.Int32(100),
 			})
 			if err != nil {
+				if cerr := callCtx.Err(); cerr != nil {
+					return resources, cerr
+				}
 				ctx.GetLogger().Error("failed to fetch WAF regex pattern sets", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
 				break
 			}
@@ -290,7 +311,7 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 
 				// Get tags
 				if regexSet.ARN != nil {
-					tagsResult, err := svc.ListTagsForResource(context.TODO(), &wafv2.ListTagsForResourceInput{
+					tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
 						ResourceARN: regexSet.ARN,
 					})
 					if err != nil {

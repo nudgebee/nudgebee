@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/go-logr/stdr"
-	"go.opentelemetry.io/contrib/instrumentation/runtime"
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -158,7 +158,7 @@ func newResource() (*resource.Resource, error) {
 	additionalAttributes = append(additionalAttributes, attribute.String("service.version", "0.1.0"))
 	additionalAttributes = append(additionalAttributes, attribute.String("telemetry.sdk.language", "go"))
 	additionalAttributes = append(additionalAttributes, attribute.String("telemetry.distro.name", goruntime.GOOS))
-	additionalAttributes = append(additionalAttributes, attribute.String("telemetry.sdk.version", runtime.Version()))
+	additionalAttributes = append(additionalAttributes, attribute.String("telemetry.sdk.version", otelruntime.Version))
 	additionalAttributes = append(additionalAttributes, attribute.String("process.runtime.version", goruntime.Version()))
 
 	return resource.NewSchemaless(additionalAttributes...), nil
@@ -184,7 +184,7 @@ func initOtel() (trace.TracerProvider, metric.MeterProvider, error) {
 
 	//start runtime metrics collection
 	if config.Config.OtelMetricesExporter == "otlp" || config.Config.OtelMetricesExporter == "console" {
-		err = runtime.Start(runtime.WithMinimumReadMemStatsInterval(1 * time.Minute))
+		err = otelruntime.Start(otelruntime.WithMinimumReadMemStatsInterval(1 * time.Minute))
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to start runtime metrics: %w", err)
 		}

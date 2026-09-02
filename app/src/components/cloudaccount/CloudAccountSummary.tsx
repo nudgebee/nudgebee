@@ -175,9 +175,15 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
   });
 
   useEffect(() => {
+    // Cleared before the early return so an account switch (or a switch to no
+    // account) drops the previous account's rows instead of showing them under
+    // the new account's header.
+    setDynamicServices([]);
+    setRawInsights([]);
     if (!accountId) {
       return;
     }
+    let cancelled = false;
 
     const fetchServices = async () => {
       setLoadingServices(true);
@@ -185,7 +191,7 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
         // Use filtered resource counts to get actual resources (not billing line items)
         const res = await apiResources.getFilteredResourceCounts(accountId);
         const services = res.data || [];
-        setDynamicServices(services);
+        if (!cancelled) setDynamicServices(services);
       } catch (error) {
         console.error('Error fetching filtered resource counts:', error);
         // Fallback to old method if new one fails
@@ -202,12 +208,12 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
             service_name: item.resource_service_name,
             count: item.count_resource || 0,
           }));
-          setDynamicServices(services);
+          if (!cancelled) setDynamicServices(services);
         } catch (fallbackError) {
           console.error('Fallback also failed:', fallbackError);
         }
       } finally {
-        setLoadingServices(false);
+        if (!cancelled) setLoadingServices(false);
       }
     };
 
@@ -226,16 +232,19 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
             icon: GetInsightIcon({ ...item, id }),
           };
         });
-        setRawInsights(insightsData);
+        if (!cancelled) setRawInsights(insightsData);
       } catch (error) {
         console.error('Error fetching insights:', error);
       } finally {
-        setLoadingInsights(false);
+        if (!cancelled) setLoadingInsights(false);
       }
     };
 
     fetchServices();
     fetchInsights();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   const allActiveServices = dynamicServices.map((service) => ({
@@ -641,9 +650,13 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
   };
 
   useEffect(() => {
+    // Cleared before the early return so an account/service switch drops the
+    // previous scope's events rather than leaving them on screen.
+    setEventData([]);
     if (!accountId) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .listEvents(
@@ -656,6 +669,7 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
         { light: true }
       )
       .then((res: any) => {
+        if (cancelled) return;
         setLoading(false);
         const ec2ResourceData = res.data?.events?.map((item: any) => {
           const data: ICustomTableRow[] = [];
@@ -686,8 +700,11 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
         setEventData(ec2ResourceData as any);
       })
       .catch(() => {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, serviceName, _showEllipsis]);
 
   // Trend percentage for the alarm count vs last month spend ratio

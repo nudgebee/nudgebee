@@ -13,7 +13,7 @@ import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import SystemUpdateAltOutlinedIcon from '@mui/icons-material/SystemUpdateAlt';
 import BuildOutlinedIcon from '@mui/icons-material/BuildOutlined';
 import TicketLink from '@shared/links/TicketLink';
-import PRLink from '@shared/links/PRLink';
+import PRLink, { resolutionsDeepLink, hasRenderablePRState } from '@shared/links/PRLink';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
 import { Card } from '@ui/Card';
@@ -38,6 +38,7 @@ import {
 import { Banner } from '@ui/Banner';
 import DsTooltip from '@ui/Tooltip';
 import ApplyMitigationModal, { stripOptionalMarkers } from '@components/cloudaccount/ApplyMitigationModal';
+import OwnershipSection from './OwnershipSection';
 import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
 import { buildInterpretation } from './interpretation/buildInterpretation';
@@ -410,7 +411,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
   const fallback = extractFallbackContent(recData, effectiveRecommendation);
 
   // Resolved values — catalog wins, fallback fills the gaps
-  const title = details?.title || fallback.title || formatRuleName(ruleName);
+  const title = details?.title || fallback.title || formatRuleName(ruleName, category);
   const serviceName = details?.serviceName || fallback.serviceName || '';
   const description = details?.description || fallback.description || '';
   const remediation = fallback.remediation || '';
@@ -435,6 +436,13 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           recommendations: details?.recommendations,
         })}
       />
+
+      {/* Ownership — who is accountable for this resource, and how that was
+          derived. Keyed like Blast Radius below (the drawer is reused, not
+          remounted), but the key MUST stay distinct from its sibling's: two
+          siblings sharing one key makes React strand the old subtree instead of
+          replacing it, so a card accumulates on every recommendation switch. */}
+      <OwnershipSection key={`ownership-${rec?.id}`} rec={rec} />
 
       {/* Blast Radius & Safety — knowledge-graph impact + safety band. Keyed by
           rec id so the "Show all" toggle state resets when the persistent detail
@@ -593,7 +601,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       )}
 
       {/* Linked Items */}
-      {(rec.ticket || rec.resolution?.type_reference_id) && (
+      {(rec.ticket || hasRenderablePRState(rec.resolution)) && (
         <>
           <Divider />
           <Box>
@@ -615,19 +623,26 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
                   <TicketLink ticketURL={rec.ticket?.url} ticketID={rec.ticket?.ticket_id} />
                 </Box>
               )}
-              {rec.resolution?.type_reference_id && (
+              {hasRenderablePRState(rec.resolution) && (
                 <Box
                   sx={{
                     p: `${ds.space[2]} ${ds.space[3]}`,
                     borderRadius: ds.radius.lg,
-                    backgroundColor: ds.green[100],
-                    border: `1px solid ${ds.green[200]}`,
+                    // A resolution without a url is a pending or failed PR attempt; the
+                    // chip carries its own tone, so keep the container neutral there.
+                    backgroundColor: rec.resolution.type_reference_id ? ds.green[100] : ds.gray[100],
+                    border: `1px solid ${rec.resolution.type_reference_id ? ds.green[200] : ds.gray[200]}`,
                     display: 'flex',
                     alignItems: 'center',
                     gap: ds.space[2],
                   }}
                 >
-                  <PRLink prURL={rec.resolution.type_reference_id} statusMessage={rec.resolution.status_message} />
+                  <PRLink
+                    prURL={rec.resolution.type_reference_id}
+                    statusMessage={rec.resolution.status_message}
+                    status={rec.resolution.status}
+                    resolutionHref={resolutionsDeepLink(rec.id)}
+                  />
                 </Box>
               )}
             </Box>
@@ -993,7 +1008,7 @@ const SUMMARY_HIDDEN_FIELDS = new Set([
 const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; category: string; ruleName: string }) => {
   if (!recData || typeof recData !== 'object') return null;
 
-  if (category === 'RightSizing' && ruleName === 'pod_right_sizing') return <K8sRightSizingSummary recData={recData} />;
+  if (ruleName === 'pod_right_sizing') return <K8sRightSizingSummary recData={recData} />;
   if (category === 'RightSizing' && !Array.isArray(recData)) return <CloudRightSizingSummary recData={recData} />;
   if (category === 'InfraUpgrade' || category === 'K8sVersionUpgrade') return <InfraUpgradeSummary recData={recData} />;
   if (category === 'Security') return <SecuritySummary recData={recData} />;
@@ -1264,6 +1279,9 @@ function getRecommendationInsight(category: string, ruleName: string, recData: a
   const savings = rec.estimated_savings || 0;
   const savingsText = Math.round(savings) >= 1 ? ` Estimated savings: ~$${savings.toFixed(0)}/month.` : '';
 
+  // pod_right_sizing rows live under Configuration when requests are unset,
+  // but the KRR-derived insight still applies
+  if (ruleName === 'pod_right_sizing') return getRightSizingInsight(ruleName, recData, savingsText);
   if (category === 'RightSizing') return getRightSizingInsight(ruleName, recData, savingsText);
   if (category === 'Configuration')
     return 'A configuration best practice violation has been detected. Misconfigurations can lead to reliability issues, security gaps, or unexpected costs. Addressing this aligns your infrastructure with industry best practices and reduces operational risk.';

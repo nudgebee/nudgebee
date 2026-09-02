@@ -184,8 +184,8 @@ func ExecuteCliCommand(toolContext core.NbToolContext, command string, env []str
 
 	var pipelineStages []string
 
-	// GH/JQ special case
-	if isGithubCommandWithJq(command) {
+	// gh/glab + jq special case
+	if isGitCliCommandWithJq(command) {
 		pipelineStages = []string{command}
 	} else {
 		pipelineStages = strings.Split(command, "|")
@@ -775,16 +775,20 @@ func ExpandNarrowTimeWindow(logger interface{ Debug(string, ...any) }, start, en
 	return start, end
 }
 
-func isGithubCommandWithJq(command string) bool {
+// isGitCliCommandWithJq reports whether `command` is a `gh` or `glab` invocation
+// that filters output with jq. Both CLIs expose their own `--jq` flag whose
+// expression legitimately contains `|` (e.g. `--jq '.[] | .title'`), so
+// ExecuteCliCommand must not split such a command on `|` — that would shred the
+// expression across bogus pipeline stages.
+func isGitCliCommandWithJq(command string) bool {
 
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return false
 	}
-	exe := filepath.Base(parts[0])
-	isGh := exe == "gh"
-
-	if !isGh {
+	switch filepath.Base(parts[0]) {
+	case "gh", "glab":
+	default:
 		return false
 	}
 

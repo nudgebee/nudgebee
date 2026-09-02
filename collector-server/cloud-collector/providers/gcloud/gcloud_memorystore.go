@@ -99,8 +99,80 @@ func memorystoreInstanceToResource(inst *redispb.Instance, region string) provid
 	}
 }
 
-func (s *memorystoreService) GetRecommendations(_ providers.CloudProviderContext, _ providers.Account, _ providers.ListRecommendationsRequest, _ []providers.Resource) ([]providers.Recommendation, error) {
-	return nil, nil
+func (s *memorystoreService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
+	recommendations := []providers.Recommendation{}
+
+	// Load GCP alarm templates for Memorystore (all instance-level metrics)
+	memorystoreAlarmTemplates, err := LoadGCPAlarmTemplates(ServiceNameMemorystore)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to load GCP Memorystore alarm templates", "error", err)
+		memorystoreAlarmTemplates = []providers.AlarmTemplate{}
+	}
+
+	for _, resource := range existingResources {
+		if resource.ServiceName != ServiceNameMemorystore {
+			continue
+		}
+
+		// redis_instance's instance_id label carries the full resource name
+		// (projects/.../locations/.../instances/...), not the short id — use
+		// the selfLink captured at discovery (memorystoreInstanceToResource),
+		// reconstructing it when absent (a short id would never match the label).
+		instancePath, _ := resource.Meta["selfLink"].(string)
+		if instancePath == "" {
+			instancePath = fmt.Sprintf("projects/%s/locations/%s/instances/%s", account.AccountNumber, resource.Region, resource.Id)
+		}
+
+		// Check for missing Cloud Monitoring alert policies
+		for _, template := range memorystoreAlarmTemplates {
+			resourceFilter := GetResourceFilterForService(ServiceNameMemorystore, instancePath)
+			isMissing, err := IsAlarmMissing(resource, template, resourceFilter)
+			if err != nil {
+				ctx.GetLogger().Warn("Failed to check if alarm is missing", "error", err, "template", template.Name)
+				continue
+			}
+
+			if !isMissing {
+				// Alarm already exists, skip
+				continue
+			}
+
+			// All Memorystore thresholds are static ratios/counts
+			threshold := template.ThresholdRules.Default
+
+			alarmConfig := buildGCPAlarmConfig(resource, template, threshold, []providers.AlarmDimension{
+				{Name: "instance_id", Value: instancePath},
+			})
+
+			recommendations = append(recommendations, providers.Recommendation{
+				CategoryName: providers.RecommendationCategoryConfiguration,
+				RuleName:     template.Name,
+				Severity:     providers.RecommendationSeverityFromString(template.Severity),
+				Savings:      0,
+				Data: map[string]any{
+					"instance_id":     resource.Id,
+					"instance_name":   resource.Name,
+					"instance_region": resource.Region,
+					"tier":            resource.Meta["tier"],
+					"memory_size_gb":  resource.Meta["memory_size_gb"],
+					"metric_name":     template.Configuration.MetricName,
+					"threshold":       threshold,
+					"alarm_config":    alarmConfig,
+					"alarm_type":      template.AlarmType,
+					"reason":          template.Description,
+					"metric_type":     template.MetricType,
+					"project_id":      account.AccountNumber,
+				},
+				Action:              providers.RecommendationActionModify,
+				ResourceServiceName: resource.ServiceName,
+				ResourceId:          resource.Id,
+				ResourceType:        resource.Type,
+				ResourceRegion:      resource.Region,
+			})
+		}
+	}
+
+	return recommendations, nil
 }
 
 func (s *memorystoreService) ApplyRecommendation(_ providers.CloudProviderContext, _ providers.Account, _ providers.Recommendation) error {

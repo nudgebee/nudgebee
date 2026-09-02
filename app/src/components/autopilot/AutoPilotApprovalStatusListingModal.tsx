@@ -33,13 +33,20 @@ const AutoPilotApprovalStatusListingModal: React.FC<AutoPilotApprovalStatusListi
 
   useEffect(() => {
     if (open && id) {
-      getStatusListing();
+      let cancelled = false;
+      getStatusListing(() => cancelled);
+      return () => {
+        cancelled = true;
+      };
     }
   }, [id, open, perPage, currentPage]);
 
-  const getStatusListing = () => {
+  const getStatusListing = (isStale: () => boolean) => {
     setLoading(true);
     apiAutoPilot.getAutoPilotApprovalStatusById(id, perPage, (currentPage - 1) * perPage).then((res: any) => {
+      if (isStale()) {
+        return;
+      }
       const rows: any[] = res?.data?.auto_pilot_approvals.map((item: any) => [
         { text: item?.user_reviwer_id?.display_name },
         {

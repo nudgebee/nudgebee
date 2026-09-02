@@ -178,6 +178,46 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/webhooks/elasticsearch": {
+            "post": {
+                "description": "Receives alerts from a Kibana Alerting Webhook connector (or an Elasticsearch Watcher webhook action) shaped to the canonical body documented in integrations/elasticsearch_webhook.go.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "webhooks"
+                ],
+                "summary": "Elasticsearch / Kibana alerting webhook",
+                "parameters": [
+                    {
+                        "description": "Kibana alerting payload",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.WebhookPayload"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessMessage"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ActionError"
+                        }
+                    }
+                }
+            }
+        },
         "/api/webhooks/gcp-monitoring": {
             "post": {
                 "consumes": [

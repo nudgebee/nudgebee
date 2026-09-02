@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"nudgebee/runbook/internal/model"
 	// "nudgebee/runbook/internal/tasks/core" // Not directly imported here, but types used.
@@ -487,4 +488,39 @@ func (s *ExecutorTestSuite) TestExecuteWorkflow_NilInputs() {
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
+}
+
+// A run started by core.call-workflow carries the CALLEE's workflow id in its
+// start search attributes, while the definition handed to the child workflow is a
+// synthetic "inline-…" snapshot. ExecuteWorkflowInternal must not overwrite the
+// id with that snapshot's, or the run stops matching the callee's executions
+// query and disappears from its Executions tab.
+func (s *ExecutorTestSuite) TestCalleeWorkflowIDSurvivesSystemUpsert() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	s.NoError(s.env.SetTypedSearchAttributesOnStart(temporal.NewSearchAttributes(
+		temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID).ValueSet("callee-workflow-id"),
+	)))
+
+	var upserted []temporal.SearchAttributes
+	s.env.OnUpsertTypedSearchAttributes(mock.Anything).Run(func(args mock.Arguments) {
+		if attrs, ok := args.Get(0).(temporal.SearchAttributes); ok {
+			upserted = append(upserted, attrs)
+		}
+	}).Return(nil).Maybe()
+
+	inlineChildSnapshot := switchFanInWorkflow("b")
+	inlineChildSnapshot.ID = "inline-call_k8s-1234"
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, inlineChildSnapshot, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+
+	for _, attrs := range upserted {
+		val, ok := attrs.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID))
+		s.False(ok && val == inlineChildSnapshot.ID, "must not overwrite the callee id with the synthetic snapshot id")
+	}
 }

@@ -176,6 +176,7 @@ For each dependency the user approves, create a GitHub issue using the `/create-
 ```bash
 gh issue create \
   --title "[REQUEST] - {dependency description}" \
+  --assignee "@me" \
   --body "$(cat <<'EOF'
 ## Summary
 This is a dependency of #{parent_issue_number} — {parent_title}.
@@ -196,12 +197,9 @@ EOF
 )"
 ```
 
-After creating, add each new issue to the project board with current iteration:
-```bash
-gh project item-add 1 --owner nudgebee --url "https://github.com/nudgebee/nudgebee/issues/${NEW_ISSUE_NUMBER}"
-```
+After creating, add each new issue to the project board and **set the current iteration** — follow `/create-issue` Steps 6–7 exactly (they resolve the project item id, the current iteration id, and verify the result). Do not stop at `item-add`; an item without an iteration is invisible in sprint views. Use the issue's actual repo in the `--url` (`gh repo view --json nameWithOwner -q .nameWithOwner` — this repo's origin is `nudgebee/nudgebee-enterprise`, not `nudgebee/nudgebee`).
 
-Link the dependency tickets back to the parent by adding a comment:
+Link each dependency ticket to the parent as a **native sub-issue** (follow `/create-issue` Step 6.5 — `addSubIssue` GraphQL mutation). This makes the children show up on the parent ticket itself; a body mention alone does not. Then summarize on the parent with a comment:
 ```bash
 gh issue comment {PARENT_ISSUE_NUMBER} --body "Dependencies created:
 - #{dep1_number} — {dep1_title}

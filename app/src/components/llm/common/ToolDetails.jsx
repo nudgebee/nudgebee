@@ -25,7 +25,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import CopyButton from '@shared/buttons/CopyButton';
 import { Divider } from '@ui/Divider';
 import KubernetesTable from '@components/k8s/common/KubernetesTable';
-import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
+import { mapToTableData } from '@components/k8s/common/logTableMapper';
 import { LogDate } from '@components/k8s/common/LogDate';
 import KubernetesSecurityDetails from '@components/recommendations/security/KubernetesSecurityDetails';
 import { DiffViewer } from '@ui/DiffViewer';
@@ -50,6 +50,39 @@ const cleanToolName = (name) => {
     .replace(/_/g, ' ')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+// Where a tool call actually did its work, derived from the execution counters the
+// tool records (db_queries/relay_calls on the persisted metadata). A resource
+// lookup answered from the inventory DB and one that fell through to live cluster
+// commands are the same tool with an order-of-magnitude difference in cost — the
+// name is where that belongs, so it reads at a glance instead of needing the
+// numbers decoded. Returns '' for tools that record no counters, leaving their
+// name untouched.
+const toolSourceSuffix = (metadata) => {
+  if (!metadata) {
+    return '';
+  }
+  let meta = metadata;
+  if (typeof meta === 'string') {
+    try {
+      meta = JSON.parse(meta);
+    } catch {
+      return '';
+    }
+  }
+  const db = Number(meta?.db_queries) || 0;
+  const relay = Number(meta?.relay_calls) || 0;
+  if (db > 0 && relay > 0) {
+    return ' (DB + Cluster)';
+  }
+  if (db > 0) {
+    return ' (DB)';
+  }
+  if (relay > 0) {
+    return ' (Cluster)';
+  }
+  return '';
 };
 
 const getStatusIcon = (status) => {
@@ -1003,6 +1036,7 @@ const ToolCallSection = ({ tc, index, accountId, reasoning }) => {
           }}
         >
           {index + 1}. {cleanToolName(tcName)}
+          {toolSourceSuffix(tc.metadata)}
         </Typography>
         <StatusBadge status={tcStatus} />
         <ReasoningBadge reasoning={reasoning} />
@@ -1183,6 +1217,13 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
   const codeEdits = hasMultipleToolCalls ? toolCalls.map(parseCodeEditParams).filter(Boolean) : [];
   const editedFiles = [...new Set(codeEdits.map((e) => e.file_path).filter(Boolean))];
 
+  // Metadata for the header badges. `toolCall` is the task wrapper the drawer is
+  // opened with and usually carries no metadata of its own; the persisted row
+  // lives in toolCalls. Prefer the row whose tool_name matches the one being
+  // rendered (a task can group several calls), then the first row, then the
+  // wrapper — same widening the reasoning lookup below does.
+  const headerMetadata = toolCall.metadata ?? toolCalls.find((t) => t?.tool_name === toolName)?.metadata ?? toolCalls[0]?.metadata;
+
   // Per-tool reasoning lookup: match a tool-call-like object's candidate ids against the
   // time-split reasoning map so each tool shows the thinking that produced it.
   const reasoningFor = (obj) => {
@@ -1223,6 +1264,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
           }}
         >
           {cleanToolName(toolName)}
+          {toolSourceSuffix(headerMetadata)}
         </Typography>
         {parsedReferences.length > 0 && (
           <Box
@@ -1267,7 +1309,10 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
         )}
         <StatusBadge status={status} />
         <ReasoningBadge reasoning={headerReasoning} />
-        <Duration createdAt={toolCall.created_at} updatedAt={toolCall.updated_at} />
+        {/* `toolCall` is the task wrapper; the persisted row (and its metadata)
+            lives in toolCalls[0] for the single-call view — same precedence the
+            reasoning badge above uses. */}
+        <Duration createdAt={toolCall.created_at} updatedAt={toolCall.updated_at} metadata={headerMetadata} />
       </Box>
 
       {hasMultipleToolCalls && (
@@ -1340,6 +1385,22 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
             </Box>
           )}
         </>
+      )}
+
+      {/* Sub-steps: the individual inventory queries and cluster commands this
+          tool ran. Rendered with the same section component as grouped tool
+          calls so each carries its own input, output, status and duration —
+          the point is debugging here rather than in a SQL client. */}
+      {(toolCall.childSteps?.length ?? 0) > 0 && (
+        <Box sx={{ mb: ds.space[4] }} data-testid='tool-details-sub-steps'>
+          <Divider sx={{ my: ds.space[3] }} />
+          <Typography sx={sectionLabelSx}>
+            Sub-steps — {toolCall.childSteps.length} operation{toolCall.childSteps.length !== 1 ? 's' : ''}
+          </Typography>
+          {toolCall.childSteps.map((step, idx) => (
+            <ToolCallSection key={step.id || idx} tc={step} index={idx} accountId={accountId} reasoning={null} />
+          ))}
+        </Box>
       )}
 
       {parsedReferences.length > 0 && (

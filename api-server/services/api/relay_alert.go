@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -189,6 +190,35 @@ func handleEventRuleAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 		}
 		c.JSON(200, actions)
 		return
+
+	case "eventrules_sync_provider_rules":
+		var syncRequest eventrule.SyncProviderRulesRequest
+		if relayRequest["request"] != nil {
+			relayRequest = relayRequest["request"].(map[string]interface{})
+		}
+		if err := common.UnmarshalMapToStruct(relayRequest, &syncRequest); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		results, err := eventrule.SyncProviderRulesForAccount(ctx, syncRequest)
+		defer func() {
+			auditEvent.AccountId = syncRequest.AccountId
+			auditEvent.EventAction = audit.EventActionCreate
+			auditEvent.EventTime = time.Now()
+			auditEvent.EventTarget = strings.Join(syncRequest.Sources, ",")
+			auditEvent.EventState = syncRequest
+			if auditErr := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}}); auditErr != nil {
+				ctx.GetLogger().Error("failed to create audit event", "error", auditErr)
+			}
+		}()
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			auditEvent.EventStatus = audit.EventStatusFailure
+			return
+		}
+		c.JSON(200, results)
+		return
+
 	default:
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return

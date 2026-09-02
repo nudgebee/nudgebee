@@ -15,34 +15,34 @@ requires-python = ">=3.10,<=3.14"
 dependencies = [
     # --- Core framework ---
     "aiofiles==25.1.0",
-    "fastapi==0.139.0",
-    "uvicorn[standard]==0.44.0",
-    "python-multipart==0.0.31",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "python-multipart==0.0.32",
     "python-dotenv==1.2.2",
-    "asgiref==3.11.1",
+    "asgiref==3.12.1",
 
     # --- Observability ---
-    "opentelemetry-distro==0.63b1",
-    "opentelemetry-exporter-otlp==1.42.1",
-    "opentelemetry-instrumentation-fastapi==0.63b1",
-    "opentelemetry-instrumentation-requests==0.63b1",
-    "opentelemetry-instrumentation-httpx==0.63b1",
-    "python-json-logger==4.0.0",
+    "opentelemetry-distro==0.65b0",
+    "opentelemetry-exporter-otlp==1.44.0",
+    "opentelemetry-instrumentation-fastapi==0.65b0",
+    "opentelemetry-instrumentation-requests==0.65b0",
+    "opentelemetry-instrumentation-httpx==0.65b0",
+    "python-json-logger==4.1.0",
 
     # --- Vector database ---
-    "qdrant-client==1.16.0",
+    "qdrant-client==1.19.0",
 
     # --- Database & storage ---
-    "psycopg2-binary==2.9.10",
-    "boto3==1.42.74",
-    "botocore==1.42.74",
-    "s3transfer==0.16.0",
-    "sqlalchemy==2.0.49",
-    "pymongo==4.11.3",
+    "psycopg2-binary==2.9.12",
+    "boto3==1.43.67",
+    "botocore==1.43.67",
+    "s3transfer==0.19.2",
+    "sqlalchemy==2.0.51",
+    "pymongo==4.17.0",
 
     # --- AI/LLM SDKs (direct, no langchain) ---
-    "openai==2.26.0",
-    "anthropic==0.84.0",
+    "openai==2.53.0",
+    "anthropic==0.121.0",
     "azure-ai-inference>=1.0.0b9",
     "google-genai==1.66.0",
 
@@ -58,22 +58,20 @@ dependencies = [
     "transformers>=5.5.0",
     "onnxruntime>=1.23.2",
     "huggingface-hub>=1.5.0",
-    "hf_xet==1.3.2",
+    "hf_xet==1.6.0",
     "numpy>=1.26.0",
 
     # --- Document processing ---
-    "tiktoken==0.12.0",
-    "beautifulsoup4==4.14.3",
+    "tiktoken==0.13.0",
+    "beautifulsoup4==4.15.0",
     "unstructured==0.18.32",
-    "pymupdf==1.27.2.2",
-    "jq==1.10.0",
+    "pymupdf==1.28.2",
+    "jq==1.12.0",
 
     # --- Security-forced transitive bumps (CVE fixes; none imported directly) ---
     # Pulled transitively (msal->PyJWT, rsa->pyasn1, sentence-transformers->onnx/
     # transformers, unstructured->pypdf, fastapi->starlette). Pinned here to force
-    # the patched versions. setuptools>=83 clears CVE-2026-59890; the previous
-    # `<81` cap mirrored ml-k8s-server's pkg_resources crash guard, which no
-    # longer applies (nothing in this resolve imports pkg_resources unguarded).
+    # the patched versions. setuptools>=83 clears CVE-2026-59890 (old <81 cap no longer needed).
     "PyJWT>=2.13.0",
     "pyasn1>=0.6.3",
     "onnx>=1.22.0",
@@ -87,59 +85,61 @@ dependencies = [
     "kubernetes==32.0.1",
 
     # --- Utilities ---
-    "filelock==3.29.0",
+    "filelock==3.32.2",
     "httpcore==1.0.9",
     "psutil==7.2.2",
     "pydantic>=2.11.2",
     "pydantic-settings>=2.10.1",
-    "orjson==3.11.8",
-    "validators==0.34.0",
+    "orjson==3.11.9",
+    "validators==0.35.0",
     "cryptography==48.0.1",
-    "certifi==2026.2.25",
-    "charset-normalizer==3.4.1",
-    "click==8.2.1",
+    "certifi==2026.7.22",
+    "charset-normalizer==3.4.9",
+    "click==8.4.2",
     "durationpy==0.10",
-    "frozenlist==1.5.0",
-    "fsspec==2026.4.0",
-    "httpx-sse==0.4.1",
+    "frozenlist==1.8.0",
+    "fsspec==2026.7.0",
+    "httpx-sse==0.4.3",
     "monotonic==1.6",
-    "msal==1.34.0",
+    "msal==1.37.0",
     "multidict==6.7.1",
     "mypy-extensions==1.1.0",
-    "propcache==0.3.1",
-    "pydantic-core==2.33.1",
+    "propcache==0.5.2",
     "pygments==2.20.0",
-    "rsa==4.9",
-    "simsimd==6.2.1",
-    "soupsieve==2.8.4",
-    "sympy==1.13.3",
-    "typer==0.24.1",
+    "rsa==4.9.1",
+    "simsimd==6.5.16",
+    "soupsieve==2.9.2",
+    "sympy==1.14.0",
+    "typer==0.27.1",
     "typing-extensions==4.16.0",
     "typing-inspection==0.4.2",
-    "watchfiles==1.1.1",
-    "yarl==1.19.0",
+    "watchfiles==1.2.0",
+    "yarl==1.24.5",
     "zipp==3.21.0",
 
     # --- Type stubs ---
-    "types-aiofiles==25.1.0.20251011",
-    "types-requests==2.32.4.20250913",
+    "types-aiofiles==25.1.0.20260518",
+    "types-requests==2.33.0.20260712",
     "types-botocore==1.0.2",
     "types-beautifulsoup4==4.12.0.20250516",
     "types-psutil==7.2.2.20260130",
-    "types-awscrt==0.31.3",
+    "types-awscrt==0.34.1",
     "types-html5lib==1.1.11.20260402",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pre-commit==4.6.0",
-    "black==26.3.1",
-    "mypy==1.16.1",
+    "pre-commit==4.6.1",
+    "black==26.5.1",
+    # mypy 1.16.1 crashes (INTERNAL ERROR, RuntimeError: Not implemented
+    # TypeGuardedType) while resolving indirect dependencies of the openai and
+    # anthropic SDKs at the versions pinned above. Fixed from 1.17 onward.
+    "mypy==1.20.2",
     "flake8==6.1.0"
 ]
 test = [
-    "pytest==9.0.3",
-    "pytest-benchmark==5.1.0"
+    "pytest==9.1.1",
+    "pytest-benchmark==5.2.3"
 ]
 
 [tool.mypy]

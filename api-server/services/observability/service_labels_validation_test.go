@@ -133,6 +133,28 @@ func TestValidateReferencedLabels(t *testing.T) {
 		src := &fakeLabelSource{labels: []OutputLogLabel{}}
 		assert.NoError(t, validateReferencedLabels(ctx, src, logReq, refSet("service_nam"), nil))
 	})
+
+	t.Run("no close match gives action-agnostic guidance", func(t *testing.T) {
+		src := &fakeLabelSource{labels: labelSet("k8s_cluster", "namespace", "pod")}
+		// Shares no token with any available label and is far outside typo distance.
+		err := validateReferencedLabels(ctx, src, logReq, refSet("zzz_unrelated_field"), nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "zzz_unrelated_field")
+		assert.Contains(t, err.Error(), "verify the name")
+		assert.NotContains(t, err.Error(), "logs_list_labels") // don't name a tool the caller may lack
+	})
+
+	// Typos that are not prefix/suffix truncations must still yield a correction: the
+	// substring-only matcher this replaced returned nothing for them, leaving the agent
+	// with an unactionable error.
+	t.Run("mid-word typo still suggests the right label", func(t *testing.T) {
+		for _, typo := range []string{"k8s_deploymnt_name", "k8s_deploymetn_name", "kaas_cluster"} {
+			src := &fakeLabelSource{labels: labelSet("k8s_deployment_name", "k8s_cluster", "pod")}
+			err := validateReferencedLabels(ctx, src, logReq, refSet(typo), nil)
+			require.Error(t, err, typo)
+			assert.Contains(t, err.Error(), "closest valid label(s):", typo)
+		}
+	})
 }
 
 func TestUnknownReferencedLabels(t *testing.T) {
@@ -219,5 +241,14 @@ func TestValidateReferencedTraceLabels(t *testing.T) {
 	t.Run("fails open when discovery errors", func(t *testing.T) {
 		src := &fakeTraceSource{err: errors.New("clickhouse down")}
 		assert.NoError(t, validateReferencedTraceLabels(ctx, src, traceReq, refSet("service_nam"), nil))
+	})
+
+	t.Run("no close match gives action-agnostic guidance", func(t *testing.T) {
+		src := &fakeTraceSource{labels: traceLabelSet("app.custom.attr")}
+		err := validateReferencedTraceLabels(ctx, src, traceReq, refSet("zzzzzz"), nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "zzzzzz")
+		assert.Contains(t, err.Error(), "verify the name")
+		assert.NotContains(t, err.Error(), "traces_list_labels") // don't name a tool the caller may lack
 	})
 }

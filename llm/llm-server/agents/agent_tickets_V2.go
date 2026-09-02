@@ -137,7 +137,7 @@ Step 2: Review each required field from get_create_meta:
 - Fields with type "select" where context makes the answer obvious (e.g., priority=High for a production OOM) → set as default.
 - Fields with type "datetime" or "datepicker" → default to current date/time.
 - Fields with type "select" where you cannot infer → ask with followup_type="single_select" and pass the allowed values as options.
-- Fields with type "multicheckboxes" or multi-value → ask with followup_type="multi_select" and pass the allowed values as options.
+- Fields with type "multiselect" or multi-value → ask with followup_type="multi_select" and pass the allowed values as options.
 - Fields with type "string"/"text" where you cannot infer → ask with followup_type="text".
 
 Step 3: For each field that must be asked, call ask_clarification ONE field at a time:

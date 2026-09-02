@@ -50,6 +50,11 @@ jest.mock('@context/DataContext', () => ({
   useData: jest.fn(),
 }));
 
+// Log analysis opens the app-level chat drawer, whose provider lives in _app.
+jest.mock('@context/NubiGlobalChatContext', () => ({
+  useNubiGlobalChat: () => ({ openWithContext: jest.fn() }),
+}));
+
 // Mock apiAccount
 jest.mock('@api1/account', () => ({
   __esModule: true,

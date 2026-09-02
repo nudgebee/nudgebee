@@ -285,6 +285,20 @@ func TestClickhouseInt64(t *testing.T) {
 	})
 }
 
+// TestCountTracesByTraceDecodesQuotedUInt64Count is the regression guard for the
+// "By Traces" count (traces_by_trace_count_v3 / CountTracesByTrace) returning 0 while
+// the trace list still had rows. count(*) is a ClickHouse UInt64 that the relay's
+// FORMAT JSON round-trip delivers as a quoted string ("42"). The earlier
+// clickhouseCountValue type-switch handled float64/int64/uint64/int but had no string
+// case, so it hit the default branch and silently zeroed the count. This asserts the
+// exact decode CountTracesByTrace now performs on the count cell — the same shape
+// executeClickhouseQuery hands back — resolves to the real value, not 0.
+func TestCountTracesByTraceDecodesQuotedUInt64Count(t *testing.T) {
+	row := map[string]any{"count": "42"} // JSON-quoted UInt64, as the relay delivers it
+	assert.Equal(t, 42, int(clickhouseInt64(row["count"])),
+		"quoted UInt64 count(*) must decode to its real value, not 0")
+}
+
 // TestMapRowToOpenTelemetryTrace_DurationParsesQuotedUInt64 is the regression
 // guard for the duration_ns "0ns" bug: ClickHouse delivers UInt64 columns as
 // quoted strings, and the old (float64)-only type assertion silently dropped

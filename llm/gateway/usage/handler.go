@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -34,8 +35,19 @@ type apiListRequest struct {
 	RoutingReason string `json:"routing_reason"` // optional; e.g. substitute | fallback | deprecated
 	RejectReason  string `json:"reject_reason"`  // optional; e.g. rate_limited | secret_blocked
 	Dlp           bool   `json:"dlp"`            // optional; requests that tripped the egress filter
+	SessionID     string `json:"session_id"`     // optional; one session/conversation (drill-in)
 	Limit         int    `json:"limit"`
 	Offset        int    `json:"offset"`
+}
+
+// apiSessionsRequest is the body for the paginated session list (Sessions tab).
+type apiSessionsRequest struct {
+	StartDate string `json:"start_date"`
+	EndDate   string `json:"end_date"`
+	UserID    string `json:"user_id"` // optional; scope to one user
+	Search    string `json:"search"`  // optional; session_id contains
+	Limit     int    `json:"limit"`
+	Offset    int    `json:"offset"`
 }
 
 // RegisterRoutes mounts the read-only usage query API under /rpc/usage, guarded by
@@ -97,11 +109,47 @@ func RegisterRoutes(r *gin.Engine, token string) {
 			TenantID: tenantID, StartDate: start, EndDate: end,
 			UserID: req.UserID, Providers: req.Providers, Models: req.Models, Status: req.Status,
 			Tool: req.Tool, RoutingReason: req.RoutingReason, RejectReason: req.RejectReason, Dlp: req.Dlp,
-			CallerUserID: c.GetHeader("x-user-id"),
-			Limit:        req.Limit, Offset: req.Offset,
+			SessionID:     req.SessionID,
+			CallerUserID:  c.GetHeader("x-user-id"),
+			CallerIsAdmin: rpc.IsTenantAdmin(c),
+			Limit:         req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "request list failed"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": res})
+	})
+
+	g.POST("/sessions", func(c *gin.Context) {
+		var req apiSessionsRequest
+		if !rpc.BindAction(c, &req) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		tenantID, ok := rpc.RequireTenant(c)
+		if !ok {
+			return
+		}
+		start, end, ok := parseWindow(c, req.StartDate, req.EndDate)
+		if !ok {
+			return
+		}
+		db, err := common.GetDatabaseManager(common.MeteringSink)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metering store unavailable"})
+			return
+		}
+		res, err := ListSessions(c.Request.Context(), db, ListSessionsRequest{
+			TenantID: tenantID, StartDate: start, EndDate: end,
+			UserID: req.UserID, Search: req.Search,
+			CallerUserID:  c.GetHeader("x-user-id"),
+			CallerIsAdmin: rpc.IsTenantAdmin(c),
+			Limit:         req.Limit, Offset: req.Offset,
+		})
+		if err != nil {
+			slog.Error("usage: session list failed", "error", err, "tenant", tenantID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "session list failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": res})

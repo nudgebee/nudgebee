@@ -210,7 +210,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		return ConversationTree{}, fmt.Errorf("GetConversationTree model_calls: %w", err)
 	}
 
-	pricing, err := chat.GetConversationCosts(nil)
+	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
 	if err != nil {
 		return ConversationTree{}, fmt.Errorf("GetConversationTree pricing: %w", err)
 	}
@@ -387,7 +387,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			COALESCE(status, '') AS status, created_at, updated_at,
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
-		WHERE %s
+		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL
 		ORDER BY created_at`, convScopeCTE)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationTree: tool_calls query failed", "error", err)
@@ -510,7 +510,7 @@ func HandleConversationTreeApi(ctx *security.RequestContext, request Conversatio
 	if request.ConversationId == "" || request.AccountId == "" {
 		return ConversationTree{}, fmt.Errorf("HandleConversationTreeApi: conversation_id and account_id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 		return ConversationTree{}, fmt.Errorf("HandleConversationTreeApi: forbidden account_id")
 	}
 	return GetConversationDao().GetConversationTree(request.ConversationId, request.AccountId)

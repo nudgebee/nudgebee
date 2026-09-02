@@ -87,6 +87,7 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 		bodyLog: bodyLog,
 		limiter: limiter,
 		pricer:  pricer,
+		router:  router,
 		// Request pipeline (control stages), run after auth and before passthrough.
 		// route → ratelimit → resolver → filter. Each stage is pluggable; an unset
 		// stage defaults to pass-through.
@@ -106,6 +107,7 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	// Generic provider-agnostic endpoint: OpenAI-compatible, with the provider chosen
 	// from the model name. Same auth + control pipeline as the native mounts.
 	r.POST("/v1/chat/completions", authmw, h.handleChat)
+	r.POST("/v1/embeddings", authmw, h.handleEmbeddings)
 	r.GET("/v1/models", authmw, h.handleModels)
 }
 
@@ -115,6 +117,7 @@ type handler struct {
 	bodyLog  metering.BodyLogSink
 	limiter  *ratelimit.Limiter
 	pricer   *metering.Pricer
+	router   routing.Resolver // for pre-pipeline tier-alias lane resolution on /v1
 	pipeline *Pipeline
 }
 
@@ -198,7 +201,10 @@ func (h *handler) handle(c *gin.Context) {
 		SafeHeaders: safeHeaders(c.Request.Header),
 	}
 
-	sessionID, sessionSource := resolveSession(c, rc.Body)
+	// Fingerprint the stable prompt prefix (system+tools+first-user): the cache-affinity
+	// key + the inferred session id when the client supplies none. Uses the ORIGINAL body.
+	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
+	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
 		reqID:         uuid.NewString(),
 		provider:      provider,
@@ -212,6 +218,7 @@ func (h *handler) handle(c *gin.Context) {
 		start:         start,
 		sessionID:     sessionID,
 		sessionSource: sessionSource,
+		prefixFinger:  fingerprint,
 		reqAttrs:      extractRequestAttributes(provider, rc.Body),
 		identity:      identity,
 		decision:      rc.Decision,
@@ -253,6 +260,7 @@ type reqMeta struct {
 	start          time.Time
 	sessionID      string
 	sessionSource  string
+	prefixFinger   string // stable-prefix fingerprint (cache-affinity key + inferred session id)
 	reqAttrs       map[string]any
 	identity       auth.Identity
 	decision       routing.Decision
@@ -462,6 +470,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	if rm.surface != "" {
 		attrs.Derived["surface"] = rm.surface
 	}
+	if rm.prefixFinger != "" {
+		attrs.Derived["prefix_fingerprint"] = rm.prefixFinger
+	}
 	if len(rm.degraded) > 0 {
 		attrs.Derived["degraded"] = rm.degraded
 	}
@@ -503,7 +514,9 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	// row carries the price as it was when the call ran (read paths sum this instead
 	// of re-pricing on every query). The same value reconciles the quota below.
 	if h.pricer != nil {
-		ev.CostUsd = h.pricer.CostUSD(ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+		// Tenant-scoped: a tenant's own price override wins over the built-in rate (else the
+		// built-in), so one tenant's negotiated rate never bleeds onto another's cost.
+		ev.CostUsd = h.pricer.CostUSD(ev.TenantID, ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
 	}
 	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
 	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The
@@ -522,20 +535,21 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 	if record && bodyCaptureAllowed(rm.identity.TenantID) {
 		now := time.Now().UTC()
 		h.bodyLog.Record(metering.BodyLog{
-			ID:           uuid.NewString(),
-			RequestID:    rm.reqID,
-			CreatedAt:    now,
-			ExpiresAt:    now.Add(metering.TTL()),
-			TenantID:     rm.identity.TenantID,
-			UserID:       rm.identity.UserID,
-			SessionID:    rm.sessionID,
-			Provider:     string(rm.provider),
-			Model:        rm.model,
-			Method:       rm.method,
-			Path:         rm.path,
-			StatusCode:   status,
-			RequestBody:  metering.CapBody(rm.body),
-			ResponseBody: metering.CapBody(respBody),
+			ID:               uuid.NewString(),
+			RequestID:        rm.reqID,
+			CreatedAt:        now,
+			ExpiresAt:        now.Add(metering.TTL()),
+			TenantID:         rm.identity.TenantID,
+			UserID:           rm.identity.UserID,
+			SessionID:        rm.sessionID,
+			Provider:         string(rm.provider),
+			Model:            rm.model,
+			Method:           rm.method,
+			Path:             rm.path,
+			StatusCode:       status,
+			RequestBody:      metering.CapBody(rm.body),
+			ResponseBody:     metering.CapBody(respBody),
+			FirstUserMessage: firstUserMessage(rm.body),
 		})
 	}
 }
@@ -672,11 +686,34 @@ func statusOf(bErr *schemas.BifrostError) int {
 func writeBifrostError(c *gin.Context, bErr *schemas.BifrostError) int {
 	status := statusOf(bErr)
 	msg := "provider engine error"
-	if bErr.Error != nil && bErr.Error.Message != "" {
+	if bErr != nil && bErr.Error != nil && bErr.Error.Message != "" {
 		msg = bErr.Error.Message
 	}
-	writeJSONError(c, status, "upstream_error", msg)
+	writeJSONError(c, status, upstreamErrorCode(status), coldStartHint(status, msg))
 	return status
+}
+
+// coldStartHint appends a cold-start explanation to a 502/503/504 upstream error. Serverless
+// / scale-to-zero model endpoints (e.g. HF Inference Endpoints) return these while warming
+// up, so the hint reframes a transient "unavailable" as "retry shortly" rather than a hard
+// failure. Other statuses pass through unchanged.
+func coldStartHint(status int, msg string) string {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return msg + " — the model endpoint may be starting up or temporarily unavailable " +
+			"(common for serverless / scale-to-zero endpoints); retry in a moment"
+	default:
+		return msg
+	}
+}
+
+// upstreamErrorCode gives a 503 a more specific machine-readable code than the generic
+// upstream_error, so clients can distinguish a warm-up from a real upstream failure.
+func upstreamErrorCode(status int) string {
+	if status == http.StatusServiceUnavailable {
+		return "upstream_unavailable"
+	}
+	return "upstream_error"
 }
 
 func writeJSONError(c *gin.Context, status int, typ, msg string) {

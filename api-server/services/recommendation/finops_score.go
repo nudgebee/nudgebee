@@ -2,12 +2,14 @@ package recommendation
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
@@ -315,12 +317,65 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		return err
 	}
 
+	// Collect all computed scores in memory for batch update
+	type scoreRow struct {
+		id        string
+		score     int
+		band      string
+		breakdown string
+	}
+	var batch []scoreRow
+
+	// The scan loop below does nothing but read rows, so each SELECT's cursor is
+	// released as soon as its last row lands. Scoring and blast-radius annotation
+	// run afterwards, in a second pass: annotation issues its own knowledge-graph
+	// queries on this same pool, and doing that from inside `rows.Next()` pinned
+	// the connection for the whole recompute — Postgres bills time blocked on a
+	// slow client to the statement, so this SELECT was logging multi-minute
+	// durations against the slow-query alert while the query itself is a PK-keyed
+	// join over an indexed `status = 'Open'` scan.
+	type recRow struct {
+		id                string
+		tenantID          string
+		cloudAccountID    *string
+		category          string
+		ruleName          string
+		severity          *string
+		estimatedSavings  *float32
+		createdAt         *time.Time
+		resourceName      *string
+		resourceNamespace *string
+		resourceID        *string
+	}
+	var recs []recRow
+
+	errCount := 0
+	// Read the Open set in bounded keyset pages rather than one unbounded
+	// statement. The cron still scores every Open row, but a single ~180k-row
+	// SELECT ran ~69s — long enough to trip the slow-query alert and to pin one
+	// snapshot open across the whole read, holding back vacuum on a table this
+	// size. Paging on (created_at, id) rides idx_recommendation_open_created_at_id
+	// (migration V749, partial on status='Open'), the same cursor pattern
+	// runbook-server's WorkflowDao.FindNewRecommendations already uses, so each
+	// page is an ordered range scan that short-circuits at LIMIT.
+	//
+	// readUntil pins the upper bound at start: rows created while the walk is in
+	// flight are out of scope for this run (they were scored at insert time) and
+	// pinning it makes termination independent of the insert rate.
+	const readPageSize = 2000
+	readUntil := time.Now()
+	var (
+		cursorCreatedAt time.Time
+		cursorID        string
+		hasCursor       bool
+	)
+
 	// resource_name + namespace are derived from the cloud_resourses join (the same
 	// source the recommendations view uses), NOT the raw recommendation JSONB: that
 	// JSONB's shape varies per rule type and usually omits the namespace entirely
 	// (e.g. pod_right_sizing keys by workload name and carries no namespace at all),
 	// so parsing it resolves nothing.
-	rows, err := dbms.Db.Queryx(`
+	const recomputeSelect = `
 		SELECT
 			r.id, r.tenant_id, r.cloud_account_id, r.category, r.rule_name,
 			r.severity, r.estimated_savings, r.created_at,
@@ -335,25 +390,63 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 			r.resource_id
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
-		WHERE r.status = 'Open'`)
-	if err != nil {
-		ctx.GetLogger().Error("error querying recommendations for score recompute", "error", err)
-		return err
-	}
-	defer func() {
+		WHERE r.status = 'Open' AND r.created_at <= $1`
+
+	for {
+		var (
+			rows *sqlx.Rows
+			qerr error
+		)
+		if hasCursor {
+			rows, qerr = dbms.Db.Queryx(recomputeSelect+`
+			  AND (r.created_at, r.id) > ($2, $3::uuid)
+			ORDER BY r.created_at ASC, r.id ASC
+			LIMIT $4`, readUntil, cursorCreatedAt, cursorID, readPageSize)
+		} else {
+			rows, qerr = dbms.Db.Queryx(recomputeSelect+`
+			ORDER BY r.created_at ASC, r.id ASC
+			LIMIT $2`, readUntil, readPageSize)
+		}
+		if qerr != nil {
+			ctx.GetLogger().Error("error querying recommendations for score recompute", "error", qerr)
+			return qerr
+		}
+
+		pageCount := 0
+		advanced := false
+		for rows.Next() {
+			var r recRow
+			var createdAt time.Time
+			pageCount++
+			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID); err != nil {
+				ctx.GetLogger().Error("error scanning recommendation row", "error", err)
+				errCount++
+				continue
+			}
+			r.createdAt = &createdAt
+			cursorCreatedAt, cursorID, hasCursor, advanced = createdAt, r.id, true, true
+			recs = append(recs, r)
+		}
+		if err := rows.Err(); err != nil {
+			ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
+			if cerr := rows.Close(); cerr != nil {
+				ctx.GetLogger().Error("error closing rows", "error", cerr)
+			}
+			return err
+		}
 		if cerr := rows.Close(); cerr != nil {
 			ctx.GetLogger().Error("error closing rows", "error", cerr)
 		}
-	}()
 
-	// Collect all computed scores in memory for batch update
-	type scoreRow struct {
-		id        string
-		score     int
-		band      string
-		breakdown string
+		if pageCount < readPageSize {
+			break
+		}
+		if !advanced {
+			// Every row in a full page failed to scan, so the cursor did not move
+			// and the next page would re-read the same rows forever. Bail out.
+			return fmt.Errorf("finops score recompute: no scannable rows in a full page of %d; aborting", readPageSize)
+		}
 	}
-	var batch []scoreRow
 
 	// Blast-radius annotation: resolve each recommendation to its knowledge-graph
 	// node — a k8s workload by (namespace, name), or a cloud resource by resource_id —
@@ -363,51 +456,31 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	kgService := core.NewService(ctx, ctx.GetLogger(), dbms)
 	impactCache := map[string]*recommendationImpact{}
 
-	errCount := 0
-	for rows.Next() {
-		var (
-			id                string
-			tenantID          string
-			cloudAccountID    *string
-			category          string
-			ruleName          string
-			severity          *string
-			estimatedSavings  *float32
-			createdAt         *time.Time
-			resourceName      *string
-			resourceNamespace *string
-			resourceID        *string
-		)
-		if err := rows.Scan(&id, &tenantID, &cloudAccountID, &category, &ruleName, &severity, &estimatedSavings, &createdAt, &resourceName, &resourceNamespace, &resourceID); err != nil {
-			ctx.GetLogger().Error("error scanning recommendation row", "error", err)
-			errCount++
-			continue
-		}
-
+	for _, r := range recs {
 		savings := float32(0)
-		if estimatedSavings != nil {
-			savings = *estimatedSavings
+		if r.estimatedSavings != nil {
+			savings = *r.estimatedSavings
 		}
-		result := ComputeFinOpsScore(category, ruleName, severity, savings, createdAt)
+		result := ComputeFinOpsScore(r.category, r.ruleName, r.severity, savings, r.createdAt)
 
 		accountID := ""
-		if cloudAccountID != nil {
-			accountID = *cloudAccountID
+		if r.cloudAccountID != nil {
+			accountID = *r.cloudAccountID
 		}
 		// Identity comes from the cloud_resourses join above; annotate no-ops when it
 		// resolves to no graph node (k8s workload or cloud resource absent from the
 		// graph, or an account-level rec with a null resource_id).
 		ns, name, resID := "", "", ""
-		if resourceNamespace != nil {
-			ns = *resourceNamespace
+		if r.resourceNamespace != nil {
+			ns = *r.resourceNamespace
 		}
-		if resourceName != nil {
-			name = *resourceName
+		if r.resourceName != nil {
+			name = *r.resourceName
 		}
-		if resourceID != nil {
-			resID = *resourceID
+		if r.resourceID != nil {
+			resID = *r.resourceID
 		}
-		annotateBreakdownWithImpact(kgService, tenantID, accountID, ns, name, resID, result.Breakdown, impactCache)
+		annotateBreakdownWithImpact(kgService, r.tenantID, accountID, ns, name, resID, result.Breakdown, impactCache)
 
 		breakdownJSON, err := json.Marshal(result.Breakdown)
 		if err != nil {
@@ -416,15 +489,11 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		}
 
 		batch = append(batch, scoreRow{
-			id:        id,
+			id:        r.id,
 			score:     result.Score,
 			band:      result.Band,
 			breakdown: string(breakdownJSON),
 		})
-	}
-	if err := rows.Err(); err != nil {
-		ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
-		return err
 	}
 
 	// Batch update using unnest — single query for all rows

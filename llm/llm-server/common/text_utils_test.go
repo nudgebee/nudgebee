@@ -2,7 +2,9 @@ package common
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/stretchr/testify/assert"
@@ -181,4 +183,81 @@ func TestTokenCountComparison(t *testing.T) {
 		fmt.Printf("%-100s | %-10d | %-10d\n", q, wc, tc)
 	}
 	fmt.Println("--------------------------------------------")
+}
+
+func TestTruncateHead(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxBytes int
+		expected string
+	}{
+		{
+			name:     "string shorter than maxBytes",
+			input:    "hello world",
+			maxBytes: 20,
+			expected: "hello world",
+		},
+		{
+			name:     "string exactly maxBytes",
+			input:    "hello world",
+			maxBytes: 11,
+			expected: "hello world",
+		},
+		{
+			name:     "pure ascii truncated cleanly",
+			input:    "hello world",
+			maxBytes: 5,
+			expected: "hello",
+		},
+		{
+			name:     "multi-byte utf8 character boundary preserved",
+			input:    "hello " + "世界", // "世界" is 6 bytes (3 bytes each)
+			maxBytes: 7,               // "hello " (6 bytes) + 1 byte of 世 -> should truncate to "hello "
+			expected: "hello ",
+		},
+		{
+			name:     "multi-byte utf8 exact character boundary",
+			input:    "hello " + "世界",
+			maxBytes: 9, // "hello " (6 bytes) + "世" (3 bytes) = 9 bytes
+			expected: "hello 世",
+		},
+		{
+			name:     "200 bytes boundary with 2-byte rune",
+			input:    strings.Repeat("a", 199) + "é" + " tail",
+			maxBytes: 200,
+			expected: strings.Repeat("a", 199),
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			maxBytes: 10,
+			expected: "",
+		},
+		{
+			name:     "zero maxBytes",
+			input:    "hello",
+			maxBytes: 0,
+			expected: "",
+		},
+		{
+			name:     "negative maxBytes",
+			input:    "hello",
+			maxBytes: -5,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TruncateHead(tt.input, tt.maxBytes)
+			assert.Equal(t, tt.expected, got)
+			assert.True(t, utf8.ValidString(got), "result must be valid UTF-8")
+			if tt.maxBytes > 0 {
+				assert.LessOrEqual(t, len(got), tt.maxBytes)
+			} else {
+				assert.Equal(t, 0, len(got))
+			}
+		})
+	}
 }

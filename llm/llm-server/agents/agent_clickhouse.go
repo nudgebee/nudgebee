@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -72,12 +71,10 @@ func (l ClickhouseDebugAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteClickhouseQuery] = []string{
-			"Executes queries against Clickhouse. Input MUST be a JSON object with a `query` key and optional `database` key. Example: `{\"query\": \"SELECT * FROM logs LIMIT 10;\", \"database\": \"default\"}`.",
-			"Output: Data returned by Clickhouse.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the query output.",
-		}
+	toolUsage[tools.ToolExecuteClickhouseQuery] = []string{
+		"Executes queries against Clickhouse. Input MUST be a JSON object with a `query` key and optional `database` key. Example: `{\"query\": \"SELECT * FROM logs LIMIT 10;\", \"database\": \"default\"}`.",
+		"Output: Data returned by Clickhouse.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the query output.",
 	}
 	examples := []core.NBAgentPromptExample{
 		{

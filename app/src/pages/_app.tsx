@@ -14,12 +14,16 @@ import { AppErrorBoundary } from '@shared/ErrorBoundary';
 import { DataProvider } from '@context/DataContext';
 import { Toast as SnackbarComponent } from '@ui/Toast';
 import { TourProvider } from '@components/common/tour';
+import { NubiGlobalChatProvider } from '@context/NubiGlobalChatContext';
+import NubiGlobalChat from '@components/llm/NubiGlobalChat';
 import 'swiper/css/bundle';
 import '../styles/CustomSwiperCarousel.css';
 import 'driver.js/dist/driver.css';
 import '../styles/tour.css';
 import '../styles/nubi-animation.css';
 import { useThemeProvider } from '@hooks/useThemeProvider';
+import { useEffect } from 'react';
+import { reportClientError } from '@lib/clientErrorReporter';
 
 // Use of the <SessionProvider> is mandatory to allow components that call
 // `useSession()` anywhere in your application to access the `session` object.
@@ -27,6 +31,33 @@ import { useThemeProvider } from '@hooks/useThemeProvider';
 export default function App({ Component, pageProps }: AppProps<{ session: Session }>) {
   const router = useRouter();
   const { theme } = useThemeProvider();
+
+  // Catch uncaught JS errors and unhandled promise rejections that never reach
+  // a React error boundary, and report them to Loki (see @lib/clientErrorReporter).
+  useEffect(() => {
+    const onError = (event: ErrorEvent) => {
+      reportClientError({
+        kind: 'js-error',
+        message: event.message || 'window.onerror',
+        stack: event.error?.stack,
+        source: event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : undefined,
+      });
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason as { message?: string; stack?: string } | undefined;
+      reportClientError({
+        kind: 'unhandled-rejection',
+        message: reason?.message ?? String(event.reason),
+        stack: reason?.stack,
+      });
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>
@@ -45,7 +76,10 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
           refetchWhenOffline={false}
         >
           <GlobalFilterContextProvider>
-            {router.pathname.indexOf('signin') >= 0 ||
+            {/* Exact match: the substring checks below would also strip chrome from
+                any future route containing 'status' (e.g. /kubernetes/status). */}
+            {router.pathname === '/status' ||
+            router.pathname.indexOf('signin') >= 0 ||
             router.pathname.indexOf('signup') >= 0 ||
             router.pathname.indexOf('signup_verify') >= 0 ||
             router.pathname.indexOf('ready') >= 0 ||
@@ -56,10 +90,13 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
             ) : (
               <DataProvider>
                 <TourProvider>
-                  <PageLayout>
-                    <Component {...pageProps} />
-                    <SnackbarComponent />
-                  </PageLayout>
+                  <NubiGlobalChatProvider>
+                    <PageLayout>
+                      <Component {...pageProps} />
+                      <SnackbarComponent />
+                    </PageLayout>
+                    <NubiGlobalChat />
+                  </NubiGlobalChatProvider>
                 </TourProvider>
               </DataProvider>
             )}

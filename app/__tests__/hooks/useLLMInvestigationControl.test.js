@@ -63,6 +63,7 @@ const mockGetConversation = apiAskNudgebee.getLlmConversation;
 const mockStopInvestigate = apiAskNudgebee.aiStopInvestigate;
 const mockGenerateInvestigate = apiAskNudgebee.aiGenerateInvestigate;
 const mockGetModelConfig = apiAskNudgebee.getModelConfig;
+const mockGenerateWorkflow = require('@api1/workflow').default.aiGenerateWorkflow;
 
 describe('useLLMInvestigationControl', () => {
   beforeEach(() => {
@@ -88,12 +89,24 @@ describe('useLLMInvestigationControl', () => {
     expect(mockListModels).not.toHaveBeenCalled();
   });
 
-  it('fetches available models on mount', async () => {
+  it('fetches available credentials on mount', async () => {
     mockListModels.mockResolvedValue({
-      data: { models: [{ provider: 'anthropic', model: 'claude-3' }], default: 'claude-3' },
+      data: {
+        credentials: [
+          {
+            id: 'cred-1',
+            name: 'Anthropic',
+            provider: 'anthropic',
+            llm_config_source: 'env:global',
+            models: [{ model: 'claude-3' }],
+          },
+        ],
+        default: 'claude-3',
+      },
     });
     const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
-    await waitFor(() => expect(result.current.availableModels).toHaveLength(1));
+    await waitFor(() => expect(result.current.availableCredentials).toHaveLength(1));
+    expect(result.current.availableCredentials[0].models).toEqual([{ model: 'claude-3' }]);
     expect(result.current.defaultModel).toBe('claude-3');
   });
 
@@ -334,6 +347,264 @@ describe('useLLMInvestigationControl', () => {
 
       expect(result.current.selectedTierModels).toEqual(tierPicks);
       expect(result.current.selectedModel).toBeNull();
+    });
+
+    it('sends each task pick with its own credential', async () => {
+      // Without llm_config_source per pick the task resolves its model through
+      // whatever credential the conversation is pinned to — a different key and
+      // endpoint than the one the user chose for that task.
+      mockGenerateInvestigate.mockResolvedValue({
+        data: { data: { ai_execute_investigation: { data: { query: 'q', session_id: 'sess-1' } } } },
+      });
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() =>
+        result.current.setSelectedTierModels({
+          summary: { provider: 'googleai', model: 'gemini-3-flash', configSource: 'db:int-1' },
+          reasoning: { provider: 'googleai', model: 'gemini-3-pro', configSource: 'db:int-2' },
+        })
+      );
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q', apiMode: 'investigate' });
+      });
+
+      const { config } = mockGenerateInvestigate.mock.calls[0][0];
+      expect(config.llm_tier_models).toEqual({
+        summary: { provider: 'googleai', model: 'gemini-3-flash', llm_config_source: 'db:int-1' },
+        reasoning: { provider: 'googleai', model: 'gemini-3-pro', llm_config_source: 'db:int-2' },
+      });
+    });
+
+    it('sends a whole-config pin with no model, so the config picks per task', async () => {
+      // llm_provider/llm_model_name alongside a ':all' pin is a contradiction —
+      // the server rejects it, because the config is what chooses the model.
+      mockGenerateInvestigate.mockResolvedValue({
+        data: { data: { ai_execute_investigation: { data: { query: 'q', session_id: 'sess-1' } } } },
+      });
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() => result.current.setSelectedConfig({ configSource: 'db:int-1:all', configName: 'piyush-llm' }));
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q', apiMode: 'investigate' });
+      });
+
+      const { config } = mockGenerateInvestigate.mock.calls[0][0];
+      expect(config).toEqual({ llm_config_source: 'db:int-1:all' });
+    });
+
+    it('a config pick supersedes a model pick, and vice versa', async () => {
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'gemini-3-flash', configSource: 'db:int-1' }));
+      act(() => result.current.setSelectedConfig({ configSource: 'db:int-2:all' }));
+      expect(result.current.selectedModel).toBeNull();
+      expect(result.current.selectedConfig).toEqual({ configSource: 'db:int-2:all' });
+
+      act(() => result.current.setSelectedTierModels({ summary: { provider: 'googleai', model: 'x', configSource: 'db:int-3' } }));
+      expect(result.current.selectedConfig).toBeNull();
+
+      act(() => result.current.setSelectedConfig({ configSource: 'db:int-2:all' }));
+      expect(result.current.selectedTierModels).toBeNull();
+    });
+
+    // Switching account refetches the list, but selections are sticky — a db pin
+    // from the previous account would survive and llm-server would reject it as
+    // an integration this account cannot see.
+    const modelsRes = (models) => ({ data: { models, credentials: [], default: null } });
+
+    it('drops a pin the newly-loaded account cannot serve', async () => {
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'a', provider: 'googleai', llm_config_source: 'db:acc1-int' }]));
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'a', configSource: 'db:acc1-int' }));
+
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'b', provider: 'googleai', llm_config_source: 'db:acc2-int' }]));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+
+      expect(result.current.selectedModel).toBeNull();
+    });
+
+    it('keeps a pin the new account still serves, and legacy pins with no source', async () => {
+      const shared = [
+        { model: 'a', provider: 'googleai', llm_config_source: 'db:shared:tier:summary' },
+        { model: 'b', provider: 'googleai', llm_config_source: 'env:global' },
+      ];
+      mockListModels.mockResolvedValue(modelsRes(shared));
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+
+      // A whole-config pin validates through its parent config, not the raw id —
+      // 'db:shared:all' never appears in models[] but its config does.
+      act(() => result.current.setSelectedConfig({ configSource: 'db:shared:all' }));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+      expect(result.current.selectedConfig).toEqual({ configSource: 'db:shared:all' });
+
+      // No configSource at all — nothing account-bound to check, so it stays.
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'legacy' }));
+      rerender({ id: 'acc-3' });
+      await act(async () => {});
+      expect(result.current.selectedModel).toMatchObject({ model: 'legacy' });
+    });
+
+    it('a failed model fetch does not wipe the current selection', async () => {
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'a', provider: 'googleai', llm_config_source: 'db:int-1' }]));
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'a', configSource: 'db:int-1' }));
+
+      mockListModels.mockResolvedValue(modelsRes([]));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+
+      expect(result.current.selectedModel).toMatchObject({ configSource: 'db:int-1' });
+    });
+
+    it('prunes only the tier picks the new account lost', async () => {
+      mockListModels.mockResolvedValue(
+        modelsRes([
+          { model: 'x', provider: 'googleai', llm_config_source: 'db:kept' },
+          { model: 'y', provider: 'googleai', llm_config_source: 'db:gone' },
+        ])
+      );
+      const { result, rerender } = renderHook(({ id }) => useLLMInvestigationControl(id), { initialProps: { id: 'acc-1' } });
+      await act(async () => {});
+      act(() =>
+        result.current.setSelectedTierModels({
+          reasoning: { provider: 'googleai', model: 'x', configSource: 'db:kept' },
+          summary: { provider: 'googleai', model: 'y', configSource: 'db:gone' },
+        })
+      );
+
+      mockListModels.mockResolvedValue(modelsRes([{ model: 'x', provider: 'googleai', llm_config_source: 'db:kept' }]));
+      rerender({ id: 'acc-2' });
+      await act(async () => {});
+
+      expect(Object.keys(result.current.selectedTierModels)).toEqual(['reasoning']);
+    });
+
+    it('restores task picks on reload instead of the default model', async () => {
+      // In per-task mode the server reports `current` as the DEFAULT model, not
+      // a pick. Hydrating it as a blanket selection shows a model the user
+      // never chose and — because the two modes are mutually exclusive — the
+      // next turn overwrites the stored picks with it.
+      mockGetConversation.mockResolvedValue({
+        data: {
+          data: {
+            llm_conversations: [{ id: 'conv-1', title: 'T', status: 'COMPLETED', llm_conversation_messages: [] }],
+          },
+          errors: [],
+        },
+      });
+      mockGetModelConfig.mockResolvedValue({
+        data: {
+          is_custom: true,
+          current: { provider: 'googleai', model: 'gemini-3-flash-preview' },
+          default: { provider: 'googleai', model: 'gemini-3-flash-preview' },
+          tier_overrides: {
+            reasoning: { provider: 'googleai', model: 'gemini-2.5-pro', llm_config_source: 'env:global' },
+          },
+        },
+      });
+
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      await act(async () => {
+        await result.current.fetchConversation('sess-1', 'conv-1', 'direct', false);
+      });
+
+      expect(result.current.selectedTierModels).toEqual({
+        reasoning: { provider: 'googleai', model: 'gemini-2.5-pro', configSource: 'env:global' },
+      });
+      expect(result.current.selectedModel).toBeNull();
+    });
+  });
+
+  describe('clear all', () => {
+    const mockOk = () =>
+      mockGenerateInvestigate.mockResolvedValue({
+        data: { data: { ai_execute_investigation: { data: { query: 'q', session_id: 'sess-1' } } } },
+      });
+
+    it('sends an explicit reset so the stored config is dropped', async () => {
+      // Both selections being null is also the never-picked state, which
+      // inherits the conversation's stored config — so clearing has to say so.
+      mockOk();
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'gemini-3-flash' }));
+      act(() => result.current.clearModelConfig());
+
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q', apiMode: 'investigate' });
+      });
+
+      expect(mockGenerateInvestigate.mock.calls[0][0].config).toEqual({ llm_config_reset: true });
+    });
+
+    it('stops sending the reset once it has been delivered', async () => {
+      // Re-sending it every turn would keep wiping a config the user may have
+      // re-picked from another surface.
+      mockOk();
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() => result.current.clearModelConfig());
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q1', apiMode: 'investigate' });
+      });
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q2', apiMode: 'investigate' });
+      });
+
+      expect(mockGenerateInvestigate.mock.calls[0][0].config).toEqual({ llm_config_reset: true });
+      expect(mockGenerateInvestigate.mock.calls[1][0].config).toBeUndefined();
+    });
+
+    it('carries the reset on the workflow-generation path too', async () => {
+      // Workflow generation builds its own config object; it has to serialise
+      // the same signals or clearing works in chat and silently doesn't here.
+      mockGenerateWorkflow.mockResolvedValue({ data: { ai_generate_workflow: { data: { query: 'q', response: 'r' } } } });
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() => result.current.clearModelConfig());
+
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'a daily pod report', apiMode: 'workflow' });
+      });
+
+      const config = mockGenerateWorkflow.mock.calls[0][4];
+      expect(config.llm_config_reset).toBe(true);
+    });
+
+    it('serialises task picks with their credential on the workflow path', async () => {
+      mockGenerateWorkflow.mockResolvedValue({ data: { ai_generate_workflow: { data: { query: 'q', response: 'r' } } } });
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() =>
+        result.current.setSelectedTierModels({
+          reasoning: { provider: 'googleai', model: 'gemini-2.5-pro', configSource: 'env:global' },
+        })
+      );
+
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'a daily pod report', apiMode: 'workflow' });
+      });
+
+      const config = mockGenerateWorkflow.mock.calls[0][4];
+      expect(config.llm_tier_models).toEqual({
+        reasoning: { provider: 'googleai', model: 'gemini-2.5-pro', llm_config_source: 'env:global' },
+      });
+      expect(config.llm_config_reset).toBeUndefined();
+    });
+
+    it('a new pick supersedes a pending clear', async () => {
+      mockOk();
+      const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+      act(() => result.current.clearModelConfig());
+      act(() => result.current.setSelectedModel({ provider: 'googleai', model: 'gemini-2.5-pro' }));
+
+      await act(async () => {
+        await result.current.startInvestigation({ text: 'q', apiMode: 'investigate' });
+      });
+
+      expect(mockGenerateInvestigate.mock.calls[0][0].config).toEqual({
+        llm_provider: 'googleai',
+        llm_model_name: 'gemini-2.5-pro',
+      });
     });
   });
 });

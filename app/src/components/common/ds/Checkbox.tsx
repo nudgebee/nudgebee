@@ -43,6 +43,13 @@ export interface CheckboxProps {
   id?: string;
   name?: string;
   value?: string;
+  /**
+   * Automation hook, forwarded to the native input. Declared explicitly because
+   * this component destructures a fixed prop list and does NOT spread the rest —
+   * without it a `data-testid` passed by a caller is silently dropped, which is
+   * how the Roles permission matrix ended up with 114 untargetable checkboxes.
+   */
+  'data-testid'?: string;
 }
 
 const SIZE_TOKENS: Record<CheckboxSize, { box: string; fontSize: string; gap: string; iconSize: number }> = {
@@ -63,6 +70,7 @@ export function Checkbox({
   id,
   name,
   value,
+  'data-testid': dataTestId,
 }: CheckboxProps) {
   const tokens = SIZE_TOKENS[size];
   const reactId = React.useId();
@@ -80,6 +88,20 @@ export function Checkbox({
 
   const visualState: 'on' | 'off' | 'indeterminate' = indeterminate ? 'indeterminate' : checked ? 'on' : 'off';
 
+  // A disabled checkbox must still SHOW its state. `disabled` used to win the
+  // fill outright, painting background-200 (near-white) behind a tick drawn in
+  // background-100 (white) — so a checked-but-disabled box rendered as an EMPTY
+  // one. That is wrong everywhere, and actively misleading on the read-only
+  // surfaces that exist precisely to display state: Tenant Settings for a
+  // tenants:Read holder, and the built-in-role view of the Roles matrix.
+  //
+  // Disabled now mutes the ON fill to gray-500 instead of dropping it. White on
+  // #8f8f8f is ~3.2:1, clearing the 3:1 WCAG 1.4.11 bar for a non-text state
+  // indicator, while still reading as inert next to the blue-500 enabled state.
+  const isOn = visualState !== 'off';
+  const boxFill = disabled ? (isOn ? 'var(--ds-gray-500)' : 'var(--ds-background-200)') : isOn ? 'var(--ds-blue-500)' : 'var(--ds-background-100)';
+  const boxBorder = disabled ? (isOn ? 'var(--ds-gray-500)' : 'var(--ds-gray-300)') : isOn ? 'var(--ds-blue-500)' : 'var(--ds-gray-400)';
+
   const visualBox = (
     <Box
       aria-hidden='true'
@@ -92,8 +114,8 @@ export function Checkbox({
         height: tokens.box,
         flexShrink: 0,
         borderRadius: 'var(--ds-radius-sm)',
-        border: `1px solid ${disabled ? 'var(--ds-gray-300)' : visualState !== 'off' ? 'var(--ds-blue-500)' : 'var(--ds-gray-400)'}`,
-        backgroundColor: disabled ? 'var(--ds-background-200)' : visualState !== 'off' ? 'var(--ds-blue-500)' : 'var(--ds-background-100)',
+        border: `1px solid ${boxBorder}`,
+        backgroundColor: boxFill,
         transition: 'background-color var(--ds-motion-micro) var(--ds-motion-ease)',
         display: 'inline-flex',
         alignItems: 'center',
@@ -135,6 +157,7 @@ export function Checkbox({
       id={inputId}
       name={name}
       value={value}
+      data-testid={dataTestId}
       checked={checked}
       disabled={disabled}
       aria-label={!hasLabel ? ariaLabel : undefined}

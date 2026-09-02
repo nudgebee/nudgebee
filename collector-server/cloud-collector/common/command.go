@@ -3,8 +3,10 @@ package common
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"syscall"
@@ -71,6 +73,20 @@ type SecureCommandOptions struct {
 	Timeout time.Duration
 }
 
+// killProcessGroup kills the process group led by pid (set up via Setpgid in
+// SecureExecute's ForkExec call). ESRCH means the group is already gone —
+// the child can legitimately finish and be reaped by the concurrent Wait4
+// right as the timeout/cancel fires, which is a benign race, not a failure —
+// so only unexpected errors are logged.
+func killProcessGroup(pid int, reason string) {
+	if pid <= 0 {
+		return
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		slog.Error("command: failed to kill process group", "error", err, "pid", pid, "reason", reason)
+	}
+}
+
 func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, string, error) {
 	// 1. Parse the command string using shlex to safely handle arguments
 	args, err := shlex.Split(opts.Command)
@@ -103,9 +119,13 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 	defer func() { _ = stderrWriter.Close() }()
 
 	// 3. Fork the process
+	// Setpgid puts the child in its own process group (pgid == pid) so the
+	// timeout/cancel paths below can kill the whole group it spawned via
+	// Kill(-pid, ...) instead of targeting a group that doesn't exist.
 	pid, err := syscall.ForkExec(path, args, &syscall.ProcAttr{
 		Env:   append(opts.Env, "PATH="+os.Getenv("PATH")),
 		Files: []uintptr{os.Stdin.Fd(), stdoutWriter.Fd(), stderrWriter.Fd()},
+		Sys:   &syscall.SysProcAttr{Setpgid: true},
 	})
 
 	if err != nil {
@@ -154,14 +174,29 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 			return "", "", fmt.Errorf("failed to wait for child process: %w", werr)
 		}
 	case <-timer.C:
-		// Kill the child process on timeout
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		return "", "", fmt.Errorf("command timed out after %v", timeout)
+		// The child may have finished and been reaped (closing done) in the
+		// instant before this case was chosen — recheck before killing so we
+		// don't send SIGKILL to a pid the OS may have already recycled.
+		select {
+		case <-done:
+			if werr != nil {
+				return "", "", fmt.Errorf("failed to wait for child process: %w", werr)
+			}
+		default:
+			killProcessGroup(pid, "timed-out")
+			return "", "", fmt.Errorf("command timed out after %v", timeout)
+		}
 	case <-ctx.Done():
 		timer.Stop()
-		// Kill the child process on context cancellation
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		return "", "", fmt.Errorf("command cancelled: %w", ctx.Err())
+		select {
+		case <-done:
+			if werr != nil {
+				return "", "", fmt.Errorf("failed to wait for child process: %w", werr)
+			}
+		default:
+			killProcessGroup(pid, "cancelled")
+			return "", "", fmt.Errorf("command cancelled: %w", ctx.Err())
+		}
 	}
 
 	// Wait for pipe reading to complete

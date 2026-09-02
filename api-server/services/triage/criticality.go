@@ -123,9 +123,13 @@ func resolveWorkloadCriticality(ctx context.Context, db *sqlx.DB, account, cloud
 // 'llm_inferred' for an LLM verdict or 'fact_signal' for the deterministic fallback). It NEVER
 // overwrites a user override (the WHERE guard on the DO UPDATE), so operator curation is sticky
 // across re-runs.
-func upsertAutoCriticality(ctx context.Context, db *sqlx.DB, tenant, account, cloudResourceID, namespace, source, level, rationale string, confidence float64, signals map[string]interface{}) {
+//
+// Returns the write error so the caller can count a failed write as failed. Swallowing it here made
+// a schema drift that broke EVERY upsert (a partial unique index the ON CONFLICT can't infer) look
+// like a healthy sweep for 24 days — the job kept reporting rows as tiered while writing none.
+func upsertAutoCriticality(ctx context.Context, db *sqlx.DB, tenant, account, cloudResourceID, namespace, source, level, rationale string, confidence float64, signals map[string]interface{}) error {
 	if db == nil || tenant == "" || account == "" || cloudResourceID == "" || level == "" {
-		return
+		return fmt.Errorf("upsert criticality: incomplete arguments for resource %q", cloudResourceID)
 	}
 	signalsJSON, _ := json.Marshal(signals)
 	_, err := db.ExecContext(ctx, `
@@ -148,5 +152,7 @@ func upsertAutoCriticality(ctx context.Context, db *sqlx.DB, tenant, account, cl
 	if err != nil {
 		slog.WarnContext(ctx, "failed to upsert auto workload criticality",
 			"cloud_resource_id", cloudResourceID, "source", source, "error", err)
+		return err
 	}
+	return nil
 }

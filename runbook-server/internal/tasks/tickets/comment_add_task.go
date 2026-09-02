@@ -54,6 +54,14 @@ func (t *TicketsAddCommentTask) Execute(taskCtx types.TaskContext, params map[st
 		return nil, err
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket comment")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"comment":   comment,
+		}, nil
+	}
+
 	request := ticket.AddTicketCommentRequest{
 		TicketId:      ticketId,
 		Comment:       comment,

@@ -21,15 +21,18 @@ and on-prem installation has been upgraded past the STS-to-Deployment cut.
 {{- $pvcName := printf "%s-storage-%s-0" $fullname $fullname -}}
 {{- $legacyPod := printf "%s-0" $fullname -}}
 {{/*
-Hook image defaults to alpine/k8s:1.32.13 — a conservative kubectl version
-chosen to work across the range of Kubernetes versions customers are
-likely to run. kubectl 1.32 is officially skew-compatible with k8s
-servers 1.31-1.33, and in practice works against 1.28+ for the basic
-core/v1 + apps/v1 operations this hook uses (get/delete sts/pod/pvc,
-rollout status deployment). Override via .Values.migrationHookImage for
-air-gapped environments or when a specific kubectl version is needed.
+Hook image defaults to ghcr.io/nudgebee/alpine-k8s:1.32.13 — our ghcr
+clone of docker.io/alpine/k8s (same digest, copied by
+nudgebee-mirrors/clone-third-party.sh) so the chart pulls nothing from
+Docker Hub. 1.32 is a conservative kubectl version chosen to work across
+the range of Kubernetes versions customers are likely to run. kubectl
+1.32 is officially skew-compatible with k8s servers 1.31-1.33, and in
+practice works against 1.28+ for the basic core/v1 + apps/v1 operations
+this hook uses (get/delete sts/pod/pvc, rollout status deployment).
+Override via .Values.migrationHookImage for air-gapped environments or
+when a specific kubectl version is needed.
 */}}
-{{- $image := default "alpine/k8s:1.32.13" .Values.migrationHookImage -}}
+{{- $image := default "ghcr.io/nudgebee/alpine-k8s:1.32.13" .Values.migrationHookImage -}}
 ---
 apiVersion: v1
 kind: ServiceAccount

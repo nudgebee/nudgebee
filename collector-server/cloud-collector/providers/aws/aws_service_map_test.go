@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
 	"os"
 	"testing"
@@ -11,6 +12,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// enableMultiSourceServicemap flips the global rollout toggle for the duration of a test.
+func enableMultiSourceServicemap(t *testing.T) {
+	t.Helper()
+	prev := config.Config.EnableMultiSourceServicemap
+	config.Config.EnableMultiSourceServicemap = true
+	t.Cleanup(func() { config.Config.EnableMultiSourceServicemap = prev })
+}
 
 func TestAwsServiceMap(t *testing.T) {
 	// Skip if not in integration test mode
@@ -210,9 +219,9 @@ func TestMultiSourceServiceMapFeatureFlag(t *testing.T) {
 		"Multi-source engine should be disabled by default")
 
 	// Test with feature flag enabled
-	t.Setenv("ENABLE_MULTI_SOURCE_SERVICEMAP", "true")
+	enableMultiSourceServicemap(t)
 	assert.True(t, provider.shouldUseMultiSourceEngine(account),
-		"Multi-source engine should be enabled when env var is set")
+		"Multi-source engine should be enabled when the config toggle is set")
 }
 
 // TestMultiSourceServiceMapFallback tests that multi-source engine falls back to legacy
@@ -327,7 +336,7 @@ func TestVPCWideServiceMap(t *testing.T) {
 	}
 
 	// Execute service map query with multi-source engine enabled
-	t.Setenv("ENABLE_MULTI_SOURCE_SERVICEMAP", "true")
+	enableMultiSourceServicemap(t)
 	response, err := provider.QueryServiceMap(ctx, account, request)
 
 	if err != nil {

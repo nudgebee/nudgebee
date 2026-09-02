@@ -38,7 +38,7 @@ env: {}
 # streaming annotations are REQUIRED — without them nginx buffers SSE and applies
 # short timeouts, breaking token streaming and long LLM calls.
 ingress:
-  enabled: true
+  enabled: false
   className: 'nginx'
   annotations:
     nginx.ingress.kubernetes.io/proxy-buffering: 'off'

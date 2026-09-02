@@ -33,12 +33,36 @@ type ConversationModelListApiRequest struct {
 	AccountId string `json:"account_id" mapstructure:"required" validate:"required"`
 }
 
+// ModelPricingListApiRequest carries nothing: prices are tenant-scoped and the
+// tenant comes from the security context. There is deliberately no account —
+// a price applies to every account in the tenant, so scoping the read to one
+// would only invite the idea that it could differ between them.
+type ModelPricingListApiRequest struct{}
+
+// ModelPricingUpsertApiRequest carries the rates a tenant is setting. There is
+// deliberately no tenant_id field: taking it from the request body would let a
+// caller write another tenant's prices.
+type ModelPricingUpsertApiRequest struct {
+	Prices []core.ModelPriceInput `json:"prices"`
+}
+
+// The tenant is never taken from the request — it comes from the security
+// context, so a caller cannot delete another tenant's override by naming it.
+type ModelPricingDeleteApiRequest struct {
+	ProviderName string `json:"provider_name"`
+	ModelName    string `json:"model_name"`
+}
+
 type ConversationReferenceListApiRequest struct {
 	AccountId      string `json:"account_id" mapstructure:"required" validate:"required"`
 	ConversationId string `json:"conversation_id"`
 	MessageId      string `json:"message_id"`
-	AgentId        string `json:"agent_id"`
-	Limit          int    `json:"limit"`
+	// MessageIds batches multiple message ids into one call (e.g. the frontend's
+	// per-conversation batch fetch). Takes precedence over MessageId when both are set;
+	// MessageId stays for existing single-message callers.
+	MessageIds []string `json:"message_ids"`
+	AgentId    string   `json:"agent_id"`
+	Limit      int      `json:"limit"`
 }
 
 func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -96,7 +120,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_models") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -121,7 +145,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// of picks under "tier_overrides". Both modes are mutually exclusive
 		// at the conversation row level.
 		if request.ConversationId != "" {
-			convProvider, convModel, tierOverrides, err := core.GetConversationOverride(request.ConversationId)
+			convProvider, convModel, tierOverrides, pinnedSource, err := core.GetConversationOverride(request.ConversationId)
 			if err == nil && convProvider != "" && convModel != "" {
 				response["current"] = map[string]string{
 					"provider": convProvider,
@@ -136,6 +160,15 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 				// No custom model, current = default
 				response["current"] = response["default"]
 			}
+
+			// A pinned config source is orthogonal to the provider/model override
+			// above — a conversation can carry either, both, or neither — so it's
+			// reported separately. The client matches it against the
+			// ai_list_models rows to recover the slot's display name.
+			if err == nil && pinnedSource != "" {
+				response["config_source"] = pinnedSource
+				response["is_custom"] = true
+			}
 		} else {
 			// No conversation, current = default
 			response["current"] = response["default"]
@@ -143,9 +176,146 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		logger.Info("api: model config retrieved",
 			"conversation_id", request.ConversationId,
-			"is_custom", response["is_custom"])
+			"is_custom", response["is_custom"],
+			"config_source", response["config_source"])
 
 		c.JSON(200, buildApiResponse(response, nil))
+	})
+
+	// bindPricingRequest folds the action-envelope decoding the RPC handlers all
+	// repeat — unwrap input.request, decode into the typed request, then build
+	// the security context — so the two pricing handlers below read as their
+	// authorization and their query, not as 30 lines of boilerplate each.
+	//
+	// Returns ok=false having already written the response, so callers just
+	// return.
+	bindPricingRequest := func(c *gin.Context, tracer trace.Tracer, meter metric.Meter, request any) (*security.RequestContext, bool) {
+		requestMap := make(map[string]any)
+		if err := c.ShouldBindJSON(&requestMap); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			return nil, false
+		}
+		var actionRequest ActionRequest
+		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			return nil, false
+		}
+		payload := actionRequest.Input
+		if payload["request"] != nil {
+			payload, _ = payload["request"].(map[string]any)
+		}
+		if payload == nil {
+			payload = requestMap
+		}
+		if err := common.DecodeMapToStruct(payload, request); err != nil {
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			return nil, false
+		}
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		if err != nil {
+			c.JSON(401, buildApiResponse(nil, []error{err}))
+			return nil, false
+		}
+		return agentContext, true
+	}
+
+	// Tenant-supplied model pricing (V843). Both handlers scope authorization
+	// to the account the UI is showing, but read the tenant from the security
+	// context — a tenant_id in the payload would let a caller price another
+	// tenant's models.
+	groupV2.POST("/ai_list_model_pricing", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_list_model_pricing")
+		var request ModelPricingListApiRequest
+		agentContext, ok := bindPricingRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		sc := agentContext.GetSecurityContext()
+		// Rates are reference data — seeing what a model costs is not privileged
+		// within a tenant, and account admins already read cost dashboards built
+		// from these numbers. Account roles are included to match the grant in
+		// actions.yaml; without them those users reach this handler and get a 403
+		// on a tab they can see. Writing rates stays tenant_admin only.
+		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsAccountAdmin() && !sc.IsAccountReadAdmin() &&
+			!sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
+			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+
+		dbManager, err := common.GetDatabaseManager(common.Metastore)
+		if err != nil {
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		prices, err := core.ListModelPricing(dbManager, sc.GetTenantId())
+		if err != nil {
+			agentContext.GetLogger().Error("api: error listing model pricing", "error", err)
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]any{"prices": prices}, nil))
+	})
+
+	groupV2.POST("/ai_upsert_model_pricing", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_upsert_model_pricing")
+		var request ModelPricingUpsertApiRequest
+		agentContext, ok := bindPricingRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		// A price change applies to every account in the tenant and rewrites
+		// what all of them are billed at, so it is a tenant-admin action —
+		// account-level write access is not enough.
+		if !agentContext.GetSecurityContext().IsTenantAdmin() {
+			c.JSON(403, buildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
+			return
+		}
+
+		dbManager, err := common.GetDatabaseManager(common.Metastore)
+		if err != nil {
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		sc := agentContext.GetSecurityContext()
+		if err := core.UpsertModelPricing(dbManager, sc.GetTenantId(), sc.GetUserId(), request.Prices); err != nil {
+			agentContext.GetLogger().Error("api: error saving model pricing", "error", err)
+			// Validation failures are the caller's fault, so report them as 400
+			// with the message intact rather than a blanket 500.
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]any{"saved": len(request.Prices)}, nil))
+	})
+
+	groupV2.POST("/ai_delete_model_pricing", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_delete_model_pricing")
+		var request ModelPricingDeleteApiRequest
+		agentContext, ok := bindPricingRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		// Removing an override changes what every account in the tenant is
+		// billed at, exactly as setting one does, so it carries the same gate.
+		if !agentContext.GetSecurityContext().IsTenantAdmin() {
+			c.JSON(403, buildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
+			return
+		}
+
+		dbManager, err := common.GetDatabaseManager(common.Metastore)
+		if err != nil {
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		sc := agentContext.GetSecurityContext()
+		removed, err := core.DeleteModelPricing(dbManager, sc.GetTenantId(), request.ProviderName, request.ModelName)
+		if err != nil {
+			agentContext.GetLogger().Error("api: error deleting model pricing", "error", err)
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]any{"removed": removed}, nil))
 	})
 
 	groupV2.POST("/ai_list_models", func(c *gin.Context) {
@@ -196,7 +366,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_models") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -219,18 +389,25 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		defaultProvider := core.GetLLMProvider(agentContext, request.AccountId, "", false, "")
 		defaultModel := core.GetLLMModelName(agentContext, request.AccountId, defaultProvider, "", false, "")
 
-		// Build response. image_support advertises the server's runtime image
-		// capability + limits so the UI can gate the attach affordance and
-		// enforce limits client-side instead of guessing (the flag defaults
-		// off and was previously invisible to clients).
+		// Build response. image_support advertises the server's image limits
+		// so the UI can enforce them client-side instead of guessing. Image
+		// support itself is always on — "enabled" is kept for API
+		// compatibility with clients already reading it.
 		response := map[string]any{
+			// models: flat one-row-per-(slot, model) list. Kept for the
+			// workflow node picker, which only reads provider/model.
 			"models": models,
+			// credentials: the same information collapsed into unique
+			// destinations, each with the models reachable through it. Only the
+			// server can compute this — endpoints and api keys are never
+			// serialized — so clients must not attempt their own grouping.
+			"credentials": core.BuildCredentialsFrom(request.AccountId, models),
 			"default": map[string]string{
 				"provider": defaultProvider,
 				"model":    defaultModel,
 			},
 			"image_support": map[string]any{
-				"enabled":            core.IsImageSupportEnabled(),
+				"enabled":            true,
 				"max_per_message":    core.GetImageMaxPerMessage(),
 				"max_size_mb":        core.GetImageMaxSizeMB(),
 				"allowed_mime_types": core.GetAllowedImageMIMETypes(),
@@ -290,7 +467,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -424,7 +601,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -494,7 +671,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -505,7 +682,12 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			request.Limit = 100
 		}
 
-		references, err := core.GetConversationDao().ListAgentReferences(request.AccountId, request.ConversationId, request.MessageId, request.AgentId, request.Limit)
+		messageIds := request.MessageIds
+		if len(messageIds) == 0 && request.MessageId != "" {
+			messageIds = []string{request.MessageId}
+		}
+
+		references, err := core.GetConversationDao().ListAgentReferences(request.AccountId, request.ConversationId, messageIds, request.AgentId, request.Limit)
 		if err != nil {
 			logger.Error("api: error listing references", "error", err)
 			c.JSON(500, buildApiResponse(nil, []error{

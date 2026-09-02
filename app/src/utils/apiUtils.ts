@@ -46,13 +46,14 @@ export async function fetchData(url: string, token: string | null, requestId: st
 
 export function handleErrorResponse(res: NextApiResponse, error: any, requestId: string): void {
   console.error('API error:', error);
-  res
-    .status(error.status || 500)
-    .setHeader('x-request-id', requestId)
-    .json({
-      code: error.code || 'internal_error',
-      error: error.message || 'Internal Server Error',
-    });
+  if (res.headersSent) {
+    if (!res.writableEnded) res.end();
+    return;
+  }
+  res.status(500).setHeader('x-request-id', requestId).json({
+    code: 'internal_error',
+    error: 'Internal Server Error',
+  });
 }
 
 export function getIdsFromSession(session: Session | null): { userEmail: string } {

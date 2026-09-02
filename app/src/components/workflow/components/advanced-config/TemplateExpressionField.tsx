@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, Menu, MenuItem, ListItemText, ListItemIcon } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
 import { ContentCopy, Check, KeyboardArrowDown, Code } from '@mui/icons-material';
 import { Input } from '@ui/Input';
+import { DropdownMenu, type DropdownMenuItem } from '@ui/DropdownMenu';
 import { CONDITIONAL_PRESETS, FIELD_HELPER_TEXT, FIELD_PLACEHOLDERS } from './advancedConfigPresets';
 import { useCopyToClipboard } from '@components/workflow/hooks/useCopyToClipboard';
 
@@ -31,8 +32,6 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
 }) => {
   const [localValue, setLocalValue] = useState(value || '');
   const { copied, copy } = useCopyToClipboard();
-  const [presetAnchor, setPresetAnchor] = useState<null | HTMLElement>(null);
-  const [taskAnchor, setTaskAnchor] = useState<null | HTMLElement>(null);
 
   const helperText = customHelperText || FIELD_HELPER_TEXT.if || '';
   const placeholder = FIELD_PLACEHOLDERS.if || '';
@@ -53,7 +52,6 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
   const handlePresetSelect = (presetValue: string) => {
     setLocalValue(presetValue);
     onChange(presetValue);
-    setPresetAnchor(null);
   };
 
   const handleTaskSelect = (task: PreviousTask) => {
@@ -61,7 +59,6 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
     const newValue = localValue ? `${localValue} ${template}` : template;
     setLocalValue(newValue);
     onChange(newValue);
-    setTaskAnchor(null);
   };
 
   const insertTemplate = (template: string) => {
@@ -69,6 +66,34 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
     setLocalValue(newValue);
     onChange(newValue);
   };
+
+  // Monospace secondary line for template/expression values (optional color).
+  const mono = (text: string, color?: string) => (
+    <Box component='span' sx={{ fontFamily: 'var(--ds-font-mono)', ...(color ? { color } : {}) }}>
+      {text}
+    </Box>
+  );
+
+  const presetItems: DropdownMenuItem[] = CONDITIONAL_PRESETS.map((preset) => ({
+    label: preset.label,
+    description: mono(preset.value as string, 'var(--ds-brand-500)'),
+    onSelect: () => handlePresetSelect(preset.value as string),
+  }));
+
+  const taskMenuItems: DropdownMenuItem[] = [
+    { type: 'section', label: 'Previous Tasks' },
+    ...previousTasks.map((task) => ({
+      id: task.id,
+      label: task.name || task.id,
+      description: mono(`{{ .Tasks.${task.id}.output }}`),
+      icon: <Code sx={{ fontSize: 'var(--ds-text-body-lg)' }} />,
+      onSelect: () => handleTaskSelect(task),
+    })),
+    { type: 'section', label: 'Common Variables' },
+    { label: 'Automation Inputs', description: mono('{{ .Inputs }}'), onSelect: () => insertTemplate('{{ .Inputs }}') },
+    { label: 'Automation State', description: mono('{{ .State }}'), onSelect: () => insertTemplate('{{ .State }}') },
+    { label: 'Automation Variables', description: mono('{{ .Vars }}'), onSelect: () => insertTemplate('{{ .Vars }}') },
+  ];
 
   return (
     <Box>
@@ -81,96 +106,52 @@ const TemplateExpressionField: React.FC<TemplateExpressionFieldProps> = ({
         </Typography>
         <Box sx={{ display: 'flex', gap: 0.5 }}>
           {/* Preset expressions */}
-          <Button
-            composition='icon-only'
-            tone='ghost'
-            size='xs'
-            tooltip='Preset expressions'
-            aria-label='Preset expressions'
-            disabled={disabled}
-            onClick={(e) => setPresetAnchor(e.currentTarget)}
-            icon={
-              <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
-                <Code sx={{ fontSize: 'var(--ds-text-title)' }} />
-                <KeyboardArrowDown sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
-              </Box>
-            }
-          />
-          <Menu anchorEl={presetAnchor} open={Boolean(presetAnchor)} onClose={() => setPresetAnchor(null)}>
-            {CONDITIONAL_PRESETS.map((preset, index) => (
-              <MenuItem key={index} onClick={() => handlePresetSelect(preset.value as string)} sx={{ minWidth: 250 }}>
-                <ListItemText
-                  primary={preset.label}
-                  secondary={
-                    <Typography component='span' sx={{ fontFamily: 'monospace', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}>
-                      {preset.value as string}
-                    </Typography>
-                  }
-                  primaryTypographyProps={{ fontSize: 'var(--ds-text-body)' }}
-                />
-              </MenuItem>
-            ))}
-          </Menu>
-
-          {/* Previous tasks */}
-          {previousTasks.length > 0 && (
-            <>
+          <DropdownMenu
+            align='end'
+            minWidth={250}
+            // Portal to body (as the original MUI Menu did) so the panel isn't
+            // clipped/mispositioned when this field renders inside a transformed
+            // or overflow-clipped config panel.
+            disablePortal={false}
+            trigger={
               <Button
                 composition='icon-only'
                 tone='ghost'
                 size='xs'
-                tooltip='Insert task reference'
-                aria-label='Insert task reference'
+                tooltip='Preset expressions'
+                aria-label='Preset expressions'
                 disabled={disabled}
-                onClick={(e) => setTaskAnchor(e.currentTarget)}
-                icon={<Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)' }}>{'{{ }}'}</Typography>}
+                icon={
+                  <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
+                    <Code sx={{ fontSize: 'var(--ds-text-title)' }} />
+                    <KeyboardArrowDown sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
+                  </Box>
+                }
               />
-              <Menu anchorEl={taskAnchor} open={Boolean(taskAnchor)} onClose={() => setTaskAnchor(null)}>
-                <MenuItem disabled sx={{ opacity: 0.7 }}>
-                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)' }}>Previous Tasks</Typography>
-                </MenuItem>
-                {previousTasks.map((task) => (
-                  <MenuItem key={task.id} onClick={() => handleTaskSelect(task)}>
-                    <ListItemIcon>
-                      <Code sx={{ fontSize: 'var(--ds-text-body-lg)' }} />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={task.name || task.id}
-                      secondary={`{{ .Tasks.${task.id}.output }}`}
-                      primaryTypographyProps={{ fontSize: 'var(--ds-text-small)' }}
-                      secondaryTypographyProps={{ fontSize: 'var(--ds-text-caption)', fontFamily: 'monospace' }}
-                    />
-                  </MenuItem>
-                ))}
-                <MenuItem disabled sx={{ opacity: 0.7, mt: 1 }}>
-                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)' }}>Common Variables</Typography>
-                </MenuItem>
-                <MenuItem onClick={() => insertTemplate('{{ .Inputs }}')}>
-                  <ListItemText
-                    primary='Automation Inputs'
-                    secondary='{{ .Inputs }}'
-                    primaryTypographyProps={{ fontSize: 'var(--ds-text-small)' }}
-                    secondaryTypographyProps={{ fontSize: 'var(--ds-text-caption)', fontFamily: 'monospace' }}
-                  />
-                </MenuItem>
-                <MenuItem onClick={() => insertTemplate('{{ .State }}')}>
-                  <ListItemText
-                    primary='Automation State'
-                    secondary='{{ .State }}'
-                    primaryTypographyProps={{ fontSize: 'var(--ds-text-small)' }}
-                    secondaryTypographyProps={{ fontSize: 'var(--ds-text-caption)', fontFamily: 'monospace' }}
-                  />
-                </MenuItem>
-                <MenuItem onClick={() => insertTemplate('{{ .Vars }}')}>
-                  <ListItemText
-                    primary='Automation Variables'
-                    secondary='{{ .Vars }}'
-                    primaryTypographyProps={{ fontSize: 'var(--ds-text-small)' }}
-                    secondaryTypographyProps={{ fontSize: 'var(--ds-text-caption)', fontFamily: 'monospace' }}
-                  />
-                </MenuItem>
-              </Menu>
-            </>
+            }
+            items={presetItems}
+          />
+
+          {/* Previous tasks */}
+          {previousTasks.length > 0 && (
+            <DropdownMenu
+              align='end'
+              minWidth={250}
+              // Portal to body (see the preset menu above) — same clipping guard.
+              disablePortal={false}
+              trigger={
+                <Button
+                  composition='icon-only'
+                  tone='ghost'
+                  size='xs'
+                  tooltip='Insert task reference'
+                  aria-label='Insert task reference'
+                  disabled={disabled}
+                  icon={<Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)' }}>{'{{ }}'}</Typography>}
+                />
+              }
+              items={taskMenuItems}
+            />
           )}
 
           <Button

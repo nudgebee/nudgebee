@@ -16,11 +16,11 @@ import (
 // fakeConversationDao embeds IConversationDao so it satisfies the interface
 // while only stubbing the single method recordFailedActionStep persists
 // through (SaveCompletedConversationAgentCall) — the rest are never called.
-type fakeConversationDao struct {
+type failureConversationDao struct {
 	IConversationDao
 }
 
-func (fakeConversationDao) SaveCompletedConversationAgentCall(
+func (failureConversationDao) SaveCompletedConversationAgentCall(
 	_ uuid.UUID,
 	_, _, _, _, _, _, _, _, _, _ string,
 	_ toolcore.NBQueryConfig,
@@ -56,7 +56,7 @@ func newActionFailureTestExecutor(agent NBAgent) *plannerExecutor {
 
 func TestDoIterationParallel_ActionFailureDoesNotAbortIteration(t *testing.T) {
 	prevDao := conversationDao
-	SetConversationDao(fakeConversationDao{})
+	SetConversationDao(failureConversationDao{})
 	t.Cleanup(func() { conversationDao = prevDao })
 
 	toolOk := &MockContextCapturingTool{NameVal: "TOOL_OK", ReturnOutput: "ok-output", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
@@ -113,7 +113,7 @@ func TestDoIterationParallel_ActionFailureDoesNotAbortIteration(t *testing.T) {
 
 func TestDoIterationSequential_ActionFailureRecordsFailedStep(t *testing.T) {
 	prevDao := conversationDao
-	SetConversationDao(fakeConversationDao{})
+	SetConversationDao(failureConversationDao{})
 	t.Cleanup(func() { conversationDao = prevDao })
 
 	toolUnauthorized := &MockContextCapturingTool{NameVal: "TOOL_UNAUTH", ReturnOutput: "never", ReturnStatus: toolcore.NBToolResponseStatusSuccess}

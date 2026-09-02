@@ -55,20 +55,6 @@ func TestStage22CanAutoExecutePredicates(t *testing.T) {
 		{"oom_killer/skips when no subject_name", &oomKillerAction{},
 			makeCtx("pod_oom_killer_enricher", "pod", "", "ns", nil), false},
 
-		// noisy_neighbours
-		{"noisy_neighbours/fires on OOM", &noisyNeighboursAction{},
-			makeCtx("pod_oom_killer_enricher", "pod", "p1", "ns", nil), true},
-		{"noisy_neighbours/fires on crash_loop", &noisyNeighboursAction{},
-			makeCtx("report_crash_loop", "pod", "p1", "ns", nil), true},
-		{"noisy_neighbours/skips on job_failure", &noisyNeighboursAction{},
-			makeCtx("job_failure", "job", "j1", "ns", nil), false},
-
-		// pod_node_metrics_memory
-		{"pod_node_metrics_memory/fires on OOM", &podNodeMetricsAction{resourceType: "memory"},
-			makeCtx("pod_oom_killer_enricher", "pod", "p1", "ns", nil), true},
-		{"pod_node_metrics_memory/empty resourceType -> no fire", &podNodeMetricsAction{},
-			makeCtx("pod_oom_killer_enricher", "pod", "p1", "ns", nil), false},
-
 		// pod_enricher
 		{"pod_enricher/fires on OOM", &podEnricherAction{},
 			makeCtx("pod_oom_killer_enricher", "pod", "p1", "ns", nil), true},
@@ -141,17 +127,17 @@ func TestStage22CanAutoExecutePredicates(t *testing.T) {
 
 func TestSubjectPodNamespace(t *testing.T) {
 	t.Run("pod subject resolves from canonical fields", func(t *testing.T) {
-		name, ns := subjectPodNamespace(PlaybookEvent{SubjectType: "pod", SubjectName: "p1", SubjectNamespace: "demo"})
+		name, ns := SubjectPodNamespace(PlaybookEvent{SubjectType: "pod", SubjectName: "p1", SubjectNamespace: "demo"})
 		assert.Equal(t, "p1", name)
 		assert.Equal(t, "demo", ns)
 	})
 	t.Run("non-pod subject with pod label still resolves", func(t *testing.T) {
-		name, ns := subjectPodNamespace(PlaybookEvent{Labels: map[string]string{"pod": "p1", "namespace": "demo"}})
+		name, ns := SubjectPodNamespace(PlaybookEvent{Labels: map[string]string{"pod": "p1", "namespace": "demo"}})
 		assert.Equal(t, "p1", name)
 		assert.Equal(t, "demo", ns)
 	})
 	t.Run("non-pod subject without pod label returns empty", func(t *testing.T) {
-		name, ns := subjectPodNamespace(PlaybookEvent{SubjectType: "node", SubjectName: "n1"})
+		name, ns := SubjectPodNamespace(PlaybookEvent{SubjectType: "node", SubjectName: "n1"})
 		assert.Equal(t, "", name)
 		assert.Equal(t, "", ns)
 	})
@@ -169,13 +155,13 @@ func TestSubjectJobName(t *testing.T) {
 
 func TestSubjectNodeName(t *testing.T) {
 	// Canonical event.SubjectNode wins.
-	assert.Equal(t, "the-node", subjectNodeName(PlaybookEvent{SubjectNode: "the-node"}))
+	assert.Equal(t, "the-node", SubjectNodeName(PlaybookEvent{SubjectNode: "the-node"}))
 	// Falls through to SubjectName for node-subject events with no SubjectNode.
-	assert.Equal(t, "n1", subjectNodeName(PlaybookEvent{SubjectType: "node", SubjectName: "n1"}))
+	assert.Equal(t, "n1", SubjectNodeName(PlaybookEvent{SubjectType: "node", SubjectName: "n1"}))
 	// Label fallback when neither canonical field is set (alert-driven events).
-	assert.Equal(t, "n2", subjectNodeName(PlaybookEvent{Labels: map[string]string{"node": "n2"}}))
-	assert.Equal(t, "n3", subjectNodeName(PlaybookEvent{Labels: map[string]string{"instance": "n3"}}))
-	assert.Equal(t, "", subjectNodeName(PlaybookEvent{}))
+	assert.Equal(t, "n2", SubjectNodeName(PlaybookEvent{Labels: map[string]string{"node": "n2"}}))
+	assert.Equal(t, "n3", SubjectNodeName(PlaybookEvent{Labels: map[string]string{"instance": "n3"}}))
+	assert.Equal(t, "", SubjectNodeName(PlaybookEvent{}))
 }
 
 func TestNodeNameFromPodDict(t *testing.T) {

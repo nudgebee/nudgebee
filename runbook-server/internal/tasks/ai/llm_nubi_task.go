@@ -38,12 +38,17 @@ func (t *LLMNubiTask) Execute(taskCtx types.TaskContext, params map[string]any) 
 	if err != nil {
 		return nil, err
 	}
+	approvedTools, err := parseApprovedToolsParam(params[approvedToolsParamFieldName])
+	if err != nil {
+		return nil, err
+	}
 	requestContext := taskCtx.GetNewRequestContext()
 	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, sessionScope, llm.LLMRequest{
-		Message:      params["message"].(string),
-		AccountId:    taskCtx.GetAccountID(),
-		LlmProvider:  modelProvider,
-		LlmModelName: modelName,
+		Message:           params["message"].(string),
+		AccountId:         taskCtx.GetAccountID(),
+		LlmProvider:       modelProvider,
+		LlmModelName:      modelName,
+		ToolConfirmations: approvedTools,
 	}))
 
 	if err != nil {
@@ -68,8 +73,9 @@ func (t *LLMNubiTask) InputSchema() *types.Schema {
 				SubType:     "textarea",
 				Order:       1,
 			},
-			modelParamFieldName:        modelInputSchemaProperty(2),
-			sessionScopeParamFieldName: sessionScopeInputSchemaProperty(3),
+			modelParamFieldName:         modelInputSchemaProperty(2),
+			sessionScopeParamFieldName:  sessionScopeInputSchemaProperty(3),
+			approvedToolsParamFieldName: approvedToolsInputSchemaProperty(4),
 		},
 	}
 }

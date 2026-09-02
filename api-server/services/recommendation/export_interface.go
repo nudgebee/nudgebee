@@ -37,6 +37,11 @@ type RecommendationExporter interface {
 
 // GetExporter returns the appropriate exporter for the given category and rule name
 func GetExporter(category string, ruleName string) (RecommendationExporter, error) {
+	// pod_right_sizing rows exist under both RightSizing and Configuration
+	// (requests-unset workloads); the rule dictates the export shape, not the category.
+	if ruleName == "pod_right_sizing" {
+		return &PodRightSizingExporter{}, nil
+	}
 	// Factory pattern to return the correct exporter based on category and rule
 	switch category {
 	case "RightSizing":

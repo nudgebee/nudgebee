@@ -148,6 +148,12 @@ type Mutation {
 }
 
 type Mutation {
+  ai_delete_tool(
+    request: DeleteToolRequest!
+  ): DeleteToolResponse
+}
+
+type Mutation {
   ai_delete_function(
     request: AiDeleteFunctionRequest!
   ): AiDeleteFunctionResponse
@@ -190,15 +196,9 @@ type Mutation {
 }
 
 type Mutation {
-  ai_generate_es_dsl_query(
-    request: AIGetESDslQueryRequest!
-  ): AIGetESDslQueryResponse
-}
-
-type Mutation {
-  ai_generate_loki_query(
-    request: AIGetLokiQueryRequest!
-  ): AIGetLokiQueryResponse
+  ai_generate_log_query(
+    request: AIGetLogQueryRequest!
+  ): AIGetLogQueryResponse
 }
 
 type Mutation {
@@ -275,6 +275,32 @@ type Query {
     account_id: String!
     recommendation_type: String!
     regenerate: Boolean
+  ): AIResponse
+}
+
+type Query {
+  ai_remediation_generate(
+    account_id: String!
+    event_id: String
+    context: String!
+    available_artifacts: [String!]
+  ): AIResponse
+}
+
+type Query {
+  ai_remediation_get(
+    account_id: String!
+    event_id: String
+  ): AIResponse
+}
+
+type Mutation {
+  ai_remediation_execute(
+    account_id: String!
+    event_id: String
+    command: String!
+    config_name: String
+    slot: String
   ): AIResponse
 }
 
@@ -777,6 +803,23 @@ type Mutation {
 }
 
 type Mutation {
+  cloud_list_notification_targets(
+    account_id: String!
+    region: String
+  ): CloudNotificationTargetsResponse
+}
+
+type CloudNotificationTarget {
+  id: String!
+  name: String!
+  type: String!
+}
+
+type CloudNotificationTargetsResponse {
+  targets: [CloudNotificationTarget]
+}
+
+type Mutation {
   accounts_sync(
     account_id: String!
   ): TriggerCloudSyncResponse
@@ -958,6 +1001,94 @@ type Mutation {
   event_get_timeline(
     event_id: String!
   ): EventTimelineOutput
+}
+
+type Mutation {
+  event_get_impact(
+    event_id: String!
+  ): EventGetImpactOutput
+}
+
+type EventGetImpactOutput {
+  event_id: String
+  resolved: Boolean
+  seed: ImpactSeedNode
+  impacted: [ImpactedServiceNode]
+  depends_on: [ImpactedServiceNode]
+  correlated_count: Int
+  dependent_count: Int
+  production_dependents: Int
+  coverage_confidence: String
+  truncated: Boolean
+  assembly: IncidentAssembly
+}
+
+type IncidentAssembly {
+  root_identity: String
+  same_incident: [AssemblyItem]
+  cause: AssemblyCause
+  impact: [AssemblyItem]
+  chronic: [AssemblyItem]
+  window: AssemblyWindow
+  truncated: Boolean
+  seed_occurrences: Int
+}
+
+type AssemblyCause {
+  config_changes: [AssemblyItem]
+  upstream: [AssemblyItem]
+}
+
+type AssemblyItem {
+  event_id: String
+  title: String
+  subject: String
+  aggregation_key: String
+  priority: String
+  sources: [String]
+  occurrence_count: Int
+  relation: String
+  starts_at: String
+  dt_seconds: Int
+  evidence: AssemblyEvidence
+}
+
+type AssemblyEvidence {
+  expected_in_window: Float
+  observed_in_window: Float
+}
+
+type AssemblyWindow {
+  lead_in_s: Int
+  core_s: Int
+  impact_s: Int
+}
+
+type ImpactSeedNode {
+  node_id: String
+  name: String
+  namespace: String
+  type: String
+}
+
+type ImpactedServiceNode {
+  node_id: String
+  name: String
+  node_type: String
+  namespace: String
+  environment: String
+  hops_away: Int
+  relationship: String
+  alerting: Boolean
+  active_alerts: [ImpactAlertRef]
+}
+
+type ImpactAlertRef {
+  event_id: String
+  title: String
+  priority: String
+  source: String
+  starts_at: String
 }
 
 type Mutation {
@@ -1218,6 +1349,12 @@ type Mutation {
   integrations_check_connection_config(
     request: IntegrationTestConnectionConfigRequest!
   ): IntegrationTestConnectionResponse
+}
+
+type Mutation {
+  integrations_upsert_discovery_target(
+    request: DiscoveryTargetRequest!
+  ): DiscoveryTargetResponse
 }
 
 type Query {
@@ -1666,6 +1803,12 @@ type Mutation {
 }
 
 type Mutation {
+  security_scan_vm(
+    object: security_scan_vm_input!
+  ): security_scan_vm_output
+}
+
+type Mutation {
   slo_config_create(
     request: SLOCreateRequest!
   ): SLOResponse
@@ -1681,6 +1824,12 @@ type Mutation {
   slo_config_update(
     request: SLOUpdateRequest!
   ): SLOUpdateConfigResponse
+}
+
+type Mutation {
+  slo_config_delete(
+    request: SLODeleteRequest!
+  ): SLODeleteConfigResponse
 }
 
 type Query {
@@ -2189,6 +2338,19 @@ type Query {
     request: WorkflowExecutionCountRequest!
   ): WorkflowExecutionCountResponse
 }
+
+type Query {
+  executions_list(
+    request: AccountExecutionListRequest!
+  ): AccountExecutionListResponse
+}
+
+type Query {
+  executions_aggregate(
+    request: ExecutionAggregateRequest!
+  ): ExecutionAggregateResponse
+}
+
 
 type Query {
   workflow_get_template(
@@ -3118,6 +3280,12 @@ input security_scan_image_input {
   namespace: String!
 }
 
+input security_scan_vm_input {
+  account_id: String!
+  datasource_id: String!
+  cloud_resource_id: String!
+}
+
 input tenant_user_roles_upsert_one_input {
   user_id: String!
   role: String!
@@ -3256,12 +3424,14 @@ input RecommendationGroupingWhereRequest {
   resource_cloud_service: QueryWhereStringRequest
   resource_name: QueryWhereStringRequest
   timestamp: QueryWhereDatetimeRequest
+  updated_at: QueryWhereDatetimeRequest
   estimated_savings: QueryWhereFloatRequest
   account_object_id: QueryWhereStringRequest
   recommendation: QueryWhereStringRequest
   severity: QueryWhereStringRequest
   deleted_version: QueryWhereStringRequest
   deprecated_version: QueryWhereStringRequest
+  safety_band: QueryWhereStringRequest
 }
 
 input auto_runbook_manual_run_request {
@@ -3458,6 +3628,14 @@ input SLOConfigUpdateRequest {
   threshold: Float
   goal: Float
   enabled: Boolean!
+}
+
+input SLODeleteRequest {
+  cloud_account_id: String!
+  workload_name: String!
+  namespace: String!
+  # Optional: narrows the delete to one SLI ("availability" | "latency").
+  name: String
 }
 
 input AWSCloudFormationInput {
@@ -3699,6 +3877,7 @@ input RecommendationWhereRequest {
   deleted_version: QueryWhereStringRequest
   deprecated_version: QueryWhereStringRequest
   is_primary_recommendation: QueryWhereBooleanRequest
+  safety_band: QueryWhereStringRequest
 }
 
 input RecommendationMissConfigGroupingWhereRequest {
@@ -3849,11 +4028,12 @@ input AIGetPrometheusQueryRequest {
   async: Boolean
 }
 
-input AIGetLokiQueryRequest {
+input AIGetLogQueryRequest {
   account_id: String!
   query: String!
   user_id: String
   async: Boolean
+  log_provider: String
 }
 
 input AiFeedbackCreateRequest {
@@ -3876,13 +4056,6 @@ input GetInvestigateQueryRequest {
   session_id: String
   async: Boolean!
   config: AIConfigInput
-}
-
-input AIGetESDslQueryRequest {
-  account_id: String!
-  query: String!
-  user_id: String
-  async: Boolean
 }
 
 input auto_pilot_policy_delete_input {
@@ -4025,6 +4198,11 @@ input DeleteIntegrationConfigRequest {
 
 input IntegrationTestConnectionRequest {
   integration_id: String!
+}
+
+input DiscoveryTargetRequest {
+  integration_id: String!
+  cloud_account_id: String!
 }
 
 input IntegrationTestConnectionConfigRequest {
@@ -4557,7 +4735,13 @@ input WorkflowTaskDefinitionListRequest {
 }
 
 input WorkflowListRequest {
-  account_id: String!
+  """
+  Account filter. Omit both to list across every account the caller can read —
+  the Automations page is tenant-level. account_id is the legacy single-account
+  form, still sent by `/automation?accountId=` deep links.
+  """
+  account_ids: [String!]
+  account_id: String
   name: String
   tags: String
   limit: Int
@@ -4574,7 +4758,12 @@ input WorkflowGetRequest {
 }
 
 input WorkflowCountRequest {
-  account_id: String!
+  """
+  Same optional account filter as WorkflowListRequest, so a count always matches
+  the listing it labels.
+  """
+  account_ids: [String!]
+  account_id: String
   status: String
   trigger_type: String
 }
@@ -4599,6 +4788,8 @@ input WorkflowRequest {
   name: String!
   status: String
   created_from_session_id: String
+  description: String
+  ai_invocable: Boolean
 }
 
 input WorkflowDefinitionRequest {
@@ -4611,6 +4802,7 @@ input WorkflowDefinitionRequest {
   retry_policy: WorkflowDefinitionRetryPolicyRequest
   timeout: String
   layout: WorkflowDefinitionLayoutRequest
+  llm_description: String
 }
 
 input WorkflowDefinitionLayoutRequest {
@@ -4708,6 +4900,45 @@ input WorkflowExecutionListForEventRequest {
   event_id: String!
 }
 
+# Cross-automation execution dashboard. Unlike WorkflowExecutionListRequest
+# there is no required automation id, filters are multi-select, and the window
+# is bounded by a date range.
+input AccountExecutionListRequest {
+  """
+  Account filter. Omit both to span every account the caller can read — the
+  Executions tab is tenant-level. account_id is the legacy single-account form.
+  """
+  account_ids: [String!]
+  account_id: String
+  start_date: timestamp
+  end_date: timestamp
+  workflow_ids: [String!]
+  triggered_by: [String!]
+  statuses: [String!]
+  trigger_types: [String!]
+  limit: Int
+  page: Int
+  next_page_token: String
+  include_failure_reason: Boolean
+}
+
+input ExecutionAggregateRequest {
+  """
+  Account filter. Omit both to span every account the caller can read — the
+  Executions tab is tenant-level. account_id is the legacy single-account form.
+  """
+  account_ids: [String!]
+  account_id: String
+  start_date: timestamp
+  end_date: timestamp
+  workflow_ids: [String!]
+  triggered_by: [String!]
+  statuses: [String!]
+  trigger_types: [String!]
+  top_failed_limit: Int
+}
+
+
 input WorkflowExecutionGetRequest {
   account_id: String!
   id: String!
@@ -4736,6 +4967,7 @@ input FetchLogQueryRequest {
   log_provider_source: String
   start_time: bigint
   end_time: bigint
+  limit: Int
 }
 
 input WorkflowDeleteRequest {
@@ -5051,6 +5283,7 @@ input ListAIMemoryRequest {
   account_id: String!
   conversation_id: String
   message_id: String
+  message_ids: [String]
   limit: Int
   offset: Int
   memory_type: String
@@ -5097,6 +5330,7 @@ input ListAIReferencesRequest {
   account_id: String!
   conversation_id: String
   message_id: String
+  message_ids: [String]
   agent_id: String
   limit: Int
   offset: Int
@@ -5268,6 +5502,7 @@ input AgentHealthWhereRequest {
 
 input ValidateCloudCredentialsInput {
   cloud_provider: String!
+  account_id: String
   tenant_id: String
   client_id: String
   client_secret: String
@@ -6157,6 +6392,7 @@ type EventGroupingsRowResponse {
   latest_computed_priority: String
   latest_nb_status: String
   latest_title: String
+  latest_snoozed_until: Datetime
   nb_status: String
   nb_status_changed_at: Datetime
   nb_status_changed_by: String
@@ -6452,6 +6688,10 @@ type security_scan_image_output {
   data: [jsonb]!
 }
 
+type security_scan_vm_output {
+  data: [jsonb]!
+}
+
 type tenant_user_roles_upsert_one_output {
   status: String!
   message: String!
@@ -6587,7 +6827,11 @@ type RecommendationGroupingRowResponse {
   count: Int
   sum_estimated_savings: Float
   severity: String
+  safety_band: String
   account_object_id: String
+  vuln_id: String
+  package_name: String
+  max_severity_weight: Float
 }
 
 type auto_runbook_manual_run_response {
@@ -6797,6 +7041,14 @@ type SLOConfigListResponse {
 
 type SLOUpdateConfigResponse {
   data: SLOUpdateResponse!
+}
+
+type SLODeleteResponse {
+  success: Boolean!
+}
+
+type SLODeleteConfigResponse {
+  data: SLODeleteResponse!
 }
 
 type AWSCloudFormationOutput {
@@ -7056,6 +7308,7 @@ type RecommendationRowResponse {
   rule_name: String
   dismissed_reason: String
   is_dismissed: Boolean
+  snoozed_until: Datetime
   account_object_id: String
   updated_by: String
   resource_k8s_namespace: String
@@ -7072,6 +7325,10 @@ type RecommendationRowResponse {
   finops_score: Int
   finops_band: String
   finops_score_breakdown: Json
+  safety_band: String
+  severity_weight: Int
+  vuln_id: String
+  package_name: String
 }
 
 type generate_cluster_recommendations_output {
@@ -7249,7 +7506,7 @@ type AIGetPrometheusQuery {
   session_id: String
 }
 
-type AIGetLokiQueryResponse {
+type AIGetLogQueryResponse {
   data: AIGetPrometheusQuery!
 }
 
@@ -7259,10 +7516,6 @@ type GenerateFeedbackResponse {
 
 type FeedbackResponse {
   success: Boolean!
-}
-
-type AIGetESDslQueryResponse {
-  data: AIGetPrometheusQuery!
 }
 
 type auto_pilot_policy_delete_output {
@@ -7403,6 +7656,10 @@ type CreateIntegrationConfigResponse {
 }
 
 type DeleteIntegrationConfigResponse {
+  status: String!
+}
+
+type DiscoveryTargetResponse {
   status: String!
 }
 
@@ -7794,6 +8051,10 @@ type FetchLogResponse {
 type OutputLogLabel {
   label: String!
   attributes: jsonb
+  # Provider-independent normalization of attributes:
+  # "string" | "number" | "bool" | "timestamp" | "unknown".
+  # Used to offer only the operators the label's type supports.
+  data_type: String
 }
 
 type OutputLogLabelValue {
@@ -7936,6 +8197,9 @@ type OperatorDescriptor {
   chip_label: String
   line_label: String
   kinds: [String!]!
+  # Label data types this operator accepts. Clients intersect this with the
+  # provider's supported operators to build a per-label operator menu.
+  applicable_data_types: [String!]
 }
 
 type AvailableProvider {
@@ -8263,6 +8527,8 @@ type Workflow {
   created_at: timestamp
   updated_at: timestamp
   created_from_session_id: String
+  description: String
+  ai_invocable: Boolean
 }
 
 type WorkflowDefinition {
@@ -8275,6 +8541,7 @@ type WorkflowDefinition {
   retry_policy: WorkflowDefinitionRetryPolicy
   timeout: String
   layout: WorkflowDefinitionLayout
+  llm_description: String
 }
 
 type WorkflowDefinitionLayout {
@@ -8413,6 +8680,52 @@ type WorkflowExecutionSummary {
   version: Int
   version_number: Int
 }
+
+# A dashboard row: the standard summary plus the fields Temporal's visibility
+# store cannot supply on its own (user display name, duration, failure reason).
+type AccountExecutionSummary {
+  account_id: String
+  workflow_id: String!
+  id: String!
+  status: String!
+  start_time: timestamp
+  close_time: timestamp
+  triggered_by: String
+  trigger_type: String
+  parent_workflow_id: String
+  workflow_name: String
+  version: Int
+  version_number: Int
+  duration_ms: Float
+  user_name: String
+  failure_reason: String
+}
+
+type AccountExecutionListResponse {
+  executions: [AccountExecutionSummary!]
+  next_page_token: String
+  total_count: Float
+  total_is_approximate: Boolean
+}
+
+type FailedAutomationCount {
+  workflow_id: String!
+  workflow_name: String
+  failure_count: Float
+}
+
+type ExecutionAggregateResponse {
+  total: Float
+  succeeded: Float
+  failed: Float
+  running: Float
+  counts_are_approximate: Boolean
+  top_failed: [FailedAutomationCount!]
+  top_failed_is_approximate: Boolean
+  retention_days: Int
+}
+
+
 
 
 type WorkflowUpdateResponse {
@@ -8799,11 +9112,21 @@ type kg_get_filter_options_output {
 
 type kg_filter_options {
   account_ids: [String]
-  node_types: [String]
+  node_types: jsonb
   label_keys: [String]
   attribute_keys: [String]
   last_sync_time: timestamptz
-  node_id_map: jsonb
+  node_keys: [String]
+  node_ids: [String]
+  node_account_idx: jsonb
+  node_specific_type_idx: jsonb
+  node_cluster_idx: jsonb
+  node_bucket_idx: jsonb
+  specific_type_dict: [String]
+  cluster_dict: [String]
+  filter_buckets: jsonb
+  label_key_buckets: jsonb
+  attribute_key_buckets: jsonb
   node_count: Int
 }
 
@@ -9174,6 +9497,7 @@ type AIReferenceResponse {
   reference_id: String
   type: String
   content: String
+  metadata: Json
   used: Boolean
   used_by_agent: String
   created_at: timestamp
@@ -9282,6 +9606,8 @@ type ThresholdSuggestionDetail {
   recommendation_type: String
   suggested_duration: Int
   duration_reason: String
+  risk_level: String
+  risk_warnings: [String!]
 }
 
 type ThresholdSuggestionListOutput {
@@ -11115,6 +11441,99 @@ type CloudResourcesListRowResponse {
 }
 
 type Query {
+  cloud_vm_packages_v2(
+    where: CloudVmPackagesWhereRequest
+    limit: Int
+    offset: Int
+    order_by: [QuerySortByRequest!]
+    columns: [String!]
+  ): CloudVmPackagesResponse
+}
+
+input CloudVmPackagesWhereRequest {
+  _and: [CloudVmPackagesWhereRequest]
+  _or: [CloudVmPackagesWhereRequest]
+  _not: CloudVmPackagesWhereRequest
+  id: QueryWhereStringRequest
+  tenant_id: QueryWhereStringRequest
+  account_id: QueryWhereStringRequest
+  cloud_resource_id: QueryWhereStringRequest
+  os_family: QueryWhereStringRequest
+  os_version: QueryWhereStringRequest
+  pkg_type: QueryWhereStringRequest
+  name: QueryWhereStringRequest
+  version: QueryWhereStringRequest
+  arch: QueryWhereStringRequest
+  source_name: QueryWhereStringRequest
+  is_active: QueryWhereBooleanRequest
+  last_seen_at: QueryWhereDatetimeRequest
+}
+
+type CloudVmPackagesResponse {
+  rows: [CloudVmPackagesRowResponse]
+}
+
+type CloudVmPackagesRowResponse {
+  id: String
+  tenant_id: String
+  account_id: String
+  cloud_resource_id: String
+  os_family: String
+  os_version: String
+  pkg_type: String
+  name: String
+  version: String
+  arch: String
+  epoch: Int
+  source_name: String
+  source_version: String
+  is_active: Boolean
+  first_seen_at: Datetime
+  last_seen_at: Datetime
+  updated_at: Datetime
+}
+
+type Query {
+  cloud_vm_package_groupings_v2(
+    where: CloudVmPackageGroupingsWhereRequest
+    limit: Int
+    offset: Int
+    order_by: [QuerySortByRequest!]
+    columns: [String!]
+    group_by: [String!]
+  ): CloudVmPackageGroupingsResponse
+}
+
+input CloudVmPackageGroupingsWhereRequest {
+  _and: [CloudVmPackageGroupingsWhereRequest]
+  _or: [CloudVmPackageGroupingsWhereRequest]
+  _not: CloudVmPackageGroupingsWhereRequest
+  tenant_id: QueryWhereStringRequest
+  account_id: QueryWhereStringRequest
+  cloud_resource_id: QueryWhereStringRequest
+  os_family: QueryWhereStringRequest
+  os_version: QueryWhereStringRequest
+  pkg_type: QueryWhereStringRequest
+  name: QueryWhereStringRequest
+  is_active: QueryWhereBooleanRequest
+  last_seen_at: QueryWhereDatetimeRequest
+}
+
+type CloudVmPackageGroupingsResponse {
+  rows: [CloudVmPackageGroupingsRowResponse]
+}
+
+type CloudVmPackageGroupingsRowResponse {
+  account_id: String
+  cloud_resource_id: String
+  os_family: String
+  os_version: String
+  pkg_type: String
+  count: Int
+  max_last_seen_at: Datetime
+}
+
+type Query {
   ai_list_conversations(
     where: LlmConversationListWhereRequest
     limit: Int
@@ -11760,6 +12179,123 @@ type AILlmWatchCancelData {
   affected_rows: Int!
   watch_id: String
   status: String
+}
+
+"""
+Custom Dashboards. `definition` and `match_value` stay `Json` — the panel
+document is read and written as a whole and has no fixed field set, so
+enumerating it in SDL would only create a second schema to keep in sync.
+"""
+type Query {
+  dashboards_list(request: DashboardListRequest!): [Dashboard]
+}
+
+type Query {
+  dashboards_get(request: DashboardGetRequest!): DashboardGetResponse
+}
+
+type Query {
+  dashboards_list_contextual(request: DashboardResolveRequest!): [Dashboard]
+}
+
+type Query {
+  dashboards_list_versions(request: DashboardGetRequest!): [DashboardVersion]
+}
+
+type Mutation {
+  dashboards_create(request: DashboardSaveRequest!): Dashboard
+}
+
+type Mutation {
+  dashboards_update(request: DashboardSaveRequest!): Dashboard
+}
+
+type Mutation {
+  dashboards_delete(request: DashboardDeleteRequest!): DashboardDeleteResponse
+}
+
+input DashboardListRequest {
+  search: String
+  limit: Int
+  offset: Int
+}
+
+input DashboardGetRequest {
+  id: String!
+}
+
+input DashboardDeleteRequest {
+  id: String!
+}
+
+input DashboardResolveRequest {
+  account_id: String!
+  scope_type: String!
+  name: String
+  namespace: String
+  app_type: String
+}
+
+input DashboardBindingInput {
+  scope_type: String!
+  match_kind: String!
+  match_value: Json
+  priority: Int
+}
+
+input DashboardSaveRequest {
+  id: String
+  title: String!
+  description: String
+  definition: Json
+  tags: [String]
+  status: String
+  message: String
+  bindings: [DashboardBindingInput]
+}
+
+type Dashboard {
+  id: String!
+  tenant_id: String
+  slug: String
+  title: String
+  description: String
+  definition: Json
+  schema_version: Int
+  tags: Json
+  status: String
+  is_builtin: Boolean
+  created_by: String
+  updated_by: String
+  created_at: Datetime
+  updated_at: Datetime
+  version: Int
+}
+
+type DashboardBinding {
+  id: String
+  dashboard_id: String
+  scope_type: String
+  match_kind: String
+  match_value: Json
+  priority: Int
+}
+
+type DashboardGetResponse {
+  dashboard: Dashboard
+  bindings: [DashboardBinding]
+}
+
+type DashboardVersion {
+  version: Int
+  message: String
+  created_by: String
+  created_at: Datetime
+}
+
+type DashboardDeleteResponse {
+  id: String
+  deleted: Boolean
 }
 
 scalar Datetime

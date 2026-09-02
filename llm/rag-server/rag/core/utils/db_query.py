@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import uuid
 from collections import defaultdict
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -324,6 +325,76 @@ def get_first_active_account_for_tenant(tenant_id):
             return row.id if row else None
     except Exception as e:
         logger.exception("Error fetching first account for tenant %s: %s", tenant_id, e)
+        return None
+
+
+def _as_uuid_str(value):
+    """Return ``value`` as a canonical UUID string, or None if it isn't one.
+
+    The scope identifiers reaching search are plain strings and are compared
+    against ``uuid`` columns. Sentinels like ``"global"`` or ``""`` would make
+    Postgres raise ``invalid input syntax for type uuid``; screening them here
+    keeps the query indexable (no ``::text`` casts) and keeps a non-UUID scope
+    from looking like a database failure.
+    """
+    try:
+        return str(uuid.UUID(str(value)))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def get_live_kb_collection_names(account_id, tenant_id):
+    """Vector-collection names still backed by a live knowledge base.
+
+    Returns the set of collection names that ``account_id`` / ``tenant_id`` may
+    search, derived from surviving ``llm_knowledgebases`` rows:
+
+    - manual KBs      → ``kb_<kb_id>``                  (knowledgebase_controller)
+    - integration KBs → ``<integration_id>_knowledge_base`` (scraper)
+
+    The gate is ``status != 'archived'``, not ``status = 'active'``. Archived is
+    the only status that means "this content should stop being served";
+    ``processing`` and ``error`` are transient load states on a KB whose
+    previously-indexed documents are still the best we have. Requiring 'active'
+    would blank a customer's whole Confluence KB out of search on one failed
+    nightly scrape — a worse failure than the stale collections this filter
+    exists to remove.
+
+    Integration rows additionally require their integration to still exist and
+    be ``enabled``. Row status alone would get there eventually — llm-server's
+    kb_sync archives KBs of ineligible integrations — but that reconcile is
+    asynchronous, and search must not serve a disabled integration's content
+    while it catches up.
+
+    Returns ``None`` when the scope can't be resolved (neither identifier is a
+    UUID) or the query fails. Callers treat ``None`` as "don't filter", so a
+    database blip degrades to today's behaviour instead of emptying search.
+    """
+    account_uuid = _as_uuid_str(account_id)
+    tenant_uuid = _as_uuid_str(tenant_id)
+    if not account_uuid and not tenant_uuid:
+        return None
+    try:
+        with engine.connect() as connection:
+            query = text("""
+                SELECT kb.id, kb.integration_id
+                FROM llm_knowledgebases kb
+                LEFT JOIN integrations i ON kb.integration_id = i.id
+                WHERE kb.status != 'archived'
+                  AND (kb.account_id = :account_id OR kb.tenant_id = :tenant_id)
+                  AND (kb.integration_id IS NULL OR i.status = 'enabled')
+            """)
+            result = connection.execute(query, {"account_id": account_uuid, "tenant_id": tenant_uuid})
+
+            names = set()
+            for row in result:
+                if row.integration_id:
+                    names.add(f"{row.integration_id}_knowledge_base")
+                else:
+                    names.add(f"kb_{row.id}")
+            return names
+    except Exception as e:
+        logger.exception("Error fetching live knowledge bases for account %s / tenant %s: %s", account_id, tenant_id, e)
         return None
 
 

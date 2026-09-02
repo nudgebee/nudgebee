@@ -354,8 +354,10 @@ func CreateAccountMapping(ctx *security.RequestContext, request CreateAccountMap
 	if err := common.ValidateStruct(request); err != nil {
 		return AccountMappingResponse{}, err
 	}
-	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
-		return AccountMappingResponse{}, common.ErrorUnauthorized("Only tenant admins can map integration accounts")
+	// tenant_admin (built-in) OR a users:Write custom grant — mapping a person to
+	// an integration account is user administration, not privilege administration.
+	if !canAdministerUsers(ctx.GetSecurityContext()) && !ctx.GetSecurityContext().IsSuperAdmin() {
+		return AccountMappingResponse{}, common.ErrorUnauthorized("Not allowed to map integration accounts")
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if tenantId == "" {
@@ -402,8 +404,8 @@ func DeleteAccountMapping(ctx *security.RequestContext, request DeleteAccountMap
 	if err := common.ValidateStruct(request); err != nil {
 		return AccountMappingResponse{}, err
 	}
-	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
-		return AccountMappingResponse{}, common.ErrorUnauthorized("Only tenant admins can unmap integration accounts")
+	if !canAdministerUsers(ctx.GetSecurityContext()) && !ctx.GetSecurityContext().IsSuperAdmin() {
+		return AccountMappingResponse{}, common.ErrorUnauthorized("Not allowed to unmap integration accounts")
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if tenantId == "" {

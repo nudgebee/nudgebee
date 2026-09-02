@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
-import { TextField, Typography, Box, InputAdornment, Radio, RadioGroup, FormControlLabel } from '@mui/material';
+import { Typography, Box, Radio, RadioGroup, FormControlLabel } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
+import { Input } from '@ui/Input';
 import apiRecommendations from '@api1/recommendation';
-import yaml from 'js-yaml';
-import CustomTable from '@shared/tables/CustomTable2';
+import * as yaml from 'js-yaml';
+import CustomTable from '@shared/tables/CustomTable';
 import PropTypes from 'prop-types';
 import { Button } from '@ui/Button';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import { ds } from '@utils/colors';
 
@@ -40,48 +41,22 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
   const aggregationKey = row?.aggregation_key;
 
   const getNestedValue = (obj, path) => {
-    const parts = path.split(/(?<!\[[^\]]*)\./);
-    let acc = obj;
-    for (let i = 0; i < parts.length; i++) {
-      if (acc == null || typeof acc !== 'object') {
+    return path.split(/(?<!\[[^\]]*)\./).reduce((acc, part) => {
+      if (!acc) {
         return '';
       }
-      const part = parts[i];
-      const arrayMatch = part.match(/^(.+?)\[(\d+)\]$/);
+      let arrayMatch = part.match(/^(.+?)\[(\d+)\]$/);
       if (arrayMatch) {
         const [, key, index] = arrayMatch;
-        acc = acc[key] ? acc[key][Number(index)] : '';
-        continue;
+        return acc[key] ? acc[key][Number(index)] : '';
       }
-      const bracketMatch = part.match(/^(.+?)\['(.+)'\]$/);
+      let bracketMatch = part.match(/^(.+?)\['(.+)'\]$/);
       if (bracketMatch) {
         const [, key, innerKey] = bracketMatch;
-        acc = acc[key] ? acc[key][innerKey] : '';
-        continue;
+        return acc[key] ? acc[key][innerKey] : '';
       }
-      if (part in acc) {
-        acc = acc[part];
-        continue;
-      }
-      // k8s annotation/label keys contain dots & slashes (e.g.
-      // `kubectl.kubernetes.io/restartedAt`) and get over-split by the `.` split
-      // above. Greedily rejoin the longest remaining run of parts that exists as a
-      // single literal key.
-      let matched = false;
-      for (let j = parts.length; j > i + 1; j--) {
-        const joined = parts.slice(i, j).join('.');
-        if (joined in acc) {
-          acc = acc[joined];
-          i = j - 1;
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        return '';
-      }
-    }
-    return acc ?? '';
+      return acc[part];
+    }, obj);
   };
 
   const renderConditionalFields = () => {
@@ -133,22 +108,13 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
           {existingVolume && <Typography>Current storage size: {existingVolume}</Typography>}
           <Box display={'grid'} gridTemplateColumns={'1fr 1fr'} gap={ds.space[3]}>
-            <TextField
-              value={requestBody.value}
+            <Input
+              value={requestBody.size || ''}
               label='Increase Volume To'
               type='number'
-              onChange={(e) => setRequestBody({ size: e.target.value })}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment
-                    position='end'
-                    sx={{ '& p': { color: 'var(--ds-brand-300)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' } }}
-                  >
-                    Gi
-                  </InputAdornment>
-                ),
-              }}
-              size='small'
+              onChange={(value) => setRequestBody({ size: value })}
+              suffix='Gi'
+              size='sm'
               required
             />
           </Box>
@@ -163,12 +129,12 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
                 value='size'
                 control={<Radio />}
                 label={
-                  <TextField
+                  <Input
                     value={requestBody.size || ''}
                     label={aggregationKey === 'CPUThrottlingHigh' ? 'Increase CPU To' : 'Increase Memory To'}
                     type='number'
-                    onChange={(e) => setRequestBody({ size: e.target.value, increase_replicas: '', restart: false, revert: false })}
-                    size='small'
+                    onChange={(value) => setRequestBody({ size: value, increase_replicas: '', restart: false, revert: false })}
+                    size='sm'
                   />
                 }
               />
@@ -176,12 +142,12 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
                 value='increase_replicas'
                 control={<Radio />}
                 label={
-                  <TextField
+                  <Input
                     value={requestBody.increase_replicas || ''}
                     label='Increase Replicas'
                     type='number'
-                    onChange={(e) => setRequestBody({ size: '', increase_replicas: e.target.value, restart: false, revert: false })}
-                    size='small'
+                    onChange={(value) => setRequestBody({ size: '', increase_replicas: value, restart: false, revert: false })}
+                    size='sm'
                   />
                 }
               />
@@ -233,41 +199,37 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
           <Typography>Mention Container Name and Image Tag to change</Typography>
           <br />
           <Box display={'grid'} gridTemplateColumns={'1fr 1fr'} gap={ds.space[3]}>
-            <TextField
+            <Input
               value={requestBody.imageChangeContainerName || ''}
               label='Container Name'
               type='text'
-              onChange={(e) => {
+              onChange={(value) => {
                 setRequestBody((prev) => ({
                   ...prev,
-                  imageChangeContainerName: e.target.value,
+                  imageChangeContainerName: value,
                   revert: false,
                 }));
                 setValidationError((prev) => ({ ...prev, imageChangeContainerName: '' }));
               }}
-              size='small'
-              sx={{ width: '100%' }}
+              size='sm'
               required
-              helperText={validationError.imageChangeContainerName}
-              error={!!validationError.imageChangeContainerName}
+              error={validationError.imageChangeContainerName || undefined}
             />
-            <TextField
+            <Input
               value={requestBody.imageNameWithTag || ''}
               label='Image (with Tag)'
               type='text'
-              onChange={(e) => {
+              onChange={(value) => {
                 setRequestBody((prev) => ({
                   ...prev,
-                  imageNameWithTag: e.target.value,
+                  imageNameWithTag: value,
                   revert: false,
                 }));
                 setValidationError((prev) => ({ ...prev, imageNameWithTag: '' }));
               }}
-              size='small'
-              sx={{ width: '100%' }}
+              size='sm'
               required
-              helperText={validationError.imageNameWithTag}
-              error={!!validationError.imageNameWithTag}
+              error={validationError.imageNameWithTag || undefined}
             />
           </Box>
         </div>
@@ -375,7 +337,7 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
           },
         }}
       >
-        <Button tone='secondary' size='md' onClick={handleClose}>
+        <Button size='md' onClick={handleClose} tone='secondary'>
           Cancel
         </Button>
         <Button size='md' onClick={handleSubmit} loading={loading}>

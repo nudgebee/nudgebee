@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 import recommendationApi, { RECOMMENDATION_STATUS } from '@api1/recommendation';
@@ -25,7 +25,7 @@ import { Link as CustomLink } from '@ui/Link';
 import EmptyData from '@shared/EmptyData';
 import Link from 'next/link';
 import { DataNotAvailable } from '@assets';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { latestUpdatedAt } from 'src/utils/common';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
@@ -163,10 +163,7 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
   const [recommendationStatus, setRecommendationStatus] = useState('Open');
   const [selectedNamespace, setSelectedNamespace] = useState(router?.query?.namespace || '');
   const [selectedAccountId, setSelectedAccountId] = useState(props?.kubernetes?.id);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   useEffect(() => {
     setSelectedAccountId(props?.kubernetes?.id);
@@ -222,6 +219,7 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
   const [namespaces, setNamespaces] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const rawPVCRef = useRef([]);
 
   useEffect(() => {
     if (router.isReady && router.query.namespace) {
@@ -265,6 +263,142 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
     listPVCRightSizingRecommendations();
   }, [selectedAccountId, page, recommendationStatus, selectedNamespace, rowsPerPage, accounts.length]);
 
+  const buildRow = (item) => {
+    let data = [];
+    let name = item?.recommendation?.spec?.claimRef?.name;
+    let nameSpace = item?.recommendation?.spec?.claimRef?.namespace;
+
+    data.push({
+      component: (
+        <>
+          <Text value={name} showAutoEllipsis />
+          {nameSpace && <Text value={nameSpace} secondaryText />}
+          {isOptimisePage && (
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
+              <Text value={'acc: '} secondaryText />
+              <CustomLink
+                href={{
+                  pathname: `/kubernetes/details/${item.account_id}`,
+                }}
+                target='_blank'
+                secondaryText
+              >
+                {getAccountName(item.account_id)}
+              </CustomLink>
+            </Box>
+          )}
+          {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
+        </>
+      ),
+      drilldownQuery: {
+        data: item,
+        pvcName: item?.recommendation?.spec?.claimRef?.name,
+        namespaceName: nameSpace,
+        recommendation: item,
+      },
+    });
+    data.push({
+      component: <Memory value={item?.recommendation?.recommendation?.capacity || null} />,
+    });
+    data.push({
+      component: <Memory value={item?.recommendation?.recommendation?.usage?.current || null} />,
+    });
+    data.push({
+      component: <Memory value={item?.recommendation?.recommendation?.recommend_size || null} sourceUnit='gb' />,
+    });
+    data.push({
+      component: <Text value={(item?.recommendation?.duration || '7') + ' D'} />,
+    });
+    data.push({
+      component: <Currency value={item?.estimated_savings} precison={1} />,
+    });
+    data.push({ component: <Datetime value={item.updated_at} /> });
+    data.push({
+      component: (
+        <Box
+          onClick={(e) => e.stopPropagation()}
+          sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
+        >
+          {hasWriteAccess(item.account_id || selectedAccountId) && (
+            <DsButton
+              tone='secondary'
+              size='xs'
+              id={`pvc-rs-resolve-${item.id}`}
+              trailingAccent={<ArrowForwardIcon />}
+              onClick={(e) => {
+                e.stopPropagation();
+                resolvePVRightSizing(item);
+              }}
+            >
+              Optimize
+            </DsButton>
+          )}
+          <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
+            <span>
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                aria-label={`Ask ${assistantName}`}
+                id={`pvc-rs-ask-nubi-${item.id}`}
+                icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+                onClick={() => {
+                  const prompt = buildNubiOptimizePrompt({
+                    ruleName: 'PVC Right Sizing',
+                    category: 'RightSizing',
+                    severity: item.severity || 'Info',
+                    resourceName: name || '',
+                    resourceType: 'PersistentVolumeClaim',
+                    namespace: nameSpace || '',
+                    accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
+                    estimatedSavings: item.estimated_savings || undefined,
+                    brief: `PVC ${name} current allocation: ${formatMemory(item?.recommendation?.recommendation?.capacity)}, usage: ${formatMemory(
+                      item?.recommendation?.recommendation?.usage?.current
+                    )}, recommended: ${formatMemory(item?.recommendation?.recommendation?.recommend_size, 'gb')}.`,
+                  });
+                  openNubiChat({
+                    accountId: item.account_id || selectedAccountId,
+                    sessionId: `recom_${item.id}`,
+                    query: prompt,
+                    categorySource: 'Optimize',
+                  });
+                }}
+              />
+            </span>
+          </CustomTooltip>
+          <DsDropdownMenu
+            align='end'
+            size='sm'
+            items={[
+              {
+                id: `pvc-action-ticket-${item.id}`,
+                label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
+                icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
+                disabled: !!item.ticket?.ticket_id,
+                onSelect: () => {
+                  setTicketData(item);
+                  setIsTicketCreateFormOpen(true);
+                },
+              },
+            ]}
+            trigger={
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                icon={<MoreVertIcon />}
+                aria-label='More actions'
+                id={`pvc-action-menu-${item.id}`}
+              />
+            }
+          />
+        </Box>
+      ),
+    });
+
+    return data;
+  };
+
   const listPVCRightSizingRecommendations = () => {
     if (!selectedAccountId && !isOptimisePage) {
       return;
@@ -288,145 +422,10 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
       .then((res) => {
         setLoading(false);
         const rawItems = res?.data?.recommendation || [];
+        rawPVCRef.current = rawItems;
         setLastRefreshed(latestUpdatedAt(rawItems));
         setKubernetesAbandonedWorkloadsCount(res?.data?.recommendation_aggregate?.aggregate?.count || 0);
-        let k8sRecommendationData = rawItems.map((item) => {
-          let data = [];
-          let name = item?.recommendation?.spec?.claimRef?.name;
-          let nameSpace = item?.recommendation?.spec?.claimRef?.namespace;
-
-          data.push({
-            component: (
-              <>
-                <Text value={name} showAutoEllipsis />
-                {nameSpace && <Text value={nameSpace} secondaryText />}
-                {isOptimisePage && (
-                  <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
-                    <Text value={'acc: '} secondaryText />
-                    <CustomLink
-                      href={{
-                        pathname: `/kubernetes/details/${item.account_id}`,
-                      }}
-                      target='_blank'
-                      secondaryText
-                    >
-                      {getAccountName(item.account_id)}
-                    </CustomLink>
-                  </Box>
-                )}
-                {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
-              </>
-            ),
-            drilldownQuery: {
-              data: item,
-              pvcName: item?.recommendation?.spec?.claimRef?.name,
-              namespaceName: nameSpace,
-              recommendation: item,
-            },
-          });
-          data.push({
-            component: <Memory value={item?.recommendation?.recommendation?.capacity || null} />,
-          });
-          data.push({
-            component: <Memory value={item?.recommendation?.recommendation?.usage?.current || null} />,
-          });
-          data.push({
-            component: <Memory value={item?.recommendation?.recommendation?.recommend_size || null} sourceUnit='gb' />,
-          });
-          data.push({
-            component: <Text value={(item?.recommendation?.duration || '7') + ' D'} />,
-          });
-          data.push({
-            component: <Currency value={item?.estimated_savings} precison={1} />,
-          });
-          data.push({ component: <Datetime value={item.updated_at} /> });
-          data.push({
-            component: (
-              <Box
-                onClick={(e) => e.stopPropagation()}
-                sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
-              >
-                {hasWriteAccess(item.account_id || selectedAccountId) && (
-                  <DsButton
-                    tone='secondary'
-                    size='xs'
-                    id={`pvc-rs-resolve-${item.id}`}
-                    trailingAccent={<ArrowForwardIcon />}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      resolvePVRightSizing(item);
-                    }}
-                  >
-                    Optimize
-                  </DsButton>
-                )}
-                <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
-                  <span>
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      aria-label={`Ask ${assistantName}`}
-                      id={`pvc-rs-ask-nubi-${item.id}`}
-                      icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-                      onClick={() => {
-                        const prompt = buildNubiOptimizePrompt({
-                          ruleName: 'PVC Right Sizing',
-                          category: 'RightSizing',
-                          severity: item.severity || 'Info',
-                          resourceName: name || '',
-                          resourceType: 'PersistentVolumeClaim',
-                          namespace: nameSpace || '',
-                          accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
-                          estimatedSavings: item.estimated_savings || undefined,
-                          brief: `PVC ${name} current allocation: ${formatMemory(
-                            item?.recommendation?.recommendation?.capacity
-                          )}, usage: ${formatMemory(item?.recommendation?.recommendation?.usage?.current)}, recommended: ${formatMemory(
-                            item?.recommendation?.recommendation?.recommend_size,
-                            'gb'
-                          )}.`,
-                        });
-                        setNubiQuery(prompt);
-                        setNubiAccountId(item.account_id || selectedAccountId);
-                        setNubiConversationId(`recom_${item.id}`);
-                        setNubiSidebarVisible(true);
-                      }}
-                    />
-                  </span>
-                </CustomTooltip>
-                <DsDropdownMenu
-                  align='end'
-                  size='sm'
-                  items={[
-                    {
-                      id: `pvc-action-ticket-${item.id}`,
-                      label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
-                      disabled: !!item.ticket?.ticket_id,
-                      onSelect: () => {
-                        setTicketData(item);
-                        setIsTicketCreateFormOpen(true);
-                      },
-                    },
-                  ]}
-                  trigger={
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<MoreVertIcon />}
-                      aria-label='More actions'
-                      id={`pvc-action-menu-${item.id}`}
-                    />
-                  }
-                />
-              </Box>
-            ),
-          });
-
-          return data;
-        });
-        setKubernetesAbandonedWorkloads(k8sRecommendationData);
+        setKubernetesAbandonedWorkloads(rawItems.map(buildRow));
       })
       .catch(() => {
         setLoading(false);
@@ -486,8 +485,15 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
     }
   }, [isOptimisePage, allCluster]);
 
-  const handleTicketSuccess = () => {
-    listPVCRightSizingRecommendations();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const idx = rawPVCRef.current.findIndex((item) => item.id === ticketData.id);
+    if (idx === -1) return;
+    rawPVCRef.current[idx] = { ...rawPVCRef.current[idx], ticket: { ticket_id: ticketId, url } };
+    setKubernetesAbandonedWorkloads((prev) => {
+      const next = [...prev];
+      next[idx] = buildRow(rawPVCRef.current[idx]);
+      return next;
+    });
   };
 
   const handleTicketFailure = (res) => {
@@ -719,18 +725,6 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
           data={kubernetesPVRightSizingUpdatePopupFormFormData}
         />
       </ListingLayout>
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        queryPrefix={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
     </>
   );
 };

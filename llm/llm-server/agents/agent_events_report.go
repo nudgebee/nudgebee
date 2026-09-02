@@ -63,7 +63,7 @@ func (m AgentEventRCAReport) getEvidenceAnalysis(ctx *security.RequestContext, r
 	eventEvidenceToolInput := string(payload)
 	eventAnalysisTool := EvidenceInsightsTool{}
 	toolCtx := toolcore.NewNbToolContext(ctx, eventAnalysisTool, request.AccountId, ctx.GetSecurityContext().GetUserId(), request.ConversationId, request.MessageId, request.ParentAgentId, eventEvidenceToolInput, []llms.MessageContent{}, "", toolcore.NBQueryConfig{}, "")
-	data, err := eventAnalysisTool.Call(toolCtx, toolcore.NBToolCallRequest{
+	data, err := core.CallTool(toolCtx, eventAnalysisTool, toolcore.NBToolCallRequest{
 		Command: eventEvidenceToolInput,
 	})
 	if err != nil {
@@ -72,9 +72,7 @@ func (m AgentEventRCAReport) getEvidenceAnalysis(ctx *security.RequestContext, r
 	return data.Data, nil
 }
 
-const DefaultRCAFormat = `<<Event RCA Report Format>>
----------------------------------
-# 📝 Root Cause Analysis (RCA) Report
+const DefaultRCAFormat = `# 📝 Root Cause Analysis (RCA) Report
 
 ## 📊 Event Summary
 Provide a brief description of the event, including:

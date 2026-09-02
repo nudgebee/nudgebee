@@ -11,7 +11,7 @@ import sys  # noqa: E402
 import time  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import List, Optional, Union  # noqa: E402
+from typing import Dict, List, Literal, Optional, Union  # noqa: E402
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -290,9 +290,21 @@ class AgentBenchmarkRequest(BaseModel):
         None  # Number of parallel test workers (default from env or 2)
     )
     run_name: Optional[str] = None  # Human-readable name for the run
-    # Pins the log backend for every request in this run, forwarded to the
-    # llm-server chat config (e.g. "k8s" forces kubectl logs). None = account default.
-    log_provider_override: Optional[str] = None
+    # Selects the K8s orchestrator variant for every request in this run,
+    # forwarded to the llm-server chat config as QueryConfig.K8sOrchestratorMode.
+    # None = defer to the llm-server env default (LLM_SERVER_K8S_ORCHESTRATOR_MODE).
+    k8s_orchestrator_mode: Optional[
+        Literal["delegating", "direct", "lean", "native"]
+    ] = None
+    # Pins every request in this run to one configured LLM slot, as
+    # {layer}:{scope}[:{name}] (env:global, db:<uuid>:tier:summary, ...), so
+    # results aren't skewed by the resolver picking a different credential.
+    # Blanket provider+model and per-tier picks are mutually exclusive; the
+    # config source is orthogonal to both.
+    llm_config_source: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model_name: Optional[str] = None
+    llm_tier_models: Optional[Dict[str, Dict[str, str]]] = None
 
 
 class GatherBenchmarkRequest(BaseModel):
@@ -305,7 +317,18 @@ class GatherBenchmarkRequest(BaseModel):
     tag_filter: Optional[str] = None
     test_filter: Optional[str] = None
     cc_emails: Optional[List[str]] = None
-    log_provider_override: Optional[str] = None
+    k8s_orchestrator_mode: Optional[
+        Literal["delegating", "direct", "lean", "native"]
+    ] = None
+    # Pins every request in this run to one configured LLM slot, as
+    # {layer}:{scope}[:{name}] (env:global, db:<uuid>:tier:summary, ...), so
+    # results aren't skewed by the resolver picking a different credential.
+    # Blanket provider+model and per-tier picks are mutually exclusive; the
+    # config source is orthogonal to both.
+    llm_config_source: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model_name: Optional[str] = None
+    llm_tier_models: Optional[Dict[str, Dict[str, str]]] = None
 
 
 USE_ORCHESTRATOR = os.getenv("USE_ORCHESTRATOR", "true").lower() == "true"
@@ -325,7 +348,13 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
     cc_emails: Optional[List[str]] = None,
     parallel_workers: Optional[int] = None,
     skip_indices: Optional[str] = None,
-    log_provider_override: Optional[str] = None,
+    k8s_orchestrator_mode: Optional[
+        Literal["delegating", "direct", "lean", "native"]
+    ] = None,
+    llm_config_source: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    llm_model_name: Optional[str] = None,
+    llm_tier_models: Optional[Dict[str, Dict[str, str]]] = None,
 ):
     """
     Runs the pytest benchmark for a specific agent and sends the report via email.
@@ -407,7 +436,11 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
                 tag_filter=tag_filter,
                 skip_indices=skip_indices,
                 tool_config=tool_config,
-                log_provider_override=log_provider_override,
+                k8s_orchestrator_mode=k8s_orchestrator_mode,
+                llm_config_source=llm_config_source,
+                llm_provider=llm_provider,
+                llm_model_name=llm_model_name,
+                llm_tier_models=llm_tier_models,
             )
 
             # Report & email (same as pytest path)
@@ -580,8 +613,20 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
 
     # Pin the log backend for this run's requests (read by benchmark.py's
     # _execute_query and forwarded to the llm-server chat config).
-    if log_provider_override:
-        env_vars["LOG_PROVIDER_OVERRIDE"] = log_provider_override
+    if k8s_orchestrator_mode:
+        env_vars["K8S_ORCHESTRATOR_MODE"] = k8s_orchestrator_mode
+
+    # Same carrier for the LLM pin — the pytest subprocess reads these back in
+    # benchmark.py's _execute_query. Tier picks travel as JSON since env vars
+    # are flat strings.
+    if llm_config_source:
+        env_vars["LLM_CONFIG_SOURCE"] = llm_config_source
+    if llm_provider:
+        env_vars["LLM_PIN_PROVIDER"] = llm_provider
+    if llm_model_name:
+        env_vars["LLM_PIN_MODEL_NAME"] = llm_model_name
+    if llm_tier_models:
+        env_vars["LLM_TIER_MODELS"] = json.dumps(llm_tier_models)
 
     # Pass test selection to env vars (used by refactored agents)
     if max_tests is not None:
@@ -761,7 +806,11 @@ async def trigger_agent_benchmark(
         cc_emails=request.cc_emails,
         parallel_workers=request.parallel_workers,
         run_name=request.run_name,
-        log_provider_override=request.log_provider_override,
+        k8s_orchestrator_mode=request.k8s_orchestrator_mode,
+        llm_config_source=request.llm_config_source,
+        llm_provider=request.llm_provider,
+        llm_model_name=request.llm_model_name,
+        llm_tier_models=request.llm_tier_models,
     )
 
     background_tasks.add_task(
@@ -778,7 +827,11 @@ async def trigger_agent_benchmark(
         request.tag_filter,
         request.cc_emails,
         request.parallel_workers,
-        log_provider_override=request.log_provider_override,
+        k8s_orchestrator_mode=request.k8s_orchestrator_mode,
+        llm_config_source=request.llm_config_source,
+        llm_provider=request.llm_provider,
+        llm_model_name=request.llm_model_name,
+        llm_tier_models=request.llm_tier_models,
     )
 
     message = f"{agent_name.upper()} agent benchmark started."
@@ -859,7 +912,11 @@ async def gather_benchmark_tests(
         test_filter=request.test_filter,
         tag_filter=request.tag_filter,
         cc_emails=request.cc_emails,
-        log_provider_override=request.log_provider_override,
+        k8s_orchestrator_mode=request.k8s_orchestrator_mode,
+        llm_config_source=request.llm_config_source,
+        llm_provider=request.llm_provider,
+        llm_model_name=request.llm_model_name,
+        llm_tier_models=request.llm_tier_models,
     )
 
     tests_summary = [{"test_id": tid, "test_index": gi} for _fp, tid, gi in test_cases]
@@ -1818,8 +1875,16 @@ async def _run_single_test_task(run_id: str, test_index: int, config: dict):
     )
     if config.get("tool_config"):
         env["TOOL_CONFIG"] = config["tool_config"]
-    if config.get("log_provider_override"):
-        env["LOG_PROVIDER_OVERRIDE"] = config["log_provider_override"]
+    if config.get("k8s_orchestrator_mode"):
+        env["K8S_ORCHESTRATOR_MODE"] = config["k8s_orchestrator_mode"]
+    if config.get("llm_config_source"):
+        env["LLM_CONFIG_SOURCE"] = config["llm_config_source"]
+    if config.get("llm_provider"):
+        env["LLM_PIN_PROVIDER"] = config["llm_provider"]
+    if config.get("llm_model_name"):
+        env["LLM_PIN_MODEL_NAME"] = config["llm_model_name"]
+    if config.get("llm_tier_models"):
+        env["LLM_TIER_MODELS"] = json.dumps(config["llm_tier_models"])
 
     cmd = [
         "python",
@@ -2096,7 +2161,11 @@ async def _run_followup_task(  # noqa: C901
                 conversation_id=conversation_id,
                 agent_id=agent_id,
                 message_id=message_id,
-                log_provider_override=run_config.get("log_provider_override"),
+                k8s_orchestrator_mode=run_config.get("k8s_orchestrator_mode"),
+                llm_config_source=run_config.get("llm_config_source"),
+                llm_provider=run_config.get("llm_provider"),
+                llm_model_name=run_config.get("llm_model_name"),
+                llm_tier_models=run_config.get("llm_tier_models"),
             ),
         )
 
@@ -2352,7 +2421,11 @@ async def run_all_gathered_tests(
         config.get("tag_filter"),
         config.get("cc_emails"),
         config.get("parallel_workers"),
-        log_provider_override=config.get("log_provider_override"),
+        k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+        llm_config_source=config.get("llm_config_source"),
+        llm_provider=config.get("llm_provider"),
+        llm_model_name=config.get("llm_model_name"),
+        llm_tier_models=config.get("llm_tier_models"),
     )
 
     return {
@@ -2391,7 +2464,11 @@ async def rerun_benchmark(
         config.get("tag_filter"),
         config.get("cc_emails"),
         config.get("parallel_workers"),
-        log_provider_override=config.get("log_provider_override"),
+        k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+        llm_config_source=config.get("llm_config_source"),
+        llm_provider=config.get("llm_provider"),
+        llm_model_name=config.get("llm_model_name"),
+        llm_tier_models=config.get("llm_tier_models"),
     )
 
     return {
@@ -2447,7 +2524,11 @@ async def rerun_specific_tests(
         config.get("tag_filter"),
         config.get("cc_emails"),
         config.get("parallel_workers"),
-        log_provider_override=config.get("log_provider_override"),
+        k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+        llm_config_source=config.get("llm_config_source"),
+        llm_provider=config.get("llm_provider"),
+        llm_model_name=config.get("llm_model_name"),
+        llm_tier_models=config.get("llm_tier_models"),
     )
 
     return {
@@ -2498,7 +2579,11 @@ async def restart_benchmark(
         config.get("cc_emails"),
         parallel_workers=config.get("parallel_workers"),
         skip_indices=skip_indices,
-        log_provider_override=config.get("log_provider_override"),
+        k8s_orchestrator_mode=config.get("k8s_orchestrator_mode"),
+        llm_config_source=config.get("llm_config_source"),
+        llm_provider=config.get("llm_provider"),
+        llm_model_name=config.get("llm_model_name"),
+        llm_tier_models=config.get("llm_tier_models"),
     )
 
     skipped = len(completed_indices)

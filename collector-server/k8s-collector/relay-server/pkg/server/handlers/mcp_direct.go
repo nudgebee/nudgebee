@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"nudgebee/relay-server/pkg/safehttp"
 	"nudgebee/relay-server/pkg/server/metrics"
 	"strings"
 	"sync"
@@ -21,7 +22,9 @@ import (
 )
 
 var mcpHTTPClient = &http.Client{
-	Timeout: 120 * time.Second,
+	Timeout:       120 * time.Second,
+	Transport:     safehttp.NewSafeTransport(30 * time.Second),
+	CheckRedirect: safehttp.SafeCheckRedirect,
 }
 
 const mcpSessionTTL = 30 * time.Minute
@@ -89,6 +92,11 @@ func handleDirectMCP(c *gin.Context, rawBody []byte, logger *slog.Logger, start 
 	mcpURL := gjson.GetBytes(rawBody, "body.action_params.url").String()
 	if mcpURL == "" {
 		c.JSON(400, gin.H{"error": "url is required for direct MCP request"})
+		return true
+	}
+	if err := safehttp.ValidateURL(c.Request.Context(), mcpURL); err != nil {
+		logger.Warn("MCP URL rejected by SSRF check", "url", mcpURL, "error", err)
+		c.JSON(400, gin.H{"error": fmt.Sprintf("url failed safety validation: %v", err)})
 		return true
 	}
 
@@ -385,6 +393,9 @@ func injectMCPAuth(req *http.Request, rawBody []byte) error {
 func fetchOAuthToken(ctx context.Context, tokenURL, clientID, clientSecret, scope, audience string) (string, error) {
 	if tokenURL == "" || clientID == "" || clientSecret == "" {
 		return "", fmt.Errorf("oauth2: token_url, client_id, and client_secret are required")
+	}
+	if err := safehttp.ValidateURL(ctx, tokenURL); err != nil {
+		return "", fmt.Errorf("oauth2: token URL failed safety validation: %w", err)
 	}
 
 	form := url.Values{}

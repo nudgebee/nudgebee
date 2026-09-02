@@ -590,20 +590,22 @@ func (d *OptimizerDao) GetRecommendations(ctx context.Context, accountID, tenant
 func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Context, accountID uuid.UUID, category string) ([]model.RecommendationWithResource, error) {
 
 	recommendationRuleName := category
-	recommendationCategory := category
+	recommendationCategories := []string{category}
 	switch category {
 	case "vertical_rightsize":
 		recommendationRuleName = "pod_right_sizing"
-		recommendationCategory = "RightSizing"
+		// requests-unset pod recs are stored under Configuration but remain
+		// vertical-rightsize targets
+		recommendationCategories = []string{"RightSizing", "Configuration"}
 	case "horizontal_rightsize":
 		recommendationRuleName = "replica_right_sizing"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	case "pvc_rightsize":
 		recommendationRuleName = "pv_rightsize"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	case "continuous_rightsize":
 		recommendationRuleName = "continuous_rightsize"
-		recommendationCategory = "RightSizing"
+		recommendationCategories = []string{"RightSizing"}
 	}
 
 	query := `
@@ -617,7 +619,7 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 			LEFT JOIN cloud_resourses cr ON r.resource_id = cr.id
 			WHERE r.cloud_account_id = $1
 			AND cr.status = 'Active'
-			AND r.category = $2
+			AND r.category = ANY($2)
 			AND r.rule_name = $3
 			AND r.status = 'Open'
 			AND r.is_dismissed = false
@@ -650,7 +652,7 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 		UpdatedBy            *uuid.UUID `db:"updated_by"`
 	}
 
-	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, recommendationCategory, recommendationRuleName); err != nil {
+	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, pq.Array(recommendationCategories), recommendationRuleName); err != nil {
 		return nil, err
 	}
 
@@ -782,6 +784,36 @@ func (d *OptimizerDao) SaveAutoOptimizeTasks(ctx context.Context, tasks []model.
 
 func (d *OptimizerDao) SaveAutoOptimizeTask(ctx context.Context, task model.AutoOptimizeTask) error {
 	return d.SaveAutoOptimizeTasks(ctx, []model.AutoOptimizeTask{task})
+}
+
+// MarkAutoOptimizeTaskTerminal records a terminal status for a task whose normal
+// save could not be completed, so it never stays in Scheduled and blocks its
+// recommendation (#34943).
+//
+// It writes only the status columns — no task_id, no meta, no attributes — so it
+// cannot fail for whatever reason the full save did. The status guard keeps it
+// from overwriting an outcome that did land.
+//
+// status is the outcome the run actually reached, not always Failed: the save
+// this backstops trips most easily on a task that succeeded and produced a
+// resolution id, so hardcoding Failed here would report a success as a failure.
+// error is only set when the run itself failed, so a Complete row does not carry
+// one. A status that is empty or still Scheduled is coerced to Failed, since the
+// whole point is to leave nothing non-terminal.
+func (d *OptimizerDao) MarkAutoOptimizeTaskTerminal(ctx context.Context, id uuid.UUID, status, reason string) error {
+	if status == "" || status == string(model.AutopilotTaskStatusScheduled) {
+		status = string(model.AutopilotTaskStatusFailed)
+	}
+	_, err := d.db.ExecContext(ctx, `UPDATE auto_pilot_task
+			SET status = $1,
+				reason = $2,
+				error = CASE WHEN $1 = $6 THEN $2 ELSE error END,
+				updated_at = $3
+			WHERE id = $4 AND status = $5`,
+		status, reason, time.Now().UTC(), id,
+		string(model.AutopilotTaskStatusScheduled),
+		string(model.AutopilotTaskStatusFailed))
+	return err
 }
 
 func (d *OptimizerDao) GetAutoOptimizeTask(ctx context.Context, id uuid.UUID) (*model.AutoOptimizeTask, error) {
@@ -981,6 +1013,13 @@ func (d *OptimizerDao) UpdateRecommendationStatus(ctx context.Context, id uuid.U
 	return err
 }
 
+// GetActiveTasksForRecommendations returns the tasks that are still in flight
+// for the given recommendations, so a run does not schedule the same work twice.
+//
+// Only recently-created Scheduled tasks count. A task left behind by a run that
+// died before writing a terminal status is indistinguishable from one waiting its
+// turn, and without the age bound it held its recommendation back from every
+// later run forever (#34943). See model.ScheduledTaskStaleAfter.
 func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID]model.AutoOptimizeTask, error) {
 	if len(recommendationIDs) == 0 {
 		return nil, nil
@@ -988,7 +1027,7 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 	query := `SELECT id, auto_pilot_id, tenant_id, account_id, recommendation_id, status,
 			created_at, updated_at, meta, attributes, resource_filter, scheduled_time, name,
 			reason, error, command, task_id, skipped_by
-		FROM auto_pilot_task WHERE recommendation_id = ANY($1) AND status = $2`
+		FROM auto_pilot_task WHERE recommendation_id = ANY($1) AND status = $2 AND created_at > $3`
 
 	var dbTasks []struct {
 		ID               uuid.UUID  `db:"id"`
@@ -1011,7 +1050,8 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 		SkippedBy        *uuid.UUID `db:"skipped_by"`
 	}
 
-	if err := d.db.SelectContext(ctx, &dbTasks, query, pq.Array(recommendationIDs), model.AutopilotTaskStatusScheduled); err != nil {
+	staleBefore := time.Now().UTC().Add(-model.ScheduledTaskStaleAfter)
+	if err := d.db.SelectContext(ctx, &dbTasks, query, pq.Array(recommendationIDs), model.AutopilotTaskStatusScheduled, staleBefore); err != nil {
 		return nil, err
 	}
 
@@ -1056,8 +1096,36 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 	return res, nil
 }
 
+// GetActiveResolutionsForRecommendations returns the resolutions that make a
+// recommendation ineligible for a fresh run. A resolution blocks when either:
+//
+//   - it is still InProgress with no pull request URL — creation is genuinely in
+//     flight, so there is nothing to compare against yet; or
+//   - it is an open pull request that the auto optimize does not own. The
+//     api-server's open-PR guard would return it rather than raise a second one
+//     (see model.PRLifecycleTerminalStates), and we do not rewrite a pull request
+//     a person raised by hand.
+//
+// An open pull request the auto optimize raised itself deliberately does *not*
+// block. The run proceeds, recomputes the values, and the api-server guard decides
+// whether they have moved far enough to rewrite that pull request in place
+// (#34959). Raising a second pull request is still prevented — by the guard, which
+// is where that check belongs.
+//
+// Relaxing this is safe only because the trap it used to guard against is gone:
+// the run no longer aborts on a duplicate resolution id (the UNIQUE constraint was
+// dropped in V818), the task now always records a terminal status, and a stale
+// Scheduled task no longer blocks its recommendation — all of #34943.
 func (d *OptimizerDao) GetActiveResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error) {
-	return d.getResolutionsByStatuses(ctx, recommendationIDs, string(model.RecommendationResolutionStatusInProgress))
+	return d.getResolutions(ctx, recommendationIDs,
+		`((status = $2 AND type_reference_id NOT LIKE 'http%')
+			OR (type = $3 AND type_reference_id LIKE 'http%'
+				AND resolver_type <> $5
+				AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state <> ALL($4))))`,
+		string(model.RecommendationResolutionStatusInProgress),
+		string(model.RecommendationResolutionTypePullRequest),
+		pq.Array(model.PRLifecycleTerminalStates),
+		string(model.RecommendationResolutionResolverTypeAutoOptimize))
 }
 
 // GetResolutionsForRecommendations returns resolutions that are either still
@@ -1065,19 +1133,24 @@ func (d *OptimizerDao) GetActiveResolutionsForRecommendations(ctx context.Contex
 // type_reference_id while staying InProgress) or Failed (async PR creation
 // failed). Used by the PR-ready follow-up notification.
 func (d *OptimizerDao) GetResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error) {
-	return d.getResolutionsByStatuses(ctx, recommendationIDs,
-		string(model.RecommendationResolutionStatusInProgress),
-		string(model.RecommendationResolutionStatusFailed))
+	return d.getResolutions(ctx, recommendationIDs, `status = ANY($2)`,
+		pq.Array([]string{
+			string(model.RecommendationResolutionStatusInProgress),
+			string(model.RecommendationResolutionStatusFailed),
+		}))
 }
 
-func (d *OptimizerDao) getResolutionsByStatuses(ctx context.Context, recommendationIDs []uuid.UUID, statuses ...string) (map[uuid.UUID][]model.RecommendationResolution, error) {
-	if len(recommendationIDs) == 0 || len(statuses) == 0 {
+// getResolutions loads resolutions for the given recommendations, narrowed by
+// cond. cond is appended to the recommendation_id filter and may reference $2
+// onwards, matching args.
+func (d *OptimizerDao) getResolutions(ctx context.Context, recommendationIDs []uuid.UUID, cond string, args ...any) (map[uuid.UUID][]model.RecommendationResolution, error) {
+	if len(recommendationIDs) == 0 || cond == "" {
 		return nil, nil
 	}
 	query := `SELECT id, recommendation_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, created_at, updated_at, status_message,
 			pr_iteration_count, pr_lifecycle_state, last_pr_check_at
-		FROM recommendation_resolution WHERE recommendation_id = ANY($1) AND status = ANY($2)`
+		FROM recommendation_resolution WHERE recommendation_id = ANY($1) AND ` + cond
 
 	var dbResolutions []struct {
 		ID               uuid.UUID  `db:"id"`
@@ -1096,7 +1169,7 @@ func (d *OptimizerDao) getResolutionsByStatuses(ctx context.Context, recommendat
 		LastPRCheckAt    *time.Time `db:"last_pr_check_at"`
 	}
 
-	if err := d.db.SelectContext(ctx, &dbResolutions, query, pq.Array(recommendationIDs), pq.Array(statuses)); err != nil {
+	if err := d.db.SelectContext(ctx, &dbResolutions, query, append([]any{pq.Array(recommendationIDs)}, args...)...); err != nil {
 		return nil, err
 	}
 

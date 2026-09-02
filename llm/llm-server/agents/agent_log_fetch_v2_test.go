@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -50,7 +51,7 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	// Build envelopes through the real makeFetchResponse so the test tracks the
 	// actual wire shape the agent produces.
 	env := func(logs string) core.NBAgentResponse {
-		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", nil)
+		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", "", "", nil)
 	}
 	cases := []struct {
 		name string
@@ -72,6 +73,61 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	}
 }
 
+// TestQueryHasExplicitTimeAnchor guards the kubectl-fallback guard added for
+// bug C1 (log_analysis_bugs): kubectl's plain `--tail` fetch has no time
+// filtering, so falling back to it after a services-server success-but-empty
+// result is only safe when the canonical query had no explicit start_time —
+// an absolute historical anchor kubectl cannot honor at all.
+func TestQueryHasExplicitTimeAnchor(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"empty query", "", false},
+		{"unparseable query", "not-json", false},
+		{"no start_time, only relative time_range", `{"where":{},"time_range":"1h"}`, false},
+		{"explicit start_time", `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, true},
+		{"blank start_time field", `{"where":{},"start_time":"  "}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, queryHasExplicitTimeAnchor(c.query))
+		})
+	}
+}
+
+// TestShouldFallbackToKubectl exercises Execute's actual fallback decision
+// (bug C1, log_analysis_bugs) end-to-end at the decision-function level: a
+// Failed primary always falls back regardless of the query; a successful
+// primary with real rows never falls back; a successful-but-empty primary
+// falls back UNLESS the query had an explicit start_time, which kubectl's
+// untimed `--tail` dump cannot honor.
+func TestShouldFallbackToKubectl(t *testing.T) {
+	empty := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, "", "", "", "", nil)
+	rows := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, `{"logs":[{"timestamp":"t","message":"boom"}]}`, "", "", "", nil)
+	failed := core.NBAgentResponse{Status: core.ConversationStatusFailed, Response: []string{"boom"}}
+
+	cases := []struct {
+		name           string
+		resp           core.NBAgentResponse
+		canonicalQuery string
+		want           bool
+	}{
+		{"failed primary always falls back, no query", failed, "", true},
+		{"failed primary always falls back, even with an explicit window", failed, `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, true},
+		{"successful primary with real rows never falls back", rows, "", false},
+		{"successful-empty primary with no explicit window falls back", empty, `{"where":{},"time_range":"1h"}`, true},
+		{"successful-empty primary with no query info falls back", empty, "", true},
+		{"successful-empty primary with an explicit start_time does NOT fall back", empty, `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, shouldFallbackToKubectl(c.resp, c.canonicalQuery))
+		})
+	}
+}
+
 // TestCanonicalQueryExamples asserts the v2 few-shots use provider-independent
 // canonical entity names — never provider-native field names (which would
 // defeat services-server's canonical→provider resolution).
@@ -82,7 +138,7 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 // resolves when those words are literally keys in label_mappings) nor any
 // provider-native field name.
 func TestCanonicalQueryExamples(t *testing.T) {
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(defaultLogQueryOperators)
 	assert.NotEmpty(t, examples)
 
 	var answers strings.Builder
@@ -227,6 +283,90 @@ func TestBuildCanonicalLogQueryPrompt(t *testing.T) {
 	})
 }
 
+// TestWithFallbackNote pins the kubectl-fallback observability signal: a
+// successful kubectl response gets a "fallback_note" field injected into its
+// JSON envelope so it's distinguishable from a direct (non-fallback) kubectl
+// fetch, without disturbing the rest of the envelope. Non-JSON bodies (e.g. an
+// error string) are left untouched rather than corrupted.
+func TestWithFallbackNote(t *testing.T) {
+	t.Run("injects the note into a JSON envelope", func(t *testing.T) {
+		resp := makeFetchResponse(FetchLogsAgentName, "kubectl logs pod-x -n ns", `{"stdout":"line1\nline2","stderr":""}`, `{"stdout":"line1\nline2","stderr":""}`, "logs_kubectl_1.txt", "", nil)
+		out := withFallbackNote(resp, "canonical loki query matched zero rows — retried via kubectl.")
+		require.Len(t, out.Response, 1)
+		var env map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out.Response[0]), &env))
+		assert.Equal(t, "canonical loki query matched zero rows — retried via kubectl.", env["fallback_note"])
+		// Original fields survive untouched.
+		assert.Equal(t, "logs_kubectl_1.txt", env["file_ref"])
+	})
+
+	t.Run("leaves a non-JSON body unchanged", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{"kubectl intent extraction: boom"}, Status: core.ConversationStatusFailed}
+		out := withFallbackNote(resp, "note")
+		assert.Equal(t, resp, out)
+	})
+
+	t.Run("leaves an empty response unchanged", func(t *testing.T) {
+		resp := core.NBAgentResponse{}
+		out := withFallbackNote(resp, "note")
+		assert.Equal(t, resp, out)
+	})
+}
+
+// TestEnvelopeQuery guards a bug caught in code review (gemini-code-assist):
+// kubectlFallback used to call executedLogQuery — which looks for a NESTED
+// metadata.query field, the shape of the raw logs_execute_v2 tool response —
+// directly on the already-built makeFetchResponse envelope, whose "query" is a
+// TOP-LEVEL field instead. That mismatch meant primaryQuery was silently
+// always "", so fallback_note's "(query: ...)" clause could never render.
+// envelopeQuery reads the correct (top-level) shape.
+func TestEnvelopeQuery(t *testing.T) {
+	t.Run("extracts the top-level query field from a real envelope", func(t *testing.T) {
+		resp := makeFetchResponse(FetchLogsAgentName, `{"where":{"app":{"_eq":"checkout"}}}`, `{"logs":[]}`, "", "", "", nil)
+		assert.Equal(t, `{"where":{"app":{"_eq":"checkout"}}}`, envelopeQuery(resp.Response))
+	})
+
+	t.Run("empty response returns empty string", func(t *testing.T) {
+		assert.Empty(t, envelopeQuery(nil))
+		assert.Empty(t, envelopeQuery([]string{}))
+	})
+
+	t.Run("unparseable body returns empty string", func(t *testing.T) {
+		assert.Empty(t, envelopeQuery([]string{"not-json"}))
+	})
+
+	t.Run("a raw logs_execute_v2 response (nested metadata.query, no top-level query) is not what this reads", func(t *testing.T) {
+		// Documents the exact shape mismatch the bug was about: this is the RAW
+		// backend response shape (what executedLogQuery is for), not the
+		// envelope shape (what envelopeQuery is for) — envelopeQuery correctly
+		// finds nothing here since there's no top-level "query" key.
+		raw := `{"logs":[],"metadata":{"query":"{namespace=\"checkout\"}","provider":"loki"}}`
+		assert.Empty(t, envelopeQuery([]string{raw}))
+	})
+}
+
+// TestFallbackNote pins the wording distinction a live local run caught: when
+// the canonical query outright FAILED (network/backend error), the note must
+// say "failed", not "matched zero rows" — the two are different diagnoses and
+// conflating them misleads whoever reads the envelope. Also pins that an empty
+// primaryQuery (typical of a failure, since executedLogQuery has nothing to
+// extract) omits the query clause instead of rendering "(query: )".
+func TestFallbackNote(t *testing.T) {
+	t.Run("completed-but-empty primary reads as zero rows, with query clause", func(t *testing.T) {
+		note := fallbackNote("loki", core.ConversationStatusCompleted, `{"where":{"namespace":{"_eq":"nudgebee"}}}`)
+		assert.Contains(t, note, "matched zero rows")
+		assert.Contains(t, note, `(query: {"where":{"namespace":{"_eq":"nudgebee"}}})`)
+		assert.NotContains(t, note, "failed")
+	})
+
+	t.Run("failed primary reads as failed, no empty query clause", func(t *testing.T) {
+		note := fallbackNote("loki", core.ConversationStatusFailed, "")
+		assert.Contains(t, note, "canonical loki query failed")
+		assert.NotContains(t, note, "matched zero rows")
+		assert.NotContains(t, note, "(query: )")
+	})
+}
+
 // TestCanonicalLogQueryGeneration_Live runs the real failing/edge questions
 // (from the manual fetch_logs testing) through generateCanonicalLogQuery against
 // the configured LLM and asserts the generated query honours the user's entities
@@ -246,7 +386,7 @@ func TestCanonicalLogQueryGeneration_Live(t *testing.T) {
 	// exactly as the agent does at request time.
 	agent := newFetchLogsAgentV2(account)
 	require.NotEmpty(t, agent.provider.Provider, "account has no services-server log provider configured")
-	agent.fields, agent.indices = fetchLabelsAndIndices(account, agent.provider)
+	fields, indices := fetchLabelsAndIndices(account, agent.provider)
 	ctx := security.NewRequestContextForTenantAccountAdmin(tenant, user, []string{account})
 
 	cases := []struct {
@@ -372,7 +512,7 @@ func TestCanonicalLogQueryGeneration_Live(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := core.NBAgentRequest{Query: tc.query, OriginalQuery: tc.query, AccountId: account, UserId: user}
-			out, err := generateCanonicalLogQuery(ctx, req, agent.provider, agent.fields, agent.indices)
+			out, err := generateCanonicalLogQuery(ctx, req, agent.provider, fields, indices)
 			require.NoError(t, err)
 			t.Logf("query=%q -> %s", tc.query, out)
 

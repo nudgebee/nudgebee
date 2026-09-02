@@ -62,13 +62,18 @@ func (c *Client) setCompletionDefaults(payload *CompletionRequest) {
 // nolint:lll
 func (c *Client) createCompletion(ctx context.Context, payload *CompletionRequest) (*ChatCompletionResponse, error) {
 	c.setCompletionDefaults(payload)
+	var tempPtr *float64
+	if payload.Temperature >= 0 {
+		t := payload.Temperature
+		tempPtr = &t
+	}
 	return c.createChat(ctx, &ChatRequest{
 		Model: payload.Model,
 		Messages: []*ChatMessage{
 			{Role: "user", Content: payload.Prompt},
 		},
 		Adapter:          payload.Adapter,
-		Temperature:      payload.Temperature,
+		Temperature:      tempPtr,
 		TopP:             payload.TopP,
 		MaxTokens:        payload.MaxTokens,
 		N:                payload.N,

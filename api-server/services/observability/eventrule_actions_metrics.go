@@ -132,7 +132,7 @@ func (a *prometheusAction) getValidPrometheusExpressionFromEventRules(ctx playbo
 
 	for _, name := range namesToTry {
 		var expr string
-		err = dbms.Db.QueryRowx("SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1",
+		err = dbms.Db.QueryRowx("SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 			name, ctx.GetAccountId()).Scan(&expr)
 		if err != nil {
 			continue
@@ -555,8 +555,13 @@ func (a *observabilityMetricsAction) AutoExecute(ctx playbooks.PlaybookActionCon
 	return a.autoExecuteByWorkload(ctx)
 }
 
-// autoExecuteByWorkload generates metric queries for K8s workloads using standard container metrics.
-// It resolves the configured provider to generate provider-appropriate queries (PromQL, Datadog, etc.).
+// autoExecuteByWorkload fetches workload CPU utilisation for the event's K8s
+// workload. It delegates to FetchMetricUtilisation, which builds the correct
+// query AND provider-specific options (label filters, groupBy, etc.) for every
+// supported metrics provider — prometheus, chronosphere, victoria_metrics,
+// datadog, newrelic, dynatrace, solarwinds, and Elasticsearch. CloudWatch is not
+// covered: it has no per-pod K8s CPU metric without Container Insights, so it
+// falls through to FetchMetricUtilisation's unsupported-provider error.
 func (a *observabilityMetricsAction) autoExecuteByWorkload(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	workloadName := getEventWorkload(ctx.GetEvent())
 	namespace := getEventNamespace(ctx.GetEvent())
@@ -564,57 +569,139 @@ func (a *observabilityMetricsAction) autoExecuteByWorkload(ctx playbooks.Playboo
 		return nil, errors.New("observabilityMetricsAction: workload name and namespace required for fallback")
 	}
 
-	// Determine the provider to generate the right query format
-	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
-	provider, _, err := GetLogsMetricsTracesProvider(requestCtx, ctx.GetAccountId(), "", "metrics", "")
+	// Fail fast on missing tenant/account so we never run a provider lookup or
+	// metrics query without a tenant scope (cross-tenant leak / full-table scan).
+	tenantID := ctx.GetTenantId()
+	accountID := ctx.GetAccountId()
+	if tenantID == "" || accountID == "" {
+		return nil, errors.New("observabilityMetricsAction: tenant ID and account ID required")
+	}
+
+	// Determine the provider so we can request the metric key its builder understands.
+	requestCtx := security.NewRequestContextForTenantAdmin(tenantID, ctx.GetLogger(), nil, nil)
+	provider, _, err := GetLogsMetricsTracesProvider(requestCtx, accountID, "", "metrics", "")
 	if err != nil {
 		return nil, fmt.Errorf("observabilityMetricsAction: unable to determine metrics provider: %w", err)
 	}
 
-	queries := generateWorkloadMetricQueries(provider, workloadName, namespace)
-	if len(queries) == 0 {
-		return nil, fmt.Errorf("observabilityMetricsAction: no workload metric queries available for provider %q", provider)
+	startTime, endTime := workloadMetricTimeRange(ctx.GetEvent())
+	// Every provider's builder understands "cpu_usage" now that the Elasticsearch
+	// path resolves it too; ES used to need "cpu_real" because its query builder
+	// mapped only that one key.
+	const cpuKey = "cpu_usage"
+	kind := workloadKindFromEvent(ctx.GetEvent())
+
+	// getEventWorkload returns SubjectOwner (the controller) when present, else
+	// SubjectName; kind is derived to match so the per-provider builders apply the
+	// right filter (kube_deployment vs kube_stateful_set, pod=~"name-.*" vs pod="name").
+	request := map[string]any{
+		"workload_namespace": namespace,
+		"workload_name":      workloadName,
+		"kind":               kind,
+		"metrics":            []string{cpuKey},
 	}
 
-	ctx.GetLogger().Info("metrics auto action: executing workload-based query",
-		"workload", workloadName, "namespace", namespace, "provider", provider)
+	ctx.GetLogger().Info("metrics auto action: executing workload-based utilisation query",
+		"workload", workloadName, "namespace", namespace, "provider", provider, "metric", cpuKey)
 
-	params := map[string]any{
-		"query": queries["cpu"],
+	metricsoutput, err := FetchMetricUtilisation(requestCtx, GetUtilisationTrendRequest{
+		AccountId: accountID,
+		StartTime: startTime,
+		EndTime:   endTime,
+		Request:   request,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("observabilityMetricsAction: workload utilisation query failed for provider %q: %w", provider, err)
 	}
-	return a.Execute(ctx, params)
+
+	return buildWorkloadMetricsResponse(request, metricsoutput), nil
 }
 
-// generateWorkloadMetricQueries returns provider-specific metric queries for a K8s workload.
-func generateWorkloadMetricQueries(provider, workloadName, namespace string) map[string]string {
-	safeWorkload := escapePromQLString(workloadName)
-	safeNamespace := escapePromQLString(namespace)
+// workloadKindFromEvent derives the K8s workload kind (deployment / statefulset /
+// daemonset / pod) the per-provider builders expect. getEventWorkload keys queries
+// on SubjectOwner (the pod's top-level controller) when set, otherwise on
+// SubjectName, so the kind is taken from SubjectOwnerKind / SubjectType to match.
+// Upstream casing is inconsistent (e.g. "DaemonSet" vs "daemonset"), so values are
+// normalised. Falls back to "deployment" when no recognised kind is present.
+func workloadKindFromEvent(ev playbooks.PlaybookEvent) string {
+	if ev.SubjectOwner != "" {
+		if k := normalizeWorkloadKind(ev.SubjectOwnerKind); k != "" {
+			return k
+		}
+		return "deployment"
+	}
+	if k := normalizeWorkloadKind(ev.SubjectType); k != "" {
+		return k
+	}
+	return "deployment"
+}
 
-	switch provider {
-	case "prometheus", "chronosphere", "signoz":
-		return map[string]string{
-			"cpu": fmt.Sprintf(
-				`sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!=""}[5m])) by (pod)`,
-				safeNamespace, safeWorkload,
-			),
-		}
-	case "datadog":
-		return map[string]string{
-			"cpu": fmt.Sprintf(
-				`avg:kubernetes.cpu.usage.total{kube_deployment:%s,kube_namespace:%s} by {pod_name}`,
-				workloadName, namespace,
-			),
-		}
-	case "newrelic":
-		return map[string]string{
-			"cpu": fmt.Sprintf(
-				"SELECT sum(cpuUsedCores) FROM K8sContainerSample WHERE namespaceName = '%s' AND (deploymentName = '%s' OR podName LIKE '%s-%%') FACET podName TIMESERIES",
-				escapeNRQLValue(namespace), escapeNRQLValue(workloadName), escapeNRQLValue(workloadName),
-			),
-		}
+// normalizeWorkloadKind lower-cases kind and returns it only when it is one the
+// metric query builders understand; anything else (job, cronjob, host, …) yields
+// "" so the caller can apply its default.
+func normalizeWorkloadKind(kind string) string {
+	switch strings.ToLower(kind) {
+	case "deployment", "statefulset", "daemonset", "pod":
+		return strings.ToLower(kind)
 	default:
+		return ""
+	}
+}
+
+// workloadMetricTimeRange derives a [start, end] window in epoch millis for a
+// workload metric query, mirroring observabilityMetricsAction.Execute: it widens
+// the window to 60m before the event start and defaults to a trailing hour when
+// the event carries no timestamps.
+func workloadMetricTimeRange(ev playbooks.PlaybookEvent) (int64, int64) {
+	var startTime, endTime int64
+	if ev.StartedAt != nil {
+		startTime = ev.StartedAt.Add(-60 * time.Minute).UnixMilli()
+	}
+	if ev.EndedAt != nil {
+		endTime = ev.EndedAt.UnixMilli()
+	}
+	if endTime == 0 {
+		endTime = time.Now().UnixMilli()
+	}
+	if startTime == 0 {
+		startTime = endTime - int64(time.Hour/time.Millisecond)
+	}
+	return startTime, endTime
+}
+
+// buildWorkloadMetricsResponse wraps a metrics query output into a playbook
+// response, returning nil when the query produced no data so empty evidence is
+// skipped. queryMeta is recorded under metadata["query"] for traceability.
+func buildWorkloadMetricsResponse(queryMeta any, metricsoutput OutputMetricQuery) playbooks.PlaybookActionResponse {
+	hasData := false
+	for _, r := range metricsoutput.Results {
+		if len(r.Payload) > 0 {
+			hasData = true
+			break
+		}
+	}
+	if !hasData {
 		return nil
 	}
+
+	metadata := map[string]any{
+		"query-result-version": "1.0",
+		"query":                queryMeta,
+	}
+	resp := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": metricsoutput}, map[string]any{}, []playbooks.PlaybookActionResponseInsight{}, metadata)
+	// Lift labels from the first result that actually carries data — Results[0]
+	// may be empty while a later query in the batch has a payload.
+	labels := map[string]any{}
+	for _, r := range metricsoutput.Results {
+		if len(r.Payload) > 0 {
+			for k, v := range r.Payload[0].Metric {
+				labels[k] = v
+			}
+			break
+		}
+	}
+	resp.Labels = labels
+	return resp
 }
 
 func (a *observabilityMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
@@ -668,31 +755,8 @@ func (a *observabilityMetricsAction) Execute(ctx playbooks.PlaybookActionContext
 		return nil, err
 	}
 
-	// Skip empty metric results to avoid storing useless evidence
-	hasData := false
-	for _, r := range metricsoutput.Results {
-		if len(r.Payload) > 0 {
-			hasData = true
-			break
-		}
-	}
-	if !hasData {
-		return nil, nil
-	}
-
-	metadata := map[string]any{
-		"query-result-version": "1.0",
-		"query":                rawParams,
-	}
-	resp := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": metricsoutput}, map[string]any{}, []playbooks.PlaybookActionResponseInsight{}, metadata)
-	labels := map[string]any{}
-	if len(metricsoutput.Results) > 0 && len(metricsoutput.Results[0].Payload) > 0 {
-		for k, v := range metricsoutput.Results[0].Payload[0].Metric {
-			labels[k] = v
-		}
-	}
-	resp.Labels = labels
-	return resp, err
+	// Skip empty metric results (nil response) to avoid storing useless evidence.
+	return buildWorkloadMetricsResponse(rawParams, metricsoutput), nil
 }
 
 // Datadog Metrics Action

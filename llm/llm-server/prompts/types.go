@@ -14,6 +14,10 @@ const (
 	CategoryPlanners  PromptCategory = "planners"
 	CategoryTools     PromptCategory = "tools"
 	CategoryUtilities PromptCategory = "utilities"
+	// CategoryFragments is a pseudo-category for include-only partials. They live
+	// beside the real category directories and are never written to
+	// llm_prompt_configuration, whose CHECK constraint allows only the four above.
+	CategoryFragments PromptCategory = "_fragments"
 )
 
 // ConfigSource indicates where the prompt configuration came from

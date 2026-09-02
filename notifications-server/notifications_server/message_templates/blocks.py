@@ -22,6 +22,8 @@ from notifications_server.message_templates.base import BaseBlock
 BLOCK_SIZE_LIMIT = 2997
 PRINTED_TABLE_MAX_WIDTH = 70
 DEFAULT_TIMEZONE = timezone.utc
+# Slack's data_visualization block caps the chart title at 50 characters.
+CHART_TITLE_MAX_CHARS = 50
 
 
 class RendererType:
@@ -139,6 +141,46 @@ class FileBlock(BaseBlock):
                 break
 
         return "\n".join(truncated_lines).encode("utf-8")
+
+
+class ChartBlock(BaseBlock):
+    """
+    A native Slack Block Kit ``data_visualization`` block (pie/bar/line/area chart).
+    See: https://docs.slack.dev/reference/block-kit/blocks/data-visualization-block/
+    """
+
+    title: str
+    chart: Dict[str, Any]
+
+    def __init__(self, title: str, chart: Dict[str, Any]):
+        """
+        :param title: label shown above the chart (Slack caps this at 50 characters)
+        :param chart: the ``chart`` object as specified by Slack's data_visualization block
+        """
+        if len(title) > CHART_TITLE_MAX_CHARS:
+            title = title[: CHART_TITLE_MAX_CHARS - 1] + "…"
+        super().__init__(title=title, chart=chart)
+
+
+class GridTableBlock(BaseBlock):
+    """
+    A native Slack Block Kit ``table`` block: a bordered grid with an
+    automatically-styled header row (the first row) and rich cell types
+    (raw_text/raw_number/rich_text with links). Distinct from ``TableBlock``,
+    which renders a monospaced ASCII table inside a markdown code block.
+    See: https://docs.slack.dev/reference/block-kit/blocks/table-block/
+    """
+
+    rows: List[List[Dict[str, Any]]]
+    column_settings: Optional[List[Dict[str, Any]]] = None
+
+    def __init__(self, rows: List[List[Dict[str, Any]]], column_settings: Optional[List[Dict[str, Any]]] = None):
+        """
+        :param rows: row-major list of cell objects (``{"type": "raw_text", "text": ...}`` etc.),
+            first row is rendered as the header
+        :param column_settings: optional per-column ``{"align": ..., "is_wrapped": ...}`` settings
+        """
+        super().__init__(rows=rows, column_settings=column_settings)
 
 
 class HeaderBlock(BaseBlock):

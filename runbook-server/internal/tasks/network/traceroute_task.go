@@ -3,6 +3,7 @@ package network
 import (
 	"bufio"
 	"fmt"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"os/exec"
 	"regexp"
@@ -41,6 +42,11 @@ func (t *TracerouteTask) Execute(taskCtx types.TaskContext, params map[string]an
 	if strings.HasPrefix(host, "-") {
 		return nil, fmt.Errorf("host cannot start with hyphen")
 	}
+	safeIP, err := safehttp.ResolveSafeIP(host)
+	if err != nil {
+		return nil, fmt.Errorf("host failed safety validation: %w", err)
+	}
+	host = safeIP
 
 	maxHops := 30
 	if m, ok := params["max_hops"].(float64); ok {

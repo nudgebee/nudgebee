@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, field_validator
 
 from notifications_server.configs.settings import public_ip
-from notifications_server.message_templates.base import Emojis
+from notifications_server.message_templates.base import Emojis, format_burn_rate, format_burn_rate_window
 import logging
 
 LOG = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ class SLOAlertParams(BaseModel):
     good_event_count: int
     threshold: Union[str, float, int]
     burn_rate: Optional[Union[str, float, int]] = None
+    # Window (seconds) and threshold of the multi-window burn-rate rule that
+    # fired. Absent on notifications from an api-server that predates them.
+    burn_rate_window: Optional[Union[str, float, int]] = None
+    burn_rate_threshold: Optional[Union[str, float, int]] = None
     error_budget_remaining: Optional[Union[str, float, int]] = None
     end_time: Optional[Union[str, float, int]] = None
 
@@ -38,6 +42,15 @@ class SLOAlertParams(BaseModel):
 
 
 def get_teams_slo_alert_template(params: SLOAlertParams) -> Dict[str, Any]:
+    # Name the window that actually breached — "14× over 1 hour" is actionable
+    # in a way a bare multiplier is not.
+    window = format_burn_rate_window(params.burn_rate_window)
+    burn_rate = format_burn_rate(params.burn_rate, params.burn_rate_window) or "N/A"
+    burn_rate_facts: list[Dict[str, Any]] = [{"title": "Burn Rate", "value": burn_rate}]
+    if params.burn_rate_threshold:
+        burn_rate_facts.append({"title": "Burn-rate Threshold", "value": f"{params.burn_rate_threshold}×"})
+    over_window = f" over the last {window}" if window else ""
+
     body: list[Any] = [
         {
             "type": "TextBlock",
@@ -62,7 +75,7 @@ def get_teams_slo_alert_template(params: SLOAlertParams) -> Dict[str, Any]:
                 {"title": "Threshold", "value": params.threshold},
                 {"title": "Good Events", "value": str(params.good_event_count)},
                 {"title": "Bad Events", "value": str(params.bad_event_count)},
-                {"title": "Burn Rate", "value": params.burn_rate or "N/A"},
+                *burn_rate_facts,
                 {"title": "Error Budget Remaining", "value": params.error_budget_remaining or "N/A"},
             ],
         },
@@ -70,9 +83,10 @@ def get_teams_slo_alert_template(params: SLOAlertParams) -> Dict[str, Any]:
             "type": "TextBlock",
             "text": (
                 f"{Emojis.Alert.value} The current value of your SLO has dropped below the target of"
-                f" **{params.slo_target}**. The error budget is being consumed at a rate of **{params.burn_rate}**,"
-                f" leaving only **{params.error_budget_remaining}** of the budget remaining. Immediate action is"
-                " required to address this issue and ensure the reliability of your service."
+                f" **{params.slo_target}**. The error budget is being consumed at a rate of"
+                f" **{params.burn_rate}**{over_window}, leaving only **{params.error_budget_remaining}** of the budget"
+                " remaining. Immediate action is required to address this issue and ensure the reliability of your"
+                " service."
             ),
             "wrap": True,
         },

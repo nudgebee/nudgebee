@@ -14,6 +14,7 @@ export class TroubleshootTabLocator extends ClusterDetailsLocators {
     readonly TroubleshootAllEvents = "all_events";
     readonly TroubleshootAnomaly = "anomaly";
     readonly TroubleshootTriageRules = "triage-rules";
+    readonly TroubleshootServiceCriticality = "service-criticality";
 
     constructor(page: Page) {
         super(page);

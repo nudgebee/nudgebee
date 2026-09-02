@@ -112,6 +112,12 @@ const EvidencePanel = ({ recommendation, category, ruleName, estimatedSavings, c
 
   const rec = safeParseJSON(recommendation);
 
+  // pod_right_sizing payloads keep the KRR container shape under either
+  // category (requests-unset rows live under Configuration)
+  if (ruleName === 'pod_right_sizing') {
+    return renderRightSizing(rec, ruleName, estimatedSavings, cloudResource, fullRecommendation);
+  }
+
   switch (category) {
     case 'RightSizing':
       return renderRightSizing(rec, ruleName, estimatedSavings, cloudResource, fullRecommendation);

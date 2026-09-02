@@ -15,6 +15,7 @@ import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { getAllowedNamespaces } from '@lib/auth';
 import { Box } from '@mui/material';
 import { Switch } from '@ui/Switch';
+import { Chip } from '@ui/Chip';
 import EmptyData from '@shared/EmptyData';
 import noDataImg from '@assets/Icon-no-data-available.svg';
 import { useData } from '@context/DataContext';
@@ -28,8 +29,9 @@ import Datetime from '@shared/format/Datetime';
 import { Button as DsButton } from '@ui/Button';
 import CopyButton from '@shared/buttons/CopyButton';
 import SafeIcon from '@shared/icons/SafeIcon';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import apiKubernetes1 from '@api1/kubernetes1';
+import observability from '@api1/observability';
 import { md5 } from '@lib/encode';
 
 // Parse namespace and workload from container_id, handling both 3-segment (/k8s/ns/workload)
@@ -125,27 +127,91 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
   const [ticketData, setTicketData] = useState({});
   const [count, setCount] = useState(0);
   const [allowInActivePod, setAllowInActivePod] = useState(false);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiSessionId, setNubiSessionId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const { providerCapabilities } = useData();
-  const logsCaps = providerCapabilities.find((e: any) => e.provider_type === 'logs')?.capabilities;
-  const supportsFeature = logsCaps?.supports_log_groups ?? null;
+  const logsProviderEntry = providerCapabilities.find((e: any) => e.provider_type === 'logs');
+  const logsCaps = logsProviderEntry?.capabilities;
+  // Mirror the backend's own resolution order (getLogGroupSourceForAccount): the log
+  // provider gets first refusal, and when it can't group — Pinot, CloudWatch, Observe,
+  // Azure App Insights and Splunk have no QueryLogGroup — the metrics provider serves
+  // the groups instead. Gating on the logs entry alone made this tab claim "not
+  // supported" for accounts the log_group API would have answered, and left them worse
+  // off than accounts with no log provider at all (no logs entry → null → we fetch).
+  const metricsProviderEntry = providerCapabilities.find((e: any) => e.provider_type === 'metrics');
+  const metricsCaps = metricsProviderEntry?.capabilities;
+  const supportsFeature = logsCaps?.supports_log_groups || metricsCaps?.supports_log_groups ? true : logsCaps || metricsCaps ? false : null;
+  // Which provider actually answers, by the same order. Surfaced in the toolbar because
+  // the two are not interchangeable reads: Prometheus groups are counted from the
+  // container_log_messages_total metric, not from log lines, so their counts and time
+  // buckets behave differently from a Loki/ES-grouped result.
+  const logGroupsProvider = logsCaps?.supports_log_groups
+    ? logsProviderEntry?.provider
+    : metricsCaps?.supports_log_groups
+    ? metricsProviderEntry?.provider
+    : null;
+  // Elasticsearch stores logs in indices; unlike label-based providers there is
+  // no fixed index to query, so expose a freeSolo Index picker (mirrors the ES
+  // index selector in the log-query builder) and thread the chosen index through
+  // the log_group request. Non-ES providers ignore `index`.
+  const isESLogProvider = logsProviderEntry?.provider === 'ES';
+  const [indexFilter, setIndexFilter] = useState<string[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<string>('');
 
   useEffect(() => {
     if (supportsFeature === false) return;
     handleSubmit();
-  }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload]);
+  }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload, selectedIndex]);
+
+  // Load the available Elasticsearch indices for the freeSolo Index picker.
+  // Reuse the shared, provider-agnostic ES index-list API (logs_list_labels),
+  // which resolves indices for both agent and direct/SaaS ES — unlike a raw
+  // query_es_indices relay call, which only works for the agent variant. Mirrors
+  // the traces group listing's index picker.
+  useEffect(() => {
+    // Clear any index carried over from a previous account/provider context so a
+    // stale index isn't queried (or shown) against the new account.
+    setSelectedIndex('');
+    setIndexFilter([]);
+    if (supportsFeature === false || !accountId || !isESLogProvider) {
+      return;
+    }
+    let isMounted = true;
+    observability
+      .logIndexList(accountId, 'ES')
+      .then((res: any) => {
+        if (!isMounted) return;
+        const indices = (res?.data?.data?.logs_list_labels || [])
+          .map((l: any) => l?.label)
+          .filter(Boolean)
+          .sort();
+        setIndexFilter(indices);
+      })
+      .catch((err: any) => {
+        if (!isMounted) return;
+        console.error('Failed to load ES indices:', err);
+        setIndexFilter([]);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [accountId, isESLogProvider, supportsFeature]);
 
   useEffect(() => {
     if (supportsFeature === false) return;
     if (!accountId || workloadName) {
       return;
     }
+    let cancelled = false;
     k8sApi.getK8sNamespaceNames(accountId).then((res) => {
+      if (cancelled) {
+        return;
+      }
       const namespaces = res.data.namespaces as string[];
       setNamespaceFilter(namespaces);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   useEffect(() => {
@@ -153,17 +219,24 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     if (!accountId || workloadNamespace) {
       return;
     }
+    let cancelled = false;
     const query = {
       accountId: accountId,
       allow_in_active_pod: allowInActivePod,
     };
     k8sApi.getAllK8sWorkload(query).then((res) => {
+      if (cancelled) {
+        return;
+      }
       const data = res?.data as any[];
       const workloadNames = data.map((e: any) => e.name) as string[];
       setWorkloadFilter([...new Set(workloadNames)]);
       setAllWorkload(data);
       setAllWorkload(res?.data);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, allowInActivePod]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
@@ -196,6 +269,10 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     setAllowInActivePod(e);
   };
 
+  const onIndexFilterChange = (value: string) => {
+    setSelectedIndex(value || '');
+  };
+
   const onMenuClick = (menuItems: any, data: any) => {
     const c = data?.values?.reduce((accumulator: number, currentValue: string) => accumulator + parseInt(currentValue), 0);
     setCount(c);
@@ -211,11 +288,13 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     const pod = containerIds?.[3] ?? item?.workload ?? item?.container ?? '';
     const workloadName = extractWorkloadName(pod);
 
-    setNubiQuery(
-      `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue.\n namespace: ${namespace}, pod - ${pod}, workload - ${workloadName}  \n\n Log - ${item.sample}`
-    );
-    setNubiSessionId(md5([item?.pattern_hash ?? item?.sample ?? '']));
-    setNubiSidebarVisible(true);
+    openNubiChat({
+      accountId,
+      sessionId: md5([item?.pattern_hash ?? item?.sample ?? '']),
+      query: `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue.\n namespace: ${namespace}, pod - ${pod}, workload - ${workloadName}  \n\n Log - ${item.sample}`,
+      source: 'log_pattern_analysis',
+      aboveModal: nubiAboveModal,
+    });
   };
 
   const handleSubmit = () => {
@@ -229,6 +308,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         request: {
           ...(selectedNamespace && { selectedNamespace }),
           ...(selectedWorkload && { selectedWorkload }),
+          ...(isESLogProvider && selectedIndex && { index: selectedIndex }),
         },
       })
       .then((res) => {
@@ -405,7 +485,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
           id='log-grouping-unsupported'
           img={noDataImg}
           heading='Log Grouping not supported'
-          subHeading='Your current log provider does not support log grouping.'
+          subHeading='Neither your log provider nor your metrics provider supports log grouping.'
           height='400px'
           sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
         />
@@ -415,19 +495,6 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
 
   return (
     <div>
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={accountId}
-        query={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiSessionId } }}
-        apiMode='investigate'
-        source='log_pattern_analysis'
-        position='right'
-        mode='overlay'
-        width='500px'
-        aboveModal={nubiAboveModal}
-      />
       <TicketCreatePopupForm
         open={isTicketCreateFormOpen}
         handleClose={closeTicketCreateForm}
@@ -449,6 +516,11 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         <ListingLayout.Toolbar
           actions={
             <>
+              {logGroupsProvider && (
+                <Chip id='log-group-source' variant='tag' size='xs' tone='subtle'>
+                  {`Source: ${logGroupsProvider}`}
+                </Chip>
+              )}
               <CustomDateTimeRangePicker
                 passedSelectedDateTime={{
                   startTime: selectedDateRange.startDate,
@@ -475,6 +547,16 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
               options={workloadFilter.map((o) => ({ value: o, label: o }))}
               value={selectedWorkload}
               onSelect={(e: React.ChangeEvent<HTMLInputElement>) => onWorkloadFilterChange(e as any)}
+            />
+          )}
+          {isESLogProvider && (
+            <FilterDropdown
+              id='log-group-es-index'
+              label='Index'
+              options={indexFilter}
+              value={selectedIndex}
+              onSelect={(e: any) => onIndexFilterChange(e?.target?.value)}
+              freeSolo={true}
             />
           )}
           <Switch

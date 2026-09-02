@@ -1,13 +1,14 @@
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import { decisionsRecord } from '@api1/memory';
 import { ShareIconBlue } from '@assets';
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import Text from '@shared/format/Text';
 import CopyButton from '@shared/buttons/CopyButton';
 import Tooltip from '@ui/Tooltip';
 import { Divider } from '@ui/Divider';
 import { Link } from '@ui/Link';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import FeedbackComponent from '@ui/FeedbackVote';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
 import Duration from '@components/llm/common/Duration';
@@ -19,8 +20,8 @@ import PropTypes from 'prop-types';
 import React, { useEffect, useState } from 'react';
 import { ds } from '@utils/colors';
 import { convertToReadableFormat } from 'src/utils/common';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
-import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
+import { mapToTableData } from '@components/k8s/common/logTableMapper';
 import { LogDate } from '@components/k8s/common/LogDate';
 import { AgentTokenUsage } from './common/TokenUsageDisplay';
 import { Button } from '@ui/Button';
@@ -36,6 +37,15 @@ const KubernetesLLMRequestResponse = (props) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = useState(null);
 
   useEffect(() => {
+    // MessageStream batch-fetches feedback for every response in the conversation via
+    // useMessageAdditionalData and passes the result down as `feedback` — skip the per-card
+    // network call entirely in that case (feedbackManagedExternally is only ever passed
+    // from that path). Other callers (LLMConversationWithTabs, investigate.jsx) don't pass
+    // it and keep fetching their own single session's feedback as before.
+    if (props.feedbackManagedExternally) {
+      setSentFeedback(props.feedback ?? {});
+      return;
+    }
     if (props.toolCall.type == 'response') {
       apiAskNudgebee
         .getFeedbackForSessionId({
@@ -57,7 +67,7 @@ const KubernetesLLMRequestResponse = (props) => {
           }
         });
     }
-  }, [props.toolCall.id]);
+  }, [props.toolCall.id, props.feedbackManagedExternally, props.feedback]);
 
   const onPageChange = (page, limit) => {
     setCurrentPage(page - 1);
@@ -125,13 +135,13 @@ const KubernetesLLMRequestResponse = (props) => {
 
       let convertedJson = arrayData.map((row) => {
         const rowData = {};
-        headers.forEach((header, _) => {
+        headers.forEach((header) => {
           rowData[header] = row[header];
         });
         return rowData;
       });
       const convertedJson2 = convertedJson.map((item) => {
-        const components = Object.entries(item).map(([_, value]) => {
+        const components = Object.entries(item).map(([_key, value]) => {
           let value1 = value;
           if (typeof value === 'object' || Array.isArray(value)) {
             value1 = JSON.stringify(value);
@@ -456,7 +466,7 @@ const KubernetesLLMRequestResponse = (props) => {
                         </Grid>
                         {e.values?.length > 1 ? (
                           <Grid item md={12} mb={ds.space[4]}>
-                            <LineChart data={e.values} labels={e.timestamps} />
+                            <Chart.Line data={e.values} labels={e.timestamps} />
                           </Grid>
                         ) : (
                           <>
@@ -626,7 +636,7 @@ const KubernetesLLMRequestResponse = (props) => {
           let tableData = mapToTableData(logsData);
           return (
             <Grid container sx={{ marginBottom: ds.space[2], fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-blue-700)' }}>
-              <KubernetesTable2
+              <KubernetesTable
                 id={'k8s-logs'}
                 totalRows={tableData.length}
                 data={tableData}
@@ -1061,10 +1071,27 @@ const KubernetesLLMRequestResponse = (props) => {
         llm_response: '',
         user_corrected_response: '',
         additional_notes: createFeedbackObject.type == 'thumbs_up' ? 'User liked the Response' : createFeedbackObject.message,
-        conversation_id: props.toolCall.id,
+        conversation_id: props.sessionId || props.conversationId || props.toolCall.id,
         cloud_account_id: props.accountId,
         useful: createFeedbackObject.type == 'thumbs_up',
       });
+      // Mirror the vote into Memory's Decisions layer so the next chat sees
+      // which root causes this user has accepted or rejected. The subject is
+      // derived server-side from the answer being voted on — sending the
+      // question instead recorded decisions like "hi: user thumbs-up on RCA".
+      // Fire-and-forget — feedback is the user-facing success path.
+      const isPositive = createFeedbackObject.type == 'thumbs_up';
+      if (props.toolCall?.id) {
+        decisionsRecord({
+          decisionType: isPositive ? 'root_cause_agreed' : 'root_cause_disagreed',
+          rationale: isPositive ? 'user thumbs-up on RCA' : createFeedbackObject.message || 'user thumbs-down on RCA',
+          messageId: props.toolCall.id,
+          accountId: props.accountId,
+          conversationId: props.conversationId,
+        }).catch(() => {
+          // Memory write is best-effort; never block feedback toast.
+        });
+      }
     }
   };
 
@@ -1117,8 +1144,16 @@ const KubernetesLLMRequestResponse = (props) => {
                     <>
                       <Box sx={{ borderLeft: '1px solid var(--ds-gray-200)', height: ds.space.mul(1, 5), mx: ds.space[1] }} />
                       <Box
+                        role='button'
+                        tabIndex={0}
                         onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
                         onClick={(e) => setReferencesAnchorEl(e.currentTarget)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setReferencesAnchorEl(e.currentTarget);
+                          }
+                        }}
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
@@ -1191,8 +1226,16 @@ const KubernetesLLMRequestResponse = (props) => {
                     {props.agentTokenData && <AgentTokenUsage agentData={props.agentTokenData} />}
                     {parsedReferences.length > 0 && (
                       <Box
+                        role='button'
+                        tabIndex={0}
                         onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
                         onClick={(e) => setReferencesAnchorEl(e.currentTarget)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setReferencesAnchorEl(e.currentTarget);
+                          }
+                        }}
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
@@ -1354,6 +1397,12 @@ KubernetesLLMRequestResponse.propTypes = {
   selectedModel: PropTypes.object,
   followupReadOnlyKey: PropTypes.string,
   conversationJson: PropTypes.object,
+  feedback: PropTypes.shape({
+    submitted: PropTypes.bool,
+    isPositive: PropTypes.bool,
+    message: PropTypes.string,
+  }),
+  feedbackManagedExternally: PropTypes.bool,
 };
 
 export default KubernetesLLMRequestResponse;

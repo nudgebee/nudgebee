@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools/core"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -146,6 +147,26 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 		}, err
 	}
 
+	// Detect per-query failures BEFORE summarizing: they arrive in results[].Error,
+	// NOT in the HTTP status, so the API call above returned nil error even when
+	// Elasticsearch refused the query (bad index, closed index, permissions,
+	// malformed query). Without this check the tool reports success on a
+	// genuinely failed query and the LLM misreads the shaped-empty payload as
+	// "no data" — one POC trace had 31 consecutive failures all marked success,
+	// and the final report told the customer to check their ingestion pipeline.
+	// Fail loudly with error-only content: no empty payload is returned so there
+	// is nothing to misread, and every layer above the tool (planner, retry,
+	// notebook, critique) sees the failure. Doing this before summarize also
+	// skips the per-series stats + sub-sampling work we'd only discard. See #36236.
+	if errText := collectESMetricsErrors(response); errText != "" {
+		nbRequestContext.Ctx.GetLogger().Warn("es_metrics_query: per-query failure(s) detected",
+			"error", errText, "queries", len(response.Results))
+		return core.NBToolResponse{
+			Data:   fmt.Sprintf("Metrics query failed: %s", errText),
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+
 	// Compute stats and cap series to manage token usage, mirroring the Prometheus tool pattern.
 	summarized := summarizeESMetricsResponse(response)
 
@@ -163,6 +184,26 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 		Type:   core.NBToolResponseTypeJson,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// collectESMetricsErrors returns a joined error text if any result in the batch
+// carries a non-nil Error, empty string otherwise. Today es_metrics_query sends
+// a single-entry batch (Queries map has one key), so any error means the whole
+// call failed; the helper is written batch-safe for the day multi-query batches
+// are added, and prefixes each error with its query key so an operator can tell
+// which sub-query failed.
+func collectESMetricsErrors(resp core.ObservabilityMetricsQueryResponse) string {
+	var errs []string
+	for _, r := range resp.Results {
+		if r.Error != nil && *r.Error != "" {
+			if r.QueryKey != "" {
+				errs = append(errs, fmt.Sprintf("[%s] %s", r.QueryKey, *r.Error))
+			} else {
+				errs = append(errs, *r.Error)
+			}
+		}
+	}
+	return strings.Join(errs, "; ")
 }
 
 // maxESMetricsSeries is the maximum number of series to return per query result.
@@ -186,12 +227,19 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 	}
 
 	type resultSummary struct {
-		QueryKey     string          `json:"query_key"`
-		Query        string          `json:"query"`
-		Payload      []seriesSummary `json:"payload"`
-		TotalSeries  int             `json:"total_series"`
-		Error        *string         `json:"error,omitempty"`
-		CappedNotice string          `json:"capped_notice,omitempty"`
+		QueryKey    string          `json:"query_key"`
+		Query       string          `json:"query"`
+		Payload     []seriesSummary `json:"payload"`
+		TotalSeries int             `json:"total_series"`
+		// DocsMatched separates "the query matched nothing" from "the query matched
+		// documents but the projection excluded the numeric paths series are built
+		// from". Both used to surface as total_series: 0, so the agent discarded
+		// correct queries and reformulated — 30 of 35 queries in one customer
+		// conversation came back with zero series and no way to tell which case it was.
+		DocsMatched  *int64  `json:"docs_matched,omitempty"`
+		Note         string  `json:"note,omitempty"`
+		Error        *string `json:"error,omitempty"`
+		CappedNotice string  `json:"capped_notice,omitempty"`
 	}
 
 	out := map[string]any{}
@@ -202,6 +250,8 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 			QueryKey:    r.QueryKey,
 			Query:       r.Query,
 			TotalSeries: len(r.Payload),
+			DocsMatched: r.DocsMatched,
+			Note:        r.Note,
 			Error:       r.Error,
 		}
 

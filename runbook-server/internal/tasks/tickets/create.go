@@ -3,6 +3,8 @@ package tickets
 import (
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/ticket"
+
+	"github.com/google/uuid"
 )
 
 // TicketsCreateTask defines a task for creating a ticket.
@@ -112,6 +114,22 @@ func (t *TicketsCreateTask) Execute(taskCtx types.TaskContext, params map[string
 		delete(additionalFields, "urgency")
 	}
 
+	// Dry run: validate params but never reach the ticketing platform. The
+	// placeholder satisfies OutputSchema so downstream tasks can render values.
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket creation")
+		return map[string]any{
+			"id":           "dry-run",
+			"platform":     "",
+			"reference_id": referenceId,
+			"severity":     severity,
+			"status":       "dry_run",
+			"ticket_id":    "dry-run",
+			"url":          "",
+			"action":       "dry_run",
+		}, nil
+	}
+
 	request := ticket.CreateTicketRequest{
 		IntegrationId:    integrationId,
 		Title:            title,
@@ -148,21 +166,29 @@ func (t *TicketsCreateTask) Execute(taskCtx types.TaskContext, params map[string
 // workflow doesn't set one explicitly: the triggering event's ID (so a
 // re-firing event comments on the existing ticket instead of opening a
 // duplicate), else a per-run key so each run creates a fresh ticket and only
-// activity retries within the run dedup. Isolated "Run Task" executions have
-// neither and return "" — the ticket server never dedups an empty reference.
+// activity retries within the run dedup.
+//
+// Isolated "Run Task" executions have neither, and get a fresh random key. It
+// is safe here and only here: ExecuteTask is a direct synchronous call, so
+// nothing re-rolls the key. Inside an activity a random key would change on
+// every Temporal retry and duplicate the ticket. An empty key is not an option
+// — it is stored as-is and collides with every other empty-reference row.
 func resolveReferenceID(taskCtx types.TaskContext) string {
 	if eventID := taskCtx.GetEventID(); eventID != "" {
 		return eventID
 	}
 	wfID := taskCtx.GetWorkflowID()
 	runID := taskCtx.GetWorkflowRunID()
-	if wfID == "" {
-		return runID
-	}
-	if runID != "" {
+	switch {
+	case wfID != "" && runID != "":
 		return wfID + ":" + runID
+	case wfID != "":
+		return wfID
+	case runID != "":
+		return runID
+	default:
+		return "runtask:" + uuid.NewString()
 	}
-	return wfID
 }
 
 func (t *TicketsCreateTask) InputSchema() *types.Schema {

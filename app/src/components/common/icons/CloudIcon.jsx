@@ -54,6 +54,7 @@ import {
   GrafanaColorIcon,
   Last9Icon,
   CloudFoundryIcon,
+  SelfHostedIcon,
   ElasticSearchIcon,
   PinotIcon,
   HiveIcon,
@@ -77,6 +78,10 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ouK8s;
   } else if (cloud_provider.toUpperCase() === 'CLOUDFOUNDRY') {
     Icon = CloudFoundryIcon;
+  } else if (cloud_provider.toUpperCase() === 'SELFHOSTED') {
+    // Without this the chain falls through to the cloudBlackIcon default — a
+    // cloud glyph on the one account type that has no cloud behind it.
+    Icon = SelfHostedIcon;
   } else if (cloud_provider.toUpperCase() === 'SNOWFLAKE') {
     Icon = ouSnowFlake;
   } else if (cloud_provider.toUpperCase() === 'OPENAI') {
@@ -129,6 +134,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ClickhouseIcon;
   } else if (cloud_provider.toUpperCase() === 'LLM') {
     Icon = LlmIcon;
+  } else if (cloud_provider.toUpperCase() === 'LLM_GATEWAY') {
+    Icon = LlmIcon;
   } else if (cloud_provider.toUpperCase() === 'MCP') {
     Icon = McpIcon;
   } else if (cloud_provider.toUpperCase() === 'LOGGLY') {
@@ -139,7 +146,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = SignozIcon;
   } else if (cloud_provider.toUpperCase() === 'OBSERVE') {
     Icon = ObserveIcon;
-  } else if (cloud_provider.toUpperCase() === 'OPENOBSERVE') {
+  } else if (cloud_provider.toUpperCase() === 'OPENOBSERVE' || cloud_provider.toUpperCase() === 'OPENOBSERVE_WEBHOOK') {
     Icon = OpenObserveIcon;
   } else if (cloud_provider.toUpperCase() === 'AZURE_APP_INSIGHTS') {
     Icon = AzureAppInsightIcon;
@@ -175,7 +182,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = GitLabIcon;
   } else if (cloud_provider.toUpperCase() === 'GRAFANA-TEMPO') {
     Icon = GrafanaTempoIcon;
-  } else if (cloud_provider.toUpperCase() === 'ES') {
+  } else if (cloud_provider.toUpperCase() === 'ES' || cloud_provider.toUpperCase() === 'ELASTICSEARCH_WEBHOOK') {
     Icon = ElasticSearchIcon;
   } else if (cloud_provider.toUpperCase() === 'PINOT') {
     Icon = PinotIcon;

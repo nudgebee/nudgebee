@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -175,6 +175,13 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Input: event_id (required), evidence_type (optional: logs, pod_metrics, node_metrics, traces, deployment, pod_events, node_events, pod_data, alert_labels, noisy_neighbours, related_events, api_failures, all)",
 			"Output: the requested evidence data for the event.",
 			"Strategy: Start with 'logs' (most diagnostic), then 'deployment' or 'pod_metrics' for context.",
+		},
+		tools.ToolIncidentAssembly: {
+			"Use this tool to see what else is going on around ONE alert: its repeat firings and cross-source copies (same_incident), config changes and upstream-dependency alerts shortly before it (cause candidates), downstream-dependent alerts after it (impact candidates), and background noise for that subject (chronic).",
+			"Input: event_id (required).",
+			"Output: the four candidate groups plus the analysis window; entries carry occurrence_count, sources, relation to the subject and expected-vs-observed firing rates.",
+			"Strategy: call it EARLY when analyzing a single alert, before concluding a root cause. Treat cause entries as hypotheses to verify against evidence; mention impact entries as potentially affected; NEVER present a chronic entry as the cause.",
+			"The grouping is by timing + topology only — candidates, not confirmed relationships.",
 		},
 		tools.ToolTriageExplanation: {
 			"Use this tool to explain HOW a single event was triaged (why it is DUPLICATE/SUPPRESSED or has a given computed_priority).",
@@ -558,6 +565,7 @@ func (p AgentEvents) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
 		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
 		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
+		tools.IncidentAssemblyTool{},
 	}
 }
 
@@ -1084,11 +1092,18 @@ func (m EventSummaryTool) InputSchema() toolcore.ToolSchema {
 		Type: toolcore.ToolSchemaTypeObject,
 		Properties: map[string]toolcore.ToolSchemaProperty{
 			"command": {
-				Type:        toolcore.ToolSchemaTypeString,
-				Description: "Events Data",
+				Type: toolcore.ToolSchemaTypeString,
+				Description: "Optional and ignored. Call summarises the event data already " +
+					"carried on the request context; nothing is read from this field.",
 			},
 		},
-		Required: []string{"command"},
+		// Deliberately no Required entry. Call() reads input.Context /
+		// QueryContext and never looks at "command", but the model is only ever
+		// told "Input: events data" — so it called the tool without that field,
+		// validation rejected the call, and the resulting
+		// `Invalid tool input for "event_summary"` text was stored and rendered
+		// as the event's summary. A required field nothing consumes can only
+		// ever fail.
 	}
 }
 
@@ -1179,10 +1194,13 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 
 	// Batch all events into a single LLM call instead of one-per-event
 	var eventPrompt string
+	eventPromptName := prompts.PromptEventGeneralSummary
 	if serviceLabelFound {
-		eventPrompt = prompts_repo.GetPrompt(prompts_repo.PromptEventSummary)
-	} else {
-		eventPrompt = prompts_repo.GetPrompt(prompts_repo.PromptEventGeneralSummary)
+		eventPromptName = prompts.PromptEventSummary
+	}
+	eventPrompt, eventPromptErr := prompts.GetPromptStrict(nbRequestContext.Ctx.GetContext(), eventPromptName, nbRequestContext.AccountId)
+	if eventPromptErr != nil {
+		return toolcore.NBToolResponse{}, fmt.Errorf("event summary: loading %s prompt: %w", eventPromptName, eventPromptErr)
 	}
 
 	// Add account context (cloud provider) as a hidden system instruction

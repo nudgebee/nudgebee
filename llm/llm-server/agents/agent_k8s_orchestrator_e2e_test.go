@@ -296,7 +296,7 @@ func runTest(t *testing.T, agent core.NBAgent, tc k8sTestCase) core.NBAgentRespo
 func waitForMemory(t *testing.T, accountId string, keywords []string, attempts int, interval time.Duration) (core.LongTermMemory, bool) {
 	t.Helper()
 	for i := 0; i < attempts; i++ {
-		memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", "", "", "", 50, 0)
+		memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 		if err == nil {
 			for _, m := range memories {
 				if containsAll(m.Content, keywords) {
@@ -315,7 +315,7 @@ func waitForMemory(t *testing.T, accountId string, keywords []string, attempts i
 // contains every keyword in `keywords`.
 func countMemoriesMatching(t *testing.T, accountId string, keywords []string) int {
 	t.Helper()
-	memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", "", "", "", 50, 0)
+	memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 	assert.Nil(t, err)
 	count := 0
 	for _, m := range memories {
@@ -988,11 +988,6 @@ func TestK8sAgent_WorkspaceFeatures(t *testing.T) {
 		t.Skip("TEST_ACCOUNT not set")
 	}
 
-	// Enable the shell tool for these tests
-	orig := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = orig })
-
 	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	shellTools := []string{"shell_execute", "workspace"}
@@ -1516,6 +1511,24 @@ func TestK8sAgent_FunctionExecutionWithApproval(t *testing.T) {
 		UserId:            os.Getenv("TEST_USER"),
 		Query:             fmt.Sprintf("/call check_ci_failure investigate failure of action `%s` in %s repo", action, repo),
 		ApprovalResponses: []string{approval},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
+	prev := config.Config.LlmServerKBPrestepEnabled
+	config.Config.LlmServerKBPrestepEnabled = true
+	t.Cleanup(func() { config.Config.LlmServerKBPrestepEnabled = prev })
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent("25f42d26-f179-4acd-9946-271ee0cf1b73")
+
+	tc := k8sTestCase{
+		Name:              "ci_failure_investigation",
+		SessionId:         "ut-skills-subagents-1",
+		AccountId:         "25f42d26-f179-4acd-9946-271ee0cf1b73",
+		UserId:            os.Getenv("TEST_USER"),
+		Query:             "can you get me memory usage of llm-server in nudgebee namespace.",
+		ApprovalResponses: []string{},
 	}
 	runTestMinimal(t, agent, tc)
 }

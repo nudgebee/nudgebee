@@ -2,7 +2,6 @@ package tools
 
 import (
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -189,7 +188,7 @@ func (m ServerExecuteTool) executeShellCommand(nbRequestContext core.NbToolConte
 	// the direct ExecuteContainerJob path so the override actually lands at
 	// the SSH command construction in common_relay.go / workspace.go. When
 	// no overrides are supplied the existing workspace path is unchanged.
-	if config.Config.LlmServerWorkspaceEnabled && !hasOverride {
+	if !hasOverride {
 		wm := workspace.NewWorkspaceManager()
 		// Use the command as-is, the shim for 'ssh' in the workspace pod will handle the relay call
 		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
@@ -200,7 +199,7 @@ func (m ServerExecuteTool) executeShellCommand(nbRequestContext core.NbToolConte
 			return response, err
 		}
 
-		// Wrap in JSON to be consistent with non-workspace mode
+		// Wrap in JSON to be consistent with the direct-relay path
 		outputformat := map[string]string{
 			"stdout": response,
 		}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"nudgebee/code-analysis-agent/config"
 
@@ -302,4 +303,54 @@ func TestHandleExecute_IsolatedEnv(t *testing.T) {
 		assert.Equal(t, "success", resp.CommandStatus, "response: %+v", resp)
 		assert.Contains(t, resp.Response, "MY_CUSTOM_VAR=caller-provided")
 	})
+}
+
+// TestHandleExecute_TimeoutKillsGrandchildProcess pins the fix for a bug found
+// via live testing: exec.CommandContext's default cancellation only kills the
+// direct child (sh), not any grandchildren it spawns (e.g. `sleep` in
+// `sleep N && echo done`). Without process-group cancellation, a command that
+// outlives the deadline still runs to its full natural duration — the
+// deadline becomes cosmetic, and the "prevent hangs" purpose of this timeout
+// is defeated for any multi-process command. This asserts the HTTP response
+// returns bounded by the configured deadline, not by the sleep's duration.
+func TestHandleExecute_TimeoutKillsGrandchildProcess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tempDir, err := os.MkdirTemp("", "exec_test_timeout")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	cfg := &config.Config{}
+	cfg.Analysis.WorkspaceDir = tempDir
+	cfg.Execution.WorkspaceDir = filepath.Join(tempDir, "exec_workspaces")
+	// Effective exec deadline is WriteTimeout - 2s (see HandleExecute), so
+	// this yields a ~1s deadline against a command that sleeps far longer.
+	cfg.Server.WriteTimeout = 3 * time.Second
+
+	handler := NewExecutionHandler(cfg)
+	router := gin.New()
+	router.POST("/execute", handler.HandleExecute)
+
+	body, _ := json.Marshal(ExecutionRequest{
+		Command:        "sleep 30 && echo done",
+		ConversationID: "test-timeout-grandchild",
+	})
+	httpReq, _ := http.NewRequest(http.MethodPost, "/execute", bytes.NewBuffer(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	router.ServeHTTP(w, httpReq)
+	elapsed := time.Since(start)
+
+	var resp ExecutionResponse
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	assert.Equal(t, "failed", resp.CommandStatus, "response: %+v", resp)
+	assert.Contains(t, resp.Error, "killed")
+	assert.Less(t, elapsed, 5*time.Second,
+		"handler took %s — should be bounded by the ~1s configured deadline, not the sleep 30's natural duration; "+
+			"a regression here means the deadline no longer kills grandchild processes", elapsed)
 }

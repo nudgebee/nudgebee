@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/common"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/tmc/langchaingo/llms"
 )
 
 // TestGoogleAICacheProvider_SingleflightCollapsesConcurrentCreates verifies the
@@ -142,4 +143,135 @@ func TestCacheTryLock_NonRedisAlwaysAcquires(t *testing.T) {
 	assert.True(t, acquired, "non-redis provider must always acquire")
 	assert.Equal(t, "", token, "non-redis acquire returns an empty token")
 	common.CacheUnlock(context.Background(), "lock-key", token) // must not panic
+}
+
+func TestAnthropicCacheProvider_MultiBreakpoint(t *testing.T) {
+	p := NewAnthropicCacheProvider()
+
+	messages := []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "System Instructions: Base Agent Rules"}},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "Turn 1: Check pod status"}},
+		},
+		{
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "Turn 1 Response: Checking pods..."}},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "Turn 2: Show logs"}},
+		},
+		{
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "Turn 2 Response: Here are the logs..."}},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "Turn 3: Active query"}},
+		},
+	}
+
+	req := &CacheRequest{
+		Provider:       "anthropic",
+		Model:          "claude-3-7-sonnet",
+		AccountId:      "acc-1",
+		ConversationId: "conv-1",
+		Messages:       messages,
+		Scope:          CacheScopeConversation,
+	}
+
+	resp := p.ApplyCache(context.Background(), req)
+	assert.NoError(t, resp.Error)
+	assert.False(t, resp.CacheHit)
+	assert.Len(t, resp.Messages, len(messages))
+
+	// Count cache_control markers across all message parts
+	markerCount := 0
+	systemMarked := false
+	for _, msg := range resp.Messages {
+		for _, part := range msg.Parts {
+			if cached, ok := part.(llms.CachedContent); ok {
+				markerCount++
+				if msg.Role == llms.ChatMessageTypeSystem {
+					systemMarked = true
+				}
+				assert.Equal(t, "ephemeral", cached.CacheControl.Type)
+			}
+		}
+	}
+
+	assert.True(t, systemMarked, "System message must have a cache breakpoint")
+	assert.True(t, markerCount >= 2 && markerCount <= 3, "Expected 2-3 breakpoints, got %d", markerCount)
+}
+
+func TestGetCacheTTL_PerModelAndScope(t *testing.T) {
+	// 1. Static scopes (Global / Account) always return 12h
+	assert.Equal(t, 12*time.Hour, getCacheTTL(CacheScopeGlobal, "gemini-2.5-flash"))
+	assert.Equal(t, 12*time.Hour, getCacheTTL(CacheScopeAccount, "gemini-2.5-pro"))
+
+	// 2. Conversation scope with Flash model -> 30m
+	assert.Equal(t, 30*time.Minute, getCacheTTL(CacheScopeConversation, "gemini-2.5-flash"))
+	assert.Equal(t, 30*time.Minute, getCacheTTL(CacheScopeConversation, "gemini-2.0-flash-lite"))
+
+	// 3. Conversation scope with Pro model -> 10m
+	assert.Equal(t, 10*time.Minute, getCacheTTL(CacheScopeConversation, "gemini-2.5-pro"))
+	assert.Equal(t, 10*time.Minute, getCacheTTL(CacheScopeConversation, "gemini-1.5-pro"))
+
+	// 4. Other models default to 10m
+	assert.Equal(t, 10*time.Minute, getCacheTTL(CacheScopeConversation, "claude-3-7-sonnet"))
+}
+
+func TestGoogleAICacheProvider_ZeroLatencyHitPath(t *testing.T) {
+	p := NewGoogleAICacheProvider()
+
+	messages := []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "System prompt"}},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "User question"}},
+		},
+	}
+
+	cacheable, _ := identifyCacheableMessages(messages, CacheScopeAccount)
+	cacheable = padMessagesIfRequired(cacheable, CacheScopeAccount)
+	contentHash := hashContent(cacheable)
+	credsFp := credsFingerprint("", "", "", "", "", "", "")
+	cacheKey := generateCacheKey(CacheScopeAccount, "acc-hit-test", "", "test_agent", "gemini-2.5-flash", credsFp)
+
+	// Seed cache in memory
+	info := &CacheInfo{
+		CacheName:      "cachedContents/existing-123",
+		AccountId:      "acc-hit-test",
+		AgentName:      "test_agent",
+		Model:          "gemini-2.5-flash",
+		ContentHash:    contentHash,
+		CreatedAt:      time.Now().Add(-10 * time.Minute),
+		ExpiresAt:      time.Now().Add(11 * time.Hour),
+		ConversationId: "conv-1",
+	}
+	data, err := json.Marshal(info)
+	assert.NoError(t, err)
+	assert.NoError(t, common.CacheSet(p.namespace, cacheKey, data))
+
+	req := &CacheRequest{
+		Provider:       "googleai",
+		Model:          "gemini-2.5-flash",
+		AccountId:      "acc-hit-test",
+		AgentName:      "test_agent",
+		ConversationId: "conv-1",
+		Messages:       messages,
+		Scope:          CacheScopeAccount,
+	}
+
+	// ApplyCache should return HIT immediately without network calls
+	resp := p.ApplyCache(context.Background(), req)
+	assert.True(t, resp.CacheHit)
+	assert.Len(t, resp.Options, 1)
 }

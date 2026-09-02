@@ -13,8 +13,10 @@ import (
 
 const ServiceNameLoadBalancing = "Cloud Load Balancing"
 
-// validResourceID matches alphanumeric, hyphens, dots, underscores, and colons
-var validResourceID = regexp.MustCompile(`^[a-zA-Z0-9._:/-]+$`)
+// validResourceID guards against filter-string injection; it admits the
+// characters legal in GCP resource ids — including tilde/plus/percent, which
+// Pub/Sub subscription and topic ids may contain.
+var validResourceID = regexp.MustCompile(`^[a-zA-Z0-9._:/~+%-]+$`)
 
 // AlarmCheckResult contains alarm check result
 type AlarmCheckResult struct {
@@ -82,8 +84,14 @@ func matchCondition(condition *monitoring.AlertPolicy_Condition, template provid
 		return false
 	}
 
-	// Check metric type
-	expectedMetric := getGCPMetricType(template.Configuration.Namespace, template.Configuration.MetricName)
+	// Check metric type. Prefer the template's authoritative metric_type_filter
+	// (the creator side already resolves from it, see resolveGCPMetricAndResource);
+	// the hardcoded getGCPMetricType mapping remains as fallback for templates
+	// that predate the field.
+	expectedMetric := template.Configuration.MetricTypeFilter
+	if expectedMetric == "" {
+		expectedMetric = getGCPMetricType(template.Configuration.Namespace, template.Configuration.MetricName)
+	}
 	if !strings.Contains(metricThreshold.Filter, expectedMetric) {
 		return false
 	}
@@ -93,7 +101,39 @@ func matchCondition(condition *monitoring.AlertPolicy_Condition, template provid
 		return false
 	}
 
+	// A template that pins metric labels (e.g. 5xx-only error rate) is not
+	// satisfied by a broader alert on the same metric — every pinned label
+	// must appear in the existing alert's filter. metricLabelClause keeps the
+	// expected form identical to what the creator emits (incl. unquoted
+	// numerics for INT64-typed labels).
+	for k, v := range template.Configuration.MetricLabelFilters {
+		if !containsMetricLabelClause(metricThreshold.Filter, metricLabelClause(k, v)) {
+			return false
+		}
+	}
+
 	return true
+}
+
+// containsMetricLabelClause reports whether filter contains the rendered
+// clause as a whole term. Unquoted numeric clauses need a boundary check: a
+// plain substring probe would let a longer number match (…=500 sits inside
+// …=5000), falsely satisfying the template and suppressing a recommendation.
+// The character after the match must therefore not be another digit. Quoted
+// string clauses end with a closing quote, for which the check is a no-op.
+func containsMetricLabelClause(filter, clause string) bool {
+	for from := 0; from <= len(filter)-len(clause); {
+		idx := strings.Index(filter[from:], clause)
+		if idx < 0 {
+			return false
+		}
+		end := from + idx + len(clause)
+		if end >= len(filter) || filter[end] < '0' || filter[end] > '9' {
+			return true
+		}
+		from = from + idx + 1
+	}
+	return false
 }
 
 // getGCPMetricType converts generic metric to GCP metric type
@@ -175,6 +215,16 @@ func GetResourceFilterForService(serviceName, resourceID string) string {
 		return fmt.Sprintf(`resource.type="k8s_cluster" AND resource.labels.cluster_name="%s"`, resourceID)
 	case ServiceNameLoadBalancing:
 		return fmt.Sprintf(`resource.type="https_lb_rule" AND resource.labels.forwarding_rule_name="%s"`, resourceID)
+	case ServiceNamePubSub:
+		return fmt.Sprintf(`resource.type="pubsub_subscription" AND resource.labels.subscription_id="%s"`, resourceID)
+	case ServiceNameFunctions:
+		return fmt.Sprintf(`resource.type="cloud_function" AND resource.labels.function_name="%s"`, resourceID)
+	case ServiceNameStorage:
+		return fmt.Sprintf(`resource.type="gcs_bucket" AND resource.labels.bucket_name="%s"`, resourceID)
+	case ServiceNameMemorystore:
+		// resourceID must be the full instance path (projects/.../instances/...) —
+		// redis_instance's instance_id label carries the full resource name
+		return fmt.Sprintf(`resource.type="redis_instance" AND resource.labels.instance_id="%s"`, resourceID)
 	default:
 		return fmt.Sprintf(`resource.labels.resource_id="%s"`, resourceID)
 	}

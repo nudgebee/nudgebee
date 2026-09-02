@@ -69,7 +69,15 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		} else {
-			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", authHeader)
+			maskedAuth := ""
+			if authHeader != "" {
+				if len(authHeader) > 8 {
+					maskedAuth = authHeader[:4] + "***"
+				} else {
+					maskedAuth = "***"
+				}
+			}
+			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", maskedAuth)
 			c.Writer.WriteHeader(401)
 			c.Abort()
 			return

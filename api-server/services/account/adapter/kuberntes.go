@@ -254,7 +254,7 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 			ResolutionType:           RecommendationResolutionTypeDeploymentChange,
 			ResolutionTypeRefrenceId: taskId,
 		}, nil
-	case request.Recommendation.Category == "RightSizing" && request.Recommendation.RuleName == "pod_right_sizing":
+	case request.Recommendation.RuleName == "pod_right_sizing":
 		if request.Resource.Id == "" {
 			return ApplyRecommendationResponse{}, fmt.Errorf("rule is not supported for empty respurce id")
 		}

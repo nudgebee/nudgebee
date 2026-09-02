@@ -74,13 +74,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
     let keyValues;
     if (fields[key].type == 'array') {
       keyValues = value;
-    } else if (fields[key].type == 'select') {
-      if (key.includes('customfield_')) {
-        keyValues = { id: value };
-      } else {
-        keyValues = value;
-      }
-    } else if (fields[key].type == 'multicheckboxes' || fields[key].type == 'multiselect') {
+    } else if (fields[key].type == 'multiselect') {
       keyValues = (value || []).map((v) => ({ id: v }));
     } else if (fields[key].type == 'datetime') {
       keyValues = value?.valueOf();
@@ -248,7 +242,6 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
               </Grid>
             );
           case 'multiselect':
-          case 'multicheckboxes':
             return (
               <Grid item xs={12} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
                 <Select
@@ -301,7 +294,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
   };
 
   return (
-    <Grid container columnSpacing={2}>
+    <Grid container columnSpacing={2} rowSpacing={1.5}>
       {renderFields()}
     </Grid>
   );

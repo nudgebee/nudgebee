@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/prompts"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -51,8 +51,14 @@ func EvaluateAgentResponse(ctx *security.RequestContext, agentResponse NBAgentRe
 	)
 
 	// Get prompts from prompt_repo
-	systemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEvaluatorSystem)
-	mainPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEvaluatorQueryResponse, agentResponse.Query, agentResponse.Response)
+	systemPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptEvaluatorSystem, accountId)
+	if err != nil {
+		return AgentResponseEvaluationResult{}, fmt.Errorf("evaluator: loading system prompt: %w", err)
+	}
+	mainPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptEvaluatorQueryResponse, accountId, agentResponse.Query, agentResponse.Response)
+	if err != nil {
+		return AgentResponseEvaluationResult{}, fmt.Errorf("evaluator: loading query-response prompt: %w", err)
+	}
 
 	messageContent := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
@@ -85,8 +91,14 @@ func EvaluateAgentResponse(ctx *security.RequestContext, agentResponse NBAgentRe
 		availableToolsInfo := strings.Join(availableToolInfos, "\n---\n")
 
 		// Get tool evaluation prompts from prompt_repo
-		toolSystemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEvaluatorSystem)
-		toolPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEvaluatorToolCalls, agentResponse.Query, allToolsInfo, availableToolsInfo)
+		toolSystemPrompt, tsErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptEvaluatorSystem, accountId)
+		if tsErr != nil {
+			return AgentResponseEvaluationResult{}, fmt.Errorf("evaluator: loading tool system prompt: %w", tsErr)
+		}
+		toolPrompt, tpErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptEvaluatorToolCalls, accountId, agentResponse.Query, allToolsInfo, availableToolsInfo)
+		if tpErr != nil {
+			return AgentResponseEvaluationResult{}, fmt.Errorf("evaluator: loading tool-calls prompt: %w", tpErr)
+		}
 
 		toolMsg := []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, toolSystemPrompt),

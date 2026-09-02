@@ -433,6 +433,110 @@ func TestCheckRequiredFields(t *testing.T) {
 	})
 }
 
+// --- dropUnsupportedCreateFields tests ---
+
+func TestDropUnsupportedCreateFields(t *testing.T) {
+	issueTypes := []ticketServerIssueType{
+		{
+			Name: "Bug",
+			Fields: map[string]ticketServerFieldInfo{
+				"summary":  {Key: "summary", Name: "Summary", Type: "string", Required: true},
+				"priority": {Key: "priority", Name: "Priority", Type: "select", Required: false},
+				"assignee": {Key: "assignee", Name: "Assignee", Type: "string", Required: false},
+			},
+		},
+		{
+			// Mirrors the reproduced production bug: a Task create screen with no
+			// priority or assignee field, only summary.
+			Name: "Task",
+			Fields: map[string]ticketServerFieldInfo{
+				"summary": {Key: "summary", Name: "Summary", Type: "string", Required: true},
+			},
+		},
+	}
+
+	t.Run("drops severity when issue type has no priority field", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:      "Outage",
+			TicketType: "Task",
+			Severity:   "High",
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		assert.Equal(t, []string{"severity"}, dropped)
+		assert.Empty(t, req.Severity)
+	})
+
+	t.Run("keeps severity when issue type has a priority field", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:      "OOM Bug",
+			TicketType: "Bug",
+			Severity:   "High",
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		assert.Empty(t, dropped)
+		assert.Equal(t, "High", req.Severity)
+	})
+
+	t.Run("keeps assignee when issue type has an assignee field", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:      "OOM Bug",
+			TicketType: "Bug",
+			Assignee:   "alice@test.com",
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		assert.Empty(t, dropped)
+		assert.Equal(t, "alice@test.com", req.Assignee)
+	})
+
+	t.Run("drops assignee when issue type has no assignee field", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:      "Outage",
+			TicketType: "Task",
+			Assignee:   "alice@test.com",
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		assert.Equal(t, []string{"assignee"}, dropped)
+		assert.Empty(t, req.Assignee)
+	})
+
+	t.Run("drops additional_fields keys not on the create screen", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:      "Outage",
+			TicketType: "Task",
+			AdditionalFields: map[string]any{
+				"customfield_10034": "Backend",
+			},
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		assert.Equal(t, []string{"customfield_10034"}, dropped)
+		assert.NotContains(t, req.AdditionalFields, "customfield_10034")
+	})
+
+	t.Run("keeps additional_fields keys that exist on the create screen", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:      "OOM Bug",
+			TicketType: "Bug",
+			AdditionalFields: map[string]any{
+				"assignee": "bob@test.com",
+			},
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		assert.Empty(t, dropped)
+		assert.Contains(t, req.AdditionalFields, "assignee")
+	})
+
+	t.Run("falls back to first issue type when ticket_type unset", func(t *testing.T) {
+		req := TicketV2OperationRequest{
+			Title:    "Untyped",
+			Severity: "High",
+		}
+		dropped := dropUnsupportedCreateFields(issueTypes, &req)
+		// issueTypes[0] is "Bug", which has a priority field.
+		assert.Empty(t, dropped)
+		assert.Equal(t, "High", req.Severity)
+	})
+}
+
 // --- formatAdditionalFields tests ---
 
 func TestFormatAdditionalFields(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	smithy "github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
@@ -171,6 +172,44 @@ func TestIsThrottleError(t *testing.T) {
 	}
 }
 
+func TestIsRegionDisabled(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain string error", errors.New("boom"), false},
+		{"InvalidClientTokenId (STS token invalid in disabled region)", &smithy.GenericAPIError{Code: "InvalidClientTokenId"}, true},
+		{"UnrecognizedClientException (JSON-protocol services)", &smithy.GenericAPIError{Code: "UnrecognizedClientException"}, true},
+		{"AuthFailure (EC2-family)", &smithy.GenericAPIError{Code: "AuthFailure"}, true},
+		{"OptInRequired", &smithy.GenericAPIError{Code: "OptInRequired"}, true},
+		{"SubscriptionRequiredException", &smithy.GenericAPIError{Code: "SubscriptionRequiredException"}, true},
+		{"plain AccessDenied must still surface", &smithy.GenericAPIError{Code: "AccessDenied"}, false},
+		{"AccessDeniedException must still surface", &smithy.GenericAPIError{Code: "AccessDeniedException"}, false},
+		{"wrapped via fmt.Errorf %w", fmt.Errorf("fetch failed: %w", &smithy.GenericAPIError{Code: "AuthFailure"}), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isRegionDisabled(c.err); got != c.want {
+				t.Fatalf("isRegionDisabled=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestIsRegionDisabledRealSdkChain pins the full aws-sdk-go-v2 wrapping a call
+// into a not-opted-in region produces: the endpoint answers fast with an
+// auth-layer rejection (no retries), wrapped in smithy.OperationError.
+func TestIsRegionDisabledRealSdkChain(t *testing.T) {
+	respErr := &smithyhttp.ResponseError{Response: &smithyhttp.Response{Response: &http.Response{StatusCode: 403}}, Err: &smithy.GenericAPIError{Code: "InvalidClientTokenId", Message: "The security token included in the request is invalid"}}
+	opErr := &smithy.OperationError{ServiceID: "EKS", OperationName: "ListClusters", Err: respErr}
+
+	if !isRegionDisabled(opErr) {
+		t.Fatalf("isRegionDisabled=false for the real SDK disabled-region chain; the region skip would not trigger in prod")
+	}
+}
+
 // TestIsThrottleErrorRealSdkChain pins the FULL aws-sdk-go-v2 wrapping that a
 // throttled ListClustersV2 produces in prod after the SDK exhausts its retries:
 // smithy.OperationError -> retry.MaxAttemptsError -> smithyhttp.ResponseError{429}.
@@ -193,3 +232,34 @@ type timeoutError struct{}
 func (timeoutError) Error() string   { return "i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
+
+// Regression test: the Cost & Usage Report API only exists in us-east-1.
+// getUsageBucketFromCostReport used to build its CUR client straight from
+// the account's own aws.Config, so an account operating in any other region
+// (e.g. eu-west-1) failed CUR discovery with a DNS lookup error against a
+// nonexistent regional endpoint (cur.eu-west-1.amazonaws.com — no such
+// host), even though the account's credentials and CUR report were fine.
+func TestCurServiceConfigForcesUsEast1(t *testing.T) {
+	cases := []struct {
+		name         string
+		inputRegion  string
+		expectRegion string
+	}{
+		{name: "non-us-east-1 account region gets overridden", inputRegion: "eu-west-1", expectRegion: "us-east-1"},
+		{name: "already us-east-1 stays us-east-1", inputRegion: "us-east-1", expectRegion: "us-east-1"},
+		{name: "empty region gets set to us-east-1", inputRegion: "", expectRegion: "us-east-1"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := aws.Config{Region: tc.inputRegion}
+			got := curServiceConfig(cfg)
+			if got.Region != tc.expectRegion {
+				t.Fatalf("curServiceConfig(region=%q).Region = %q, want %q", tc.inputRegion, got.Region, tc.expectRegion)
+			}
+			if cfg.Region != tc.inputRegion {
+				t.Fatalf("curServiceConfig mutated the input config's region: got %q, want unchanged %q", cfg.Region, tc.inputRegion)
+			}
+		})
+	}
+}

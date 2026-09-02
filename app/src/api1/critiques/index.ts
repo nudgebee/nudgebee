@@ -57,6 +57,12 @@ export interface CritiqueListRow {
   critiqued_content: string;
   feedback: string;
   created_at: string;
+  /** Cross-tenant list — account_id is per-row, not a request-level scope. */
+  account_id: string;
+  conversation_id: string;
+  message_id: string;
+  /** Empty when the owning conversation no longer exists. */
+  session_id: string;
 }
 
 export interface CritiqueList {

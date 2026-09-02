@@ -3,8 +3,90 @@ package flow_sources
 import (
 	"log/slog"
 	"nudgebee/services/knowledge_graph/core"
+	"nudgebee/services/traces"
 	"testing"
 )
+
+// A K8s Node observed via host-network/kubelet-level traffic (e.g. a
+// Prometheus node-metrics scrape) arrives from traces/service_map.go with
+// Kind="Node" (see applicationKindFor there) — inferNodeType must map that to
+// NodeTypeNode so isK8sAuthoritativeType correctly defers to the
+// k8s_source-authoritative Node instead of fabricating a stand-alone Service
+// node (nb-34880-class bug: KG node misclassification).
+func TestTracesFlowSource_InferNodeType_Node(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	nodeType, _ := source.inferNodeType("Node", nil)
+	if nodeType != core.NodeTypeNode {
+		t.Errorf("inferNodeType(%q, nil) = %v, want %v", "Node", nodeType, core.NodeTypeNode)
+	}
+}
+
+// createNodeForServiceApplication must not fabricate a stand-alone node for a
+// Kind="Node" application — k8s_source is the single source of truth for
+// Node/Namespace/Cluster (see isK8sAuthoritativeType in ebpf_flow_source.go).
+// Callers fall back to matchServiceApplicationToNode, which reuses the real
+// node if one exists, and drop the edge otherwise.
+func TestTracesFlowSource_CreateNodeForServiceApplication_SkipsNode(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	app := &traces.ServiceApplication{
+		Id: traces.ServiceApplicationId{
+			Name:      "gke-example-cluster-node-pool-a1b2c3d4-xy9z",
+			Kind:      "Node",
+			Namespace: "node",
+		},
+	}
+
+	node := source.createNodeForServiceApplication(app, "tenant-1", core.K8sAccount{CloudAccountID: "account1"})
+	if node != nil {
+		t.Errorf("createNodeForServiceApplication() = %+v, want nil (k8s-authoritative type)", node)
+	}
+}
+
+// End-to-end proof of the fix's intended outcome: a Kind="Node" application
+// must be resolved to the real, k8s_source-authoritative Node node (matched
+// by name — Node objects have no "namespace" property, so Strategy 1's
+// namespace+name match can't apply here, only Strategy 2's name-only match),
+// not left to fabricate a phantom Service node.
+func TestTracesFlowSource_MatchServiceApplicationToNode_Node(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	const nodeName = "gke-example-cluster-node-pool-a1b2c3d4-xy9z"
+	existingNodes := []*core.DbNode{
+		{
+			UniqueKey:      "k8s:account1::Node::" + nodeName,
+			NodeType:       core.NodeTypeNode,
+			Properties:     map[string]interface{}{"name": nodeName},
+			CloudAccountID: "account1",
+			Source:         "k8s",
+		},
+	}
+	source.InitializeNodeMatcher(existingNodes)
+
+	app := &traces.ServiceApplication{
+		Id: traces.ServiceApplicationId{
+			Name:      nodeName,
+			Kind:      "Node",
+			Namespace: "node",
+		},
+	}
+
+	node, err := source.matchServiceApplicationToNode(app, "account1")
+	if err != nil {
+		t.Fatalf("matchServiceApplicationToNode() error = %v, want a match against the existing Node", err)
+	}
+	if node == nil {
+		t.Fatalf("matchServiceApplicationToNode() = nil, nil, want a match against the existing Node")
+		return
+	}
+	if node.UniqueKey != existingNodes[0].UniqueKey {
+		t.Errorf("matchServiceApplicationToNode() matched %q, want %q", node.UniqueKey, existingNodes[0].UniqueKey)
+	}
+}
 
 func TestNewTracesFlowSource(t *testing.T) {
 	logger := slog.Default()
@@ -420,6 +502,73 @@ func TestTracesFlowSource_MatchK8sInternalDNSToNode(t *testing.T) {
 	}
 }
 
+func TestNormalizeCallTargetName(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		kind     string
+		wantName string
+	}{
+		{
+			name:     "deployment pod name is normalized to workload name",
+			target:   "llm-server-57744b6758-z5422",
+			kind:     "",
+			wantName: "llm-server",
+		},
+		{
+			name:     "another replica of the same deployment normalizes to the same workload name",
+			target:   "llm-server-57744b6758-bzt2r",
+			kind:     "",
+			wantName: "llm-server",
+		},
+		{
+			name:     "kind Pod forces owner extraction even if name doesn't look pod-shaped",
+			target:   "kafka-0",
+			kind:     "Pod",
+			wantName: "kafka",
+		},
+		{
+			name:     "plain service name is left untouched",
+			target:   "llm-server",
+			kind:     "",
+			wantName: "llm-server",
+		},
+		{
+			name:     "external hostname is left untouched",
+			target:   "api.stripe.com",
+			kind:     "",
+			wantName: "api.stripe.com",
+		},
+		{
+			name:     "bare ReplicaSet name (single hash segment) is normalized to workload name",
+			target:   "cloud-collector-server-5888444974",
+			kind:     "Service",
+			wantName: "cloud-collector-server",
+		},
+		{
+			name:     "another ReplicaSet hash for the same workload normalizes to the same name",
+			target:   "cloud-collector-server-5f6cc75ffb",
+			kind:     "Service",
+			wantName: "cloud-collector-server",
+		},
+		{
+			name:     "short trailing segment below the hash length range is left untouched",
+			target:   "auth-service",
+			kind:     "Service",
+			wantName: "auth-service",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeCallTargetName(tt.target, tt.kind)
+			if got != tt.wantName {
+				t.Errorf("normalizeCallTargetName(%q, %q) = %q, want %q", tt.target, tt.kind, got, tt.wantName)
+			}
+		})
+	}
+}
+
 // NOTE: The main business logic for traces flow source is now in:
 // 1. traces.FetchTracesAndBuildServiceMap() - building the service map from traces
 // 2. ConvertServiceMapToGraph() - converting service map to graph nodes/edges
@@ -434,3 +583,51 @@ func TestTracesFlowSource_MatchK8sInternalDNSToNode(t *testing.T) {
 // - service map conversion: service_map_converter_test.go (to be added)
 //
 // Integration tests for the full flow should be added to knowledge_graph/integration_test.go
+
+// TestTracesFlowSource_ResolvesBarePodNameToWorkload is the flow-source golden
+// for the StatefulSet-ordinal gap: normalizeCallTargetName's string heuristic
+// leaves "redis-master-0" unchanged (isPodName requires a 5-char pod ID), so
+// tryMatchExternalService must resolve it authoritatively (namespace-scoped) to
+// the owning Workload before minting an opaque ExternalService leaf.
+func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
+	logger := slog.Default()
+	source := NewTracesFlowSource(logger)
+
+	// The redis-master StatefulSet Workload already exists in the graph (k8s source).
+	redisMaster := &core.DbNode{
+		UniqueKey: "k8s:acct1:redis:Workload::redis-master",
+		NodeType:  core.NodeTypeWorkload,
+		Properties: map[string]interface{}{
+			"name":      "redis-master",
+			"kind":      "StatefulSet",
+			"namespace": "redis",
+		},
+		CloudAccountID: "acct1",
+	}
+	source.InitializeNodeMatcher([]*core.DbNode{redisMaster})
+
+	// Pod-name index as both sources (kube_pod_info + k8s_pods) would build it.
+	resolver := resolverWithPodNames([]struct {
+		namespace string
+		name      string
+		node      *core.DbNode
+	}{
+		{"redis", "redis-master-0", redisMaster},
+	})
+
+	// Caller in namespace "redis" -> resolves to the StatefulSet, not an ExternalService.
+	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "redis", resolver)
+	if got == nil {
+		t.Fatalf("expected redis-master-0 to resolve to the redis-master StatefulSet, got nil (would create an ExternalService)")
+		return
+	}
+	if got.UniqueKey != redisMaster.UniqueKey {
+		t.Errorf("expected %q, got %q", redisMaster.UniqueKey, got.UniqueKey)
+	}
+
+	// Caller in a namespace with no such pod: no pod match, and no DNS/name match
+	// either -> nil, so the caller falls back to an ExternalService (status quo).
+	if miss := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "payments", resolver); miss != nil {
+		t.Errorf("bare pod name unknown in caller ns must NOT match, got %q", miss.UniqueKey)
+	}
+}

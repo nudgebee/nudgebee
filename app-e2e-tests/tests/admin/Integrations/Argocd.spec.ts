@@ -7,6 +7,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 
 const requiredEnv = [
@@ -65,9 +66,7 @@ test.describe.serial("Argocd Account Integration", () => {
     await locators.addArgocdAccountBtn.click();
 
     await locators.argocdConfigNameInput.fill(configName);
-    await locators.argocdAccountIdDropdown.click();
-    await locators.argocdAccountIdOption(process.env.CLUSTER!).first().click();
-    await locators.argocdAccountIdDropdown.press("Escape");
+    await selectAccountFromDropdown(page, locators.argocdAccountIdDropdown, process.env.CLUSTER!);
     await locators.argocdK8sSecretInput.fill(process.env.ARGOCD_SECRET!);
 
     await locators.argocdInsecureDropdown.click();
@@ -90,7 +89,6 @@ test.describe.serial("Argocd Account Integration", () => {
       successToast: locators.argocdSuccessToast,
       testName: "Add Argocd Account Integration",
       operationNames: ["AddIntegrations"],
-      ignoreErrorMessages: ["already exists", "already has"],
     });
   });
 

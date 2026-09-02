@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations"
 	"nudgebee/services/internal/database"
+	kgcore "nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/observability"
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
@@ -1357,10 +1358,11 @@ func EnrichWithCloudResources(requestContext *security.RequestContext, nodes []*
 		nodeType := determineCloudResourceNodeType(resource.Type)
 
 		// Create cloud resource node
+		cloudNodeKey := fmt.Sprintf("%s:%s:%s", nodeType, resource.Name, resource.Region)
 		cloudNode := &KnowledgeGraphNode{
-			ID:             uuid.New().String(),
+			ID:             kgcore.NodeIDFor(cloudNodeKey, tenantID, cloudAccountID),
 			NodeType:       nodeType,
-			UniqueKey:      fmt.Sprintf("%s:%s:%s", nodeType, resource.Name, resource.Region),
+			UniqueKey:      cloudNodeKey,
 			CloudAccountID: cloudAccountID,
 			TenantID:       tenantID,
 			CreatedAt:      time.Now(),
@@ -1526,10 +1528,11 @@ func EnrichWithCloudResources(requestContext *security.RequestContext, nodes []*
 		}
 
 		// Create inferred cloud resource node
+		inferredNodeKey := fmt.Sprintf("%s:%s:%s", nodeType, awsEndpoint, "inferred")
 		inferredNode := &KnowledgeGraphNode{
-			ID:             uuid.New().String(),
+			ID:             kgcore.NodeIDFor(inferredNodeKey, tenantID, cloudAccountID),
 			NodeType:       nodeType,
-			UniqueKey:      fmt.Sprintf("%s:%s:%s", nodeType, awsEndpoint, "inferred"),
+			UniqueKey:      inferredNodeKey,
 			CloudAccountID: cloudAccountID,
 			TenantID:       tenantID,
 			CreatedAt:      time.Now(),
@@ -1785,10 +1788,11 @@ func EnrichLoadBalancerWithTargets(
 			environment = lbEnv
 		}
 
+		ingressNodeKey := fmt.Sprintf("Service:%s:%s", k8sServiceName, k8sNamespace)
 		ingressNode := &KnowledgeGraphNode{
-			ID:        uuid.New().String(),
+			ID:        kgcore.NodeIDFor(ingressNodeKey, tenantID, k8sAccountID),
 			NodeType:  NodeTypeService,
-			UniqueKey: fmt.Sprintf("Service:%s:%s", k8sServiceName, k8sNamespace),
+			UniqueKey: ingressNodeKey,
 			Properties: map[string]interface{}{
 				"name":         k8sServiceName,
 				"namespace":    k8sNamespace,
@@ -2193,9 +2197,10 @@ func EnrichLoadBalancerWithTargets(
 					properties["labels"] = labels
 				}
 
+				targetNodeKey := fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace)
 				targetNode = &KnowledgeGraphNode{
-					ID:             uuid.New().String(),
-					UniqueKey:      fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace),
+					ID:             kgcore.NodeIDFor(targetNodeKey, tenantID, k8sAccountID),
+					UniqueKey:      targetNodeKey,
 					NodeType:       NodeTypePod, // Still use Pod type for infrastructure
 					CloudAccountID: k8sAccountID,
 					TenantID:       tenantID,
@@ -2378,10 +2383,11 @@ func resolveIngressBackendServices(
 				uniqueBackends[backendKey] = true
 
 				// Create Service node for the backend service
+				backendNodeKey := fmt.Sprintf("Service:%s:%s", backendServiceName, namespace)
 				backendNode := &KnowledgeGraphNode{
-					ID:        uuid.New().String(),
+					ID:        kgcore.NodeIDFor(backendNodeKey, tenantID, k8sAccountID),
 					NodeType:  NodeTypeService,
-					UniqueKey: fmt.Sprintf("Service:%s:%s", backendServiceName, namespace),
+					UniqueKey: backendNodeKey,
 					Properties: map[string]interface{}{
 						"name":          backendServiceName,
 						"namespace":     namespace,
@@ -2795,9 +2801,10 @@ func EnrichRoute53DNSWithTargets(
 					"cache_endpoint", cname)
 
 				// Create ElastiCache node
+				cacheNodeKey := fmt.Sprintf("ElastiCache:%s", cname)
 				cacheNode := &KnowledgeGraphNode{
-					ID:             uuid.New().String(),
-					UniqueKey:      fmt.Sprintf("ElastiCache:%s", cname),
+					ID:             kgcore.NodeIDFor(cacheNodeKey, tenantID, awsAccountID),
+					UniqueKey:      cacheNodeKey,
 					NodeType:       NodeTypeCache,
 					CloudAccountID: awsAccountID,
 					TenantID:       tenantID,
@@ -2858,9 +2865,10 @@ func EnrichRoute53DNSWithTargets(
 					"rds_endpoint", cname)
 
 				// Create RDS node
+				rdsNodeKey := fmt.Sprintf("RDS:%s", cname)
 				rdsNode := &KnowledgeGraphNode{
-					ID:             uuid.New().String(),
-					UniqueKey:      fmt.Sprintf("RDS:%s", cname),
+					ID:             kgcore.NodeIDFor(rdsNodeKey, tenantID, awsAccountID),
+					UniqueKey:      rdsNodeKey,
 					NodeType:       NodeTypeDatabase,
 					CloudAccountID: awsAccountID,
 					TenantID:       tenantID,
@@ -2919,9 +2927,10 @@ func EnrichRoute53DNSWithTargets(
 					"hostname", hostname,
 					"target", cname)
 
+				externalNodeKey := fmt.Sprintf("ExternalService:%s", hostname)
 				externalNode := &KnowledgeGraphNode{
-					ID:        uuid.New().String(),
-					UniqueKey: fmt.Sprintf("ExternalService:%s", hostname),
+					ID:        kgcore.NodeIDFor(externalNodeKey, tenantID, ""),
+					UniqueKey: externalNodeKey,
 					NodeType:  NodeTypeExternalService,
 					TenantID:  tenantID,
 					Properties: map[string]interface{}{
@@ -3182,9 +3191,10 @@ func mapIPsToPods(
 			properties["labels"] = labels
 		}
 
+		targetNodeKey := fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace)
 		targetNode := &KnowledgeGraphNode{
-			ID:             uuid.New().String(),
-			UniqueKey:      fmt.Sprintf("%s:%s:%s", ownerKind, ownerName, namespace),
+			ID:             kgcore.NodeIDFor(targetNodeKey, tenantID, k8sAccountID),
+			UniqueKey:      targetNodeKey,
 			NodeType:       NodeTypePod,
 			CloudAccountID: k8sAccountID,
 			TenantID:       tenantID,
@@ -3590,7 +3600,7 @@ func ConvertServiceMapToKnowledgeGraph(serviceMap *ServiceMap, cloudAccountID, t
 				properties["cluster"] = cluster
 			}
 		}
-		nodeID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(uniqueKey)).String() // UUIDv5 style
+		nodeID := kgcore.NodeIDFor(uniqueKey, tenantID, cloudAccountID)
 		properties["node_id"] = nodeID
 
 		node := &KnowledgeGraphNode{
@@ -3791,10 +3801,11 @@ func convertK8sMetadataToGraph(metadata *K8sInfrastructureMetadata, cloudAccount
 
 	// Create cluster nodes
 	for _, cluster := range metadata.Clusters {
+		clusterNodeKey := fmt.Sprintf("Cluster:%s:%s", cluster.Name, cluster.Environment)
 		node := &KnowledgeGraphNode{
-			ID:        uuid.New().String(),
+			ID:        kgcore.NodeIDFor(clusterNodeKey, tenantID, cloudAccountID),
 			NodeType:  NodeTypeCluster,
-			UniqueKey: fmt.Sprintf("Cluster:%s:%s", cluster.Name, cluster.Environment),
+			UniqueKey: clusterNodeKey,
 			Properties: map[string]any{
 				"name":        cluster.Name,
 				"environment": cluster.Environment,
@@ -3809,10 +3820,11 @@ func convertK8sMetadataToGraph(metadata *K8sInfrastructureMetadata, cloudAccount
 
 	// Create namespace nodes and edges to clusters
 	for _, ns := range metadata.Namespaces {
+		nsNodeKey := fmt.Sprintf("Namespace:%s:%s:%s", ns.Cluster, ns.Name, ns.Environment)
 		node := &KnowledgeGraphNode{
-			ID:        uuid.New().String(),
+			ID:        kgcore.NodeIDFor(nsNodeKey, tenantID, cloudAccountID),
 			NodeType:  NodeTypeNamespace,
-			UniqueKey: fmt.Sprintf("Namespace:%s:%s:%s", ns.Cluster, ns.Name, ns.Environment),
+			UniqueKey: nsNodeKey,
 			Properties: map[string]any{
 				"name":        ns.Name,
 				"cluster":     ns.Cluster,
@@ -3846,10 +3858,11 @@ func convertK8sMetadataToGraph(metadata *K8sInfrastructureMetadata, cloudAccount
 
 	// Create worker node nodes and edges to clusters
 	for _, n := range metadata.Nodes {
+		workerNodeKey := fmt.Sprintf("Node:%s:%s:%s", n.Cluster, n.Name, n.Environment)
 		node := &KnowledgeGraphNode{
-			ID:        uuid.New().String(),
+			ID:        kgcore.NodeIDFor(workerNodeKey, tenantID, cloudAccountID),
 			NodeType:  NodeTypeNode,
-			UniqueKey: fmt.Sprintf("Node:%s:%s:%s", n.Cluster, n.Name, n.Environment),
+			UniqueKey: workerNodeKey,
 			Properties: map[string]any{
 				"name":        n.Name,
 				"cluster":     n.Cluster,
@@ -4990,6 +5003,11 @@ func (s *KnowledgeGraphService) BuildServiceMapFromNodes(nodes []*KnowledgeGraph
 	// Build a map of service dependencies with metrics from edges
 	serviceDependencies := make(map[string]map[string]*ServiceDependencyMetrics)
 
+	// Track which resource names have been added per service per label key for O(1) dedup.
+	// Without this, addInfrastructureLabels used strings.Contains on a growing comma-separated
+	// string — O(n²) total and prone to substring false positives (e.g. "pod-1" matching "pod-10").
+	infraLabelSeen := make(map[string]map[string]map[string]struct{})
+
 	for _, edge := range edges {
 		sourceNode := nodeMap[edge.SourceNodeID]
 		destNode := nodeMap[edge.DestinationNodeID]
@@ -5156,7 +5174,10 @@ func (s *KnowledgeGraphService) BuildServiceMapFromNodes(nodes []*KnowledgeGraph
 
 			// Also add pod to LoadBalancer's infrastructure labels for quick reference
 			if serviceApp, exists := serviceGroups[sourceKey]; exists {
-				s.addInfrastructureLabels(serviceApp, destNode)
+				if infraLabelSeen[sourceKey] == nil {
+					infraLabelSeen[sourceKey] = make(map[string]map[string]struct{})
+				}
+				s.addInfrastructureLabels(serviceApp, destNode, infraLabelSeen[sourceKey])
 			}
 		}
 
@@ -5164,7 +5185,10 @@ func (s *KnowledgeGraphService) BuildServiceMapFromNodes(nodes []*KnowledgeGraph
 		if sourceNode.NodeType == NodeTypeService && edge.RelationshipType == RelationshipRunsOn {
 			sourceKey := s.getServiceKey(sourceNode)
 			if serviceApp, exists := serviceGroups[sourceKey]; exists {
-				s.addInfrastructureLabels(serviceApp, destNode)
+				if infraLabelSeen[sourceKey] == nil {
+					infraLabelSeen[sourceKey] = make(map[string]map[string]struct{})
+				}
+				s.addInfrastructureLabels(serviceApp, destNode, infraLabelSeen[sourceKey])
 			}
 		}
 
@@ -5923,8 +5947,26 @@ func (s *KnowledgeGraphService) createUpstreamLink(upstreamService *ServiceAppli
 	}
 }
 
-// addInfrastructureLabels adds infrastructure information to service labels
-func (s *KnowledgeGraphService) addInfrastructureLabels(serviceApp *ServiceApplication, infraNode *KnowledgeGraphNode) {
+// appendUniqueLabel adds resourceName to serviceApp.Labels[key] as a comma-separated value,
+// using labelSeen for O(1) dedup instead of substring search on the accumulated string.
+func appendUniqueLabel(serviceApp *ServiceApplication, key, resourceName string, labelSeen map[string]map[string]struct{}) {
+	if labelSeen[key] == nil {
+		labelSeen[key] = make(map[string]struct{})
+	}
+	if _, seen := labelSeen[key][resourceName]; seen {
+		return
+	}
+	labelSeen[key][resourceName] = struct{}{}
+	if existing, exists := serviceApp.Labels[key]; exists {
+		serviceApp.Labels[key] = existing + "," + resourceName
+	} else {
+		serviceApp.Labels[key] = resourceName
+	}
+}
+
+// addInfrastructureLabels adds infrastructure information to service labels.
+// labelSeen tracks already-added resource names per label key for O(1) dedup.
+func (s *KnowledgeGraphService) addInfrastructureLabels(serviceApp *ServiceApplication, infraNode *KnowledgeGraphNode, labelSeen map[string]map[string]struct{}) {
 	resourceName, ok := infraNode.Properties["name"].(string)
 	if !ok || resourceName == "" {
 		slog.Warn("Skipping infrastructure labeling for node with invalid name",
@@ -5934,45 +5976,17 @@ func (s *KnowledgeGraphService) addInfrastructureLabels(serviceApp *ServiceAppli
 
 	switch infraNode.NodeType {
 	case NodeTypePod:
-		key := "infrastructure.pods"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.pods", resourceName, labelSeen)
 	case NodeTypeNamespace:
 		serviceApp.Labels["infrastructure.namespace"] = resourceName
 	case NodeTypeCluster:
 		serviceApp.Labels["infrastructure.cluster"] = resourceName
 	case NodeTypeDatabase:
-		key := "infrastructure.databases"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.databases", resourceName, labelSeen)
 	case NodeTypeCache:
-		key := "infrastructure.caches"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.caches", resourceName, labelSeen)
 	case NodeTypeMessageQueue:
-		key := "infrastructure.queues"
-		if existing, exists := serviceApp.Labels[key]; exists {
-			if !strings.Contains(existing, resourceName) {
-				serviceApp.Labels[key] = existing + "," + resourceName
-			}
-		} else {
-			serviceApp.Labels[key] = resourceName
-		}
+		appendUniqueLabel(serviceApp, "infrastructure.queues", resourceName, labelSeen)
 	}
 }
 

@@ -77,6 +77,8 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventGetCorrelations(h, c, ctx)
 	case "event_get_timeline":
 		handleEventGetTimeline(h, c, ctx)
+	case "event_get_impact":
+		handleEventGetImpact(h, c, ctx)
 	case "event_backfill_triage":
 		handleEventBackfillTriage(h, c, ctx)
 	case "event_deduplicate_correlations":

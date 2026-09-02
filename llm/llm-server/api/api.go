@@ -38,6 +38,7 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleToolsApis(r, tracer, meter)
 	handleAnalysisApis(r, tracer, meter)
 	handleSyncConversationStatusApi(r)
+	handleAiCostDailyReportApi(r)
 	handleRagApis(r, tracer, meter)
 	handleBudgetStatusApi(r, tracer, meter)
 	if config.Config.WatchEnabled {
@@ -51,6 +52,7 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleWorkspaceApis(r, tracer, meter)
 	handleLLMConfigTestApis(r, tracer, meter)
 	handleEgressfilterTenantApis(r)
+	handleEgressfilterConfigApis(r, tracer, meter)
 	handleSwagger(r)
 }
 

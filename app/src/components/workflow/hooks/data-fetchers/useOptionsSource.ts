@@ -225,16 +225,20 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
 
     // Surface failures to the user — a 401/500 from the upstream MCP server
     // arrives here as either a populated `errors` array or null `data`.
+    // In Direct mode the failure is usually an unreachable URL or missing auth,
+    // so append a hint pointing at the Auth Type / OAuth fields (shown above
+    // Tool Name) instead of leaving an opaque "internal error" dead end.
+    const directHint = mode === 'direct' ? ' Check the URL is reachable and any required Auth Type / OAuth fields above are filled.' : '';
     const errors = resp?.errors;
     if (Array.isArray(errors) && errors.length > 0) {
       const message = errors[0]?.message || errors[0]?.toString?.() || 'Failed to list MCP tools';
-      snackbar.error(`Failed to list MCP tools: ${message}`);
+      snackbar.error(`Failed to list MCP tools: ${message}.${directHint}`);
       return [];
     }
 
     const tools = resp?.data?.workflow_list_mcp_tools?.tools;
     if (!Array.isArray(tools)) {
-      snackbar.error('Failed to list MCP tools: empty response from server');
+      snackbar.error(`Failed to list MCP tools: empty response from server.${directHint}`);
       return [];
     }
 

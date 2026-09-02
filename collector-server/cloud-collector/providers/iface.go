@@ -14,18 +14,31 @@ type CloudProviderContext interface {
 	GetSecurityContext() *security.SecurityContext
 }
 
+// QueryMetricsRequest selects metrics one of two ways, and exactly one of them
+// applies per request:
+//
+//   - The STRUCTURED selector — ServiceName plus the metric / dimension /
+//     statistic fields. The provider resolves the namespace from the service.
+//   - Query — a provider-native metrics query the provider runs verbatim
+//     (CloudWatch Metrics Insights SQL). It names its own namespace, metrics and
+//     grouping, so ServiceName and the selector fields are ignored when it is set.
+//
+// ServiceName therefore carries no `validate:"required"` tag: a query-only
+// request legitimately has no service. The "one or the other" rule is enforced
+// at the API boundary (see api/cloud.go), which can say which one is missing.
 type QueryMetricsRequest struct {
 	StartDate       *time.Time          `json:"start_date"`
 	EndDate         *time.Time          `json:"end_date"`
 	ResourceIds     []string            `json:"resource_ids"`
 	ResourceType    string              `json:"resource_type"`
-	ServiceName     string              `json:"service_name" validate:"required"`
+	ServiceName     string              `json:"service_name"`
 	Region          string              `json:"region"`
 	MetricNamespace string              `json:"metric_namespace"`
 	MetricNames     []string            `json:"metric_names"`
 	Step            time.Duration       `json:"step"`
 	Dimensions      []map[string]string `json:"dimensions,omitempty"` // Added field for metric dimensions
 	Statistics      []string            `json:"statistics"`
+	Query           string              `json:"query,omitempty"`
 }
 
 type Account struct {
@@ -287,6 +300,13 @@ type Event struct {
 
 type ListResourcesResponse struct {
 	Items []Resource `json:"items"`
+	// SkippedRegions lists regions that were requested but not actually
+	// observed this run — unreachable endpoints, rate-limited regions, or
+	// regions disabled for the account. Absence of items from these regions
+	// says nothing about whether resources exist there, so callers that
+	// archive resources missing from the result MUST exclude these regions
+	// from the archival scope.
+	SkippedRegions []string `json:"skipped_regions,omitempty"`
 }
 
 type ListRecommendationsResponse struct {
@@ -358,12 +378,13 @@ type QueryLogsRequest struct {
 	// GCP generic-scope context. When the per-service / log-metric resolution above
 	// scopes nothing (SLO alerts, unmapped resource types), these let the collector
 	// resolve the query scope from the monitored resource via GCP's own APIs
-	// (services.get / metrics.get) instead of per-service code. Provider-agnostic;
-	// AWS/Azure ignore them.
+	// (services.get / metrics.get / alertPolicies.get) instead of per-service code.
+	// Provider-agnostic; AWS/Azure ignore them.
 	ResourceType   string            `json:"resource_type"`   // gcp_event_resource_type
 	ResourceLabels map[string]string `json:"resource_labels"` // resource.labels (prefix stripped)
 	MetricType     string            `json:"metric_type"`     // gcp_metric_type (SLO expr / log-based metric)
 	AlertType      string            `json:"alert_type"`      // gcp_alert_type: metric | log
+	PolicyID       string            `json:"policy_id"`       // gcp_policy_id (projects/N/alertPolicies/ID)
 }
 
 // LogLabel represents a single field in a log event.
@@ -614,6 +635,25 @@ type AvailableMetric struct {
 	Dimensions []map[string]string `json:"dimensions,omitempty"`
 }
 
+// NotificationTarget is an existing provider-side notification destination an
+// alarm can be wired to at creation time: an SNS topic (AWS), a notification
+// channel (GCP), or an action group (Azure).
+type NotificationTarget struct {
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type ListNotificationTargetsRequest struct {
+	// Region scopes the listing for providers with regional targets (AWS SNS
+	// topics). Ignored by GCP (project-wide) and Azure (subscription-wide).
+	Region string `json:"region"`
+}
+
+type ListNotificationTargetsResponse struct {
+	Targets []NotificationTarget `json:"targets"`
+}
+
 type CloudProvider interface {
 	Name() string
 	QueryServiceMap(ctx CloudProviderContext, account Account, query QueryServiceMapRequest) (QueryServiceMapResponse, error)
@@ -631,6 +671,13 @@ type CloudProvider interface {
 	ListEventRules(ctx CloudProviderContext, account Account) (ListEventRules, error)
 	// QueryDatabasePerformance fetches database performance insights (AWS RDS, GCP Cloud SQL, Azure SQL Database)
 	QueryDatabasePerformance(ctx CloudProviderContext, account Account, request DatabasePerformanceRequest) (DatabasePerformanceResponse, error)
+}
+
+// NotificationTargetLister is an optional capability: providers whose alarms can
+// carry notification targets at creation time (AWS, GCP, Azure) implement it.
+// Kept off CloudProvider so providers without alarm support need no stub.
+type NotificationTargetLister interface {
+	ListNotificationTargets(ctx CloudProviderContext, account Account, request ListNotificationTargetsRequest) (ListNotificationTargetsResponse, error)
 }
 
 // DeploymentDiffProvider is an optional capability implemented only by providers

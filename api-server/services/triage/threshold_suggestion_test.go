@@ -1050,6 +1050,41 @@ func TestClassifyAlertQuality(t *testing.T) {
 			wantClass:     "healthy",
 			wantRecommend: "no_action",
 		},
+		{
+			// Activity-log style rule with no resolution semantics: hundreds of instant-closed
+			// firings per day, zero engagement over 30d. Must not fall through to healthy.
+			name: "no-lifecycle spam — instant-dominated, high frequency, ignored",
+			score: AlertQualityScore{
+				ResolutionRate:  0.0,
+				EngagementRate:  0.0,
+				InstantRate:     1.0,
+				FiringFrequency: 285.0,
+			},
+			wantClass:     "false_positive",
+			wantRecommend: "disable_alert",
+		},
+		{
+			name: "instant-dominated but low frequency stays healthy",
+			score: AlertQualityScore{
+				ResolutionRate:  0.0,
+				EngagementRate:  0.0,
+				InstantRate:     1.0,
+				FiringFrequency: 2.0,
+			},
+			wantClass:     "healthy",
+			wantRecommend: "no_action",
+		},
+		{
+			name: "instant-dominated high frequency but engaged stays healthy",
+			score: AlertQualityScore{
+				ResolutionRate:  0.0,
+				EngagementRate:  0.3,
+				InstantRate:     1.0,
+				FiringFrequency: 20.0,
+			},
+			wantClass:     "healthy",
+			wantRecommend: "no_action",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1060,6 +1095,29 @@ func TestClassifyAlertQuality(t *testing.T) {
 			assert.Equal(t, tt.wantRecommend, score.Recommendation)
 		})
 	}
+}
+
+func TestQualityOnlyRecommendation(t *testing.T) {
+	tests := []struct {
+		name           string
+		recommendation string
+		want           string
+	}{
+		{"disable_alert maps to disable", "disable_alert", "disable"},
+		{"increase_duration passes through", "increase_duration", "increase_duration"},
+		{"investigate maps to review_alert", "investigate", "review_alert"},
+		{"tune_threshold degrades to review_alert without a metric", "tune_threshold", "review_alert"},
+		{"no_action is not actionable", "no_action", ""},
+		{"unknown recommendation is not actionable", "something_else", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, qualityOnlyRecommendation(&AlertQualityScore{Recommendation: tt.recommendation}))
+		})
+	}
+	t.Run("nil quality is not actionable", func(t *testing.T) {
+		assert.Equal(t, "", qualityOnlyRecommendation(nil))
+	})
 }
 
 func TestComputeConfidence_multifactor(t *testing.T) {

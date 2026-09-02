@@ -17,7 +17,8 @@ import (
 )
 
 func init() {
-	prompts.InitializeGlobalLoader()
+	prompts.InitMetrics()
+	prompts.SetGlobalLoaderForTesting(prompts.NewLoaderForTesting())
 }
 
 func setupTestRouter() *gin.Engine {

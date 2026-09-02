@@ -2,7 +2,9 @@ package aws
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/collector/cloud/common"
@@ -307,9 +309,11 @@ func processSQSMessageBodyForEventBridgeEvent(ctx providers.CloudProviderContext
 		}
 
 		// Use token-based account lookup (falls back to legacy if no token)
+		// The caller logs this error with the message context, and picks the
+		// level — an orphan token is expected and logs at Warn, so logging it
+		// at Error here too would keep firing Error-level alerts for it.
 		account, err := getAccountFromEventBridgeEvent(ctx, event, eventHandler)
 		if err != nil {
-			ctx.GetLogger().Error("Error getting account from EventBridge event", "error", err)
 			return providers.Event{}, providers.Account{}, err
 		}
 
@@ -331,9 +335,10 @@ func processSQSMessageBodyForEventBridgeEvent(ctx providers.CloudProviderContext
 	}
 
 	// Use token-based account lookup (falls back to legacy if no token)
+	// Not logged here for the same reason as the SNS path above: the caller
+	// logs it once, with the message context, at the right level.
 	account, err := getAccountFromEventBridgeEvent(ctx, event, eventHandler)
 	if err != nil {
-		ctx.GetLogger().Error("Error getting account from EventBridge event", "error", err)
 		return providers.Event{}, providers.Account{}, err
 	}
 
@@ -463,8 +468,17 @@ func getAccountByExternalId(ctx providers.CloudProviderContext, externalId strin
 
 	err = dbms.QueryRowAndScan(&accountRow, query, externalId, expectedAwsAccountNumber)
 	if err != nil {
-		return providers.Account{}, fmt.Errorf("account not found for external_id '%s' and account_number '%s': %w",
+		lookupErr := fmt.Errorf("account not found for external_id '%s' and account_number '%s': %w",
 			externalId, expectedAwsAccountNumber, err)
+		// No matching row is permanent: the token belongs to an orphan rule still
+		// firing in a customer account whose cloud_accounts row is gone. Retrying
+		// cannot help within the visibility window, and an undeleted message keeps
+		// being redelivered — which ages the queue and trips the SQS age alarm.
+		// Any other error (connection loss, pool exhaustion) stays retryable.
+		if errors.Is(err, sql.ErrNoRows) {
+			return providers.Account{}, common.NewPermanentError(lookupErr)
+		}
+		return providers.Account{}, lookupErr
 	}
 
 	// Store account metadata (ID and TenantID) in cache for later use
@@ -756,6 +770,15 @@ func processBatchConcurrent(
 
 			processedEvent, originatingAccount, err := processSQSMessageBodyForEventBridgeEvent(pCtx, *msg.Body, processor, eventHandler)
 			if err != nil {
+				// A permanent error will fail identically on every redelivery, so
+				// ack it instead of letting it age in the queue until the
+				// RedrivePolicy DLQs it.
+				var permErr *common.PermanentError
+				if errors.As(err, &permErr) {
+					logger.Warn("aws: permanent error processing SQS message, discarding", "messageId", mid, "error", err, "queueURL", queueURL, "component", "SQSConsumer")
+					results <- batchProcessResult{receiptHandle: rh, messageId: mid, ackDelete: true}
+					return
+				}
 				logger.Error("aws: failed to process SQS message for EventBridge event", "messageId", mid, "error", err, "queueURL", queueURL, "component", "SQSConsumer")
 				results <- batchProcessResult{receiptHandle: rh, messageId: mid, ackDelete: false}
 				return

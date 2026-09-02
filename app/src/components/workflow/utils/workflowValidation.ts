@@ -1,4 +1,5 @@
 import type { Node } from 'reactflow';
+import { validateCron } from 'src/utils/cron';
 
 interface WorkflowData {
   id: string | null;
@@ -31,6 +32,16 @@ export const validateWorkflowForSave = (
   const invalidNodes = nodes.filter((node) => node.type === 'action' && node.data.taskConfig && !node.data.taskConfig.valid);
   if (invalidNodes.length > 0) {
     errors.push(`${invalidNodes.length} task(s) have validation errors`);
+  }
+
+  // Schedule triggers are checked against the cron parser rather than the
+  // node's `valid` flag, which is only set once the user edits the trigger —
+  // a workflow loaded with an already-broken cron would otherwise sail through.
+  const badSchedules = nodes.filter(
+    (node) => node.type === 'trigger' && node.data?.trigger?.type === 'schedule' && !validateCron(node.data.trigger.params?.cron ?? '').valid
+  );
+  if (badSchedules.length > 0) {
+    errors.push(`${badSchedules.length} schedule trigger(s) have an invalid cron expression`);
   }
 
   return errors;

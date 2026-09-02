@@ -14,12 +14,14 @@ import {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useRouter } from 'next/router';
-import { Alert, Box, Typography, CircularProgress, Drawer, Tooltip, Divider, FormControlLabel, Checkbox } from '@mui/material';
+import { Alert, Box, Typography, CircularProgress, Drawer, Divider } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
+import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Chip as DsChip } from '@ui/Chip';
+import { Label, type LabelTone } from '@ui/Label';
 import { DropdownMenu } from '@ui/DropdownMenu';
-import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import AddIcon from '@mui/icons-material/Add';
@@ -97,7 +99,6 @@ import {
   checkIconBold,
   DeleteIconRed,
   GitMergeIcon,
-  ArrowDown,
 } from '@assets';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import { useUnsavedChangesTracking } from './hooks/useUnsavedChangesTracking';
@@ -106,7 +107,7 @@ import { useWorkflowHistory } from './hooks/useWorkflowHistory';
 import { useWorkflowClipboard } from './hooks/useWorkflowClipboard';
 import { useWorkflowShortcuts } from './hooks/useWorkflowShortcuts';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { hasFeatureAccess, hasWriteAccess } from '@lib/auth';
+import { hasPermission, hasWriteAccess } from '@lib/auth';
 import { Modal } from '@ui/Modal';
 import Text from '@shared/format/Text';
 
@@ -120,6 +121,16 @@ const NubiChatSidebar = lazy(() => import('@shared/layout/NubiChatSidebar'));
 const TestResponseModal = lazy(() => import('./components/TestResponseModal'));
 const DryRunResultModal = lazy(() => import('./components/DryRunResultModal'));
 const TriggerWorkflowModal = lazy(() => import('./components/TriggerWorkflowModal'));
+
+// The three statuses a version (and, once promoted, the workflow) can be in.
+// Shared by the live row's status control and the Make-live dialog, so it lives
+// at module scope rather than being re-allocated per version row.
+type VersionStatus = 'ACTIVE' | 'PAUSED' | 'INACTIVE';
+const VERSION_STATUS_ITEMS: { value: VersionStatus; label: string; tone: LabelTone; dotColor: string }[] = [
+  { value: 'ACTIVE', label: 'Active', tone: 'success', dotColor: 'var(--ds-green-600)' },
+  { value: 'PAUSED', label: 'Paused', tone: 'warning', dotColor: 'var(--ds-amber-600)' },
+  { value: 'INACTIVE', label: 'Inactive', tone: 'neutral', dotColor: 'var(--ds-gray-600)' },
+];
 
 interface WorkflowData {
   id: string | null;
@@ -140,8 +151,11 @@ interface WorkflowData {
       backoff_coefficient: number;
     };
     layout?: { viewport?: { x: number; y: number; zoom: number } };
+    llm_description?: string;
   };
   tags: Record<string, any>;
+  description?: string;
+  ai_invocable?: boolean;
   created_from_session_id?: string | null;
   live_version_id?: string | null;
   live_version_number?: number | null;
@@ -350,7 +364,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   const isNewWorkflow = (workflowId === 'new' || mode === 'create') && !isTransitioningFromCreateToEdit;
 
   // Read-only users cannot mutate workflows — gate all mutation surfaces below.
-  const canEdit = hasWriteAccess(accountId);
+  // A dynamic-RBAC `workflows:Write` grant also authorizes editing: such users
+  // hold no built-in account role, so hasWriteAccess alone falsely locks them out
+  // even though the gateway and runbook-server both admit their mutations.
+  const canEdit = hasWriteAccess(accountId) || hasPermission('workflows', 'Write');
 
   // Workflow-specific state
   const [workflowData, setWorkflowData] = useState<WorkflowData | null>(null);
@@ -371,6 +388,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     outputs: {},
     tags: [],
     status: 'ACTIVE',
+    description: '',
+    aiInvocable: false,
+    llmDescription: '',
   });
   const workflowSettingsRef = useRef(workflowSettings);
   useEffect(() => {
@@ -388,7 +408,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   //              to the Executions tab and auto-select the new execution so
   //              the user sees what's actually running.
   const [runVariant, setRunVariant] = useState<'current' | 'live'>('current');
-  // Anchor for the Run-button split menu (chevron next to the primary button).
   // Execution ID we want ExecutionsView to auto-select on its next refresh.
   // Pushed by `executeRun` after a `live` trigger; consumed by ExecutionsView's
   // `pendingSelectionRef` path (also used by the Retry flow).
@@ -409,12 +428,20 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           outputs: workflowData.definition.output ?? prev.outputs,
           tags: Object.entries(workflowData.tags || {}).map(([key, value]) => (value ? `${key}:${value}` : key)),
           status: workflowData.status ?? prev.status,
+          description: workflowData.description ?? prev.description,
+          // ai_invocable is a workflow field; the AI description/keywords live in
+          // the definition alongside the rest of the settings above.
+          aiInvocable: workflowData.ai_invocable ?? prev.aiInvocable,
+          llmDescription: workflowData.definition.llm_description ?? prev.llmDescription,
         };
       });
 
-      // Extract ai_session_id from tags for existing AI-generated workflows
-      const aiTag = workflowData.tags?.ai_session_id;
-      if (aiTag && !aiSessionId) {
+      // Session lineage of the loaded automation, so a workflow without one can't inherit the
+      // previously opened workflow's chat. Skipped while a workflow is being created: it is
+      // staged with id null / empty tags, and clearing there would drop the session that
+      // stamps created_from_session_id at create time.
+      const aiTag = workflowData.tags?.ai_session_id || workflowData.created_from_session_id || '';
+      if (workflowData.id && !isTransitioningFromCreateToEdit && aiTag !== aiSessionId) {
         setAiSessionId(aiTag);
       }
     }
@@ -494,7 +521,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       nubiChatEverOpenedRef.current = true;
     }
   }, [showNubiChat]);
-  const [nubiChatFeatureEnabled, setNubiChatFeatureEnabled] = useState(false); // Feature flag for NubiChat
   const [nubiChatContext, setNubiChatContext] = useState<{
     type: 'workflow' | 'workflowbuilder';
     data?: any;
@@ -520,12 +546,16 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   const [publishSetLive, setPublishSetLive] = useState(true);
   // Initial status the published version (and the workflow row, when
   // setLive=true) lands in. Default PAUSED matches the backend default so the
-  // user must opt in to ACTIVE — V746 contract. The version-history drawer's
-  // per-row dropdown is the long-term knob, but offering the initial value
-  // here saves a round-trip when the user already knows what they want.
+  // user must opt in to ACTIVE — V746 contract. The live row's dropdown in the
+  // version drawer is the long-term knob, but offering the initial value here
+  // saves a round-trip when the user already knows what they want.
   const [publishStatus, setPublishStatus] = useState<'ACTIVE' | 'PAUSED' | 'INACTIVE'>('PAUSED');
   const [publishing, setPublishing] = useState(false);
   const [confirmLiveVersion, setConfirmLiveVersion] = useState<WorkflowVersionEntry | null>(null);
+  // Status the promoted version lands in. Asked for at promotion time because
+  // that is the only moment a version's status starts having runtime effect —
+  // non-live versions no longer expose a status control at all.
+  const [makeLiveStatus, setMakeLiveStatus] = useState<VersionStatus>('ACTIVE');
   const [settingLive, setSettingLive] = useState(false);
   const [confirmDeleteVersion, setConfirmDeleteVersion] = useState<WorkflowVersionEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -574,21 +604,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     return Array.from(placeholders);
   }, [workflowData?.definition?.tasks, aiSessionId]);
 
-  // Check NubiChat feature flag on mount
-  useEffect(() => {
-    const checkNubiChatFeatureAccess = async () => {
-      try {
-        const hasAccess = await hasFeatureAccess('WORKFLOWS');
-        setNubiChatFeatureEnabled(hasAccess);
-      } catch (error) {
-        console.error('Error checking NubiChat feature access:', error);
-        setNubiChatFeatureEnabled(false);
-      }
-    };
-
-    checkNubiChatFeatureAccess();
-  }, []);
-
   // Auto-open the NuBi sidebar when the route carries a conversation_id (or
   // session_id) query param so the linked conversation is rendered without a
   // manual toggle. The actual fetch is owned by KubernetesLLMResponseGenerator
@@ -598,13 +613,13 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   useEffect(() => {
     // Don't auto-open for read-only users: the panel is gated on canEdit, so
     // flipping the flag would only push the layout aside for a hidden sidebar.
-    if (!nubiChatFeatureEnabled || !canEdit) return;
+    if (!canEdit) return;
     const urlId = urlConversationId || urlSessionId || workflowSessionId;
     if (!urlId) return;
     if (autoOpenedNubiUrlRef.current === urlId) return;
     autoOpenedNubiUrlRef.current = urlId;
     setShowNubiChat(true);
-  }, [urlConversationId, urlSessionId, workflowSessionId, nubiChatFeatureEnabled, canEdit]);
+  }, [urlConversationId, urlSessionId, workflowSessionId, canEdit]);
 
   // Adjust viewport when JSON panel or NubiChat visibility changes
   useEffect(() => {
@@ -668,6 +683,18 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // and the init effect re-runs — without it, setNodes([]) wipes a trigger the user already
   // placed via the inline empty-state card. See #30510.
   const newEmptyWorkflowInitializedRef = useRef(false);
+  // Guards the existing-workflow load from re-firing when `taskDefinitions` resolves and
+  // the init effect re-runs before the in-flight GetWorkflowById response sets isInitialized
+  // (both are state, not synchronous) — without it, the load can double-fire. Stores the
+  // workflowId being/already loaded so navigating to a different workflow still reloads.
+  const existingWorkflowLoadStartedForRef = useRef<string | null>(null);
+  // Reset only on true unmount (empty deps — cleanup here never fires on the load
+  // effect's own dependency changes, so it can't undo the dedup guard above).
+  useEffect(() => {
+    return () => {
+      existingWorkflowLoadStartedForRef.current = null;
+    };
+  }, []);
 
   // JSON Editor sync hook - handles all JSON editor state and synchronization
   const {
@@ -1102,10 +1129,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       newEmptyWorkflowInitializedRef.current = true;
     } else if (workflowId && accountId) {
       // Skip redundant reload for existing workflows that are already initialized
-      // (taskDefinitions.length change triggers this effect but existing workflows don't need reloading)
-      if (isInitialized && workflowData?.id) {
+      // (taskDefinitions.length change triggers this effect but existing workflows don't need reloading).
+      // Compare against the id in the URL: routing from one automation to another keeps this
+      // component mounted, so an id-blind guard leaves the previously loaded workflow on screen
+      // under the new id (hit via the "View caller" link on a called run).
+      if (isInitialized && workflowData?.id === workflowId) {
         return;
       }
+
+      // Skip if a load for this workflowId is already in flight (taskDefinitions.length
+      // resolving while GetWorkflowById is still pending would otherwise re-run this
+      // effect and fire a duplicate request before isInitialized/workflowData catch up).
+      if (existingWorkflowLoadStartedForRef.current === workflowId) {
+        return;
+      }
+      existingWorkflowLoadStartedForRef.current = workflowId;
 
       const loadData = async () => {
         setLoading(true);
@@ -1190,7 +1228,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 triggerCount,
                 definition: workflow.definition,
                 workflowJson,
-                conversationId: workflow.tags?.ai_session_id || aiSessionId,
+                // Only this automation's own lineage — `aiSessionId` may still hold the previously opened one.
+                conversationId: workflow.tags?.ai_session_id || workflow.created_from_session_id || '',
               },
             });
             setIsInitialized(true);
@@ -1593,7 +1632,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
       setServerErrors({});
       if (showSuccess) {
-        snackbar.success('Workflow validation succeeded! No errors found.');
+        snackbar.success('Automation validation succeeded! No errors found.');
       }
       return true;
     } catch (err: any) {
@@ -1701,7 +1740,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           setWorkflowData((prev) => (prev ? { ...prev, id: newWorkflowId } : null));
 
           // Redirect to edit mode after creation
-          router.replace(`/workflow/${newWorkflowId}?accountId=${accountId}`);
+          router.replace(`/automation/${newWorkflowId}?accountId=${accountId}`);
 
           // After URL change, reload the workflow data to ensure complete sync
           setTimeout(async () => {
@@ -2149,7 +2188,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       }
     } catch (err) {
       console.error('Failed to publish workflow version:', err);
-      snackbar.error('Failed to publish workflow.');
+      snackbar.error('Failed to publish automation.');
     } finally {
       setPublishing(false);
     }
@@ -2159,7 +2198,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     // without re-creating this callback on every edit.
   }, [accountId, hasUnsavedChanges, publishDescription, publishName, publishSetLive, publishStatus, refreshVersions, workflowId]);
 
-  // Per-version status mutation, fired from the dropdown next to each row in
+  // Per-version status mutation, fired from the dropdown on the live row in
   // the version-history drawer. Tracks which version is currently being
   // mutated so we can disable the matching control while the request is in
   // flight; this keeps the UI responsive for non-target rows.
@@ -2202,13 +2241,31 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     const targetVersion = confirmLiveVersion.version_number;
     setSettingLive(true);
     try {
+      // Status write goes FIRST, while the version is still non-live: the
+      // backend skips the Temporal re-sync for a non-live version, so this is a
+      // pure metadata write. SetLiveVersion then reads the freshly-written
+      // status and mirrors it onto workflows.status, and the make-live call
+      // re-syncs Temporal exactly once. Reversing the order would leave
+      // workflows.status stale.
+      //
+      // The pair is not atomic: if make-live fails after the status write, the
+      // version carries the new status but isn't live — harmless (a non-live
+      // status has no runtime effect) and fixed by retrying Make live.
+      if (makeLiveStatus !== (confirmLiveVersion.status ?? 'PAUSED')) {
+        const statusResponse: any = await apiWorkflow.updateWorkflowVersionStatus(accountId, workflowId, targetVersion, makeLiveStatus);
+        const statusErrMsg = parseHttpResponseBodyMessage(statusResponse);
+        if (statusErrMsg) {
+          snackbar.error(statusErrMsg);
+          return;
+        }
+      }
       const response: any = await apiWorkflow.makeWorkflowVersionLive(accountId, workflowId, targetVersion);
       const errMsg = parseHttpResponseBodyMessage(response);
       if (errMsg) {
         snackbar.error(errMsg);
         return;
       }
-      snackbar.success(`v${targetVersion} is now live.`);
+      snackbar.success(`v${targetVersion} is now live (${makeLiveStatus.toLowerCase()}).`);
       setConfirmLiveVersion(null);
       await refreshVersions();
       // Live pointer moved — reload workflowData so the header badge and Run
@@ -2227,7 +2284,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     } finally {
       setSettingLive(false);
     }
-  }, [accountId, confirmLiveVersion, refreshVersions, workflowId]);
+  }, [accountId, confirmLiveVersion, makeLiveStatus, refreshVersions, workflowId]);
 
   // Function to load workflow from AI-generated response
   // This function can be called to populate the workflow builder with an AI-generated workflow
@@ -2407,7 +2464,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           setWorkflowData((prev) => (prev ? { ...prev, id: currentWorkflowId } : null));
 
           // Update URL to reflect the new workflow ID
-          router.replace(`/workflow/${currentWorkflowId}?accountId=${accountId}`);
+          router.replace(`/automation/${currentWorkflowId}?accountId=${accountId}`);
         } else if (variant === 'current' && hasUnsavedChanges) {
           // "Run current" runs the on-screen draft, so we must persist the
           // draft first or the backend would execute a stale snapshot.
@@ -3534,7 +3591,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               Gated by canEdit: read-only users (who are forced into the
               Executions tab) have no workflow-authoring access, so the Nubi
               assistant must not be offered to them. */}
-          {nubiChatFeatureEnabled && canEdit && (
+          {canEdit && (
             <Box
               sx={{
                 position: 'absolute',
@@ -3611,8 +3668,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Suspense>
             </Box>
           )}
-          {/* NubiChat Toggle Button (Feature Flag Controlled, write-access only) */}
-          {nubiChatFeatureEnabled && canEdit && (
+          {/* NubiChat Toggle Button (write-access only) */}
+          {canEdit && (
             <Box
               id='workflow-nubi-chat-toggle'
               onClick={() => setShowNubiChat(!showNubiChat)}
@@ -3665,7 +3722,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             <Box
               sx={{
                 height: '100%',
-                marginLeft: nubiChatFeatureEnabled && canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                marginLeft: canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
                 transition: isResizingRef.current ? 'none' : 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
               }}
             >
@@ -3810,7 +3867,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   sx={{
                     height: '100%',
                     flex: 1,
-                    marginLeft: nubiChatFeatureEnabled && canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                    marginLeft: canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
                     marginRight: jsonPanelVisible ? `${jsonWindowWidth}px` : '0',
                     position: 'relative',
                     transition: isResizingRef.current
@@ -4195,6 +4252,22 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                 a new version; the explicit Publish button in the
                                 top-right state strip is what produces a version. */}
                           {canEdit && (
+                            <Tooltip title='Validate the automation definition on the server'>
+                              <span style={{ marginRight: 'var(--ds-space-2)' }}>
+                                <Button
+                                  id='workflow-validate-btn'
+                                  tone='ghost'
+                                  size='sm'
+                                  icon={<PlaylistAddCheckIcon sx={{ fontSize: 16 }} />}
+                                  onClick={() => runValidation(true)}
+                                >
+                                  Validate
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          )}
+
+                          {canEdit && (
                             <Tooltip
                               title={
                                 isNewWorkflow
@@ -4238,9 +4311,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               </Button>
                               <DropdownMenu
                                 align='end'
-                                side='top'
-                                size='sm'
-                                minWidth={260}
+                                disablePortal={false}
                                 trigger={
                                   <Button
                                     id='run-variant-menu-btn'
@@ -4255,35 +4326,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                 items={[
                                   {
                                     id: 'run-current-menu-item',
+                                    label: 'Run current',
+                                    description: 'Run the unsaved/draft definition on screen',
                                     icon: <PlayArrowIcon fontSize='small' />,
-                                    label: (
-                                      <Box data-testid='run-current-menu-item'>
-                                        <Typography sx={{ fontSize: 'var(--ds-text-body)' }}>Run current</Typography>
-                                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
-                                          Run the unsaved/draft definition on screen
-                                        </Typography>
-                                      </Box>
-                                    ),
                                     onSelect: () => handleRunButtonClick('current'),
                                   },
                                   {
                                     id: 'run-live-menu-item',
+                                    label: 'Run live version',
+                                    description: workflowDataRef.current?.live_version_id
+                                      ? `Trigger the published live version${
+                                          workflowDataRef.current?.live_version_number ? ` (v${workflowDataRef.current.live_version_number})` : ''
+                                        }`
+                                      : 'No live version published yet',
                                     icon: <PublishedWithChangesIcon fontSize='small' />,
                                     disabled: !workflowDataRef.current?.live_version_id,
-                                    label: (
-                                      <Box data-testid='run-live-btn'>
-                                        <Typography sx={{ fontSize: 'var(--ds-text-body)' }}>Run live version</Typography>
-                                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
-                                          {workflowDataRef.current?.live_version_id
-                                            ? `Trigger the published live version${
-                                                workflowDataRef.current?.live_version_number
-                                                  ? ` (v${workflowDataRef.current.live_version_number})`
-                                                  : ''
-                                              }`
-                                            : 'No live version published yet'}
-                                        </Typography>
-                                      </Box>
-                                    ),
                                     onSelect: () => handleRunButtonClick('live'),
                                   },
                                 ]}
@@ -4335,8 +4392,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                           {/* Divider */}
                           <Box sx={{ width: '1px', height: '28px', backgroundColor: ds.brand[200] }} />
 
-                          {/* NuBi AI Chat Button */}
-                          {nubiChatFeatureEnabled && (
+                          {/* NuBi AI Chat Button (write-access only, matching the sidebar it toggles) */}
+                          {canEdit && (
                             <Button
                               id='workflow-nubi-chat-btn'
                               composition='icon-only'
@@ -4374,24 +4431,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             disabled={nodes.length === 0}
                             onClick={handlePrettifyLayout}
                           />
-
-                          {/* More actions (three-dots) menu */}
-                          {canEdit && (
-                            <ThreeDotsMenu
-                              id='workflow-toolbar-more-btn'
-                              menuItems={[
-                                {
-                                  id: 'workflow-validate-btn',
-                                  label: 'Validate',
-                                  reactIcon: <PlaylistAddCheckIcon fontSize='small' />,
-                                },
-                              ]}
-                              data={{ source: 'workflow-toolbar' }}
-                              onMenuClick={(item: { id: string }) => {
-                                if (item.id === 'workflow-validate-btn') runValidation(true);
-                              }}
-                            />
-                          )}
 
                           {/* The workflow-row status dropdown that used to live
                               here was removed in the V746 rollout. Status now
@@ -4745,6 +4784,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 onSave={setWorkflowSettings}
                 initialSettings={workflowSettings}
                 taskTimeouts={nodes.filter((n) => n.data?.taskConfig?.timeout).map((n) => n.data.taskConfig.timeout as string)}
+                triggerTypes={extractTriggersFromNodes(nodes).map((t) => t.type)}
+                accountId={accountId}
               />
             </Suspense>
           )}
@@ -4803,12 +4844,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                       // is purely UX.
                       const isDraftBase = v.version_number === workflowData?.draft_version_number;
                       const deleteBlockReason = v.is_live ? 'live version' : isDraftBase ? 'current draft base' : '';
-                      const statusItems: { value: 'ACTIVE' | 'PAUSED' | 'INACTIVE'; label: string; color: string }[] = [
-                        { value: 'ACTIVE', label: 'Active', color: 'var(--ds-green-600)' },
-                        { value: 'PAUSED', label: 'Paused', color: 'var(--ds-amber-600)' },
-                        { value: 'INACTIVE', label: 'Inactive', color: 'var(--ds-gray-600)' },
-                      ];
-                      const currentStatusMeta = statusItems.find((s) => s.value === currentStatus) ?? statusItems[1];
+                      const currentStatusMeta = VERSION_STATUS_ITEMS.find((s) => s.value === currentStatus) ?? VERSION_STATUS_ITEMS[1];
                       return (
                         <Box
                           key={v.id}
@@ -4870,40 +4906,82 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                   id={`workflow-make-live-v${v.version_number}-btn`}
                                   tone='secondary'
                                   size='sm'
-                                  onClick={() => setConfirmLiveVersion(v)}
+                                  onClick={() => {
+                                    setMakeLiveStatus('ACTIVE');
+                                    setConfirmLiveVersion(v);
+                                  }}
                                   disabled={anyInFlight}
                                 >
                                   Make live
                                 </Button>
                               )}
-                              {/* Status surfaced upfront as its own button-menu so the
-                                  current per-version status is readable without opening
-                                  the kebab. Selecting an option mutates
-                                  workflow_versions.status; if the row is live the DAO
-                                  mirrors it onto workflows.status in the same tx. */}
-                              <DropdownMenu
-                                align='end'
-                                trigger={
-                                  <Button
-                                    tone='secondary'
-                                    size='sm'
-                                    composition='text+icon'
-                                    iconPlacement='end'
-                                    icon={<SafeIcon src={ArrowDown} alt='' width={12} height={12} />}
-                                    disabled={anyInFlight}
-                                    id={`workflow-version-status-menu-v${v.version_number}`}
-                                  >
-                                    <span style={{ color: currentStatusMeta.color }}>{currentStatusMeta.label}</span>
-                                  </Button>
-                                }
-                                items={statusItems.map((s) => ({
-                                  label: <span style={{ color: s.color }}>{s.label}</span>,
-                                  icon: currentStatus === s.value ? <SafeIcon src={checkIconBold} alt='current' width={16} height={16} /> : undefined,
-                                  onSelect: () => handleChangeVersionStatus(v.version_number, s.value),
-                                  disabled: anyInFlight || currentStatus === s.value,
-                                  id: `workflow-version-status-${s.value.toLowerCase()}-v${v.version_number}`,
-                                }))}
-                              />
+                              {/* Status control is live-only: only the live version's
+                                  status has runtime effect (the DAO mirrors it onto
+                                  workflows.status and re-syncs Temporal from it), so a
+                                  status on an archived snapshot is dead metadata that
+                                  only invites confusion. Non-live versions get their
+                                  status at promotion time, from the Make-live dialog. */}
+                              {v.is_live && (
+                                <DropdownMenu
+                                  align='end'
+                                  trigger={
+                                    <Box
+                                      component='span'
+                                      role='button'
+                                      tabIndex={0}
+                                      aria-label='Change version status'
+                                      id={`workflow-version-status-menu-v${v.version_number}`}
+                                      // Label is not a button element, so the
+                                      // keyboard affordance the old Button
+                                      // trigger gave us has to be re-added here.
+                                      // DropdownMenu's cloneElement only
+                                      // overrides onClick, so onKeyDown survives.
+                                      onKeyDown={(e: React.KeyboardEvent<HTMLElement>) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          e.currentTarget.click();
+                                        }
+                                      }}
+                                      sx={{
+                                        display: 'inline-flex',
+                                        cursor: anyInFlight ? 'default' : 'pointer',
+                                        opacity: anyInFlight ? 0.6 : 1,
+                                        pointerEvents: anyInFlight ? 'none' : 'auto',
+                                      }}
+                                    >
+                                      <Label
+                                        text={currentStatusMeta.label}
+                                        tone={currentStatusMeta.tone}
+                                        size='md'
+                                        dot
+                                        textTransform='none'
+                                        showDropdownArrow={!anyInFlight}
+                                      />
+                                    </Box>
+                                  }
+                                  items={VERSION_STATUS_ITEMS.map((s) => ({
+                                    label: (
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                                        <Box
+                                          sx={{
+                                            width: ds.space[2],
+                                            height: ds.space[2],
+                                            borderRadius: 'var(--ds-radius-pill)',
+                                            backgroundColor: s.dotColor,
+                                            flexShrink: 0,
+                                          }}
+                                        />
+                                        {s.label}
+                                      </Box>
+                                    ),
+                                    icon:
+                                      currentStatus === s.value ? <SafeIcon src={checkIconBold} alt='current' width={16} height={16} /> : undefined,
+                                    onSelect: () => handleChangeVersionStatus(v.version_number, s.value),
+                                    disabled: anyInFlight || currentStatus === s.value,
+                                    id: `workflow-version-status-${s.value.toLowerCase()}-v${v.version_number}`,
+                                  }))}
+                                />
+                              )}
                               <DropdownMenu
                                 minWidth={ds.space.mul(0, 60)}
                                 align='end'
@@ -4937,16 +5015,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               />
                             </Box>
                           ) : (
-                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0, minWidth: 130 }}>
-                              <DsChip
-                                size='xs'
-                                variant='status'
-                                tone={v.status === 'ACTIVE' ? 'success' : v.status === 'INACTIVE' ? 'neutral' : 'warning'}
+                            v.is_live && (
+                              <Box
+                                sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}
                                 data-testid={`workflow-version-status-chip-v${v.version_number}`}
                               >
-                                {v.status === 'ACTIVE' ? 'Active' : v.status === 'INACTIVE' ? 'Inactive' : 'Paused'}
-                              </DsChip>
-                            </Box>
+                                <Label text={currentStatusMeta.label} tone={currentStatusMeta.tone} size='sm' dot textTransform='none' />
+                              </Box>
+                            )
                           )}
                         </Box>
                       );
@@ -5015,7 +5091,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             open={publishDialogOpen}
             handleClose={() => (publishing ? undefined : setPublishDialogOpen(false))}
             width='sm'
-            title='Publish workflow version'
+            title='Publish automation version'
             actionButtons={
               <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
                 <Button tone='secondary' size='md' onClick={() => setPublishDialogOpen(false)} disabled={publishing}>
@@ -5065,15 +5141,16 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   actively choose ACTIVE — matches the backend default and
                   prevents surprise auto-fires on publish. When setLive is on,
                   the chosen status also mirrors onto workflows.status via
-                  DAO.SetLiveVersion in a single tx. The version-history drawer
-                  exposes the same Select per row for after-the-fact changes. */}
+                  DAO.SetLiveVersion in a single tx. After the fact it can be
+                  changed from the live row's status control in the version
+                  drawer, or from the Make-live dialog when promoting. */}
               <Box data-testid='workflow-publish-status-select' sx={{ mt: 1.5 }}>
                 <Select
                   size='sm'
                   label='Version status'
-                  help='Active = all triggers fire. Paused = manual only. Inactive = blocked. Change later from the version history drawer.'
+                  help="Active = all triggers fire. Paused = manual only. Inactive = blocked. Change later from the live version's status control, or when you promote another version."
                   value={publishStatus}
-                  onChange={(next) => setPublishStatus(next as 'ACTIVE' | 'PAUSED' | 'INACTIVE')}
+                  onChange={(next) => setPublishStatus(next as VersionStatus)}
                   disabled={publishing}
                   clearable={false}
                   options={[
@@ -5083,18 +5160,15 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   ]}
                 />
               </Box>
-              <FormControlLabel
-                sx={{ mt: 1 }}
-                control={
-                  <Checkbox
-                    checked={publishSetLive}
-                    onChange={(e) => setPublishSetLive(e.target.checked)}
-                    disabled={publishing}
-                    data-testid='workflow-publish-setlive-checkbox'
-                  />
-                }
-                label='Make this version live (new executions will run it)'
-              />
+              <Box sx={{ mt: 1 }}>
+                <Checkbox
+                  checked={publishSetLive}
+                  disabled={publishing}
+                  data-testid='workflow-publish-setlive-checkbox'
+                  label='Make this version live (new executions will run it)'
+                  onChange={(next) => setPublishSetLive(next)}
+                />
+              </Box>
             </Box>
           </Modal>
 
@@ -5122,10 +5196,28 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               </Box>
             }
           >
-            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-              New executions will run v{confirmLiveVersion?.version_number}. Your current draft is preserved and remains separate — switching the live
-              pointer does not modify what you&apos;re editing.
-            </Typography>
+            <Box>
+              <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                New executions will run v{confirmLiveVersion?.version_number}. Your current draft is preserved and remains separate — switching the
+                live pointer does not modify what you&apos;re editing.
+              </Typography>
+              {/* Promotion is the moment a version's status starts mattering, so
+                  it is chosen here rather than on the archived row. Default
+                  ACTIVE: the user is explicitly putting this version into
+                  service, so "running" is the expected landing state. */}
+              <Box data-testid='workflow-make-live-status-select' sx={{ mt: 2 }}>
+                <Select
+                  size='sm'
+                  label='Version status'
+                  help='Active = all triggers fire. Paused = manual runs only. Inactive = blocked.'
+                  value={makeLiveStatus}
+                  onChange={(next) => setMakeLiveStatus(next as VersionStatus)}
+                  disabled={settingLive}
+                  clearable={false}
+                  options={VERSION_STATUS_ITEMS.map((s) => ({ value: s.value, label: s.label }))}
+                />
+              </Box>
+            </Box>
           </Modal>
 
           {/* Exit-confirmation modal. Two variants share the same component so

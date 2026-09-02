@@ -33,7 +33,7 @@ import { Input } from '@ui/Input';
 import DsTooltip from '@ui/Tooltip';
 import { generateQuery } from './LogGenerateQuery';
 import { getLineOperators } from './QueryBuilder';
-import { getOperatorsForKind, getOperatorDisplayLabel, normalizeLegacyOperator } from './operatorCatalog';
+import { getOperatorsForLabel, getOperatorDisplayLabel, normalizeLegacyOperator } from './operatorCatalog';
 
 // TODO: move server-side when service_map/knowledge_graph gain a backend
 // GetSupportedOperators. Both are served by triage/service_map.go and
@@ -375,10 +375,17 @@ const initializeQueryBlocks = (prebuildQueryBlocks, logProvider) => {
   return prebuildQueryBlocks;
 };
 
-const resolveMockOperators = (logProvider, operatorDescriptors) => {
+// resolveMockOperators returns the operators offered for one label. dataType narrows
+// the list to what that label's type accepts — so a numeric column offers =, !=, <, >
+// but not =~ / LIKE / contains, which the provider would reject at query time. Omit
+// dataType (or pass 'unknown') to get the provider's full list.
+//
+// service_map / knowledge_graph query their own in-memory graph rather than a log
+// backend and carry no label types, so they keep their fixed operator lists.
+const resolveMockOperators = (logProvider, operatorDescriptors, dataType) => {
   if (logProvider === 'service_map') return SERVICE_MAP_OPERATORS;
   if (logProvider === 'knowledge_graph') return KNOWLEDGE_GRAPH_OPERATORS;
-  return getOperatorsForKind(operatorDescriptors, 'chip');
+  return getOperatorsForLabel(operatorDescriptors, 'chip', dataType);
 };
 
 const resolveCombinedQuery = (queries) => {
@@ -598,7 +605,8 @@ const LogQueryBuilderAutocomplete = ({
         logProvider == 'datadog' ||
         logProvider == 'newrelic' ||
         logProvider == 'dynatrace' ||
-        logProvider == 'solarwinds') &&
+        logProvider == 'solarwinds' ||
+        logProvider == 'openobserve') &&
       providerType == 'metrics'
     ) {
       const fetchMetrics = async () => {
@@ -663,12 +671,9 @@ const LogQueryBuilderAutocomplete = ({
             setMetricsList(cachedESIndexes);
           } else {
             setMetricsList([]);
-            const res = await observability.fetchLogLabels({
-              account_id: accountId,
-              ...(providerOverride ? { log_provider: providerOverride } : {}),
-            });
+            const res = await observability.logIndexList(accountId, providerOverride);
             if (res?.errors) {
-              snackbar.error(`failed to fetch labels- ${parseHttpResponseBodyMessage(res?.data)}`);
+              snackbar.error(`failed to fetch indexes - ${parseHttpResponseBodyMessage(res?.data)}`);
               return;
             }
             const indexList = res?.data?.data?.logs_list_labels?.map((m) => m.label) || [];
@@ -691,13 +696,15 @@ const LogQueryBuilderAutocomplete = ({
 
   useEffect(() => {
     if (!activeSelectedMetric) return;
+    let cancelled = false;
     const fetchLabels = async () => {
       if (
         (logProvider === 'prometheus' ||
           logProvider == 'datadog' ||
           logProvider == 'newrelic' ||
           logProvider == 'dynatrace' ||
-          logProvider == 'solarwinds') &&
+          logProvider == 'solarwinds' ||
+          logProvider == 'openobserve') &&
         providerType == 'metrics'
       ) {
         try {
@@ -708,13 +715,15 @@ const LogQueryBuilderAutocomplete = ({
             return;
           }
           const responseAttributes = (response?.data?.data?.metrics_list_labels || []).filter((l) => l !== '__name__');
-          if (responseAttributes.length > 0) {
+          if (!cancelled && responseAttributes.length > 0) {
             setLabels(responseAttributes);
           }
         } catch (err) {
           snackbar.error(`Failed to fetch labels - ${err.message}`);
         } finally {
-          setLoadingLabels(false);
+          if (!cancelled) {
+            setLoadingLabels(false);
+          }
         }
       } else if (logProvider == 'ES' && providerType == 'metrics') {
         try {
@@ -725,13 +734,15 @@ const LogQueryBuilderAutocomplete = ({
             return;
           }
           const responseAttributes = response?.data?.data?.metrics_list_labels || [];
-          if (responseAttributes.length > 0) {
+          if (!cancelled && responseAttributes.length > 0) {
             setLabels(responseAttributes);
           }
         } catch (err) {
           snackbar.error(`Failed to fetch labels - ${err.message}`);
         } finally {
-          setLoadingLabels(false);
+          if (!cancelled) {
+            setLoadingLabels(false);
+          }
         }
       } else if (logProvider == 'ES') {
         try {
@@ -742,18 +753,26 @@ const LogQueryBuilderAutocomplete = ({
             return;
           }
           const responseAttributes = response?.data?.data?.logs_list_labels || [];
-          if (responseAttributes.length > 0) {
+          if (!cancelled && responseAttributes.length > 0) {
             setLabels(responseAttributes);
           }
         } catch (err) {
           snackbar.error(`Failed to fetch labels - ${err.message}`);
         } finally {
-          setLoadingLabels(false);
+          if (!cancelled) {
+            setLoadingLabels(false);
+          }
         }
       }
     };
     fetchLabels();
-  }, [logProvider, activeBlockId, activeSelectedMetric]);
+    return () => {
+      cancelled = true;
+    };
+    // accountId is the fetch argument and providerType picks the branch, so both
+    // must re-run the effect. The two sibling label effects in this file already
+    // key on accountId; this one was the outlier.
+  }, [logProvider, accountId, providerType, activeBlockId, activeSelectedMetric]);
 
   useEffect(() => {
     if (
@@ -817,7 +836,13 @@ const LogQueryBuilderAutocomplete = ({
     }
   }, [getLabelsFromProps, logProvider]);
 
-  const mockOperators = resolveMockOperators(logProvider, operatorDescriptors);
+  // The operator list is per-LABEL, not per-provider: a numeric column must not be
+  // offered =~ / LIKE / contains, which the backend rejects. Resolve the label's
+  // data_type (same lookup fetchValuesForLabel does below) and narrow accordingly.
+  // Labels with no known type keep the full list.
+  const getLabelDataType = (labelName) => labels.find((l) => (l.label || l.index || l.field) === labelName)?.data_type;
+
+  const operatorsForLabel = (labelName) => resolveMockOperators(logProvider, operatorDescriptors, getLabelDataType(labelName));
 
   // Fetch values for a specific label
   const fetchValuesForLabel = async (labelName) => {
@@ -901,7 +926,8 @@ const LogQueryBuilderAutocomplete = ({
             logProvider === 'datadog' ||
             logProvider == 'newrelic' ||
             logProvider == 'dynatrace' ||
-            logProvider == 'solarwinds') &&
+            logProvider == 'solarwinds' ||
+            logProvider == 'openobserve') &&
           providerType == 'metrics'
         ) {
           const activeBlock = getActiveBlock();
@@ -985,7 +1011,7 @@ const LogQueryBuilderAutocomplete = ({
         setPendingChip({ label: matchingLabel, operator: '', value: '' });
         setCurrentStep('operator');
 
-        const operatorSuggestions = mockOperators.map((op) => ({
+        const operatorSuggestions = operatorsForLabel(matchingLabel).map((op) => ({
           type: 'operator',
           value: op.value,
           label: op.label,
@@ -1014,8 +1040,11 @@ const LogQueryBuilderAutocomplete = ({
 
       // Match against display label, backend token, and normalized legacy
       // value so typing `=` / `CONTAINS` / `_eq` all resolve to the same entry.
+      // Matching against the label's own operator list means free text like
+      // `status_code =~ 5..` fails to resolve for a numeric column, exactly as the
+      // dropdown refuses to offer it.
       const normalizedPart = normalizeLegacyOperator(operatorPart).toLowerCase();
-      const matchingOperator = mockOperators.find(
+      const matchingOperator = operatorsForLabel(label).find(
         (op) =>
           op.value.toLowerCase() === operatorPart.toLowerCase() ||
           op.value.toLowerCase() === normalizedPart ||
@@ -1076,7 +1105,7 @@ const LogQueryBuilderAutocomplete = ({
       }
 
       // Show operator suggestions
-      const operatorSuggestions = mockOperators.map((op) => ({
+      const operatorSuggestions = operatorsForLabel(label).map((op) => ({
         type: 'operator',
         value: op.value,
         label: op.label,
@@ -1095,7 +1124,7 @@ const LogQueryBuilderAutocomplete = ({
       // Normalize the typed operator so pendingChip always carries the backend
       // token, regardless of whether the user typed `=`, `_eq`, or `CONTAINS`.
       const normalizedPart = normalizeLegacyOperator(operatorPart);
-      const matchedOp = mockOperators.find((op) => op.value === operatorPart || op.value === normalizedPart || op.label === operatorPart);
+      const matchedOp = operatorsForLabel(label).find((op) => op.value === operatorPart || op.value === normalizedPart || op.label === operatorPart);
       setPendingChip({ label, operator: matchedOp?.value ?? operatorPart, value: valueStr });
 
       // Show filtered value suggestions based on current input (capped at MAX_SUGGESTIONS)
@@ -1288,7 +1317,9 @@ const LogQueryBuilderAutocomplete = ({
         // Accept either the display label (=, contains), the backend token
         // (_eq), or a legacy value (CONTAINS). Store the backend token.
         const normalizedPart = normalizeLegacyOperator(operatorPart);
-        const validOperator = mockOperators.find((op) => op.value === operatorPart || op.value === normalizedPart || op.label === operatorPart);
+        const validOperator = operatorsForLabel(label).find(
+          (op) => op.value === operatorPart || op.value === normalizedPart || op.label === operatorPart
+        );
         if (validOperator) {
           const activeBlock = getActiveBlock();
           const newChip = { label, operator: validOperator.value, value, id: chipIdCounter.current++ };
@@ -1351,7 +1382,7 @@ const LogQueryBuilderAutocomplete = ({
 
       // Show operator suggestions immediately
       setTimeout(() => {
-        const operatorSuggestions = mockOperators.map((op) => ({
+        const operatorSuggestions = operatorsForLabel(suggestion.value).map((op) => ({
           type: 'operator',
           value: op.value,
           label: op.label,
@@ -1559,7 +1590,8 @@ const LogQueryBuilderAutocomplete = ({
                   logProvider === 'datadog' ||
                   logProvider === 'newrelic' ||
                   logProvider === 'dynatrace' ||
-                  logProvider === 'solarwinds') &&
+                  logProvider === 'solarwinds' ||
+                  logProvider === 'openobserve') &&
                   providerType === 'metrics') ||
                   logProvider === 'ES') && (
                   <FilterDropdown
@@ -1611,7 +1643,11 @@ const LogQueryBuilderAutocomplete = ({
                         ((logProvider === 'prometheus' ||
                           logProvider == 'datadog' ||
                           logProvider == 'ES' ||
-                          ((logProvider == 'dynatrace' || logProvider == 'solarwinds') && providerType === 'metrics')) &&
+                          // openobserve is scoped to metrics here on purpose: it is also a
+                          // logs provider, where there is no metric selector to satisfy and
+                          // an unconditional gate would disable the logs builder outright.
+                          ((logProvider == 'dynatrace' || logProvider == 'solarwinds' || logProvider == 'openobserve') &&
+                            providerType === 'metrics')) &&
                           !block.selectedMetric)
                       }
                       variant='outlined'

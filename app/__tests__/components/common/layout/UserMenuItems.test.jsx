@@ -16,6 +16,8 @@ jest.mock('@lib/auth', () => ({
     appVersion: '1.0.0',
   })),
   isTenantAdmin: jest.fn(() => false),
+  canViewTenantSettings: jest.fn(() => true),
+  missingPermissionMessage: jest.fn((p) => `You need the "${p}" permission. Ask an admin to grant it.`),
 }));
 
 // Mock @assets with all icons
@@ -39,7 +41,7 @@ jest.mock('src/utils/colors', () => {
 });
 
 const { signOut } = require('next-auth/react');
-const { getUserSession, isTenantAdmin } = require('@lib/auth');
+const { getUserSession, isTenantAdmin, canViewTenantSettings } = require('@lib/auth');
 
 describe('UserMenuItems', () => {
   let setAnchorElUser;
@@ -131,6 +133,21 @@ describe('UserMenuItems', () => {
       expect(setOpenSettings).toHaveBeenCalledWith(true);
     });
 
+    it('disables Settings and suppresses the click when the user cannot view tenant settings', () => {
+      // A user with neither a tenant-wide role nor tenants:Read still SEES the
+      // entry — it is disabled and names the grant to ask for, rather than
+      // vanishing from the menu.
+      canViewTenantSettings.mockReturnValue(false);
+      render(<>{getMenuItem('Settings')}</>);
+      const label = screen.getByText(/Tenant Settings/);
+      const menuItem = label.closest('[role="menuitem"]');
+      expect(menuItem).toBeInTheDocument();
+      expect(menuItem).toHaveAttribute('aria-disabled', 'true');
+      fireEvent.click(menuItem);
+      expect(setOpenSettings).not.toHaveBeenCalled();
+      canViewTenantSettings.mockReturnValue(true);
+    });
+
     it('renders API Tokens item and handles click', () => {
       render(<>{getMenuItem('API Tokens')}</>);
       const menuItem = screen.getByText(/API Tokens/);
@@ -154,7 +171,10 @@ describe('UserMenuItems', () => {
       const menu = generateMenuItems(false);
       expect(menu).toContain('UserInfo');
       expect(menu).not.toContain('Switch Tenant');
-      expect(menu).not.toContain('Settings');
+      // Settings is listed for every user now — entitlement is applied at render
+      // time (disabled + a tooltip naming the missing grant), not by omitting the
+      // entry, so a non-admin can see the surface exists and what to ask for.
+      expect(menu).toContain('Settings');
       expect(menu).toContain('API Tokens');
       expect(menu).toContain('Logout');
       expect(menu).toContain('Version');

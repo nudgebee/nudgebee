@@ -86,8 +86,9 @@ function BackBar({ onBack }: { onBack: () => void }) {
   );
 }
 
-const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutral'> = {
+const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutral' | 'info'> = {
   completed: 'success',
+  'in-progress': 'info',
   failed: 'critical',
   'awaiting-approval': 'warning',
   cancelled: 'neutral',
@@ -2197,7 +2198,7 @@ function BackingCallsDrawer({
 }
 
 const FINDING_TONE: Record<string, 'success' | 'critical' | 'warning' | 'neutral'> = {
-  high: 'success',
+  high: 'critical',
   medium: 'warning',
   low: 'neutral',
 };
@@ -2249,7 +2250,8 @@ function FindingRow({ f, onDrill }: { f: OptFinding; onDrill: (agentId: string) 
             {f.type.replace(/_/g, ' ')}
           </Chip>
           <Box sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>{f.title}</Box>
-          <Label tone={FINDING_TONE[f.confidence] ?? 'neutral'} text={f.confidence} />
+          {/* Findings are LLM-generated — normalize casing so e.g. "High" still maps to a tone. */}
+          <Label tone={FINDING_TONE[String(f.confidence).toLowerCase()] ?? 'neutral'} text={f.confidence} />
           {f.overlaps_with && f.overlaps_with.length > 0 && (
             <Chip size='2xs' variant='tag' hue='slate'>
               overlaps {f.overlaps_with.join(', ')}

@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import apiRecommendations from '@api1/recommendation';
 import apiUser from '@api1/user';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
-import { Box, Typography } from '@mui/material';
+import { toast as snackbar } from '@ui/Toast';
+import { Box, Button, Typography } from '@mui/material';
 import Link from 'next/link';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
@@ -128,7 +129,9 @@ const ListingRecommendationResolution = ({ accountId }) => {
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
   const [data, setData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [selectedStatus, setSelectedStatus] = useState('InProgress');
+  // Default to every status: filtering to InProgress hid exactly the rows someone
+  // opens this listing to read — the failed ones.
+  const [selectedStatus, setSelectedStatus] = useState('');
   const [recommendationTypes, setRecommendationTypes] = useState([]);
   const [resolverTypes, setResolverTypes] = useState([]);
   const [selectedRecommendation, setSelectedRecommendation] = useState('');
@@ -155,6 +158,33 @@ const ListingRecommendationResolution = ({ accountId }) => {
   const changePage = (nextPage, limit) => {
     setPage(nextPage - 1);
     setRowsPerPage(limit);
+  };
+
+  // Retrying a Failed attempt re-dispatches it server-side; the refetch shows
+  // its new InProgress state. The ref guards double-clicks — rows are only
+  // rebuilt on refetch, so a disabled prop could not update in time.
+  const retryingRef = useRef('');
+  const handleRetry = (resolutionId) => {
+    if (retryingRef.current === resolutionId) {
+      return;
+    }
+    retryingRef.current = resolutionId;
+    apiRecommendations
+      .retryRecommendationResolution(accountId, resolutionId)
+      .then((res) => {
+        if (res?.errors?.length) {
+          snackbar.error(res.errors[0]?.message || 'Failed to retry resolution');
+        } else {
+          snackbar.success('Retry started');
+          getResolutionListingData();
+        }
+      })
+      .catch(() => {
+        snackbar.error('Failed to retry resolution');
+      })
+      .finally(() => {
+        retryingRef.current = '';
+      });
   };
 
   const getResolutionListingData = () => {
@@ -267,10 +297,27 @@ const ListingRecommendationResolution = ({ accountId }) => {
               {
                 component: (() => {
                   const statusText = rr.status === 'InProgress' ? 'In Progress' : rr.status;
+                  // Surface the reason inline: a failure (or a success that produced no
+                  // link) is otherwise only readable after expanding the row.
+                  const showMessage =
+                    rr.status_message && (rr.status === 'Failed' || (rr.status === 'Success' && !containsLink(rr.type_reference_id)));
                   return (
-                    <Label tone={statusToLabelTone(statusText)} size='sm'>
-                      {statusText}
-                    </Label>
+                    <Box display='flex' flexDirection='column' gap={ds.space[1]}>
+                      <Label tone={statusToLabelTone(statusText)} size='sm'>
+                        {statusText}
+                      </Label>
+                      {showMessage && <Text value={rr.status_message} secondaryText showAutoEllipsis sx={{ fontSize: ds.text.small }} />}
+                      {rr.status === 'Failed' && (
+                        <Button
+                          size='small'
+                          variant='text'
+                          onClick={() => handleRetry(rr.id)}
+                          sx={{ alignSelf: 'flex-start', p: 0, minWidth: 0, fontSize: ds.text.small, textTransform: 'none' }}
+                        >
+                          Retry
+                        </Button>
+                      )}
+                    </Box>
                   );
                 })(),
               },
@@ -329,6 +376,7 @@ const ListingRecommendationResolution = ({ accountId }) => {
   }, [accountId, selectedStatus, rowsPerPage, page, selectedRecommendation, selectedResolver, currencySymbol]);
 
   const statusOptions = [
+    { label: 'All', value: '' },
     { label: 'Success', value: 'Success' },
     { label: 'Failed', value: 'Failed' },
     { label: 'In Progress', value: 'InProgress' },

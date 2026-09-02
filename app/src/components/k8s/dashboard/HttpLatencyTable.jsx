@@ -52,6 +52,7 @@ const HttpLatencyTable = ({ accountId, data }) => {
   };
 
   useEffect(() => {
+    let cancelled = false;
     const fetchData = async () => {
       try {
         // Step 1: Fetch initial data (method & path counts)
@@ -72,6 +73,9 @@ const HttpLatencyTable = ({ accountId, data }) => {
         }
 
         const response = await apiKubernetes1.utilisationApi(requestBody1);
+        if (cancelled) {
+          return;
+        }
         const vectorList = response?.find((data) => data.query_key === 'http_throughput')?.payload || [];
 
         // Create initial row map with method+path as key
@@ -139,6 +143,9 @@ const HttpLatencyTable = ({ accountId, data }) => {
           ...requestBody2,
           metrics: Object.values(queries).map((e) => e.value),
         });
+        if (cancelled) {
+          return;
+        }
 
         // Update rowMap with each result
         setRowMap((currentRowMap) => {
@@ -162,12 +169,18 @@ const HttpLatencyTable = ({ accountId, data }) => {
           return updatedRowMap;
         });
       } catch (error) {
+        if (cancelled) {
+          return;
+        }
         console.error('Error fetching initial data', error);
         setLoading(false);
       }
     };
 
     fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, data.workloadName, data.namespaceName, selectedDateRange]);
 
   // Derive rows synchronously from rowMap — avoids an extra render cycle

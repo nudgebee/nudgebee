@@ -28,13 +28,32 @@ import { EmptyState } from '@ui/EmptyState';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import Tooltip from '@ui/Tooltip';
 import HeaderLabel from './HeaderLabel';
-import { fmtCost, fmtDuration, fmtTokens, runCallCount, runModelBreakdown, stepModelBreakdown, triggerLabel, type ModelStat } from '../format';
+import {
+  avgLatencyMs,
+  fmtCost,
+  fmtDuration,
+  fmtTokens,
+  runCallCount,
+  runModelBreakdown,
+  stepModelBreakdown,
+  triggerLabel,
+  type ModelStat,
+} from '../format';
 import { makeSeverity, SeverityCell } from './severity';
 import type { Run, RunStatus, Step } from '../types';
 
 export type ConvSortKey = 'start' | 'trigger' | 'cost' | 'tokens' | 'duration' | 'latency' | 'calls';
 
-type ConvView = 'all' | 'cost' | 'latency' | 'calls' | 'failed';
+export type ConvView = 'all' | 'cost' | 'latency' | 'calls' | 'failed';
+
+/** Server-side page the table renders as-is (already sorted + sliced upstream). */
+export interface ConvServerPage {
+  page: number;
+  rowsPerPage: number;
+  /** Filter-wide row count, not the length of `runs`. */
+  totalRows: number;
+  onPageChange: (page: number, rowsPerPage: number) => void;
+}
 
 const CONV_VIEW_OPTIONS = [
   { value: 'all', label: 'All', icon: <FormatListBulletedIcon sx={{ fontSize: 14 }} /> },
@@ -48,9 +67,9 @@ interface ConversationsTableProps {
   runs: Run[];
   /** account_id → display name, for the per-row account label beside the source. */
   accountNameById?: Record<string, string>;
-  onSelectRun: (runId: string) => void;
+  onSelectRun: (runId: string, accountId?: string) => void;
   /** Open the detail modal straight on the Optimize tab and run/show the analysis. */
-  onAnalyse?: (runId: string) => void;
+  onAnalyse?: (runId: string, accountId?: string) => void;
   /** Compact = fewer columns (Overview top-10). */
   compact?: boolean;
   /** Initial sort (default differs per report). */
@@ -62,10 +81,23 @@ interface ConversationsTableProps {
   headerActions?: React.ReactNode;
   /** When true, the table renders its own skeleton rows (no external spinner). */
   loading?: boolean;
+  /** Controlled preset toggle — omit to let the table own it. */
+  view?: ConvView;
+  onViewChange?: (view: ConvView) => void;
+  /** Controlled sort — omit to let the table own it. */
+  sort?: { name: string; order: 'asc' | 'desc' };
+  onSortChange?: (sort: { name: string; order: 'asc' | 'desc' }) => void;
+  /**
+   * Server-paged mode. `runs` is one page that the server already ordered, so the
+   * table does no client-side sorting or slicing and renders pagination over
+   * `totalRows` (the filter-wide count) instead of the rows it happens to hold.
+   */
+  serverPage?: ConvServerPage;
 }
 
-const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutral'> = {
+const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutral' | 'info'> = {
   completed: 'success',
+  'in-progress': 'info',
   failed: 'critical',
   'awaiting-approval': 'warning',
   cancelled: 'neutral',
@@ -75,7 +107,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontVariantNumeric: 'tabular-nums' } as const;
 
 // Header name → sort key (only sortable headers appear here).
-const HEADER_TO_KEY: Record<string, ConvSortKey> = {
+export const HEADER_TO_KEY: Record<string, ConvSortKey> = {
   'Start time': 'start',
   Trigger: 'trigger',
   Cost: 'cost',
@@ -85,15 +117,8 @@ const HEADER_TO_KEY: Record<string, ConvSortKey> = {
   Calls: 'calls',
 };
 
-// Per-conversation latency shown in the table = AVERAGE model response time per
-// call (SUM of per-call latencies ÷ call count), NOT the sum. The sum double-
-// counts calls that run in parallel (ReWOO parallel exec) and can exceed the
-// conversation's wall-clock Duration; the average is a per-call figure that
-// stays ≤ Duration and matches the detail panel's "Avg latency / call" stat.
-const avgLatencyMs = (r: Run): number => {
-  const n = runCallCount(r);
-  return n > 0 ? r.totalModelLatencyMs / n : 0;
-};
+// `avgLatencyMs` (average model response time per call) is shared with the CSV
+// export — see its definition and rationale in ../format.
 const KEY_TO_HEADER: Record<ConvSortKey, string> = {
   start: 'Start time',
   trigger: 'Trigger',
@@ -253,9 +278,23 @@ export function ConversationsTable({
   caption,
   headerActions,
   loading = false,
+  view: viewProp,
+  onViewChange,
+  sort: sortProp,
+  onSortChange,
+  serverPage,
 }: ConversationsTableProps) {
-  const [sort, setSort] = React.useState<{ name: string; order: 'asc' | 'desc' }>({ name: KEY_TO_HEADER[defaultSort.key], order: defaultSort.order });
-  const [view, setView] = React.useState<ConvView>('all');
+  const [sortState, setSortState] = React.useState<{ name: string; order: 'asc' | 'desc' }>({
+    name: KEY_TO_HEADER[defaultSort.key],
+    order: defaultSort.order,
+  });
+  const [viewState, setViewState] = React.useState<ConvView>('all');
+  // Both controls fall back to local state when the parent doesn't drive them
+  // (the Overview top-10 table), so that usage is unchanged.
+  const sort = sortProp ?? sortState;
+  const view = viewProp ?? viewState;
+  const setSort = onSortChange ?? setSortState;
+  const setView = onViewChange ?? setViewState;
 
   // Picking a "Top 5 by X" preset syncs the column sort to the same metric, so
   // the visible order matches the preset. Without this, the default cost sort
@@ -272,15 +311,21 @@ export function ConversationsTable({
   };
 
   // Quick-filter presets narrow the set; the column sort then orders what's shown.
+  // Server-paged mode gets the preset and the ordering from the backend, so both
+  // passes are skipped there — re-slicing a page would drop rows off it. (Depend
+  // on the flag, not the object: `serverPage` is a fresh literal every render.)
+  const isServerPaged = !!serverPage;
   const viewRuns = React.useMemo(() => {
+    if (isServerPaged) return runs;
     if (view === 'cost') return [...runs].sort((a, b) => b.totalCost - a.totalCost).slice(0, 5);
     if (view === 'latency') return [...runs].sort((a, b) => avgLatencyMs(b) - avgLatencyMs(a)).slice(0, 5);
     if (view === 'calls') return [...runs].sort((a, b) => runCallCount(b) - runCallCount(a)).slice(0, 5);
     if (view === 'failed') return runs.filter((r) => r.status === 'failed');
     return runs;
-  }, [runs, view]);
+  }, [runs, view, isServerPaged]);
 
   const sortedRuns = React.useMemo(() => {
+    if (isServerPaged) return viewRuns;
     const key = HEADER_TO_KEY[sort.name] ?? defaultSort.key;
     const sorted = [...viewRuns].sort((a, b) => {
       const av = runValue(a, key);
@@ -288,7 +333,7 @@ export function ConversationsTable({
       return typeof av === 'string' ? String(av).localeCompare(String(bv)) : (av as number) - (bv as number);
     });
     return sort.order === 'desc' ? sorted.reverse() : sorted;
-  }, [viewRuns, sort, defaultSort.key]);
+  }, [viewRuns, sort, defaultSort.key, isServerPaged]);
 
   // While loading, fall through to the table so it can render its own skeleton
   // rows; only show the empty state once a load has finished with no rows.
@@ -438,7 +483,7 @@ export function ConversationsTable({
               icon={<VisibilityOutlinedIcon />}
               aria-label='View details'
               tooltip='View details'
-              onClick={() => onSelectRun(run.runId)}
+              onClick={() => onSelectRun(run.runId, run.accountId)}
               id={`view-run-${run.runId}`}
             />
             {/* Deep-link to the original conversation in the Ask-Nubi chat (new tab). */}
@@ -463,7 +508,7 @@ export function ConversationsTable({
                 tone='secondary'
                 size='xs'
                 trailingAccent={<ArrowForwardRoundedIcon />}
-                onClick={() => onAnalyse(run.runId)}
+                onClick={() => onAnalyse(run.runId, run.accountId)}
                 id={`analyse-run-${run.runId}`}
               >
                 Analyse
@@ -505,7 +550,15 @@ export function ConversationsTable({
         loading={loading}
         sort={sort}
         onSortChange={(s: { name: string; order: 'asc' | 'desc' }) => setSort(s)}
-        onRowClick={(q: { run?: Run }) => q?.run && onSelectRun(q.run.runId)}
+        onRowClick={(q: { run?: Run }) => q?.run && onSelectRun(q.run.runId, q.run.accountId)}
+        {...(serverPage
+          ? {
+              pageNumber: serverPage.page,
+              rowsPerPage: serverPage.rowsPerPage,
+              totalRows: serverPage.totalRows,
+              onPageChange: serverPage.onPageChange,
+            }
+          : {})}
       />
     </Box>
   );

@@ -220,6 +220,51 @@ func TestValidateWorkflow(t *testing.T) {
 		assert.Contains(t, err.Error(), "cron_invalid")
 	})
 
+	t.Run("Schedule trigger cron syntax", func(t *testing.T) {
+		scheduleWorkflow := func(cronExpr string) model.Workflow {
+			return model.Workflow{
+				Name: "test-workflow",
+				Definition: model.WorkflowDefinition{
+					Version: "v1",
+					Triggers: []model.Trigger{
+						{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": cronExpr}},
+					},
+					Tasks: []model.Task{
+						{ID: "task1", Type: "http_request"},
+					},
+				},
+			}
+		}
+
+		accepted := []string{
+			"0 9 * * 1-5",
+			"*/15 * * * *",
+			"0 0,12 1 */2 *",
+			"@every 1h",
+			"@daily",
+			"CRON_TZ=Asia/Kolkata 0 9 * * *",
+			"TZ=UTC 0 9 * * *",
+		}
+		for _, expr := range accepted {
+			assert.NoError(t, model.ValidateWorkflow(scheduleWorkflow(expr)), "expected %q to be accepted", expr)
+		}
+
+		rejected := []string{
+			"not a cron",
+			"99 * * * *",
+			"0 9 * *",
+			"0 9 * * * *",
+			"* * * * 9",
+			"CRON_TZ=Asia/Kolkata",
+		}
+		for _, expr := range rejected {
+			err := model.ValidateWorkflow(scheduleWorkflow(expr))
+			if assert.Error(t, err, "expected %q to be rejected", expr) {
+				assert.Contains(t, err.Error(), "cron_syntax_invalid", "expected %q to fail cron syntax validation", expr)
+			}
+		}
+	})
+
 	t.Run("Valid webhook trigger params", func(t *testing.T) {
 		wf := model.Workflow{
 			Name: "test-workflow",
@@ -361,6 +406,52 @@ func TestValidateWorkflow(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "filter_invalid_syntax")
 	})
+}
+
+// TestValidateWorkflow_TriggerNilParams pins the behaviour of every trigger type when
+// the definition omits `params` entirely (JSON `{"type":"webhook"}` unmarshals to a nil
+// map, unlike `{"type":"webhook","params":{}}` which is an empty one). Validate used to
+// short-circuit on nil params for everything except event/optimization, so webhook and
+// schedule triggers passed validation and were then rejected by the save call — or, for
+// schedule, saved and silently never fired (#35384). Manual is the only type with no
+// required params and must still pass. Covering all five types here is the regression
+// guard: a new trigger type with a required param has to add its row.
+func TestValidateWorkflow_TriggerNilParams(t *testing.T) {
+	tests := []struct {
+		name        string
+		triggerType model.WorkflowTrigger
+		wantTag     string // empty means the definition must validate cleanly
+	}{
+		{"manual accepts absent params", model.WorkflowTriggerManual, ""},
+		{"schedule requires cron", model.WorkflowTriggerSchedule, "cron_missing"},
+		{"webhook requires integration_name", model.WorkflowTriggerWebhook, "integration_name_missing"},
+		{"event requires event_type or filter", model.WorkflowTriggerEvent, "event_trigger_needs_filter"},
+		{"optimization requires params", model.WorkflowTriggerOptimization, "optimization_trigger_needs_params"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wf := model.Workflow{
+				Name: "test-workflow",
+				Definition: model.WorkflowDefinition{
+					Version:  "v1",
+					Triggers: []model.Trigger{{Type: tt.triggerType}}, // Params intentionally nil
+					Tasks:    []model.Task{{ID: "task1", Type: "http_request"}},
+				},
+			}
+			err := model.ValidateWorkflow(wf)
+			if tt.wantTag == "" {
+				assert.NoError(t, err)
+				return
+			}
+			// Guard the Contains on Error: a regression here returns nil, and calling
+			// err.Error() on it would panic the whole package run instead of reporting
+			// which trigger type stopped being validated.
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), tt.wantTag)
+			}
+		})
+	}
 }
 
 func TestValidateWorkflow_TaskTimeoutsExceedWorkflow(t *testing.T) {
@@ -711,4 +802,97 @@ func TestValidateWorkflow_DependencyEdgeCases(t *testing.T) {
 		err := model.ValidateWorkflow(wf)
 		assert.NoError(t, err)
 	})
+}
+
+// aiInvocableWorkflow builds a workflow that satisfies every AI-invocation
+// precondition, so each subtest below can knock out exactly one of them.
+func aiInvocableWorkflow() model.Workflow {
+	return model.Workflow{
+		Name:        "restart-payment-consumers",
+		AIInvocable: true,
+		Definition: model.WorkflowDefinition{
+			Version:        "v1",
+			LLMDescription: "Restarts the payment consumers and drains the stuck queue.",
+			Triggers:       []model.Trigger{{Type: model.WorkflowTriggerManual}},
+			Tasks:          []model.Task{{ID: "task1", Type: "http_request"}},
+		},
+	}
+}
+
+func TestValidateWorkflowAIInvocable(t *testing.T) {
+	t.Run("AI-invocable with description and manual trigger", func(t *testing.T) {
+		assert.NoError(t, model.ValidateWorkflow(aiInvocableWorkflow()))
+	})
+
+	t.Run("AI-invocable without llm_description is rejected", func(t *testing.T) {
+		wf := aiInvocableWorkflow()
+		wf.Definition.LLMDescription = ""
+		err := model.ValidateWorkflow(wf)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "ai_invocable")
+	})
+
+	t.Run("whitespace-only llm_description is rejected", func(t *testing.T) {
+		wf := aiInvocableWorkflow()
+		wf.Definition.LLMDescription = "   \n\t "
+		err := model.ValidateWorkflow(wf)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "ai_invocable")
+	})
+
+	t.Run("AI-invocable without a manual trigger is rejected", func(t *testing.T) {
+		wf := aiInvocableWorkflow()
+		wf.Definition.Triggers = []model.Trigger{
+			{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": "0 * * * *"}},
+		}
+		err := model.ValidateWorkflow(wf)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "ai_invocable")
+	})
+
+	t.Run("a manual trigger alongside others is enough", func(t *testing.T) {
+		wf := aiInvocableWorkflow()
+		wf.Definition.Triggers = []model.Trigger{
+			{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": "0 * * * *"}},
+			{Type: model.WorkflowTriggerManual},
+		}
+		assert.NoError(t, model.ValidateWorkflow(wf))
+	})
+
+	t.Run("preconditions do not apply when the flag is off", func(t *testing.T) {
+		// A scheduled automation with no AI description is perfectly valid — it
+		// just cannot be invoked by the AI.
+		wf := aiInvocableWorkflow()
+		wf.AIInvocable = false
+		wf.Definition.LLMDescription = ""
+		wf.Definition.Triggers = []model.Trigger{
+			{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": "0 * * * *"}},
+		}
+		assert.NoError(t, model.ValidateWorkflow(wf))
+	})
+}
+
+func TestHasManualTrigger(t *testing.T) {
+	tests := []struct {
+		name     string
+		triggers []model.Trigger
+		want     bool
+	}{
+		{"manual only", []model.Trigger{{Type: model.WorkflowTriggerManual}}, true},
+		{"schedule only", []model.Trigger{{Type: model.WorkflowTriggerSchedule}}, false},
+		{"webhook only", []model.Trigger{{Type: model.WorkflowTriggerWebhook}}, false},
+		{"event only", []model.Trigger{{Type: model.WorkflowTriggerEvent}}, false},
+		{"manual among many", []model.Trigger{
+			{Type: model.WorkflowTriggerWebhook},
+			{Type: model.WorkflowTriggerManual},
+		}, true},
+		{"no triggers", nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			def := model.WorkflowDefinition{Triggers: tt.triggers}
+			assert.Equal(t, tt.want, def.HasManualTrigger())
+		})
+	}
 }

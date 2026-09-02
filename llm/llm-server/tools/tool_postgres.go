@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -130,88 +129,48 @@ func (m PostgresExecuteTool) Call(nbRequestContext core.NbToolContext, input cor
 		return core.NBToolResponse{}, err
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		// For workspace mode, we want raw terminal output
-		pgFlags := ""
-		if database != "" {
-			pgFlags = "--dbname " + common.ShellEscape(database)
-		}
-
-		explainQuery := false
-		if (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain ")) || (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain analyze")) {
-			query = fmt.Sprintf(`psql %s -c "%s"`, pgFlags, query)
-			explainQuery = true
-		} else {
-			query = strings.TrimSpace(query)
-			query = strings.TrimSuffix(query, ";")
-			query = fmt.Sprintf(`psql %s -c "\copy (%s) TO stdout WITH CSV HEADER"`, pgFlags, query)
-		}
-
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
-			"PGDATABASE":                      database,
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-
-		if explainQuery {
-			response = fmt.Sprintf(`[{"plan": %s}]`, response)
-		} else {
-			response = convertCsvToJsonString(nbRequestContext, response, rune(','))
-		}
-
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("postgres: unable to execute shell script", "error", err.Error(), "command", query)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
+	wm := workspace.NewWorkspaceManager()
+	// For workspace mode, we want raw terminal output
+	pgFlags := ""
+	if database != "" {
+		pgFlags = "--dbname " + common.ShellEscape(database)
 	}
 
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobPostgres, query, nbRequestContext.AccountId, map[string]any{
-		"database": database,
-	}, false)
+	explainQuery := false
+	if (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain ")) || (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain analyze")) {
+		query = fmt.Sprintf(`psql %s -c "%s"`, pgFlags, query)
+		explainQuery = true
+	} else {
+		query = strings.TrimSpace(query)
+		query = strings.TrimSuffix(query, ";")
+		query = fmt.Sprintf(`psql %s -c "\copy (%s) TO stdout WITH CSV HEADER"`, pgFlags, query)
+	}
+
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
+		"PGDATABASE":                      database,
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
+
+	if explainQuery {
+		response = fmt.Sprintf(`[{"plan": %s}]`, response)
+	} else {
+		response = convertCsvToJsonString(nbRequestContext, response, rune(','))
+	}
+
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("postgres: unable to execute postgres query", "error", err.Error())
-		// Mirror tool_kubectl's wrapKubectlError: ExecuteContainerJob returns
-		// (nil, err) on every failure path, so the actual signal — including
-		// the relay's "Error: Server returned NNN: ..." wrapper — lives in
-		// err.Error(). Use it as the raw input. The `response` assertion below
-		// is defensive in case a future path returns a non-nil response alongside
-		// an error.
-		rawError := err.Error()
-		if response != nil {
-			if responseData1, ok := response.(string); ok && responseData1 != "" {
-				rawError = responseData1
-			}
+		nbRequestContext.Ctx.GetLogger().Error("postgres: unable to execute shell script", "error", err.Error(), "command", query)
+		if response == "" {
+			response = err.Error()
 		}
 		return core.NBToolResponse{
-			Data:   wrapPostgresError(rawError),
+			Data:   response,
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
-	// path could return a non-string / nil response alongside a nil error,
-	// which an unguarded `response.(string)` would turn into a panic. A nil
-	// response falls through as an empty string rather than the literal
-	// "<nil>" that fmt.Sprintf would produce.
-	data, ok := response.(string)
-	if !ok && response != nil {
-		data = fmt.Sprintf("%v", response)
-	}
 	return core.NBToolResponse{
-		Data:   data,
-		Type:   core.NBToolResponseTypeTable,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
 }

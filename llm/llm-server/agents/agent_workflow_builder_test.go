@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -94,7 +95,7 @@ func TestWorkflowBuilderAgent_ToolInitWorkflow(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Initialize workflow
-	result := agent.toolInitWorkflow(map[string]interface{}{
+	result := agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "test-workflow",
 		"triggers": []interface{}{
 			map[string]interface{}{"type": "manual"},
@@ -106,7 +107,7 @@ func TestWorkflowBuilderAgent_ToolInitWorkflow(t *testing.T) {
 
 	// Missing name
 	agent2 := newWorkflowBuilderAgent("test-account")
-	result = agent2.toolInitWorkflow(map[string]interface{}{})
+	result = agent2.toolInitWorkflow(nil, map[string]interface{}{})
 	assert.Contains(t, result, "Error")
 }
 
@@ -116,13 +117,13 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Init workflow first
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
 
 	// Add task
-	result := agent.toolAddTask(map[string]interface{}{
+	result := agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "get-pods",
 		"type": "k8s.cli",
 		"params": map[string]interface{}{
@@ -133,7 +134,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	assert.Contains(t, result, "1 task(s)")
 
 	// Add duplicate task should fail
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "get-pods",
 		"type": "k8s.cli",
 		"params": map[string]interface{}{
@@ -152,7 +153,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	assert.Contains(t, result, "not found")
 
 	// Modify task
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id": "get-pods",
 		"id":      "get-pods",
 		"type":    "k8s.cli",
@@ -167,7 +168,7 @@ func TestWorkflowBuilderAgent_ToolAddGetModifyDeleteTask(t *testing.T) {
 	assert.Contains(t, result, "get pods -n production -o json")
 
 	// Add second task
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "notify",
 		"type":       "notifications.im",
 		"depends_on": []interface{}{"get-pods"},
@@ -200,11 +201,11 @@ func TestWorkflowBuilderAgent_ToolFinalize(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Init and add a task
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "print-hello",
 		"type": "core.print",
 		"params": map[string]interface{}{
@@ -231,11 +232,11 @@ func TestWorkflowBuilderAgent_ToolFinalize(t *testing.T) {
 // nil RequestContext is safe here.
 func TestWorkflowBuilderAgent_Finalize_CapturesChangeSummary(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name":     "test-workflow",
 		"triggers": []interface{}{map[string]interface{}{"type": "manual"}},
 	})
-	agent.toolAddTask(map[string]interface{}{"id": "print-hello", "type": "core.print"})
+	agent.toolAddTask(nil, map[string]interface{}{"id": "print-hello", "type": "core.print"})
 
 	cs := "Added a print task so the run logs Hello."
 	result := agent.executeWorkflowTool(nil, "finalize", `{"change_summary": "`+cs+`"}`, "")
@@ -251,7 +252,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// Step 1: Initialize workflow
-	result := agent.toolInitWorkflow(map[string]interface{}{
+	result := agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "pod-health-monitor",
 		"triggers": []interface{}{
 			map[string]interface{}{"type": "schedule", "params": map[string]interface{}{"cron": "*/30 * * * *"}},
@@ -263,7 +264,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.Contains(t, result, "initialized")
 
 	// Step 2: Add k8s task
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "get-pods",
 		"type": "k8s.cli",
 		"params": map[string]interface{}{
@@ -273,7 +274,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.Contains(t, result, "added")
 
 	// Step 3: Add transform task
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "check-health",
 		"type":       "data.transform",
 		"depends_on": []interface{}{"get-pods"},
@@ -287,7 +288,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.Contains(t, result, "2 task(s)")
 
 	// Step 4: Add notification task with condition
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "send-alert",
 		"type":       "notifications.im",
 		"depends_on": []interface{}{"check-health"},
@@ -314,7 +315,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	result = agent.toolGetTask(map[string]interface{}{"task_id": "get-pods"})
 	assert.Contains(t, result, "Inputs.namespace")
 
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id": "get-pods",
 		"id":      "get-pods",
 		"type":    "k8s.cli",
@@ -330,7 +331,7 @@ func TestWorkflowBuilderAgent_BuildAndModifyWorkflow(t *testing.T) {
 	assert.NotContains(t, result, "Inputs.namespace")
 
 	// Step 7: Add a fourth task, then delete it
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "log-result",
 		"type":       "core.print",
 		"depends_on": []interface{}{"send-alert"},
@@ -437,7 +438,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 	assert.Contains(t, result, "top pods -n default")
 
 	// Fix 1: wrong namespace in fetch-metrics
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id": "fetch-metrics",
 		"id":      "fetch-metrics",
 		"type":    "k8s.cli",
@@ -449,7 +450,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 	result = agent.toolGetTask(map[string]interface{}{"task_id": "send-report"})
 	assert.Contains(t, result, "#daily-reports")
 
-	result = agent.toolModifyTask(map[string]interface{}{
+	result = agent.toolModifyTask(nil, map[string]interface{}{
 		"task_id":    "send-report",
 		"id":         "send-report",
 		"type":       "notifications.im",
@@ -463,7 +464,7 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 	assert.Contains(t, result, "updated")
 
 	// Add a new task: also send email
-	result = agent.toolAddTask(map[string]interface{}{
+	result = agent.toolAddTask(nil, map[string]interface{}{
 		"id":         "send-email",
 		"type":       "notifications.email",
 		"depends_on": []interface{}{"summarize"},
@@ -506,10 +507,10 @@ func TestWorkflowBuilderAgent_LoadExistingAndModify(t *testing.T) {
 func TestWorkflowBuilderAgent_CoercionInFinalize(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
-	agent.toolInitWorkflow(map[string]interface{}{
+	agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "coercion-test",
 	})
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "task-1",
 		"type": "http.request",
 		"params": map[string]interface{}{
@@ -1638,10 +1639,16 @@ func TestWorkflowBuilder_BuildSystemPromptHasAccountIdUUIDRule(t *testing.T) {
 	assert.Contains(t, prompt, "CLOUD ACCOUNT IDs", "build prompt must have a dedicated section for account_id rules")
 	assert.Contains(t, prompt, "account_id", "build prompt must mention account_id by name")
 	assert.Contains(t, prompt, "UUID", "build prompt must call out UUID requirement")
-	assert.Contains(t, prompt, "k8s.cli", "build prompt must enumerate k8s.cli")
-	assert.Contains(t, prompt, "cloud.aws.cli", "build prompt must enumerate cloud.aws.cli")
-	assert.Contains(t, prompt, "cloud.gcp.cli", "build prompt must enumerate cloud.gcp.cli")
-	assert.Contains(t, prompt, "cloud.azure.cli", "build prompt must enumerate cloud.azure.cli")
+	assert.Contains(t, prompt, "k8s.cli", "build prompt must name the CLI tasks as examples")
+
+	// The rule must NOT read as "these four task types only". 41 task types across tickets, dbms,
+	// observability, scripting, github and rabbitmq declare an account-typed parameter, and a
+	// model told the rule applies to CLI tasks will happily write a display name into a
+	// tickets.create account_id.
+	assert.Contains(t, prompt, "tickets.", "build prompt must show the rule reaches beyond CLI tasks")
+	assert.Contains(t, prompt, "OPTIONAL", "build prompt must say account_id is optional")
+	assert.Contains(t, prompt, "PREFER OMITTING",
+		"the engine defaults account_id to the automation's own account, so omitting it is the right default")
 }
 
 // TestWorkflowBuilder_EditSystemPromptHasAccountIdUUIDRule mirrors the build
@@ -1750,16 +1757,14 @@ func TestWorkflowBuilder_ParseTurnIntent(t *testing.T) {
 }
 
 // TestWorkflowBuilder_CurrentContextSection verifies the current-cluster context block (#30162):
-// emitted with a "do not ask which account/cluster" instruction when a context is set, empty otherwise.
+// emitted with a "do not ask which account/cluster" instruction, and empty only when the agent
+// has no account at all.
 func TestWorkflowBuilder_CurrentContextSection(t *testing.T) {
-	// No context → empty.
+	// Name + id from the viewing context → names both and instructs not to ask.
 	a := newWorkflowBuilderAgent("acct")
-	assert.Equal(t, "", a.currentContextSection())
-
-	// Name + id → names both and instructs not to ask.
 	a.currentCluster = "prod-eks"
 	a.currentClusterId = "11111111-2222-3333-4444-555555555555"
-	got := a.currentContextSection()
+	got := a.currentContextSection(nil)
 	assert.Contains(t, got, "CURRENT CONTEXT")
 	assert.Contains(t, got, "prod-eks")
 	assert.Contains(t, got, "account_id=11111111-2222-3333-4444-555555555555")
@@ -1768,9 +1773,34 @@ func TestWorkflowBuilder_CurrentContextSection(t *testing.T) {
 	// Id only (no display name) → falls back to the id as the label, still non-empty.
 	a2 := newWorkflowBuilderAgent("acct")
 	a2.currentClusterId = "abc"
-	got2 := a2.currentContextSection()
+	got2 := a2.currentContextSection(nil)
 	assert.Contains(t, got2, "CURRENT CONTEXT")
 	assert.Contains(t, got2, "abc")
+
+	// No agent account at all → nothing to default to, block omitted.
+	assert.Equal(t, "", newWorkflowBuilderAgent("").currentContextSection(nil))
+}
+
+// The Create Automation dialog sends the chosen account as the request's account_id and nothing
+// else — no QueryConfig.CurrentCluster*, verified on the wire. Before the fallback that made this
+// test necessary, currentContextSection returned "" from that surface, the "do NOT ask" rule never
+// reached the prompt, and the builder asked which cluster to target after the user had already
+// picked one — then wrote whatever it was answered with into account_id (#35391).
+func TestWorkflowBuilder_CurrentContextFallsBackToTheAgentAccount(t *testing.T) {
+	a := newWorkflowBuilderAgent("a2a30b02-0f67-42e5-a2ab-c658230fd798")
+
+	got := a.currentContextSection(nil)
+
+	assert.Contains(t, got, "CURRENT CONTEXT", "the account the builder is scoped to must reach the prompt")
+	assert.Contains(t, got, "a2a30b02-0f67-42e5-a2ab-c658230fd798")
+	assert.Contains(t, got, "Do NOT ask")
+	assert.Contains(t, got, "NEVER a `{{ Configs.<key> }}` template",
+		"the observed failure was a config reference, not a display name")
+
+	// The display name is unresolvable here (no ctx), so the label already IS the id. Naming it
+	// twice — `"<uuid>" (account_id=<uuid>)` — is noise in a prompt the model has to read.
+	assert.NotContains(t, got, "(account_id=",
+		"do not repeat the id as a suffix when it is already the label")
 }
 
 // TestWorkflowBuilder_BuildPromptHasTriggerPayloadAccess asserts the build
@@ -2046,13 +2076,13 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 	agent := newWorkflowBuilderAgent("test-account")
 
 	// First init — should succeed.
-	result := agent.toolInitWorkflow(map[string]interface{}{
+	result := agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "my-workflow",
 	})
 	assert.Contains(t, result, "initialized")
 
 	// Add a task.
-	agent.toolAddTask(map[string]interface{}{
+	agent.toolAddTask(nil, map[string]interface{}{
 		"id":   "task-1",
 		"type": "core.print",
 		"params": map[string]interface{}{
@@ -2061,7 +2091,7 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 	})
 
 	// Re-init should warn and refuse.
-	result = agent.toolInitWorkflow(map[string]interface{}{
+	result = agent.toolInitWorkflow(nil, map[string]interface{}{
 		"name": "overwritten-name",
 	})
 	assert.Contains(t, result, "Warning")
@@ -2074,10 +2104,198 @@ func TestToolInitWorkflow_ReInitGuard(t *testing.T) {
 
 	// Re-init on empty workflow (no tasks) should succeed.
 	agent2 := newWorkflowBuilderAgent("test-account")
-	agent2.toolInitWorkflow(map[string]interface{}{"name": "first"})
-	result = agent2.toolInitWorkflow(map[string]interface{}{"name": "second"})
+	agent2.toolInitWorkflow(nil, map[string]interface{}{"name": "first"})
+	result = agent2.toolInitWorkflow(nil, map[string]interface{}{"name": "second"})
 	assert.Contains(t, result, "initialized")
 	assert.Equal(t, "second", agent2.state.WorkingWorkflow["name"])
+}
+
+// TestToolInitWorkflow_TriggerShape pins the trigger-shape contract (#35383). Roughly one in four
+// non-manual triggers arrived with settings at the trigger's top level instead of under `params`;
+// everything outside `type` is dropped on decode, so the automation saved with a trigger that could
+// never fire — and the user was told it worked.
+//
+// The rule is deliberately "only these four keys are legal", not a repair pass for the one bad
+// shape we observed, so the `config:` case below — which a normaliser would have turned into
+// structured junk — is rejected on the same rule as the flat one.
+func TestToolInitWorkflow_TriggerShape(t *testing.T) {
+	cases := []struct {
+		name       string
+		trigger    interface{}
+		wantReject bool
+		wantIn     string // substring the rejection must name, so the model can act on it
+	}{
+		{
+			name:       "flat webhook",
+			trigger:    map[string]interface{}{"type": "webhook", "integration_name": "my-hook", "filter": "x"},
+			wantReject: true,
+			wantIn:     `"integration_name"`,
+		},
+		{
+			name:       "flat schedule",
+			trigger:    map[string]interface{}{"type": "schedule", "cron": "0 9 * * *"},
+			wantReject: true,
+			wantIn:     `"cron"`,
+		},
+		{
+			name:       "flat event",
+			trigger:    map[string]interface{}{"type": "event", "event_type": "alert"},
+			wantReject: true,
+			wantIn:     `"event_type"`,
+		},
+		{
+			name:       "wrong container key",
+			trigger:    map[string]interface{}{"type": "webhook", "config": map[string]interface{}{"integration_name": "my-hook"}},
+			wantReject: true,
+			wantIn:     `"config"`,
+		},
+		{
+			name:       "params is not an object",
+			trigger:    map[string]interface{}{"type": "webhook", "params": "integration_name=my-hook"},
+			wantReject: true,
+			wantIn:     "must be an object",
+		},
+		{
+			name:       "trigger is not an object",
+			trigger:    "webhook",
+			wantReject: true,
+			wantIn:     "not an object",
+		},
+		{
+			name:       "missing type",
+			trigger:    map[string]interface{}{"params": map[string]interface{}{"cron": "0 9 * * *"}},
+			wantReject: true,
+			wantIn:     `no "type"`,
+		},
+		{
+			name:    "correctly nested webhook",
+			trigger: map[string]interface{}{"type": "webhook", "params": map[string]interface{}{"integration_name": "my-hook"}},
+		},
+		{
+			name:    "manual needs no params",
+			trigger: map[string]interface{}{"type": "manual"},
+		},
+		{
+			name:    "optimization with all-optional params omitted",
+			trigger: map[string]interface{}{"type": "optimization"},
+		},
+		{
+			// Shape only — whether a webhook supplies its required params is the server's call
+			// (#35384). Checking it here too would give the same mistake two owners.
+			name:    "webhook missing required params is not a shape error",
+			trigger: map[string]interface{}{"type": "webhook"},
+		},
+		{
+			// The regression tripwire: fix mode hydrates a STORED definition, which carries the
+			// server-managed `internal` block and canvas `layout`. Rejecting or relocating either
+			// would make every saved webhook automation un-editable.
+			name: "stored trigger with internal and layout",
+			trigger: map[string]interface{}{
+				"type":     "webhook",
+				"params":   map[string]interface{}{"integration_name": "my-hook"},
+				"internal": map[string]interface{}{"name": "wf-abc123-my-hook"},
+				"layout":   map[string]interface{}{"x": 400, "y": 100},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := newWorkflowBuilderAgent("test-account")
+			result := agent.toolInitWorkflow(nil, map[string]interface{}{
+				"name":     "shape-test",
+				"triggers": []interface{}{tc.trigger},
+			})
+
+			if !tc.wantReject {
+				assert.Contains(t, result, "initialized")
+				require.NotNil(t, agent.state.WorkingWorkflow)
+				def := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
+				stored := def["triggers"].([]interface{})
+				require.Len(t, stored, 1)
+				// Accepted triggers are stored verbatim — this code never rewrites a definition.
+				wantJSON, err := json.Marshal(tc.trigger)
+				require.NoError(t, err)
+				gotJSON, err := json.Marshal(stored[0])
+				require.NoError(t, err)
+				assert.JSONEq(t, string(wantJSON), string(gotJSON), "an accepted trigger must be stored unchanged")
+				return
+			}
+
+			assert.Contains(t, result, "was NOT initialized")
+			assert.Contains(t, result, tc.wantIn)
+			// Nothing half-formed may be left behind for finalize to persist.
+			assert.Nil(t, agent.state.WorkingWorkflow, "a rejected init must not create a working workflow")
+		})
+	}
+}
+
+// TestToolInitWorkflow_TriggerShapeEscalates checks that a second malformed trigger in the same
+// build stops explaining and hands over the exact object to copy. Without this, a model that
+// misreads the first correction can burn the remaining loop iterations on one mistake.
+func TestToolInitWorkflow_TriggerShapeEscalates(t *testing.T) {
+	agent := newWorkflowBuilderAgent("test-account")
+	flat := []interface{}{map[string]interface{}{"type": "webhook", "integration_name": "my-hook"}}
+
+	first := agent.toolInitWorkflow(nil, map[string]interface{}{"name": "wf", "triggers": flat})
+	assert.Contains(t, first, "Fix the trigger(s) and call init_workflow again.")
+	assert.NotContains(t, first, "second malformed trigger")
+
+	second := agent.toolInitWorkflow(nil, map[string]interface{}{"name": "wf", "triggers": flat})
+	assert.Contains(t, second, "second malformed trigger")
+	// The escalation must carry the corrected object, not just more prose.
+	assert.Contains(t, second, `{"params":{"integration_name":"my-hook"},"type":"webhook"}`)
+}
+
+// TestTriggerShapeCorrection_RawAnswer covers the path that skips the tools entirely: the model
+// emits the whole definition as its final answer, which resolveToolLoopOutcome persists verbatim.
+// A fix confined to toolInitWorkflow would miss it.
+func TestTriggerShapeCorrection_RawAnswer(t *testing.T) {
+	flat := `{"name":"wf","definition":{"triggers":[{"type":"webhook","integration_name":"my-hook"}],"tasks":[]}}`
+	nested := `{"name":"wf","definition":{"triggers":[{"type":"webhook","params":{"integration_name":"my-hook"}}],"tasks":[]}}`
+
+	t.Run("malformed answer is corrected", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		assert.Contains(t, agent.triggerShapeCorrection(nil, flat), `"integration_name"`)
+	})
+
+	t.Run("well-formed answer passes through", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		assert.Empty(t, agent.triggerShapeCorrection(nil, nested))
+	})
+
+	t.Run("prose answer is not treated as a workflow", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		assert.Empty(t, agent.triggerShapeCorrection(nil, "I could not build this automation."))
+	})
+
+	t.Run("correction budget is bounded", func(t *testing.T) {
+		agent := newWorkflowBuilderAgent("test-account")
+		for i := 0; i < maxTriggerShapeCorrections; i++ {
+			assert.NotEmpty(t, agent.triggerShapeCorrection(nil, flat), "correction %d should still be offered", i+1)
+		}
+		// Budget spent: return the answer as-is and let the save fail loudly against the server's
+		// own validation rather than spending every remaining iteration re-explaining.
+		assert.Empty(t, agent.triggerShapeCorrection(nil, flat))
+	})
+}
+
+// TestWorkflowSchema_DocumentsTriggerStructure guards the root-cause fix. The model wrote flat
+// triggers because the schema described trigger params in prose but never showed a trigger object
+// — TASK STRUCTURE spelled out `"params": {}`, triggers had no structure block at all, and the one
+// concrete example was {"type":"manual"}, the single type that takes no params.
+func TestWorkflowSchema_DocumentsTriggerStructure(t *testing.T) {
+	schema := getWorkflowSchema()
+	assert.Contains(t, schema, "## TRIGGER STRUCTURE:", "schema must show the trigger object, not only prose about its params")
+	assert.Contains(t, schema, `{"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}`,
+		"schema must show a non-manual trigger with nested params")
+
+	planning := getWorkflowPlanningContext()
+	assert.Contains(t, planning, `belongs INSIDE "params"`, "planning context must state the nesting rule")
+
+	tools := getWorkflowToolDescriptions()
+	assert.NotContains(t, tools, `"triggers": [{"type": "manual"}]`,
+		"init_workflow's example must not be the one trigger type that needs no params")
 }
 
 // TestParseAgentId verifies safe UUID parsing for agent IDs.
@@ -2168,4 +2386,28 @@ func TestIsRawWorkflowJSON(t *testing.T) {
 // is set to 6 to avoid premature nudges in multi-task workflows.
 func TestAntiThrash_ThresholdRaised(t *testing.T) {
 	assert.Equal(t, 6, readOnlyToolStreakThreshold, "anti-thrash threshold must be 6 to avoid premature nudges")
+}
+
+// TestPlanApproval_RequestChangesNeverBuilds verifies "Request Changes" always returns the
+// feedback prompt, no matter how many revisions have already happened. The old maxPlanAttempts
+// cap silently started a build instead, which read as the approval step being skipped (#34098).
+func TestPlanApproval_RequestChangesNeverBuilds(t *testing.T) {
+	for _, attempts := range []int{1, 3, 4, 25} {
+		t.Run(fmt.Sprintf("attempts=%d", attempts), func(t *testing.T) {
+			agent := newWorkflowBuilderAgent("test-account")
+			agent.state = WorkflowBuilderState{
+				Stage:         "plan_approval",
+				OriginalQuery: "Build an automation that prints hello",
+				Plan:          "1. print hello",
+				PlanAttempts:  attempts,
+			}
+
+			resp, err := agent.Execute(nil, core.NBAgentRequest{Query: PlanApprovalOptionChanges})
+			assert.Nil(t, err)
+			assert.Equal(t, core.ConversationStatusWaiting, resp.Status)
+			assert.Equal(t, core.FollowupTypeText, resp.FollowupRequest.FollowupType)
+			assert.Contains(t, resp.FollowupRequest.Question, "What changes")
+			assert.Equal(t, "feedback", agent.state.Stage)
+		})
+	}
 }

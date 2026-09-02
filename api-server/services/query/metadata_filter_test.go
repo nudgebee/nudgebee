@@ -142,10 +142,13 @@ func TestExtractFilterSQL_FromAndClause_Eq(t *testing.T) {
 	sql := extractFilterSQL(&request, "account_id", "r.cloud_account_id")
 
 	assert.Equal(t, " AND r.cloud_account_id = 'abc-123'", sql)
-	// Removed from the And child it was found in...
+	// Left in place: the pushed-down copy is only a planner hint, and the outer WHERE
+	// must keep enforcing it. Removing an _and filter is unsafe because not every
+	// caller pushes into a subquery that constrains the same rows — see the comment on
+	// extractFilterSQL.
 	_, exists := request.Where.And[1].Binary["account_id"]
-	assert.False(t, exists, "filter should be removed from the And clause after extraction")
-	// ...while the sibling And clause is untouched.
+	assert.True(t, exists, "an _and filter must survive so the outer WHERE still applies it")
+	// The sibling And clause is likewise untouched.
 	_, statusExists := request.Where.And[0].Binary["status"]
 	assert.True(t, statusExists, "unrelated And-clause filters must be preserved")
 }
@@ -162,7 +165,7 @@ func TestExtractFilterSQL_FromAndClause_In(t *testing.T) {
 
 	assert.Equal(t, " AND r.cloud_account_id IN ('a','b')", sql)
 	_, exists := request.Where.And[0].Binary["account_id"]
-	assert.False(t, exists)
+	assert.True(t, exists, "an _and filter must survive so the outer WHERE still applies it")
 }
 
 func TestExtractFilterSQL_BinaryTakesPriorityOverAnd(t *testing.T) {
@@ -199,7 +202,7 @@ func TestExtractFilterSQL_NestedAndClause(t *testing.T) {
 
 	assert.Equal(t, " AND r.tenant_id = 't-1'", sql)
 	_, exists := request.Where.And[0].And[0].Binary["tenant_id"]
-	assert.False(t, exists, "filter nested in a deeper And chain should be extracted")
+	assert.True(t, exists, "a filter nested in a deeper And chain is pushed but not removed")
 }
 
 func TestExtractFilterSQL_IgnoresOrClause(t *testing.T) {
@@ -254,12 +257,13 @@ func TestExtractFilterSQL_SecurityShapedTenantAndAccount(t *testing.T) {
 
 	assert.Equal(t, " AND r.status IN ('Open')", statusSQL)
 	assert.Equal(t, " AND r.cloud_account_id IN ('acc-1','acc-2')", accountSQL)
-	// tenant_id is left for the outer WHERE (the grouping generator pushes it separately
-	// from the security context), and both extracted entries are gone.
+	// Every _and clause survives. This is the security-critical case: these are the
+	// restrictions service.go injects, and the outer WHERE is what actually enforces
+	// them for generators whose subquery does not constrain the same rows.
 	_, hasStatus := request.Where.And[0].Binary["status"]
 	_, hasAccount := request.Where.And[2].Binary["cloud_account_id"]
-	assert.False(t, hasStatus)
-	assert.False(t, hasAccount)
+	assert.True(t, hasStatus, "a security/user _and filter must never be removed")
+	assert.True(t, hasAccount, "a security/user _and filter must never be removed")
 	_, hasTenant := request.Where.And[1].Binary["tenant_id"]
 	assert.True(t, hasTenant, "tenant_id is not extracted by these calls and must remain")
 }
@@ -287,4 +291,30 @@ func TestExtractFilterSQL_PreservesOtherFilters(t *testing.T) {
 	// category should remain
 	_, hasCategory := request.Where.Binary["category"]
 	assert.True(t, hasCategory)
+}
+
+// TestExtractFilterSQL_AndFilterSurvivesForPartiallyScopedGenerator pins the reason the
+// _and case must not be subtractive, using the generator that actually breaks.
+//
+// k8s_workloads_cloud_account_monitoring_v2 pushes account_id into the event_count CTE,
+// which is LEFT JOINed onto an unscoped workload_list; its outer WHERE has no account
+// predicate. The security layer appends the caller's account restriction as an _and
+// clause, so if extraction removed it, that generator would return workloads from every
+// account in the tenant instead of the caller's own.
+func TestExtractFilterSQL_AndFilterSurvivesForPartiallyScopedGenerator(t *testing.T) {
+	request := QueryRequest{
+		Where: QueryWhereClause{
+			And: []QueryWhereClause{
+				{Binary: BinaryWhereClause{"account_id": {In: []any{"acc-1"}}}},
+			},
+		},
+	}
+	// Same call k8s_workloads_cloud_account_monitoring_v2 makes.
+	sql := extractFilterSQL(&request, "account_id", "e2.cloud_account_id")
+
+	assert.Equal(t, " AND e2.cloud_account_id IN ('acc-1')", sql,
+		"the hint is still generated, so the pushdown keeps its performance benefit")
+	_, exists := request.Where.And[0].Binary["account_id"]
+	assert.True(t, exists,
+		"the account restriction must remain for the outer WHERE, or results widen across accounts")
 }

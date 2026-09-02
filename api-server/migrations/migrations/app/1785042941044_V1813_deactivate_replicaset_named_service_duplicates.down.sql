@@ -1,0 +1,6 @@
+-- Intentional no-op. This migration deactivates rows identified as bad data
+-- (ReplicaSet-name duplicate Service nodes); there is no record of which
+-- specific rows it touched, so blindly flipping is_active back to true would
+-- silently resurrect wrong data rather than undo a schema change. If this
+-- migration needs to be rolled back, do it by restoring from a pre-migration
+-- backup, not by re-running this file.

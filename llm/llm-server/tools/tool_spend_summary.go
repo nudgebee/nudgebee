@@ -29,6 +29,7 @@ func (t SpendSummaryTool) GetType() core.NBToolType { return core.NBToolTypeTool
 
 func (t SpendSummaryTool) Description() string {
 	return "Retrieves pre-aggregated cloud spend summary. Returns spend amounts, period-over-period changes, and estimated savings. " +
+		"Spend amounts are gross usage cost — provider credits/refunds are excluded; the separate top-level 'credits' field carries the window's credit total (negative or zero). " +
 		"Optional group_by parameter: 'cloud_account' (default) for per-account breakdown or 'service' for per-service breakdown. " +
 		"Optional account_id parameter: UUID of a specific cloud account to scope results to (defaults to the current account). " +
 		"Optional window parameter: any '{N}d' value from 1 to 365 days (e.g. '7d', '15d', '30d', '90d'). Defaults to '30d'."
@@ -165,6 +166,10 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 		}, nil
 	}
 
+	// Credit/refund rows are excluded from all spend figures above; report their
+	// total separately so gross spend and credits are visible side by side.
+	credits, creditsErr := queryCreditsTotal(dbManager, tenantId, accountId, windowStart, windowEnd)
+
 	responseMap := map[string]any{
 		"group_by":     groupBy,
 		"window":       window,
@@ -172,6 +177,11 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 		"window_end":   windowEnd.Format("2006-01-02"),
 		"total_spend":  roundCents(grandTotal),
 		"data":         result,
+	}
+	if creditsErr != nil {
+		slog.Warn("spend_summary: credits query failed", "error", creditsErr, "account_id", accountId)
+	} else {
+		responseMap["credits"] = roundCents(credits)
 	}
 	// When the result is truncated (more groups exist than were returned), tell the
 	// agent so it reports "top N of M" with the true total instead of implying the
@@ -265,13 +275,13 @@ func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string
 		INNER JOIN (
 			SELECT SUM(spends.amount) AS amount, spends.cloud_account
 			FROM spends
-			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1%s
+			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1 AND spends.exclude_aggregate = false%s
 			GROUP BY spends.cloud_account
 		) s ON ca.id = s.cloud_account
 		LEFT JOIN (
 			SELECT SUM(spends.amount) AS amount, spends.cloud_account
 			FROM spends
-			WHERE spends.date >= $2 - ($3 - $2) AND spends.date < $2 AND tenant = $1%s
+			WHERE spends.date >= $2 - ($3 - $2) AND spends.date < $2 AND tenant = $1 AND spends.exclude_aggregate = false%s
 			GROUP BY spends.cloud_account
 		) s1 ON ca.id = s1.cloud_account
 		LEFT JOIN (
@@ -286,6 +296,28 @@ func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string
 	rows := []spendByAccountRow{}
 	err := dbManager.Db.Select(&rows, query, args...)
 	return rows, err
+}
+
+// queryCreditsTotal sums the credit/refund rows for the window, so gross spend
+// and credits can be reported side by side instead of netted into one figure.
+// exclude_aggregate alone is not enough: the k8s collector also flags its
+// per-pod allocation rows (positive amounts) to avoid double-counting the cloud
+// bill, so credits are the excluded rows with negative amounts.
+func queryCreditsTotal(dbManager *common.DatabaseManager, tenantId string, accountId string, windowStart, windowEnd time.Time) (float64, error) {
+	args := []any{tenantId, windowStart, windowEnd}
+	accountFilter := ""
+	if accountId != "" {
+		accountFilter = " AND cloud_account = $4"
+		args = append(args, accountId)
+	}
+
+	var credits float64
+	query := fmt.Sprintf(`
+		SELECT COALESCE(SUM(amount), 0)
+		FROM spends
+		WHERE tenant = $1 AND date >= $2 AND date < $3 AND exclude_aggregate = true AND amount < 0%s`, accountFilter)
+	err := dbManager.Db.Get(&credits, query, args...)
+	return credits, err
 }
 
 func querySpendByService(dbManager *common.DatabaseManager, tenantId string, accountId string, filter string, windowStart, windowEnd time.Time) ([]spendByServiceRow, error) {
@@ -342,13 +374,13 @@ func querySpendByService(dbManager *common.DatabaseManager, tenantId string, acc
 		INNER JOIN (
 			SELECT spends.cloud_resource_id, SUM(spends.amount) AS amount
 			FROM spends
-			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1%s
+			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1 AND spends.exclude_aggregate = false%s
 			GROUP BY spends.cloud_resource_id
 		) s ON s.cloud_resource_id = dedup.id
 		LEFT JOIN (
 			SELECT spends.cloud_resource_id, SUM(spends.amount) AS amount
 			FROM spends
-			WHERE spends.date >= $2 - ($3 - $2) AND spends.date < $2 AND tenant = $1%s
+			WHERE spends.date >= $2 - ($3 - $2) AND spends.date < $2 AND tenant = $1 AND spends.exclude_aggregate = false%s
 			GROUP BY spends.cloud_resource_id
 		) s1 ON s1.cloud_resource_id = dedup.id
 		WHERE s.amount > 0

@@ -2,6 +2,8 @@ package tools
 
 import (
 	"fmt"
+	"strings"
+
 	"nudgebee/llm/common"
 	"nudgebee/llm/tools/core"
 )
@@ -85,6 +87,30 @@ func (r CloudResourceSearchTool) InputSchema() core.ToolSchema {
 			},
 		},
 	}
+}
+
+// missRegionHint builds the empty-result message that bounds a live fallback to the
+// regions this account actually uses (from cloud_resourses). It returns "" when there
+// are no known regions, so the caller keeps the plain "Found 0" message. Kept pure so
+// the message shape + service-scope branch are unit-testable without a DB.
+func missRegionHint(resourceName, service string, regions []string) string {
+	if len(regions) == 0 {
+		return ""
+	}
+	scope := ""
+	if service != "" {
+		scope = " " + service
+	}
+	// resourceName is empty for service/type-only searches (e.g. "list all Lambdas").
+	matchTarget := "matching your query"
+	if resourceName != "" {
+		matchTarget = fmt.Sprintf("matching '%s'", resourceName)
+	}
+	return fmt.Sprintf(
+		"Found 0 resources %s. This account has%s resources in these regions ONLY: %s. "+
+			"If it may be new/not-yet-synced, check ONLY these regions — do NOT try other regions or enumerate regions via shell. "+
+			"If it is in none of these, it does not exist; report that rather than searching further.",
+		matchTarget, scope, strings.Join(regions, ", "))
 }
 
 func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -189,6 +215,57 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 	response := CloudResourceSearchResponse{
 		Resources: resources,
 		Message:   fmt.Sprintf("Found %d cloud resources matching your query.", len(resources)),
+	}
+
+	// On a miss, bound any live fallback to the regions this account actually uses.
+	// cloud_resourses is the inventory of record for synced resources, so a name absent
+	// here is either not-yet-synced (worth a live check — but ONLY in the account's real
+	// regions) or nonexistent. Without this the model scans all ~16 regions and even
+	// enumerates them via shell (observed session 9ab533bd). Scoped to the CURRENT account
+	// (the live CLI runs against its creds) and to the service when one was given; 'global'
+	// and empty are dropped since they aren't real --region values.
+	// Fire on ANY miss — a service/type-only search ("list all Lambdas") that returns
+	// nothing benefits from the region bound just as much as a named-resource lookup.
+	if len(resources) == 0 {
+		regionQuery := `SELECT DISTINCT region FROM cloud_resourses
+			WHERE account = $1 AND is_active = true
+			  AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'`
+		regionArgs := []interface{}{nbRequestContext.AccountId}
+		if request.Service != "" {
+			regionQuery += ` AND service_name ILIKE $2`
+			regionArgs = append(regionArgs, "%"+request.Service+"%")
+		}
+		regionQuery += ` ORDER BY region`
+
+		var regions []string
+		usedService := request.Service
+		if svcErr := dbms.Db.Select(&regions, regionQuery, regionArgs...); svcErr != nil {
+			// Non-fatal: keep the plain "Found 0" message, but don't swallow the error —
+			// a silently-skipped hint would look like "account has no regions". Skip the
+			// downstream widen/hint entirely on error (empty regions here mean "unknown",
+			// not "none").
+			nbRequestContext.Ctx.GetLogger().Warn("cloud_resource_search: region-bound query failed; miss hint skipped",
+				"error", svcErr, "account", nbRequestContext.AccountId, "service", request.Service)
+		} else {
+			// Widen to account-wide regions when the service-scoped query SUCCEEDED but
+			// returned nothing (first resource of this service, or a service string matching
+			// no synced service_name).
+			if len(regions) == 0 && request.Service != "" {
+				widenQuery := `SELECT DISTINCT region FROM cloud_resourses
+					WHERE account = $1 AND is_active = true
+					  AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'
+					ORDER BY region`
+				if err := dbms.Db.Select(&regions, widenQuery, nbRequestContext.AccountId); err != nil {
+					nbRequestContext.Ctx.GetLogger().Warn("cloud_resource_search: account-wide region widening failed",
+						"error", err, "account", nbRequestContext.AccountId)
+				} else {
+					usedService = "" // regions are now account-wide, not service-specific
+				}
+			}
+			if hint := missRegionHint(request.ResourceName, usedService, regions); hint != "" {
+				response.Message = hint
+			}
+		}
 	}
 
 	responseJSON, _ := common.MarshalJson(response)

@@ -25,12 +25,25 @@ func (rc *RequestContext) GetSecurityContext() *SecurityContext {
 	return rc.securityContext
 }
 
+// GetLogger returns the request logger, annotated with the caller's file and line.
+//
+// Tolerates a nil receiver. Passing a nil *RequestContext is a caller bug — it is the
+// first parameter of ~350 functions and every production path supplies one — but the
+// cost of that bug should be a log line against the default logger, not a panic that
+// takes down a live request. Handling it here rather than at each call site keeps the
+// invariant stated in one place instead of implying it is optional at the handful of
+// sites that happened to guard it.
+//
+// Read-only by design: a single RequestContext is shared across the goroutines that run
+// a parallel action batch, so lazily assigning rc.logger here would be an unsynchronized
+// write to shared state. Falling back without storing costs nothing and removes the race.
 func (rc *RequestContext) GetLogger() *slog.Logger {
-	if rc.logger == nil {
-		rc.logger = slog.Default()
+	logger := slog.Default()
+	if rc != nil && rc.logger != nil {
+		logger = rc.logger
 	}
 	_, file, line, _ := runtime.Caller(1)
-	return rc.logger.With(
+	return logger.With(
 		slog.String("file", file),
 		slog.Int("line", line),
 	)
@@ -44,7 +57,14 @@ func (rc *RequestContext) GetMeter() metric.Meter {
 	return rc.meter
 }
 
+// GetContext returns the inner context.Context, falling back to context.Background()
+// when the receiver or the field is nil. Same reasoning as GetLogger: a nil receiver is
+// a caller bug, and an un-cancellable background context is a better outcome than a
+// panic on a request path.
 func (rc *RequestContext) GetContext() context.Context {
+	if rc == nil || rc.context == nil {
+		return context.Background()
+	}
 	return rc.context
 }
 
@@ -142,7 +162,7 @@ func (h *CustomJSONHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	allAttrs := h.collectAttrs(r)
+	allAttrs := dedupeAttrs(h.collectAttrs(r))
 	preMsg, postMsg := h.partitionAttrs(allAttrs)
 	traceID, spanID, otherPreMsg := h.extractTraceAndSpan(preMsg)
 
@@ -171,6 +191,27 @@ func (h *CustomJSONHandler) collectAttrs(r slog.Record) [][2]string {
 		})
 	}
 	return allAttrs
+}
+
+// dedupeAttrs collapses attributes sharing a key to the last value at the key's first position, preventing duplicate-key JSON when a key (e.g. user_id) is attached twice along the logger chain.
+func dedupeAttrs(allAttrs [][2]string) [][2]string {
+	// Linear scan, not a map: this runs on every log line and attribute lists
+	// are tiny (a handful of context keys), so a scan beats a per-line map alloc.
+	deduped := make([][2]string, 0, len(allAttrs))
+	for _, kv := range allAttrs {
+		found := false
+		for i := range deduped {
+			if deduped[i][0] == kv[0] {
+				deduped[i][1] = kv[1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			deduped = append(deduped, kv)
+		}
+	}
+	return deduped
 }
 
 // partitionAttrs splits attributes into preMsg and postMsg.

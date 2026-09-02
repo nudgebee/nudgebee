@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"sort"
 	"strings"
@@ -31,8 +31,6 @@ type ConversationSuggestionResponse struct {
 	MessageId      string                                  `json:"message_id" validate:"required"`
 	Suggestions    []ConversationSuggestionMessageResponse `json:"suggestions" validate:"required"`
 }
-
-var llmSystemInstructionForSuggestions = prompts_repo.GetPrompt(prompts_repo.PromptConversationSuggestion)
 
 func HandleConversationSuggestionRequest(ctx *security.RequestContext, request ConversationSuggestionRequest) (ConversationSuggestionResponse, error) {
 	mesasge, err := GetConversationDao().GetConversationMessage(request.MessageId, request.AccountId, request.ConversationId)
@@ -72,8 +70,12 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 	// when agents are enabled/disabled). Previously this was inlined into
 	// the human message, which meant ~500-800 tokens of per-account-static
 	// content shipped fresh on every call.
+	suggestionPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptConversationSuggestion, request.AccountId)
+	if err != nil {
+		return ConversationSuggestionResponse{}, fmt.Errorf("conversation suggestion: loading prompt: %w", err)
+	}
 	llmMessages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, llmSystemInstructionForSuggestions),
+		llms.TextParts(llms.ChatMessageTypeSystem, suggestionPrompt),
 		llms.TextParts(llms.ChatMessageTypeSystem, "available_tools:\n"+strings.Join(agents, "\n")),
 		llms.TextParts(
 			llms.ChatMessageTypeHuman,

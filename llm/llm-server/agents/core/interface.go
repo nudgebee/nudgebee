@@ -48,8 +48,7 @@ type ConversationSource string
 const (
 	ConversationSourceUserInvestigation    ConversationSource = "UserInvestigation"
 	ConversationSourcePrometheusQuery      ConversationSource = "PrometheusQuery"
-	ConversationSourceLokiQuery            ConversationSource = "LokiQuery"
-	ConversationSourceESQuery              ConversationSource = "ESQuery"
+	ConversationSourceLogQuery             ConversationSource = "LogQuery"
 	ConversationSourceInvestigation        ConversationSource = "Investigation"
 	ConversationSourceInstantNotification  ConversationSource = "InstantNotification"
 	ConversationSourceWorkflowBuilder      ConversationSource = "WorkflowBuilder"
@@ -132,12 +131,35 @@ type NBAgentRequest struct {
 	// message — not the cacheable system prefix — so per-request KB content
 	// never thrashes the LLM cache.
 	KBPrestepContent string `json:"kb_prestep_content,omitempty"`
+	// KBReferences holds references to knowledge base sources retrieved by the pre-step.
+	KBReferences []AgentReference `json:"kb_references,omitempty"`
+	// KBPrestepExecuted indicates whether pre-step RAG retrieval has already been performed
+	// for this turn or propagated from a parent invocation, avoiding redundant embedding and RAG queries.
+	KBPrestepExecuted bool `json:"kb_prestep_executed,omitempty"`
 	// SkillListsMenu holds the `<skill-lists>` discovery block (names +
 	// descriptions, no bodies) when LlmServerKBPrestepEnabled is on. Like
 	// KBPrestepContent it is rendered into the human message instead of the
 	// system prompt. When the flag is off this stays empty and the legacy
 	// injectKBContext path prepends the block to the system prompt instead.
 	SkillListsMenu string `json:"skill_lists_menu,omitempty"`
+	// ChannelContext holds conversation observed in a messaging channel the
+	// tenant opted into watching. It is third-party text that nobody addressed
+	// to the agent, so it is kept in its own field rather than folded into
+	// Query: once concatenated, no downstream component can tell the user's
+	// request apart from what other people happened to say. The planner renders
+	// it into the human message inside a fenced block, and the rule for treating
+	// it as reference-only lives in the shared security rules, where it is
+	// operator-controlled rather than sitting inside the untrusted content.
+	ChannelContext string `json:"channel_context,omitempty"`
+	// ChannelContextRefs carries the provenance of ChannelContext — channel plus
+	// per-message author/preview/permalink. Persisted as a channel_context
+	// conversation reference for the UI's citation; never rendered into the
+	// prompt.
+	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
+	// MemoryContext carries the composed memory slab (soul, preferences,
+	// patterns, decisions, collective, plus the <memory_index> audit footer).
+	// Rendered as a reference-framed <user_memory> block in the human message.
+	MemoryContext string `json:"memory_context,omitempty"`
 }
 
 // DO not use for API calls
@@ -205,12 +227,28 @@ type NBAgentPlannerToolActionMemoryRef struct {
 }
 
 type NBAgentPlannerToolActionStep struct {
-	Action      NBAgentPlannerToolAction           `json:"action"`
-	Observation string                             `json:"observation"`
-	Status      ToolStatus                         `json:"status"`
-	IsTerminal  bool                               `json:"is_terminal"`
-	References  []toolcore.NBToolResponseReference `json:"references"`
-	Followup    *FollowupRequest                   `json:"followup,omitempty"`
+	Action      NBAgentPlannerToolAction `json:"action"`
+	Observation string                   `json:"observation"`
+	Status      ToolStatus               `json:"status"`
+	IsTerminal  bool                     `json:"is_terminal"`
+	// IsDuplicateCacheHit marks a step whose result came from the per-turn tool-call
+	// cache (a repeated call). It is transient (in-memory, live turn only) and drives
+	// a scratchpad-render-time "already executed — don't repeat" notice for the planner
+	// WITHOUT polluting the stored Observation (so it never reaches the terminal
+	// response, GetToolInvocations/UI, or the summarizer). Never set on terminal steps.
+	IsDuplicateCacheHit bool `json:"-"`
+	// NoProgressRepeatCount is how many CONSECUTIVE same-tool no-progress calls
+	// have led up to and include this step in the current turn. "No progress" =
+	// status=failure OR status=empty-result OR trivial observation OR byte-identical
+	// to a prior same-tool observation under a different input. Consolidates the
+	// three prior per-class counters (byte-identical, trivial-result, access-denied)
+	// into ONE tool-agnostic signal — see countConsecutiveNoProgressForTool and
+	// isNoProgressStep in executor_planner.go. Drives the noProgressNotice
+	// scratchpad prefix when >= noProgressLoopThreshold. Transient and render-only,
+	// like IsDuplicateCacheHit — never enters persisted step / UI / summarizer.
+	NoProgressRepeatCount int                                `json:"-"`
+	References            []toolcore.NBToolResponseReference `json:"references"`
+	Followup              *FollowupRequest                   `json:"followup,omitempty"`
 	// Metadata carries tool-execution telemetry (exit status, duration,
 	// stderr, truncation) used by the prompt-assembly seams to append a
 	// trailing `[exitStatus: N | executionDuration: Xms]` footer to the
@@ -229,6 +267,13 @@ type NBAgentPlannerToolActionStep struct {
 	// It is intentionally excluded from the scratchpad's compression-activation byte
 	// count so it never drags the window-pressure threshold. Empty for non-agent steps.
 	SubAgentEvidence string `json:"sub_agent_evidence,omitempty"`
+	// IsCircuitOpen mirrors toolcore.NBToolResponse.IsCircuitOpen: this step's
+	// Status is ToolStatusFailure because the tool's circuit breaker
+	// fast-failed the call, not because the tool itself failed. Consulted so
+	// a circuit-open step doesn't count toward the consecutive-failed-iteration
+	// abort counter or the summarizer's hasAnyFailure signal the same way a
+	// genuine tool failure does.
+	IsCircuitOpen bool `json:"is_circuit_open,omitempty"`
 }
 
 type ToolStatus string
@@ -469,6 +514,26 @@ func isSingleShotClassifier(agent NBAgent) bool {
 // their caching stability scope (e.g. Account or Global level vs Conversation).
 type NBAgentCacheScopeProvider interface {
 	GetCacheScope() CacheScope
+}
+
+// NBAgentRequestAwareToolProvider is an optional interface for agents whose
+// toolset depends on the request — e.g. the remediation agent drops its
+// execute tool when serving a recommendation-resolution request. The canonical
+// GetSupportedTools stays the superset shown by listing surfaces.
+type NBAgentRequestAwareToolProvider interface {
+	GetSupportedToolsForRequest(ctx *security.RequestContext, request NBAgentRequest) []toolcore.NBTool
+}
+
+// SupportedToolsForRequest resolves an agent's toolset for a specific request,
+// preferring the request-aware variant when the agent implements it. Both the
+// planner (which tools the prompt advertises) and the dispatch-time auth check
+// (which tools may actually run) resolve through this, so a request-mode
+// restriction holds even if the model emits a tool outside the advertised set.
+func SupportedToolsForRequest(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) []toolcore.NBTool {
+	if provider, ok := agent.(NBAgentRequestAwareToolProvider); ok {
+		return provider.GetSupportedToolsForRequest(ctx, request)
+	}
+	return agent.GetSupportedTools(ctx)
 }
 
 type NBAgentExecutorLlmResponseHandler interface {

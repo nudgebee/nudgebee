@@ -91,7 +91,7 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 	err = dbms.QueryRowAndScan(&id, `
 		INSERT INTO event_rules (id, account_id, tenant_id, alert, annotations, expr, duration, labels, source, category, severity, enabled, alert_type, metric_provider, metric_provider_source, external_rule_id, provider_config, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now(), now())
-		ON CONFLICT (account_id, tenant_id, alert)
+		ON CONFLICT (account_id, tenant_id, source, alert)
 		-- A firing-alert webhook (Alertmanager/PagerDuty, datadog_webhook, grafana_webhook, …) upserts on the
 		-- same (account, tenant, alert) key as the authoritative rule definition (agent PrometheusRule sync,
 		-- UI, or external-provider create), but carries only the firing instance's labels/annotations — no
@@ -465,9 +465,13 @@ func UpdateEventRule(context *security.RequestContext, eventRequest EventConfig)
 		// Fetch existing external_rule_id from DB
 		dbmsLookup, err := database.GetDatabaseManager(database.Metastore)
 		if err == nil {
+			// Scoped by source: since the unique key became
+			// (account, tenant, source, alert), the same alert name can exist
+			// under both a provider source and its *_webhook twin, and only the
+			// provider row carries the external_rule_id we are about to update.
 			lookupErr := dbmsLookup.QueryRowAndScan(&externalRuleId,
-				"SELECT COALESCE(external_rule_id, '') FROM event_rules WHERE account_id = $1 AND tenant_id = $2 AND alert = $3",
-				eventRequest.AccountID, context.GetSecurityContext().GetTenantId(), eventRequest.Alert)
+				"SELECT COALESCE(external_rule_id, '') FROM event_rules WHERE account_id = $1 AND tenant_id = $2 AND alert = $3 AND source = $4",
+				eventRequest.AccountID, context.GetSecurityContext().GetTenantId(), eventRequest.Alert, eventRequest.Source)
 			if lookupErr != nil {
 				context.GetLogger().Error("UpdateEventRule: failed to lookup external_rule_id", "error", lookupErr)
 			}
@@ -735,7 +739,7 @@ func IsK8sAgentConnected(accountId string) bool {
 
 // Action defines the interface that all playbook actions must implement.
 func ExecutePlaybook(context *security.RequestContext, accountId string, event playbooks.PlaybookEvent) ([]PlaybookActionExecutionResponse, error) {
-	context.GetLogger().Info("eventrule: executing playbook", "event_id", event.EventId, "accountId", accountId, "alertName", event.Name)
+	context.GetLogger().Info("eventrule: executing playbook", "event_id", event.EventId, "account_id", accountId, "event_name", event.Name)
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -1147,6 +1151,13 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 										continue
 									}
 								}
+								// _series holds every matched Prometheus series — an internal structure used
+								// only by playbook for_each templates (resolved from extractedLabels, not from
+								// event.Labels). It must never be merged onto the event: stringified it is
+								// hundreds of KB and rode into the RCA prompt on every planner iteration.
+								if k == "_series" {
+									continue
+								}
 								switch v := v.(type) {
 								case string:
 									pendingLabels[k] = v
@@ -1289,6 +1300,20 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 	// an import cycle eventrule -> account -> adapter -> llm -> tenant -> eventrule.)
 	k8sAgentAvailable := isK8sAgentConnected(accountId)
 
+	// Some implementations are registered under more than one action name (e.g.
+	// cloud_metrics is a legacy alias of cloud_list_metrics, kept because
+	// playbooks and event rules in the DB still reference it). Auto-discovery
+	// enumerates names, so without this both aliases pass CanAutoExecute, both
+	// run, and the event ends up with byte-identical duplicate evidence.
+	// AutoExecute never sees the action name, so one run per implementation is
+	// always equivalent.
+	executedImpls := make(map[reflect.Type]bool)
+	for _, actionName := range executedAction {
+		if action, found := playbooks.GetAction(actionName); found {
+			executedImpls[reflect.TypeOf(action)] = true
+		}
+	}
+
 	//run auto discovery actions
 	for _, actionName := range playbooks.ListActions() {
 		if slices.Contains(executedAction, actionName) {
@@ -1315,7 +1340,13 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 		if !ok {
 			continue
 		}
+		implKey := reflect.TypeOf(action)
+		if executedImpls[implKey] {
+			context.GetLogger().Info("eventrule: skipping auto action (same implementation already ran under another name)", "actionName", actionName)
+			continue
+		}
 		if autoAction.CanAutoExecute(playbookEventContext) {
+			executedImpls[implKey] = true
 			result, err := autoAction.AutoExecute(playbookEventContext)
 			if err != nil {
 				context.GetLogger().Warn("eventrule: failed to execute auto action", "actionName", actionName, "error", err)
@@ -1347,6 +1378,13 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 							continue
 						}
 						if _, ok := event.Labels[k]; ok {
+							continue
+						}
+						// _series holds every matched Prometheus series — an internal structure used
+						// only by playbook for_each templates (resolved from extractedLabels, not from
+						// event.Labels). It must never be merged onto the event: stringified it is
+						// hundreds of KB and rode into the RCA prompt on every planner iteration.
+						if k == "_series" {
 							continue
 						}
 						switch v := v.(type) {

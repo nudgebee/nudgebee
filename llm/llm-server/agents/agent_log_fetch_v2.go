@@ -1,15 +1,19 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // FetchLogsAgentV2 is the canonical, provider-independent variant of the
@@ -49,13 +53,62 @@ func (a *FetchLogsAgentV2) canonicalEnabled(ctx *security.RequestContext) bool {
 	return config.Config.LogAgentV2Enabled
 }
 
+// defaultFetchLogsWallClockTimeout is the fallback when
+// LlmServerFetchLogsWallClockTimeoutSeconds is 0 or unset. 300s picks a
+// value ~2.5× above the observed post-deploy p100 for legitimate calls
+// (fetch_logs success avg 37s, max 116s in the 4d 2026-08-02→08-06 window)
+// while still short enough to be actionable if a downstream provider stalls
+// — the same bar the api-server side uses for its 240s observability handler
+// cap (handle_actions_logs.go). Chosen tighter than the conversation-level
+// TTL so a wedged provider surfaces to the caller as a clean tool error
+// instead of stalling the whole conversation until TTL reap. Regression
+// this defends: conv 8832d8f4 on 2026-08-05 had a single fetch_logs call
+// hang 6520s (~108 min) — the api-server timeouts from PR #35570 covered
+// the RPC handler path (logs_query, logs_get_query, etc.) but NOT this
+// internal llm-server tool.
+const defaultFetchLogsWallClockTimeout = 300 * time.Second
+
+// fetchLogsWallClockTimeout is a test-override seam. In production (test
+// override zero) the effective timeout is resolved via
+// resolveFetchLogsWallClockTimeout so tenants can tune it at runtime via
+// LlmServerFetchLogsWallClockTimeoutSeconds without a code deploy. Tests
+// set this directly to shorten waits.
+var fetchLogsWallClockTimeout time.Duration
+
+// resolveFetchLogsWallClockTimeout returns the effective wall-clock bound:
+// test override (fetchLogsWallClockTimeout != 0) wins first, then the config
+// value if positive, else the compile-time default. Recomputed on every
+// Execute call so a config hot-reload takes effect without a restart.
+func resolveFetchLogsWallClockTimeout() time.Duration {
+	if fetchLogsWallClockTimeout > 0 {
+		return fetchLogsWallClockTimeout
+	}
+	if s := config.Config.LlmServerFetchLogsWallClockTimeoutSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return defaultFetchLogsWallClockTimeout
+}
+
 // Execute routes the log fetch. When the v2 gate (LLM_SERVER_LOG_AGENT_V2_ENABLED)
 // is off it delegates to the embedded v1 agent (identical to pre-v2 behaviour).
 // When on, it sends a canonical where to services-server for any backed provider,
 // keeps datadog on the proven facet path, and uses kubectl for empty/k8s. When
 // the services-server path fails or returns no logs, it falls back to kubectl
 // (kubectlFallback).
+//
+// Wrapped in runFetchLogsWithTimeout so any downstream stall (services-server
+// RPC, kubectl_execute, datadog client, workspace pod) bails at
+// fetchLogsWallClockTimeout instead of hanging the whole conversation until
+// TTL reap — the exact regression class from conv 8832d8f4.
 func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
+	return runFetchLogsWithTimeout(ctx, resolveFetchLogsWallClockTimeout(), func(tctx *security.RequestContext) (core.NBAgentResponse, error) {
+		return a.executeInner(tctx, request)
+	})
+}
+
+// executeInner is the pre-wall-clock-wrapper body of Execute. Split out so the
+// wrapper can be a thin decorator around unchanged routing logic.
+func (a *FetchLogsAgentV2) executeInner(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	// Flag off → behave exactly as v1 (which applies the override itself).
 	if !a.canonicalEnabled(ctx) {
 		return a.FetchLogsAgent.Execute(ctx, request)
@@ -74,20 +127,162 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 	// which stays on its proven facet-syntax path (the v1 datadog executor).
 	var resp core.NBAgentResponse
 	var err error
+	var canonicalQuery string
 	if providerName == "datadog" {
 		resp, err = a.generateDatadogLogQueryAndExecute(ctx, request)
 	} else {
-		resp, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
+		resp, canonicalQuery, err = a.generateCanonicalLogQueryAndExecute(ctx, request, provider)
 	}
 	if err != nil {
 		return resp, err
 	}
 
-	// Fall back to kubectl when services-server errored or returned no logs.
-	if resp.Status == core.ConversationStatusFailed || fetchResponseIsEmpty(resp) {
+	if shouldFallbackToKubectl(resp, canonicalQuery) {
 		return a.kubectlFallback(ctx, request, provider, resp)
 	}
 	return resp, nil
+}
+
+// runFetchLogsWithTimeout enforces a wall-clock bound on the fetch_logs
+// Execute pipeline via TWO complementary mechanisms:
+//
+//   - **Active downstream cancellation**: builds a `context.WithTimeout(deadline)`
+//     derived from the caller's `ctx.GetContext()`, wraps it into a fresh
+//     `*security.RequestContext` (preserving security context, logger, tracer,
+//     meter), and passes THAT into fn. Downstream code that honors context
+//     (HttpWithContext, gRPC calls, database queries) will actively cancel at
+//     the deadline — freeing HTTP connections, DB handles, etc. before the
+//     downstream itself times out.
+//
+//   - **Wall-clock select backstop**: races fn completion against the same
+//     deadline in a goroutine. Fires regardless of whether downstream honors
+//     ctx — kubectl_execute-via-workspace, datadog client, or any provider
+//     that runs blocking CPU work all get cut off at the deadline instead of
+//     stalling the whole conversation.
+//
+// The two together give us bounded caller-return latency (from the select)
+// AND clean downstream resource release (from the derived ctx). Downstream
+// that ignores ctx still runs to natural completion in the orphan goroutine
+// but the caller has already returned — same tradeoff as the api-server
+// helper runObservabilityActionWithTimeout.
+//
+// Panic recovery: Gin's recovery middleware only guards the request-serving
+// goroutine, not spawned workers — a `panic` inside `fn` would crash the
+// whole llm-server process. Recover in the worker, log via a nil-safe logger
+// (ctx.GetLogger() falls back to slog.Default() when logger is nil), hand
+// the panic value back via buffered channel so the caller re-panics on the
+// request goroutine (where middleware catches it). When the deadline branch
+// fired first the caller has moved on; the panic is only logged, not
+// re-raised (re-panicking on nobody's goroutine crashes the process).
+//
+// On deadline: returns a clean errorResponse envelope so the planner sees
+// an actionable tool error and can pivot, instead of the entire
+// conversation stalling on the wedged provider.
+func runFetchLogsWithTimeout(ctx *security.RequestContext, timeout time.Duration, fn func(*security.RequestContext) (core.NBAgentResponse, error)) (core.NBAgentResponse, error) {
+	// Build a timeout-bound Go context derived from the caller's ctx (or
+	// Background when ctx is nil). Downstream code that plumbs
+	// ctx.GetContext() into HttpWithContext / gRPC / DB calls will actively
+	// cancel at the deadline. cancel() runs on return so both branches
+	// release the context tree regardless of who fires first.
+	var goCtx context.Context
+	var cancel context.CancelFunc
+	if ctx != nil && ctx.GetContext() != nil {
+		goCtx, cancel = context.WithTimeout(ctx.GetContext(), timeout)
+	} else {
+		goCtx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
+	defer cancel()
+
+	// Wrap the timeout-bound Go context into a fresh RequestContext so fn
+	// receives all of the caller's security/logger/tracer/meter enrichment
+	// plus the derived deadline. Falls back to the raw ctx when we can't
+	// enrich (ctx == nil is only reachable from tests / degenerate call sites).
+	timeoutCtx := ctx
+	if ctx != nil {
+		timeoutCtx = security.NewRequestContext(goCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	type result struct {
+		resp     core.NBAgentResponse
+		err      error
+		panicVal any
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger := slog.Default()
+				if ctx != nil {
+					logger = ctx.GetLogger()
+				}
+				logger.Error("fetch_logs panicked; propagating to caller goroutine if still waiting",
+					"panic", fmt.Sprintf("%v", r))
+				done <- result{panicVal: r}
+			}
+		}()
+		resp, err := fn(timeoutCtx)
+		done <- result{resp: resp, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.panicVal != nil {
+			panic(r.panicVal)
+		}
+		return r.resp, r.err
+	case <-deadline.C:
+		if ctx != nil {
+			ctx.GetLogger().Warn("fetch_logs exceeded wall-clock deadline; downstream ctx cancelled, goroutine orphaned until ctx-ignoring downstream gives up",
+				"deadline", timeout.String())
+		}
+		return errorResponse(FetchLogsAgentName, fmt.Errorf("fetch_logs exceeded %s wall-clock deadline (downstream provider hung — see conv 8832d8f4 class of failures)", timeout)), nil
+	}
+}
+
+// shouldFallbackToKubectl decides whether Execute should fall back to the
+// kubectl log path after the primary services-server fetch.
+//
+// `kubectl logs --tail` has no time filtering at all — it returns whatever is
+// currently in the pod's log buffer, which can easily be hours or days old.
+// When the primary backend actually SUCCEEDED and authoritatively found zero
+// rows in an explicit historical window (start_time set — e.g. "between
+// 10:00 and 10:05 today"), that is a real, honest answer for that window;
+// replacing it with kubectl's unrelated buffered content misleads the LLM
+// into treating stale logs as if they were the requested window (traced to a
+// live incident where this fed the shell_execute file-ref hallucination
+// class). No such guard is needed when the primary itself errored — kubectl
+// remains the safety net for a genuine backend/config failure — or when no
+// explicit window was given, since a now-anchored default window is a
+// plausible match for kubectl's current-buffer semantics.
+func shouldFallbackToKubectl(resp core.NBAgentResponse, canonicalQuery string) bool {
+	if resp.Status == core.ConversationStatusFailed {
+		return true
+	}
+	if !fetchResponseIsEmpty(resp) {
+		return false
+	}
+	return !queryHasExplicitTimeAnchor(canonicalQuery)
+}
+
+// queryHasExplicitTimeAnchor reports whether the canonical query carries an
+// explicit start_time — an absolute historical anchor that plain `kubectl
+// logs --tail` cannot honor (see shouldFallbackToKubectl). Empty or
+// unparseable input is treated as "no anchor" so callers default to the
+// pre-existing fallback behaviour.
+func queryHasExplicitTimeAnchor(canonicalQuery string) bool {
+	if strings.TrimSpace(canonicalQuery) == "" {
+		return false
+	}
+	var q struct {
+		StartTime string `json:"start_time"`
+	}
+	if err := json.Unmarshal([]byte(canonicalQuery), &q); err != nil {
+		return false
+	}
+	return strings.TrimSpace(q.StartTime) != ""
 }
 
 // kubectlFallback runs the kubectl log path after a services-server fetch errored
@@ -96,8 +291,9 @@ func (a *FetchLogsAgentV2) Execute(ctx *security.RequestContext, request core.NB
 // (succeeded but empty), the original response is preferred so a real "no logs"
 // answer isn't masked by a kubectl access error.
 func (a *FetchLogsAgentV2) kubectlFallback(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, primary core.NBAgentResponse) (core.NBAgentResponse, error) {
+	primaryQuery := envelopeQuery(primary.Response)
 	ctx.GetLogger().Info("fetch_logs v2: services-server returned error/empty — falling back to kubectl",
-		"provider", provider.Provider, "primary_status", primary.Status)
+		"provider", provider.Provider, "primary_status", primary.Status, "primary_query", primaryQuery)
 	kresp, err := a.generateKubeCtlLogQueryAndExecute(ctx, request)
 	if err != nil {
 		return kresp, err
@@ -105,7 +301,77 @@ func (a *FetchLogsAgentV2) kubectlFallback(ctx *security.RequestContext, request
 	if kresp.Status == core.ConversationStatusFailed && primary.Status != core.ConversationStatusFailed {
 		return primary, nil
 	}
-	return kresp, nil
+	return withFallbackNote(kresp, fallbackNote(provider.Provider, primary.Status, primaryQuery)), nil
+}
+
+// envelopeQuery extracts the top-level "query" field from a fetch_logs
+// makeFetchResponse envelope (primary.Response[0]) — the query
+// generateCanonicalLogQueryAndExecute/generateDatadogLogQueryAndExecute already
+// resolved (via executedLogQuery, against the RAW backend response) when
+// building the envelope. Do NOT call executedLogQuery on this value again:
+// that function looks for a NESTED metadata.query field — the shape of the
+// raw logs_execute_v2 tool response — which this already-built envelope does
+// not have (its query lives at the top level), so it would always return the
+// fallback ("") and silently drop a perfectly good value. Caught in code
+// review (gemini-code-assist) against an earlier revision of this function.
+// Returns "" on an empty/unparseable response — same fallback semantics as
+// before.
+func envelopeQuery(response []string) string {
+	if len(response) == 0 {
+		return ""
+	}
+	var doc struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(response[0]), &doc); err != nil {
+		return ""
+	}
+	return doc.Query
+}
+
+// fallbackNote builds the human-readable explanation for why the canonical
+// query's result didn't reach the caller. Distinguishes an outright failure
+// (primary.Status == Failed — e.g. a network/backend error) from a query that
+// executed successfully but matched zero rows, since conflating the two as
+// "matched zero rows" misdescribes a hard failure. Omits the query clause
+// when empty (a failure often occurs before a query/metadata is available to
+// extract via executedLogQuery).
+func fallbackNote(provider string, primaryStatus core.ConversationStatus, primaryQuery string) string {
+	outcome := "matched zero rows"
+	if primaryStatus == core.ConversationStatusFailed {
+		outcome = "failed"
+	}
+	queryClause := ""
+	if primaryQuery != "" {
+		queryClause = fmt.Sprintf(" (query: %s)", primaryQuery)
+	}
+	return fmt.Sprintf("canonical %s query %s%s — retried via kubectl; this answer came from kubectl, not %s.", provider, outcome, queryClause, provider)
+}
+
+// withFallbackNote injects a "fallback_note" field into a fetch_logs response
+// envelope, best-effort. Used only by kubectlFallback so the returned kubectl
+// answer is distinguishable from a direct kubectl fetch: without it, a
+// canonical query that quietly matched zero rows (e.g. a namespace typo or a
+// stale label mapping) looks identical to "canonical was never attempted",
+// which is exactly what made this class of bug hard to diagnose without
+// grepping raw application logs. Leaves resp unchanged if the body isn't the
+// expected JSON envelope (e.g. an error string) — never blocks the fallback
+// response on a marshal failure.
+func withFallbackNote(resp core.NBAgentResponse, note string) core.NBAgentResponse {
+	if len(resp.Response) == 0 {
+		return resp
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(resp.Response[0]), &envelope); err != nil {
+		return resp
+	}
+	envelope["fallback_note"] = note
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return resp
+	}
+	resp.Response = []string{string(body)}
+	return resp
 }
 
 // fetchResponseIsEmpty reports whether a makeFetchResponse envelope carries no
@@ -137,27 +403,36 @@ func fetchResponseIsEmpty(resp core.NBAgentResponse) bool {
 	return false
 }
 
-func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, error) {
-	fields, indices := a.labelsAndIndices(provider)
+// The returned string is the canonical (pre-translation) query JSON this
+// agent generated — used by Execute's kubectl-fallback guard to check for an
+// explicit start_time. It is returned even on an error/failure response so
+// callers can inspect it consistently; it is empty when generation itself
+// failed (no query was ever produced).
+func (a *FetchLogsAgentV2) generateCanonicalLogQueryAndExecute(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider) (core.NBAgentResponse, string, error) {
+	fields, indices := fetchLabelsAndIndices(a.accountId, provider)
 	jsonQuery, err := generateCanonicalLogQuery(ctx, request, provider, fields, indices)
 	if err != nil {
-		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("canonical query extraction: %w", err)), "", nil
 	}
 	if provider.DefaultIndex != "" {
 		jsonQuery = injectDefaultIndexIfMissing(jsonQuery, provider.DefaultIndex)
 	}
 	logs, toolRefs, err := callTool(ctx, a.accountId, request, tools.ToolLogsExecuteV2, jsonQuery)
 	if err != nil {
-		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("logs_execute_v2: %w", err)), jsonQuery, nil
 	}
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
-		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
+		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), jsonQuery, nil
 	}
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, fileRef, mergeRefs(toolRefs, fileRefs)), nil
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	if err != nil {
+		return core.NBAgentResponse{}, jsonQuery, err
+	}
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // executedLogQuery pulls the provider query the backend actually ran out of the
@@ -350,7 +625,7 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	b.WriteString("- Read the caller's ORIGINAL user question (when provided) to classify intent.\n")
 
 	b.WriteString("\n**Examples:**\n")
-	examples := canonicalQueryExamples()
+	examples := canonicalQueryExamples(supportedOperators)
 	if !useCanonical {
 		if pe := providerSpecificQueryExamples(providerName); len(pe) > 0 {
 			examples = pe
@@ -368,9 +643,19 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 
 // defaultLogQueryOperators is the comparison-operator set advertised to the
 // LLM when get_default_provider omits capabilities.supported_operators (older
-// backends, fetch failure). Combinators are added separately by
-// resolveQueryOperators.
-var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_ilike", "_nlike", "_is_null"}
+// backends, fetch failure).
+//
+// It must stay the INTERSECTION of what every backend can execute, because it is
+// used precisely when we do not know which backend we are talking to. `_ilike` is
+// excluded for that reason: it is not universal (Signoz rejects it), and a rejected
+// query costs a full agent iteration to discover. `_like` is the portable spelling.
+//
+// Elasticsearch DOES execute `_ilike` — natively, via a case-insensitive wildcard —
+// and advertises it, so an ES account receives it through capabilities rather than
+// through this fallback. The fallback only applies when the backend told us nothing.
+//
+// Combinators are added separately by resolveQueryOperators.
+var defaultLogQueryOperators = []string{"_eq", "_neq", "_gt", "_gte", "_lt", "_lte", "_in", "_not_in", "_like", "_nlike", "_is_null"}
 
 // logQueryCombinators are the structural JSON combinators the where-schema
 // relies on. They are not provider comparison operators, so the backend's
@@ -416,7 +701,16 @@ func resolveQueryOperators(providerOperators []string) []string {
 // e.g. a backend whose canonical keys are `app`/`content`). The examples teach
 // query shape (operators, _or, time_range/limit, when to add an error filter);
 // the field list above teaches which name to substitute.
-func canonicalQueryExamples() []core.NBAgentPromptExample {
+func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExample {
+	// The few-shots are the strongest signal in this prompt — stronger than the
+	// operator list a few lines above it. Hardcoding `_ilike` here meant the model
+	// emitted it against Elasticsearch, which rejects it outright, even though the
+	// advertised operator list correctly omitted it. So the examples must be built
+	// from the SAME set the backend advertises.
+	contains := `_ilike`
+	if !slices.Contains(supportedOperators, "_ilike") {
+		contains = `_like`
+	}
 	return []core.NBAgentPromptExample{
 		{
 			Question:    "show me recent logs for the checkout workload",
@@ -425,12 +719,12 @@ func canonicalQueryExamples() []core.NBAgentPromptExample {
 		},
 		{
 			Question:    "errors in the checkout workload in the last hour",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}, "time_range": "1h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}, "time_range": "1h", "limit": 5000}`,
 			Explanation: "Replace <LOG_TEXT_FIELD> with the canonical_name for the log body. The question says 'last hour' → set time_range to \"1h\" EXACTLY; never widen a window the user gave (use the 24h default ONLY when the question gives no window). 'checkout' is illustrative — substitute the real workload name from the question.",
 		},
 		{
 			Question:    "warn or error logs for checkout",
-			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"_ilike": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"_ilike": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
+			Answer:      `{"where": {"<WORKLOAD_FIELD>": {"_eq": "checkout"}, "_or": [{"<LOG_TEXT_FIELD>": {"` + contains + `": "%warn%"}}, {"<LOG_TEXT_FIELD>": {"` + contains + `": "%error%"}}]}, "time_range": "24h", "limit": 5000}`,
 			Explanation: "Multiple values for the same concept → _or over the log-body canonical_name.",
 		},
 		{

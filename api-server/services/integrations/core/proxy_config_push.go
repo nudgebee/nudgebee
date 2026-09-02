@@ -202,14 +202,36 @@ func queryProxyDatasources(accountID string) ([]relay.ProxyDatasourceConfig, err
 		}
 	}()
 
-	var datasources []relay.ProxyDatasourceConfig
-
+	// First pass: read the rows only. Config values are loaded after the cursor is
+	// closed so this never holds one pool connection while asking for another —
+	// the same two-pass shape ListIntegrationConfigs was converted to for #34973.
+	pending := []pendingIntegration{}
 	for rows.Next() {
 		var integrationID, integrationType, integrationName string
 		if err := rows.Scan(&integrationID, &integrationType, &integrationName); err != nil {
 			slog.Error("integrations: failed to scan proxy integration", "error", err)
 			continue
 		}
+		pending = append(pending, pendingIntegration{
+			id:              integrationID,
+			name:            integrationName,
+			integrationType: integrationType,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("integrations: failed to iterate proxy integration rows", "error", err)
+		return nil, err
+	}
+	if cerr := rows.Close(); cerr != nil {
+		slog.Error("integrations: failed to close proxy datasource rows", "error", cerr)
+		return nil, cerr
+	}
+
+	// Second pass: the cursor is closed, so its connection is back in the pool.
+	var datasources []relay.ProxyDatasourceConfig
+
+	for _, p := range pending {
+		integrationID, integrationType, integrationName := p.id, p.integrationType, p.name
 
 		// Query config values for this integration
 		configMap := map[string]any{}

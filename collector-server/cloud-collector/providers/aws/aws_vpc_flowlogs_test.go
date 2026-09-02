@@ -1,7 +1,11 @@
 package aws
 
 import (
+	"context"
 	"testing"
+	"time"
+
+	"nudgebee/collector/cloud/providers"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -118,5 +122,30 @@ func TestExtractLambdaNameFromENI(t *testing.T) {
 			assert.Equal(t, tt.expectedName, name,
 				"name mismatch for description: %s", tt.eniDescription)
 		})
+	}
+}
+
+// TestResolveRDSEndpointToIP_HonoursContext checks that endpoint resolution is
+// cancellable. net.LookupIP ignores context entirely, so before this was bounded
+// an unreachable resolver blocked the caller indefinitely — and callers resolve
+// one endpoint per RDS instance in sequence, so a single slow lookup could stall
+// a whole collection run.
+func TestResolveRDSEndpointToIP_HonoursContext(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := ResolveRDSEndpointToIP(
+		providers.NewCloudProviderContext(cancelled),
+		"main.ca5yt51qtp3r.us-east-1.rds.amazonaws.com",
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("resolution succeeded on a cancelled context, want an error")
+	}
+	// Well under the 2s cap: cancellation must be observed rather than waited out.
+	if elapsed > time.Second {
+		t.Errorf("took %s to observe a cancelled context, want it to return promptly", elapsed)
 	}
 }

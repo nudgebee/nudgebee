@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"time"
 )
@@ -37,11 +38,11 @@ func (t *SslTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 	address := net.JoinHostPort(host, port)
 	timeout := 10 * time.Second
 
-	// Connect to the host
-	dialer := &net.Dialer{Timeout: timeout}
-
-	// 1. Dial TCP with Context
-	rawConn, err := dialer.DialContext(taskCtx.GetContext(), "tcp", address)
+	// Dial via NewSafeDialContext which validates each resolved IP at dial
+	// time (via net.Dialer.Control), closing the DNS rebinding TOCTOU window
+	// while preserving the original hostname for TLS SNI.
+	dialContext := safehttp.NewSafeDialContext(timeout)
+	rawConn, err := dialContext(taskCtx.GetContext(), "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", address, err)
 	}

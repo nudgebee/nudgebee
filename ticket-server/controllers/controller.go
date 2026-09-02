@@ -168,6 +168,13 @@ func SearchTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	filter.Tenant = headerTenantID(c)
+	if filter.Tenant == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required"})
+		return
+	}
+
 	tickets, err := services.FindTicketsByReferenceId(filter)
 	if err != nil {
 		slog.Error("Failed to lookup ticket due to:", "error", slog.AnyValue(err))

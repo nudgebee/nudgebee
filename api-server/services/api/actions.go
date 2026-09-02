@@ -280,6 +280,18 @@ func handleApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger
 		handleEventAction(&actionPayload, c, tracer, meter, logger)
 	})
 
+	groupV2.POST("/dashboard", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal(c.Request.Context(), "dashboard")
+		var actionPayload ActionRequest
+		err := c.ShouldBindJSON(&actionPayload)
+		if err != nil {
+			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "dashboard", "invalid_json")
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		handleDashboardAction(&actionPayload, c, tracer, meter, logger)
+	})
+
 	groupV2.POST("/pr-raise", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal(c.Request.Context(), "pr_raise")
 		var actionPayload ActionRequest

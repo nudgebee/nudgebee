@@ -223,6 +223,9 @@ class VerticalRightsizingRequest(MlMessageAbstract):
     datadog_api_key: Optional[str] = None
     datadog_app_key: Optional[str] = None
     datadog_site: Optional[str] = None
+    # Elasticsearch connection for metrics_provider == "ES"; api-server resolves and
+    # sends it the same way it sends the Datadog keys above.
+    elasticsearch: Optional[Dict[str, Any]] = None
     exchange: str = QueueConfig.ML_RECOMMENDATION_EXCHANGE
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
@@ -245,6 +248,7 @@ class VerticalRightsizingRequest(MlMessageAbstract):
                     datadog_api_key=self.datadog_api_key,
                     datadog_app_key=self.datadog_app_key,
                     datadog_site=self.datadog_site,
+                    elasticsearch=self.elasticsearch,
                 )
             )
             logger.info(
@@ -266,6 +270,7 @@ class VerticalRightsizingRequest(MlMessageAbstract):
             "datadog_api_key": self.datadog_api_key,
             "datadog_app_key": self.datadog_app_key,
             "datadog_site": self.datadog_site,
+            "elasticsearch": self.elasticsearch,
         }
 
 
@@ -296,6 +301,9 @@ class VolumeRightsizingRequest(MlMessageAbstract):
     datadog_api_key: Optional[str] = None
     datadog_app_key: Optional[str] = None
     datadog_site: Optional[str] = None
+    # Elasticsearch connection for metrics_provider == "ES"; api-server resolves and
+    # sends it the same way it sends the Datadog keys above.
+    elasticsearch: Optional[Dict[str, Any]] = None
     exchange: str = QueueConfig.ML_RECOMMENDATION_EXCHANGE
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
@@ -316,6 +324,7 @@ class VolumeRightsizingRequest(MlMessageAbstract):
                     datadog_api_key=self.datadog_api_key,
                     datadog_app_key=self.datadog_app_key,
                     datadog_site=self.datadog_site,
+                    elasticsearch=self.elasticsearch,
                 )
             )
             logger.info(
@@ -335,6 +344,7 @@ class VolumeRightsizingRequest(MlMessageAbstract):
             "datadog_api_key": self.datadog_api_key,
             "datadog_app_key": self.datadog_app_key,
             "datadog_site": self.datadog_site,
+            "elasticsearch": self.elasticsearch,
         }
 
 

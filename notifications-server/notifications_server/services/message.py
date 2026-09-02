@@ -23,6 +23,8 @@ from notifications_server.schemas.message import SendMessageRequest
 from notifications_server.services.cache import Cache
 from notifications_server.services.response_helpers import success_response, failed_response, system_response
 from notifications_server.services.rules import NotificationRulesService
+from notifications_server.services import weekly_digest_report
+from notifications_server.message_templates.slack.weekly_digest_events import digest_link, digest_verdict
 from notifications_server.services.slack.slack import retriable_slack_api_error, slack_channel_not_found_error
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
@@ -383,27 +385,29 @@ class SlackSender(BaseSender):
 
     @staticmethod
     async def check_if_sent_already(session, fingerprint, team_id, channels):
+        # The same finding may have been delivered to several channels (rule
+        # routing vs defaults), each with its own thread — so scan the
+        # fingerprint's rows for the target channel instead of comparing only
+        # the latest row.
+        normalized_channel = normalize_channel(channels)
+        target_channel_id = normalized_channel.get("id") if isinstance(normalized_channel, dict) else None
+        if not target_channel_id:
+            return None
+
         result = await session.execute(
             select(SentNotifications)
             .filter_by(slack_team_id=team_id, fingerprint=fingerprint)
             .order_by(SentNotifications.created_at.desc())
-            .limit(1)
         )
-        notification = result.scalars().first()
-
-        if not notification or not notification.slack_metadata:
-            return None
-
-        try:
-            slack_metadata = json.loads(notification.slack_metadata)
-        except json.JSONDecodeError:
-            LOG.warning(f"Failed to parse slack_metadata for fingerprint {fingerprint}")
-            return None
-
-        channel_id = slack_metadata.get("channel")
-        if channels:
-            normalized_channel = normalize_channel(channels)
-            if normalized_channel and channel_id == normalized_channel.get("id"):
+        for notification in result.scalars():
+            if not notification.slack_metadata:
+                continue
+            try:
+                slack_metadata = json.loads(notification.slack_metadata)
+            except json.JSONDecodeError:
+                LOG.warning(f"Failed to parse slack_metadata for fingerprint {fingerprint}")
+                continue
+            if slack_metadata.get("channel") == target_channel_id:
                 return notification.slack_thread_id
 
         return None
@@ -948,7 +952,9 @@ class MessageService:
         }.get(platform)
 
     async def _send_finding_to_slack(self, session, tenant_id, ip, finding, fingerprint):
-        thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.channels)
+        # Look up the thread at the channel the message is actually posted to
+        # (rule-routed channel or default), not the installation default.
+        thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.to_channel)
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
 
         # Empty text/blocks must be OMITTED: with no blocks Slack renders a
@@ -1273,7 +1279,7 @@ class MessageService:
     async def send_template_messages_to_platforms(self, ip, template_func, param_value, session, tenant):
         match ip.platform:
             case PlatformTypes.SLACK.value:
-                return await self.send_slack_template_notification(ip, template_func, param_value, tenant)
+                return await self.send_slack_template_notification(ip, template_func, param_value, tenant, session)
             case PlatformTypes.MS_TEAMS.value:
                 return await self.send_teams_template_notification(ip, template_func, param_value, session, tenant)
             case PlatformTypes.GOOGLE_CHAT.value:
@@ -1286,18 +1292,86 @@ class MessageService:
                 LOG.warning("Unable to identify platform %s with installation id %s", ip.platform, ip.id)
                 return None
 
-    async def send_slack_template_notification(self, ip, template_func, param_value, tenant):
+    async def send_slack_template_notification(self, ip, template_func, param_value, tenant, session=None):
         response = await asyncio.to_thread(
             self.slack_sender.post_to_slack, tenant, ip, None, **template_func(param_value)
         )
         if response and response.status_code == 200 and not response.data.get("error"):
-            return success_response(
-                "slack",
-                team_id=ip.team_id,
-                channel_id=response.data.get("channel"),
-                message_ts=response.data.get("ts"),
-            )
+            channel_id = response.data.get("channel")
+            message_ts = response.data.get("ts")
+            await self.attach_weekly_digest_pdf(session, ip, param_value, channel_id, message_ts)
+            return success_response("slack", team_id=ip.team_id, channel_id=channel_id, message_ts=message_ts)
         return failed_response("slack", team_id=ip.team_id)
+
+    async def attach_weekly_digest_pdf(self, session, ip, param_value, channel_id, message_ts):
+        """Attach the full review as a PDF, in a thread under the summary.
+
+        Threaded rather than posted to the channel so the weekly message stays
+        one item in the channel and the report hangs off it.
+
+        Entirely best-effort: the summary and its link have already been
+        delivered by the time this runs, and a review nobody can generate a PDF
+        for is still a review. Every failure path logs and returns.
+        """
+        # Only the weekly digest carries a period_start; every other
+        # template falls straight through.
+        period_start = getattr(param_value, "period_start", None)
+        tenant_id = getattr(param_value, "organization_id", None)
+        if not (session and period_start and tenant_id and channel_id and message_ts):
+            LOG.info(
+                "weekly digest: skipping PDF (session=%s period_start=%s tenant=%s channel=%s ts=%s)",
+                bool(session),
+                period_start,
+                tenant_id,
+                channel_id,
+                message_ts,
+            )
+            return
+
+        try:
+            digest = await weekly_digest_report.fetch_digest(session, tenant_id, period_start)
+            if not digest:
+                LOG.info("weekly digest: no stored digest for %s/%s, skipping the PDF", tenant_id, period_start)
+                return
+
+            context = weekly_digest_report.build_context(
+                digest,
+                verdict=digest_verdict(param_value),
+                period_label=getattr(param_value, "period_label", "") or period_start,
+                accounts=getattr(param_value, "accounts_named", 0),
+            )
+            pdf = await asyncio.to_thread(weekly_digest_report.build_pdf, context)
+            if not pdf:
+                # The Slack footer promises an attachment and carries no link,
+                # so a failed render would otherwise leave the review with no
+                # route at all. Fall back to posting the link in the thread.
+                await asyncio.to_thread(
+                    self.slack_sender.post_to_slack,
+                    tenant_id,
+                    ip,
+                    message_ts,
+                    text=f"Full review: {digest_link(param_value)}",
+                )
+                return
+
+            filename = weekly_digest_report.report_filename(period_start)
+            # The PDF goes up as bytes rather than via a temp file: SlackClient's
+            # `fname` is forwarded straight to files_upload_v2's `file`, which
+            # takes a path or the content itself. The parameter keeps its name
+            # because the wrapper's other caller passes a path.
+            await asyncio.to_thread(
+                self.slack_app.client.file_upload,
+                token=ip.token,
+                title=f"Weekly digest · {context['period_label']}",
+                fname=pdf,
+                filename=filename,
+                channel=channel_id,
+                thread_ts=message_ts,
+                initial_comment="Full review attached.",
+            )
+            LOG.info("weekly digest: attached %s (%d bytes) to %s", filename, len(pdf), channel_id)
+        except Exception:
+            LOG.exception("weekly digest: attaching the PDF failed; the summary was delivered")
 
     async def send_teams_template_notification(self, ip, template_func, param_value, session, tenant):
         token = await self.teams_sender.acquire_teams_access_token(session, ip)
@@ -1447,7 +1521,11 @@ class MessageService:
                 if not ip:
                     return [failed_response(platform, reason="No installation found")]
 
-                generic_params = get_generic_message_params(message=message_text)
+                # Forward the whole parameter set, as the top-level path does. The
+                # generic template decides an approval purely from approval_token and
+                # renders the buttons (and the message metadata carrying the decision)
+                # from it — narrowing to `message` left threaded approvals unanswerable.
+                generic_params = get_generic_message_params(**parameters)
 
                 template_factories = {
                     PlatformTypes.SLACK.value: get_slack_generic_message_template,

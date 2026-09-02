@@ -2,10 +2,10 @@
  * GlobalPageSearch
  *
  * Cmd/Ctrl+K page search box shown in the app header. Self-contained: owns
- * the static + per-provider result lists, the "@account" scoping picker,
- * recent-search persistence, and the Cmd/Ctrl+K shortcut. Renders with zero
- * props — reads selectedCluster/allCluster from DataContext, the session
- * from NextAuth, and drives navigation itself.
+ * the static + per-provider result lists, the tenant's dashboards, the
+ * "@account" scoping picker, recent-search persistence, and the Cmd/Ctrl+K
+ * shortcut. Renders with zero props — reads selectedCluster/allCluster from
+ * DataContext, the session from NextAuth, and drives navigation itself.
  *
  * The trigger/popover/search-list chrome below is a trimmed-down port of
  * ds/FilterDropdown.jsx's single-select path: this box is never `multiple`
@@ -18,25 +18,37 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
+import { v4 as uuidv4 } from 'uuid';
 import Box from '@mui/material/Box';
-import { Typography, Popover, InputBase, Fade } from '@mui/material';
+import { Typography, Popover, InputBase, Fade, IconButton } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
+import CloseIcon from '@mui/icons-material/Close';
 import { ds } from '@utils/colors';
 import Chip from '@ui/Chip';
 import Divider from '@ui/Divider';
-import { Label } from '@ui/Label';
 import CustomTooltip from '@ui/Tooltip';
+import { Button as DsButton } from '@ui/Button';
+import { toast as snackbar } from '@ui/Toast';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
-import { hasReadAccess } from '@lib/auth';
+import { hasFeatureAccess, hasPermission, hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
+import { trackProductEvent } from '@lib/productAnalytics';
+import { useTenantBranding } from '@hooks/useTenantBranding';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
+import apiAskNudgebee from '@api1/ask-nudgebee';
+import apiDashboards from '@api1/dashboards';
+import homeApi from '@api1/home';
+import { transformClusters } from '@shared/layout/UpdateDataContext';
 import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
+import { AutomateBlue, AgentIconBlue, dashboardIcon1 } from '@assets';
 import {
   navSearchPages,
+  accountScopedSearchFragments,
+  automationSearchFragments,
   k8sDetailsSearchFragments,
   awsDetailsSearchFragments,
   azureDetailsSearchFragments,
@@ -53,13 +65,42 @@ import {
 const OPTION_HEIGHT = 36;
 const OVERSCAN_COUNT = 10;
 const VIRTUALIZATION_THRESHOLD = 200;
-const MAX_LIST_HEIGHT = 420;
+const MAX_LIST_HEIGHT = 380;
 const POPOVER_WIDTH = ds.space.mul(0, 340);
+
+// The sidebar's dashboard icon, recoloured for this panel. dashboard.icon.svg
+// is drawn for the dark sidebar — its shapes are filled white, so dropped
+// straight onto this light surface it renders invisible. A CSS `fill` beats the
+// svg's own presentation attribute, so painting the paths with a --ds-* token
+// both makes it visible here and keeps it visible in dark mode (a filter-based
+// recolour, which the sidebar flyout uses in the other direction, wouldn't).
+//
+// An element rather than the raw import because OptionItem hands `icon` to
+// SafeIcon, which renders a valid element as-is — that's the only seam to wrap
+// the svg in, and it's the same one the "@account" picker's rows already use.
+const DashboardRowIcon = (
+  <Box
+    component='span'
+    sx={{
+      display: 'inline-flex',
+      flexShrink: 0,
+      width: 16,
+      height: 16,
+      '& svg': { width: 16, height: 16 },
+      '& svg path': { fill: 'var(--ds-gray-600)' },
+    }}
+  >
+    <SafeIcon src={dashboardIcon1} alt='' width={16} height={16} />
+  </Box>
+);
 
 // Icon shown per header-search row: the parent page's icon (same icons the
 // main nav uses for these sections), not a distinct icon per tab.
 const NAV_SEARCH_GROUP_ICON = {
+  Dashboards: DashboardRowIcon,
   Troubleshoot: TroubleshootIconBlue,
+  Automation: AutomateBlue,
+  'Agent Health': AgentIconBlue,
   Optimize: OptimiseIconBlue,
   Tickets: TicketIconBlue,
   Admin: AdminIconBlue,
@@ -72,16 +113,71 @@ const NAV_SEARCH_KEYBOARD_HINTS = [{ keys: ['↑', '↓'], label: 'Navigate' }];
 
 const searchKeyChipSx = {
   fontFamily: 'var(--ds-font-mono)',
-  fontSize: 'var(--ds-text-caption)',
+  fontSize: `${ds.space.mul(0, 5)}`,
   color: 'var(--ds-gray-500)',
-  backgroundColor: 'var(--ds-gray-100)',
   border: '1px solid var(--ds-gray-200)',
   borderRadius: 'var(--ds-radius-sm)',
   padding: `${ds.space[0]} ${ds.space.mul(0, 3)}`,
 };
 
+// Pinned above the results list — deliberately OUTSIDE OptionsList's own
+// scrollbox, so it never scrolls out of view, and shown regardless of result
+// count (including zero results — see pinnedRowVisible below). Contextual
+// copy on the left ("Ask {assistantName} anything", swapping to "...about
+// '{query}'" once something's typed), a solid primary button on the right
+// that's always just the short "Ask {assistantName}" label.
+const AskAiPinnedRow = ({ assistantName, nubiIconUrl, query, onClick, loading, highlighted = false }) => (
+  <Box
+    id='global-search-ask-ai-row'
+    sx={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 'var(--ds-space-4)',
+      padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 6)}`,
+      margin: `0 ${ds.space.mul(0, 5)} var(--ds-space-2) ${ds.space.mul(0, 5)}`,
+      backgroundColor: 'var(--ds-background-200)',
+      borderRadius: 'var(--ds-overlay-item-radius)',
+      // Same keyboard-nav ring OptionItem rows use, so ArrowUp/ArrowDown
+      // landing here reads identically to landing on a result row.
+      boxShadow: highlighted ? 'inset 0 0 0 1.5px var(--ds-blue-400)' : 'none',
+      transition: 'box-shadow var(--ds-motion-micro) var(--ds-motion-ease)',
+    }}
+  >
+    <Typography
+      sx={{
+        fontSize: 'var(--ds-text-body)',
+        color: 'var(--ds-gray-600)',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {query ? (
+        <>
+          Ask {assistantName} about &ldquo;{query}&rdquo;
+        </>
+      ) : (
+        <>Ask {assistantName} anything</>
+      )}
+    </Typography>
+    <DsButton
+      id='global-search-ask-ai-top'
+      tone='primary'
+      size='sm'
+      icon={<SafeIcon src={nubiIconUrl} alt='' width={14} height={14} />}
+      onClick={onClick}
+      loading={loading}
+      sx={{ flexShrink: 0 }}
+    >
+      Ask {assistantName}
+    </DsButton>
+  </Box>
+);
+
 const GlobalSearchFooterHints = ({ mentionMode = false }) => (
   <Box
+    id='global-search-footer-hints'
     sx={{
       display: 'flex',
       alignItems: 'center',
@@ -130,13 +226,9 @@ const AccountMentionChip = ({ account }) => (
   </Chip>
 );
 
-// ds/FilterDropdown.jsx's own `type` chip (which OptionItem below is ported
-// from) defaults to a 15-char tooltip-truncation limit and a 40%-of-row max
-// width — both sized for short region/namespace chips, too narrow for a full
-// path like "/aws/optimize/recommendation-resolution". Every nav-search row
-// needs the wider path-sized limits below, so OptionItem applies these
-// directly instead of the FilterDropdown defaults.
-const NAV_SEARCH_PATH_CHAR_LIMIT = 50;
+// Max width for the row's trailing path text — wide enough for a full path
+// like "/aws/optimize/recommendation-resolution" without colliding with the
+// account-name chip on rows that have one.
 const NAV_SEARCH_PATH_MAX_WIDTH = '60%';
 
 // Search rows for one provider's detail-page tabs (K8s/AWS/Azure/GCP), or []
@@ -161,6 +253,81 @@ const navSearchProviderItems = (fragments, provider, accountId, basePath) =>
       })
     : [];
 
+// Search rows for pages whose tabs need an accountId but aren't tied to a
+// single cloud provider (any connected account works) — Automation and Agent
+// Health today, see accountScopedSearchFragments' own doc comment in
+// navSearchPages.ts. Same shape/contract as navSearchProviderItems above,
+// kept as its own function (not folded into it) since these routes carry the
+// account as a `?accountId=` query param rather than a `{basePath}/{id}`
+// path segment. Each entry supplies its own basePath/group since the array
+// now spans more than one page.
+const navSearchAccountScopedItems = (fragments, accountId) =>
+  accountId
+    ? fragments.map((entry) => {
+        const path = `${entry.basePath}?accountId=${accountId}#${entry.fragment}`;
+        return {
+          label: entry.label,
+          icon: NAV_SEARCH_GROUP_ICON[entry.group],
+          type: `/${entry.slug}`,
+          value: path,
+          path,
+          accountId,
+          group: entry.group,
+          acronym: pathAcronym(entry.slug),
+          searchText: `${entry.group} ${entry.slug} ${pathAcronym(entry.slug)}`,
+        };
+      })
+    : [];
+
+// Search rows for the Automation page's tabs. Separate from the helper above
+// because /automation is tenant-level (#35113): the plain rows carry no account
+// at all, and only an "@account" scoped pick appends one — as `?account=`, the
+// param the listing's Account filter reads.
+const navSearchAutomationItems = (fragments, accountId) =>
+  fragments.map((entry) => {
+    const path = accountId ? `/automation?account=${accountId}#${entry.fragment}` : `/automation#${entry.fragment}`;
+    return {
+      label: entry.label,
+      icon: NAV_SEARCH_GROUP_ICON.Automation,
+      type: `/${entry.slug}`,
+      value: path,
+      path,
+      accountId,
+      group: 'Automation',
+      acronym: pathAcronym(entry.slug),
+      searchText: `Automation ${entry.slug} ${pathAcronym(entry.slug)}`,
+    };
+  });
+
+// The deep link that opens one dashboard — the same URL the listing itself
+// writes when a dashboard is opened there: the id rides in a query param
+// because /dashboards is hash-routed and the hash picks the tab (see
+// CustomDashboards.jsx's DASHBOARD_PARAM).
+const dashboardSearchPath = (id) => `/dashboards?dashboard=${id}#list`;
+
+// Search rows for the tenant's own dashboards (not the /dashboards page's tabs,
+// which are plain static rows in navSearchPages). A dashboard is tenant-level —
+// it has no account of its own, each of its PANELS names the account it queries
+// — so unlike the provider rows above these carry no accountId.
+const navSearchDashboardItems = (dashboards) =>
+  dashboards.map((dashboard) => {
+    const path = dashboardSearchPath(dashboard.id);
+    return {
+      label: dashboard.title,
+      icon: NAV_SEARCH_GROUP_ICON.Dashboards,
+      // The page path, not this row's own deep link — the trailing path text is
+      // there to say where a row lands, and an opaque uuid says nothing.
+      type: '/dashboards',
+      value: path,
+      path,
+      group: 'Dashboards',
+      sectionLabel: 'Dashboards',
+      // Title is already matched through `label` — this only adds what the row
+      // doesn't show but is still worth finding a dashboard by.
+      searchText: `Dashboards ${dashboard.description || ''} ${(dashboard.tags || []).join(' ')}`,
+    };
+  });
+
 // Per-provider fragment list + base path for the "@account" scoped search —
 // keyed by cloud_provider.toUpperCase() since allCluster entries' casing
 // isn't guaranteed to match the mixed-case provider labels used elsewhere.
@@ -179,6 +346,42 @@ const SCOPED_SEARCH_PROVIDER_CONFIG = {
 // below), since a recent value's account isn't necessarily the provider's
 // current single resolved account.
 const ACCOUNT_SCOPED_SEARCH_PATH_RE = /^\/(?:kubernetes\/details|cloud-account\/details)\/([^/#]+)#/;
+
+// Matches a search value stamped by navSearchAccountScopedItems
+// (`{basePath}?accountId={accountId}#{fragment}`) and captures the accountId
+// — used to re-resolve a recent pick against allCluster (see
+// resolveRecentOption below), same reasoning as ACCOUNT_SCOPED_SEARCH_PATH_RE
+// above: a recent value's account isn't necessarily whichever one
+// defaultAccountId currently resolves to. The alternation must list every
+// basePath used in accountScopedSearchFragments (navSearchPages.ts) — add a
+// new one there when adding a new basePath.
+const ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE = /^\/(?:agentHealth)\?accountId=([^#]+)#/;
+
+// Matches an Automation search value stamped by navSearchAutomationItems and
+// captures the account, if any:
+//   /automation#{fragment}                — the tenant-level row
+//   /automation?account={id}#{fragment}   — an "@account" scoped pick
+// The `accountId` alternative only exists so recents predating #35113 (and the
+// pre-split /automation?accountId= rows) are still recognised as Automation
+// rather than falling through to the provider-detail branch; they no longer
+// match a generated value, so they drop out of Recents on first use — the same
+// self-healing path a renamed page already takes. A captured account is
+// re-resolved against allCluster, same reasoning as above.
+const AUTOMATION_SCOPED_SEARCH_PATH_RE = /^\/automation(?:\?(?:accountId|account)=([^#&]+))?#/;
+
+// Matches a dashboard row's value stamped by navSearchDashboardItems. Only used
+// to route a recent pick to the dashboard branch of resolveRecentOption — the
+// id isn't captured, since that branch re-resolves the whole value against the
+// live dashboard list anyway (a deleted dashboard then drops out of Recents,
+// same as a removed page already does).
+const DASHBOARD_SEARCH_PATH_RE = /^\/dashboards\?dashboard=/;
+
+// Rows asked of dashboards_list per open. 500 is that action's own maximum
+// (anything higher silently falls back to its default 200), and asking for the
+// maximum is what lets a short response be read as "this is every dashboard in
+// the tenant" — which is the precondition for pruning a recent pick whose
+// dashboard is missing from it (see the fetch effect below).
+const DASHBOARD_SEARCH_FETCH_LIMIT = 500;
 
 // Same provider-order + connection-status + alphabetical sort ClusterDropDown
 // itself uses (CustomDropdown.jsx's groupedOptions, groupByCloudProvider mode)
@@ -290,23 +493,6 @@ const navSearchStaticItems = navSearchPages.map((page) => {
 
 // --- Result-list chrome (trimmed port of ds/FilterDropdown.jsx, single-select only) ---
 
-const ChevronIcon = ({ open = false }) => (
-  <svg
-    width='12'
-    height='12'
-    viewBox='0 0 10 10'
-    fill='none'
-    style={{
-      opacity: 0.3,
-      transition: 'transform 0.2s ease',
-      transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
-      flexShrink: 0,
-    }}
-  >
-    <path d='M2 3.5L5 6.5L8 3.5' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' />
-  </svg>
-);
-
 // Option-row label that truncates with an ellipsis and shows a tooltip with
 // the full text *only when clipped*. Open state is controlled so we can
 // force-close on scroll: otherwise scrolling the option list moves the
@@ -396,10 +582,8 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
         <Box sx={{ flexShrink: 0, maxWidth: '30%' }}>
           {/* Chip has no CSS truncation of its own (whiteSpace: 'nowrap', no
               overflow: hidden) — a long account name would otherwise spill
-              past this 30% slot and collide with the path chip. displayTooltip
-              shortens the actual text (not just visually), same fix the
-              `type` Label chip below already uses for the same row-crowding
-              problem. */}
+              past this 30% slot and collide with the path text. displayTooltip
+              shortens the actual text (not just visually) to fit. */}
           <Chip
             variant='tag'
             tone='info'
@@ -413,11 +597,20 @@ const OptionItem = React.memo(function OptionItem({ opt, highlighted = false, na
         </Box>
       )}
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: NAV_SEARCH_PATH_MAX_WIDTH }}>
-          {/* Label capitalizes by default; every opt.type here is a slash-joined
-              path (case-sensitive), so textTransform is forced off. */}
-          <Label text={opt.type} textTransform='none' maxWidth='100%' displayTooltip tooltipCharLimit={NAV_SEARCH_PATH_CHAR_LIMIT} />
-        </Box>
+        <Typography
+          sx={{
+            ml: 'auto',
+            flexShrink: 0,
+            maxWidth: NAV_SEARCH_PATH_MAX_WIDTH,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: 'var(--ds-text-caption)',
+            color: 'var(--ds-gray-500)',
+          }}
+        >
+          {opt.type}
+        </Typography>
       )}
     </Box>
   );
@@ -432,6 +625,10 @@ const startsNewSection = (opt, prevOpt) => !!opt?.sectionLabel && opt.sectionLab
 function SectionCaption({ label }) {
   return (
     <Box
+      // Stable per-label id (only ever 'Suggested Pages' / 'Recents') so the
+      // global-search guide tour can spotlight each section without reaching
+      // into row internals.
+      id={`global-search-section-${label.toLowerCase().replace(/\s+/g, '-')}`}
       sx={{
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
@@ -464,7 +661,7 @@ const scrollboxSx = {
 
 // Flat, virtualized-when-large result list. No "selected" section (this box
 // never has a `value`) and no group headers — see the file-level comment.
-function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
+function OptionsList({ filteredOptions, highlightedIndex, onSelect, mentionMode }) {
   const navActive = highlightedIndex >= 0;
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -508,13 +705,25 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
   }, [highlightedIndex]);
 
   if (filteredOptions.length === 0) {
+    // AskAiPinnedRow above already explains "no match, ask nubi about X" for
+    // every non-mention case (it's visible whenever !mentionMode) — showing
+    // this text too there would just repeat it. It's only mentionMode (no
+    // account matches the typed "@partial-name") where the pinned row is
+    // hidden and this text is the sole indicator.
     return (
-      <Box sx={scrollboxSx}>
-        <Typography
-          sx={{ padding: `${ds.space[4]} ${ds.space.mul(0, 7)}`, fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)', textAlign: 'center' }}
-        >
-          No results found
-        </Typography>
+      <Box id='global-search-options-list' data-mention-mode={mentionMode ? 'true' : 'false'} sx={scrollboxSx}>
+        {mentionMode && (
+          <Typography
+            sx={{
+              padding: `${ds.space[4]} ${ds.space.mul(0, 7)}`,
+              fontSize: 'var(--ds-text-body)',
+              color: 'var(--ds-gray-500)',
+              textAlign: 'center',
+            }}
+          >
+            No results found
+          </Typography>
+        )}
       </Box>
     );
   }
@@ -535,7 +744,7 @@ function OptionsList({ filteredOptions, highlightedIndex, onSelect }) {
   };
 
   return (
-    <Box ref={scrollRef} onScroll={handleScroll} sx={scrollboxSx}>
+    <Box id='global-search-options-list' data-mention-mode={mentionMode ? 'true' : 'false'} ref={scrollRef} onScroll={handleScroll} sx={scrollboxSx}>
       {useVirtualization ? (
         <>
           <div style={{ height: virtualizedContent.topSpacerHeight }} aria-hidden='true' />
@@ -573,10 +782,40 @@ const GlobalSearchPopoverTransition = React.forwardRef(function GlobalSearchPopo
   );
 });
 
-export default function GlobalPageSearch() {
+export default function GlobalPageSearch({ hasClusterDropdown = true }) {
   const { data } = useSession();
   const router = useRouter();
-  const { selectedCluster, allCluster, setSelectedCluster } = useData();
+  const { selectedCluster, allCluster, setSelectedCluster, setAllCluster } = useData();
+  const { assistantName, nubiIconUrl } = useTenantBranding();
+
+  // allCluster is deliberately NOT a dependency (or read in the guard) here —
+  // this effect itself calls setAllCluster, and transformClusters returns a
+  // new array reference every time, so an allCluster dependency would
+  // re-trigger this same effect on its own write and loop forever. Keying
+  // only on hasClusterDropdown means this fires once per page that has no
+  // ClusterDropdown, which is what we want. setAllCluster IS included below —
+  // it's stable (wrapped in useCallback with an empty dep array in
+  // DataContext.jsx) so it never actually changes, but listing it keeps this
+  // effect honest for exhaustive-deps instead of needing a disable comment.
+  useEffect(() => {
+    if (hasClusterDropdown || allCluster?.length > 0) {
+      return;
+    }
+    let active = true;
+    homeApi
+      .getCloudAccounts('', false, true)
+      .then((res) => {
+        if (active) {
+          setAllCluster(transformClusters(res));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch cloud accounts:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [hasClusterDropdown, setAllCluster]);
 
   // Resolves "an account of this provider" for the details-page search
   // entries below: the current cluster if it matches, else the last account
@@ -604,8 +843,10 @@ export default function GlobalPageSearch() {
   const azureSearchAccountId = useMemo(() => resolveSearchAccountId('Azure'), [resolveSearchAccountId]);
   const gcpSearchAccountId = useMemo(() => resolveSearchAccountId('GCP'), [resolveSearchAccountId]);
 
-  // Navigates to a search result. K8s/AWS/Azure/GCP results carry `accountId`
-  // for whichever account resolveSearchAccountId picked. ClusterDropDown
+  // Navigates to a search result or an Ask-AI hand-off. K8s/AWS/Azure/GCP
+  // search results carry `accountId` for whichever account
+  // resolveSearchAccountId picked; handleAskAi below passes its own resolved
+  // accountId (e.g. a "@account" scoped pick) the same way. ClusterDropDown
   // (mounted in the header alongside this component) self-heals the URL back
   // toward its own selectedCluster whenever its local clusterValue is unset —
   // which happens on first mount and on any hard/first navigation for a
@@ -647,7 +888,12 @@ export default function GlobalPageSearch() {
   //     active K8s cluster only rebuilds the ~47 K8s rows, not all ~200 rows
   //     across every provider (which a single combined useMemo would do,
   //     since any one of the four account ids changing invalidates it).
-  const [hasOpenedSearch, setHasOpenedSearch] = useState(false);
+  //
+  // Counted rather than flagged: the static rows only care that the box has
+  // been opened at least once (hasOpenedSearch below), but the dashboard fetch
+  // needs to re-run on *each* open, and a counter gives both off one state.
+  const [searchOpenSeq, setSearchOpenSeq] = useState(0);
+  const hasOpenedSearch = searchOpenSeq > 0;
   // Top-3 most-recently-selected search results for this tenant, re-read from
   // localStorage on every open (not just once) so a pick made in another tab
   // shows up here too. Only the `value` (path) is persisted — re-resolved
@@ -696,6 +942,68 @@ export default function GlobalPageSearch() {
   const [scopedAccount, setScopedAccount] = useState(null);
   const [search, setSearch] = useState('');
   const mentionMode = !scopedAccount && hasMentionAccounts && search.startsWith('@');
+  // The tenant's dashboards, offered as results alongside pages. Re-read on
+  // every open (like the recent-search list above, and for the same reason:
+  // one created, renamed or deleted meanwhile should be reflected on the next
+  // open, not on the next full page load) but never per keystroke — filtering
+  // happens client-side, through the same ranking every other row goes
+  // through. A failure leaves the list empty and is only logged: page search
+  // must keep working for a user whose tenant has no dashboards, or who may
+  // not read them.
+  const [dashboards, setDashboards] = useState([]);
+  useEffect(() => {
+    if (!searchOpenSeq) {
+      return undefined;
+    }
+    let active = true;
+    apiDashboards
+      .listDashboardsBrief({ limit: DASHBOARD_SEARCH_FETCH_LIMIT })
+      .then((res) => {
+        if (!active) {
+          return;
+        }
+        // apiDashboards resolves with {data, errors} rather than throwing, so a
+        // GraphQL-level failure (a 403 on dashboards, say) arrives here with
+        // data null — checked explicitly so it's logged rather than read as
+        // "this tenant has no dashboards". Either way the previous list and the
+        // stored recents are left untouched: nothing below runs.
+        if (res?.errors) {
+          console.error('Failed to fetch dashboards for search:', res.errors);
+          return;
+        }
+        if (!res?.data) {
+          return;
+        }
+        setDashboards(res.data);
+        // A recent pick whose dashboard has since been deleted already stops
+        // rendering (resolveRecentOption can't match it any more), but the
+        // stored value would sit in the tenant's three-slot list forever. Drop
+        // it here, where a full listing is in hand to judge against.
+        //
+        // Only when the response is short of the page size: a full page means
+        // there may be more dashboards we haven't seen, and a value missing
+        // from a partial list is no proof the dashboard is gone. Recents for
+        // pages/accounts are left alone — those resolve against lists that
+        // load separately, so "unresolvable" there can just mean "not loaded
+        // yet".
+        if (res.data.length >= DASHBOARD_SEARCH_FETCH_LIMIT) {
+          return;
+        }
+        const live = new Set(res.data.map((dashboard) => dashboardSearchPath(dashboard.id)));
+        const stale = apiUser.getRecentPageSearches(data?.tenant?.id).filter((value) => DASHBOARD_SEARCH_PATH_RE.test(value) && !live.has(value));
+        if (stale.length) {
+          setRecentSearchValues(apiUser.removeRecentPageSearches(stale, data?.tenant?.id));
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch dashboards for search:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [searchOpenSeq, data?.tenant?.id]);
+
+  const dashboardSearchItems = useMemo(() => navSearchDashboardItems(dashboards), [dashboards]);
 
   const k8sNavItems = useMemo(
     () => (hasOpenedSearch ? navSearchProviderItems(k8sDetailsSearchFragments, 'K8s', k8sSearchAccountId, '/kubernetes/details') : []),
@@ -713,36 +1021,160 @@ export default function GlobalPageSearch() {
     () => (hasOpenedSearch ? navSearchProviderItems(gcpDetailsSearchFragments, 'GCP', gcpSearchAccountId, '/cloud-account/details') : []),
     [hasOpenedSearch, gcpSearchAccountId]
   );
+  // LLM_ANALYSER is a per-tenant feature flag, so it can only be resolved
+  // client-side — same pattern as optimise/index.jsx, which owns the tab this
+  // search entry jumps to. Fails closed until it resolves.
+  const [llmAnalyserEnabled, setLlmAnalyserEnabled] = useState(false);
+  useEffect(() => {
+    hasFeatureAccess('LLM_ANALYSER')
+      .then(setLlmAnalyserEnabled)
+      .catch(() => setLlmAnalyserEnabled(false));
+  }, []);
+
   // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
   // user who can't see that nav entry shouldn't find its pages (Users,
   // Groups, Audits, Notifications, Integrations, Ownership) via search either.
   const canAccessAdmin = hasReadAccess();
+  // Same gate the Automation page's own Task Runner tab uses (automation/index.jsx's
+  // isAdmin) — only tenant_admin/account_admin can see that tab there, so a
+  // non-admin shouldn't be able to jump to it via search either.
+  const canAccessTaskRunner = !!(data?.roles?.includes('tenant_admin') || data?.roles?.includes('account_admin'));
+  // Same gate user-management's Billing tab uses (billingFilter.tsx's
+  // shouldShow) — it's only registered into userManagementFilters(session) for
+  // SaaS-tier tenants, so a non-SaaS tenant's search shouldn't offer it either
+  // (canAccessAdmin alone isn't enough — that only checks nav-level admin access).
+  const canAccessBilling = data?.tier === 'saas';
+  // Same gate the Roles tab's own registration uses (RolePermissions.jsx's
+  // shouldShow): the CUSTOM_ROLES feature must be on, and the user must hold a
+  // tenant-wide role or the delegated customroles:Read grant. canAccessAdmin
+  // alone isn't enough — it only checks nav-level admin access, so an Audits-only
+  // reviewer would otherwise get a row leading to a tab that isn't there.
+  const canAccessRoles = !!(
+    data?.customRolesEnabled &&
+    (data?.roles?.includes('tenant_admin') ||
+      data?.roles?.includes('tenant_admin_readonly') ||
+      data?.isSuperAdmin ||
+      data?.permissions?.includes('customroles:Read'))
+  );
+  // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use.
+  // They are different KINDS of gate: LLM_ANALYSER is a per-tenant feature flag
+  // (resolved asynchronously, hence the state above), while AI Gateway is still
+  // a per-deployment UI_ENABLE_LLM_GATEWAY env var read off the session by
+  // isUiFeatureEnabled. Both are then narrowed by
+  // hasReadAccess(selectedCluster?.value), mirroring the page's per-account check.
+  const canAccessLlmAnalyser = llmAnalyserEnabled && hasReadAccess(selectedCluster?.value);
+  // The `llm:Read` disjunct mirrors the page too: the gateway usage API is
+  // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
+  // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.
+  const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read'));
+
+  // Provider-agnostic "some account" resolution — used by Automation/Agent
+  // Health's search entries (no K8s/AWS/Azure/GCP concept to key
+  // resolveSearchAccountId's per-provider cache off of) and by handleAskAi's
+  // own accountId fallback
+  // chain below. Falls back in the same order ClusterDropDown.jsx uses when it
+  // resolves an account with no prior URL/selectedCluster to go on: the
+  // cached last account (any provider), else the first connected account.
+  const defaultAccountId = useMemo(() => {
+    if (selectedCluster?.value) {
+      return selectedCluster.value;
+    }
+    const cachedId = apiUser.getUserPreferences()?.[PREFERENCE_LAST_ACCOUNT_ID];
+    if (cachedId && allCluster?.some((c) => c.value === cachedId)) {
+      return cachedId;
+    }
+    return allCluster?.[0]?.value || null;
+  }, [selectedCluster, allCluster]);
+
+  // Whether a static nav-search row should be visible to the current user —
+  // shared by the live result list below and resolveRecentOption further
+  // down, so a role gate only has to be expressed once.
+  const isNavSearchItemVisible = useCallback(
+    (opt) => {
+      if (opt.group === 'Admin' && !canAccessAdmin) {
+        return false;
+      }
+      if (opt.label === 'Task Runner' && !canAccessTaskRunner) {
+        return false;
+      }
+      if (opt.label === 'Billing' && !canAccessBilling) {
+        return false;
+      }
+      if (opt.label === 'Roles' && !canAccessRoles) {
+        return false;
+      }
+      if (opt.label === 'LLM Analyser' && !canAccessLlmAnalyser) {
+        return false;
+      }
+      if (opt.label === 'AI Gateway' && !canAccessAiGateway) {
+        return false;
+      }
+      return true;
+    },
+    [canAccessAdmin, canAccessTaskRunner, canAccessBilling, canAccessRoles, canAccessLlmAnalyser, canAccessAiGateway]
+  );
+
+  const accountScopedNavItems = useMemo(
+    () => (hasOpenedSearch ? navSearchAccountScopedItems(accountScopedSearchFragments, defaultAccountId) : []),
+    [hasOpenedSearch, defaultAccountId]
+  );
+
+  // No account passed: the plain rows point at the tenant-level listing. Only
+  // the "@account" scoped list below pre-seeds one.
+  const automationNavItems = useMemo(() => (hasOpenedSearch ? navSearchAutomationItems(automationSearchFragments) : []), [hasOpenedSearch]);
+
   const navSearchItems = useMemo(
     () => [
-      ...navSearchStaticItems.filter((opt) => opt.group !== 'Admin' || canAccessAdmin),
+      ...navSearchStaticItems.filter(isNavSearchItemVisible),
+      ...automationNavItems.filter(isNavSearchItemVisible),
+      ...accountScopedNavItems.filter(isNavSearchItemVisible),
       ...k8sNavItems,
       ...awsNavItems,
       ...azureNavItems,
       ...gcpNavItems,
     ],
-    [k8sNavItems, awsNavItems, azureNavItems, gcpNavItems, canAccessAdmin]
+    [isNavSearchItemVisible, automationNavItems, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
   );
 
   // Re-resolves one recent value into a full display option. A static page's
-  // value is always in navSearchStaticItems. A provider-detail value carries
-  // its accountId in the path itself — that account isn't necessarily the
-  // provider's current single resolved account (the @mention picker lets you
-  // pick and search within ANY connected account, not just the resolved
-  // one), so navSearchItems alone (built for just that one resolved account
-  // per provider) can't be used as the existence check here. Checking
-  // against allCluster directly instead means a recent pick whose account has
-  // since been disconnected/removed is silently dropped, same as a
-  // renamed/removed static page already was.
+  // value is always in navSearchStaticItems. An Automation/Agent Health or provider-detail
+  // value carries its accountId in the value itself — that account isn't
+  // necessarily the current defaultAccountId/provider's single
+  // resolved account (for providers, the @mention picker also lets you pick
+  // and search within ANY connected account, not just the resolved one), so
+  // navSearchItems alone (built for just the currently-resolved account) can't
+  // be used as the existence check here. Checking against allCluster directly
+  // instead means a recent pick whose account has since been
+  // disconnected/removed is silently dropped, same as a renamed/removed
+  // static page already was.
   const resolveRecentOption = useCallback(
     (value) => {
       const staticMatch = navSearchStaticItems.find((opt) => opt.value === value);
       if (staticMatch) {
-        return staticMatch.group !== 'Admin' || canAccessAdmin ? staticMatch : null;
+        return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
+      }
+      if (DASHBOARD_SEARCH_PATH_RE.test(value)) {
+        return dashboardSearchItems.find((opt) => opt.value === value) || null;
+      }
+      const automationMatch = AUTOMATION_SCOPED_SEARCH_PATH_RE.exec(value);
+      if (automationMatch) {
+        const [, accountId] = automationMatch;
+        // Only an account-scoped pick needs the account to still exist; the
+        // tenant-level row is always resolvable.
+        if (accountId && !allCluster?.some((c) => c.value === accountId)) {
+          return null;
+        }
+        const match = navSearchAutomationItems(automationSearchFragments, accountId).find((opt) => opt.value === value);
+        return match && isNavSearchItemVisible(match) ? match : null;
+      }
+      const accountScopedQueryMatch = ACCOUNT_SCOPED_QUERY_SEARCH_PATH_RE.exec(value);
+      if (accountScopedQueryMatch) {
+        const [, accountId] = accountScopedQueryMatch;
+        if (!allCluster?.some((c) => c.value === accountId)) {
+          return null;
+        }
+        const match = navSearchAccountScopedItems(accountScopedSearchFragments, accountId).find((opt) => opt.value === value);
+        return match && isNavSearchItemVisible(match) ? match : null;
       }
       const match = ACCOUNT_SCOPED_SEARCH_PATH_RE.exec(value);
       if (!match) {
@@ -759,18 +1191,12 @@ export default function GlobalPageSearch() {
       }
       return navSearchProviderItems(config.fragments, config.label, accountId, config.basePath).find((opt) => opt.value === value);
     },
-    [allCluster, canAccessAdmin]
+    [allCluster, isNavSearchItemVisible, dashboardSearchItems]
   );
 
-  // Two lists under one plain caption each (opt.sectionLabel): recent picks
-  // under "Recents", then the full navSearchItems under "Suggested Pages" — a
-  // recent pick intentionally still appears in "Suggested Pages" too (as a
-  // separate option copy), not just "Recents". "Suggested Pages" is always tagged
-  // (even with zero recents, when it's the only section) for a consistent
-  // caption. "Recents" is prepended only once there's at least one recent
-  // pick. Still one flat array under the hood, so the ArrowUp/ArrowDown +
-  // Enter-to-select keyboard nav below works identically whether one or both
-  // sections are present.
+  // Recent picks, captioned "Recents". A recent pick intentionally still
+  // appears in its own section further down too (as a separate option copy),
+  // not just here.
   //
   // Recent rows additionally get `accountName`/`cloud_provider` stamped on
   // (when the recent pick carries an accountId) so OptionItem can render an
@@ -778,36 +1204,68 @@ export default function GlobalPageSearch() {
   // in the row, and (unlike a provider's current resolved account) isn't
   // necessarily the provider's current one — it's whatever account the user
   // was actually in when they picked it.
-  const navSearchItemsWithRecent = useMemo(() => {
-    const allOptions = navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' }));
-    if (recentSearchValues.length === 0) {
-      return allOptions;
-    }
-    const recentOptions = recentSearchValues
-      .map(resolveRecentOption)
-      .filter(Boolean)
-      .map((opt) => {
-        const account = opt.accountId ? allCluster?.find((c) => c.value === opt.accountId) : null;
-        return { ...opt, sectionLabel: 'Recents', accountName: account?.label, cloud_provider: account?.cloud_provider };
-      });
-    return [...recentOptions, ...allOptions];
-  }, [navSearchItems, recentSearchValues, resolveRecentOption, allCluster]);
+  const recentSearchOptions = useMemo(
+    () =>
+      recentSearchValues
+        .map(resolveRecentOption)
+        .filter(Boolean)
+        .map((opt) => {
+          const account = opt.accountId ? allCluster?.find((c) => c.value === opt.accountId) : null;
+          return { ...opt, sectionLabel: 'Recents', accountName: account?.label, cloud_provider: account?.cloud_provider };
+        }),
+    [recentSearchValues, resolveRecentOption, allCluster]
+  );
+
+  const suggestedPageOptions = useMemo(() => navSearchItems.map((opt) => ({ ...opt, sectionLabel: 'Suggested Pages' })), [navSearchItems]);
 
   // Once an account is picked, results are scoped to just that account's
   // provider detail pages — reuses the same navSearchProviderItems helper the
   // unscoped per-provider lists above already use, so accountId/path/icon
-  // wiring stays identical.
+  // wiring stays identical. Automation/Agent Health aren't provider-specific
+  // (any connected account works there), so they're appended after the
+  // provider's own pages rather than gated behind a cloud_provider match,
+  // same filter (Admin/Task Runner/Billing) as the unscoped list.
   const scopedSearchItems = useMemo(() => {
     if (!scopedAccount) {
       return [];
     }
     const config = SCOPED_SEARCH_PROVIDER_CONFIG[scopedAccount.cloud_provider?.toUpperCase()];
-    return config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
-  }, [scopedAccount]);
+    const providerItems = config ? navSearchProviderItems(config.fragments, config.label, scopedAccount.value, config.basePath) : [];
+    const accountScopedItems = navSearchAccountScopedItems(accountScopedSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
+    const automationItems = navSearchAutomationItems(automationSearchFragments, scopedAccount.value).filter(isNavSearchItemVisible);
+    return [...providerItems, ...automationItems, ...accountScopedItems];
+  }, [scopedAccount, isNavSearchItemVisible]);
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
   // ds/FilterDropdown.jsx's `options` prop.
-  const searchBoxOptions = mentionMode ? accountMentionOptions : scopedAccount ? scopedSearchItems : navSearchItemsWithRecent;
+  //
+  // Three peer sections under one plain caption each (opt.sectionLabel):
+  // "Recents", then the tenant's own "Dashboards", then "Suggested Pages".
+  // Each renders only when it has rows — a tenant with no dashboards (or a
+  // fresh user with no recents) simply never sees that caption, since
+  // SectionCaption fires off a contiguous run of options rather than off a
+  // declared list of sections. Dashboards sit *above* Suggested Pages
+  // deliberately: that list runs to ~200 static rows, so anything after it is
+  // effectively hidden until you scroll. Still one flat array under the hood,
+  // so the ArrowUp/ArrowDown + Enter-to-select keyboard nav below works
+  // identically however many sections are present.
+  //
+  // Dashboards stay out of the "@account" scoped list — a dashboard is
+  // tenant-level (its panels each carry their own account), so there's nothing
+  // there for an account scope to narrow.
+  //
+  // Memoized rather than written inline: filteredOptions is keyed on this
+  // array's identity, and a fresh array on every render would also re-fire
+  // OptionsList's scroll reset on every arrow keypress.
+  const searchBoxOptions = useMemo(() => {
+    if (mentionMode) {
+      return accountMentionOptions;
+    }
+    if (scopedAccount) {
+      return scopedSearchItems;
+    }
+    return [...recentSearchOptions, ...dashboardSearchItems, ...suggestedPageOptions];
+  }, [mentionMode, accountMentionOptions, scopedAccount, scopedSearchItems, recentSearchOptions, dashboardSearchItems, suggestedPageOptions]);
 
   // Filters searchBoxOptions by `search`. Supports glob wildcards `*` (any
   // sequence) and `?` (single char) — useful for long index/label lists.
@@ -928,8 +1386,22 @@ export default function GlobalPageSearch() {
   const searchPlaceholder = scopedAccount
     ? `Search for ${scopedAccount.label}…`
     : hasMentionAccounts
-    ? 'Search pages… (type @ to scope by account)'
-    : 'Search pages…';
+    ? 'Search pages or dashboards… (type @ to scope by account)'
+    : 'Search pages or dashboards…';
+
+  // Only offered once a typed query has actually come up empty, and never in
+  // mention mode — picking an account, not asking a question, is that mode's
+  // only action (see GlobalSearchFooterHints' own mentionMode guard above).
+  const askAiEmptyQuery = !mentionMode && filteredOptions.length === 0 && search.trim() ? search.trim() : null;
+
+  // Whether AskAiPinnedRow is actually on screen — same condition its own
+  // render guard uses below. Visible whenever we're not mid @account-pick,
+  // regardless of result count (the empty state no longer carries its own
+  // CTA, so this is the one place that does). Claims keyboard-nav index 0
+  // ahead of every filteredOptions row, which then shift down by one, so
+  // ArrowUp from the first result lands on it and Enter asks the AI instead
+  // of selecting a page.
+  const pinnedRowVisible = !mentionMode;
 
   const handleBackspaceWhenEmpty = useCallback(() => {
     if (scopedAccount) {
@@ -940,6 +1412,7 @@ export default function GlobalPageSearch() {
   // --- Trigger/popover state (mirrors ds/FilterDropdown.jsx's own) ---
   const [anchorEl, setAnchorEl] = useState(null);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [askingAi, setAskingAi] = useState(false);
   const searchRef = useRef(null);
   const triggerRef = useRef(null);
   const open = Boolean(anchorEl);
@@ -969,15 +1442,80 @@ export default function GlobalPageSearch() {
     [mentionMode, navigateToSearchResult, data?.tenant?.id]
   );
 
+  // "Ask {assistantName}" — the search box's AI hand-off. Reuses the same
+  // aiGenerateInvestigate + session_id flow the home page's own "Ask nubi" input
+  // already drives (home/index.jsx's handleGenerateInvestigation): create a
+  // session, submit the typed text as the first question, then land on that
+  // conversation. An empty query (persistent footer button with nothing typed)
+  // just opens a fresh chat instead of submitting nothing. No resolvable account
+  // (e.g. before any cluster/account has loaded) falls back to a bare /ask-nudgebee
+  // rather than silently doing nothing.
+  const handleAskAi = useCallback(
+    async (rawQuery) => {
+      if (askingAi) {
+        return;
+      }
+      const query = (rawQuery || '').trim();
+      // A deliberate "@account" pick takes priority over the page's own account
+      // context — the user explicitly scoped the search to it, so the question
+      // should go there too, not wherever the current page happens to be.
+      const accountId =
+        scopedAccount?.value ||
+        router?.query?.accountId ||
+        router?.query?.KubernetesDetails ||
+        router?.query?.CloudAccountDetails ||
+        defaultAccountId;
+      if (!query || !accountId) {
+        setAnchorEl(null);
+        setSearch('');
+        const path = accountId ? `/ask-nudgebee?accountId=${accountId}` : '/ask-nudgebee';
+        navigateToSearchResult(path, accountId);
+        return;
+      }
+      setAskingAi(true);
+      const sessionId = uuidv4();
+      try {
+        const res = await apiAskNudgebee.aiGenerateInvestigate({ account_id: accountId, query, session_id: sessionId });
+        const response = res?.data?.data?.ai_execute_investigation ?? {};
+        if (!response?.data?.query) {
+          snackbar.error("Can't process your request right now.");
+          return;
+        }
+        setAnchorEl(null);
+        setSearch('');
+        const path = `/ask-nudgebee?accountId=${accountId}&session_id=${sessionId}`;
+        navigateToSearchResult(path, accountId);
+      } catch (error) {
+        console.error('Failed to start AI investigation:', error);
+        snackbar.error("Can't process your request right now.");
+      } finally {
+        setAskingAi(false);
+      }
+    },
+    [askingAi, router, defaultAccountId, scopedAccount, navigateToSearchResult]
+  );
+
   // Fires once per popover open, before it actually opens: lazily builds the
-  // per-provider result rows on first open (see hasOpenedSearch above) and
-  // refreshes the recent-searches list (a pick made in another tab should
-  // show up here too).
+  // per-provider result rows on first open (see hasOpenedSearch above),
+  // re-reads the tenant's dashboards, and refreshes the recent-searches list
+  // (a pick made in another tab should show up here too).
+  // Read the current route through a ref so openSearch keeps a stable
+  // identity — it is a dependency of the Ctrl/Cmd+K listener effect below,
+  // which would otherwise re-attach on every navigation.
+  const pagePathRef = useRef(router.pathname);
+  useEffect(() => {
+    pagePathRef.current = router.pathname;
+  }, [router.pathname]);
+
+  // `source` distinguishes the trigger button from the Ctrl/Cmd+K shortcut
+  // below — a shortcut open produces no DOM click, so a Pendo click-tagged
+  // Feature on #auto-complete-global-page-search cannot see it at all.
   const openSearch = useCallback(
-    (target) => {
-      setHasOpenedSearch(true);
+    (target, source = 'click') => {
+      setSearchOpenSeq((seq) => seq + 1);
       setRecentSearchValues(apiUser.getRecentPageSearches(data?.tenant?.id));
       setAnchorEl(target);
+      trackProductEvent('global_search_opened', { source, page: pagePathRef.current });
     },
     [data?.tenant?.id]
   );
@@ -1011,7 +1549,7 @@ export default function GlobalPageSearch() {
         if (anchorEl) {
           setAnchorEl(null);
         } else {
-          openSearch(triggerRef.current);
+          openSearch(triggerRef.current, 'shortcut');
         }
       }
     };
@@ -1057,122 +1595,184 @@ export default function GlobalPageSearch() {
       // ArrowUp/ArrowDown navigation + Enter-to-select the highlighted row.
       // Gated on `open` so these keys still behave normally (e.g. page
       // scroll) when the trigger button has focus but the panel is closed.
-      if (!open || filteredOptions.length === 0) {
+      // AskAiPinnedRow, when visible, claims index 0 ahead of every result —
+      // filteredOptions rows shift down by one accordingly. It's now visible
+      // even with zero results, so navCount (not filteredOptions.length) is
+      // what decides whether there's anything to navigate at all.
+      const navCount = filteredOptions.length + (pinnedRowVisible ? 1 : 0);
+      if (!open || navCount === 0) {
         return;
       }
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
-          setHighlightedIndex((i) => Math.min(filteredOptions.length - 1, i + 1));
+          setHighlightedIndex((i) => Math.min(navCount - 1, i + 1));
           break;
         case 'ArrowUp':
           e.preventDefault();
           setHighlightedIndex((i) => Math.max(0, i - 1));
           break;
         case 'Enter':
-          if (highlightedIndex >= 0 && filteredOptions[highlightedIndex]) {
-            e.preventDefault();
-            handleOptionSelect(filteredOptions[highlightedIndex]);
+          if (highlightedIndex < 0) {
+            break;
+          }
+          e.preventDefault();
+          if (pinnedRowVisible && highlightedIndex === 0) {
+            handleAskAi(search);
+          } else {
+            const optIndex = pinnedRowVisible ? highlightedIndex - 1 : highlightedIndex;
+            if (filteredOptions[optIndex]) {
+              handleOptionSelect(filteredOptions[optIndex]);
+            }
           }
           break;
         default:
           break;
       }
     },
-    [open, filteredOptions, highlightedIndex, handleOptionSelect]
+    [open, filteredOptions, highlightedIndex, handleOptionSelect, pinnedRowVisible, handleAskAi, search]
   );
 
   return (
     // Forces this instance's popover to the viewport center regardless of trigger
     // position, and gives it a Modal-like (@ui/Modal) pop-in + dark backdrop.
-    // Overrides the MuiPopover-paper's JS-computed inline top/left —
-    // disablePortal keeps the paper in this subtree, so the selector reaches
-    // it — with !important, since author !important beats both inline
-    // styles and the component's own transform/slide-in keyframes. The
-    // pop-in keyframe bakes the centering translate into its own start/end
-    // values (rather than a separate static transform) so
-    // `animation ... forwards` is the single source of truth for `transform`
-    // post-animation — exit then falls through to GlobalSearchPopoverTransition's
-    // own opacity fade (see its definition above), same as Modal's exit.
     // Backdrop mirrors Modal's default dim color (MUI Backdrop's own
     // rgba(0,0,0,0.5)) and its opacity-transition timing.
     <Box
       sx={{
         position: 'relative',
         width: '100%',
-        maxWidth: '80%',
-        // top is a fixed offset (not 50%) so the panel's top edge stays put as its
-        // height changes with the result count — true vertical centering would
-        // re-center around a shrinking/growing box, making the top edge visibly
-        // jump on every keystroke. Only left is 50%, so horizontal centering still
-        // uses translateX; there's no translateY left to do.
-        '& .MuiPopover-paper': {
-          position: 'fixed !important',
-          top: `${ds.space.mul(0, 60)} !important`,
-          left: '50% !important',
-          margin: 0,
-          padding: ds.space[4],
-          animation: 'globalSearchPopoverPopIn 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards !important',
-        },
-        '@keyframes globalSearchPopoverPopIn': {
-          '0%': { transform: 'translate(-50%, 0) translateY(20px) scale(0.96)', opacity: 0 },
-          '100%': { transform: 'translate(-50%, 0) translateY(0) scale(1)', opacity: 1 },
-        },
-        '& .MuiBackdrop-root': {
-          backgroundColor: 'rgba(0, 0, 0, 0.5) !important',
-          transition: 'opacity 300ms cubic-bezier(0.22, 1, 0.36, 1) !important',
+        maxWidth: '60%',
+        '@media (max-width: 1300px)': {
+          maxWidth: '70%',
         },
       }}
     >
+      {/* Outer pill shell — widened from the old single-button trigger to make
+          room for the Ask AI avatar on the right, now that the standalone
+          gradient "Ask nubi" button next to this search box (formerly in
+          Header1.jsx) has been folded into this component instead. */}
       <Box
-        component='button'
-        type='button'
-        id='auto-complete-global-page-search'
-        ref={triggerRef}
-        onClick={(e) => openSearch(e.currentTarget)}
-        onKeyDown={handleKeyDown}
         sx={{
-          display: 'inline-flex',
+          display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 'var(--ds-space-2)',
-          minWidth: '150px',
+          width: '100%',
+          minWidth: '260px',
           height: ds.space.mul(0, 18),
-          padding: '0 var(--ds-space-3)',
-          fontFamily: 'inherit',
-          fontSize: 'var(--ds-text-small)',
-          fontWeight: 'var(--ds-font-weight-regular)',
-          lineHeight: 1.4,
-          color: 'var(--ds-gray-700)',
           backgroundColor: 'var(--ds-background-100)',
           border: '1px solid var(--ds-gray-300)',
           borderRadius: 'var(--ds-radius-md)',
-          outline: 'none',
-          cursor: 'pointer',
-          transition: 'border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease',
-          whiteSpace: 'nowrap',
           boxSizing: 'border-box',
-          '&:hover': { borderColor: 'var(--ds-gray-400)', backgroundColor: 'var(--ds-background-200)' },
-          '&:focus-visible': { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' },
+          overflow: 'hidden',
+          transition: 'border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease',
+          '&:hover': { borderColor: 'var(--ds-gray-400)' },
+          '&:focus-within': { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' },
           ...(open && { borderColor: 'var(--ds-blue-500)', boxShadow: '0 0 0 3px var(--ds-blue-100)' }),
-          width: '100%',
-          maxWidth: '80%',
-          pl: ds.space[6],
         }}
       >
-        <span style={{ color: 'var(--ds-gray-600)', fontWeight: 'var(--ds-font-weight-regular)', flex: 1, textAlign: 'left' }}>Search pages…</span>
-        <ChevronIcon open={open} />
+        <Box
+          component='button'
+          type='button'
+          id='auto-complete-global-page-search'
+          ref={triggerRef}
+          onClick={(e) => openSearch(e.currentTarget)}
+          onKeyDown={handleKeyDown}
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 'var(--ds-space-2)',
+            height: '100%',
+            padding: '0 var(--ds-space-3)',
+            fontFamily: 'inherit',
+            fontSize: 'var(--ds-text-small)',
+            fontWeight: 'var(--ds-font-weight-regular)',
+            lineHeight: 1.4,
+            color: 'var(--ds-gray-700)',
+            background: 'none',
+            border: 'none',
+            outline: 'none',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <SearchIcon sx={{ fontSize: 16, color: 'var(--ds-gray-400)', flexShrink: 0 }} />
+          <span
+            style={{
+              color: 'var(--ds-gray-600)',
+              fontWeight: 'var(--ds-font-weight-regular)',
+              flex: 1,
+              textAlign: 'left',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            Search pages, dashboards or just ask…
+          </span>
+          <Box component='kbd' sx={searchKeyChipSx}>
+            Ctrl/⌘
+          </Box>
+          <Box component='kbd' sx={searchKeyChipSx}>
+            K
+          </Box>
+        </Box>
+
+        <Box sx={{ width: '1px', height: ds.space.mul(0, 10), backgroundColor: 'var(--ds-gray-200)', flexShrink: 0 }} />
+
+        {/* Ask AI avatar — a direct shortcut to /ask-nudgebee, distinct from the
+            trigger button beside it (which opens page search). Same plain
+            white circle-badge treatment as the nubi icon on the home page's
+            own "Ask nubi" input (home/index.jsx) — no gradient, no motion. */}
+        <CustomTooltip title={`Ask ${assistantName}`} placement='bottom'>
+          <Box
+            component='button'
+            type='button'
+            id='global-search-trigger-ask-ai'
+            aria-label={`Ask ${assistantName}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleAskAi('');
+            }}
+            sx={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 22,
+              height: 22,
+              margin: `0 ${ds.space[2]}`,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: 'var(--ds-background-100)',
+              overflow: 'hidden',
+            }}
+          >
+            <SafeIcon src={nubiIconUrl} alt='' width={22} height={22} />
+          </Box>
+        </CustomTooltip>
       </Box>
 
       <Popover
         open={open}
         anchorEl={anchorEl}
         onClose={() => setAnchorEl(null)}
-        disablePortal
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
         TransitionComponent={GlobalSearchPopoverTransition}
         slotProps={{
+          // No disablePortal: this renders straight to document.body (like
+          // ds/Modal), so it lands at MUI's default modal z-index (1300) —
+          // clear of the sidebar's own z-index:100 stacking context. With
+          // disablePortal, the whole Modal (backdrop included) used to nest
+          // inside #app-sticky-header's position:sticky/z-index:20 subtree,
+          // which caps it below the sidebar regardless of its own z-index —
+          // the sidebar's hover flyout would paint (and stay clickable) over
+          // the dimmed backdrop. Because it no longer nests under the
+          // trigger, the paper override below goes straight on the paper
+          // slot's own sx (not an ancestor `&` selector) so it still applies
+          // wherever the portal lands. Same reasoning for the backdrop dim,
+          // via `sx` on the Popover itself below.
           paper: {
             sx: {
               // Surface chrome shared via --ds-overlay-* tokens with DropdownMenu/Select/FilterDropdown.
@@ -1183,17 +1783,73 @@ export default function GlobalPageSearch() {
               boxShadow: 'var(--ds-overlay-shadow)',
               width: POPOVER_WIDTH,
               overflow: 'hidden',
-              transformOrigin: 'top left',
-              animation: 'globalSearchSlideIn var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
-              '@keyframes globalSearchSlideIn': {
-                '0%': { opacity: 0, transform: 'scaleY(0.9) translateY(-8px)' },
-                '100%': { opacity: 1, transform: 'scaleY(1) translateY(0)' },
+              // Forces the popover to the viewport center regardless of
+              // trigger position. top is a fixed offset (not 50%) so the
+              // panel's top edge stays put as its height changes with the
+              // result count — true vertical centering would re-center
+              // around a shrinking/growing box, making the top edge visibly
+              // jump on every keystroke. Only left is 50%, so horizontal
+              // centering still uses translateX.
+              position: 'fixed !important',
+              top: `${ds.space.mul(0, 50)} !important`,
+              left: '50% !important',
+              // Static resting transform, matching the keyframe's own 100% value
+              // — kept OUTSIDE the animation (see `forwards` note below) so it's
+              // still in effect once the animation ends.
+              transform: 'translate(-50%, 0)',
+              margin: 0,
+              padding: ds.space[4],
+              transformOrigin: 'top center',
+              // No `forwards`: an animation held via fill-mode: forwards keeps
+              // its GPU compositing layer pinned indefinitely after it finishes,
+              // which left Chrome occasionally failing to repaint this element's
+              // screen region once it was actually removed from the DOM on
+              // close — a stale "ghost" frame of the popover stayed visible
+              // until something else forced a repaint (e.g. typing). The base
+              // `transform` above already matches the animation's end state, so
+              // dropping `forwards` doesn't cause a visible snap once it ends.
+              animation: 'globalSearchPopoverPopIn 360ms cubic-bezier(0.22, 1, 0.36, 1)',
+              '@keyframes globalSearchPopoverPopIn': {
+                '0%': { transform: 'translate(-50%, 0) translateY(20px) scale(0.96)', opacity: 0 },
+                '100%': { transform: 'translate(-50%, 0) translateY(0) scale(1)', opacity: 1 },
               },
             },
           },
         }}
+        // Popover has no slotProps.backdrop slot (it hardcodes slotProps.root's
+        // own backdrop config to `invisible: true`, which a nested override
+        // would collide with) — so the dim backdrop is styled here instead, via
+        // a descendant selector on the Popover's own sx. That still lands on
+        // Modal's root wrapper regardless of portal target, and the Backdrop
+        // is always rendered as a real DOM child of that wrapper, so this
+        // reaches it correctly whether or not the popover is portalled.
+        sx={{
+          '& .MuiBackdrop-root': {
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            transition: 'opacity 300ms cubic-bezier(0.22, 1, 0.36, 1) !important',
+          },
+        }}
         onKeyDown={handleKeyDown}
       >
+        <CustomTooltip title='Close (Esc/Ctrl/⌘+K)' placement='top'>
+          <IconButton
+            id='global-search-close-btn'
+            data-testid='global-search-close-btn'
+            onClick={() => setAnchorEl(null)}
+            aria-label='Close'
+            sx={{
+              position: 'absolute',
+              top: ds.space.mul(0, 3),
+              right: ds.space.mul(0, 3),
+              padding: ds.space.mul(0, 1),
+              zIndex: 2,
+              color: 'var(--ds-gray-500)',
+            }}
+          >
+            <CloseIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </CustomTooltip>
+
         <Box sx={{ margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`, position: 'relative' }}>
           <SearchIcon
             sx={{
@@ -1208,6 +1864,7 @@ export default function GlobalPageSearch() {
             }}
           />
           <InputBase
+            id='global-search-input'
             inputRef={searchRef}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1237,13 +1894,21 @@ export default function GlobalPageSearch() {
                   handleOptionSelect(filteredOptions[0]);
                 }
               }
+              // A query that matches no page is a dead end otherwise — hand it
+              // straight to the AI assistant, same as clicking AskAiPinnedRow above.
+              // Gated on highlightedIndex < 0 — when the pinned row itself is
+              // arrow-highlighted (index 0), handleKeyDown's own Enter case above
+              // already calls handleAskAi; without this guard both would fire.
+              if (e.key === 'Enter' && highlightedIndex < 0 && askAiEmptyQuery) {
+                e.preventDefault();
+                handleAskAi(askAiEmptyQuery);
+              }
             }}
             sx={{
               width: '100%',
               fontSize: 'var(--ds-text-body)',
               color: 'var(--ds-gray-700)',
               border: '1px solid var(--ds-gray-200)',
-              backgroundColor: 'var(--ds-gray-100)',
               borderRadius: ds.radius.md,
               padding: `${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 14)}`,
               transition: 'all 0.15s ease',
@@ -1258,48 +1923,29 @@ export default function GlobalPageSearch() {
           />
         </Box>
 
-        <OptionsList filteredOptions={filteredOptions} highlightedIndex={highlightedIndex} onSelect={handleOptionSelect} />
+        {/* Hidden only while mid @account-pick — otherwise always shown, including
+            with zero results, since the empty state no longer has its own CTA. */}
+        {pinnedRowVisible && (
+          <AskAiPinnedRow
+            assistantName={assistantName}
+            nubiIconUrl={nubiIconUrl}
+            query={search.trim()}
+            onClick={() => handleAskAi(search)}
+            loading={askingAi}
+            highlighted={highlightedIndex === 0}
+          />
+        )}
+
+        <OptionsList
+          filteredOptions={filteredOptions}
+          highlightedIndex={pinnedRowVisible ? highlightedIndex - 1 : highlightedIndex}
+          onSelect={handleOptionSelect}
+          mentionMode={mentionMode}
+        />
 
         <Divider sx={{ marginTop: 0, marginBottom: 0 }} />
         <GlobalSearchFooterHints mentionMode={mentionMode} />
       </Popover>
-
-      {/* Leading search icon, matching the one shown inside the open popover's own
-          search input — pointerEvents: 'none' so it doesn't block the trigger click. */}
-      <SearchIcon
-        sx={{
-          position: 'absolute',
-          left: ds.space.mul(0, 5),
-          top: '50%',
-          transform: 'translateY(-50%)',
-          fontSize: 16,
-          color: 'var(--ds-gray-400)',
-          pointerEvents: 'none',
-        }}
-      />
-      {/* Overlaid, not part of the trigger button's own layout — pointerEvents:
-          'none' lets clicks fall through to the button underneath so the whole
-          trigger area (including under this hint) still opens the search. Sits at
-          a fixed offset clear of the trigger's own chevron icon. */}
-      <Box
-        sx={{
-          position: 'absolute',
-          right: '30%',
-          top: '50%',
-          transform: 'translateY(-50%)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--ds-space-1)',
-          pointerEvents: 'none',
-        }}
-      >
-        <Box component='kbd' sx={searchKeyChipSx}>
-          Ctrl/⌘
-        </Box>
-        <Box component='kbd' sx={searchKeyChipSx}>
-          K
-        </Box>
-      </Box>
     </Box>
   );
 }

@@ -109,7 +109,7 @@ func (s *optimizerService) ExecuteAutoOptimize(ctx context.Context, autoOptimize
 	workflowOptions := client.StartWorkflowOptions{
 		ID:                       "manual_trigger_" + s.scheduleID(ao.ID) + "_" + uuid.New().String(),
 		TaskQueue:                workflow.OptimizerTaskQueue,
-		WorkflowExecutionTimeout: 1 * time.Hour,
+		WorkflowExecutionTimeout: workflow.OptimizerWorkflowExecutionTimeout,
 	}
 
 	workflowInput := workflow.OptimizerWorkflowInput{
@@ -627,7 +627,7 @@ func (s *optimizerService) createSchedule(ctx context.Context, ao model.AutoOpti
 		Workflow:                 workflow.OptimizerWorkflow,
 		Args:                     []interface{}{workflow.OptimizerWorkflowInput{AutoOptimizeID: ao.ID.String()}},
 		TaskQueue:                workflow.OptimizerTaskQueue,
-		WorkflowExecutionTimeout: 1 * time.Hour,
+		WorkflowExecutionTimeout: workflow.OptimizerWorkflowExecutionTimeout,
 	}
 
 	_, err := s.temporalClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
@@ -647,7 +647,7 @@ func (s *optimizerService) updateSchedule(ctx context.Context, ao model.AutoOpti
 			action.Args = []interface{}{
 				workflow.OptimizerWorkflowInput{AutoOptimizeID: ao.ID.String()},
 			}
-			action.WorkflowExecutionTimeout = 1 * time.Hour
+			action.WorkflowExecutionTimeout = workflow.OptimizerWorkflowExecutionTimeout
 			return &client.ScheduleUpdate{
 					Schedule: &schedule.Description.Schedule,
 				},

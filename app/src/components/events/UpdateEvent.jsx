@@ -1,14 +1,13 @@
 import apiKubernetes1 from '@api1/kubernetes1';
-import CustomDropdown from '@shared/CustomDropdown';
-import CustomButton from '@shared/NewCustomButton';
-import { Modal } from '@shared/modal';
-import { snackbar } from '@shared/snackbarService';
+import { Select } from '@ui/Select';
+import { Modal } from '@ui/Modal';
+import { toast as snackbar } from '@ui/Toast';
 import { Box, Typography } from '@mui/material';
 import { useState } from 'react';
-import { colors } from 'src/utils/colors';
+import { ds } from '@utils/colors';
 import PropTypes from 'prop-types';
 
-const UpdateEvent = ({ selectedEvent, handlePopupClose, isUpdateEvent }) => {
+const UpdateEvent = ({ selectedEvent, handlePopupClose, isUpdateEvent, onUpdated }) => {
   const [updatedUrgency, setUpdatedUrgency] = useState(selectedEvent?.urgency);
   const [updateEventLoading, setUpdateEventLoading] = useState(false);
 
@@ -24,6 +23,8 @@ const UpdateEvent = ({ selectedEvent, handlePopupClose, isUpdateEvent }) => {
           snackbar.error(`Failed to update event: ${res.data.errors[0].message}`);
         } else if (res?.data?.data?.event_update) {
           snackbar.success(`Event ${selectedEvent.title} Updated`);
+          handlePopupClose();
+          onUpdated?.();
         } else {
           snackbar.error(`Failed to update event: ${res.message || 'An unknown error occurred'}`);
         }
@@ -33,58 +34,32 @@ const UpdateEvent = ({ selectedEvent, handlePopupClose, isUpdateEvent }) => {
       })
       .finally(() => {
         setUpdateEventLoading(false);
-        handlePopupClose();
       });
   };
 
   return (
     <Modal
-      width='md'
       open={isUpdateEvent}
-      handleClose={() => {
-        handlePopupClose();
-      }}
-      title={`Update the event "${selectedEvent.title}"`}
-      contentStyles={{ padding: '0px' }}
-      rightComponentOnTitle={undefined}
+      handleClose={handlePopupClose}
+      title='Update event urgency'
       loader={updateEventLoading}
+      confirmText='Update'
+      onConfirm={handleSubmit}
+      confirmDisabled={!updatedUrgency || updatedUrgency === selectedEvent?.urgency}
     >
-      <Box p={5}>
-        <Box key={'1'} display='flex' alignItems='center' width='100%' mb={3} gap={'20px'}>
-          <Typography>Urgency</Typography>
-          <CustomDropdown
-            value={updatedUrgency}
-            options={['HIGH', 'MEDIUM', 'LOW', 'DEBUG', 'INFO']}
-            onChange={(_, v) => {
-              setUpdatedUrgency(v);
-            }}
-          />
-        </Box>
-      </Box>
-
-      <Box
-        display='flex'
-        alignItems='center'
-        justifyContent='flex-end'
-        gap='12px'
-        p='16px 24px'
-        sx={{
-          borderTop: `0.5px solid ${colors.border.vertical}`,
-          button: {
-            minWidth: '140px',
-          },
-        }}
-      >
-        <CustomButton
-          type='button'
-          id='cancel'
-          text={'Cancel'}
-          size='Medium'
-          variant='secondary'
-          onClick={handlePopupClose}
-          disabled={updateEventLoading}
+      <Typography variant='body1' mb={3}>
+        Set the urgency of <strong>{selectedEvent.title}</strong>. This helps prioritize the event for further investigation.
+      </Typography>
+      <Box sx={{ maxWidth: ds.space.mul(0, 100) }}>
+        <Select
+          label='Urgency'
+          required
+          value={updatedUrgency}
+          options={['HIGH', 'MEDIUM', 'LOW', 'DEBUG', 'INFO']}
+          onChange={(v) => {
+            setUpdatedUrgency(v);
+          }}
         />
-        <CustomButton type='button' id='submit' text={'Submit'} size='Medium' onClick={handleSubmit} disabled={updateEventLoading} />
       </Box>
     </Modal>
   );
@@ -98,6 +73,7 @@ UpdateEvent.propTypes = {
   }).isRequired,
   handlePopupClose: PropTypes.func.isRequired,
   isUpdateEvent: PropTypes.bool.isRequired,
+  onUpdated: PropTypes.func,
 };
 
 export default UpdateEvent;

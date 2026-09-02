@@ -209,11 +209,23 @@ func (v *FixVerifier) Verify(ctx context.Context, workspaceDir string, buildCfg 
 	result := VerificationResult{Status: VerificationVerified}
 	ranAny := false
 	for _, m := range modules {
-		if reason := preflightSkip(workspaceDir, m); reason != "" {
-			result.Steps = append(result.Steps, VerificationStep{Dir: m.Path, Command: m.Build, Skipped: true, SkipReason: reason})
+		buildCmd := m.Build
+		if m.Kind == "python" {
+			// Scope the lint to the module's changed .py files: a whole-module
+			// pyflakes would surface pre-existing repo noise as verification
+			// failures, which are not attributable to the fix.
+			scoped, skipReason := pythonScopedLintCommand(m, changed)
+			if skipReason != "" {
+				result.Steps = append(result.Steps, VerificationStep{Dir: m.Path, Command: m.Build, Skipped: true, SkipReason: skipReason})
+				continue
+			}
+			buildCmd = scoped
+		}
+		if reason := preflightSkip(ctx, workspaceDir, m); reason != "" {
+			result.Steps = append(result.Steps, VerificationStep{Dir: m.Path, Command: buildCmd, Skipped: true, SkipReason: reason})
 			continue
 		}
-		step := v.runCommand(ctx, workspaceDir, m.Path, m.Build)
+		step := v.runCommand(ctx, workspaceDir, m.Path, buildCmd)
 		result.Steps = append(result.Steps, step)
 		ranAny = true
 		if step.Passed {
@@ -489,10 +501,47 @@ func modulesForFiles(roots []tools.ModuleRoot, files []string) []tools.ModuleRoo
 	return modules
 }
 
+// safeLintPath matches file paths that are inert in a shell command: no
+// metacharacters, no whitespace, and no leading "-" (option injection). File
+// names come from `git status` of the ANALYZED repo — attacker-controlled
+// content — and shell double-quoting does NOT neutralize $(...) expansion, so
+// anything outside this allowlist is skipped rather than quoted.
+var safeLintPath = regexp.MustCompile(`^[A-Za-z0-9._/][A-Za-z0-9._/-]*$`)
+
+// pythonScopedLintCommand appends the module's changed .py files (relative to
+// the module root) to the module's pyflakes command. Returns a skip reason
+// when the change touched no lintable Python files in the module — running
+// pyflakes on nothing (or on the whole module, surfacing pre-existing noise)
+// proves nothing about the fix.
+func pythonScopedLintCommand(m tools.ModuleRoot, changed []string) (string, string) {
+	var rel []string
+	for _, f := range changed {
+		if !strings.HasSuffix(f, ".py") {
+			continue
+		}
+		r := f
+		if m.Path != "." {
+			prefix := m.Path + "/"
+			if !strings.HasPrefix(f, prefix) {
+				continue
+			}
+			r = strings.TrimPrefix(f, prefix)
+		}
+		if !safeLintPath.MatchString(r) || strings.Contains(r, "..") {
+			continue
+		}
+		rel = append(rel, r)
+	}
+	if len(rel) == 0 {
+		return "", "no changed Python files in this module to lint"
+	}
+	return m.Build + " " + strings.Join(rel, " "), ""
+}
+
 // preflightSkip reports why a module cannot be meaningfully verified in this
 // environment (missing toolchain, uninstalled dependencies) — a skip, not a
 // failure. Verification must never mint environment problems as code failures.
-func preflightSkip(workspaceDir string, m tools.ModuleRoot) string {
+func preflightSkip(ctx context.Context, workspaceDir string, m tools.ModuleRoot) string {
 	fields := strings.Fields(m.Build)
 	// Skip leading env-var assignments (`GOOS=linux go build ...`) — the binary
 	// to probe is the first non-assignment word.
@@ -509,6 +558,20 @@ func preflightSkip(workspaceDir string, m tools.ModuleRoot) string {
 	if m.Kind == "node" {
 		if _, err := os.Stat(filepath.Join(workspaceDir, m.Path, "node_modules")); err != nil {
 			return "node dependencies not installed (node_modules missing)"
+		}
+	}
+	if m.Kind == "python" && strings.Contains(m.Build, "-m pyflakes") &&
+		strings.HasPrefix(filepath.Base(fields[cmdIdx]), "python") {
+		// LookPath can only probe the interpreter; the pyflakes module itself
+		// may be absent. A missing checker is an environment skip, never a
+		// code failure. The `-c import` probe is only valid when the command
+		// really is an interpreter (`python*`) — a direct `pyflakes` binary or
+		// a wrapper like `poetry run pyflakes` is already validated by the
+		// LookPath above and must not be probed with interpreter flags.
+		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := exec.CommandContext(probeCtx, fields[cmdIdx], "-c", "import pyflakes").Run(); err != nil {
+			return "pyflakes not available in this environment"
 		}
 	}
 	return ""

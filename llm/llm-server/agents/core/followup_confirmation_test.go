@@ -49,10 +49,55 @@ func TestFollowupRequestForToolOperationConfirmation_QuerySubstring(t *testing.T
 			var err error
 			assert.NotPanics(t, func() {
 				fr, err = FollowupRequestForToolOperationConfirmation(
-					llmOverrideContext(), query, agent, action, toolcore.ToolRequestTypeUpdate)
+					llmOverrideContext(), query, agent, action, toolcore.ToolRequestTypeUpdate, action.Tool, "")
 			})
 			assert.NoError(t, err)
 			assert.Contains(t, fr.Question, tc.wantContains)
 		})
 	}
+}
+
+// A tool-provided question replaces the default "Command - <raw input>"
+// rendering; an empty override keeps it.
+func TestFollowupRequestForToolOperationConfirmation_QuestionOverride(t *testing.T) {
+	query := NBAgentRequest{AgentId: uuid.New().String()}
+	agent := LLMAgent{}
+	action := NBAgentPlannerToolAction{Tool: "recommendation_apply", ToolInput: `{"recommendation_id":"rec-1"}`}
+
+	fr, err := FollowupRequestForToolOperationConfirmation(
+		llmOverrideContext(), query, agent, action, toolcore.ToolRequestTypeUpdate, "key-1",
+		"Apply this change? memory 512Mi → 300Mi. Do you want to continue?")
+	assert.NoError(t, err)
+	assert.Equal(t, "Apply this change? memory 512Mi → 300Mi. Do you want to continue?", fr.Question)
+	assert.Equal(t, "key-1", fr.ConfirmationKey)
+
+	fr, err = FollowupRequestForToolOperationConfirmation(
+		llmOverrideContext(), query, agent, action, toolcore.ToolRequestTypeUpdate, "key-1", "")
+	assert.NoError(t, err)
+	assert.Contains(t, fr.Question, "Tool(recommendation_apply) is trying to update cluster resources")
+	assert.Contains(t, fr.Question, `{"recommendation_id":"rec-1"}`)
+}
+
+// The create path and the already-active-followup update path persist the same
+// config — the update path silently dropping confirmationKey recorded the
+// user's approval under the bare tool name, which a per-action-scoped tool's
+// resume could never match (approval invisible → fail-fast on a confirmed run).
+func TestFollowupMessageConfig_CarriesConfirmationKey(t *testing.T) {
+	withKey := followupMessageConfig(FollowupRequest{
+		Question:        "q",
+		FollowupType:    FollowupTypeToolConfirmation,
+		ToolName:        "recommendation_apply",
+		ToolId:          "recommendation_apply-1",
+		ConfirmationKey: "recommendation_apply:abc123",
+	})
+	assert.Equal(t, "recommendation_apply:abc123", withKey["confirmationKey"])
+	assert.Equal(t, "recommendation_apply", withKey["toolName"])
+
+	withoutKey := followupMessageConfig(FollowupRequest{
+		Question:     "q",
+		FollowupType: FollowupTypeToolConfirmation,
+		ToolName:     "kubectl_execute",
+	})
+	_, present := withoutKey["confirmationKey"]
+	assert.False(t, present, "per-tool confirmations must not gain an empty key entry")
 }

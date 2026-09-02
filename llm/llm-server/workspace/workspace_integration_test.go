@@ -25,7 +25,6 @@ import (
 // Run it with: go test -v -tags=integration ./workspace/... -run TestWorkspaceIntegration
 func TestWorkspaceIntegration(t *testing.T) {
 	// 1. Setup Configuration for Local Test
-	config.Config.LlmServerWorkspaceEnabled = true
 	config.Config.LlmServerCodeAgentNamespace = "default"
 	config.Config.LlmServerWorkspacePort = 8080
 	config.Config.LlmServerCodeAgentSecret = "nudgebee-secret-volume"

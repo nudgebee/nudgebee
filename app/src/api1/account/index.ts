@@ -442,7 +442,7 @@ const apiAccount = {
   },
   async getAllAccount() {
     try {
-      const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry'];
+      const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry', 'SelfHosted'];
       const messagingPlatforms = ['slack', 'ms_teams', 'google_chat', 'discord'];
       const integrationTypes = [
         'github',
@@ -469,6 +469,7 @@ const apiAccount = {
         'datadog',
         'argocd',
         'llm',
+        'llm_gateway',
         'mcp',
         'loggly',
         'loki',
@@ -496,6 +497,7 @@ const apiAccount = {
         'gcp_monitoring_webhook',
         'solarwinds',
         'solarwinds_webhook',
+        'elasticsearch_webhook',
         'workflow_webhook',
         'google_chat_space',
         'slack',
@@ -689,6 +691,7 @@ const apiAccount = {
               chip_label
               line_label
               kinds
+              applicable_data_types
             }
           }
           capabilities {
@@ -701,6 +704,7 @@ const apiAccount = {
               chip_label
               line_label
               kinds
+              applicable_data_types
             }
           }
         }
@@ -736,6 +740,7 @@ const apiAccount = {
               chip_label
               line_label
               kinds
+              applicable_data_types
             }
           }
         }

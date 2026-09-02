@@ -13,6 +13,13 @@ from rag.core.types import LLM, LLMResult
 logger = logging.getLogger(__name__)
 
 
+def _ensure_user_content(prompt: str) -> str:
+    """Guard against a request with no usable user query. Some chat templates (Qwen3 on
+    vLLM) reject a message set whose only user turn is empty, so fall back to a minimal
+    non-empty prompt. Mirrors llm-server's ensureUserMessage."""
+    return prompt if prompt and prompt.strip() else "Continue."
+
+
 class OpenAILLM(LLM):
     """OpenAI LLM using the openai SDK directly."""
 
@@ -28,7 +35,7 @@ class OpenAILLM(LLM):
     def generate(self, prompt: str) -> LLMResult:
         resp = self._client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _ensure_user_content(prompt)}],
             temperature=0,
         )
         text = resp.choices[0].message.content or ""
@@ -56,7 +63,7 @@ class AzureOpenAILLM(LLM):
     def generate(self, prompt: str) -> LLMResult:
         resp = self._client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _ensure_user_content(prompt)}],
             temperature=0,
         )
         text = resp.choices[0].message.content or ""
@@ -82,7 +89,7 @@ class AnthropicLLM(LLM):
             model=self.model,
             max_tokens=1024,
             temperature=0,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": _ensure_user_content(prompt)}],
         )
         first_block = resp.content[0] if resp.content else None
         text = first_block.text if first_block and hasattr(first_block, "text") else ""

@@ -193,7 +193,11 @@ def create_run(
     cc_emails: list = None,
     parallel_workers: int = None,
     run_name: str = None,
-    log_provider_override: str = None,
+    k8s_orchestrator_mode: str = None,
+    llm_config_source: str = None,
+    llm_provider: str = None,
+    llm_model_name: str = None,
+    llm_tier_models: dict = None,
 ) -> str:
     """Create a new benchmark run and return its ID."""
     run_id = uuid.uuid4().hex[:12]
@@ -222,7 +226,11 @@ def create_run(
             parallel_workers=parallel_workers,
             run_name=run_name,
             cc_emails=cc_emails,
-            log_provider_override=log_provider_override,
+            k8s_orchestrator_mode=k8s_orchestrator_mode,
+            llm_config_source=llm_config_source,
+            llm_provider=llm_provider,
+            llm_model_name=llm_model_name,
+            llm_tier_models=llm_tier_models,
             errors=[],
         )
         db.add(run)
@@ -1253,7 +1261,11 @@ def _run_config(run: BenchmarkRun) -> dict:
         "account_id": run.account_id,
         "tenant_id": run.tenant_id,
         "tool_config": run.tool_config,
-        "log_provider_override": run.log_provider_override,
+        "k8s_orchestrator_mode": run.k8s_orchestrator_mode,
+        "llm_config_source": run.llm_config_source,
+        "llm_provider": run.llm_provider,
+        "llm_model_name": run.llm_model_name,
+        "llm_tier_models": run.llm_tier_models,
         "max_tests": run.max_tests,
         "test_indices": run.test_indices,
         "test_filter": run.test_filter,
@@ -1347,18 +1359,29 @@ def rerun_tests(run_id: str, test_indices: list[int]) -> dict:
                 f"Test indices {sorted(missing)} not found in run {run_id}"
             )
 
-        # Reset requested test rows so store_test_result can overwrite them
+        # Reset requested test rows so store_test_result can overwrite them.
+        # conversation_id/polling_conversation_id are cleared so the reconciler
+        # can't re-attach to the previous attempt's (already COMPLETED)
+        # conversation and mark the rerun done before it actually re-executes.
         db.query(BenchmarkTestResult).filter(
             BenchmarkTestResult.run_id == run_id,
             BenchmarkTestResult.test_index.in_(test_indices),
         ).update(
             {
                 BenchmarkTestResult.status: "running",
+                BenchmarkTestResult.conversation_id: None,
+                BenchmarkTestResult.polling_conversation_id: None,
                 BenchmarkTestResult.actual_answer: "",
                 BenchmarkTestResult.answer_similarity: 0.0,
                 BenchmarkTestResult.answer_relevancy: 0.0,
                 BenchmarkTestResult.planner_relevancy: 0.0,
+                BenchmarkTestResult.score_reason: None,
+                BenchmarkTestResult.execution_trace: None,
+                BenchmarkTestResult.followup_request: None,
                 BenchmarkTestResult.duration_seconds: 0.0,
+                BenchmarkTestResult.setup_duration: 0.0,
+                BenchmarkTestResult.llm_duration: 0.0,
+                BenchmarkTestResult.teardown_duration: 0.0,
                 BenchmarkTestResult.cost: 0.0,
                 BenchmarkTestResult.total_tokens: 0,
                 BenchmarkTestResult.input_tokens: 0,
@@ -1607,7 +1630,11 @@ def _run_to_status(run: BenchmarkRun) -> dict:
         "model_names": _get_model_info(run, "model_names"),
         "model_providers": _get_model_info(run, "model_providers"),
         "tool_config": getattr(run, "tool_config", None) or "",
-        "log_provider_override": getattr(run, "log_provider_override", None) or "",
+        "k8s_orchestrator_mode": getattr(run, "k8s_orchestrator_mode", None) or "",
+        "llm_config_source": getattr(run, "llm_config_source", None) or "",
+        "llm_provider": getattr(run, "llm_provider", None) or "",
+        "llm_model_name": getattr(run, "llm_model_name", None) or "",
+        "llm_tier_models": getattr(run, "llm_tier_models", None) or {},
         "cc_emails": run.cc_emails or [],
         "user_email": _get_user_email(run.user_id),
         "tag_filter": run.tag_filter or "",
@@ -1836,6 +1863,17 @@ def store_test_result(run_id: str, result: dict):
             # When re-running a test (status -> running), clear stale errors and
             # scores from the previous attempt so they don't leak into the new run
             if new_status == "running":
+                # A (re)started test has no conversation yet — drop the previous
+                # attempt's handle so the reconciler can't re-attach to its
+                # already-terminal conversation (this covers the restart path,
+                # which resets rows via the orchestrator's initial running write).
+                # Guard on the incoming id so _persist_submit_cid, which writes the
+                # new conversation_id with status still "running", isn't wiped.
+                if not result.get("conversation_id"):
+                    tr.conversation_id = None
+                    tr.polling_conversation_id = None
+                tr.score_reason = None
+                tr.execution_trace = None
                 tr.error_message = ""
                 tr.error_category = ""
                 tr.actual_answer = ""
@@ -2585,7 +2623,11 @@ def create_gathered_run(
     test_filter: str = None,
     tag_filter: str = None,
     cc_emails: list = None,
-    log_provider_override: str = None,
+    k8s_orchestrator_mode: str = None,
+    llm_config_source: str = None,
+    llm_provider: str = None,
+    llm_model_name: str = None,
+    llm_tier_models: dict = None,
 ) -> str:
     """Create a run in GATHERED state with pending test result rows.
 
@@ -2615,7 +2657,11 @@ def create_gathered_run(
             test_filter=test_filter,
             tag_filter=tag_filter,
             cc_emails=cc_emails,
-            log_provider_override=log_provider_override,
+            k8s_orchestrator_mode=k8s_orchestrator_mode,
+            llm_config_source=llm_config_source,
+            llm_provider=llm_provider,
+            llm_model_name=llm_model_name,
+            llm_tier_models=llm_tier_models,
             progress_current=0,
             progress_total=len(test_cases),
             errors=[],
@@ -2739,6 +2785,13 @@ def set_test_running(run_id: str, test_index: int) -> dict:
         # Remember the previous state so finish_single_test can restore it
         prev_state = run.state
         tr.status = "running"
+        # Drop the previous attempt's conversation handle. The reconciler watches
+        # every `running` row that still has a conversation_id and mirrors that
+        # conversation's status — a stale (already COMPLETED) id would make it
+        # mark this retry `pass` before the fresh run even submits. store_test_result
+        # writes the new id once the retry starts.
+        tr.conversation_id = None
+        tr.polling_conversation_id = None
         # Clear stale score/result fields so the dashboard doesn't render the
         # previous pass scores while the retry is in flight; if the subprocess
         # crashes before writing a new result, an empty/running row is the

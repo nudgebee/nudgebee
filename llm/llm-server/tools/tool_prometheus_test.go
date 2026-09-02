@@ -2,9 +2,13 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
+	"nudgebee/llm/tools/core"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -466,4 +470,291 @@ func TestValidatePromQLSyntax_ValidQueryReturnsEmpty(t *testing.T) {
 	assert.Empty(t, validatePromQLSyntax(`kube_pod_container_status_restarts_total{namespace="default"}`))
 	assert.Empty(t, validatePromQLSyntax(`rate(container_cpu_usage_seconds_total[5m])`))
 	assert.Empty(t, validatePromQLSyntax("")) // empty is passthrough, not error
+}
+
+// ---------------------------------------------------------------------------
+// metrics_label_values
+// ---------------------------------------------------------------------------
+
+// label_values() is a Grafana template-variable function, not PromQL. Observed in
+// prod: the agent needed a label's values, reached for the Grafana idiom, and got
+// back a generic "unknown PromQL function" list that named no way to get them —
+// so it guessed another label name instead and the run ended in "no data".
+func TestValidatePromQLSyntax_LabelValuesPointsAtLabelValuesTool(t *testing.T) {
+	got := validatePromQLSyntax("label_values(node_cpu_seconds_total, instance)")
+	require.NotEmpty(t, got, "label_values() is not PromQL and must produce an error")
+	assert.Contains(t, got, ToolMetricsLabelValues,
+		"hint must name the tool that actually returns label values")
+	assert.Contains(t, got, "Grafana",
+		"hint must explain why label_values() can never parse here")
+	assert.NotContains(t, got, "histogram_quantile()",
+		"must not fall through to the generic unknown-function list, which names no recovery path")
+}
+
+// The generic unknown-function hint must survive for every other bad function —
+// the label_values branch is a narrow carve-out, not a replacement.
+func TestValidatePromQLSyntax_OtherUnknownFunctionKeepsGenericHint(t *testing.T) {
+	got := validatePromQLSyntax("bogus_function(node_cpu_seconds_total)")
+	require.NotEmpty(t, got)
+	assert.Contains(t, got, "histogram_quantile()", "generic unknown-function hint must still apply")
+	assert.NotContains(t, got, ToolMetricsLabelValues,
+		"unrelated unknown functions must not be steered to the label-values tool")
+}
+
+func TestFilterAndCapLabelValues_FiltersCaseInsensitivelyAndSorts(t *testing.T) {
+	raw := []core.ObservabilityMetricsLabelValue{
+		{Value: "10.0.0.2:9100"},
+		{Value: "gke-node-b:9100"},
+		{Value: ""}, // empty values are dropped, not surfaced as a blank choice
+		{Value: "GKE-node-a:9100"},
+	}
+
+	values, matched, truncated := filterAndCapLabelValues(raw, "gke-NODE")
+
+	assert.Equal(t, []string{"GKE-node-a:9100", "gke-node-b:9100"}, values)
+	assert.Equal(t, 2, matched)
+	assert.False(t, truncated)
+}
+
+func TestFilterAndCapLabelValues_NoFilterKeepsAllNonEmpty(t *testing.T) {
+	raw := []core.ObservabilityMetricsLabelValue{{Value: "b"}, {Value: ""}, {Value: "a"}}
+
+	values, matched, truncated := filterAndCapLabelValues(raw, "")
+
+	assert.Equal(t, []string{"a", "b"}, values)
+	assert.Equal(t, 2, matched)
+	assert.False(t, truncated)
+}
+
+// The pre-cap count is what tells the agent its filter was too broad, so it must
+// report the true match count rather than the length of the truncated slice.
+func TestFilterAndCapLabelValues_ReportsPreCapCountWhenTruncated(t *testing.T) {
+	raw := make([]core.ObservabilityMetricsLabelValue, 0, maxPrometheusLabelValuesInResponse+50)
+	for i := 0; i < maxPrometheusLabelValuesInResponse+50; i++ {
+		raw = append(raw, core.ObservabilityMetricsLabelValue{Value: fmt.Sprintf("pod-%04d", i)})
+	}
+
+	values, matched, truncated := filterAndCapLabelValues(raw, "")
+
+	assert.Len(t, values, maxPrometheusLabelValuesInResponse)
+	assert.Equal(t, maxPrometheusLabelValuesInResponse+50, matched, "matched must be the pre-cap total")
+	assert.True(t, truncated)
+}
+
+func TestFilterAndCapLabelValues_NoMatchesReturnsZero(t *testing.T) {
+	raw := []core.ObservabilityMetricsLabelValue{{Value: "10.0.0.2:9100"}}
+
+	values, matched, truncated := filterAndCapLabelValues(raw, "nonexistent")
+
+	assert.Empty(t, values)
+	assert.Equal(t, 0, matched)
+	assert.False(t, truncated)
+}
+
+// A delimited string key would make (filter "a:b", metric "c") and (filter "a",
+// metric "b:c") the same cache entry, so one lookup would be served the other's
+// values. Colons are not hypothetical here: Prometheus recording-rule metric
+// names contain them (cluster:node_cpu:ratio) and the filter is free-form.
+func TestLabelValuesCacheKey_ColonsDoNotCollide(t *testing.T) {
+	base := labelValuesCacheKey{accountId: "acct", provider: "prometheus", label: "instance"}
+
+	first := base
+	first.filter, first.metric = "a:b", "c"
+	second := base
+	second.filter, second.metric = "a", "b:c"
+
+	assert.NotEqual(t, first, second, "colon placement must remain distinguishable")
+
+	// Struct keys are comparable, so sync.Map treats them as distinct entries.
+	var cache sync.Map
+	cache.Store(first, "first")
+	cache.Store(second, "second")
+	got, ok := cache.Load(first)
+	require.True(t, ok)
+	assert.Equal(t, "first", got, "second Store must not overwrite the first")
+}
+
+// Label-value results live in their own cache, so a metrics_list entry can never
+// be read back as a label-value entry (or vice versa) even for a coincident key.
+func TestLabelValuesCache_IsSeparateFromMetricsListCache(t *testing.T) {
+	key := labelValuesCacheKey{accountId: "acct", provider: "prometheus", label: "instance"}
+	metricsLabelValuesCache.Store(key, metricsListCacheEntry{
+		response: core.NBToolResponse{Data: "label-values"},
+		expiry:   time.Now().Add(time.Minute),
+	})
+	t.Cleanup(func() { metricsLabelValuesCache.Delete(key) })
+
+	_, found := metricsListCache.Load(key)
+	assert.False(t, found, "label-value entries must not land in the metrics_list cache")
+}
+
+// A missing label must be a self-explanatory error rather than a backend call,
+// and it must name the tool that lists valid label names.
+func TestListMetricsLabelValuesTool_RequiresLabel(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "prometheus"}
+
+	resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{})
+
+	require.NoError(t, err, "a missing argument is a recoverable LLM mistake, not a tool failure")
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, ToolMetricsLabelsList,
+		"error must point at the tool that lists label names")
+}
+
+func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "prometheus"}
+
+	assert.Equal(t, ToolMetricsLabelValues, tool.Name())
+	schema := tool.InputSchema()
+	assert.Equal(t, []string{"label"}, schema.Required)
+	for _, key := range []string{"label", "filter", "metric"} {
+		assert.Contains(t, schema.Properties, key)
+	}
+	// metrics_labels_list returns names; this tool is the only source of values.
+	// The descriptions must not blur that, or the planner picks the wrong one.
+	assert.Contains(t, tool.Description(), "VALUES")
+	assert.Contains(t, ListMetricsLabelsTool{}.Description(), "labels")
+}
+
+// The empty-result guidance is the agent's only cue at the exact moment it would
+// otherwise start guessing label names, so it must route both named-resource
+// shapes: workloads to series-match, everything else to label-values.
+func TestPrometheusNoDataMessage_RoutesEachDiscoveryShape(t *testing.T) {
+	msg := prometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
+
+	assert.Contains(t, msg, `node_cpu_seconds_total{kubernetes_node="worker-1"}`,
+		"the failing query must be echoed so the agent knows what to change")
+	assert.Contains(t, msg, ToolMetricsSeriesMatch, "workload path")
+	assert.Contains(t, msg, ToolMetricsLabelValues, "non-workload named-resource path")
+	assert.Contains(t, msg, ToolMetricsList, "keyword-discovery path")
+	assert.Contains(t, msg, "do NOT guess another label name",
+		"must explicitly forbid the observed guess-loop")
+}
+
+// TestESNumericFieldTypes_DistinguishMetricsFromDimensions pins the type split that
+// replaced the old identity-field guess. For Beats-family indices the metric identity is
+// the numeric FIELD PATH — the same path the backend flattens into `__name__` on every
+// series — so numeric types are metric candidates and everything else is a dimension.
+func TestESNumericFieldTypes_DistinguishMetricsFromDimensions(t *testing.T) {
+	for _, ty := range []string{"long", "integer", "double", "float", "scaled_float", "unsigned_long"} {
+		assert.True(t, esNumericFieldTypes[ty], "%s is a metric value type", ty)
+	}
+	// Dimensions and metadata must never be offered as metric names.
+	for _, ty := range []string{"keyword", "text", "date", "boolean", "ip", "object", ""} {
+		assert.False(t, esNumericFieldTypes[ty], "%s is not a metric value type", ty)
+	}
+	// An unfamiliar type is treated as a dimension rather than guessed into a metric.
+	assert.False(t, esNumericFieldTypes["some_future_type"])
+	assert.Equal(t, "name", esMetricNameField, "the OTel metric-name field")
+}
+
+// TestMetricsListTool_DescriptionMatchesAcceptedInput guards the input-shape gap: the
+// description promised a keyword only, while the implementation also accepts an index
+// pattern, and silently ignored the keyword for ES. A caller told one contract and given
+// another emits calls that look successful and return nothing (see #33876).
+func TestMetricsListTool_DescriptionMatchesAcceptedInput(t *testing.T) {
+	desc := MetricsListTool{}.Description()
+	assert.Contains(t, desc, "keyword", "keyword form must stay documented")
+	assert.Contains(t, desc, "wildcard", "the index-pattern form must be documented too")
+	assert.Contains(t, desc, "index pattern")
+}
+
+// ---------------------------------------------------------------------------
+// metrics_label_values — Elasticsearch argument contract.
+//
+// Every pre-existing test in this file builds the tool with Provider "prometheus".
+// The ES branch had no coverage at all, which is how `metric_name` came to carry a
+// metric name into the index position and stay there. Reproduced against dev account
+// 25f42d26 on 2026-08-26:
+//
+//	metric_name = "kubernetes.pod.cpu.usage.nanocores" -> 404 no such index [...]
+//	metric_name = "metricbeat-8.19.11"                 -> 200 + pod names
+// ---------------------------------------------------------------------------
+
+func TestSanitizeMetricsArg(t *testing.T) {
+	// The quoted form is what produced `no such index [\"aws.rds.cpu.total.pct\"]`.
+	assert.Equal(t, "aws.rds.cpu.total.pct", sanitizeMetricsArg(`"aws.rds.cpu.total.pct"`))
+	assert.Equal(t, "aws.rds.cpu.total.pct", sanitizeMetricsArg("`aws.rds.cpu.total.pct`"))
+	assert.Equal(t, "instance", sanitizeMetricsArg(`  'instance'  `))
+	assert.Equal(t, "instance", sanitizeMetricsArg(`inst\\ance`))
+	assert.Equal(t, "", sanitizeMetricsArg(`  `))
+}
+
+func TestValidateLabelArg_RejectsQueryStringSyntax(t *testing.T) {
+	// The exact value the planner produced.
+	err := validateLabelArg("kubernetes.pod.name&filter=api-preprod")
+	require.Error(t, err)
+	// The message must name the argument to use, or the agent reformulates the label
+	// instead of fixing the call — which is the loop this guards against.
+	assert.Contains(t, err.Error(), `"filter"`)
+	assert.Contains(t, err.Error(), `"api-preprod"`)
+	assert.Contains(t, err.Error(), `"kubernetes.pod.name"`)
+
+	assert.Error(t, validateLabelArg("pod?x=1"))
+	assert.Error(t, validateLabelArg("pod name"))
+
+	// Ordinary field names, including dotted ES paths, must pass untouched.
+	for _, ok := range []string{
+		"instance", "kubernetes.pod.name", "metricset.dimensions.DBInstanceIdentifier",
+	} {
+		assert.NoError(t, validateLabelArg(ok), "label %q must be accepted", ok)
+	}
+}
+
+func TestListMetricsLabelValuesTool_RejectsMangledLabel(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "ES", DefaultIndex: "metricbeat-8.19.11"}
+	resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{
+		Arguments: map[string]any{"label": "kubernetes.pod.name&filter=app-dev"},
+	})
+	require.NoError(t, err)
+	// Must fail BEFORE any network call, and must fail loudly: this previously
+	// reached Elasticsearch, matched no field and returned `200 []`.
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, `"filter"`)
+}
+
+func TestListMetricsLabelValuesTool_DescriptionStatesESIgnoresMetric(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "ES"}
+	// The old text said "providers that support it" without naming any, which is why
+	// the planner kept supplying a metric on ES.
+	assert.Contains(t, strings.ToLower(tool.Description()), "ignored on elasticsearch",
+		"the description must say plainly that ES ignores `metric`")
+	assert.Contains(t, strings.ToLower(tool.InputSchema().Properties["metric"].Description),
+		"ignored on elasticsearch")
+	// And it must not describe a JSON tool in function-call syntax.
+	assert.NotContains(t, tool.Description(), `metrics_label_values(label=`)
+}
+
+// ---------------------------------------------------------------------------
+// ES metric-name discovery.
+//
+// Reproduced on dev 2026-08-27, account 25f42d26, index pattern `metric*`:
+//
+//	metrics_list "metric*"  -> container.cpu.usage, container.memory.working_set
+//	agent: "no RDS metrics found", zero queries issued
+//
+// Eight CloudWatch metrics were in that pattern and had been read successfully
+// through the same account minutes earlier. Discovery returned on the first
+// non-empty source, so whichever shape carried a `name` field hid the rest.
+// ---------------------------------------------------------------------------
+
+func TestESDiscoveryProvenance_SeparatesDataFromSchema(t *testing.T) {
+	// Both sources contributed: the caller must be able to tell them apart, because
+	// on dev the mapping supplies 4306 names of which 79 have ever held a value.
+	both := esDiscoveryProvenance(2, 4306)
+	assert.Contains(t, both, "2 read from documents")
+	assert.Contains(t, both, "4306 declared in the index mapping")
+	assert.Contains(t, both, "may have no data")
+
+	// Mapping only: the warning has to be unmissable, since every name may be empty.
+	mappingOnly := esDiscoveryProvenance(0, 4306)
+	assert.Contains(t, mappingOnly, "may have no data")
+	assert.Contains(t, mappingOnly, "confirm a metric exists before concluding")
+
+	// Documents only: every name is a fact, so no caveat belongs on it.
+	docsOnly := esDiscoveryProvenance(8, 0)
+	assert.Contains(t, docsOnly, "8 read from documents")
+	assert.NotContains(t, docsOnly, "may have no data")
+
+	assert.Equal(t, "none found", esDiscoveryProvenance(0, 0))
 }

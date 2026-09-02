@@ -1,6 +1,8 @@
 package gcloud
 
 import (
+	"context"
+	"nudgebee/collector/cloud/providers"
 	"testing"
 
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
@@ -86,5 +88,118 @@ func TestMapMonitoringService(t *testing.T) {
 
 	if rt, _ := mapMonitoringService(&monitoringpb.Service{}); rt != "" {
 		t.Errorf("empty service should map to empty resource type, got %q", rt)
+	}
+}
+
+func TestPickLogMatchFilter(t *testing.T) {
+	// A policy mixing condition kinds contributes only its log-match filter.
+	policy := &monitoringpb.AlertPolicy{Conditions: []*monitoringpb.AlertPolicy_Condition{
+		{Condition: &monitoringpb.AlertPolicy_Condition_ConditionThreshold{
+			ConditionThreshold: &monitoringpb.AlertPolicy_Condition_MetricThreshold{Filter: `metric.type="x"`}}},
+		{Condition: &monitoringpb.AlertPolicy_Condition_ConditionMatchedLog{
+			ConditionMatchedLog: &monitoringpb.AlertPolicy_Condition_LogMatch{
+				Filter: `resource.type="gke_nodepool" AND jsonPayload.state="STARTED"`}}},
+	}}
+	want := `resource.type="gke_nodepool" AND jsonPayload.state="STARTED"`
+	if got := pickLogMatchFilter(policy); got != want {
+		t.Errorf("pickLogMatchFilter:\n got=%s\nwant=%s", got, want)
+	}
+
+	// Metric-only policy has no log scope to offer.
+	metricOnly := &monitoringpb.AlertPolicy{Conditions: []*monitoringpb.AlertPolicy_Condition{
+		{Condition: &monitoringpb.AlertPolicy_Condition_ConditionThreshold{
+			ConditionThreshold: &monitoringpb.AlertPolicy_Condition_MetricThreshold{Filter: `metric.type="x"`}}},
+	}}
+	if got := pickLogMatchFilter(metricOnly); got != "" {
+		t.Errorf("metric-only policy should yield no filter, got %q", got)
+	}
+
+	// A blank filter is not a scope — must fall through, not scope to everything.
+	blank := &monitoringpb.AlertPolicy{Conditions: []*monitoringpb.AlertPolicy_Condition{
+		{Condition: &monitoringpb.AlertPolicy_Condition_ConditionMatchedLog{
+			ConditionMatchedLog: &monitoringpb.AlertPolicy_Condition_LogMatch{Filter: "  "}}},
+	}}
+	if got := pickLogMatchFilter(blank); got != "" {
+		t.Errorf("blank filter should yield %q, got %q", "", got)
+	}
+
+	if got := pickLogMatchFilter(nil); got != "" {
+		t.Errorf("nil policy should yield no filter, got %q", got)
+	}
+}
+
+func TestLoggingResourceType(t *testing.T) {
+	// HTTP(S) LB alerts fire on https_lb_rule / l7_lb_rule; the logs are all written
+	// under http_load_balancer.
+	if got := loggingResourceType("https_lb_rule"); got != "http_load_balancer" {
+		t.Errorf("https_lb_rule -> %q", got)
+	}
+	if got := loggingResourceType("l7_lb_rule"); got != "http_load_balancer" {
+		t.Errorf("l7_lb_rule -> %q", got)
+	}
+	// Types where both catalogs agree pass through untouched.
+	for _, rt := range []string{"cloud_run_revision", "cloudsql_database", "gae_app", "gke_cluster"} {
+		if got := loggingResourceType(rt); got != rt {
+			t.Errorf("%s should pass through, got %q", rt, got)
+		}
+	}
+}
+
+// TestResolveGcloudScopeOfflinePaths covers the resolver branches that reach no GCP API:
+// the instance-scoped path that already works in production (regression guard) and the
+// fallback that must remap the resource type.
+func TestResolveGcloudScopeOfflinePaths(t *testing.T) {
+	ctx := providers.NewCloudProviderContext(context.Background())
+	account := providers.Account{}
+
+	tests := []struct {
+		name       string
+		in         GCPScopeInput
+		wantFilter string
+		wantSource string
+	}{
+		{
+			// https_lb_rule metric alert: no identifying labels, no log metric, no SLO.
+			// Before the remap this produced resource.type="https_lb_rule", which matches
+			// no Cloud Logging entry at all.
+			name:       "lb fallback remaps to the logging resource type",
+			in:         GCPScopeInput{Project: "example-project", ResourceType: "https_lb_rule", MetricType: "loadbalancing.googleapis.com/https/request_count", AlertType: "metric"},
+			wantFilter: `resource.type="http_load_balancer"`,
+			wantSource: "resource_type_fallback",
+		},
+		{
+			name:       "log alert without a policy id still falls back by resource type",
+			in:         GCPScopeInput{Project: "p", ResourceType: "gke_nodepool", AlertType: "log"},
+			wantFilter: `resource.type="gke_nodepool"`,
+			wantSource: "native_log",
+		},
+		{
+			// Regression guard: the instance-scoped path serving 1300+ prod events daily.
+			name: "identifying labels still scope to the instance, unmapped",
+			in: GCPScopeInput{Project: "p", ResourceType: "cloud_run_revision", AlertType: "metric",
+				ResourceLabels: map[string]string{"project_id": "p", "service_name": "frontoffice", "location": "us-central1"}},
+			wantFilter: `resource.type="cloud_run_revision" AND resource.labels.location="us-central1" AND resource.labels.service_name="frontoffice"`,
+			wantSource: "resource_labels",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveGcloudScope(ctx, account, tt.in)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.LogFilter != tt.wantFilter {
+				t.Errorf("filter:\n got=%s\nwant=%s", got.LogFilter, tt.wantFilter)
+			}
+			if got.Source != tt.wantSource {
+				t.Errorf("source = %q, want %q", got.Source, tt.wantSource)
+			}
+		})
+	}
+
+	// No resource type and nothing else to go on is an error, not a project-wide scope.
+	if _, err := resolveGcloudScope(ctx, account, GCPScopeInput{Project: "p"}); err == nil {
+		t.Error("expected an error when nothing identifies a scope")
 	}
 }

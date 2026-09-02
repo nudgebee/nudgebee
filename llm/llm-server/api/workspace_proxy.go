@@ -159,7 +159,8 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 	}
 
 	accountId, _ := payload["account_id"].(string)
-	if accountId != "" && !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if accountId != "" && !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		!granted(ctx.GetSecurityContext(), accountId, moduleAiMisc, "Read", "Write") {
 		return nil, nil, "", errors.New(errorUserAccessMessage)
 	}
 
@@ -367,7 +368,7 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 	case "clickhouse", "clickhouse-client":
 		relayJob = tools.RelayJobClickhouse
 		registeredToolName = tools.ToolExecuteClickhouseQuery
-	case "rabbitmq", "rabbitmqadmin":
+	case "rabbitmq", "rabbitmqadmin", "rabbitmq-api":
 		relayJob = tools.RelayJobRabbitmq
 		registeredToolName = tools.ToolExecuteRabbitCommand
 	case "mssql", "sqlcmd":

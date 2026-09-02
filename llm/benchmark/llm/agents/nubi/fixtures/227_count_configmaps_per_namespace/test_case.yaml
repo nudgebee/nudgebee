@@ -16,6 +16,13 @@ tags:
   - holmesgpt-parity
 
 before_test: |
+  # Pre-clean any app-227-* namespaces orphaned by a crashed/timed-out prior run,
+  # then wait for deletion so create doesn't collide with a Terminating namespace.
+  kubectl delete namespace app-227-payments app-227-inventory app-227-shipping app-227-analytics app-227-notifications --wait=false --ignore-not-found || true
+  for NS in payments inventory shipping analytics notifications; do
+    kubectl wait --for=delete namespace/app-227-$NS --timeout=120s 2>/dev/null || true
+  done
+
   echo "Creating 5 namespaces for ConfigMap counting test"
   for NS in payments inventory shipping analytics notifications; do
     kubectl create namespace "app-227-$NS" || true
@@ -62,6 +69,6 @@ before_test: |
   echo "Test setup complete!"
 
 after_test: |
-  for NS in payments inventory shipping analytics notifications; do
-    kubectl delete namespace "app-227-$NS" || true
-  done
+  # Parallel, non-blocking teardown: a slow namespace deletion can't time out the
+  # loop and orphan later namespaces (which would fail the next run's setup).
+  kubectl delete namespace app-227-payments app-227-inventory app-227-shipping app-227-analytics app-227-notifications --wait=false --ignore-not-found || true

@@ -2,9 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/cloud"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -19,6 +16,26 @@ func init() {
 	core.RegisterNBToolFactory(ToolExecuteGcpCliCommand, func(accountId string) (core.NBTool, error) {
 		return GcpCliTool{}, nil
 	})
+	// Phase 3d (#32503): the retired GcpAgent used the short handle "gcp". Any
+	// stored delegate_agent(tools=["gcp"]) input, or LLM turn that saw "gcp" as
+	// a discoverable name before retirement, resolves to this canonical tool.
+	core.RegisterNBToolAlias("gcp", ToolExecuteGcpCliCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the gcp_orchestrator's `gcp_lean.yaml` prompt is NOT loaded.
+// Deliberately slim: safety-critical + easy-to-miss gcloud CLI gotchas only.
+// Orchestrator prompt owns the investigation methodology.
+func (t GcpCliTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs or make assumptions from empty results.",
+		"**IAM safety:** NEVER attempt to modify your own IAM permissions or bindings. `gcloud projects add-iam-policy-binding`, `gcloud projects set-iam-policy`, `gsutil iam set` are OFF LIMITS for granting yourself access. Report missing permissions as a finding.",
+		"**Project already set:** GCP project is pre-configured from account credentials. Do NOT run `gcloud config set project` before commands — pass `--project <project_id>` inline as a flag instead. Config-set slows execution and is unnecessary.",
+		"**--format gotcha:** `--format=json` is the safe default for parseable output. If using `--format=table`, you MUST specify columns in single quotes: `--format='table(name,region,status)'`. Bare `--format=table` fails because gcloud requires the projection.",
+		"**Tool name discipline:** The canonical tool name is `gcloud_execute`. Do NOT emit variants like `gcp_cloud_logging`, `gcp_cloud_monitoring`, `gcp_logging`, or `google_cloud` — those don't exist and the planner will fail to resolve them.",
+		"**High-volume queries:** Always use `--limit`, `resource.type` / label filters, and a bounded time window for logs, events, or lists — unbounded queries saturate context.",
+	}
 }
 
 type GcpCliTool struct{}
@@ -80,10 +97,6 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	command = strings.ReplaceAll(command, "\\\r\n", " ")
 	command = strings.ReplaceAll(command, "\\\n", " ")
 
-	if !strings.HasPrefix(command, "gcloud") {
-		command = "gcloud " + command // Ensure "gcloud" prefix
-	}
-
 	// Denylist auth commands
 	args, err := shlex.Split(command)
 	if err != nil {
@@ -105,85 +118,116 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		return core.NBToolResponse{}, fmt.Errorf("unable to identify accountId - %s, please configure", t.Name())
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		creds, err := GetCloudAccountCredentials(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		auth, err := BuildGcpAuth(creds)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
-		fullCommand := WrapCommandWithAuth(command, auth)
-
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, fullCommand, auth.Env)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("gcp: unable to execute shell script", "error", err.Error(), "command", fullCommand)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, gcloudErrorHint(response), "gcloud", "gcloud <command> --help"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()
-	if tenant == "" {
-		tenant1, err := security.GetTenantIdFromAccountId(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-		tenant = tenant1
-	}
-
-	response, err := cloud.Execute(cloud.CloudExecuteCliCommandRequest{
-		AccountID: accountId,
-		TenantID:  tenant,
-		UserID:    nbRequestContext.Ctx.GetSecurityContext().GetUserId(),
-		Command:   command,
-	})
+	creds, err := GetCloudAccountCredentials(accountId)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("gcp-cli: command execution failed", "error", err.Error(), "command", command)
 		return core.NBToolResponse{}, err
 	}
 
-	data := ""
-	if response["data"] != nil {
-		data = response["data"].(string)
-	} else if response["errors"] != nil {
-		errorsArr, ok := response["errors"].([]any)
-		if ok && len(errorsArr) > 0 {
-			errorMap, ok := errorsArr[0].(map[string]any)
-			if ok {
-				data = errorMap["message"].(string)
-			}
-		}
+	auth, err := BuildGcpAuth(creds)
+	if err != nil {
+		return core.NBToolResponse{}, err
 	}
 
-	if data == "" {
-		dataArr, err := common.MarshalJson(response)
-		if err != nil {
-			return core.NBToolResponse{}, err
+	auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
+	fullCommand := WrapCommandWithAuth(command, auth)
+
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, fullCommand, auth.Env)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("gcp: unable to execute shell script", "error", err.Error(), "command", fullCommand)
+		if response == "" {
+			response = err.Error()
 		}
-		data = string(dataArr)
+		return core.NBToolResponse{
+			Data:   cliRecoveryEnvelope(response, gcloudErrorHint(response), "gcloud", "gcloud <command> --help"),
+			Status: core.NBToolResponseStatusError,
+		}, err
 	}
 
 	return core.NBToolResponse{
-		Data: data,
-		Type: core.NBToolResponseTypeText,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// rejectNonGcloudShapes screens the input command against known-wrong shapes
+// that don't belong in gcloud_execute — returns an empty string when the
+// command is acceptable (starts with gcloud, gsutil, or looks like a shell
+// command that will get the "gcloud " prefix auto-added and either work or
+// fail with an actionable gcloud error).
+//
+// Rejected shapes (with routing hints instead of silent auto-prefixing):
+//   - curl/wget: model is trying REST API fallback; should route to shell_execute
+//     where auth tokens work naturally (`curl -H "Authorization: Bearer $(gcloud auth print-access-token)" ...`).
+//   - kubectl: wrong tool entirely.
+//   - bq: BigQuery CLI is separate from gcloud; belongs in shell_execute.
+//   - natural-language string (no CLI-token shape as first word): pipeline gap
+//     upstream sent a raw question through as if it were a command.
+//
+// gsutil is INTENTIONALLY allowed — see caller for the auto-prefix skip.
+func rejectNonGcloudShapes(command string) string {
+	// strings.Fields robustly handles all whitespace (space, tab, newline, CR)
+	// as separators — safer than IndexAny(trimmed, " \t") when input arrives
+	// with backslash-continuations already collapsed or embedded newlines.
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	firstToken := fields[0]
+	switch firstToken {
+	case "curl", "wget":
+		return "gcloud_execute runs the gcloud CLI only. For REST API calls " +
+			"(e.g. Cloud Monitoring / Cloud Trace v1), request `shell_execute` from the parent agent — " +
+			"it supports curl with `gcloud auth print-access-token` for auth."
+	case "kubectl":
+		return "gcloud_execute runs the gcloud CLI only. Use the `kubectl` tool for Kubernetes operations."
+	case "bq":
+		return "gcloud_execute runs the gcloud CLI only. For BigQuery queries, request `shell_execute` " +
+			"from the parent agent (the `bq` CLI is available there)."
+	}
+	// Natural-language sniff: first token is long, or has a non-executable
+	// shape (uppercase-first / punctuation). Executable names are short and
+	// match [a-z][A-Za-z0-9_.-]*.
+	if len(firstToken) > 30 || !isExecutableLikeToken(firstToken) {
+		trimmed := strings.TrimSpace(command)
+		preview := trimmed
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		return "gcloud_execute expects a shell command starting with `gcloud ...`. " +
+			"Got what looks like a natural-language string: \"" + preview + "\". " +
+			"Compose the gcloud command explicitly and re-run."
+	}
+	return ""
+}
+
+// isExecutableLikeToken reports whether s has the shape of a Unix executable
+// name — starts with a lowercase letter, then lowercase-letters / digits /
+// underscore / hyphen / dot only. Used to distinguish shell commands from
+// natural-language strings.
+//
+// The lowercase-first rule matters: natural-language sentences typically
+// start with an uppercase word ("Check ...", "List all ...", "Show me ..."),
+// and this heuristic catches them without false-positives against real Unix
+// commands (essentially all of which start lowercase — `Xvfb` is the only
+// widely-known exception, and it's not in play here).
+func isExecutableLikeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case i == 0 && r >= 'a' && r <= 'z':
+			// ok — lowercase start (real executable name shape)
+		case i > 0 && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.'):
+			// ok — mixed case + digits + safe punctuation after the first char
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // gcloudErrorHint returns an actionable recovery hint for the two gcloud
@@ -207,6 +251,15 @@ func gcloudErrorHint(rawError string) string {
 			"Wrap the --format value in single quotes so the shell passes it through unchanged: " +
 			"`--format='table(name,status,version)'` or `--format='value(name)'`. " +
 			"Correct this command rather than dropping --format entirely — gcloud needs the format spec to produce structured output."
+	case strings.Contains(lower, "requires a non-empty projection"):
+		// Projection-requiring formats (`table`, `csv`, `value`) fail at the
+		// gcloud layer when no column list is provided. Distinct from the
+		// parens-shell class above; the model often lands here after
+		// "fixing" the shell error by dropping the parens.
+		return "The specified `--format` requires an explicit column list (projection) — this applies to `table`, `csv`, and `value`. " +
+			"Either switch to `--format=json` for parseable output, or specify the columns in single quotes: " +
+			"`--format='table(name,status,version)'` (same shape for `csv` and `value`). " +
+			"Do NOT drop --format entirely — pick one of these shapes."
 	case strings.Contains(lower, "has not been used in project") && strings.Contains(lower, "before or it is disabled"),
 		strings.Contains(lower, "permission_denied") && strings.Contains(lower, "api has not been used"):
 		// Per-project API enablement. The model tends to retry across every
@@ -216,6 +269,22 @@ func gcloudErrorHint(rawError string) string {
 			"Do NOT retry the same command on this project — report the specific project + API in your answer so the user can enable it, and continue with other projects if there are any."
 	case strings.Contains(lower, "quota exceeded"):
 		return "GCP quota exceeded for this API. Retrying will fail the same way; report the specific quota to the user and continue with other work."
+	case strings.Contains(lower, "invalid choice:"):
+		// Subcommand hallucination — model invented a subcommand that doesn't
+		// exist in this gcloud tree (`gcloud sql insights`, `gcloud monitoring
+		// timeseries`, etc.). gcloud's own error prints the valid alternatives
+		// under a "Maybe you meant:" section on line 2+. Steer the model to
+		// read that list rather than guessing another name.
+		if strings.Contains(lower, "maybe you meant:") {
+			return "gcloud printed the valid alternatives above under 'Maybe you meant:'. " +
+				"Pick one from that list and re-run — do NOT guess another subcommand name. " +
+				"If none of the suggestions fit your intent, extract the parent path from the error " +
+				"line (e.g. `ERROR: (gcloud.sql.insights)` → parent is `gcloud sql`) and run " +
+				"`gcloud <parent> --help` to see the full subcommand tree."
+		}
+		return "The subcommand is invalid. Extract the parent path from the error line " +
+			"(e.g. `ERROR: (gcloud.sql.insights)` → parent is `gcloud sql`) and run " +
+			"`gcloud <parent> --help` to see the valid subcommands. Do NOT guess another name."
 	}
 	return ""
 }

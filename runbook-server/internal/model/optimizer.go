@@ -34,7 +34,22 @@ type RecommendationResolutionType string
 
 const (
 	RecommendationResolutionTypeDeploymentChange RecommendationResolutionType = "DeploymentChange"
+	RecommendationResolutionTypePullRequest      RecommendationResolutionType = "PullRequest"
 )
+
+// PRLifecycleTerminalStates mirrors the terminal set used by the api-server's
+// open-PR guard (findOpenPRResolution in recommendation/service.go). A PR
+// resolution outside this set is still open on the provider, and the api-server
+// answers a fresh apply by handing back that existing resolution instead of
+// raising a second PR.
+//
+// The optimizer must therefore treat those recommendations as busy. When the two
+// sides disagreed — the optimizer keying off status while the guard keyed off
+// lifecycle — a run would execute a task, be handed a resolution it had already
+// recorded, and abort on a duplicate key before writing any status, wedging the
+// task in Scheduled and silently disabling that workload forever (#34943). Keep
+// this list in sync with the api-server guard.
+var PRLifecycleTerminalStates = []string{"merged", "closed", "unresolvable"}
 
 type RecommendationResolutionStatus string
 
@@ -43,6 +58,13 @@ const (
 	RecommendationResolutionStatusSuccess    RecommendationResolutionStatus = "Success"
 	RecommendationResolutionStatusFailed     RecommendationResolutionStatus = "Failed"
 )
+
+// RecommendationResolutionResolverTypeAutoOptimize mirrors the api-server
+// resolver type (models.RecommendationResolutionResolverTypeAutoOptimize) for a
+// resolution a scheduled auto optimize raised and therefore owns end to end.
+// Only these pull requests are eligible for an in-place value refresh; one a
+// person raised by hand is left alone (#34959).
+const RecommendationResolutionResolverTypeAutoOptimize = "AutoOptimize"
 
 type RecommendationStatus string
 
@@ -61,6 +83,21 @@ const (
 	AutopilotTaskStatusFailed    AutopilotTaskStatus = "Failed"
 	AutopilotTaskStatusSkipped   AutopilotTaskStatus = "Skipped"
 )
+
+// ScheduledTaskStaleAfter bounds how long a task may sit in Scheduled and still
+// hold its recommendation back from a fresh run.
+//
+// A task in Scheduled is normally one waiting its turn inside a live run, so
+// skipping its recommendation is correct. But a run that dies before writing a
+// terminal status leaves a row that looks identical and never clears, which used
+// to disable that workload permanently (#34943).
+//
+// The optimizer workflow carries a 1h execution timeout, so a genuinely in-flight
+// task cannot outlive that. This sits comfortably above it: long enough that a
+// slow-but-live run is never double-scheduled (which would raise a second PR,
+// the regression #33523 fixed), short enough that a wedged workload recovers on
+// its own within a couple of cycles.
+const ScheduledTaskStaleAfter = 2 * time.Hour
 
 // AutoOptimizeResourceFilter represents a filter for resources.
 type AutoOptimizeResourceFilter struct {
@@ -276,7 +313,19 @@ type AutoOptimizeTaskAttributes struct {
 	Response     map[string]any `json:"response,omitempty"`
 	TicketLink   *string        `json:"ticket_link,omitempty"`
 	PRLink       *string        `json:"pr_link,omitempty"`
+	// PRAction is what the apply did to the pull request: "created", "refreshed",
+	// "unchanged", or "" when the api-server did not say. A task holding a
+	// resolution id is not by itself evidence the run changed anything — the
+	// open-PR guard returns the existing resolution untouched — so this is what
+	// separates the two. See notifications.go:classifyTask.
+	PRAction string `json:"pr_action,omitempty"`
 }
+
+// PRAction values, mirroring the api-server's recommendation.PRAction. Only the
+// one the optimizer branches on is named; the others travel through as data.
+const (
+	PRActionUnchanged = "unchanged"
+)
 
 // AutoOptimizeTask represents a task execution.
 type AutoOptimizeTask struct {

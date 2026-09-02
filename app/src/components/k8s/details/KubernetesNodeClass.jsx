@@ -13,7 +13,7 @@ import { hasWriteAccess } from '@lib/auth';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
-import yaml1 from 'js-yaml';
+import * as yaml1 from 'js-yaml';
 import Text from '@shared/format/Text';
 import { useData } from '@context/DataContext';
 import FilterDropdown from '@ui/FilterDropdown';

@@ -9,6 +9,9 @@ from server.recommendation.vertical_rightsizing.strategy.strategies import RunRe
 from server.recommendation.vertical_rightsizing.models.allocations import RecommendationValue
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData
 from server.recommendation.vertical_rightsizing.services.metrics_datadog_service import DatadogMetricsService
+from server.recommendation.vertical_rightsizing.services.metrics_elasticsearch_service import (
+    ElasticsearchMetricsService,
+)
 from server.recommendation.vertical_rightsizing.models.result import (
     ResourceAllocations,
     ResourceScan,
@@ -42,11 +45,33 @@ class RecommendationService:
         datadog_api_key: Optional[str] = None,
         datadog_app_key: Optional[str] = None,
         datadog_site: Optional[str] = None,
+        elasticsearch: Optional[dict] = None,
     ) -> None:
         self._config = config
         self._executor = ThreadPoolExecutor(self._config.max_workers)
         self.account_id = account_id
-        if metrics_provider == "datadog":
+        if metrics_provider == "ES":
+            # An ES account has no Prometheus to fall back to, so a missing connection
+            # has to fail loudly. Falling through to PrometheusMetricsService is what
+            # made rightsizing silently produce nothing for these accounts.
+            if not elasticsearch:
+                raise ValueError(
+                    f"metrics_provider=ES for account {account_id} but no elasticsearch connection was supplied"
+                )
+            self._metrics_service_loaders = ElasticsearchMetricsService(
+                config,
+                account_id,
+                self._executor,
+                url=elasticsearch.get("url", ""),
+                auth_type=elasticsearch.get("auth_type"),
+                username=elasticsearch.get("username"),
+                password=elasticsearch.get("password"),
+                api_key=elasticsearch.get("api_key"),
+                bearer_token=elasticsearch.get("bearer_token"),
+                metrics_index=elasticsearch.get("metrics_index"),
+                tls_skip_verify=bool(elasticsearch.get("tls_skip_verify", False)),
+            )
+        elif metrics_provider == "datadog":
             self._metrics_service_loaders = DatadogMetricsService(
                 config,
                 account_id,

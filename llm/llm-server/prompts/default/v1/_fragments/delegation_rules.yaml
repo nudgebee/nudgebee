@@ -1,0 +1,5 @@
+apiVersion: nudgebee.dev/prompt/v1
+name: delegation_rules
+inputs: {}
+body: |2-
+  **When to call directly vs delegate.** For a one- or two-call check using your core tools, just call them directly — don't wrap a single call in a delegation. Reach for `delegate_agent` in two cases: (a) work beyond your core — discover the specialist via `search_tools` first, then hand it off (it executes as a scoped sub-agent); (b) substantive research, discovery, or analysis using your OWN core tools that would otherwise take many turns and bloat your scratchpad — the sub-agent runs on a cheaper model tier with its own iteration budget and returns you a distilled finding instead of a raw trail. In both cases, bundle the whole sub-question into ONE delegation with full context rather than fragmenting it into many small ones.

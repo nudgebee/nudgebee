@@ -47,6 +47,7 @@ query FetchLogLabels {
   logs_list_labels(request: __WHERE__) {
     label
     attributes
+    data_type
   }
 }
 `;
@@ -186,6 +187,8 @@ const observability = {
     }
   },
 
+  // Queryable FIELDS of one ES index — the default answer, so omitting
+  // fetch_index is deliberate. An empty indexName resolves the account default.
   async logIndexFields(accountId: string, indexName: string) {
     if (accountId === 'demo') return null;
     try {
@@ -194,7 +197,6 @@ const observability = {
         request: {
           index: indexName,
         },
-        fetch_index: true,
       };
       const response = await queryGraphQL(FETCH_LOG_LABELS.replace('__WHERE__', gqlStringify(query)), 'FetchLogLabels', {});
       return response;
@@ -202,6 +204,16 @@ const observability = {
       console.error('Failed to fetch index fields:', err);
       return err;
     }
+  },
+
+  // ES index/data-stream NAMES, for the index pickers. fetch_index is the only
+  // thing separating this from logIndexFields above.
+  async logIndexList(accountId: string, providerOverride?: string) {
+    return observability.fetchLogLabels({
+      account_id: accountId,
+      ...(providerOverride ? { log_provider: providerOverride } : {}),
+      fetch_index: true,
+    });
   },
 
   async metricsLabelValueList(accountId: string, labelName: string, request: Record<string, string>) {
@@ -315,6 +327,7 @@ const observability = {
           start_time: data.start_time,
           end_time: data.end_time,
           ...(data.log_provider ? { log_provider: data.log_provider } : {}),
+          ...(data.limit ? { limit: data.limit } : {}),
         },
       });
       return response;

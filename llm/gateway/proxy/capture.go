@@ -14,20 +14,53 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// resolveSession returns the session/round correlation id for a request. LLM APIs
-// are stateless, so this is client-supplied only: the configured correlation
-// header first, then Anthropic's body metadata.user_id. Empty when neither is set
-// — we never fabricate one.
-func resolveSession(c *gin.Context, body []byte) (id, source string) {
+// resolveSession returns the session/round correlation id for a request, with its
+// source. Resolution order, most-authoritative first: the configured correlation
+// HEADER; then a real session_id nested inside Anthropic's metadata.user_id (Claude
+// Code sends user_id as a JSON blob {device_id, account_uuid, session_id} — the
+// session_id there is the true per-conversation id); then the raw metadata.user_id
+// (other clients that send a plain identifier); then the INFERRED prefix fingerprint
+// (a stable hash of system+tools+first-user — see prefixFingerprint; deterministic,
+// so a conversation's turns share it). Empty only when there is no prefix to
+// fingerprint either. `fingerprint` is precomputed by the caller (it also feeds
+// cache-affinity routing). New signals slot in above `inferred` later.
+func resolveSession(c *gin.Context, body []byte, fingerprint string) (id, source string) {
 	if h := config.Config.SessionHeader; h != "" {
 		if v := strings.TrimSpace(c.GetHeader(h)); v != "" {
 			return v, "header"
 		}
 	}
-	if uid := bodyMetadataUserID(body); uid != "" {
-		return uid, "metadata.user_id"
+	if uid := strings.TrimSpace(bodyMetadataUserID(body)); uid != "" {
+		if strings.HasPrefix(uid, "{") {
+			// A JSON blob (Claude Code): use the nested session_id if present,
+			// otherwise fall through to the inferred fingerprint — never store the
+			// raw blob as a session id.
+			if sid := nestedSessionID(uid); sid != "" {
+				return sid, "metadata.session_id"
+			}
+		} else {
+			return uid, "metadata.user_id" // a plain client-supplied identifier
+		}
+	}
+	if fingerprint != "" {
+		return fingerprint, "inferred"
 	}
 	return "", ""
+}
+
+// nestedSessionID pulls a real session_id out of a metadata.user_id value when the
+// client encodes one as JSON (Claude Code: {"device_id":…,"account_uuid":…,
+// "session_id":"<uuid>"}). Returns "" for a plain-string user_id (no JSON object),
+// so callers fall back to the raw value.
+func nestedSessionID(uid string) string {
+	if !strings.HasPrefix(strings.TrimSpace(uid), "{") {
+		return ""
+	}
+	var m struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal([]byte(uid), &m)
+	return strings.TrimSpace(m.SessionID)
 }
 
 // extractRequestAttributes pulls structure-only metadata from the provider-native
@@ -39,13 +72,14 @@ func extractRequestAttributes(_ schemas.ModelProvider, body []byte) map[string]a
 		return nil
 	}
 	var r struct {
-		Model       string            `json:"model"`
-		MaxTokens   *int              `json:"max_tokens"`
-		Temperature *float64          `json:"temperature"`
-		TopP        *float64          `json:"top_p"`
-		Stream      bool              `json:"stream"`
-		System      json.RawMessage   `json:"system"`
-		Messages    []json.RawMessage `json:"messages"`
+		Model       string          `json:"model"`
+		MaxTokens   *int            `json:"max_tokens"`
+		Temperature *float64        `json:"temperature"`
+		TopP        *float64        `json:"top_p"`
+		Stream      bool            `json:"stream"`
+		System      json.RawMessage `json:"system"`
+		Messages    []toolMessage   `json:"messages"`
+		Contents    []geminiContent `json:"contents"`
 		Tools       []struct {
 			Name     string   `json:"name"` // Anthropic
 			Function struct { // OpenAI
@@ -82,6 +116,18 @@ func extractRequestAttributes(_ schemas.ModelProvider, body []byte) map[string]a
 		attrs["tool_names"] = names
 		attrs["tool_count"] = len(names)
 	}
+	// Tool CALLS + failures (structure-only, names not arguments). Read from the
+	// conversation tail already parsed above — no cross-request correlation, no second
+	// body parse, and works even when the response is streamed (the request is always
+	// fully buffered).
+	if called, failed := toolActivityFromParsed(r.Messages, r.Contents); len(called) > 0 {
+		attrs["called_tools"] = called
+		attrs["called_count"] = len(called)
+		if len(failed) > 0 {
+			attrs["failed_tools"] = failed
+			attrs["failed_count"] = len(failed)
+		}
+	}
 	if len(attrs) == 0 {
 		return nil
 	}
@@ -113,6 +159,139 @@ func toolNames(tools []struct {
 		}
 	}
 	return names
+}
+
+// toolBlock is one content block of an Anthropic message, reduced to the tool fields:
+// a tool_use (assistant call: id+name) or a tool_result (user outcome: tool_use_id +
+// is_error). Non-tool blocks (text, image) leave these zero-valued.
+type toolBlock struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`          // tool_use: the call id
+	Name      string `json:"name"`        // tool_use: the tool name
+	ToolUseID string `json:"tool_use_id"` // tool_result: which call this answers
+	IsError   bool   `json:"is_error"`    // tool_result: the failure signal
+}
+
+// contentBlocks parses an Anthropic-style message `content` (an array of blocks) into
+// toolBlocks. Returns nil for string content (OpenAI/plain text) — no blocks to read.
+func contentBlocks(raw json.RawMessage) []toolBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []toolBlock
+	if json.Unmarshal(raw, &blocks) == nil {
+		return blocks
+	}
+	return nil
+}
+
+// toolMessage is one messages[] entry (Anthropic/OpenAI) reduced to the tool fields:
+// its role, the raw content (parsed lazily, only for the tail messages), and OpenAI's
+// assistant tool_calls. Content stays json.RawMessage so the bulk of the transcript is
+// never deeply parsed.
+type toolMessage struct {
+	Role      string          `json:"role"`
+	Content   json.RawMessage `json:"content"`
+	ToolCalls []struct {      // OpenAI assistant tool calls
+		ID       string `json:"id"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	} `json:"tool_calls"`
+}
+
+// geminiContent is one contents[] entry (Gemini) reduced to functionCall names.
+type geminiContent struct {
+	Role  string `json:"role"`
+	Parts []struct {
+		FunctionCall *struct {
+			Name string `json:"name"`
+		} `json:"functionCall"`
+	} `json:"parts"`
+}
+
+// toolActivityFromParsed reads structure-only tool CALL + failure signal from an
+// already-parsed conversation tail — names only, never arguments or results. Each
+// request carries the growing transcript, so the most recent assistant turn holds the
+// calls (Anthropic tool_use / OpenAI tool_calls / Gemini functionCall) and the following
+// user turn holds their results (Anthropic tool_result{is_error}); pairing them here
+// needs no cross-request correlation and works even when the response is streamed. Only
+// the LAST assistant turn is counted, so each call is counted exactly once across the
+// transcript. Anthropic yields calls AND failures (is_error is a clean bool);
+// OpenAI/Gemini yield calls only (they carry no structured tool-error flag).
+func toolActivityFromParsed(messages []toolMessage, contents []geminiContent) (called, failed []string) {
+	// messages[] shape (Anthropic + OpenAI): last assistant turn = calls, last user turn
+	// = their results.
+	lastAssistant, lastUser := -1, -1
+	for i, m := range messages {
+		switch m.Role {
+		case "assistant":
+			lastAssistant = i
+		case "user":
+			lastUser = i
+		}
+	}
+	idName := map[string]string{} // tool_use_id -> name, to attribute a failure to a tool
+	if lastAssistant >= 0 {
+		m := messages[lastAssistant]
+		for _, tc := range m.ToolCalls { // OpenAI
+			if tc.Function.Name != "" {
+				called = append(called, tc.Function.Name)
+				if tc.ID != "" {
+					idName[tc.ID] = tc.Function.Name
+				}
+			}
+		}
+		for _, blk := range contentBlocks(m.Content) { // Anthropic
+			if blk.Type == "tool_use" && blk.Name != "" {
+				called = append(called, blk.Name)
+				if blk.ID != "" {
+					idName[blk.ID] = blk.Name
+				}
+			}
+		}
+	}
+	if lastUser >= 0 { // Anthropic tool_result outcomes
+		for _, blk := range contentBlocks(messages[lastUser].Content) {
+			if blk.Type == "tool_result" && blk.IsError {
+				if name := idName[blk.ToolUseID]; name != "" {
+					failed = append(failed, name)
+				}
+			}
+		}
+	}
+
+	// contents[] shape (Gemini): last model turn's functionCall names (calls only).
+	if len(called) == 0 {
+		lastModel := -1
+		for i, c := range contents {
+			if c.Role == "model" {
+				lastModel = i
+			}
+		}
+		if lastModel >= 0 {
+			for _, p := range contents[lastModel].Parts {
+				if p.FunctionCall != nil && p.FunctionCall.Name != "" {
+					called = append(called, p.FunctionCall.Name)
+				}
+			}
+		}
+	}
+	return called, failed
+}
+
+// extractToolActivity parses a raw request body then delegates to toolActivityFromParsed.
+// The hot path (extractRequestAttributes) reuses its single unmarshal and does NOT call
+// this; it exists for direct unit testing.
+func extractToolActivity(body []byte) (called, failed []string) {
+	var r struct {
+		Messages []toolMessage   `json:"messages"`
+		Contents []geminiContent `json:"contents"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return nil, nil
+	}
+	return toolActivityFromParsed(r.Messages, r.Contents)
 }
 
 // extractResponseAttributes pulls structure-only metadata from a unary response
@@ -367,6 +546,89 @@ func modelFromPath(provider schemas.ModelProvider, path string) string {
 		rest = rest[:c]
 	}
 	return rest
+}
+
+// firstMessageMaxLen caps the stored opening-message preview (a short recognizer for
+// the Sessions tab, not the full prompt — keeps the structure-only spirit + the column small).
+const firstMessageMaxLen = 200
+
+// firstUserMessage extracts a short RAW preview of the request's first user message —
+// the opening question shown on the Sessions tab. Handles Anthropic/OpenAI string or
+// array (text-block) content and Gemini parts. Whitespace is collapsed to one line and
+// the text is length-capped; wrapper tokens (e.g. <session>) are deliberately NOT
+// stripped (they are client scaffolding, tool-specific). Empty when none is found.
+func firstUserMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var r struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return ""
+	}
+	var text string
+	for _, m := range r.Messages {
+		if m.Role == "user" {
+			text = messageContentText(m.Content)
+			break
+		}
+	}
+	if text == "" {
+		for _, ct := range r.Contents {
+			if ct.Role == "user" || ct.Role == "" {
+				for _, p := range ct.Parts {
+					if p.Text != "" {
+						text = p.Text
+						break
+					}
+				}
+				if text != "" {
+					break
+				}
+			}
+		}
+	}
+	text = strings.Join(strings.Fields(text), " ") // collapse whitespace to one line
+	if rs := []rune(text); len(rs) > firstMessageMaxLen {
+		text = string(rs[:firstMessageMaxLen])
+	}
+	return text
+}
+
+// messageContentText renders message content — a plain string, or an array of
+// {type,text} blocks (Anthropic) — to text.
+func messageContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) == nil {
+		parts := make([]string, 0, len(blocks))
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	return ""
 }
 
 // bodyMetadataUserID extracts Anthropic's metadata.user_id from a request body.

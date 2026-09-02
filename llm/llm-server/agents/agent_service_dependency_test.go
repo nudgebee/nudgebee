@@ -74,7 +74,7 @@ func TestServiceDependency_GetSupportedTools_KGAndResourceSearchOnly(t *testing.
 		"agent must expose kg_search_nodes for KG discovery")
 	assert.Contains(t, names, tools.ToolKGTraverse,
 		"agent must expose kg_traverse for dependency / topology / cloud-routing traversal")
-	assert.Contains(t, names, ResourceSearchAgentName,
+	assert.Contains(t, names, tools.ToolResourceSearch,
 		"agent must expose resource_search for fuzzy K8s + cloud resource matching")
 	assert.NotContains(t, names, tools.ToolServiceDependencyGraph,
 		"agent must NOT expose the (removed) runtime SDG tool — KG-only")
@@ -90,7 +90,7 @@ func TestServiceDependency_GetSupportedTools_KGAndResourceSearchOnly(t *testing.
 		"with KGGetNodeEnabled=true the drill-down tool must be advertised")
 	assert.Contains(t, names, tools.ToolKGSearchNodes)
 	assert.Contains(t, names, tools.ToolKGTraverse)
-	assert.Contains(t, names, ResourceSearchAgentName)
+	assert.Contains(t, names, tools.ToolResourceSearch)
 	assert.NotContains(t, names, tools.ToolServiceDependencyGraph)
 }
 
@@ -152,7 +152,7 @@ func TestServiceDependency_GetSystemPrompt_ToolUsageEntries(t *testing.T) {
 
 	assert.Contains(t, prompt.ToolUsage, tools.ToolKGSearchNodes)
 	assert.Contains(t, prompt.ToolUsage, tools.ToolKGTraverse)
-	assert.Contains(t, prompt.ToolUsage, ResourceSearchAgentName)
+	assert.Contains(t, prompt.ToolUsage, tools.ToolResourceSearch)
 	assert.NotContains(t, prompt.ToolUsage, tools.ToolServiceDependencyGraph,
 		"agent must not advertise the (removed) runtime SDG tool in its prompt")
 	assert.NotContains(t, prompt.ToolUsage, tools.ToolKGGetNode,

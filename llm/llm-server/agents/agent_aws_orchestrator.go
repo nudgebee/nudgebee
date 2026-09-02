@@ -1,239 +1,111 @@
 package agents
 
 import (
-	"log/slog"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
-	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	tocore "nudgebee/llm/tools/core"
-	"sort"
-	"strings"
 )
 
-// AWS Agent name constants
+// Lean-only: delegating/direct dropped 2026-08-11 (#32503 Phase 1).
+// The AWS orchestrator now runs the lean-loop implementation under the
+// primary handle; the always-direct eval handle (aws_orchestrator_2) and
+// the direct/delegating-mode branch were removed with the collapse.
 const (
-	// AgentAwsOrchestratorName is the name for the AWS debug agent
+	// AgentAwsOrchestratorName is the name for the AWS orchestrator.
 	AgentAwsOrchestratorName = "aws_orchestrator"
-	// AwsAgentName is the name for the AWS agent
+	// AwsAgentName is retained for one release as a compat shim after the
+	// wrapping AWS agent was retired in Phase 3d (#32503). The short handle
+	// `"aws"` now resolves to `aws_execute` via tool alias (see
+	// tools/tool_cloud_aws.go init).
 	AwsAgentName = "aws"
 )
 
 func init() {
+	// Legacy aliases (`aws_orchestrator_2`, `aws_debug_2`, `aws_orchestrator_lean`,
+	// `aws_debug_lean`) kept as registry lookup keys so stored conversation history
+	// referencing the pre-collapse eval / lean handles still resolves to the primary.
+	// Not surfaced in GetNameAliases so the @-picker isn't polluted.
 	core.RegisterNBAgentFactoryWithAliases(AgentAwsOrchestratorName, func(accountId string) (core.NBAgent, error) {
 		return newAwsOrchestratorAgent(accountId), nil
-	}, "aws_debug")
+	}, "aws_debug", "aws_orchestrator_2", "aws_debug_2", "aws_orchestrator_lean", "aws_debug_lean")
+	// The lean-only orchestrator preloads the reduced cloud core and reaches
+	// specialists on-demand via search_tools + delegate_agent; its tool set is
+	// cached per account and must be invalidated on agent-config or enabled-tool
+	// changes so a stale surface is not served after a change.
+	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
+		if agentName == "" || agentName == AgentAwsOrchestratorName {
+			InvalidateAgentSupportedToolsCache(accountId, AgentAwsOrchestratorName)
+		}
+	})
+	tocore.RegisterToolCacheInvalidator(func(accountId string) {
+		InvalidateAgentSupportedToolsCache(accountId, AgentAwsOrchestratorName)
+	})
 }
 
-// AwsOrchestratorAgent is an agent that helps debug AWS issues.
+// AwsOrchestratorAgent is a deliberately minimal AWS orchestrator: the reduced
+// cloud core (aws_execute + service_dependency_graph + events + recommendations
+// + websearch + delegate_agent + search_tools) plus a short principle-level
+// prompt (agent_aws_lean). Every specialist (databases, kubectl, aws_observability,
+// other clouds, github, tickets, …) is dropped from context and reached on-demand
+// via search_tools + delegate_agent. Everything else — including the answer
+// critique — runs through the same ReAct3 planner under the standard gates.
 type AwsOrchestratorAgent struct {
-	accountId            string
-	clusterSnapshot      map[string][]string
-	clusterSnapshotFound bool
+	accountId string
 }
 
-// newAwsOrchestratorAgent creates a new AwsOrchestratorAgent.
-// The factory will provide accountId.
+// newAwsOrchestratorAgent is the router-selected constructor. Lean-only; the
+// former mode switch (delegating / direct / lean) was collapsed away in #32503
+// Phase 1.
 func newAwsOrchestratorAgent(accountId string) core.NBAgent {
-	return &AwsOrchestratorAgent{
-		accountId: accountId,
-	}
+	return &AwsOrchestratorAgent{accountId: accountId}
 }
 
-// GetName returns the name of the agent.
-func (a *AwsOrchestratorAgent) GetName() string {
-	return AgentAwsOrchestratorName
-}
+func (a *AwsOrchestratorAgent) GetName() string { return AgentAwsOrchestratorName }
 
-// GetNameAliases returns aliases for the agent name.
 func (a *AwsOrchestratorAgent) GetNameAliases() []string {
 	return []string{"aws debug", "amazon_aws_debug", "aws_debug"}
 }
 
-// GetDescription returns a description of the agent.
 func (a *AwsOrchestratorAgent) GetDescription() string {
-	return "An expert AWS investigation and troubleshooting orchestrator that delegates to specialized sub-agents: `aws_observability` for CloudWatch Logs/Metrics/Alarms/X-Ray, and `aws` for all other AWS resources (EC2, RDS, S3, VPC, Lambda, Cost, etc.). Generates comprehensive investigation plans."
-}
-
-func (a *AwsOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
-	return getAwsPlannerSupportedTools(ctx, a.accountId)
+	return `Lean-loop AWS SRE/DevOps troubleshooting orchestrator: minimal principle-level prompt, direct aws_execute, specialists reached on-demand via search_tools + delegate_agent.`
 }
 
 func (a *AwsOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
+func (a *AwsOrchestratorAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
+func (a *AwsOrchestratorAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+
 // IsWatchCapable: drives action sub-agents whose async outcome completes later,
 // so it may register a background watch.
 func (a *AwsOrchestratorAgent) IsWatchCapable() bool { return true }
 
-func (a *AwsOrchestratorAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+// NB: no CritiqueEnabled() method on purpose — the orchestrator does not
+// implement NBAgentReActPlannerCritiqueSupport, so critique is governed by the
+// standard gate (LlmServerReActCritiqueEnabled && top-level && investigation).
+
+func (a *AwsOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
+	// Reduced cloud core (aws_execute + SDG + events + recommendations + delegate
+	// + search_tools); specialists reached on-demand via search_tools.
+	return getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteAwsCliCommand)
 }
 
-func (a *AwsOrchestratorAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
-}
-
-// GetSystemPrompt returns the system prompt for the agent.
 func (a *AwsOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAwsDebugReact)
-	instructions := strings.Split(promptText, "\n")
-
-	if !a.clusterSnapshotFound {
-		a.clusterSnapshot = tools.GetCurrentAwsAccountState(a.accountId)
-		a.clusterSnapshotFound = true
+	promptText, promptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptAwsLean, query.AccountId)
+	if promptErr != nil {
+		// Return nothing rather than continue: everything appended below is
+		// decoration, so carrying on yields a "system prompt" that is just a memory
+		// nudge — worse than empty, because it looks like a prompt. MustResolveAll
+		// covers default/v1 at startup; this catches a malformed provider- or
+		// version-specific override added later.
+		ctx.GetLogger().Error("aws orchestrator: system prompt failed to load", "error", promptErr)
+		return core.NBAgentPrompt{}
 	}
-
-	if len(a.clusterSnapshot) > 0 {
-		regions := append([]string(nil), a.clusterSnapshot["region"]...)
-		sort.Strings(regions)
-		services := append([]string(nil), a.clusterSnapshot["service"]...)
-		sort.Strings(services)
-		instructions = append(instructions, "**Current AWS State:**")
-		instructions = append(instructions, "Active Regions - "+strings.Join(regions, ","))
-		instructions = append(instructions, "**Current Services:**")
-		instructions = append(instructions, "AWS Services - "+strings.Join(services, ","))
+	if n := memoryNudgeIfEnabled(); n != "" {
+		promptText += "\n\n" + n
 	}
-
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, "**Full Shell Capabilities:**")
-		instructions = append(instructions, "The execution environment supports a full shell. You can use pipes (`|`), redirection, and standard Linux utilities (`grep`, `awk`, `sed`, `jq`, `sort`, `uniq`) in your planned queries.")
-		instructions = append(instructions, "Encourage the use of these tools to filter and process output directly in the command line for efficiency.")
-	}
-
-	constraints := []string{
-		"Sub-agents generate AWS CLI commands internally - describe WHAT to investigate in natural language",
-		"Investigation ONLY - DIAGNOSE and PROPOSE remediation, NEVER execute infrastructure changes",
-		"If logs show 'connection to IP X failed', ask 'Where did X come from?' (UserData, config)",
-		"Config issues (wrong IP/endpoint) look like network issues but are NOT - validate config first",
-		"NEVER query logs without first verifying log groups exist",
-		"If sub-agent reports 'not found', investigation ends there - don't fabricate next steps",
-	}
-
-	return core.NBAgentPrompt{
-		Role:         "an expert AWS investigation and troubleshooting orchestrator that delegates to specialized sub-agents",
-		Instructions: instructions,
-		Constraints:  constraints,
-		// ToolUsage intentionally omitted: the planner already renders each tool's
-		// Description() once via {{.tool_descriptions}}. Seeding it here duplicated that
-		// same text in the <tool_usage_instructions> block of this orchestrator's
-		// (account-cached) prompt prefix.
-		Rag: core.NBAgentPromptRag{
-			Module:      "planner",
-			Records:     3,
-			Format:      core.NBAgentPromptRagFormatString,
-			QuestionKey: "Question",
-			AnswerKey:   "Answer",
-		},
-		OutputFormat: awsReactOutputFormat,
-	}
-}
-
-// awsReactOutputFormat is the output format for react_3 planners — conditionally applies
-// the investigation format only for troubleshooting queries.
-const awsReactOutputFormat = `Choose the format based on the type of user request:
-
-**FOR INVESTIGATION / TROUBLESHOOTING QUERIES** (e.g. "why is X failing", "debug Y", "show me recent issues"):
-
-**Investigation Summary:**
-- **Symptom:** [What user reported]
-- **Signal:** [What metrics/logs showed]
-
-### Causality Chain (5-Whys)
-- **Symptom:** (The primary issue reported/observed)
-- **Why?** (Immediate cause of the symptom)
-- **Why?** (Next layer of causality)
-- **Root Cause:** (The foundational reason discovered)
-
-**Evidence Chain:**
-1. [Tool Name - ID](#task-ID) -> [Key finding]
-2. [Tool Name - ID](#task-ID) -> [Key finding]
-
-**CRITICAL: Citation Format Rule**
-You MUST use the full markdown link format for EVERY reference: [Short Tool Name - ID](#task-ID).
-Example: ...found in [AWS - E1](#task-E1) and [CloudWatch Logs - E3](#task-E3).
-Exception: when citing an external resource that has its own real URL (e.g. a GitHub PR/issue link), use [Label](actual-url) with that real URL instead — never substitute a #task-ID anchor for it.
-
-**Blast Radius:**
-- Affected resources: [list]
-- Potential downstream impact: [description]
-
-**Resolution:**
-- Immediate fix: [specific command/action]
-- Long-term recommendation: [prevention]
-
-**FOR ALL OTHER QUERIES** (generation, listing, explanation, how-to, etc.):
-Answer the user's question directly in clear markdown. Do NOT use the investigation format above. Use code blocks, tables, or bullet points as appropriate for the content.`
-
-func getAwsTicketAgentName() string {
-	if config.Config.TicketV2Enabled {
-		return "tickets_v2"
-	}
-	return "tickets"
-}
-
-// getAwsPlannerSupportedTools returns tools relevant to AWS debugging.
-// This orchestrator agent primarily delegates to aws_observability and aws sub-agents.
-func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId string) []tocore.NBTool {
-	supportedToolNames := []string{
-		"aws_observability",
-		AwsAgentName,
-		tools.ToolExecuteAwsCliCommand,
-		getAwsTicketAgentName(),
-		"github",          // GithubAgentName
-		"websearch",       // SearchAgentName
-		"recommendations", // RecommendationsAgentName
-		"events",          // EventsAgentName
-		"visualizer",      // VisualizationAgentName
-		"postgres",        // PostgresAgentName
-		"mysql",           // MySQLAgentName
-		"mssql",           // MSSQLAgentName
-		"oracle",          // OracleAgentName
-		"redis",           // RedisAgentName
-		"rabbitmq",        // RabbitMQAgentName
-		"kubectl",         // KubectlAgentName
-		DelegateAgentToolName,
-	}
-
-	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
-	// not just K8s, so expose it to this orchestrator. The old V1 variant that
-	// was K8s-only has been removed; the V2 flag guard here went with it.
-	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
-
-	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
-	// It auto-injects cloud credentials based on account type.
-
-	summary, err := tocore.GetAccountConfigSummary(ctx, accountId)
-	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentAwsOrchestratorName)
-	}
-
-	tools := make([]tocore.NBTool, 0, len(supportedToolNames))
-	for _, toolName := range supportedToolNames {
-		tool, found := tocore.GetNBTool(accountId, toolName)
-		if found {
-			// Check if tool is configured before adding it
-			if !tocore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentAwsOrchestratorName)
-				continue
-			}
-			tools = append(tools, tool)
-		} else {
-			slog.Warn("AWS Debug Planner: Tool not found in registry", "toolName", toolName, "accountId", accountId)
-		}
-	}
-
-	// Include MCP integration tools (dynamic names, not in static supportedToolNames list)
-	tools = append(tools, tocore.ListMCPIntegrationTools(accountId)...)
-
-	// Conditionally add think tool for complex investigations
-	if config.Config.LlmServerThinkToolEnabled {
-		if thinkTool, ok := tocore.GetNBTool(accountId, "think"); ok {
-			tools = append(tools, thinkTool)
-		}
-	}
-
-	return tools
+	return core.ParsePromptToNBAgentPrompt(promptText)
 }

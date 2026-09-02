@@ -35,6 +35,12 @@ jest.mock('@context/DataContext', () => ({
   useData: () => mockUseData(),
 }));
 
+// "Ask Nubi" opens the app-level chat drawer, whose provider lives in _app.
+const mockOpenNubiChat = jest.fn();
+jest.mock('@context/NubiGlobalChatContext', () => ({
+  useNubiGlobalChat: () => ({ openWithContext: mockOpenNubiChat }),
+}));
+
 jest.mock('@hooks/useTenantBranding', () => ({
   useTenantBranding: () => ({ assistantName: 'Nubi' }),
   getNubiIconUrl: () => '/nubi.svg',
@@ -123,18 +129,6 @@ jest.mock('@ui/Button', () => ({
 jest.mock('@ui/Toast', () => ({
   __esModule: true,
   toast: { success: jest.fn(), error: jest.fn(), info: jest.fn() },
-}));
-
-jest.mock('@shared/layout/NubiChatSidebar', () => ({
-  __esModule: true,
-  default: ({ isVisible, accountId, queryPrefix, context }) =>
-    isVisible ? (
-      <div data-testid='nubi-sidebar'>
-        <div data-testid='nubi-account'>{accountId}</div>
-        <div data-testid='nubi-query'>{queryPrefix}</div>
-        <div data-testid='nubi-conv-id'>{context?.data?.conversationId}</div>
-      </div>
-    ) : null,
 }));
 
 jest.mock('@ui/Stat', () => ({
@@ -418,17 +412,19 @@ describe('KubernetesBestPractices (integration)', () => {
     expect(snackbar.error).toHaveBeenCalledWith(expect.stringContaining('Bad'));
   });
 
-  it('opens Nubi sidebar with prompt + account + conv id when Nubi icon clicked', async () => {
+  it('opens the Nubi chat with prompt + account + conv id when Nubi icon clicked', async () => {
     render(<KubernetesBestPractices kubernetes={{ id: 'acc-1' }} />);
 
     await waitFor(() => expect(screen.getByTestId('btn-bp-ask-nubi-r-1')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('btn-bp-ask-nubi-r-1'));
 
-    expect(screen.getByTestId('nubi-sidebar')).toBeInTheDocument();
-    expect(screen.getByTestId('nubi-account')).toHaveTextContent('acc-1');
-    expect(screen.getByTestId('nubi-conv-id')).toHaveTextContent('recom_r-1');
-    expect(screen.getByTestId('nubi-query').textContent).toMatch(/^nubi-prompt-Misconfiguration$/);
+    expect(mockOpenNubiChat).toHaveBeenCalledWith({
+      accountId: 'acc-1',
+      sessionId: 'recom_r-1',
+      query: 'nubi-prompt-Misconfiguration',
+      categorySource: 'Optimize',
+    });
   });
 
   it('refetches with severity filter on change', async () => {

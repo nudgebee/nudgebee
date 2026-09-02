@@ -11,8 +11,10 @@ import (
 	"nudgebee/collector/cloud/providers"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
@@ -76,6 +78,26 @@ func isServiceUnavailableInRegion(err error) bool {
 	return false
 }
 
+// isRegionDisabled reports whether err is the auth-layer rejection AWS returns
+// when calling into a region that is not enabled (opted in) for the account:
+// IAM data and global-endpoint STS tokens are not propagated to disabled
+// opt-in regions, so calls fail fast with a token/subscription error rather
+// than a network error. Every mature multi-account scanner (CloudQuery,
+// Cartography, Fix Inventory) skips this class per region. Scoped to the
+// canonical disabled-region codes — plain AccessDenied is NOT included, since
+// a permissions gap must still surface as a real error.
+func isRegionDisabled(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "InvalidClientTokenId", "UnrecognizedClientException", "AuthFailure",
+			"OptInRequired", "SubscriptionRequiredException":
+			return true
+		}
+	}
+	return false
+}
+
 // isThrottleError reports whether err is an API-level rate-limit rejection —
 // HTTP 429, or an AWS throttle error code. Unlike the three region-skip guards
 // above, the endpoint here resolved, connected, and answered; it just
@@ -113,6 +135,19 @@ func GetAwsConfigFromAccount(ctx context.Context, account providers.Account) (aw
 	return getAwsConfigFromAccount(ctx, account)
 }
 
+// collectorHTTPClient is shared by every AWS config built from account
+// credentials. The SDK's default 30s dial timeout, multiplied by the 5 retry
+// attempts configured below, lets a single unroutable regional endpoint (an
+// opted-in far region the cluster's egress can't reach, surfacing as
+// "StatusCode: 0") burn ~2m45s per API call — enough to blow the post-report
+// sync budget for multi-region accounts. AWS endpoints establish connections
+// in well under a second, so 5s is generous; a transiently slow dial still
+// gets the retryer's remaining attempts. One shared instance so all service
+// clients reuse a single connection pool.
+var collectorHTTPClient = awshttp.NewBuildableClient().WithDialerOptions(func(d *net.Dialer) {
+	d.Timeout = 5 * time.Second
+})
+
 func getAwsConfigFromAccount(ctx context.Context, account providers.Account) (aws.Config, error) {
 	region := "us-east-1"
 	if account.Region != nil {
@@ -121,14 +156,17 @@ func getAwsConfigFromAccount(ctx context.Context, account providers.Account) (aw
 
 	opts := []func(*config.LoadOptions) error{
 		config.WithRegion(region),
-		// The collector fans a service across every opted-in region concurrently,
-		// which trips AWS API rate limits (429) — especially in low-quota opt-in
-		// regions like me-central-1/me-south-1. Adaptive mode adds a client-side
-		// rate limiter that backs off proactively instead of hammering until the
-		// default 3 attempts exhaust, and the higher attempt ceiling rides out
-		// brief throttling. Errors that still surface are handled by isThrottleError.
-		config.WithRetryMode(aws.RetryModeAdaptive),
+		// Standard mode with a raised attempt ceiling: exponential backoff +
+		// jitter rides out brief 429 throttling in low-quota opt-in regions, and
+		// errors that still surface are handled by isThrottleError. Adaptive mode
+		// was tried here but its client-side rate limiter is explicitly
+		// anti-recommended by AWS for multi-tenant use, and because this config
+		// is rebuilt per call the limiter's state never survived across calls
+		// anyway — it could only delay first attempts, never learn.
+		config.WithRetryMode(aws.RetryModeStandard),
 		config.WithRetryMaxAttempts(5),
+		// Bound the connection-establishment phase; see collectorHTTPClient.
+		config.WithHTTPClient(collectorHTTPClient),
 	}
 
 	// Allow AWS profile to be configured via environment variable
@@ -170,6 +208,19 @@ func getAwsConfigFromAccount(ctx context.Context, account providers.Account) (aw
 	}
 
 	return cfg, nil
+}
+
+// curServiceConfig returns cfg with its region forced to us-east-1 — the
+// only region the Cost & Usage Report API (costandusagereportservice) is
+// hosted in, regardless of the account's configured operating region.
+// Without this, accounts outside us-east-1 fail CUR discovery with a DNS
+// lookup error against a nonexistent regional endpoint (e.g.
+// cur.eu-west-1.amazonaws.com). Mirrors the identical override already
+// applied in common/cloud_credential_validator_aws.go's buildAWSConfigForValidation.
+func curServiceConfig(cfg aws.Config) aws.Config {
+	curCfg := cfg.Copy()
+	curCfg.Region = "us-east-1"
+	return curCfg
 }
 
 func isPublicSubnet(ctx context.Context, cfg aws.Config, subnetId string) bool {

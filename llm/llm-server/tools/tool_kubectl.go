@@ -3,16 +3,39 @@ package tools
 import (
 	"fmt"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"path/filepath"
 	"strings"
 
 	"github.com/pkg/errors"
 )
 
 const ToolExecuteKubectlCommand = "kubectl_execute"
+
+func init() {
+	// Phase 3d (#32503): the retired KubectlAgent used the short handle "kubectl".
+	// Preserve resolvability for stored delegate_agent(tools=["kubectl"]) calls.
+	core.RegisterNBToolAlias("kubectl", ToolExecuteKubectlCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the k8s_orchestrator's `k8s_lean.yaml` prompt is NOT loaded. Slim
+// safety + easy-to-miss kubectl output-scale gotchas only; orchestrator
+// prompt owns investigation methodology.
+func (m KubectlExecuteTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Always specify a namespace via `-n <namespace>` (or `--all-namespaces` for cluster-wide reads). Never assume a namespace — if missing on an execute request, resolve via `resource_search_execute` or one concise clarification before running.",
+		"**Read-only investigations first:** Prefer `get`, `describe`, `logs` over mutating commands unless the request is explicitly an action. Reserve `--force` / `--grace-period=0` for the user's explicit ask.",
+		"**RBAC safety:** If a command returns Forbidden / 403, report the missing permission as a finding. NEVER modify RBAC or ServiceAccount bindings to grant yourself access.",
+		"**Output-scale gotchas:** AVOID `-o json` / `-o yaml` on `-A` / `--all-namespaces` without filters — output can saturate context and time out. Prefer default output, `-o wide`, or `-o custom-columns=...` for broad checks. For counting, use `--no-headers` (with `| wc -l`) so the header row isn't counted.",
+		"**Field selectors > client-side filtering:** `--field-selector=status.phase=Running`, `--selector=app=xxx` at the API is faster than piping to grep.",
+		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods.",
+		"**Quoting:** Always quote complex arguments with special characters — `-o custom-columns=...`, `-o jsonpath=...`, `-l`, `--field-selector`, patterns with `[`, `(`, `?`, `@`, `*`. Example: `kubectl get pods -A -o 'custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace'`.",
+	}
+}
 
 // kubectlStderrNoisePrefixes are kubectl stderr lines that the workspace pod's
 // /execute handler merges into stdout (because cmd.Stdout and cmd.Stderr point at
@@ -254,6 +277,23 @@ func kubectlReadsSecretFilesystemPath(command string) bool {
 	if !hasFilesystemVerb {
 		return false
 	}
+	// Globs are resolved inside the target pod, where the validator cannot
+	// know which path they select. Fail closed for filesystem-capable verbs so
+	// `/var/run/se*rets` cannot hide a mounted-secret path.
+	if strings.ContainsAny(cmd, "*?[") {
+		return true
+	}
+	// Clean every path-shaped token before matching. This covers normal shell
+	// path resolution such as `/var/run/./secrets` and
+	// `/var/run/tmp/../secrets`, including the `pod:/path` form used by cp.
+	cleanedTokens := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if strings.Contains(tok, "/") {
+			tok = filepath.Clean(tok)
+		}
+		cleanedTokens = append(cleanedTokens, tok)
+	}
+	cmd = strings.Join(cleanedTokens, " ")
 	for _, pat := range kubectlSecretFilesystemPatterns {
 		if strings.Contains(cmd, pat) {
 			return true
@@ -435,6 +475,202 @@ func (m KubectlExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
+// hasShellExpansion detects shell-evaluated expansion while allowing literal
+// dollar signs and backticks inside single quotes and escaped dollar signs.
+// Expansion remains active inside double quotes, so those forms are rejected.
+func hasShellExpansion(command string) bool {
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if !singleQuoted && (char == '$' || char == '`') {
+			return true
+		}
+	}
+	return false
+}
+
+// kubectlCommandHasUnsafeShellStructure permits one direct kubectl invocation
+// with optional stdout-only filters. Compound commands, redirections, and
+// downstream executors can manufacture a blocked resource name after static
+// validation, so they fail closed at the relay boundary.
+func kubectlCommandHasUnsafeShellStructure(command string) bool {
+	var stages []string
+	start := 0
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if singleQuoted || doubleQuoted {
+			continue
+		}
+		if strings.ContainsRune(";&<>\n\r(){}", rune(char)) {
+			return true
+		}
+		if char == '|' {
+			stages = append(stages, command[start:i])
+			start = i + 1
+		}
+	}
+	if singleQuoted || doubleQuoted || escaped {
+		return true
+	}
+	stages = append(stages, command[start:])
+
+	first, ok := splitShellWords(stages[0])
+	if !ok {
+		return true
+	}
+	if len(first) == 0 || first[0] != "kubectl" {
+		return true
+	}
+	for _, stage := range stages[1:] {
+		parts, ok := splitShellWords(stage)
+		if !ok || !isSafeKubectlPipelineFilter(parts) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitShellWords(input string) ([]string, bool) {
+	var words []string
+	var word strings.Builder
+	var singleQuoted, doubleQuoted, escaped, active bool
+	flush := func() {
+		if active {
+			words = append(words, word.String())
+			word.Reset()
+			active = false
+		}
+	}
+	for i := 0; i < len(input); i++ {
+		char := input[i]
+		if escaped {
+			word.WriteByte(char)
+			escaped = false
+			active = true
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			active = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			active = true
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			active = true
+			continue
+		}
+		if !singleQuoted && !doubleQuoted && (char == ' ' || char == '\t') {
+			flush()
+			continue
+		}
+		word.WriteByte(char)
+		active = true
+	}
+	flush()
+	return words, !singleQuoted && !doubleQuoted && !escaped
+}
+
+// isSafeKubectlPipelineFilter accepts only filters whose arguments cannot name
+// an input file. grep/jq get one positional expression; head/tail/wc get none
+// and therefore must consume stdin. This intentionally rejects richer option
+// forms when their operand roles are ambiguous.
+func isSafeKubectlPipelineFilter(parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	var maxPositionals int
+	switch parts[0] {
+	case "grep", "egrep", "fgrep", "rgrep", "jq":
+		maxPositionals = 1
+	case "head", "tail", "wc":
+		maxPositionals = 0
+	default:
+		return false
+	}
+	positionals := 0
+	for _, part := range parts[1:] {
+		if strings.Contains(parts[0], "grep") && (part == "-e" || strings.HasPrefix(part, "-e") || part == "--regexp" || strings.HasPrefix(part, "--regexp=")) {
+			return false
+		}
+		if !strings.HasPrefix(part, "-") {
+			positionals++
+		}
+	}
+	return positionals <= maxPositionals
+}
+
+// validateKubectlCommandAccess applies the kubectl hard-deny policy at both
+// the direct tool path and the final relay boundary. Keeping the relay check
+// prevents any caller that dispatches without calling KubectlExecuteTool.Call
+// (workspace shims, remediation, resource search, or future paths) from
+// bypassing secret-access restrictions.
+func validateKubectlCommandAccess(command string) error {
+	if kubectlCommandHasUnsafeShellStructure(command) {
+		return errors.New("kubectl: compound commands, redirections, and unsafe pipeline filters are blocked")
+	}
+	words, _ := splitShellWords(command)
+	normalizedCommand := shellQuoteStripper.Replace(command)
+	for _, word := range words {
+		if strings.Contains(word, "/") {
+			normalizedCommand += " " + filepath.Clean(word)
+		}
+	}
+	for _, path := range kubectlSecretFilesystemPatterns {
+		if strings.Contains(normalizedCommand, path) {
+			return errors.New("kubectl: reading mounted secret filesystem paths is blocked")
+		}
+	}
+	if hasShellExpansion(command) {
+		return errors.New("kubectl: shell variable and command expansion ($, $(), and backticks) is blocked")
+	}
+	if blocked := kubectlBlockedKind(command); blocked != "" {
+		return fmt.Errorf("kubectl: access to %q is blocked. Secret-bearing kinds (secrets, sealedsecrets, externalsecrets, secretstores, secretproviderclasses) are not readable via this tool", blocked)
+	}
+	if kubectlReadsSecretFilesystemPath(command) {
+		return errors.New("kubectl: reading mounted secret filesystem paths (/var/run/secrets, /var/lib/kubelet/pods, /run/secrets) via exec/cp/attach is blocked")
+	}
+
+	return nil
+}
+
 func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 
 	if nbRequestContext.ToolConfig.Name == "" {
@@ -443,25 +679,12 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 
 	nbRequestContext.Ctx.GetLogger().Info("k8s: executing executeShellCommand tool call", "query", input.Command)
 	command := strings.TrimSpace(input.Command)
-	if !strings.HasPrefix(command, "kubectl") {
-		command = "kubectl " + command
+
+	if err := validateKubectlCommandAccess(command); err != nil {
+		return core.NBToolResponse{}, err
 	}
 
 	command1 := strings.ToLower(command)
-	// Block secret-bearing resource kinds. Uses a shell-aware tokenizer
-	// (kubectlBlockedKind) instead of a substring check so that
-	// `kubectl get secret/my-tls -o yaml`, `kubectl get -o yaml secret X`,
-	// `kubectl get secrets.v1.core`, `kubectl get pods,secrets`, and
-	// `kubectl get sealedsecrets.bitnami.com/foo` are all caught.
-	if blocked := kubectlBlockedKind(command); blocked != "" {
-		return core.NBToolResponse{}, fmt.Errorf("kubectl: access to %q is blocked. Secret-bearing kinds (secrets, sealedsecrets, externalsecrets, secretstores, secretproviderclasses) are not readable via this tool", blocked)
-	}
-	// Block exec/cp/attach reads from well-known secret mount paths so
-	// `kubectl exec mypod -- cat /var/run/secrets/...` can't bypass the
-	// kind-level check above.
-	if kubectlReadsSecretFilesystemPath(command) {
-		return core.NBToolResponse{}, errors.New("kubectl: reading mounted secret filesystem paths (/var/run/secrets, /var/lib/kubelet/pods, /run/secrets) via exec/cp/attach is blocked")
-	}
 
 	// Safety net: auto-inject --tail for kubectl logs if not already limited
 	if strings.Contains(command1, " logs ") || strings.HasPrefix(command1, "kubectl logs") {
@@ -508,97 +731,61 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		effectiveAccountId = configAccountId
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, effectiveAccountId, nbRequestContext.ConversationId, command, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		if err != nil {
-			// Pipeline-tail no-match reclassification (issue #32240).
-			// The LLM regularly uses kubectl with `| grep` / `| awk` /
-			// `| jq` to filter output (`kubectl get pods | grep api-server`).
-			// When the filter finds nothing the pipeline exits 1, the
-			// workspace reports "exit status 1", and the LLM sees an
-			// opaque failure for what was a successful empty result. The
-			// helpers from tool_shell.go (PR #32007) already classify
-			// these correctly; we just need to wire them in.
-			if isNoMatchExit(err, command) {
-				nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
-				return successResponseNoMatches(nbRequestContext, response)
-			}
-			nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		stdout, stderr := splitKubectlStderrNoise(response)
-
-		// Wrap stdout in JSON for consistency with non-workspace mode and to
-		// let agents parse it. Stderr is intentionally NOT packed into this
-		// envelope — it travels via Metadata.Stderr so it stays out of the
-		// observation text the UI renders (and isn't tool-specific anymore).
-		outputformat := map[string]string{
-			"stdout": stdout,
-		}
-		outputformatBytes, err := common.MarshalJson(outputformat)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("kubectl: unable to marshal response", "error", err.Error())
-			return core.NBToolResponse{
-				Data:   response,
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-		response = string(outputformatBytes)
-
-		resp := core.NBToolResponse{
-			Data:       response,
-			Type:       core.NBToolResponseTypeText,
-			Status:     core.NBToolResponseStatusSuccess,
-			References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
-		}
-		if stderr != "" {
-			resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
-		}
-		return resp, nil
-	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, effectiveAccountId, map[string]any{}, false)
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, effectiveAccountId, nbRequestContext.ConversationId, command, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	if err != nil {
+		// Pipeline-tail no-match reclassification (issue #32240).
+		// The LLM regularly uses kubectl with `| grep` / `| awk` /
+		// `| jq` to filter output (`kubectl get pods | grep api-server`).
+		// When the filter finds nothing the pipeline exits 1, the
+		// workspace reports "exit status 1", and the LLM sees an
+		// opaque failure for what was a successful empty result. The
+		// helpers from tool_shell.go (PR #32007) already classify
+		// these correctly; we just need to wire them in.
+		if isNoMatchExit(err, command) {
+			nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
+			return successResponseNoMatches(nbRequestContext, response)
+		}
 		nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
-		// ExecuteContainerJob returns (nil, err) on every failure path
-		// (relay.Execute error, getRelayCommandResponseData parser error,
-		// downstream unmarshal failure), so `response` is always nil here
-		// and the only thing that carries the actual signal — including
-		// the shim's "Error: Server returned NNN: ..." wrapper that the
-		// hint patterns are tuned for — is err.Error(). Use it as the
-		// raw input to wrapKubectlError. The `response` assertion below
-		// is defensive in case a future code path starts returning a
-		// non-nil response alongside an error.
-		rawError := err.Error()
-		if response != nil {
-			if responseStr, ok := response.(string); ok && responseStr != "" {
-				rawError = responseStr
-			}
+		if response == "" {
+			response = err.Error()
 		}
 		return core.NBToolResponse{
-			Data:   wrapKubectlError(rawError, command),
+			Data:   response,
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	data := response.(string)
+	stdout, stderr := splitKubectlStderrNoise(response)
+
+	// Wrap stdout in JSON so agents can parse it. Stderr is intentionally
+	// NOT packed into this envelope — it travels via Metadata.Stderr so it
+	// stays out of the observation text the UI renders (and isn't
+	// tool-specific anymore).
+	outputformat := map[string]string{
+		"stdout": stdout,
+	}
+	outputformatBytes, err := common.MarshalJson(outputformat)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("kubectl: unable to marshal response", "error", err.Error())
+		return core.NBToolResponse{
+			Data:   response,
+			Status: core.NBToolResponseStatusError,
+		}, err
+	}
+	response = string(outputformatBytes)
+
 	resp := core.NBToolResponse{
-		Data:       data,
+		Data:       response,
 		Type:       core.NBToolResponseTypeText,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
 	}
-
+	if stderr != "" {
+		resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
+	}
 	return resp, nil
 }
 

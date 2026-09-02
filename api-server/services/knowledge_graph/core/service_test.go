@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"nudgebee/services/internal/testenv"
@@ -1372,6 +1373,56 @@ func TestService_GetNodeNeighbors_NilDbManager(t *testing.T) {
 	}
 	if err != nil && !contains(err.Error(), "database manager not initialized") {
 		t.Errorf("GetNodeNeighbors() error = %v, want error containing 'database manager not initialized'", err)
+	}
+}
+
+func TestService_GetFilterOptions_NilDbManager(t *testing.T) {
+	service := NewService(newTestRequestContext(), nil, nil)
+
+	_, err := service.GetFilterOptions("tenant-1", nil, nil)
+	if err == nil {
+		t.Error("GetFilterOptions() with nil dbManager should return error")
+	}
+	if err != nil && !contains(err.Error(), "database manager not initialized") {
+		t.Errorf("GetFilterOptions() error = %v, want error containing 'database manager not initialized'", err)
+	}
+}
+
+// TestFilterOptions_NodeTypes_JSONTag confirms node_types serializes as the merged
+// node_type -> []specific_type map the frontend reads (its keys are the node-type list),
+// and that a node_type with multiple specific_types round-trips as a group.
+func TestFilterOptions_NodeTypes_JSONTag(t *testing.T) {
+	opts := FilterOptions{
+		NodeTypes: map[string][]string{
+			"CloudResource": {"EC2Instance", "S3Bucket"},
+			"Workload":      {},
+		},
+		NodeKeys: []string{},
+		NodeIDs:  []string{},
+	}
+
+	raw, err := json.Marshal(opts)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if _, ok := decoded["node_types"]; !ok {
+		t.Fatalf("expected \"node_types\" key in %s", raw)
+	}
+
+	var grouped map[string][]string
+	if err := json.Unmarshal(decoded["node_types"], &grouped); err != nil {
+		t.Fatalf("unexpected unmarshal error for node_types map: %v", err)
+	}
+	if got := grouped["CloudResource"]; len(got) != 2 || got[0] != "EC2Instance" || got[1] != "S3Bucket" {
+		t.Errorf("expected [EC2Instance S3Bucket] for CloudResource, got %v", got)
+	}
+	if _, ok := grouped["Workload"]; !ok {
+		t.Errorf("expected Workload key (no-breakdown type) present in node_types map: %v", grouped)
 	}
 }
 

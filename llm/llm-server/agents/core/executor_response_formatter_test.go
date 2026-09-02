@@ -1,9 +1,10 @@
 package core
 
 import (
+	"context"
 	"testing"
 
-	"nudgebee/llm/agents/prompts_repo"
+	nbprompts "nudgebee/llm/prompts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tmc/langchaingo/llms"
@@ -151,6 +152,51 @@ func TestConvertMarkdownToSlackMarkdown(t *testing.T) {
 			input:    "```\n**not bold**\n```",
 			expected: "```\n**not bold**\n```",
 		},
+		{
+			// Regression guard: "*_text_*" is redundant same-level GFM
+			// emphasis - "*x*" and "_x_" both mean italic, nesting them
+			// doesn't add bold. Before reNestedItalic existed, reItalic
+			// captured "_John_" (underscores included) as flat content and
+			// wrapped it again, producing "__John__" - invalid Slack syntax
+			// that renders as bold, not italic.
+			name:     "Single-asterisk wrapping a complete underscore span collapses to italic",
+			input:    "This is *_John_* here.",
+			expected: "This is _John_ here.",
+		},
+		{
+			// Genuine GFM bold-italic ("**_text_**") must still convert
+			// correctly: reBold consumes the whole span before
+			// reNestedItalic ever sees it, so this is unaffected by the fix.
+			name:     "Double-asterisk wrapping a complete underscore span stays bold+italic",
+			input:    "This is **_John_** here.",
+			expected: "This is *_John_* here.",
+		},
+		{
+			// Plain single-asterisk italic (content isn't itself a
+			// complete underscore span) is unaffected.
+			name:     "Plain single-asterisk italic is unaffected",
+			input:    "This is *plain* here.",
+			expected: "This is _plain_ here.",
+		},
+		{
+			// Plain snake_case content isn't itself wrapped in underscores
+			// ("*my_bucket_name*", not "*_my_bucket_name_*"), so it doesn't
+			// start with "_" and reNestedItalic never matches - falls
+			// through to reItalic exactly as before, unaffected by the fix.
+			name:     "Snake_case identifier in single asterisks is unaffected",
+			input:    "Use *my_bucket_name* here.",
+			expected: "Use _my_bucket_name_ here.",
+		},
+		{
+			// reNestedItalic's content must allow underscores, not just
+			// exclude them, or a redundant wrap around a multi-underscore
+			// identifier (common in FinOps/technical content) skips the
+			// collapse and falls to reItalic instead, producing invalid
+			// "__my_bucket_name__" (bold) instead of italic.
+			name:     "Single-asterisk wrapping an underscore span containing underscores still collapses to italic",
+			input:    "This is *_my_bucket_name_* here.",
+			expected: "This is _my_bucket_name_ here.",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -234,7 +280,7 @@ func TestBuildStepReferenceParts_GuideForReAct3ExecutedAgents(t *testing.T) {
 // query/generation turns — so a query-type response is never even told how to build
 // a Causality Chain.
 func TestFormatterTemplate_GatesCausalityOnQuery(t *testing.T) {
-	raw := prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
+	raw := nbprompts.GetPrompt(context.Background(), nbprompts.PromptResponseFormatter, "")
 	inv := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": true})
 	qry := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": false})
 
@@ -247,6 +293,41 @@ func TestFormatterTemplate_GatesCausalityOnQuery(t *testing.T) {
 	assert.Contains(t, qry, "No Causality Chain")
 	assert.Contains(t, qry, "NO CAUSAL EMBELLISHMENT")
 	// Both branches must render with no leftover template tokens.
+	assert.NotContains(t, inv, "{{")
+	assert.NotContains(t, qry, "{{")
+}
+
+// TestBasePromptTemplate_GatesRcaFrameworkOnQuery pins that the PLANNER base prompt
+// (not just the formatter) drops the investigation RCA answer-format spec on a query
+// turn — so the planner never emits a Causality Chain for a simple question in the
+// first place (the formatter's query-branch can prevent adding one but not reliably
+// strip one already generated). Gated on the same is_investigation signal.
+func TestBasePromptTemplate_GatesRcaFrameworkOnQuery(t *testing.T) {
+	raw := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
+	inv := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": true})
+	qry := renderFormatterTemplate(raw, map[string]interface{}{"is_investigation": false})
+
+	// Investigation keeps the full RCA framework.
+	assert.Contains(t, inv, "ROOT CAUSE ANALYSIS FRAMEWORK")
+	assert.Contains(t, inv, "Causality Chain (Root Cause)")
+	assert.Contains(t, inv, "SYMPTOM VS. ROOT CAUSE CHECK")
+
+	// Query drops the entire RCA framework — the planner is never told how to build one.
+	// (The retained "Question type" line legitimately still MENTIONS the term to say
+	// "do NOT use Causality Chain / Evidence Chain for queries" — that is guidance, not
+	// the build spec, so we assert on the spec markers, not the bare term.)
+	assert.NotContains(t, qry, "ROOT CAUSE ANALYSIS FRAMEWORK")
+	assert.NotContains(t, qry, "Causality Chain (Root Cause)")
+	assert.NotContains(t, qry, "SYMPTOM VS. ROOT CAUSE CHECK")
+	// The retained guidance still tells the model not to use the RCA format for queries.
+	assert.Contains(t, qry, "Do NOT use the investigation output format")
+
+	// ...but the GENERAL final-answer mechanics stay for BOTH (not inside the gate).
+	assert.Contains(t, inv, "single `<final_answer>` block")
+	assert.Contains(t, qry, "single `<final_answer>` block")
+	assert.Contains(t, qry, "GREETINGS & ANSWERING WITHOUT TOOLS")
+
+	// No leftover template tokens on either branch (balanced {{if}}/{{end}}).
 	assert.NotContains(t, inv, "{{")
 	assert.NotContains(t, qry, "{{")
 }

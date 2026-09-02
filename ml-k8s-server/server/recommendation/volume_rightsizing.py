@@ -95,6 +95,7 @@ class VolumeRightsizingService:
         datadog_api_key: Optional[str] = None,
         datadog_app_key: Optional[str] = None,
         datadog_site: Optional[str] = None,
+        elasticsearch: Optional[dict] = None,
     ):
         self.account_id = account_id
         self.tenant_id = tenant_id
@@ -104,6 +105,7 @@ class VolumeRightsizingService:
         self.datadog_api_key = datadog_api_key
         self.datadog_app_key = datadog_app_key
         self.datadog_site = datadog_site
+        self.elasticsearch = elasticsearch
         self._executor = ThreadPoolExecutor(max_workers=4)
 
         # Configuration from original implementation
@@ -173,6 +175,21 @@ class VolumeRightsizingService:
             try:
                 if self.metrics_provider == "datadog":
                     return await self._get_volume_usage_data_datadog(namespace_filter, ctx_logger, span)
+
+                if self.metrics_provider == "ES":
+                    # Volume rightsizing needs per-PVC used/capacity bytes. The Elastic
+                    # Agent ships those only from the `volume` metricset, and keys them
+                    # by the pod's volume NAME rather than the PVC, so they cannot be
+                    # matched to a PVC without joining the pod spec. Until that join
+                    # exists, say so: the alternative is the Prometheus path below
+                    # querying a Prometheus an ES-only cluster does not have, which
+                    # returned nothing and reported it as "no oversized volumes".
+                    ctx_logger.warning(
+                        "Volume rightsizing is not supported for Elasticsearch metrics; skipping. "
+                        "Pod/vertical rightsizing is unaffected."
+                    )
+                    span.set_attribute("pvc.skipped_reason", "elasticsearch_unsupported")
+                    return []
 
                 # Prometheus path (default)
                 current_usage_query = (
@@ -905,7 +922,8 @@ class VolumeRightsizingService:
             :recommendation_action, :category, :rule_name, :severity, :estimated_savings, :status, :account_object_id,
             '', '', false) ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO
             UPDATE SET recommendation = EXCLUDED.recommendation, estimated_savings = EXCLUDED.estimated_savings,
-            status = EXCLUDED.status
+            status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+            THEN recommendation.status ELSE EXCLUDED.status END
         """)
         with self.engine.connect() as conn:
             conn.execute(upsert_query, recommendations)
@@ -941,6 +959,7 @@ async def generate_volume_rightsizing_recommendations(
     datadog_api_key: Optional[str] = None,
     datadog_app_key: Optional[str] = None,
     datadog_site: Optional[str] = None,
+    elasticsearch: Optional[dict] = None,
 ) -> VolumeRightsizingResult:
     """Main entry point for generating volume rightsizing recommendations."""
     service = VolumeRightsizingService(
@@ -950,6 +969,7 @@ async def generate_volume_rightsizing_recommendations(
         datadog_api_key=datadog_api_key,
         datadog_app_key=datadog_app_key,
         datadog_site=datadog_site,
+        elasticsearch=elasticsearch,
     )
     result = await service.generate_recommendations(namespace_filter=namespace, max_recommendations=max_recommendations)
     if persist_recommendation:

@@ -1,0 +1,73 @@
+# GCP Cloud Pub/Sub Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for messaging monitoring.
+# All metrics are subscription-level (pubsub_subscription monitored resource) —
+# Pub/Sub health signals live on subscriptions, not topics.
+service_name: "Cloud Pub/Sub"
+
+templates:
+  - name: "gcp_pubsub_oldest_unacked_age_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "A growing age of the oldest unacknowledged message means the subscriber is stuck, crashed, or too slow — messages are waiting and may expire past the retention window. Alert when the oldest message has been waiting longer than 10 minutes."
+    configuration:
+      namespace: "pubsub.googleapis.com"
+      metric_name: "OldestUnackedMessageAge"
+      metric_type_filter: "pubsub.googleapis.com/subscription/oldest_unacked_message_age"
+      resource_type: "pubsub_subscription"
+      statistic: "ALIGN_MAX"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MAX"
+    threshold_rules:
+      default: 600.0  # seconds — oldest message waiting > 10 minutes
+
+  - name: "gcp_pubsub_undelivered_messages_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "A sustained backlog of undelivered messages means subscribers are not keeping up with publishers. Some backlog is normal for bursty workloads; a sustained one delays downstream processing. Alert when the backlog stays above the threshold."
+    configuration:
+      namespace: "pubsub.googleapis.com"
+      metric_name: "UndeliveredMessages"
+      metric_type_filter: "pubsub.googleapis.com/subscription/num_undelivered_messages"
+      resource_type: "pubsub_subscription"
+      statistic: "ALIGN_MAX"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MAX"
+    threshold_rules:
+      default: 1000.0  # messages — starting point; workload-specific tuning expected
+
+  - name: "gcp_pubsub_dead_letter_rate_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"  # Only for subscriptions that have a dead-letter topic configured
+    category: "Configuration"
+    severity: "High"
+    description: "Messages arriving in the dead-letter topic mean the subscriber repeatedly failed to process them — each one is a lost-or-parked message that needs investigation. Alert on any dead-lettered message."
+    configuration:
+      namespace: "pubsub.googleapis.com"
+      metric_name: "DeadLetterMessages"
+      metric_type_filter: "pubsub.googleapis.com/subscription/dead_letter_message_count"
+      resource_type: "pubsub_subscription"
+      statistic: "ALIGN_SUM"
+      period: 300
+      # A dead-lettered message is a discrete failure event, not a sustained
+      # condition — a single 5-minute window with any DLQ'd message should fire.
+      evaluation_periods: 1
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 0.0  # any dead-lettered message is worth knowing about
+    conditions:
+      # Only recommend for subscriptions that actually have a dead-letter topic;
+      # subscriptions without one are covered by the gcp_pubsub_no_dead_letter rule.
+      - field: "Meta.dead_letter_topic"
+        operator: "exists"
+        logic: "AND"
+      - field: "Meta.dead_letter_topic"
+        operator: "not_empty"

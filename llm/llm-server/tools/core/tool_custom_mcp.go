@@ -16,11 +16,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// isRestrictedIP returns true if the address falls inside a range we never want
-// outbound MCP traffic to reach (loopback, RFC1918, link-local, multicast, etc.).
 func isRestrictedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	return common.IsPrivateOrLoopbackIP(ip)
 }
 
 // pinnedSafeDialContext re-resolves the hostname at dial time and rejects any

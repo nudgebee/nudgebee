@@ -39,9 +39,13 @@ LOG = logging.getLogger(__name__)
 # block_actions; the value contract is identical).
 FINDING_CALLBACK_ID = "nb_finding_actions"
 
-SILENCE_ACTION_NAME = "silence_finding"
-SILENCE_THIS_DURATIONS = (("1h", 1), ("4h", 4), ("24h", 24), ("7d", 168))
-SILENCE_ALL_DURATIONS = (("4h", 4), ("24h", 24), ("7d", 168))
+# Wire identifier, not copy: cards already posted to Slack carry this value in
+# their signed payloads, so it stays as-is while the labels read "Suppress"
+# (matching the Triage Rules UI and the SUPPRESSED status it produces).
+SUPPRESS_ACTION_NAME = "silence_finding"
+ASK_NUBI_ACTION_NAME = "ask_nubi"
+SUPPRESS_THIS_DURATIONS = (("1h", 1), ("4h", 4), ("24h", 24), ("7d", 168))
+SUPPRESS_ALL_DURATIONS = (("4h", 4), ("24h", 24), ("7d", 168))
 
 
 def add_evidences(blocks, finding, is_cloud):
@@ -167,21 +171,21 @@ def _blocks_to_mrkdwn(slack_blocks: List[dict]) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def _signed_silence_value(action_params):
+def _signed_suppress_value(action_params):
     body = ActionRequestBody(
         timestamp=int(time.time()),
-        action_name=SILENCE_ACTION_NAME,
+        action_name=SUPPRESS_ACTION_NAME,
         action_params=action_params,
         origin="callback",
     )
     return ExternalActionRequest(body=body, signature=sign_action_request(body, SLACK_SIGNIN_SECRET)).model_dump_json()
 
 
-def _silence_select_action(finding, tenant_id):
-    """Legacy attachment menu offering time-boxed silences. Scope "fingerprint"
-    mutes repeat firings of this exact alert; "alertname" mutes every alert
-    sharing the aggregation key on the account. Each option value is a signed
-    callback payload (same contract as the card buttons)."""
+def _suppress_select_action(finding, tenant_id):
+    """Legacy attachment menu offering time-boxed suppressions. Scope
+    "fingerprint" quiets repeat firings of this exact alert; "alertname" quiets
+    every alert sharing the aggregation key on the account. Each option value is
+    a signed callback payload (same contract as the card buttons)."""
     fingerprint = str(finding.get("fingerprint") or "").strip()
     alertname = str(finding.get("aggregation_key") or "").strip()
     account_id = finding.get("cloud_account_id")
@@ -191,9 +195,9 @@ def _silence_select_action(finding, tenant_id):
     def _options(scope, durations):
         options = []
         for label, hours in durations:
-            value = _signed_silence_value(
+            value = _signed_suppress_value(
                 {
-                    "action_name": SILENCE_ACTION_NAME,
+                    "action_name": SUPPRESS_ACTION_NAME,
                     "event_id": finding.get("id"),
                     "fingerprint": fingerprint,
                     "alertname": alertname,
@@ -203,22 +207,24 @@ def _silence_select_action(finding, tenant_id):
                     "duration_hours": hours,
                 }
             )
-            options.append({"text": f"Silence {label}", "value": value})
+            options.append({"text": f"Suppress {label}", "value": value})
         return options
 
     option_groups = []
     if fingerprint:
-        option_groups.append({"text": "This alert only", "options": _options("fingerprint", SILENCE_THIS_DURATIONS)})
+        option_groups.append({"text": "This alert only", "options": _options("fingerprint", SUPPRESS_THIS_DURATIONS)})
     if alertname:
         shown = alertname if len(alertname) <= 30 else alertname[:27] + "…"
-        option_groups.append({"text": f'All "{shown}" alerts', "options": _options("alertname", SILENCE_ALL_DURATIONS)})
+        option_groups.append(
+            {"text": f'All "{shown}" alerts', "options": _options("alertname", SUPPRESS_ALL_DURATIONS)}
+        )
     if not option_groups:
         return None
 
     return {
         "type": "select",
-        "name": SILENCE_ACTION_NAME,
-        "text": "🔕 Silence…",
+        "name": SUPPRESS_ACTION_NAME,
+        "text": "Suppress…",
         "option_groups": option_groups,
     }
 
@@ -333,9 +339,9 @@ def get_slack_finding_message(slack_app, installation, finding):
         {"type": "button", "text": "View Details", "url": investigate_url, "style": "primary"},
         {"type": "button", "name": "ask_nubi", "text": "Ask Nubi to Analyse!", "value": ask_nubi_value},
     ]
-    silence_action = _silence_select_action(finding, tenant_id)
-    if silence_action:
-        actions.append(silence_action)
+    suppress_action = _suppress_select_action(finding, tenant_id)
+    if suppress_action:
+        actions.append(suppress_action)
 
     attachment = {
         "color": STRIPE_CRITICAL if priority.upper() == "HIGH" else STRIPE_HIGH,

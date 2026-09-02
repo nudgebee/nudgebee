@@ -23,6 +23,8 @@ import NotificationOutlineIconDark from '@assets/new/bell-icon-dark.svg';
 import DocumentationIcon from '@assets/header/Documentation.svg';
 import newAwsLogo from '@assets/logo/aws_logo.png';
 import GroupingIcon from '@assets/header/group-icon.svg';
+import VmServerIcon from '@assets/new/vm-server.svg';
+import DashboardIconBlue from '@assets/home/Dashboard_Icon.svg';
 import OuK8sIcon from '@assets/ou-management/kubernetes_icon.icon.svg';
 import JiraIcon from '@assets/jira_icon.icon.svg';
 import GithubIcon from '@assets/github-icon.icon.svg';
@@ -41,7 +43,6 @@ import { useRouter } from 'next/router';
 import { useData } from '@context/DataContext';
 import { hasWriteAccess } from '@lib/auth';
 import apiKubernetes from '@api1/kubernetes';
-import IconButton from '@mui/material/IconButton';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import GlobalPageSearch from '@shared/navigation/GlobalPageSearch';
 import { useSession } from 'next-auth/react';
@@ -72,10 +73,12 @@ import CustomDrawer from '@shared/CustomDrawer';
 import ProductUpdatesDrawerContent from '@shared/widgets/ProductUpdatesDrawerContent';
 import { useProductUpdates } from '@hooks/useProductUpdates';
 
+const AGENT_UPGRADE_DOCS_URL = docsUrl('/docs/installation/agent/installation/upgrade/');
+
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
   const router = useRouter();
-  const { assistantName, baseTitle, nubiIconUrl, nubiIconLightUrl } = useTenantBranding();
+  const { assistantName, baseTitle, nubiIconUrl } = useTenantBranding();
   const { selectedCluster, allCluster } = useData();
   const selectedClusterRef = useRef(selectedCluster);
   selectedClusterRef.current = selectedCluster;
@@ -153,13 +156,20 @@ const Header1 = ({ showBorder = false }) => {
   }, [router.pathname]);
 
   useEffect(() => {
+    let cancelled = false;
     const fetchIntegrationCounts = async () => {
       try {
         const [slackRes, gChatRes] = await Promise.all([apiAccount.getMessagingPlatform('slack'), apiAccount.getMessagingPlatform('google_chat')]);
+        if (cancelled) {
+          return;
+        }
         setSlackAccountsCount(slackRes?.data?.length || 0);
         const configuredGChatCount = gChatRes?.data?.filter((item) => item?.channels).length || 0;
         setGChatAccountsCount(configuredGChatCount);
       } catch (error) {
+        if (cancelled) {
+          return;
+        }
         console.error('Failed to fetch Slack/GChat integration counts:', error);
         setSlackAccountsCount(0);
         setGChatAccountsCount(0);
@@ -169,6 +179,9 @@ const Header1 = ({ showBorder = false }) => {
     if (anchorActiveTab.connectAccountButton && hasWriteAccess()) {
       fetchIntegrationCounts();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [anchorActiveTab]);
 
   useEffect(() => {
@@ -244,14 +257,22 @@ const Header1 = ({ showBorder = false }) => {
         icon: HomeIconBlue,
         showActiveCluster: true,
         clusterDetailButton: true,
-        showAskNudgebee: true,
       },
       {
-        name: 'Cluster Overview',
+        // The fleet-wide overview across every provider's accounts. /kubernetes
+        // keeps an entry because it is still a route — a redirector that shows a
+        // spinner while it resolves which cluster (or /overview) to open.
+        name: 'Account Overview',
+        route: '/overview',
+        icon: ClusterIconBlue,
+        showActiveCluster: false,
+        connectClusterButton: true,
+      },
+      {
+        name: 'Account Overview',
         route: '/kubernetes',
         icon: ClusterIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
         connectClusterButton: true,
       },
       {
@@ -259,7 +280,6 @@ const Header1 = ({ showBorder = false }) => {
         route: '/kubernetes/details/',
         icon: ClusterIconBlue,
         showActiveCluster: true,
-        showAskNudgebee: true,
       },
       {
         name: 'Agent Details',
@@ -281,7 +301,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: TroubleshootIconBlue,
         showActiveCluster: false,
         clusterDetailButton: false,
-        showAskNudgebee: false,
       },
       {
         name: 'Troubleshoot',
@@ -290,7 +309,6 @@ const Header1 = ({ showBorder = false }) => {
         showActiveCluster: true,
         disableDropdown: true,
         connectAccountButton: false,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -299,7 +317,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: OptimiseIconBlue,
         showActiveCluster: false,
         clusterDetailButton: false,
-        showAskNudgebee: false,
       },
       {
         name: 'Optimize',
@@ -307,15 +324,16 @@ const Header1 = ({ showBorder = false }) => {
         icon: OptimiseIconBlue,
         showActiveCluster: false,
         clusterDetailButton: false,
-        showAskNudgebee: false,
       },
       {
         name: 'Automation',
         route: '/automation',
         icon: WorkflowIconBlue,
-        clusterDetailButton: true,
-        showActiveCluster: true,
-        showAskNudgebee: true,
+        // Tenant-level like Troubleshoot / Optimize above: the listing carries
+        // its own multi-select Account filter, so the global cluster dropdown
+        // would be a second, conflicting account control.
+        clusterDetailButton: false,
+        showActiveCluster: false,
       },
       {
         name: 'Auto Pilot',
@@ -323,7 +341,6 @@ const Header1 = ({ showBorder = false }) => {
         icon: AutopilotIconBlue,
         clusterDetailButton: false,
         showActiveCluster: false,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -332,14 +349,12 @@ const Header1 = ({ showBorder = false }) => {
         icon: AutopilotIconBlue,
         clusterDetailButton: false,
         showActiveCluster: false,
-        showAskNudgebee: true,
       },
       {
         name: 'Tickets',
         route: '/tickets',
         icon: TicketIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
         connectAccountButton: false,
       },
       {
@@ -347,7 +362,6 @@ const Header1 = ({ showBorder = false }) => {
         route: '/user-management',
         icon: AdminIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
         connectAccountButton: true,
       },
       {
@@ -373,7 +387,6 @@ const Header1 = ({ showBorder = false }) => {
         showActiveCluster: true,
         disableDropdown: true,
         connectAccountButton: false,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -389,7 +402,16 @@ const Header1 = ({ showBorder = false }) => {
             : '',
         showActiveCluster: true,
         connectAccountButton: false,
-        showAskNudgebee: true,
+      },
+      {
+        name: 'Virtual Machines',
+        route: '/vm',
+        icon: VmServerIcon,
+        // Same shape as Cloud/K8s details: the page is scoped to one account and
+        // the global dropdown is how you switch it. handleDropdownChange sends a
+        // SelfHosted pick here and a cloud/K8s pick back to its own page.
+        showActiveCluster: true,
+        connectAccountButton: false,
       },
       {
         name: 'Application Group',
@@ -398,6 +420,13 @@ const Header1 = ({ showBorder = false }) => {
         connectAccountButton: false,
         showGroupingDropdown: true,
         showBackButton: true,
+      },
+      {
+        name: 'Dashboards',
+        route: '/dashboards',
+        icon: DashboardIconBlue,
+        showActiveCluster: false,
+        connectAccountButton: false,
       },
       {
         name: (
@@ -427,7 +456,6 @@ const Header1 = ({ showBorder = false }) => {
         name: 'Pod Details',
         route: '/kubernetes/podDetails/[PodDetails]',
         icon: PodsIcon,
-        showAskNudgebee: true,
         showBackButton: true,
       },
       {
@@ -437,10 +465,9 @@ const Header1 = ({ showBorder = false }) => {
       },
       {
         name: 'Automation Builder',
-        route: '/workflow',
+        route: '/automation',
         icon: WorkflowIconBlue,
         showActiveCluster: true,
-        showAskNudgebee: false,
         connectClusterButton: false,
         showBackButton: true,
       },
@@ -449,7 +476,6 @@ const Header1 = ({ showBorder = false }) => {
         route: '/agentic/optimize',
         icon: OptimiseIconBlue,
         showActiveCluster: false,
-        showAskNudgebee: false,
       },
     ];
     return baseOptions;
@@ -481,7 +507,7 @@ const Header1 = ({ showBorder = false }) => {
         let snackMessage = '';
         let disconnectedService = [];
         setSnackbarOpen(true);
-        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="/help/docs/installation/agent/installation/" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
+        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="${AGENT_UPGRADE_DOCS_URL}" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
         if (cluster.agent?.connection_status) {
           const connectionStatus = cluster.agent?.connection_status;
           if (!connectionStatus.relayConnection) {
@@ -514,16 +540,16 @@ const Header1 = ({ showBorder = false }) => {
       );
     });
     if (matchedTab) {
+      const isDashboardGroups = router.pathname === '/dashboards' && router.asPath.includes('#groups');
       setAnchorActiveTab({
-        name: matchedTab.name,
-        icon: matchedTab.icon,
+        name: isDashboardGroups ? 'Application Group' : matchedTab.name,
+        icon: isDashboardGroups ? GroupingIcon : matchedTab.icon,
         showActiveCluster: matchedTab.showActiveCluster,
         disableDropdown: matchedTab.disableDropdown ?? false,
         connectClusterButton: matchedTab.connectClusterButton,
         connectAccountButton: matchedTab.connectAccountButton,
         showGroupingDropdown: matchedTab.showGroupingDropdown,
         clusterDetailButton: matchedTab.clusterDetailButton,
-        showAskNudgebee: matchedTab.showAskNudgebee ?? false,
         showBackButton: matchedTab.showBackButton ?? false,
       });
     } else {
@@ -532,7 +558,7 @@ const Header1 = ({ showBorder = false }) => {
     if (['/tickets', '/user-management', '/kubernetes'].some((path) => router.pathname.startsWith(path))) {
       setSnackbarOpen(false);
     }
-  }, [router.pathname, headerItems]);
+  }, [router.pathname, router.asPath, headerItems]);
 
   // Capture the version this tab booted with — once, when the session first
   // resolves (data is null while useSession is loading). We deliberately never
@@ -577,6 +603,26 @@ const Header1 = ({ showBorder = false }) => {
     const fragment = currentRouter?.asPath?.split('#')?.[1] || '';
     const hashString = fragment ? `#${fragment}` : '';
 
+    // 0. Handle switching TO / AWAY FROM a self-hosted VM fleet.
+    //
+    // Kept ahead of the cloud/K8s branches because it is the only case keyed on
+    // the *provider* rather than the page: /vm is a single tenant-level route
+    // (no per-account path segment), so picking a self-hosted account from any
+    // account-scoped page lands there, and picking anything else while on /vm
+    // has to leave. Falling through to the branches below would push a
+    // SelfHosted id at /cloud-account/details/, which has no provider to render.
+    if (e.cloud_provider === 'SelfHosted') {
+      updateClusterState(e);
+      // Preserve the tab when already on /vm; enter on Summary otherwise.
+      currentRouter.push(`/vm?accountId=${e.value}${currentRouter.pathname === '/vm' ? hashString || '#summary' : '#summary'}`);
+      return;
+    }
+    if (currentRouter.pathname === '/vm') {
+      updateClusterState(e);
+      currentRouter.push(e.cloud_provider === 'K8s' ? `/kubernetes/details/${e.value}#summary` : `/cloud-account/details/${e.value}#summary`);
+      return;
+    }
+
     // 1. Handle switching TO Kubernetes FROM Cloud Account
     if (currentRouter.pathname.indexOf('/cloud-account/details/') > -1 && e.cloud_provider == 'K8s') {
       updateClusterState(e);
@@ -595,18 +641,7 @@ const Header1 = ({ showBorder = false }) => {
       return;
     }
 
-    // 3. Handle Auto Pilot Route (NEW)
-    else if (currentRouter.pathname.indexOf('/automation') > -1 || currentRouter.pathname.indexOf('/auto-pilot') > -1) {
-      const currentAccountId = currentRouter.query.accountId;
-      if (currentAccountId !== e.value) {
-        updateClusterState(e);
-        // Switch account but keep the same tab (hash)
-        currentRouter.push(`/automation?accountId=${e.value}${hashString}`);
-        return;
-      }
-    }
-
-    // 4. Handle same-view switching (staying on details page)
+    // 3. Handle same-view switching (staying on details page)
     const accountId = currentRouter?.query?.accountId || currentRouter.query?.KubernetesDetails || currentRouter.query?.CloudAccountDetails || '';
 
     if (accountId && accountId != e.value) {
@@ -746,6 +781,7 @@ const Header1 = ({ showBorder = false }) => {
       )}
 
       <Box
+        id='app-sticky-header'
         sx={{
           zIndex: 20,
           boxShadow: `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[100]}`,
@@ -764,14 +800,14 @@ const Header1 = ({ showBorder = false }) => {
           <Box
             sx={{
               display: 'grid',
-              // Fixed 20/30/50 split (heading / search / right-side actions) instead of
-              // content-driven (auto) tracks — chosen for a consistent search-box width
-              // across pages over the previous behavior, where a busy right-side column
-              // (e.g. Home's cluster picker + buttons) shrank the search column on some
-              // pages. Trade-off: unlike auto/minmax, these tracks don't grow for content
-              // that needs more room — a long account name or extra header actions can
-              // clip or overflow their 20%/50% share instead of pushing the grid wider.
-              gridTemplateColumns: '20% 30% 50%',
+              // Content-based outer columns (heading / right-side actions) so a short
+              // heading or a light actions column doesn't waste a fixed share of the
+              // header, with the search column absorbing whatever space is left over
+              // (and centering its own content within that flexible track — see its
+              // own justifyContent below). Trade-off vs. the earlier fixed 20/40/40
+              // split: the search column's width now varies with how busy the other
+              // two columns are on a given page, instead of staying constant everywhere.
+              gridTemplateColumns: 'auto 1fr auto',
               alignItems: 'center',
               background: ds.background[100],
               height: ds.space.mul(0, 28),
@@ -779,7 +815,7 @@ const Header1 = ({ showBorder = false }) => {
               gap: ds.space[3],
             }}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: ds.space[2] }}>
               {anchorActiveTab.showBackButton && <BackButton />}
               <Box sx={{ display: 'flex', alignItems: 'center' }}>
                 {anchorActiveTab.icon && (
@@ -794,8 +830,8 @@ const Header1 = ({ showBorder = false }) => {
                 </Typography>
               </Box>
             </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'flex-end', flex: 1 }}>
-              <GlobalPageSearch />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'center', flex: 1 }}>
+              <GlobalPageSearch hasClusterDropdown={anchorActiveTab.showActiveCluster} />
             </Box>
             <Box display={'flex'} alignItems={'center'} justifyContent={'flex-end'} gap={ds.space[3]}>
               <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: ds.space[2] }}>
@@ -862,85 +898,6 @@ const Header1 = ({ showBorder = false }) => {
                       },
                     ]}
                   />
-                )}
-                {anchorActiveTab.showAskNudgebee && (
-                  // Fixed-footprint wrapper sized to the button's collapsed (icon-only)
-                  // state, position: relative so the IconButton inside can be positioned
-                  // absolute — its hover-expand (fit-content width growing as .nubi-text's
-                  // maxWidth opens up) then overlays leftward over the search box instead
-                  // of growing this flex row's width and shoving the cluster picker /
-                  // detail-view button / notification icons to the right on every hover.
-                  <Box sx={{ position: 'relative', width: ds.space.mul(0, 16), height: ds.space.mul(0, 16), flexShrink: 0 }}>
-                    <IconButton
-                      size='small'
-                      aria-label={`Ask ${assistantName}`}
-                      sx={{
-                        // Brand-navy gradient — tokenised across the brand-* scale so the
-                        // pill restains brand-tone consistency with primary DsButtons but
-                        // keeps its bespoke gradient + hover-expand affordance (no DS
-                        // equivalent for this pattern).
-                        background: `linear-gradient(120deg, ${ds.brand[500]} 0%, ${ds.brand[500]} 28%, ${ds.brand[500]} 85%, ${ds.brand[500]} 100%)`,
-                        borderRadius: ds.radius.lg,
-                        position: 'absolute',
-                        top: 0,
-                        right: 0,
-                        zIndex: 2,
-                        height: ds.space.mul(0, 16),
-                        width: 'fit-content',
-                        padding: `0 0 0 ${ds.space[2]}`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: ds.space[2],
-                        overflow: 'hidden',
-                        transition: 'transform 0.3s ease, box-shadow 0.3s ease',
-                        '&:hover': {
-                          transform: 'scale(1)',
-                          '& img, & svg': {
-                            animation: 'popSmooth 1.5s infinite ease-in-out',
-                            filter: 'brightness(1.5) contrast(1.3) saturate(1.2)',
-                          },
-                          '& .nubi-text': {
-                            opacity: 1,
-                            maxWidth: ds.space.mul(0, 100),
-                            marginRight: ds.space[2],
-                          },
-                        },
-                        '@keyframes popSmooth': {
-                          '0%, 100%': { transform: 'scale(1)' },
-                          '50%': { transform: 'scale(1.2)' },
-                        },
-                      }}
-                      onClick={() =>
-                        router.push(
-                          `/ask-nudgebee?accountId=${
-                            router?.query?.accountId ||
-                            router?.query?.KubernetesDetails ||
-                            router?.query?.CloudAccountDetails ||
-                            selectedCluster?.value
-                          }`
-                        )
-                      }
-                    >
-                      <SafeIcon alt={`Ask ${assistantName}`} src={nubiIconLightUrl} height={26} width={26} />
-                      <Typography
-                        className='nubi-text'
-                        sx={{
-                          color: ds.background[100],
-                          fontSize: ds.text.small,
-                          opacity: 0,
-                          maxWidth: 0,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          transition: 'opacity 0.3s ease, max-width 0.3s ease, margin 0.3s ease',
-                        }}
-                      >
-                        <Box component='span' fontWeight={ds.weight.medium}>
-                          {assistantName}:
-                        </Box>{' '}
-                        how can I assist you?
-                      </Typography>
-                    </IconButton>
-                  </Box>
                 )}
                 {anchorActiveTab.showActiveCluster && (
                   <Box

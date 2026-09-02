@@ -24,6 +24,13 @@ import { useLlmAsyncPolling, extractQueryResultFromConversation } from '@hooks/u
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
 
+// Providers whose metrics are queried with PromQL. They share the metric-name list, the
+// label/value endpoints and the CodeMirror PromQL autocomplete, so a provider missing from
+// this set silently renders an empty builder with no suggestions rather than erroring.
+const PROMQL_METRIC_PROVIDERS = ['prometheus', 'chronosphere', 'victoria-metrics', 'openobserve'];
+
+const isPromQLMetricProvider = (provider) => PROMQL_METRIC_PROVIDERS.includes(provider);
+
 export const chipsToBlockLabelMatchers = (block) => {
   const labelMatchers = [];
   (block?.queryItems || []).forEach((item) => {
@@ -36,6 +43,13 @@ export const chipsToBlockLabelMatchers = (block) => {
   });
   return labelMatchers;
 };
+
+// ES Code-tab query languages. 'dsl' sends the raw editor body through as-is;
+// 'kql' tags the request so the backend translates the KQL expression into DSL.
+const ES_QUERY_LANGUAGES = [
+  { label: 'DSL', value: 'dsl' },
+  { label: 'KQL', value: 'kql' },
+];
 
 /**
  * @param {{
@@ -54,6 +68,7 @@ export const chipsToBlockLabelMatchers = (block) => {
  *   deleteDataOnQueryBlockDeletion?: (query_key: string) => void
  *   providerType?: string,
  *   initialEsIndex?: string,
+ *   limit?: number,
  * }} props
  */
 
@@ -78,6 +93,7 @@ const QueryModeSwitcher = ({
   providerType = '',
   initialQuery = '',
   initialEsIndex = '',
+  limit,
 }) => {
   const { assistantName } = useTenantBranding();
   const [mounted, setMounted] = useState(false);
@@ -93,6 +109,9 @@ const QueryModeSwitcher = ({
   const [metricsList, setMetricsList] = useState([]);
   const [esIndexList, setEsIndexList] = useState([]);
   const [isEsIndexLoading, setIsEsIndexLoading] = useState(false);
+  // ES Code tab exposes a language toggle: 'dsl' (raw Query DSL, default) or 'kql'
+  // (translated to DSL server-side, works on every ES version + OpenSearch).
+  const [esQueryType, setEsQueryType] = useState('dsl');
 
   useEffect(() => {
     setMounted(true);
@@ -118,6 +137,11 @@ const QueryModeSwitcher = ({
       case 'chronosphere':
       case 'victoria-metrics':
         return 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])';
+      case 'openobserve':
+        // Metrics go through the Prometheus-compatible API; logs are SQL over a stream.
+        return isMetric
+          ? 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])'
+          : "Example: SELECT * FROM \"default\" WHERE k8s_namespace_name = 'prod' AND str_match(body, 'ERROR')";
       case 'signoz':
         return isMetric
           ? 'Example: sum(rate(signoz_calls_total{service_name="api-server",http_status_code="500"}[5m])) by (service_name)'
@@ -151,7 +175,12 @@ const QueryModeSwitcher = ({
     }
   };
 
-  const extensions = [EditorView.lineWrapping, cmPlaceholder(getSampleQuery(logProvider, providerType))];
+  // Show the sample that matches the selected ES Code-tab language.
+  const codeSample =
+    logProvider === 'ES' && esQueryType === 'kql'
+      ? 'Example: status:200 and service.name:"auth" and http.response.status_code >= 400'
+      : getSampleQuery(logProvider, providerType);
+  const extensions = [EditorView.lineWrapping, cmPlaceholder(codeSample)];
 
   const resetStates = () => {
     setQuery('');
@@ -373,6 +402,11 @@ const QueryModeSwitcher = ({
         // when the fetch runs against the override (e.g. Loki). Only sent when
         // overridden, mirroring the fetch path in KubernetesLogs.handleSubmit.
         ...(providerOverride ? { log_provider: providerOverride } : {}),
+        // Preview the query with the same row limit the fetch will use. Without
+        // it the backend falls back to the provider default (Pinot/Hive: 1000),
+        // so the generated SQL contradicted the toolbar's Limit selection — and
+        // in Code mode that SQL is executed verbatim, silently overriding it.
+        limit,
       });
 
       if (response?.data?.errors) {
@@ -395,7 +429,7 @@ const QueryModeSwitcher = ({
   };
 
   useEffect(() => {
-    if (logProvider == 'prometheus' || logProvider == 'chronosphere' || logProvider == 'victoria-metrics') {
+    if (isPromQLMetricProvider(logProvider)) {
       const fetchMetrics = async () => {
         try {
           const cachedPrometheusLabels = cache.getWithSuffix(`${accountId}.prometheus.labels`, null, {});
@@ -428,10 +462,7 @@ const QueryModeSwitcher = ({
             setEsIndexList(cachedESIndexes);
           } else {
             setEsIndexList([]);
-            const res = await observability.fetchLogLabels({
-              account_id: accountId,
-              ...(providerOverride ? { log_provider: providerOverride } : {}),
-            });
+            const res = await observability.logIndexList(accountId, providerOverride);
             if (res?.errors) {
               snackbar.error(`failed to fetch indexes - ${parseHttpResponseBodyMessage(res)}`);
               return;
@@ -476,7 +507,7 @@ const QueryModeSwitcher = ({
   }, [logProvider, initialEsIndex]);
 
   const getExtension = () => {
-    if (logProvider == 'prometheus' || logProvider == 'chronosphere' || logProvider == 'victoria-metrics') {
+    if (isPromQLMetricProvider(logProvider)) {
       extensions.push(
         new PromQLExtension()
           .setComplete({
@@ -546,11 +577,30 @@ const QueryModeSwitcher = ({
     }
     setQuery('');
     setHelperTextForLLM('');
-    if (logProvider == 'loki') {
+    if (
+      logProvider &&
+      logProvider !== 'datadog' &&
+      logProvider !== 'prometheus' &&
+      logProvider !== 'chronosphere' &&
+      logProvider !== 'victoria-metrics'
+    ) {
+      // Generic, provider-independent log query generation — covers loki, ES,
+      // signoz, newrelic, loggly, azure_app_insights, observe, pinot, hive, and
+      // any future log backend without a per-provider branch here. datadog and
+      // the metrics providers (handled below) aren't wired to this action; an
+      // unconfigured/k8s-only account is rejected server-side.
       apiAskNudgebee
-        .askAiGenerateLokiQuery({
+        .askAiGenerateLogQuery({
           account_id: accountId,
           query: generateQuestionText,
+          // Unlike the other log_provider call sites in this file, this is sent
+          // unconditionally (not gated on providerOverride) — an account with no
+          // single clear "default" among multiple integrations can leave
+          // defaultProvider empty/stale, which would silently drop the override
+          // and let the backend resolve a different provider than what the
+          // dropdown shows. Always pinning to the currently-selected logProvider
+          // removes that failure mode entirely.
+          ...(logProvider ? { log_provider: logProvider } : {}),
         })
         .then((res) => {
           const errors = res?.data?.errors || [];
@@ -562,7 +612,7 @@ const QueryModeSwitcher = ({
             }
             return;
           }
-          const data = res?.data?.data?.ai_generate_loki_query?.data;
+          const data = res?.data?.data?.ai_generate_log_query?.data;
           const sessionId = data?.session_id;
           if (sessionId) {
             startPolling(sessionId, (conv) => {
@@ -574,16 +624,13 @@ const QueryModeSwitcher = ({
                 const result = extractQueryResultFromConversation(conv);
                 if (result) {
                   const queryData = safeJSONParse(result.response);
-                  if (queryData) {
-                    const queries = Object.keys(queryData);
-                    if (queries.length > 0) {
-                      const key = uuidv4();
-                      setQuery(queries[0]);
-                      if (onQueryChange) {
-                        onQueryChange({ query: queries[0], queryKeys: [key] });
-                      }
-                      sendConversationIdAndLLMResponseToParent(result.conversationId, queryData[queries[0]]);
+                  if (queryData?.query) {
+                    const key = uuidv4();
+                    setQuery(queryData.query);
+                    if (onQueryChange) {
+                      onQueryChange({ query: queryData.query, queryKeys: [key] });
                     }
+                    sendConversationIdAndLLMResponseToParent(result.conversationId, queryData.query);
                   }
                 }
               } else {
@@ -593,16 +640,13 @@ const QueryModeSwitcher = ({
           } else {
             const query = data?.response[0] ?? '{}';
             const queryData = safeJSONParse(query);
-            if (queryData) {
-              const queries = Object.keys(queryData);
-              if (queries.length > 0) {
-                const key = uuidv4();
-                setQuery(queries[0]);
-                if (onQueryChange) {
-                  onQueryChange({ query: queries[0], queryKeys: [key] });
-                }
-                sendConversationIdAndLLMResponseToParent(data?.conversation_id ?? '', queryData[queries[0]]);
+            if (queryData?.query) {
+              const key = uuidv4();
+              setQuery(queryData.query);
+              if (onQueryChange) {
+                onQueryChange({ query: queryData.query, queryKeys: [key] });
               }
+              sendConversationIdAndLLMResponseToParent(data?.conversation_id ?? '', queryData.query);
             }
             setIsLoadingGenerateQuestionText(false);
             if (onAiLoadingChange) {
@@ -758,24 +802,41 @@ const QueryModeSwitcher = ({
       return (
         <Box sx={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', marginTop: 'var(--ds-space-4)' }}>
           {logProvider === 'ES' && (
-            <Box sx={{ width: ds.space.mul(0, 130) }}>
-              <FilterDropdown
-                label='Select an Index'
-                value={selectedEsIndex || null}
-                options={esIndexList ?? []}
-                freeSolo
-                // Same affordance as the Build tab's picker: freeSolo alone is
-                // invisible, so the hint is what tells the user a wildcard
-                // pattern outside the listed indices is accepted.
-                searchPlaceholder='Search or type pattern (use * for wildcard)...'
-                onSelect={(_event, value) => {
-                  setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
-                  if (onQueryChange) {
-                    onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: value || '' });
-                  }
-                }}
-                isOptionsLoading={isEsIndexLoading}
-              />
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
+              <Box sx={{ width: ds.space.mul(0, 88) }}>
+                <FilterDropdown
+                  id='es-query-language'
+                  label='Query Language'
+                  value={ES_QUERY_LANGUAGES.find((o) => o.value === esQueryType) ?? ES_QUERY_LANGUAGES[0]}
+                  options={ES_QUERY_LANGUAGES}
+                  onSelect={(_event, item) => {
+                    const next = item?.value || 'dsl';
+                    setEsQueryType(next);
+                    if (onQueryChange) {
+                      onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: selectedEsIndex, queryType: next });
+                    }
+                  }}
+                />
+              </Box>
+              <Box sx={{ width: ds.space.mul(0, 130) }}>
+                <FilterDropdown
+                  label='Select an Index'
+                  value={selectedEsIndex || null}
+                  options={esIndexList ?? []}
+                  freeSolo
+                  // Same affordance as the Build tab's picker: freeSolo alone is
+                  // invisible, so the hint is what tells the user a wildcard
+                  // pattern outside the listed indices is accepted.
+                  searchPlaceholder='Search or type pattern (use * for wildcard)...'
+                  onSelect={(_event, value) => {
+                    setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
+                    if (onQueryChange) {
+                      onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: value || '', queryType: esQueryType });
+                    }
+                  }}
+                  isOptionsLoading={isEsIndexLoading}
+                />
+              </Box>
             </Box>
           )}
           <CodeMirror
@@ -802,7 +863,7 @@ const QueryModeSwitcher = ({
                 onQueryChange({
                   query: e,
                   queryKeys: [''],
-                  ...(logProvider === 'ES' ? { index: selectedEsIndex } : {}),
+                  ...(logProvider === 'ES' ? { index: selectedEsIndex, queryType: esQueryType } : {}),
                 });
               }
             }}
@@ -966,6 +1027,7 @@ QueryModeSwitcher.propTypes = {
   setQueryOperations: PropTypes.func,
   setLlmQueryResponse: PropTypes.func,
   setConversationId: PropTypes.func,
+  limit: PropTypes.number,
   qLEditor: PropTypes.string,
   setQLEditor: PropTypes.func,
   allowMultipleQueries: PropTypes.bool,

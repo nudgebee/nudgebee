@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	tocore "nudgebee/llm/tools/core"
 	"testing"
 
@@ -18,12 +19,14 @@ func TestAwsDebug_IncludesMCPIntegrationTools(t *testing.T) {
 	defer tocore.ClearMCPIntegrationToolCache(testAccountId)
 
 	sc := security.NewRequestContextForSuperAdmin()
-	tools := getAwsPlannerSupportedTools(sc, testAccountId)
-	toolNames := make([]string, len(tools))
-	for i, tool := range tools {
+	// Lean-only orchestrator: MCP inclusion comes via getCloudLeanSupportedTools,
+	// which merges ListMCPIntegrationTools into the returned tool set.
+	tl := getCloudLeanSupportedTools(sc, testAccountId, AgentAwsOrchestratorName, tools.ToolExecuteAwsCliCommand)
+	toolNames := make([]string, len(tl))
+	for i, tool := range tl {
 		toolNames[i] = tool.Name()
 	}
 
 	assert.Contains(t, toolNames, "mcp_test_server_echo",
-		"aws_debug agent should include MCP integration tools")
+		"aws orchestrator should include MCP integration tools")
 }

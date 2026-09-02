@@ -38,7 +38,7 @@ import ToolReliabilityBars from '../components/ToolReliabilityBars';
 import ToolDurationBars from '../components/ToolDurationBars';
 import ToolCallsModal from '../components/ToolCallsModal';
 import { makeSeverity, SeverityCell, type Severity } from '../components/severity';
-import { listToolUsage, type ToolUsageRow, type ToolSortBy, type ToolStatusGroup } from '@api1/ai-cost';
+import { listToolUsage, TOOL_TYPE_LABEL, type ToolUsageRow, type ToolSortBy, type ToolStatusGroup } from '@api1/ai-cost';
 import type { CostFilters } from '../types';
 
 interface ToolsViewProps {
@@ -78,12 +78,12 @@ const H = {
 };
 
 const HEADERS = [
-  { name: 'Tool', width: '24%', sortEnabled: true, component: H.tool },
-  { name: 'Calls', width: '9%', align: 'right' as const, sortEnabled: true, component: H.calls },
+  { name: 'Tool', width: '22%', sortEnabled: true, component: H.tool },
+  { name: 'Calls', width: '8%', align: 'right' as const, sortEnabled: true, component: H.calls },
   { name: 'Errors', width: '13%', align: 'right' as const, sortEnabled: true, component: H.errors },
-  { name: 'Avg dur', width: '10%', align: 'right' as const, sortEnabled: true, component: H.avgDur },
-  { name: 'Duration', width: '14%', align: 'right' as const, sortEnabled: true, component: H.p90Dur },
-  { name: 'Reach', width: '15%', align: 'right' as const, sortEnabled: true, component: H.reach },
+  { name: 'Avg dur', width: '9%', align: 'right' as const, sortEnabled: true, component: H.avgDur },
+  { name: 'Duration', width: '16%', align: 'right' as const, sortEnabled: true, component: H.p90Dur },
+  { name: 'Reach', width: '17%', align: 'right' as const, sortEnabled: true, component: H.reach },
   { name: 'Downstream $', width: '15%', align: 'right' as const, sortEnabled: true, component: H.cost },
 ];
 
@@ -108,8 +108,7 @@ function toRow(
   return [
     {
       data: r.tool_name,
-      // The tool name opens the invocation explorer (all calls); the error cell
-      // below opens it pre-filtered to failures.
+      // The tool name opens the invocation explorer (all calls).
       component: (
         <Box
           component='button'
@@ -139,7 +138,9 @@ function toRow(
           >
             {r.tool_name || 'tool'}
           </Box>
-          {r.tool_type ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>{r.tool_type}</Box> : null}
+          {TOOL_TYPE_LABEL[r.tool_type] && (
+            <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>{TOOL_TYPE_LABEL[r.tool_type]}</Box>
+          )}
         </Box>
       ),
     },
@@ -148,36 +149,23 @@ function toRow(
       align: 'right' as const,
       data: r.error_count,
       component: (
-        <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
-          <SeverityCell severity={errSev(r.error_rate_pct)} metric='cost'>
-            {r.error_count > 0 ? (
-              <Box
-                component='button'
-                type='button'
-                title={`${r.error_count} of ${r.calls} calls failed (${r.error_rate_pct.toFixed(1)}%) — click to view`}
-                onClick={() => onOpen(r, 'errors')}
-                id={`tool-errors-${r.tool_name}`}
-                sx={{
-                  all: 'unset',
-                  cursor: 'pointer',
-                  textAlign: 'right',
-                  lineHeight: 1.25,
-                  '&:focus-visible': { outline: '2px solid var(--ds-blue-400)', outlineOffset: 2, borderRadius: 'var(--ds-radius-sm)' },
-                }}
-              >
-                {/* Rate is the headline (comparable across tools); the raw count
-                    is the secondary line so the two can't be misread as one number. */}
+        <Box sx={{ textAlign: 'right' }}>
+          <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
+            <SeverityCell severity={errSev(r.error_rate_pct)} metric='cost'>
+              {r.error_count > 0 ? (
                 <Chip size='2xs' tone='waste' variant='tag'>
                   {r.error_rate_pct.toFixed(0)}%
                 </Chip>
-                <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}>
-                  {r.error_count.toLocaleString()} of {r.calls.toLocaleString()}
-                </Box>
-              </Box>
-            ) : (
-              <Box sx={{ ...numCell, textAlign: 'right' }}>0</Box>
-            )}
-          </SeverityCell>
+              ) : (
+                <Box sx={numCell}>0</Box>
+              )}
+            </SeverityCell>
+          </Box>
+          {r.error_count > 0 && (
+            <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}>
+              {r.error_count.toLocaleString()} of {r.calls.toLocaleString()}
+            </Box>
+          )}
         </Box>
       ),
     },
@@ -190,15 +178,15 @@ function toRow(
       align: 'right' as const,
       data: r.p90_duration_seconds,
       component: (
-        <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
-          <SeverityCell severity={durSev(r.p90_duration_seconds)} metric='latency'>
-            <Box sx={{ lineHeight: 1.3, textAlign: 'right' }}>
+        <Box sx={{ textAlign: 'right' }}>
+          <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
+            <SeverityCell severity={durSev(r.p90_duration_seconds)} metric='latency'>
               <Box sx={numCell}>{secs(r.p90_duration_seconds)}</Box>
-              <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}>
-                max {secs(r.max_duration_seconds)}
-              </Box>
-            </Box>
-          </SeverityCell>
+            </SeverityCell>
+          </Box>
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}>
+            max {secs(r.max_duration_seconds)}
+          </Box>
         </Box>
       ),
     },
@@ -340,19 +328,21 @@ export function ToolsView({ accountId, filters, onSelectRun }: ToolsViewProps) {
 
       <Card>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
-            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-              Top {state.rows.length} tools by {sortBy} · scoped by date + source only (model / provider / status don&rsquo;t apply to tools)
-            </Box>
-            <ToggleGroup
-              selection='single'
-              size='sm'
-              ariaLabel='Rank tools by'
-              value={sortBy}
-              onChange={(v: ToolSortBy) => setSortBy(v)}
-              options={SORT_OPTIONS}
-            />
-          </Box>
+          <SectionHeader
+            title='Tool leaderboard'
+            icon={<FormatListNumberedIcon />}
+            subtitle={`Top ${state.rows.length} tools by ${sortBy} · scoped by date + source only (model / provider / status don’t apply to tools)`}
+            right={
+              <ToggleGroup
+                selection='single'
+                size='sm'
+                ariaLabel='Rank tools by'
+                value={sortBy}
+                onChange={(v: ToolSortBy) => setSortBy(v)}
+                options={SORT_OPTIONS}
+              />
+            }
+          />
 
           {inapplicable && (
             <Banner

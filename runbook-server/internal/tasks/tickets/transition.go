@@ -54,6 +54,15 @@ func (t *TicketsTransitionTask) Execute(taskCtx types.TaskContext, params map[st
 		return nil, err
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket transition")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"status":    "dry_run",
+			"message":   "Dry run: ticket transition skipped",
+		}, nil
+	}
+
 	request := ticket.TransitionTicketRequest{
 		TicketId:      ticketId,
 		IntegrationId: integrationId,

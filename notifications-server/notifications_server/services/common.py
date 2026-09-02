@@ -3,11 +3,13 @@ import json
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta
 
 import aiohttp
 import nh3
 from slack_sdk.errors import SlackApiError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql.functions import func
 
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
@@ -19,6 +21,7 @@ from notifications_server.exceptions.exceptions import Err
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.models import (
+    ChannelAccountMapping,
     MessagingPlatform,
     SentNotifications,
     ConfigurationStore,
@@ -47,11 +50,22 @@ LOG = logging.getLogger(__name__)
 ADAPTIVE_CARD_SCHEMA_KEY = "$schema"
 ADAPTIVE_CARD_SCHEMA_URL = "http://adaptivecards.io/schemas/adaptive-card.json"
 
+# Slack invite errors that describe the channel or the bot's access to it rather
+# than the invited user. They fail identically for every user in the batch, so
+# they are reported once as a channel-level error instead of being pinned on each
+# user_id — "not_in_channel" in particular means the *bot* is not in the channel.
+SLACK_CHANNEL_LEVEL_INVITE_ERRORS = ("not_in_channel", "channel_not_found", "is_archived", "missing_scope")
+
 # Error message constants
 ERR_UNKNOWN = "Unknown error"
 ERR_TOKEN_REFRESH_FAILED = "Token refresh failed"
 ERR_GCHAT_TOKEN_REFRESH = "Unable to refresh g chat token for installation id %s"
 MSG_DM_SENT_SUCCESS = "Direct message sent successfully"
+
+# Separates the latest user message from the rest of a thread transcript. The
+# text before it is what the user actually just asked; everything after is
+# surrounding conversation. Callers that need the question alone split on this.
+THREAD_CONTEXT_MARKER = "\n--- context ---"
 
 
 class CommonService:
@@ -62,6 +76,11 @@ class CommonService:
         self._scoped_session = BaseDB.session(self.engine)
         self.session = self._scoped_session()
         self.teams_adapter = None
+        # Set per-request by the event/interactive dispatcher (from the incoming
+        # payload's api_app_id) so get_slack_installation can disambiguate when
+        # multiple apps are installed to the same team_id. None means "unknown",
+        # preserving the original team-only lookup.
+        self.app_id = None
 
     def close(self):
         """Close and remove the scoped session, returning the connection to the pool."""
@@ -332,7 +351,18 @@ class CommonService:
             return {"status": "needs_authorization"}
         return {"status": "unknown"}
 
-    def join_channel(self, platform, account_id, tenant_id, channel_id, session_id=None, team_id=None, text=None):
+    def join_channel(
+        self,
+        platform,
+        account_id,
+        tenant_id,
+        channel_id,
+        session_id=None,
+        bind_session_id=None,
+        team_id=None,
+        text=None,
+        bind_account=False,
+    ):
         try:
             if platform == "google_chat":
                 return self._join_google_chat_space(account_id, tenant_id, channel_id, session_id, text)
@@ -386,6 +416,16 @@ class CommonService:
                     f"session_id={session_id}, account_id={account_id}, tenant_id={tenant_id}"
                 )
 
+                # Durable counterpart to the Redis mapping above (that entry expires;
+                # this row doesn't) — checked by events.py:_resolve_mapped_account.
+                # Opt-in via bind_account. Uses bind_session_id, not session_id:
+                # session_id always has a value (generated fallback), which would
+                # durably bind future @mentions to a conversation that never existed.
+                if bind_account:
+                    self._persist_channel_account_mapping(
+                        platform, channel_team_id, channel_id, account_id, tenant_id, bind_session_id
+                    )
+
             return {
                 "success": True,
                 "message": "Successfully joined channel",
@@ -400,6 +440,67 @@ class CommonService:
             # traceback via LOG.exception for debugging.
             LOG.exception("Error joining channel")
             return {"error": {"message": "Unexpected error while joining channel"}}
+
+    def _persist_channel_account_mapping(
+        self, platform, team_id, channel_id, account_id, tenant_id, bind_session_id=None
+    ):
+        """Upsert the permanent channel->account binding used by
+        events.py:_resolve_mapped_account to skip the account picker.
+
+        channel_metadata (plain text, so json.dumps()) always carries
+        "system_managed": true — every row here is automation-created, and the
+        admin CRUD never sets it, so the settings UI can tell them apart — plus
+        "session_id" when given, which events.py reuses to keep future
+        @mentions in the same investigation conversation.
+
+        Atomic INSERT ... ON CONFLICT DO UPDATE, scoped to this tenant (see
+        `where=` below): the (platform, team_id, channel_id) unique constraint
+        doesn't include tenant_id, and one workspace can be connected to more
+        than one tenant, so an unscoped update could adopt another tenant's row.
+
+        Errors are logged, not raised: the Redis mapping the caller already
+        wrote still lets the channel work for the TTL window either way.
+        """
+        try:
+            metadata_payload = {"system_managed": True}
+            if bind_session_id:
+                metadata_payload["session_id"] = bind_session_id
+            channel_metadata = json.dumps(metadata_payload)
+            now = utc_now()
+            stmt = pg_insert(ChannelAccountMapping).values(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                platform=platform,
+                team_id=team_id,
+                channel_id=channel_id,
+                account_id=account_id,
+                channel_metadata=channel_metadata,
+                created_at=now,
+                updated_at=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["platform", "team_id", "channel_id"],
+                set_={
+                    "account_id": account_id,
+                    "channel_metadata": channel_metadata,
+                    "updated_at": now,
+                },
+                where=(ChannelAccountMapping.tenant_id == tenant_id),
+            )
+            result = self.session.execute(stmt)
+            self.session.commit()
+            if result.rowcount == 0:
+                LOG.warning(
+                    f"Skipped channel-account mapping for {channel_id} ({team_id}): "
+                    f"already bound to a different tenant than {tenant_id}"
+                )
+            else:
+                LOG.info(
+                    f"Persisted permanent channel-account mapping: {channel_id} ({team_id}) -> account_id={account_id}"
+                )
+        except Exception:
+            self.session.rollback()
+            LOG.exception(f"Failed to persist channel-account mapping for channel {channel_id}")
 
     def _join_google_chat_space(self, account_id, tenant_id, channel_id, session_id=None, text=None):
         """Self-join a Google Chat space and bind its incident thread to a session.
@@ -663,19 +764,21 @@ class CommonService:
                 )
                 if response.get("ok"):
                     added.append(user_id)
-                else:
-                    error_msg = response.get("error", ERR_UNKNOWN)
-                    if error_msg in ("already_in_channel", "already_in_group"):
-                        already_members.append(user_id)
-                    else:
-                        failed.append({"user_id": user_id, "error": error_msg})
+                    continue
+                error_msg = response.get("error", ERR_UNKNOWN)
             except SlackApiError as e:
                 error_msg = e.response.get("error", str(e))
-                if error_msg in ("already_in_channel", "already_in_group"):
-                    already_members.append(user_id)
-                else:
-                    LOG.error("Slack API error inviting %s to %s: %s", user_id, channel_id, error_msg)
-                    failed.append({"user_id": user_id, "error": error_msg})
+
+            if error_msg in ("already_in_channel", "already_in_group"):
+                already_members.append(user_id)
+            elif error_msg in SLACK_CHANNEL_LEVEL_INVITE_ERRORS:
+                # Not this user's problem — every remaining invite would fail the
+                # same way, so stop and surface it as an actionable channel error.
+                LOG.error("Slack invite to %s blocked at channel level: %s", channel_id, error_msg)
+                return self._check_error_msg(error_msg, "channels:manage or groups:write")
+            else:
+                LOG.error("Slack API error inviting %s to %s: %s", user_id, channel_id, error_msg)
+                failed.append({"user_id": user_id, "error": error_msg})
 
         return self._members_result("slack", channel_id, added, already_members, failed)
 
@@ -1029,7 +1132,11 @@ class CommonService:
 
     def get_user_info(self, platform, team_id, user_id):
         if platform == "slack":
-            bot = load_installation_by_team(self.session, team_id, "slack")
+            # app_id disambiguates when more than one Slack app shares this
+            # team_id (see get_slack_installation) — without it this silently
+            # falls back to "integration row wins over legacy", which may not
+            # be the app that actually owns the click/event being handled.
+            bot = load_installation_by_team(self.session, team_id, "slack", app_id=self.app_id)
             if not bot:
                 LOG.info("Could not complete action for %s, no installation found for team: %s ", platform, team_id)
                 return None
@@ -1143,8 +1250,39 @@ class CommonService:
             )
             return True
         except Exception as e:
-            LOG.debug(f"Failed to update Slack message attachments: {e}")
+            # Was DEBUG: a failure here (e.g. the resolved bot isn't the one
+            # that posted the message, so Slack rejects the edit) used to
+            # disappear silently, leaving a caller's card stuck with no clue
+            # why. Warn level so it actually surfaces in normal operation.
+            LOG.warning(f"Failed to update Slack message attachments: {e}")
             return False
+
+    def get_message_attachments(self, channel_id, team_id, thread_ts, message_ts):
+        """Fetch a message's current attachments straight from Slack.
+
+        Used before a delayed chat.update (e.g. a background task finishing
+        minutes after the click that triggered it) so the update is applied
+        on top of whatever the message actually looks like now, rather than a
+        stale click-time snapshot that would silently clobber a concurrent
+        edit (e.g. someone suppressing the finding in the meantime).
+
+        `thread_ts` must be the actual thread root, not `message_ts`: for a
+        recurring finding posted into an existing thread (message.py's
+        check_if_sent_already path), message_ts is a reply, and
+        conversations.replies always returns the thread *parent* first
+        regardless of which ts you pass — passing message_ts there would
+        silently resolve to a different finding's card. So this fetches the
+        whole thread and picks the message that actually matches message_ts."""
+        try:
+            bot = self.get_slack_installation(team_id)
+            response = self.slack_app.client.conversations_replies(
+                token=bot.token, channel_id=channel_id, thread_ts=thread_ts
+            )
+            message = next((m for m in response.get("messages") or [] if m.get("ts") == message_ts), None)
+            return message.get("attachments") if message else None
+        except Exception as e:
+            LOG.debug(f"Failed to fetch current Slack message attachments: {e}")
+            return None
 
     def update_slack_message_with_blocks(self, channel_id, team_id, message_ts, blocks):
         """Update an existing Slack message with new blocks."""
@@ -1590,7 +1728,7 @@ class CommonService:
             return last_message
 
         context = "\n".join(f"{role}:\n{text}\n" for role, text in context_entries)
-        return f"{last_message}\n\n--- context ---\n{context}"
+        return f"{last_message}\n{THREAD_CONTEXT_MARKER}\n{context}"
 
     def _extract_meaningful_text(self, msg, bot):
         parts = []
@@ -1693,7 +1831,7 @@ class CommonService:
         return text
 
     def get_slack_installation(self, team_id):
-        return load_installation_by_team(self.session, team_id, "slack")
+        return load_installation_by_team(self.session, team_id, "slack", app_id=self.app_id)
 
     def get_slack_user_display_name(self, team_id, user_id):
         """
@@ -1727,6 +1865,21 @@ class CommonService:
             )
         except Exception as e:
             LOG.debug(f"Failed to get user display name: {e}")
+            return None
+
+    def get_slack_team_domain(self, team_id):
+        """Workspace subdomain (acme in acme.slack.com), used to build message
+        permalinks. None when the workspace or its domain can't be resolved."""
+        try:
+            bot = self.get_slack_installation(team_id)
+            if not bot:
+                return None
+            info = self.slack_app.client.team_info(token=bot.token, team_id=team_id)
+            if not info.get("ok"):
+                return None
+            return info.get("team", {}).get("domain") or None
+        except Exception as e:
+            LOG.debug(f"Failed to get team domain: {e}")
             return None
 
     def get_thread_messages(self, tenant_id, channel_id, thread_ts, team_id=None):
@@ -1868,16 +2021,30 @@ class CommonService:
         }
         return error_map.get(error_msg, f"Failed to fetch thread: {error_msg}")
 
-    def get_channel_and_ts_from_sent_notifications(self, conversation_id):
+    def get_channel_and_ts_from_sent_notifications(self, conversation_id, tenant_id=None):
         if not conversation_id or not isinstance(conversation_id, str):
             return None, None, None, None
 
         parts = conversation_id.split("-", 1)
         fingerprint = parts[1] if len(parts) > 1 else parts[0]
         try:
+            # A tenant can have Slack, Discord, and MS Teams all enabled at once;
+            # send_finding_notification writes one sent_notifications row per
+            # platform for the same fingerprint, sharing this one table. Without
+            # this filter, "most recent by created_at" can land on the
+            # Discord/Teams row instead of the Slack one (its slack_* columns
+            # all NULL), which this Slack-only caller then can't route with.
+            #
+            # Fingerprints carry no tenant identity (hashed from alert identity
+            # alone), so two tenants can collide on the same fingerprint. Scope
+            # by tenant_id whenever the caller has one so a foreign tenant's
+            # Slack row can never be selected instead of this tenant's own
+            # (non-Slack, or missing) row for the same fingerprint.
+            query = self.session.query(SentNotifications).filter_by(fingerprint=fingerprint)
+            if tenant_id:
+                query = query.filter_by(tenant_id=tenant_id)
             notification = (
-                self.session.query(SentNotifications)
-                .filter_by(fingerprint=fingerprint)
+                query.filter(SentNotifications.slack_thread_id.isnot(None))
                 .order_by(SentNotifications.created_at.desc())
                 .limit(1)
                 .first()

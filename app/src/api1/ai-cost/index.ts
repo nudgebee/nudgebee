@@ -41,6 +41,8 @@ export interface UsageGroupRow {
 export interface UsageFilterOption {
   id: string;
   name: string;
+  /** Accounts only — groups the account dropdown by provider and picks its logo. */
+  cloud_provider?: string;
 }
 
 export interface UsageFilters {
@@ -103,6 +105,57 @@ export interface UsageMetrics {
   storage?: CacheStorage | null;
 }
 
+/** One "what drove the cost" line (a model or a source) within a single account. */
+export interface AiCostDriver {
+  key: string;
+  cost_usd: number;
+}
+
+/** One account's row in the consolidated cost report (Accounts tab / Slack digest). */
+export interface AiCostAccountRow {
+  account_id: string;
+  account_name: string;
+  daily_cost_usd: number;
+  mtd_cost_usd: number;
+  prev_month_cost_usd: number;
+  avg_daily_this_month_usd: number;
+  avg_daily_prev_month_usd: number;
+  /** (avgDailyThisMonth - avgDailyPrevMonth) / avgDailyPrevMonth * 100; 0 when no prior baseline. */
+  pct_delta_avg_daily: number;
+  top_daily_by_model: AiCostDriver[];
+  top_daily_by_source: AiCostDriver[];
+  top_mtd_by_model: AiCostDriver[];
+  top_mtd_by_source: AiCostDriver[];
+}
+
+/** One model's tenant-wide MTD cost/call-count/percentile breakdown (top 10, cost-desc — from the Go query, not re-sorted here). */
+export interface AiCostTopModelRow {
+  model: string;
+  mtd_cost_usd: number;
+  call_count: number;
+  p95_cost_per_call_usd: number;
+  p99_cost_per_call_usd: number;
+}
+
+/** Same shape as AiCostTopModelRow, grouped by source instead of model (top 5, cost-desc). */
+export interface AiCostTopSourceRow {
+  source: string;
+  mtd_cost_usd: number;
+  call_count: number;
+  p95_cost_per_call_usd: number;
+  p99_cost_per_call_usd: number;
+}
+
+export interface AiCostAccountReport {
+  tenant_id: string;
+  reference_date: string; // YYYY-MM-DD
+  accounts: AiCostAccountRow[];
+  /** Tenant-wide (not per-account) — top models by MTD cost, with p95/p99 cost-per-call. */
+  top_models: AiCostTopModelRow[];
+  /** Tenant-wide (not per-account) — top sources by MTD cost, with p95/p99 cost-per-call. */
+  top_sources: AiCostTopSourceRow[];
+}
+
 /** One model's rolled-up calls + cost within a single conversation (list row). */
 export interface ConversationModelStat {
   model: string;
@@ -125,6 +178,8 @@ export interface ConversationCostRow {
   ended_at: string;
   wall_clock_seconds: number;
   total_model_time_seconds: number;
+  /** Total model time ÷ llm calls — what the list's Latency column ranks on. */
+  avg_latency_seconds: number;
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
@@ -396,10 +451,13 @@ export interface AggregateUsageRequest extends UsageFilterRequest {
   topN?: number;
   /** day|week|month — when set, the response includes the over-time `time_series`. */
   granularity?: string;
+  /** Skip the cache-lifecycle storage-cost scan (`storage` in the response) when the
+   * caller only needs totals/breakdowns — e.g. a totals-only comparison window. */
+  skipStorage?: boolean;
 }
 
 export interface ListConversationCostsRequest extends UsageFilterRequest {
-  sortBy?: 'cost' | 'start_time' | 'duration' | 'llm_calls' | 'tokens';
+  sortBy?: 'cost' | 'start_time' | 'duration' | 'llm_calls' | 'tokens' | 'latency';
   sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
@@ -444,12 +502,12 @@ export async function aggregateUsageMetrics(req: AggregateUsageRequest, signal?:
   const query = `mutation AggregateUsageMetrics(
     $accountIds: [String!], $startDate: String!, $endDate: String!, $userId: String,
     $sources: [String!], $models: [String!], $providers: [String!], $agents: [String!], $statuses: [String!],
-    $groupBy: [String!], $topN: Int, $granularity: String
+    $groupBy: [String!], $topN: Int, $granularity: String, $skipStorage: Boolean
   ) {
     ai_aggregate_usage_metrics(request: {
       account_ids: $accountIds, start_date: $startDate, end_date: $endDate, user_id: $userId,
       sources: $sources, models: $models, providers: $providers, agents: $agents, statuses: $statuses,
-      group_by: $groupBy, top_n: $topN, granularity: $granularity
+      group_by: $groupBy, top_n: $topN, granularity: $granularity, skip_storage: $skipStorage
     }) {
       data
     }
@@ -470,6 +528,7 @@ export async function aggregateUsageMetrics(req: AggregateUsageRequest, signal?:
       groupBy: req.groupBy ?? [],
       topN: req.topN ?? 0,
       granularity: req.granularity ?? null,
+      skipStorage: req.skipStorage ?? false,
     },
     undefined,
     signal
@@ -514,6 +573,31 @@ export async function listConversationCosts(req: ListConversationCostsRequest, s
     signal
   );
   return response?.data?.data?.ai_list_conversation_costs?.data ?? null;
+}
+
+/** Consolidated per-account cost report (Accounts tab) — same computation the
+ * Slack daily digest uses. referenceDate is the day being reported on
+ * (YYYY-MM-DD); accountIds empty = every account the caller may read. */
+export async function aggregateAccountCostReport(
+  req: { accountIds?: string[]; referenceDate: string },
+  signal?: AbortSignal
+): Promise<AiCostAccountReport | null> {
+  const query = `mutation AggregateAccountCostReport($accountIds: [String!], $referenceDate: String!) {
+    ai_aggregate_account_cost_report(request: { account_ids: $accountIds, reference_date: $referenceDate }) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(
+    query,
+    'AggregateAccountCostReport',
+    {
+      accountIds: arr(req.accountIds),
+      referenceDate: req.referenceDate,
+    },
+    undefined,
+    signal
+  );
+  return response?.data?.data?.ai_aggregate_account_cost_report?.data ?? null;
 }
 
 // ─── ai_list_agent_costs (Agents leaderboard) ──────────────────────────────────
@@ -646,6 +730,15 @@ export interface ToolUsageList {
   rows: ToolUsageRow[];
 }
 
+/**
+ * Human labels for `llm_conversation_tool_calls.tool_type`. A type with no entry
+ * here (e.g. the default 'tool' backfill value) renders nothing — the raw DB
+ * value is never shown to users.
+ */
+export const TOOL_TYPE_LABEL: Partial<Record<string, string>> = {
+  agent: 'Spawns sub-agent',
+};
+
 export interface ListToolUsageRequest {
   accountIds?: string[];
   startDate: string; // RFC3339 UTC
@@ -693,11 +786,12 @@ export async function listToolUsage(req: ListToolUsageRequest, signal?: AbortSig
 
 /** Tool statuses, grouped for the drill-in toggle (lowercased on write). */
 export const TOOL_STATUS_GROUPS = {
+  success: ['success'],
   errors: ['fail', 'error', 'terminated'],
   in_progress: ['in_progress', 'waiting', 'waiting_for_client'],
 } as const;
 
-export type ToolStatusGroup = 'all' | 'errors' | 'in_progress';
+export type ToolStatusGroup = 'all' | 'success' | 'errors' | 'in_progress';
 
 /** Resolve a UI status group to the status values the API filters on ([] = all). */
 export function toolStatusesFor(group: ToolStatusGroup): string[] {
@@ -946,6 +1040,77 @@ function optSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Parse a stored cost_optimizer message into a ConversationOptimization, safely.
+ * The agent emits `findings: null` when it finds nothing, which an unchecked `as`
+ * cast let crash the Optimize tab (`data.findings.length`). Tolerates ```json
+ * fences / prose, coerces `findings` and the numeric fields to safe defaults, and
+ * returns null only for a foreign payload (no string `summary`) — treated by
+ * callers as "no prior analysis". Mirrors parsePromptAnalysis. */
+function parseConversationOptimization(raw: string): ConversationOptimization | null {
+  if (!raw) return null;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const arr = <T>(v: unknown): T[] | undefined => (Array.isArray(v) ? (v as T[]) : undefined);
+
+  const tryParse = (s: string): ConversationOptimization | null => {
+    let o: unknown;
+    try {
+      o = JSON.parse(s);
+    } catch {
+      return null;
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    const r = o as Record<string, unknown>;
+    // Our payload carries a string `summary` + an array/null `findings`; reject the rest.
+    if (typeof r.summary !== 'string' || (r.findings != null && !Array.isArray(r.findings))) return null;
+
+    const findings: OptFinding[] = (arr<unknown>(r.findings) ?? [])
+      .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object' && !Array.isArray(f))
+      .map((f, i) => {
+        const conf = f.confidence;
+        return {
+          ...(f as unknown as OptFinding),
+          id: str(f.id) || `f-${i}`,
+          type: (str(f.type) || 'model_downgrade') as OptFindingType,
+          title: str(f.title),
+          target: (f.target && typeof f.target === 'object' && !Array.isArray(f.target) ? f.target : { kind: 'unknown' }) as OptTarget,
+          evidence: str(f.evidence),
+          recommendation: str(f.recommendation),
+          current_cost_usd: num(f.current_cost_usd),
+          estimated_savings_usd: num(f.estimated_savings_usd),
+          estimated_savings_pct: num(f.estimated_savings_pct),
+          confidence: (conf === 'high' || conf === 'medium' || conf === 'low' ? conf : 'low') as OptFinding['confidence'],
+          supporting_evidence: arr<OptEvidenceFact>(f.supporting_evidence),
+          exemplars: arr<OptExemplar>(f.exemplars),
+          backing_agent_ids: arr<string>(f.backing_agent_ids),
+          overlaps_with: arr<string>(f.overlaps_with),
+        };
+      });
+
+    return {
+      conversation_id: str(r.conversation_id),
+      current_cost_usd: num(r.current_cost_usd),
+      total_potential_savings_usd: num(r.total_potential_savings_usd),
+      total_potential_savings_pct: num(r.total_potential_savings_pct),
+      summary: str(r.summary),
+      findings,
+      profile: (r.profile && typeof r.profile === 'object' && !Array.isArray(r.profile) ? r.profile : {}) as OptimizationProfile,
+    };
+  };
+
+  const direct = tryParse(raw.trim());
+  if (direct) return direct;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    const f = tryParse(fenced[1].trim());
+    if (f) return f;
+  }
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) return tryParse(raw.slice(start, end + 1));
+  return null;
+}
+
 // Runs the cost_optimizer agent through the chat/investigate path. The analysis is
 // a minutes-long LLM call, so we run it ASYNC and poll: the agent is hosted in a
 // real conversation (session = optimizer-<target>, source = "Optimize") — which
@@ -1009,13 +1174,7 @@ export async function generateConversationOptimization(
     if (baselineTs && (latest?.created_at ?? '') <= baselineTs) continue;
     const status = (latest?.status ?? '').toUpperCase();
     if (status === 'FAILED' || status === 'KILLED') throw new Error('Optimization failed');
-    if (status === 'COMPLETED' && latest?.response) {
-      try {
-        return JSON.parse(latest.response) as ConversationOptimization;
-      } catch {
-        return null; // completed but unparseable
-      }
-    }
+    if (status === 'COMPLETED' && latest?.response) return parseConversationOptimization(latest.response);
     // IN_PROGRESS / WAITING → keep polling
   }
   throw new Error('Optimization timed out — try again');
@@ -1048,11 +1207,8 @@ export async function getStoredConversationOptimization(
     .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
   const latest = completed.pop();
   if (!latest?.response) return null;
-  try {
-    return { optimization: JSON.parse(latest.response) as ConversationOptimization, analyzedAt: latest.created_at ?? '' };
-  } catch {
-    return null;
-  }
+  const optimization = parseConversationOptimization(latest.response);
+  return optimization ? { optimization, analyzedAt: latest.created_at ?? '' } : null;
 }
 
 /** Existing per-conversation summary metrics (basic detail panel + per-model rollups). */

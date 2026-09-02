@@ -2,15 +2,18 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// Kubernetes namespace: RFC 1123 DNS label (lowercase alphanumeric + hyphens, 1-63 chars)
+var k8sNamespaceRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const ToolRemediationGenerate = "remediation_generate"
 const ToolRemediationExecute = "remediation_execute"
@@ -110,16 +113,18 @@ func (r RemediationGenerateTool) Call(nbRequestContext core.NbToolContext, input
 		}, fmt.Errorf("investigation context is required")
 	}
 
-	// Load the system prompt from the embedded prompt file rather than inlining it here.
-	// This allows the prompt to be version-controlled, reviewed, and updated independently
-	// of the tool's execution logic. See agents/prompts_repo/tool_remediation_generate.txt.
-	systemPrompt := prompts_repo.GetPrompt(prompts_repo.PromptToolRemediationGenerate)
-	if strings.TrimSpace(systemPrompt) == "" {
-		logger.Error("remediation_generate: system prompt not found — embed may be broken")
+	// Load the system prompt from prompts/default/v1/tools/remediation_generate.yaml.
+	// Keeping it out of Go source lets it be versioned, A/B tested and rolled back per
+	// account independently of this tool's execution logic. There is deliberately no
+	// fallback to an older copy: the file is embedded and validated at build time, so a
+	// failure here means a real defect and must surface as one.
+	systemPrompt, err := prompts.GetPromptStrict(nbRequestContext.Ctx.GetContext(), prompts.PromptRemediationGenerate, nbRequestContext.AccountId)
+	if err != nil {
+		logger.Error("remediation_generate: system prompt could not be loaded", "error", err)
 		return core.NBToolResponse{
 			Data:   "Remediation system prompt is not configured",
 			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("remediation system prompt is missing")
+		}, fmt.Errorf("remediation_generate: loading system prompt: %w", err)
 	}
 
 	userPrompt := investigationContext
@@ -276,6 +281,12 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 
 	// Append namespace if provided and not already in command
 	if namespace, ok := input.Arguments["namespace"].(string); ok && namespace != "" {
+		if !k8sNamespaceRe.MatchString(namespace) {
+			return core.NBToolResponse{
+				Data:   "Invalid namespace: must be a valid Kubernetes namespace (lowercase alphanumeric and hyphens, 1-63 chars)",
+				Status: core.NBToolResponseStatusError,
+			}, fmt.Errorf("invalid namespace %q: does not match Kubernetes naming rules", namespace)
+		}
 		if !strings.Contains(command, "-n ") && !strings.Contains(command, "--namespace") {
 			if strings.HasPrefix(command, "kubectl") {
 				command = fmt.Sprintf("%s -n %s", command, namespace)
@@ -290,135 +301,52 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 		ExecutedAt: startTime.Format(time.RFC3339),
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
-			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-		})
-		duration := time.Since(startTime)
-		result.Duration = duration.String()
-
-		if err != nil {
-			logger.Error("remediation: command execution failed in workspace", "command", command, "error", err)
-			result.Success = false
-			result.ExitCode = 1
-			result.Error = err.Error()
-			result.Stderr = err.Error()
-			if response != "" {
-				result.Stdout = response
-			}
-
-			responseData, _ := r.formatExecutionResult(result)
-			return core.NBToolResponse{
-				Data:   responseData,
-				Type:   core.NBToolResponseTypeJson,
-				Status: core.NBToolResponseStatusError,
-			}, nil
-		}
-
-		result.Success = true
-		result.ExitCode = 0
-		result.Stdout = response
-
-		logger.Info("remediation: command executed successfully in workspace",
-			"command", command,
-			"duration", duration,
-			"stdout_length", len(response))
-
-		responseData, err := r.formatExecutionResult(result)
-		if err != nil {
-			return core.NBToolResponse{
-				Data:   fmt.Sprintf("Command executed but failed to format result: %v", err),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		references := []core.NBToolResponseReference{}
-		if strings.Contains(command, "kubectl") {
-			references = append(references,
-				core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"kubernetes", "applications"}, "View Cluster Workloads", nil, ""))
-		}
-
-		return core.NBToolResponse{
-			Data:       responseData,
-			Type:       core.NBToolResponseTypeJson,
-			Status:     core.NBToolResponseStatusSuccess,
-			References: references,
-		}, nil
-	}
-
-	// Determine the relay job type based on command prefix
-	var relayModule RelayJob
-	switch {
-	case strings.HasPrefix(command, "kubectl"):
-		relayModule = RelayJobKubectl
-	case strings.HasPrefix(command, "helm"):
-		relayModule = RelayJobHelm
-	case strings.HasPrefix(command, "argocd"):
-		relayModule = RelayJobArgoCD
-	default:
-		// Default to shell for any other commands
-		relayModule = RelayJobShell
-	}
-
-	response, err := ExecuteContainerJob(nbRequestContext, relayModule, command, nbRequestContext.AccountId, map[string]any{}, false)
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
+		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
+	})
 	duration := time.Since(startTime)
 	result.Duration = duration.String()
 
-	// Extract stdout from response
-	var stdout string
-	if err == nil {
-		if strOutput, ok := response.(string); ok {
-			stdout = strOutput
-		} else if mapOutput, ok := response.(map[string]any); ok {
-			if stdoutVal, exists := mapOutput["stdout"]; exists {
-				if stdoutStr, ok := stdoutVal.(string); ok {
-					stdout = stdoutStr
-				}
-			}
-		}
-	}
-
 	if err != nil {
-		logger.Error("remediation: command execution failed", "command", command, "error", err)
+		logger.Error("remediation: command execution failed in workspace", "command", command, "error", err)
 		result.Success = false
 		result.ExitCode = 1
 		result.Error = err.Error()
 		result.Stderr = err.Error()
+		if response != "" {
+			result.Stdout = response
+		}
 
-		// Return error details in response
 		responseData, _ := r.formatExecutionResult(result)
 		return core.NBToolResponse{
 			Data:   responseData,
 			Type:   core.NBToolResponseTypeJson,
 			Status: core.NBToolResponseStatusError,
-		}, nil // Don't propagate error - we've captured it in result
+		}, nil
 	}
 
 	result.Success = true
 	result.ExitCode = 0
-	result.Stdout = stdout
+	result.Stdout = response
 
-	logger.Info("remediation: command executed successfully",
+	logger.Info("remediation: command executed successfully in workspace",
 		"command", command,
 		"duration", duration,
-		"stdout_length", len(stdout))
+		"stdout_length", len(response))
 
-	// Format response
 	responseData, err := r.formatExecutionResult(result)
 	if err != nil {
-		logger.Error("remediation: failed to format result", "error", err)
 		return core.NBToolResponse{
 			Data:   fmt.Sprintf("Command executed but failed to format result: %v", err),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
 
-	// Add UI reference if applicable
 	references := []core.NBToolResponseReference{}
 	if strings.Contains(command, "kubectl") {
 		references = append(references,
-			core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"workloads"}, "View Cluster Workloads", nil, ""))
+			core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"kubernetes", "applications"}, "View Cluster Workloads", nil, ""))
 	}
 
 	return core.NBToolResponse{
@@ -429,17 +357,30 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 	}, nil
 }
 
-// validateCommandSafety checks if the command is safe to execute
-func (r RemediationExecuteTool) validateCommandSafety(command string) error {
-	lowerCmd := strings.ToLower(strings.TrimSpace(command))
+// ValidateCommandSafety blocks catastrophic command patterns (fork bomb, disk wipe, etc).
+// Exported so direct execute handlers (e.g. the remediation RPC play-button path) enforce the
+// same hard-block layer the agent tool applies. Write-level gating (create/update/delete) is a
+// separate concern handled via RBAC at the call site.
+//
+// Note: Dangerous k8s operations (delete namespace, delete pv, etc.) are intentionally NOT blocked
+// here — they are gated by the write-access RBAC check, not this destructive-pattern list.
+func ValidateCommandSafety(command string) error {
+	// Collapse runs of whitespace to single spaces so the substring patterns survive spacing
+	// variation ("rm -rf  /", tabs, etc.).
+	lowerCmd := strings.Join(strings.Fields(strings.ToLower(command)), " ")
 
-	// Block destructive commands without safeguards
 	dangerousPatterns := []string{
 		"rm -rf /",
+		"rm -fr /",
+		"rm -r -f /",
+		"rm -f -r /",
+		"--no-preserve-root",
 		"dd if=/dev/zero",
+		"dd if=/dev/random",
 		"mkfs.",
 		":(){ :|:& };:", // fork bomb
 		"> /dev/sda",
+		"of=/dev/sda",
 	}
 
 	for _, pattern := range dangerousPatterns {
@@ -448,11 +389,12 @@ func (r RemediationExecuteTool) validateCommandSafety(command string) error {
 		}
 	}
 
-	// Note: Dangerous operations (delete namespace, delete pv, etc.) are handled
-	// via the InferToolRequestTypePrompt mechanism which requires user approval
-	// for all create/update/delete operations
-
 	return nil
+}
+
+// validateCommandSafety checks if the command is safe to execute (agent-tool path).
+func (r RemediationExecuteTool) validateCommandSafety(command string) error {
+	return ValidateCommandSafety(command)
 }
 
 // formatExecutionResult formats the execution result as JSON

@@ -109,6 +109,41 @@ mutation UpdateNotificationChannelAccountMapping($id: String!, $account_id: Stri
   }
 }`;
 
+export const LIST_WATCHABLE_CHANNELS = `query ListWatchableChannels($platform: String!, $team_id: String) {
+  notifications_list_watchable_channels(platform: $platform, team_id: $team_id) {
+    data
+    team_id
+    partial
+    error
+  }
+}`;
+
+export const ENABLE_CHANNEL_WATCH = `mutation EnableChannelWatch($platform: String!, $channel_id: String!, $team_id: String, $channel_name: String) {
+  notifications_enable_channel_watch(platform: $platform, channel_id: $channel_id, team_id: $team_id, channel_name: $channel_name) {
+    data
+    error
+  }
+}`;
+
+export const DISABLE_CHANNEL_WATCH = `mutation DisableChannelWatch($platform: String!, $channel_id: String!, $team_id: String) {
+  notifications_disable_channel_watch(platform: $platform, channel_id: $channel_id, team_id: $team_id) {
+    data
+    error
+  }
+}`;
+
+// Watch actions return {data} on success and {error:{message}} with a 4xx status
+// on failure; queryGraphQL hands back the raw response either way, so unwrap
+// every shape a failure can arrive in and keep the server's message intact.
+function unwrapWatchAction(response: any, action: string) {
+  const payload = response?.data?.data?.[action];
+  if (payload && (payload.data !== undefined || payload.error !== undefined)) {
+    return payload;
+  }
+  const message = response?.data?.error?.message || response?.data?.errors?.[0]?.message;
+  return { error: { message: message || 'Request failed' } };
+}
+
 const apiNotifications = {
   async getInstalledTools() {
     try {
@@ -291,6 +326,48 @@ const apiNotifications = {
     } catch (e) {
       console.log('Error updating channel account mapping:', e);
       return { error: e };
+    }
+  },
+  async listWatchableChannels(platform: string, teamId?: string) {
+    try {
+      const variables: any = { platform };
+      if (teamId) {
+        variables.team_id = teamId;
+      }
+      const response = await queryGraphQL(LIST_WATCHABLE_CHANNELS, 'ListWatchableChannels', variables);
+      return unwrapWatchAction(response, 'notifications_list_watchable_channels');
+    } catch (e) {
+      console.log('Error listing watchable channels:', e);
+      return { error: { message: 'Failed to load channels' } };
+    }
+  },
+  async enableChannelWatch(params: { platform: string; channelId: string; teamId?: string; channelName?: string }) {
+    try {
+      const variables: any = { platform: params.platform, channel_id: params.channelId };
+      if (params.teamId) {
+        variables.team_id = params.teamId;
+      }
+      if (params.channelName) {
+        variables.channel_name = params.channelName;
+      }
+      const response = await queryGraphQL(ENABLE_CHANNEL_WATCH, 'EnableChannelWatch', variables);
+      return unwrapWatchAction(response, 'notifications_enable_channel_watch');
+    } catch (e) {
+      console.log('Error enabling channel watch:', e);
+      return { error: { message: 'Failed to start watching the channel' } };
+    }
+  },
+  async disableChannelWatch(params: { platform: string; channelId: string; teamId?: string }) {
+    try {
+      const variables: any = { platform: params.platform, channel_id: params.channelId };
+      if (params.teamId) {
+        variables.team_id = params.teamId;
+      }
+      const response = await queryGraphQL(DISABLE_CHANNEL_WATCH, 'DisableChannelWatch', variables);
+      return unwrapWatchAction(response, 'notifications_disable_channel_watch');
+    } catch (e) {
+      console.log('Error disabling channel watch:', e);
+      return { error: { message: 'Failed to stop watching the channel' } };
     }
   },
 };

@@ -11,8 +11,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -264,8 +264,12 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 	logger.Debug("loganalysis: log data prepared", "data_length", len(data), "truncated", logTokenCount > maxTokens)
 
 	logger.Debug("loganalysis: generating log file details")
+	fileExtractorPrompt, fePromptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptLogAnalysisFileExtractor, query.AccountId, query.Query)
+	if fePromptErr != nil {
+		return core.NBAgentResponse{}, fmt.Errorf("loganalysis: loading file-extractor prompt: %w", fePromptErr)
+	}
 	logFileDetailMessage := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeHuman, prompts_repo.GetPrompt(prompts_repo.PromptLogAnalysisFileExtractor, query.Query)),
+		llms.TextParts(llms.ChatMessageTypeHuman, fileExtractorPrompt),
 	}
 	res, err := core.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, logFileDetailMessage, true, llms.WithTemperature(0.0))
 	if err != nil {
@@ -559,8 +563,12 @@ func (l LogAnalysisAgent) analyzeGithubCode(ctx *security.RequestContext, reques
 		ctx.GetLogger().Info("analyzer: no files found in log response, continuing with github analysis anyway")
 	}
 
+	codediffPrompt, cdPromptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptLogAnalysisCodediffGenerateRequest, request.AccountId)
+	if cdPromptErr != nil {
+		return nil, fmt.Errorf("loganalysis: loading codediff prompt: %w", cdPromptErr)
+	}
 	logGithubRequest := LogGithubAgentRequest{
-		Query:     prompts_repo.GetPrompt(prompts_repo.PromptLogAnalysisCodeDiffGenerateRequest),
+		Query:     codediffPrompt,
 		Errors:    errors,
 		Files:     filesMap,
 		GitRepo:   repo,

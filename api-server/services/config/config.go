@@ -32,6 +32,7 @@ type appConfig struct {
 	ServiceDBMinConnection          int    `mapstructure:"app_database_min_connection"`
 	ServiceDBIdleMinutes            int    `mapstructure:"app_database_idle_minutes"`
 	ServiceDBConnMaxLifetimeMinutes int    `mapstructure:"app_database_conn_max_lifetime_minutes"`
+	ServiceDBQueryTimeoutSeconds    int    `mapstructure:"app_database_query_timeout_seconds"`
 	ServiceEndpoint                 string `mapstructure:"service_api_server_url"`
 
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
@@ -41,6 +42,21 @@ type appConfig struct {
 	ClickhousePassword string `mapstructure:"clickhouse_password"`
 	ClickhouseDatabase string `mapstructure:"clickhouse_database"`
 	ClickhouseEnabled  bool   `mapstructure:"clickhouse_enabled"`
+
+	// Pool bounds for the ClickHouse warehouse. Kept separate from the
+	// app_database_* (Postgres) values because the two backends have different
+	// server-side connection budgets.
+	ClickhouseMaxConnection          int `mapstructure:"clickhouse_max_connection"`
+	ClickhouseMinConnection          int `mapstructure:"clickhouse_min_connection"`
+	ClickhouseIdleMinutes            int `mapstructure:"clickhouse_idle_minutes"`
+	ClickhouseConnMaxLifetimeMinutes int `mapstructure:"clickhouse_conn_max_lifetime_minutes"`
+
+	// Pool bounds for the relay-backed agent warehouse managers (ClickHouse,
+	// BigQuery, Chronosphere).
+	AgentWarehouseMaxConnection          int `mapstructure:"agent_warehouse_max_connection"`
+	AgentWarehouseMinConnection          int `mapstructure:"agent_warehouse_min_connection"`
+	AgentWarehouseIdleMinutes            int `mapstructure:"agent_warehouse_idle_minutes"`
+	AgentWarehouseConnMaxLifetimeMinutes int `mapstructure:"agent_warehouse_conn_max_lifetime_minutes"`
 
 	RabbitMqUsername string `mapstructure:"rabbit_mq_username"`
 	RabbitMqPassword string `mapstructure:"rabbit_mq_password"`
@@ -78,6 +94,8 @@ type appConfig struct {
 
 	RelayServerEndpoint  string `mapstructure:"relay_server_endpoint"`
 	RelayServerSecretKey string `mapstructure:"relay_server_secret_key"`
+
+	VulnMatcherServerEndpoint string `mapstructure:"vuln_matcher_server_endpoint"`
 
 	OtelServiceName          string `mapstructure:"otel_service_name"`
 	OtelExporterOtlpEndpoint string `mapstructure:"otel_exporter_otlp_endpoint"`
@@ -131,6 +149,14 @@ type appConfig struct {
 	LLMServerToken       string `mapstructure:"llm_server_token"`
 	LLMServerTokenHeader string `mapstructure:"llm_server_token_header"`
 
+	// AI Gateway (llm-gateway): reuses the SAME env convention the app already uses to
+	// reach the gateway (LLM_GATEWAY_URL / LLM_GATEWAY_ACTION_TOKEN), so ops configures one
+	// gateway URL + token across services. Used to delegate LLM Gateway integration "Test
+	// Connection" to the gateway (probe runs from its network); the token is sent as
+	// X-ACTION-TOKEN and must match the gateway's gateway_action_token.
+	LLMGatewayURL         string `mapstructure:"llm_gateway_url"`
+	LLMGatewayActionToken string `mapstructure:"llm_gateway_action_token"`
+
 	ServicesServerLLMRetryAttempts         int `mapstructure:"services_server_llm_retry_attempts"`
 	ServicesServerLLMInitialBackoffSeconds int `mapstructure:"services_server_llm_initial_backoff_seconds"`
 
@@ -153,8 +179,19 @@ type appConfig struct {
 
 	NBRetentionDaysRecommendationsArchive int `mapstructure:"nb_retention_days_recommendations_archive"`
 
+	// NBRetentionDaysEventAnalysis ages out event_log_analysis by the recency of
+	// the newest run for an event identity, not per row — see the
+	// event_log_analysis cleanup job in services/nb. Defaults to the critical
+	// event retention window so an event never outlives its own analysis.
+	NBRetentionDaysEventAnalysis int `mapstructure:"nb_retention_days_event_analysis"`
+
 	KGEdgeStaleAfterDays           int `mapstructure:"kg_edge_stale_after_days"`
 	NBRetentionDaysKGInactiveEdges int `mapstructure:"nb_retention_days_kg_inactive_edges"`
+	// May be shorter than NBRetentionDaysKGInactiveEdges: an inactive edge can
+	// briefly outlive the node it points at. Harmless because every read path
+	// filters is_active = true, so a tombstoned edge is never traversed, and the
+	// cleanup job refuses to delete a node that still has an *active* edge.
+	NBRetentionDaysKGInactiveNodes int `mapstructure:"nb_retention_days_kg_inactive_nodes"`
 
 	// LLM token-usage prompt/response cleanup (PII/storage retention). Two passes:
 	// a frequent short-term pass that only cleans up "standard" successful calls, and a
@@ -230,6 +267,11 @@ type appConfig struct {
 	RabbitMqEventPostProcessQueue       string `mapstructure:"rabbit_mq_event_post_process_queue"`
 	RabbitMqEventPostProcessConcurrency int    `mapstructure:"rabbit_mq_event_post_process_concurrency"`
 
+	// VM discovery/vulnerability scan queue configuration
+	RabbitMqVMScanExchange    string `mapstructure:"rabbit_mq_vm_scan_exchange"`
+	RabbitMqVMScanQueue       string `mapstructure:"rabbit_mq_vm_scan_queue"`
+	RabbitMqVMScanConcurrency int    `mapstructure:"rabbit_mq_vm_scan_concurrency"`
+
 	// Webhook async processing queue configuration
 	RabbitMqWebhookProcessExchange    string `mapstructure:"rabbit_mq_webhook_process_exchange"`
 	RabbitMqWebhookProcessQueue       string `mapstructure:"rabbit_mq_webhook_process_queue"`
@@ -272,6 +314,15 @@ func init() {
 	viper.SetDefault("clickhouse_database", "nudgebee")
 	viper.SetDefault("clickhouse_password", "default")
 	viper.SetDefault("clickhouse_enabled", false)
+	viper.SetDefault("clickhouse_max_connection", "20")
+	viper.SetDefault("clickhouse_min_connection", "2")
+	viper.SetDefault("clickhouse_idle_minutes", "5")
+	viper.SetDefault("clickhouse_conn_max_lifetime_minutes", "5")
+
+	viper.SetDefault("agent_warehouse_max_connection", "20")
+	viper.SetDefault("agent_warehouse_min_connection", "2")
+	viper.SetDefault("agent_warehouse_idle_minutes", "5")
+	viper.SetDefault("agent_warehouse_conn_max_lifetime_minutes", "5")
 
 	viper.SetDefault("rabbit_mq_username", "user")
 	viper.SetDefault("rabbit_mq_password", "")
@@ -298,6 +349,7 @@ func init() {
 	viper.SetDefault("app_database_min_connection", "2")
 	viper.SetDefault("app_database_idle_minutes", "5")
 	viper.SetDefault("app_database_conn_max_lifetime_minutes", "5")
+	viper.SetDefault("app_database_query_timeout_seconds", "120")
 	viper.SetDefault("nudgebee_encryption_key", "")
 
 	viper.SetDefault("rabbit_mq_notifications_queue", "notifications")
@@ -321,6 +373,8 @@ func init() {
 
 	viper.SetDefault("relay_server_endpoint", "http://localhost:52832")
 	viper.SetDefault("relay_server_secret_key", "")
+
+	viper.SetDefault("vuln_matcher_server_endpoint", "http://vuln-matcher-server:8080")
 
 	viper.SetDefault("git_commit_nudgebee_user", "Nudgebee Bot")
 	viper.SetDefault("git_commit_nudgebee_user_email", "")
@@ -348,6 +402,8 @@ func init() {
 	viper.SetDefault("llm_server_endpoint", "http://llm-server:8000")
 	viper.SetDefault("llm_server_token", "")
 	viper.SetDefault("llm_server_token_header", "X-ACTION-TOKEN")
+	viper.SetDefault("llm_gateway_url", "http://llm-gateway:8000")
+	viper.SetDefault("llm_gateway_action_token", "")
 	viper.SetDefault("services_server_llm_retry_attempts", 180)
 	viper.SetDefault("services_server_llm_initial_backoff_seconds", 5)
 
@@ -373,8 +429,10 @@ func init() {
 	viper.SetDefault("nb_retention_days_cloud_account_usage_report", 90)
 	viper.SetDefault("nb_retention_days_k8s_resources", 30)
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
+	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
+	viper.SetDefault("nb_retention_days_kg_inactive_nodes", 7)
 	viper.SetDefault("llm_token_usage_cleanup_short_term_hours", 3)
 	viper.SetDefault("llm_token_usage_cleanup_catch_all_days", 7)
 	viper.SetDefault("llm_token_usage_cleanup_max_latency_seconds", 20.0)
@@ -422,6 +480,11 @@ func init() {
 	viper.SetDefault("rabbit_mq_event_post_process_exchange", "event_post_process_exchange")
 	viper.SetDefault("rabbit_mq_event_post_process_queue", "event_post_process")
 	viper.SetDefault("rabbit_mq_event_post_process_concurrency", 5)
+
+	// VM discovery/vulnerability scan queue configuration
+	viper.SetDefault("rabbit_mq_vm_scan_exchange", "vm_scan_exchange")
+	viper.SetDefault("rabbit_mq_vm_scan_queue", "vm_scan")
+	viper.SetDefault("rabbit_mq_vm_scan_concurrency", 4)
 
 	// Webhook async processing queue configuration
 	viper.SetDefault("rabbit_mq_webhook_process_exchange", "webhook_process_exchange")

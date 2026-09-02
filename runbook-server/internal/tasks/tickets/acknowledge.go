@@ -49,6 +49,15 @@ func (t *TicketsAcknowledgeTask) Execute(taskCtx types.TaskContext, params map[s
 		return nil, err
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket acknowledge")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"status":    "dry_run",
+			"message":   "Dry run: ticket acknowledge skipped",
+		}, nil
+	}
+
 	request := ticket.AcknowledgeTicketRequest{
 		TicketId:      ticketId,
 		IntegrationId: integrationId,
@@ -82,6 +91,7 @@ func (t *TicketsAcknowledgeTask) InputSchema() *types.Schema {
 				Description: "Incident management integration (PagerDuty or ZenDuty only)",
 				Required:    true,
 				Order:       2,
+				SubTypes:    incidentPlatforms,
 			},
 			"ticket_id": {
 				Type:        types.PropertyTypeString,

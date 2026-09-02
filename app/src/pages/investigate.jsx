@@ -15,8 +15,9 @@ import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemp
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
 import apiWorkflow from '@api1/workflow';
-import { SparklesIconBG, ExternalLinkIcon } from '@assets';
+import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { Label } from '@ui/Label';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
@@ -88,12 +89,14 @@ import { LuChartLine } from 'react-icons/lu';
 import Chart from '@ui/Chart';
 import { getDateString } from '@lib/datetime';
 import TimelineCard from '@components/k8s/investigate/cards/TimelineCard';
+import ImpactCard from '@components/k8s/investigate/cards/ImpactCard';
 import UpdateEvent from '@components/events/UpdateEvent';
 import EventClassifyModal from '@components/events/EventClassifyModal';
 import { LiaEditSolid } from 'react-icons/lia';
 import { MdOutlineCategory } from 'react-icons/md';
 import DatadogMonitorSearch from '@components/k8s/investigate/cards/DatadogMonitorSearch';
 import SafeIcon from '@shared/icons/SafeIcon';
+import RemediationPanel from '@components/k8s/investigate/cards/RemediationPanel';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
 import EventBridgeEventCard from '@components/cloudaccount/investigate/cards/EventBridgeEventCard';
@@ -257,8 +260,13 @@ const Investigate = () => {
   const { startGeneration, cancelGeneration } = useCardGeneration();
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
+  // Latest-ref so card callbacks wired once (at card generation) always invoke
+  // the current handleGenerateRCA closure instead of a stale render's row/state.
+  // Assigned below, right after handleGenerateRCA is defined.
+  const handleGenerateRCARef = useRef(null);
   const { selectedCluster, allCluster, setAllCluster } = useData();
   const { assistantName } = useTenantBranding();
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   // Track timeouts for cleanup
   const trackTimeout = useCallback((fn, delay) => {
@@ -290,6 +298,8 @@ const Investigate = () => {
           status: response.status,
           summary: response.summary,
           analysis: response.analysis,
+          outdated: response.outdated,
+          format_source: response.format_source,
         };
         card.insightData = card.insightData.filter((i) => i.message !== 'RCA is underway — check back shortly for results');
         card.insightData.push({ message: 'RCA report is ready', severity: 'Info' });
@@ -502,7 +512,7 @@ const Investigate = () => {
             sessionStorage.setItem('aiSessionId', aiData.session_id);
           }
           sessionStorage.setItem('aiInitialQuery', query);
-          router.push(`/workflow/new?accountId=${accountId}&loadFromAI=true`);
+          router.push(`/automation/new?accountId=${accountId}&loadFromAI=true`);
           setShowAiGenerateModal(false);
         } else {
           snackbar.error('No automation data returned from AI');
@@ -663,7 +673,7 @@ const Investigate = () => {
       const accountId = router.query.accountId;
       sessionStorage.setItem('aiGeneratedWorkflow', workflowJson);
       sessionStorage.setItem('aiSessionId', sessionId);
-      router.push(`/workflow/new?accountId=${accountId}&loadFromAI=true`);
+      router.push(`/automation/new?accountId=${accountId}&loadFromAI=true`);
       setShowAiGenerateModal(false);
     },
     [router]
@@ -794,7 +804,7 @@ const Investigate = () => {
     }
 
     // Cloud: also set labels from data.labels directly
-    if (isCloud && data.labels) {
+    if (data.labels) {
       setAlertLabels(data.labels);
     }
 
@@ -1089,6 +1099,13 @@ const Investigate = () => {
         }
       }
 
+      // The incident card leads: it answers "what is this and what caused it", which is
+      // the question the page is opened to answer. The timeline is supporting evidence.
+      const impactCard = new ImpactCard(row);
+      if (await impactCard.canRenderContent()) {
+        dynamicCards.push(impactCard);
+      }
+
       const card = new TimelineCard(row);
       if (await card.canRenderContent()) {
         dynamicCards.push(card);
@@ -1325,6 +1342,9 @@ const Investigate = () => {
         }
         if (card.setDataUpdateCallback) {
           card.setDataUpdateCallback(handleCardDataUpdate);
+        }
+        if (card.id === 'RCACard' && hasWriteAccess(router.query.accountId)) {
+          card.onRegenerate = () => handleGenerateRCARef.current(true);
         }
         trackTimeout(() => {
           safeSetState(setCurrentInvestigation, card);
@@ -1582,13 +1602,16 @@ const Investigate = () => {
   };
 
   // Memoized: avoids re-running 3 regexes on every render (was called 5× inline with same args)
-  const handleGenerateRCA = () => {
-    apiKubernetes.generateRCA(id, router.query.accountId, true).then((response) => {
+  const handleGenerateRCA = (regenerate = false) => {
+    apiKubernetes.generateRCA(id, router.query.accountId, true, regenerate).then((response) => {
       if (response?.status) {
         const responseStatus = response.status.toUpperCase();
         const rcaCard = new RCACard();
         rcaCard.event = row;
         rcaCard.renderContent = true;
+        if (hasWriteAccess(router.query.accountId)) {
+          rcaCard.onRegenerate = () => handleGenerateRCARef.current(true);
+        }
 
         if (responseStatus === RCA_STATUS.COMPLETED) {
           // Already completed (re-trigger of existing RCA) — show results directly
@@ -1597,6 +1620,8 @@ const Investigate = () => {
             status: response.status,
             summary: response.summary,
             analysis: response.analysis,
+            outdated: response.outdated,
+            format_source: response.format_source,
           };
           rcaCard.insightData = [{ message: 'RCA report is ready', severity: 'Info' }];
         } else if (responseStatus === RCA_STATUS.FAILED) {
@@ -1626,6 +1651,7 @@ const Investigate = () => {
       }
     });
   };
+  handleGenerateRCARef.current = handleGenerateRCA;
 
   useEffect(() => {
     hasFeatureAccess('GENERATE_RCA').then((res) => {
@@ -1675,25 +1701,6 @@ const Investigate = () => {
               >
                 <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[700] }}>Was this helpful?</Typography>
                 <FeedbackVote onFeedbackSubmit={(feedbackObject) => aiCreateFeedback(feedbackObject)} sentFeedback={sentFeedback} />
-              </Box>
-            )}
-            {!askAiCardObject?.errorMessage && (
-              <Box mt='auto' mb={ds.space[5]} mr={ds.space[6]}>
-                <Button
-                  tone='secondary'
-                  size='xs'
-                  composition='icon+text'
-                  icon={<SafeIcon src={ExternalLinkIcon} alt='external link' height={16} width={16} />}
-                  disabled={!row.fingerprint}
-                  onClick={() => {
-                    if (row.fingerprint) {
-                      let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${row.fingerprint}`;
-                      window.open(href, '_blank');
-                    }
-                  }}
-                >
-                  Continue With Analysis
-                </Button>
               </Box>
             )}
           </Box>
@@ -1746,62 +1753,23 @@ const Investigate = () => {
         url: e?.additional_info?.reference_url,
       }))
       .filter((f) => f.url);
-    // Executed provider query FetchLogs actually ran (with the resolved provider), shown for reference.
-    const referenceQueries = evidences
-      ?.map((e, i) => ({
-        title: e?.additional_info?.title || e?.additional_info?.action_name || `Reference ${i}`,
-        provider: e?.additional_info?.provider,
-        query: e?.additional_info?.executed_query,
-      }))
-      .filter((f) => f.query);
-    if (referenceLinks.length || referenceQueries.length) {
+    if (referenceLinks.length) {
       return (
         <Box sx={{ mt: ds.space[4] }}>
           <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[2] }}>References</Typography>
           <Divider sx={{ mb: ds.space[3] }} />
-          {referenceLinks.length > 0 && (
-            <Box
-              component='ul'
-              sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
-            >
-              {referenceLinks.map((d) => (
-                <li key={d.url}>
-                  <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
-                    {d.title}
-                  </Link>
-                </li>
-              ))}
-            </Box>
-          )}
-          {referenceQueries.length > 0 && (
-            <Box sx={{ mt: referenceLinks.length > 0 ? ds.space[3] : 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-              {referenceQueries.map((d, idx) => (
-                <Box key={`query-${idx}`}>
-                  <Typography sx={{ fontSize: 'var(--ds-text-body-md)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}>
-                    {d.title}
-                    {d.provider ? ` · ${d.provider}` : ''}
-                  </Typography>
-                  <Box
-                    component='pre'
-                    sx={{
-                      m: 0,
-                      p: ds.space[2],
-                      fontFamily: 'monospace',
-                      fontSize: 'var(--ds-text-body-sm)',
-                      color: ds.gray[700],
-                      backgroundColor: ds.gray[100],
-                      borderRadius: 'var(--ds-radius-sm, 4px)',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                      overflowX: 'auto',
-                    }}
-                  >
-                    {d.query}
-                  </Box>
-                </Box>
-              ))}
-            </Box>
-          )}
+          <Box
+            component='ul'
+            sx={{ listStyleType: 'disc', pl: 'var(--ds-space-4)', m: 0, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
+          >
+            {referenceLinks.map((d) => (
+              <li key={d.url}>
+                <Link href={d.url} openInNew style={{ fontSize: 'var(--ds-text-body-lg)', color: ds.blue[600] }}>
+                  {d.title}
+                </Link>
+              </li>
+            ))}
+          </Box>
         </Box>
       );
     }
@@ -1856,10 +1824,8 @@ const Investigate = () => {
       {isK8s && isUpdateEvent && (
         <UpdateEvent
           selectedEvent={row}
-          handlePopupClose={() => {
-            setIsUpdateEvent(false);
-            loadData(row.id);
-          }}
+          handlePopupClose={() => setIsUpdateEvent(false)}
+          onUpdated={() => loadData(row.id)}
           isUpdateEvent={isUpdateEvent}
         />
       )}
@@ -1962,7 +1928,6 @@ const Investigate = () => {
               setTicketData(r);
               setIsTicketCreateFormOpen(true);
             }}
-            onPriorityChanged={loadData}
             onResetState={resetState}
             collapsed={sidebarCollapsed}
             onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
@@ -2081,7 +2046,7 @@ const Investigate = () => {
                               value={1}
                             />
                             {!isGeneratingCards && matchedOptions.some((option) => option?.id === 'RCACard') && (
-                              <Tab label='RCA' {...a11yProps(2)} value={2} />
+                              <Tab label='RCA Report' {...a11yProps(2)} value={2} />
                             )}
                           </Tabs>
                         </Box>
@@ -2118,7 +2083,9 @@ const Investigate = () => {
                                   onClick={() => {
                                     const parts = (res.type_reference_id || '').split(':');
                                     if (parts.length === 2) {
-                                      router.push(`/workflow/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`);
+                                      router.push(
+                                        `/automation/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`
+                                      );
                                     }
                                   }}
                                 >
@@ -2178,7 +2145,7 @@ const Investigate = () => {
                               <Button
                                 tone='secondary'
                                 size='xs'
-                                onClick={handleGenerateRCA}
+                                onClick={() => handleGenerateRCA()}
                                 disabled={!generateRcaVisible || isRcaPolling}
                                 data-testid='generate-rca-btn'
                               >
@@ -2407,6 +2374,21 @@ const Investigate = () => {
                               <AIOrRcaCard key={`ai-card-${option.id}-${option?.refreshRenderId || 0}`} option={option} noPadding />
                             ))}
 
+                          {(() => {
+                            const askAi = matchedOptions.find((option) => option?.id === 'AskAiCard');
+                            const remediationEventId = row.id || router.query.id;
+                            return isK8s && askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
+                              // Key on eventId + refreshRenderId so the panel (and its generated plan) resets
+                              // when the event changes or Refresh Investigation re-runs, matching the AI card above.
+                              <RemediationPanel
+                                key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
+                                accountId={row.cloud_account_id || router.query.accountId}
+                                eventId={remediationEventId}
+                                nbStatus={row?.nb_status}
+                              />
+                            ) : null;
+                          })()}
+
                           {isK8s && !currentInvestigation?.text && matchedOptions.length > 0 && (
                             <Box sx={{ display: 'flex', flexDirection: 'column' }}>{showReferenceLinks()}</Box>
                           )}
@@ -2557,10 +2539,12 @@ const Investigate = () => {
                             disabled={!row.fingerprint}
                             onClick={() => {
                               if (row.fingerprint) {
-                                let href = `/ask-nudgebee?accountId=${row.cloud_account_id || router.query.accountId}&session_id=event-${
-                                  row.fingerprint
-                                }`;
-                                window.open(href, '_blank');
+                                // Same conversation the full page would have opened, in the
+                                // global drawer — the investigation stays on screen behind it.
+                                openNubiChat({
+                                  accountId: row.cloud_account_id || router.query.accountId,
+                                  sessionId: `event-${row.fingerprint}`,
+                                });
                               }
                             }}
                             data-testid='continue-with-analysis-btn'

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Post-edit syntax gate: a dependency-free, parse-only check run after each
@@ -92,6 +93,15 @@ func CheckEditedFileSyntax(absPath string) SyntaxCheckResult {
 		return SyntaxCheckResult{Status: SyntaxCheckNotChecked, Checker: checker}
 	}
 	if runErr == nil {
+		// A syntactically valid .py file can still carry an undefined name
+		// (use-before-definition) — compile() cannot see it, and it has
+		// shipped broken fixes into PRs. Run the static undefined-name pass
+		// as a second gate; absent checkers keep the compile verdict.
+		if strings.ToLower(filepath.Ext(absPath)) == ".py" {
+			if r := checkPythonUndefinedNames(absPath); r.Status == SyntaxCheckFailed {
+				return r
+			}
+		}
 		return SyntaxCheckResult{Status: SyntaxCheckPassed, Checker: checker}
 	}
 	detail := strings.TrimSpace(string(out))
@@ -103,6 +113,73 @@ func CheckEditedFileSyntax(absPath string) SyntaxCheckResult {
 		return SyntaxCheckResult{Status: SyntaxCheckNotChecked, Checker: checker}
 	}
 	return SyntaxCheckResult{Status: SyntaxCheckFailed, Checker: checker, Detail: detail}
+}
+
+// checkPythonUndefinedNames statically detects undefined names in a single
+// .py file — the defect class compile() cannot catch (e.g. a variable used
+// before its definition). Prefers pyflakes (dependency-free single-file
+// checker, no project resolution needed), falls back to ruff's F821/F823
+// rules. Output is filtered to undefined-name findings only, so stylistic
+// pyflakes warnings (unused imports etc.) on a legitimately edited file never
+// surface as a failure. Both checkers absent → not_checked, per the gate's
+// tri-state contract.
+func checkPythonUndefinedNames(absPath string) SyntaxCheckResult {
+	type candidate struct {
+		bin     string
+		args    []string
+		checker string
+	}
+	candidates := []candidate{
+		{"pyflakes", []string{absPath}, "pyflakes"},
+		{"python3", []string{"-m", "pyflakes", absPath}, "python3 -m pyflakes"},
+		{"ruff", []string{"check", "--select", "F821,F823", "--no-cache", "--quiet", absPath}, "ruff F821/F823"},
+	}
+	for _, c := range candidates {
+		binPath, err := exec.LookPath(c.bin)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), syntaxCheckTimeout)
+		cmd := exec.CommandContext(ctx, binPath, c.args...)
+		out, runErr := cmd.CombinedOutput()
+		expired := ctx.Err() == context.DeadlineExceeded
+		cancel()
+		if expired {
+			return SyntaxCheckResult{Status: SyntaxCheckNotChecked, Checker: c.checker}
+		}
+		// `python3 -m pyflakes` exits 1 with "No module named pyflakes" when
+		// the module is absent — try the next candidate, don't misread it as
+		// a finding. Case-insensitive: interpreter wording varies.
+		if runErr != nil && strings.Contains(strings.ToLower(string(out)), "no module named") {
+			continue
+		}
+		if runErr == nil {
+			return SyntaxCheckResult{Status: SyntaxCheckPassed, Checker: c.checker}
+		}
+		var findings []string
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			l := strings.ToLower(line)
+			if strings.Contains(l, "undefined name") || strings.Contains(l, "undefined local") ||
+				strings.Contains(l, "referenced before assignment") || strings.Contains(l, "f821") || strings.Contains(l, "f823") {
+				findings = append(findings, strings.TrimSpace(line))
+			}
+		}
+		if len(findings) == 0 {
+			// Checker complained about something other than undefined names
+			// (or produced no parseable diagnostics) — not this gate's call.
+			return SyntaxCheckResult{Status: SyntaxCheckPassed, Checker: c.checker}
+		}
+		detail := strings.Join(findings, "\n")
+		if len(detail) > syntaxCheckMaxDetail {
+			cut := syntaxCheckMaxDetail
+			for cut > 0 && !utf8.RuneStart(detail[cut]) {
+				cut--
+			}
+			detail = detail[:cut] + "\n[... truncated]"
+		}
+		return SyntaxCheckResult{Status: SyntaxCheckFailed, Checker: c.checker, Detail: detail}
+	}
+	return SyntaxCheckResult{Status: SyntaxCheckNotChecked}
 }
 
 // AppendToObservation renders the check outcome onto a tool observation.

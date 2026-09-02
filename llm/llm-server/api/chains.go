@@ -9,11 +9,13 @@ import (
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	_ "nudgebee/llm/agents/signoz"
+	"nudgebee/llm/audit"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"sync"
@@ -50,6 +52,20 @@ type ConversationApiRequest struct {
 	ClientTools    []toolcore.NBToolCommand   `json:"client_tools"`
 	Capabilities   toolcore.AgentCapabilities `json:"capabilities"`
 	Images         []core.ImageAttachment     `json:"images,omitempty"`
+	// ChannelContext carries conversation from a watched messaging channel.
+	// Callers must never merge it into Query — keeping it separate is what lets
+	// the agent treat it as reference material rather than as a request.
+	ChannelContext string `json:"channel_context,omitempty"`
+	// ChannelContextRefs is structured provenance for ChannelContext — which
+	// channel and which retained messages the block was assembled from. Stored
+	// as a channel_context conversation reference so the UI can show what the
+	// answer drew on. Opaque to the agent; never rendered into the prompt.
+	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
+	// LogProvider optionally pins /log-query resolution to a specific log
+	// provider (e.g. "loki") instead of the account's default — mirrors the
+	// logs tab's "Log Provider:" dropdown override sent as log_provider on
+	// observability.fetchLogs. Ignored by every other handler.
+	LogProvider string `json:"log_provider,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -134,6 +150,17 @@ func handleRequestExecution(
 	} else {
 		resp, err := executeFn(agentContext)
 		if err != nil {
+			// EgressFilter block: surface the user-safe message verbatim with a 400.
+			// The error string is constructed in the egressfilter package to avoid
+			// echoing any matched value or detector internals; SanitizeErrorMessage
+			// would be a no-op on it but we skip it for clarity.
+			if scrubErr, ok := egressfilter.AsError(err); ok {
+				logger.Warn("api: outbound LLM call blocked by egressfilter", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "audit_id", scrubErr.AuditID, "rule_ids", scrubErr.RuleIDs)
+				c.JSON(http.StatusBadRequest, buildApiResponse(resp, []error{
+					common.Error{Message: scrubErr.Error()},
+				}))
+				return
+			}
 			logger.Error("api: error executing request", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "error", err)
 			c.JSON(http.StatusInternalServerError, buildApiResponse(resp, []error{
 				common.Error{
@@ -175,7 +202,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -208,14 +238,6 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if len(request.Images) > 0 {
-			if !core.IsImageSupportEnabled() {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: image attachments are not enabled",
-					},
-				}))
-				return
-			}
 			if err := core.ValidateImages(c.Request.Context(), request.Images); err != nil {
 				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 					common.Error{
@@ -381,7 +403,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc, "Read", "Write", "Execute") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -431,9 +454,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		//if agentId is available, then populate that agent
 		if agentId.Valid {
-			agents, err := core.GetConversationDao().ListConversationAgents("", agentId.UUID.String())
+			resolvedAgent, dto, walked, err := core.ResolveAgentByConversationAgentId(agentContext, agentId.UUID, request.AccountId)
 			if err != nil {
-				logger.Error("api: error getting router chain", "error", err)
+				logger.Error("api: error resolving agent for followup resume", "error", err, "agent_id", request.AgentId)
 				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, Please try again later",
@@ -441,7 +464,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
-			if len(agents) == 0 {
+			if dto == nil {
 				logger.Error("api: agent not found", "agent_id", request.AgentId)
 				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 					common.Error{
@@ -450,10 +473,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
-			agentDto := agents[0]
-			agent1, found := core.GetNBAgent(agentContext, agentDto.AgentName, request.AccountId, core.AgentStatusEnabled)
-			if !found {
-				logger.Error("api: agent not found", "agent_name", agentDto.AgentName)
+			if resolvedAgent == nil {
+				logger.Error("api: agent not found", "agent_name", dto.AgentName, "agent_id", dto.ID.String())
 				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: agent not found",
@@ -461,7 +482,18 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
-			agent = agent1
+			if walked > 0 {
+				// Sub-agent constructed on-the-fly by a tool wrapper (delegate_agent's
+				// dynamicReActAgent today) — its agent_name isn't registered, so we
+				// resumed via a registered ancestor. See ResolveAgentByConversationAgentId
+				// for the full rationale.
+				logger.Info("api: resumed unregistered dynamic sub-agent via registered ancestor",
+					"original_agent_name", dto.AgentName,
+					"original_agent_id", dto.ID.String(),
+					"ancestor_agent_name", resolvedAgent.GetName(),
+					"walked_levels", walked)
+			}
+			agent = resolvedAgent
 		}
 
 		source := core.ConversationSourceUserInvestigation
@@ -470,7 +502,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
-			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation))
+			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
@@ -517,9 +549,37 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 		}
 
+		// Audit follow-up answers only, and only for web sources. Emit strictly
+		// when a follow-up is actually pending (the agent is 'waiting') — a normal
+		// send that merely carries agent_id/message_id has no pending follow-up and
+		// must not be logged as an answer. Gating on web source also lets non-web
+		// follow-ups skip the DB lookup entirely.
+		if !isNewConversation && (request.AgentId != "" || request.MessageId != "") && isWebChatSource(source) {
+			if info, perr := core.GetPendingFollowupInfo(request.AgentId, request.AccountId, request.ConversationId); perr != nil {
+				logger.Warn("chat audit: failed to load pending followup info", "error", perr, "agent_id", request.AgentId)
+			} else if info != nil {
+				// Consistent shape across follow-up events: query = originating user
+				// question, response = the user's answer, followup_type = the kind of
+				// follow-up (so credential/config selections stay filterable).
+				chatState := map[string]any{
+					"query":         truncateQueryForAudit(info.Query),
+					"response":      truncateQueryForAudit(request.Query),
+					"followup_type": info.FollowupType,
+				}
+				chatEventType := audit.EventTypeChatClarificationRespond
+				if info.IsToolConfirmation {
+					chatEventType = audit.EventTypeChatToolConfirmationRespond
+					chatState["tool_name"] = info.ToolName
+					chatState["command"] = truncateQueryForAudit(info.Command)
+					chatState["decision"] = toolConfirmationDecision(request.Query)
+				}
+				emitChatActionAudit(agentContext, chatEventType, audit.EventActionUpdate, request.AccountId, request.UserId, request.ConversationId, request.SessionId, source, nil, chatState)
+			}
+		}
+
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,
@@ -559,7 +619,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -847,7 +910,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
-			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
+			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(500, buildApiResponse(nil, []error{
@@ -939,7 +1002,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1028,8 +1094,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			request.UserId = agentContext.GetSecurityContext().GetUserId()
 		}
 
-		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		// Check if user has access to account — honor a dynamic-RBAC
+		// ai_conversations:Read grant in addition to built-in account roles
+		// (ai_list_conversation_suggestions classifies to ai_conversations).
+		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1088,7 +1156,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1110,7 +1181,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1118,7 +1190,21 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId == "" {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 				common.Error{
-					Message: "api: messageId is required",
+					Message: "api: conversation_id is required to stop the investigation",
+				},
+			}))
+			return
+		}
+
+		// TerminateConversation writes to a UUID column — a malformed id would
+		// otherwise reach Postgres and surface as an unhandled 500 with a raw
+		// `invalid input syntax for type uuid` message. Validate at the RPC
+		// boundary so the caller gets a 400 with a clean reason, matching the
+		// pattern used elsewhere in this file (e.g. /chat, /chat_suggestions).
+		if _, err := uuid.Parse(request.ConversationId); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{
+					Message: "api: invalid conversation_id",
 				},
 			}))
 			return
@@ -1163,7 +1249,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1206,7 +1295,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1239,8 +1329,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		})
 	})
 
-	groupV2.POST("/loki-query", func(c *gin.Context) {
-		common.MetricsApiRequestsTotal("chains_loki_query")
+	groupV2.POST("/log-query", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_log_query")
 		var request ConversationApiRequest
 		var actionRequest ActionRequest
 		err := c.ShouldBindJSON(&actionRequest)
@@ -1253,7 +1343,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
@@ -1283,19 +1376,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Call the HasAccess method
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		logger.Info("api: processing request", "request", slog.AnyValue(request))
 
-		source := core.ConversationSourceLokiQuery
+		source := core.ConversationSourceLogQuery
 		if request.Source != "" {
 			source = request.Source
 		}
 
-		var logChain = &agents.LokiAgent{}
+		var logQueryChain = agents.NewLogQueryAgent(request.AccountId, request.LogProvider)
 		// Check budget limits for tenant and account
 		module := budget.ModuleUserInvestigation
 		if strings.HasPrefix(request.SessionId, events.SessionIdPrefixEvent) {
@@ -1310,94 +1404,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			request.SessionId = request.ConversationId
 		}
 
-		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_loki_query", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, logChain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
-		}, core.NBAgentResponse{
-			Response:       []string{},
-			Query:          request.Query,
-			ConversationId: request.ConversationId,
-			SessionId:      request.SessionId,
-			Status:         core.ConversationStatusInProgress,
-		})
-	})
-
-	groupV2.POST("/elastic-search-query", func(c *gin.Context) {
-		common.MetricsApiRequestsTotal("chains_elastic_search_query")
-		var request ConversationApiRequest
-		var actionRequest ActionRequest
-		err := c.ShouldBindJSON(&actionRequest)
-		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
-		if err != nil {
-			logger.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-				common.Error{
-					Message: err.Error(),
-				},
-			}))
-			return
-		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
-		err = common.DecodeMapToStruct(actionRequestPayload, &request)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-				common.Error{
-					Message: err.Error(),
-				},
-			}))
-			return
-		}
-
-		if request.ConversationId == "" {
-			request.ConversationId = uuid.New().String()
-		}
-
-		queryBody := map[string]string{}
-		err = common.UnmarshalJson([]byte(request.Query), &queryBody)
-		if err != nil {
-			slog.Error("elastic: unable unmarshal)", "error", err.Error())
-		}
-		request.Query = queryBody["query"]
-		request.Config = toolcore.NBQueryConfig{} // ES index is handled by the tool directly
-
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{
-				common.Error{
-					Message: err.Error(),
-				},
-			}))
-			return
-		}
-
-		if request.UserId == "" {
-			request.UserId = agentContext.GetSecurityContext().GetUserId()
-		}
-
-		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
-			return
-		}
-
-		// Check budget limits for tenant and account
-		if budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, budget.ModuleUserInvestigation, logger) {
-			return
-		}
-
-		source := core.ConversationSourceESQuery
-		if request.Source != "" {
-			source = request.Source
-		}
-
-		esChain := agents.ESLogAgent{}
-		request.Query = "Generate an Elastic Search DSL query for: " + request.Query
-
-		if request.SessionId == "" {
-			request.SessionId = request.ConversationId
-		}
-
-		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_elastic_search_query", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, esChain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
+		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_log_query", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
+			return core.HandleConversationSessionRequest(ctx, logQueryChain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
 		}, core.NBAgentResponse{
 			Response:       []string{},
 			Query:          request.Query,
@@ -1432,7 +1440,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1577,7 +1588,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		// Check if user has access to account
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -1704,7 +1716,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1773,7 +1788,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -1815,6 +1833,11 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
+	// usage-metrics backs the AI Cost Analyser Overview + Models screens: KPI
+	// totals plus one cost breakdown per requested group_by dimension
+	// (model/provider/source/agent/status/user/account), all off one filter.
+	// Pass several dimensions for the whole Overview in one call, or one for a
+	// single cut, or none for the KPI cards only.
 	groupV2.POST("/usage-metrics", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("chains_usage_metrics")
 		requestMap := make(map[string]any)
@@ -1867,6 +1890,71 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		data, err := core.HandleUsageMetricsApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// ai-account-report backs the Cost Analyser dashboard's Accounts tab: the
+	// consolidated daily/MTD/prev-month cost report, one row per account. Same
+	// computation (core.GetAiCostAccountReport) as the Slack daily digest and
+	// the Nubi cost-report agent, so all three surfaces reconcile.
+	groupV2.POST("/ai-account-report", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_ai_account_report")
+		requestMap := make(map[string]any)
+		err := c.ShouldBindJSON(&requestMap)
+		if err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		var request core.AiCostAccountReportRequest
+		var actionRequest ActionRequest
+		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
+			slog.Error(errorBindingMessage, "error", err)
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
+		if actionRequestPayload == nil {
+			actionRequestPayload = requestMap
+		}
+		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: " + err.Error()},
+			}))
+			return
+		}
+
+		logger := slog.With("account_ids", request.AccountIds, "reference_date", request.ReferenceDate)
+
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			return
+		}
+
+		if request.ReferenceDate == "" {
+			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				common.Error{Message: "api: reference_date is required"},
+			}))
+			return
+		}
+
+		data, err := core.HandleAiCostAccountReportApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2122,6 +2210,59 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		data, err := core.HandleConversationAgentDetailApi(agentContext, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	// event-analysis-digests backs the weekly digest tab: the account's digest
+	// history (list) and one week's full briefing including per-class findings.
+	groupV2.POST("/event-analysis-digests", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_event_analysis_digests_list")
+		var request ListEventAnalysisDigestsRequest
+		reqCtx, ok := bindDigestRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		data, err := HandleListEventAnalysisDigestsApi(reqCtx, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	groupV2.POST("/event-analysis-digest", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_event_analysis_digest_get")
+		var request GetEventAnalysisDigestRequest
+		reqCtx, ok := bindDigestRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		data, err := HandleGetEventAnalysisDigestApi(reqCtx, request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+	})
+
+	groupV2.POST("/event-analysis-digest-generate", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("chains_event_analysis_digest_generate")
+		var request GenerateEventAnalysisDigestRequest
+		reqCtx, ok := bindDigestRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		data, err := HandleGenerateEventAnalysisDigestApi(reqCtx, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2557,7 +2698,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		var request ConversationGetApiRequest
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -2577,7 +2721,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiConversations, "Read", "Write") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -2644,7 +2789,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}
@@ -2666,7 +2814,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiConversations, "Read", "Write") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -2718,7 +2867,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		actionRequestPayload := extractRequestMap(actionRequest.Input)
+		actionRequestPayload := actionRequest.Input
+		if reqVal, ok := actionRequestPayload["request"].(map[string]any); ok {
+			actionRequestPayload = reqVal
+		}
 		if actionRequestPayload == nil {
 			actionRequestPayload = requestMap
 		}

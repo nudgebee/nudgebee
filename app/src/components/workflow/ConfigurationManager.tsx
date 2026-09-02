@@ -14,15 +14,23 @@ import { ToggleGroup } from '@ui/ToggleGroup';
 import { Banner } from '@ui/Banner';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import apiWorkflow from '@api1/workflow';
-import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
+import { hasPermission, hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { DeleteIconRed, EditNewIcon } from '@assets';
 import { ds } from 'src/utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 type Scope = 'tenant' | 'account';
 
 interface ConfigurationManagerProps {
-  accountId: string;
+  /**
+   * Accounts the user can write configs in. The Automations page is
+   * tenant-level, so the account isn't implied by the route any more — this
+   * modal picks its own, defaulting to the only one when there is only one.
+   */
+  accountOptions: Array<{ value: string; label: string; group?: string }>;
   open: boolean;
   onClose: () => void;
 }
@@ -42,10 +50,17 @@ interface Config {
   updated_by: string;
 }
 
-const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, open, onClose }) => {
-  const canEdit = hasWriteAccess(accountId);
-  // Only tenant_admin can view or write tenant-scoped configs.
-  const canAccessTenantScope = isTenantAdmin();
+const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOptions, open, onClose }) => {
+  const [accountId, setAccountId] = useState<string>(accountOptions.length === 1 ? accountOptions[0].value : '');
+  // Add/Edit/Delete: a built-in write role, or a dynamic-RBAC config:Write grant.
+  // config:Read deliberately does NOT unlock these — it is read-only.
+  const canEdit = hasWriteAccess(accountId) || hasPermission('config', 'Write');
+  // Tenant scope: a built-in tenant admin, or a dynamic-RBAC config grant.
+  // Mirrors runbook-server's canReadTenantConfigs — Write implies Read there,
+  // so a config:Write holder must see the Tenant (shared) view too. Without
+  // this a pure custom-role holder got the account-only toggle even though the
+  // backend would have served them tenant rows.
+  const canAccessTenantScope = isTenantAdmin() || hasPermission('config', 'Read') || hasPermission('config', 'Write');
   const [configs, setConfigs] = useState<Config[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [editFormOpen, setEditFormOpen] = useState<boolean>(false);
@@ -68,7 +83,10 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
   const accountArgFor = (scope: Scope) => (scope === 'tenant' ? '' : accountId);
 
   const loadConfigs = async () => {
-    if (!accountId) {
+    // Tenant-scoped configs carry no account, so only the account view needs
+    // one picked.
+    if (viewScope === 'account' && !accountId) {
+      setConfigs([]);
       return;
     }
 
@@ -103,7 +121,7 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
   };
 
   useEffect(() => {
-    if (open && accountId) {
+    if (open) {
       loadConfigs();
     }
     // viewScope intentionally included so toggling reloads.
@@ -399,9 +417,27 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
                 ariaLabel='Configuration scope'
               />
               <Typography variant='caption' sx={{ mt: 0.75, color: ds.gray[600], display: 'block' }}>
-                {viewScope === 'account' ? 'Configs scoped to this account only.' : 'Tenant-shared configs visible to every account in this tenant.'}
+                {viewScope === 'account'
+                  ? 'Configs scoped to the selected account only.'
+                  : 'Tenant-shared configs visible to every account in this tenant.'}
               </Typography>
             </Box>
+            {viewScope === 'account' && (
+              <Box sx={{ minWidth: 240 }}>
+                <Select
+                  id='config-account-select'
+                  label='Account'
+                  placeholder='Select an account'
+                  options={accountOptions}
+                  grouped
+                  groupIcon={renderAccountGroupIcon}
+                  value={accountId || null}
+                  onChange={(next) => setAccountId(next || '')}
+                  required
+                  searchable
+                />
+              </Box>
+            )}
             {canEdit && (
               <Button id='add-config-btn' tone='primary' size='md' icon={<AddIcon fontSize='small' />} onClick={handleNewConfig} disabled={loading}>
                 Add Config

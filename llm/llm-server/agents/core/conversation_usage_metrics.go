@@ -106,7 +106,10 @@ type AgentMetrics struct {
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	// Honor a dynamic-RBAC ai_conversations:Read grant, not just built-in account
+	// roles — this per-conversation usage view is part of the conversation read
+	// surface (classifier maps ai_get_conversation_usage_metrics → ai_conversations).
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 		return ConversationUsageMetricsResponse{}, fmt.Errorf("HandleConversationUsageMetricsApi: forbidden account_id")
 	}
 
@@ -185,7 +188,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// at/after it. This makes a tool's details show only the reasoning that led to that
 	// call (slices sum to the agent total) instead of repeating the agent total on each.
 	reasoningByToolCall := make(map[string]ToolReasoning)
-	if toolAgents, taErr := GetConversationDao().GetConversationToolCallAgents(request.ConversationId); taErr == nil {
+	toolAgents, taErr := GetConversationDao().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
+	if taErr != nil {
+		// Non-fatal: the response is still correct without reasoning attribution.
+		// But it must be visible — this query failed on every call for as long as
+		// it has existed and the swallowed error is why nobody noticed.
+		getLogger(ctx).Error("conversation-usage: failed to load tool call agents",
+			"error", taErr, "conversation_id", request.ConversationId)
+	} else {
 		// Tool calls grouped by agent, each list already chronological (query ORDER BY).
 		toolsByAgent := make(map[string][]ToolCallAgent)
 		for _, ta := range toolAgents {
@@ -254,14 +264,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	}
 
 	// Calculate model usage statistics
-	modelUsage := calculateModelUsageStats(detailedRecords)
+	modelUsage := calculateModelUsageStats(detailedRecords, pricingTenantFromContext(ctx))
 
 	// Fetch costs for cache savings calculation
 	modelNames := []string{}
 	for _, record := range detailedRecords {
 		modelNames = append(modelNames, record.LLMModel)
 	}
-	costs, _ := GetConversationDao().GetConversationCosts(modelNames)
+	costs, _ := GetConversationDao().GetConversationCosts(modelNames, pricingTenantFromContext(ctx))
 
 	// Add per-hour storage cost for conversation-scoped caches owned by this
 	// conversation. Account/tenant/global-scoped caches are excluded — their
@@ -340,7 +350,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 }
 
 // calculateModelUsageStats aggregates statistics by model
-func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageStat {
+func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
 	if len(records) == 0 {
 		return []ModelUsageStat{}
 	}
@@ -358,7 +368,7 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 	// CostUsd stays zero and only the per-model token aggregates are populated.
 	var costs map[string]modelPricing
 	if dao := GetConversationDao(); dao != nil {
-		costs, _ = dao.GetConversationCosts(modelNames)
+		costs, _ = dao.GetConversationCosts(modelNames, tenantId)
 	}
 
 	modelMap := make(map[string]*ModelUsageStat)
@@ -387,12 +397,20 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord) []ModelUsageSt
 			stat.FailedRequests++
 		}
 
-		// Cost is tiered per call (see CalculateTotalCost) on that call's own
-		// prompt size, so it must be computed per record and summed here —
-		// aggregating tokens across the whole conversation first and pricing
-		// the total once would push the combined volume over the long-ctx
-		// threshold even when no single call did, wildly inflating cost.
-		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
+		// Prefer the cost persisted at insert time — the conversation total
+		// (GetConversationTokenUsage) and the Cost Analyser (perCallCostExpr) both
+		// do, so recomputing here made this table contradict the very total it sits
+		// under whenever llm_model_pricing changed after the call was billed.
+		//
+		// Legacy rows with no stored cost fall back to a live recompute. Cost is
+		// tiered per call (see CalculateTotalCost) on that call's own prompt size,
+		// so it must be computed per record and summed here — aggregating tokens
+		// across the whole conversation first and pricing the total once would push
+		// the combined volume over the long-ctx threshold even when no single call
+		// did, wildly inflating cost.
+		if record.CostUsd.Valid {
+			stat.CostUsd += record.CostUsd.Float64
+		} else if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			nonCachedTokens := record.InputTokens - record.CachedInputTokens
 			if nonCachedTokens < 0 {
 				nonCachedTokens = 0

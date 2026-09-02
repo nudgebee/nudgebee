@@ -1,5 +1,7 @@
 package scan_orchestrator
 
+import "nudgebee/services/internal/database/models"
+
 // Scanner declares one server-orchestrated scanner. BuildSpec returns the
 // JobSpec that gets shipped to the agent (image, args, security context),
 // Parse turns the Job's stdout into recommendation rows, RuleName is the
@@ -52,6 +54,11 @@ type Recommendation struct {
 	AccountObjectID      string  `json:"account_object_id"`
 	ResourceID           string  `json:"resource_id,omitempty"`
 	EstimatedSavings     float64 `json:"estimated_savings,omitempty"`
+	// Vulnerability is set only by image_scanner (the sole Job-based scanner
+	// that produces CVE findings); nil for every other scanner. Persist
+	// upserts it into the shared vulnerabilities table and links this row's
+	// vulnerability_id, without changing the Recommendation JSON above.
+	Vulnerability *models.Vulnerability `json:"-"`
 }
 
 // ScannerCatalog is the source of truth for Job-based scanners.
@@ -183,8 +190,12 @@ const imageScanVolumePath = "/var/trivy-operator"
 //
 //   - the Job is pinned to account.TargetNode — the node where a pod using the
 //     image is running, so the image layers are already present;
-//   - the main container IS the target image (imagePullPolicy=IfNotPresent), so
-//     the kubelet reuses the node-local copy and never hits the registry;
+//   - the main container IS the target image (imagePullPolicy=Never), so the
+//     kubelet reuses the node-local copy and never hits the registry. Never, not
+//     IfNotPresent: if the layers are gone by scan time (workload rolled, spot node
+//     replaced), IfNotPresent falls back to an uncredentialed registry pull that
+//     wedges in ImagePullBackOff for hours; Never fails at once with
+//     ErrImageNeverPull and the scan is retried next cycle against a live pod;
 //   - an init container copies the trivy binary into a shared emptyDir, and the
 //     main container overrides its entrypoint to run `trivy fs /` against its own
 //     root filesystem. The target image's real entrypoint never executes.
@@ -200,7 +211,7 @@ func buildImageScanSpec(account ScanAccount, _ map[string]any) JobSpec {
 		NamePrefix: "trivy-image-scan",
 		// Main container = the target image itself; reused from the node cache.
 		Image:           image,
-		ImagePullPolicy: "IfNotPresent",
+		ImagePullPolicy: "Never",
 		NodeName:        account.TargetNode,
 		// Run the staged trivy binary directly — NOT via `sh -c`. The main container
 		// is the (possibly distroless/scratch) target image, which may have no shell

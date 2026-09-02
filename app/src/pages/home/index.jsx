@@ -4,9 +4,7 @@ import { withAccountGuard } from '@shared/AccountGuard';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import userApi from '@api1/user';
-import { v4 as uuidv4 } from 'uuid';
-import apiAskNudgebee from '@api1/ask-nudgebee';
-import { safeJSONParse } from '@utils/common';
+import { moduleForFragment, safeJSONParse } from '@utils/common';
 import QuickLink from '@assets/home/new/quick-link.icon.svg';
 import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 import RecentErrorIcon from '@assets/home/new/recent-error.icon.svg';
@@ -17,7 +15,7 @@ import PvcSightSizing from '@assets/kubernetes/optimize-icons/pv-right-sizing.ic
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
 import OptimizeIconBlue from '@assets/header/optimize-blue.icon.svg';
 import OptimizeGaugeIcon from '@assets/home/optimize-icon.svg';
-import { getBrandingAsset, getNubiIconUrl, getIsWhiteLabel } from '@hooks/useTenantBranding';
+import { getBrandingAsset, getIsWhiteLabel } from '@hooks/useTenantBranding';
 import DataBaseBlueIcon from '@assets/kubernetes/app-nodes-icons/database-blue.icon.svg';
 import SirenBlueIcon from '@assets/home/new/siren-rounded-blue.icon.svg';
 import TicketBlueIcon from '@assets/home/new/ticket-blue.icon.svg';
@@ -78,12 +76,11 @@ import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useData } from '@context/DataContext';
-import { toast as snackbar } from '@ui/Toast';
-import { Input } from '@ui/Input';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import ConnectClusterHelp from '@components/onboarding/ConnectClusterHelp';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getUserSession, getCurrentTenant } from '@lib/auth';
+import { getUserSession, getCurrentTenant, hasPermission, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
+import DSTooltip from '@ui/Tooltip';
 import { FiArrowRight } from 'react-icons/fi';
 import useCurrencySymbol from '@hooks/useCurrencySymbol';
 import PendingFollowUps from '@components/home/PendingFollowUps';
@@ -1299,6 +1296,11 @@ const QUICK_LINKS_CONFIG = [
         fragment: 'monitoring/cloud-logs',
         icon: LogsIcon,
       },
+      {
+        name: 'Cloud Metrics',
+        fragment: 'monitoring/metrics',
+        icon: MatricsIcon,
+      },
     ],
     navigate: 'details',
     loading: false,
@@ -1385,6 +1387,11 @@ const QUICK_LINKS_CONFIG = [
         fragment: 'monitoring/cloud-logs',
         icon: LogsIcon,
       },
+      {
+        name: 'Cloud Metrics',
+        fragment: 'monitoring/metrics',
+        icon: MatricsIcon,
+      },
     ],
     navigate: 'details',
     loading: false,
@@ -1464,6 +1471,11 @@ const QUICK_LINKS_CONFIG = [
         name: 'Cloud Logs',
         fragment: 'monitoring/cloud-logs',
         icon: LogsIcon,
+      },
+      {
+        name: 'Cloud Metrics',
+        fragment: 'monitoring/metrics',
+        icon: MatricsIcon,
       },
     ],
     navigate: 'details',
@@ -1609,6 +1621,12 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
   const linkAccountId = selectedCluster?.value || cluster;
   const links = QUICK_LINKS_CONFIG.filter((d) => d.cloudProvider === cloudProvider).flatMap((d) => d.links);
 
+  // Per-module gating applies ONLY to grants-only custom-role users (no
+  // tenant-wide role, no account access); tenant admins, account users, and the
+  // demo account keep every link. A link the user lacks `<module>:Read` for is
+  // greyed with a request-access tooltip instead of navigating.
+  const gateQuickLinks = isGrantsOnlyUser(linkAccountId);
+
   const header = (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
       <Box
@@ -1677,12 +1695,10 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
             },
           }}
         >
-          {links.map((link) => (
-            <Link
-              href={buildUrl({ cloud_provider: cloudProvider }, linkAccountId, link.fragment, 'details', {})}
-              key={link.name}
-              style={{ textDecoration: 'none' }}
-            >
+          {links.map((link) => {
+            const mod = moduleForFragment(link.fragment);
+            const disabled = gateQuickLinks && !hasPermission(mod, 'Read');
+            const row = (
               <Box
                 display={'flex'}
                 alignItems={'center'}
@@ -1691,7 +1707,8 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
                 sx={{
                   px: 'var(--ds-space-2)',
                   py: 'var(--ds-space-1)',
-                  cursor: 'pointer',
+                  cursor: disabled ? 'default' : 'pointer',
+                  opacity: disabled ? 0.4 : 1,
                   '& .ql-icon': {
                     display: 'flex',
                     alignItems: 'center',
@@ -1707,10 +1724,14 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
                       objectFit: 'contain',
                     },
                   },
-                  '&:hover': {
-                    backgroundColor: 'var(--ds-brand-100)',
-                    '& .ql-icon': { filter: GRAY_700_FILTER },
-                  },
+                  ...(disabled
+                    ? {}
+                    : {
+                        '&:hover': {
+                          backgroundColor: 'var(--ds-brand-100)',
+                          '& .ql-icon': { filter: GRAY_700_FILTER },
+                        },
+                      }),
                 }}
               >
                 <Box className='ql-icon'>
@@ -1720,8 +1741,21 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
                   {link.name}
                 </Typography>
               </Box>
-            </Link>
-          ))}
+            );
+            return disabled ? (
+              <DSTooltip key={link.name} title={missingPermissionMessage(`${mod}:Read`)}>
+                {row}
+              </DSTooltip>
+            ) : (
+              <Link
+                href={buildUrl({ cloud_provider: cloudProvider }, linkAccountId, link.fragment, 'details', {})}
+                key={link.name}
+                style={{ textDecoration: 'none' }}
+              >
+                {row}
+              </Link>
+            );
+          })}
         </Box>
       )}
     </DSCard>
@@ -1739,13 +1773,11 @@ const Home = () => {
   const [workflowData, setWorkflowData] = useState({ totalCount: 0, configuredCount: 0, actionedCount: 0 });
   const [imageScanData, setImageScanData] = useState({});
   const [certificateData, setCertificateData] = useState({});
-  const [generateQuestionText, setGenerateQuestionText] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [loadingInsights, setLoadingInsights] = useState({
     troubleshooting: false,
     k8sOps: false,
   });
-  const [loadingConversation, setLoadingConversation] = useState(false);
   const { selectedCluster, allCluster } = useData();
   const currencySymbol = useCurrencySymbol(cluster);
   // Map integers to fragments based on KubernetesDetails config
@@ -1936,34 +1968,12 @@ const Home = () => {
     }
   };
 
-  const handleGenerateInvestigation = async () => {
-    setLoadingConversation(true);
-    const newSessionId = uuidv4();
-    apiAskNudgebee
-      .aiGenerateInvestigate({
-        account_id: router.query.accountId,
-        query: generateQuestionText,
-        session_id: newSessionId,
-      })
-      .then((res) => {
-        const response = res?.data?.data?.ai_execute_investigation ?? {};
-        if (!response?.data?.query) {
-          snackbar.error("Can't process your request right now.");
-          setLoadingConversation(false);
-        } else {
-          setLoadingConversation(false);
-          setGenerateQuestionText('');
-          router.push(`/ask-nudgebee?accountId=${router.query.accountId}&session_id=${newSessionId}`);
-        }
-      });
-  };
-
   const closeModal = () => {
     setShowModal(false);
   };
 
   // Memoize category filters — insightData only changes on API response, not on
-  // unrelated state updates (e.g. typing in the "Ask Nubi" input).
+  // unrelated state updates elsewhere on the page.
   const troubleshootItems = useMemo(
     () =>
       insightData.filter(
@@ -2015,87 +2025,6 @@ const Home = () => {
       <Grid item xs={9} sx={{ pt: '0px !important' }}>
         <Grid container>
           <K8sAccountModal openModal={showModal} handleClose={closeModal} />
-          <Grid item xs={12} sx={{ mr: 'var(--ds-space-5)', pb: 'var(--ds-space-4)' }}>
-            <DSCard
-              size='sm'
-              elevation='raised'
-              sx={{
-                padding: '0 var(--ds-space-3)',
-                display: 'flex',
-                alignItems: 'center',
-                boxShadow: '0 4px 14px rgba(0, 0, 0, 0.1)',
-                gap: 'var(--ds-space-3)',
-
-                transition: 'border-color 200ms ease, box-shadow 200ms ease',
-                '&:hover': {
-                  borderColor: 'var(--ds-gray-400)',
-                },
-                '&:focus-within': {
-                  borderColor: 'var(--ds-blue-500)',
-                  boxShadow: '0 0 0 3px var(--ds-blue-100)',
-                },
-                '& textarea': {
-                  width: '100%',
-                  border: '0 !important',
-                  borderRadius: '0 !important',
-                  boxShadow: 'none !important',
-                  backgroundColor: 'transparent !important',
-                  resize: 'none',
-                  color: 'var(--ds-gray-800)',
-                  fontWeight: 'var(--ds-font-weight-regular)',
-                  fontSize: 'var(--ds-text-body-lg)',
-                  textAlign: 'left',
-                  padding: 'var(--ds-space-5) var(--ds-space-2) var(--ds-space-2) 0 !important',
-                  '&::placeholder': { color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-regular)', fontSize: 'var(--ds-text-body-lg)' },
-                  '&:focus': { boxShadow: 'none !important' },
-                  '&::-webkit-scrollbar': { display: 'none' },
-                },
-                '& .MuiOutlinedInput-notchedOutline': { border: '0 !important' },
-              }}
-            >
-              <Box
-                sx={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: '50%',
-                  backgroundColor: 'var(--ds-background-100)',
-                  border: '1px solid var(--ds-gray-300)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  overflow: 'hidden',
-                  '& img': { width: 28, height: 28, objectFit: 'contain' },
-                }}
-              >
-                <SafeIcon src={getNubiIconUrl()} alt='nubi' width={28} height={28} />
-              </Box>
-              <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', minHeight: 36 }}>
-                <Input
-                  id='custom-textarea'
-                  type='textarea'
-                  value={generateQuestionText}
-                  placeholder='How can I assist you today?'
-                  animatePlaceholder
-                  minRows={1}
-                  onChange={(val) => setGenerateQuestionText(val)}
-                  maxRows={5}
-                  disabled={loadingConversation}
-                />
-              </Box>
-
-              <Button
-                id='ask-me-btn'
-                tone='primary'
-                size='md'
-                composition='icon-only'
-                icon={<ArrowForwardIcon />}
-                aria-label='Send'
-                onClick={() => handleGenerateInvestigation()}
-                disabled={!generateQuestionText || loadingConversation}
-              />
-            </DSCard>
-          </Grid>
           {getUserSession()?.user?.name && allCluster?.length == 1 ? (
             <Grid item xs={12} sx={{ mr: 'var(--ds-space-5)', pb: 'var(--ds-space-4)' }}>
               <CollapsableCard

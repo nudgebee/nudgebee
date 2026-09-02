@@ -21,6 +21,7 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
 import ReorderableList, { type DragHandleProps } from '@shared/ReorderableList';
+import { addFormError, removeFormError, type FormErrors } from './formErrorUtils';
 
 interface KubernetesCreateAlertProps {
   accountId: string;
@@ -75,7 +76,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   const [actions, setActions] = useState<any>([]);
   const [selectedActions, setSelectedActions] = useState<Array<{ label: string; value: string; id: string }>>([]);
   const [actionsMap, setActionsMap] = useState<Record<string, any>>({});
-  const [formErrors, setFormErrors] = useState<{ [actionName: string]: { [paramName: string]: string } }>({});
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
   const [loadingActions, setLoadingActions] = useState(false);
   const [expandedAccordions, setExpandedAccordions] = useState<Set<string>>(new Set());
   const [currentStep, setCurrentStep] = useState(1);
@@ -85,6 +86,13 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
 
   // Providers whose alert condition is expressed in PromQL / MetricsQL.
   const PROMQL_METRICS_PROVIDERS = ['prometheus', 'victoria_metrics', 'victoria-metrics', 'chronosphere'];
+
+  // Sources whose rules are owned by the external provider (Datadog monitors,
+  // Kibana alerting rules, Chronosphere). The form shows them read-only: the
+  // definition lives upstream, so an edit made here would be silently
+  // overwritten by the next sync and never reaches the provider.
+  const PROVIDER_OWNED_SOURCES = ['chronosphere', 'datadog_webhook', 'elasticsearch_webhook'];
+  const isProviderOwnedSource = (src?: string) => !!src && PROVIDER_OWNED_SOURCES.includes(src);
 
   // Which query language the "Triggering Condition" editor should present.
   // - Editing an existing alert: derive from the alert's ingested `source`.
@@ -185,7 +193,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   );
 
   const validateFormData = () => {
-    const errors: any = {};
+    const errors: FormErrors = {};
 
     selectedActions.forEach((action: any) => {
       const actionConfig = actionsMap[action.value];
@@ -196,15 +204,9 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
 
           if (paramConfig.required) {
             if (fieldValue === undefined || fieldValue === null || fieldValue === '') {
-              if (!errors[action.id]) {
-                errors[action.id] = {};
-              }
-              errors[action.id][paramName] = `${paramConfig.display_name || paramName} is required`;
+              addFormError(errors, action.id, paramName, `${paramConfig.display_name || paramName} is required`);
             } else if (isArrayType && Array.isArray(fieldValue) && fieldValue.length === 0) {
-              if (!errors[action.id]) {
-                errors[action.id] = {};
-              }
-              errors[action.id][paramName] = `${paramConfig.display_name || paramName} is required`;
+              addFormError(errors, action.id, paramName, `${paramConfig.display_name || paramName} is required`);
             }
           }
         });
@@ -417,16 +419,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   }, [actions]);
 
   const clearFormError = (actionId: string, paramName: string) => {
-    setFormErrors((prevErrors) => {
-      const newErrors = { ...prevErrors };
-      if (newErrors[actionId]) {
-        delete newErrors[actionId][paramName];
-        if (Object.keys(newErrors[actionId]).length === 0) {
-          delete newErrors[actionId];
-        }
-      }
-      return newErrors;
-    });
+    setFormErrors((prevErrors) => removeFormError(prevErrors, actionId, paramName));
   };
 
   const styles = {
@@ -474,7 +467,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     let hasError = false;
     const newErrorDesc = { ...errorDesc };
 
-    if (source == 'chronosphere' || source == 'datadog_webhook') {
+    if (isProviderOwnedSource(source)) {
       hasError = false;
     } else if (!isAlertNameValid(alertName)) {
       newErrorDesc.alertName = 'Name should be number, letters and no spaces';
@@ -498,7 +491,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     let hasError = false;
     const newErrorDesc = { ...errorDesc };
 
-    if (!isPromQLDialect || source == 'chronosphere' || source == 'datadog_webhook') {
+    if (!isPromQLDialect || isProviderOwnedSource(source)) {
       hasError = false;
     } else if (!time) {
       newErrorDesc.time = 'Time should greater than zero';
@@ -527,7 +520,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     let isValid = false;
     const newStepErrors = [...stepErrors];
 
-    if ((currentStep === 1 || currentStep === 2) && (source == 'chronosphere' || source == 'datadog_webhook')) {
+    if ((currentStep === 1 || currentStep === 2) && isProviderOwnedSource(source)) {
       isValid = true;
     } else if (currentStep === 1) {
       isValid = validateStep1();
@@ -889,7 +882,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                   }
                 }}
                 error={errorDesc.alertName || undefined}
-                disabled={!isCreateAlert || source == 'chronosphere' || source == 'datadog_webhook'}
+                disabled={!isCreateAlert || isProviderOwnedSource(source)}
               />
               {/* Alert Summary */}
               <Input
@@ -900,7 +893,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                 onChange={(next) => setAlertSummary(next)}
                 type='textarea'
                 rows={2}
-                disabled={source == 'chronosphere' || source == 'datadog_webhook'}
+                disabled={isProviderOwnedSource(source)}
               />
 
               {/* Alert Description */}
@@ -912,7 +905,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                 onChange={(next) => setAlertDescription(next)}
                 type='textarea'
                 rows={5}
-                disabled={source == 'chronosphere' || source == 'datadog_webhook'}
+                disabled={isProviderOwnedSource(source)}
               />
 
               {/* Alert Runbooks */}
@@ -924,7 +917,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                 onChange={(next) => setAlertRunbook(next)}
                 type='textarea'
                 rows={5}
-                disabled={source == 'chronosphere' || source == 'datadog_webhook'}
+                disabled={isProviderOwnedSource(source)}
               />
 
               {/* Severity */}
@@ -940,7 +933,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                     setErrorDesc((prev) => ({ ...prev, severity: '' }));
                   }}
                   error={errorDesc.severity || undefined}
-                  disabled={source == 'chronosphere' || source == 'datadog_webhook'}
+                  disabled={isProviderOwnedSource(source)}
                 />
               </Box>
             </Stack>
@@ -994,7 +987,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                     }));
                     setIsPromQLWrong(true);
                   }}
-                  editable={source != 'chronosphere' && source != 'datadog_webhook'}
+                  editable={!isProviderOwnedSource(source)}
                   theme='light'
                   basicSetup={codeMirrorBasicSetup}
                   style={{
@@ -1016,7 +1009,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                     <DsButton
                       tone='primary'
                       size='md'
-                      disabled={loadingQueryExec || source == 'chronosphere' || source == 'datadog_webhook'}
+                      disabled={loadingQueryExec || isProviderOwnedSource(source)}
                       loading={loadingQueryExec}
                       onClick={() => {
                         setErrorDesc((prevErrorDesc) => ({
@@ -1029,7 +1022,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                     >
                       Validate Query
                     </DsButton>
-                    {(!isPromQLWrong || source == 'chronosphere' || source == 'datadog_webhook') && (
+                    {(!isPromQLWrong || isProviderOwnedSource(source)) && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
                         <CheckIcon sx={{ color: 'var(--ds-teal-500)', fontSize: 20 }} />
                         <Typography sx={{ color: 'var(--ds-teal-500)', fontSize: 14, fontWeight: 'var(--ds-font-weight-medium)' }}>
@@ -1060,7 +1053,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                       setErrorDesc((prev) => ({ ...prev, time: '' }));
                     }}
                     error={errorDesc.time || undefined}
-                    disabled={source == 'chronosphere' || source == 'datadog_webhook'}
+                    disabled={isProviderOwnedSource(source)}
                   />
                 </Box>
 
@@ -1073,7 +1066,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                     value={timeCondition}
                     options={timeConditionOptions}
                     onChange={(next) => setTimeCondition(next)}
-                    disabled={source == 'chronosphere' || source == 'datadog_webhook'}
+                    disabled={isProviderOwnedSource(source)}
                   />
                 </Box>
               </Box>

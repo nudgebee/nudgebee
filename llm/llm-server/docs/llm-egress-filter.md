@@ -315,6 +315,7 @@ the `egressfilter` key when the message is finalized:
   "egressfilter": [
     {
       "audit_id": "egress-3a5ae6bf4317",
+      "detector": "secrets",
       "mode": "enforce",
       "payload_bytes": 6638,
       "hit_count": 1,
@@ -322,10 +323,50 @@ the `egressfilter` key when the message is finalized:
       "hits": [
         { "rule_id": "aws-access-key-id", "start": 6591, "end": 6611 }
       ]
+    },
+    {
+      "audit_id": "scrub-8f4e2b1c9d5a",
+      "detector": "pii",
+      "hit_count": 2,
+      "categories": ["EMAIL", "PERSON"],
+      "reversible": true,
+      "payload_bytes": 412,
+      "agent_name": "k8s_orchestrator"
     }
   ]
 }
 ```
+
+The array is **polymorphic** — one JSONB slot holds events from every
+outbound-inspection detector in the family. Each entry carries a
+`detector` discriminator:
+
+- `"secrets"` — a `FilterEvent` from this package (the secrets scanner).
+- `"pii"` — a `PIIScrubEvent` from the EE PII/PHI scrubber (`ee/scrubbing`).
+  Type lives OSS-side in `security/egressfilter/pii_scrub_event.go` so the
+  persistence site can hold it without importing the EE package.
+
+Consumers iterate the array and switch on `detector` to pick per-detector
+rendering / policy. Legacy rows written before the `detector` field landed
+may lack the key; treat absent as `"secrets"` for backward compat.
+
+`PIIScrubEvent` shape:
+
+```go
+type PIIScrubEvent struct {
+    AuditID      string   // "scrub-<12 hex>"
+    Detector     string   // always "pii"
+    HitCount     int      // number of distinct values tokenized
+    Categories   []string // sorted, e.g. ["EMAIL", "PERSON"]
+    Reversible   bool     // true — wrapper always uses reversible mode
+    PayloadBytes int      // total bytes sent to /scrub
+    AgentName    string   // running agent when known
+}
+```
+
+Deliberate non-fields (both event types): the matched values themselves.
+They ARE the sensitive content — recording them would re-leak exactly
+what the detector caught.
 
 The UI reads `message.metadata.egressfilter` and renders however it wants —
 a banner, a badge, an icon, nothing. The shape is structured JSON, not an
@@ -376,6 +417,10 @@ per-detector flags sit underneath.
 | `LLM_SERVER_EGRESSFILTER_SECRETS_ENABLED` | `true` | Per-detector knob for the secrets scanner. When master is on and this is true, `Scan` runs against every outbound payload. |
 | `LLM_SERVER_EGRESSFILTER_SECRETS_MODE` | `detect` | One of `detect` or `enforce`. `ParseMode` accepts the legacy alias `audit` (treated as `detect`); any other string also falls back to `detect`. Whether `enforce` actually blocks depends on whether an `ActionGate` is registered (see §6). |
 | `LLM_SERVER_EGRESSFILTER_ALLOWLIST` | unset | Comma-separated list of values to exclude from detection even if they match a rule. Typical use: vendor docs samples (`AKIAIOSFODNN7EXAMPLE`, `AIzaSyExampleKey...`) so enforce mode doesn't block prompts that quote documentation. Loaded once at startup; runtime changes require a restart. Match semantics: strict bytewise equality on the matched substring — no prefix, no regex, no case folding. Whitespace around each comma-separated entry is trimmed; empty entries are skipped. |
+| `LLM_SERVER_EGRESSFILTER_PII_NER_ENABLED` | `false` | Enables the NER (named-entity recognition) branch of the scrubber. NER is fuzzy on ops text and is opt-in for the same reasons on the scrubber itself. |
+| `LLM_SERVER_EGRESSFILTER_PII_TIMEOUT_SECONDS` | `10` | Per-request timeout for the `/scrub` HTTP call. Non-positive values fall back to 10s. |
+| `LLM_SERVER_EGRESSFILTER_PII_MODE` | `detect` | Outage policy for the PII scrubber — same vocabulary as `..._SECRETS_MODE`. `detect` = fail-OPEN on `/scrub` outage (forwards raw messages so the conversation completes, logs a WARN — operators MUST alert on it). `enforce` = fail-CLOSED (refuses the call, returns wrapped `ErrScrubUnavailable`). For regulated tenants (HIPAA / GDPR) where a raw-text bypass is not an acceptable failure mode. Any unrecognized value falls back to `detect` so a typo cannot silently break traffic. |
+| `ML_K8S_SERVER_URL` | `http://ml-k8s-server:9999` | Base URL of the `ml-k8s-server` `/scrub` endpoint. Only consulted when PII scrubbing is enabled. |
 
 | Master | Secrets | Effect |
 |---|---|---|

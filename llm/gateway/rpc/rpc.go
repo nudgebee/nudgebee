@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -46,6 +47,59 @@ func RequireTenant(c *gin.Context) (string, bool) {
 		return "", false
 	}
 	return tenantID, true
+}
+
+// CallerRole returns the caller's effective role from the session — the app RPC gateway
+// injects x-user-role (the highest-priority role the user holds). Empty for direct
+// service-to-service / curl calls that don't set it.
+func CallerRole(c *gin.Context) string { return c.GetHeader("x-user-role") }
+
+// tenantAdminRoles may read ANY user's data within their OWN tenant (never
+// cross-tenant — tenant scoping still applies). Read-only variants are included:
+// viewing is a read.
+var tenantAdminRoles = map[string]bool{
+	"tenant_admin": true, "tenant_admin_readonly": true,
+	"account_admin": true, "account_admin_readonly": true,
+	"super_admin": true, "super_admin_readonly": true,
+}
+
+// IsTenantAdmin reports whether the caller's role grants tenant-wide read access
+// (e.g. viewing another user's captured request body, within the same tenant).
+func IsTenantAdmin(c *gin.Context) bool { return tenantAdminRoles[CallerRole(c)] }
+
+// readOnlyRoles are the built-in roles whose name promises no mutations. The app
+// grants every llm_gateway_* action to all six built-in roles, and this plane is
+// otherwise guarded only by the shared service token — so without this check a
+// k8s_namespace_admin_readonly could rewrite the tenant's routing rules, rate
+// limits and tier mappings. Matching on the role NAME is sound because
+// x-user-role carries the caller's HIGHEST-priority role (app rolePriority.ts):
+// if it is a read-only variant, the caller holds no write role at all.
+var readOnlyRoles = map[string]bool{
+	"tenant_admin_readonly":        true,
+	"account_admin_readonly":       true,
+	"k8s_namespace_admin_readonly": true,
+	"super_admin_readonly":         true,
+}
+
+// RequireWriteRole rejects a caller whose effective role is read-only. Mounted on
+// the config plane's MUTATION routes only — reads stay open to every role the app
+// admits. An EMPTY x-user-role is allowed through: that is a direct
+// service-to-service call (see CallerRole), which the service token already gates.
+func RequireWriteRole() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Normalize before the lookup so a header that differs only by case or
+		// surrounding whitespace ("Tenant_Admin_Readonly", " tenant_admin_readonly ")
+		// cannot slip past the map and be treated as write-capable. Kept in a local
+		// so CallerRole still reports the header verbatim to everything else.
+		role := strings.ToLower(strings.TrimSpace(CallerRole(c)))
+		if readOnlyRoles[role] {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": gin.H{"type": "permission_error", "message": "read-only role cannot modify gateway configuration"},
+			})
+			return
+		}
+		c.Next()
+	}
 }
 
 // BindAction reads the request args into dst, tolerating both shapes (mirrors the

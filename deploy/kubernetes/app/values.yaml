@@ -127,6 +127,31 @@ extraEnvVarsSecret: {}
 
 secretName: 'nudgebee'
 
+# -- Operator-posted incident notice shown on /status ("Investigating", "Fix in
+# progress", "Scheduled maintenance"). Probes can report that a service is down;
+# only a human can say a fix is underway, so the notice is authored, not sensed.
+#
+# Point this at a ConfigMap holding a single `notice.json` key. It is
+# deliberately NOT templated by this chart: an incident notice is edited live,
+# and a chart-managed ConfigMap would be reverted by the next `helm upgrade`.
+# Create and edit it out-of-band instead; it may be absent (the normal state):
+#
+#   kubectl create configmap app-status-notice \
+#     --from-file=notice.json=./notice.json --dry-run=client -o yaml | kubectl apply -f -
+#
+# notice.json:
+#   {
+#     "state": "identified",              # investigating | identified | monitoring | maintenance
+#     "components": ["automation"],       # omit/empty = whole system
+#     "message": "Workflow execution is delayed. A fix is rolling out.",
+#     "started_at": "2026-07-17T09:00:00Z"
+#   }
+#
+# Only `maintenance` may override a probe result; the other states annotate
+# without ever turning a red component green.
+statusNotice:
+  configMapName: ''
+
 annotations: {}
 
 nginx:

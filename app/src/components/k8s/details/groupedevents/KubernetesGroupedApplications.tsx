@@ -59,7 +59,15 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
   const [selectedWorkload, setSelectedWorkload] = useState<string>((router?.query?.eventSubjectName ?? '') as string);
   const [aggregationKeyFilter, setAggregationKeyFilter] = useState<Option[]>([]);
   const [selectedAggregationKey, setSelectedAggregationKey] = useState<Option[]>([]);
-  const [isAggregationKeyReady, setIsAggregationKeyReady] = useState(false);
+  // The (account, date-range) scope the aggregation keys below were loaded for,
+  // compared against the current scope by the groupings effect. A plain boolean
+  // "ready" flag is not enough: on an account/date switch both effects run in
+  // the same commit, so the flag the filter effect resets is still `true` in the
+  // groupings effect's closure — it would fire a request pairing the NEW account
+  // with the PREVIOUS scope's selected keys, then fire again once the flag
+  // flipped back. Comparing scopes makes the stale pass a no-op.
+  const [loadedAggregationKeyScope, setLoadedAggregationKeyScope] = useState<string | null>(null);
+  const aggregationKeyScope = `${accountId}|${selectedDateRange.startDate}|${selectedDateRange.endDate}`;
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
     setSelectedDateRange({
@@ -115,8 +123,19 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
   }, [accountId]);
 
   useEffect(() => {
-    if (!accountId) return;
-    setIsAggregationKeyReady(false);
+    // Cleared before the early return so the dropdown never offers the previous
+    // scope's aggregation keys.
+    setAggregationKeyFilter([]);
+    setLoadedAggregationKeyScope(null);
+    if (!accountId) {
+      // Only drop the selection when there is no account at all. On a normal
+      // refetch it is re-derived from the router query below, and clearing it
+      // eagerly would blank the filter chip on every date change and lose the
+      // selection outright if the request fails.
+      setSelectedAggregationKey([]);
+      return;
+    }
+    let cancelled = false;
 
     k8sApi
       .getEventFilterValues({
@@ -126,6 +145,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
         endTime: new Date(selectedDateRange.endDate).toISOString(),
       })
       .then((res: any) => {
+        if (cancelled) return;
         let selectedKeys: any[] = [];
         const selectedValues: Option[] = [];
         if (router.query.eventAggregationKey) {
@@ -150,13 +170,24 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
           })
         );
         setSelectedAggregationKey(selectedValues);
-        setIsAggregationKeyReady(true);
+        setLoadedAggregationKeyScope(aggregationKeyScope);
       })
       .catch((error) => console.error(error));
-  }, [accountId, selectedDateRange.startDate, selectedDateRange.endDate]);
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, selectedDateRange.startDate, selectedDateRange.endDate, aggregationKeyScope]);
 
   useEffect(() => {
-    if (!accountId || !isAggregationKeyReady) return;
+    if (!accountId) {
+      setEventGroupings([]);
+      setTotalRows(0);
+      return;
+    }
+    // Stale pass: the aggregation keys in state still belong to the previous
+    // account/date-range. Wait for the filter effect above to reload them.
+    if (loadedAggregationKeyScope !== aggregationKeyScope) return;
+    let cancelled = false;
 
     const query: any = {
       account_id: accountId,
@@ -188,11 +219,17 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
         { name: 'event_count', order: 'desc' }
       )
       .then((res: any) => {
+        if (cancelled) return;
         setEventGroupings(res.data?.event_groupings || []);
         setTotalRows(res.data?.event_groupings_aggregate?.aggregate?.count || 0);
       })
       .catch((error) => console.error(error))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [
     currentPage,
     perPage,
@@ -202,7 +239,8 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
     selectedNamespace,
     selectedWorkload,
     selectedAggregationKey,
-    isAggregationKeyReady,
+    aggregationKeyScope,
+    loadedAggregationKeyScope,
   ]);
 
   const deriveSeverity = (distinctPriority: string | undefined): string => {

@@ -20,6 +20,7 @@ import (
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/common"
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/configtest"
 	"nudgebee/llm-gateway/engine"
 	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/proxy"
@@ -64,34 +65,20 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 	}
 }
 
-// providerCreds assembles the operator provider credentials from config: a key
-// per API-key provider (Anthropic/OpenAI/Gemini — set any subset to serve them
-// all at once) plus the LLM_PROVIDER_* block for a single cloud provider
-// (Bedrock/Vertex/Azure) that needs structured creds. engine.New dedupes by
-// provider (per-provider keys win) and skips entries with no credential.
+// providerCreds assembles the operator provider credentials from config: a key per
+// API-key provider (Anthropic/OpenAI/Gemini/HuggingFace — set any subset to serve them
+// all at once). These GATEWAY_*_API_KEY keys are the gateway's ONLY env credential
+// source; a cloud provider (Bedrock/Vertex/Azure), a custom OpenAI-compatible endpoint,
+// or a per-tenant BYO key is configured as an LLM integration (resolved separately),
+// not via env. engine.New skips entries with no credential.
 func providerCreds() []engine.ProviderCredsConfig {
-	var creds []engine.ProviderCredsConfig
-
-	// LLM_PROVIDER_* block — only when it actually carries a credential (avoids a
-	// spurious "configured but unusable" warning for the default provider name).
 	c := config.Config
-	if c.LlmProviderApiKey != "" || c.LlmProviderAccessKey != "" || c.LlmProviderSecretKey != "" {
-		creds = append(creds, engine.ProviderCredsConfig{
-			Provider:     c.LlmProvider,
-			APIKey:       c.LlmProviderApiKey,
-			Endpoint:     c.LlmProviderApiEndpoint,
-			Region:       c.LlmProviderRegion,
-			AccessKey:    c.LlmProviderAccessKey,
-			SecretKey:    c.LlmProviderSecretKey,
-			SessionToken: c.LlmProviderSessionToken,
-		})
-	}
-
-	// Per-provider API keys (appended last so they take precedence per provider).
+	var creds []engine.ProviderCredsConfig
 	for _, pc := range []engine.ProviderCredsConfig{
 		{Provider: "anthropic", APIKey: c.AnthropicAPIKey},
 		{Provider: "openai", APIKey: c.OpenAIAPIKey},
 		{Provider: "gemini", APIKey: c.GeminiAPIKey},
+		{Provider: "huggingface", APIKey: c.HuggingFaceAPIKey},
 	} {
 		if pc.APIKey != "" {
 			creds = append(creds, pc)
@@ -176,6 +163,18 @@ func main() {
 		slog.Error("main: routing config invalid", "error", err)
 		os.Exit(1)
 	}
+	// Append the platform-default tier aliases (nb-fast/cheap/smart) unless tiering is
+	// disabled deployment-wide. They carry a high priority so config-file and tenant DB
+	// rules override them; appended last so a config-file tier rule (lower priority /
+	// earlier) wins the tie.
+	if config.Config.TiersEnabled {
+		staticRules = append(staticRules, routing.DefaultTierRules()...)
+	} else {
+		// Authoritative disable: drop the defaults AND any config-file tier rule, so
+		// nb-* can't resolve on any surface. Tenant DB tier rules are stripped below.
+		staticRules = routing.StripTierAliasRules(staticRules)
+		slog.Info("main: tiering disabled (gateway_tiers_enabled=false); nb-* aliases will not resolve")
+	}
 	// RuleLoader returns the registered dynamic rule loader, or nil when none is
 	// registered (static config-file rules only). NewStore treats a nil loader as
 	// "static only". The loader reads the metastore, so it's a no-op when no DB is
@@ -183,6 +182,18 @@ func main() {
 	var ruleLoader routing.LoaderFunc
 	if config.Config.GatewayDBURL != "" {
 		ruleLoader = routing.RuleLoader()
+		// When tiering is off, strip tier-alias rules from the DB set too, so a tenant
+		// override can't resolve nb-* on a native mount (which bypasses the /v1 gate).
+		if ruleLoader != nil && !config.Config.TiersEnabled {
+			raw := ruleLoader
+			ruleLoader = func() ([]routing.Rule, error) {
+				rules, err := raw()
+				if err != nil {
+					return nil, err
+				}
+				return routing.StripTierAliasRules(rules), nil
+			}
+		}
 	}
 	router := routing.NewStore(staticRules, ruleLoader,
 		time.Duration(config.Config.RoutingRefreshSeconds)*time.Second)
@@ -227,6 +238,12 @@ func main() {
 	// clear 403 (rather than a keyless upstream error) when no credential is available.
 	proxy.RegisterOperatorCreds(eng.HasProviderCred)
 	proxy.RegisterRoutes(r, eng.Client, sink, bodyLog, auth.NewValidator(), router, limiter, pricer)
+
+	// Connectivity-probe plane (POST /rpc/config/test-connection): the api-server delegates
+	// LLM Gateway "Test Connection" here so the probe runs from the gateway's own network
+	// (real reachability + SSRF guard), guarded by the action token. No DB needed — the
+	// config to test arrives in the request body.
+	configtest.RegisterRoutes(r, config.Config.GatewayActionToken)
 
 	// Read-only usage query plane (POST /rpc/usage/aggregate) for the AI Gateway
 	// dashboard — app → gateway service-to-service, guarded by the action token.

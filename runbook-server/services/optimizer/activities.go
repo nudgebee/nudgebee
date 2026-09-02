@@ -185,13 +185,19 @@ func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) err
 				}
 			}
 
+			// What the apply actually did to the pull request, which the resolution
+			// id alone does not say (see AutoOptimizeTaskAttributes.PRAction).
+			if prAction, ok := outMap["pr_action"].(string); ok && prAction != "" {
+				task.Attributes.PRAction = prAction
+			}
+
 			// Store ticket URL in task attributes
 			if ticketURL, ok := outMap["ticket_url"].(string); ok && ticketURL != "" {
 				task.Attributes.TicketLink = &ticketURL
 			}
 		}
 
-		if task.RecommendationID != nil {
+		if task.RecommendationID != nil && closesRecommendation(task.Status, taskOutput) {
 			if err := a.Dao.UpdateRecommendationStatus(ctx, *task.RecommendationID, string(model.RecommendationStatusClosed)); err != nil {
 				slog.Error("Failed to update recommendation status", "rec_id", *task.RecommendationID, "error", err)
 			}
@@ -200,12 +206,42 @@ func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) err
 
 	if err := a.Dao.SaveAutoOptimizeTask(ctx, *task); err != nil {
 		slog.Error("Failed to save task status", "task_id", taskID, "error", err)
+		// This save is the only place the run's outcome is recorded. If it fails
+		// the row keeps the Scheduled status it was created with, which reads as
+		// "waiting its turn" and holds the recommendation back from every later
+		// run (#34943). Fall back to a status-only write so the task always
+		// reaches a terminal state, carrying the outcome the run actually
+		// reached rather than just the save failure.
+		reason := fmt.Sprintf("failed to record task outcome: %v", err)
+		if taskErr != nil {
+			reason = fmt.Sprintf("%v (and the outcome could not be recorded: %v)", taskErr, err)
+		}
+		if markErr := a.Dao.MarkAutoOptimizeTaskTerminal(ctx, task.ID, task.Status, reason); markErr != nil {
+			slog.Error("Failed to record terminal task status after save error", "task_id", taskID, "error", markErr)
+		}
 		if taskErr == nil {
 			return err
 		}
 	}
 
 	return taskErr
+}
+
+// closesRecommendation reports whether the task's outcome resolves its
+// recommendation: a dry run or a skipped task changed nothing, and a task that
+// handed the change to a recommendation resolution (a GitOps pull request)
+// leaves it InProgress for the resolution status sync, which closes it once the
+// pull request lands and reopens it when the pull request never does.
+func closesRecommendation(taskStatus string, taskOutput any) bool {
+	if taskStatus != string(model.AutopilotTaskStatusComplete) {
+		return false
+	}
+	outMap, ok := taskOutput.(map[string]any)
+	if !ok {
+		return true
+	}
+	outStatus, _ := outMap["status"].(string)
+	return outStatus != "resolved"
 }
 
 type SimpleTaskContext struct {

@@ -40,6 +40,20 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
 
+# Install the GitLab CLI (glab) from source rather than `apk add glab`.
+# Two reasons: (1) Alpine v3.22 community pins glab at 1.58.0-r5, which is far
+# behind, and (2) llm-server's base image has no glab apt package and builds it
+# from source too — building both from the same pinned version keeps the
+# workspace pod and llm-server's local-exec fallback on identical glab, so a
+# prompt that works in one works in the other. `gh` is the counter-example to
+# avoid: apk `github-cli` here vs a source build there, free to drift.
+# Consumed by llm-server's gitlab_execute tool (tools/tool_gitlab.go) and by
+# this service's own glab tool (tools/glab_tool.go).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
+    go install gitlab.com/gitlab-org/cli/cmd/glab@v1.112.0
+
 # Final stage
 FROM alpine:3.22
 
@@ -83,6 +97,7 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     aws-cli \
     python3 \
     py3-pip \
+    py3-pyflakes \
     bash
 
 # Install Google Cloud SDK
@@ -164,27 +179,30 @@ RUN npm install -g yarn pnpm && \
     ln -s /opt/python-tools/bin/mypy /usr/local/bin/mypy
 
 # Patch pnpm's vendored node-tar.
-# pnpm ships its own copy of node-tar in two places (dist/ and the standalone
-# artifacts/exe/dist/). pnpm 11.17.0 — the newest release — still vendors tar
-# 7.5.20, which carries GHSA-r292-9mhp-454m (uncontrolled recursion in
-# mapHas/filesFilter -> uncatchable stack-overflow DoS when extracting a crafted
-# tarball). No installable pnpm version clears it, and pnpm is a supported build
+# pnpm vendors its own copy of node-tar, and 11.17.0 shipped tar 7.5.20 carrying
+# GHSA-r292-9mhp-454m (uncontrolled recursion in mapHas/filesFilter -> uncatchable
+# stack-overflow DoS when extracting a crafted tarball). pnpm is a supported build
 # runner here (orchestrator_agent.go offers `pnpm lint/build/test` on cloned
-# repos), so overwrite the vendored copies with the patched release instead.
+# repos), so overwrite whatever vendored copies the installed pnpm ships.
 # tar is pure JS and this is a patch-level bump, so pnpm's usage is unaffected.
-# The directory check fails the build if pnpm ever relocates these paths, rather
-# than silently leaving the vulnerable copy in place. Bump TAR_VERSION when the
-# Trivy scan flags it again.
+#
+# The copies are discovered, not hardcoded: pnpm used to bundle a second one under
+# artifacts/exe/dist/ and dropped it in 11.24.0, which broke the earlier fixed-path
+# check and failed the release build. Finding zero copies is a pass (nothing
+# vendored means nothing vulnerable); every copy that is found must report
+# TAR_VERSION afterwards. Bump TAR_VERSION when the Trivy scan flags it again.
 ARG TAR_VERSION=7.5.22
 RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
-    && for d in /usr/local/lib/node_modules/pnpm/dist/node_modules/tar \
-                /usr/local/lib/node_modules/pnpm/artifacts/exe/dist/node_modules/tar; do \
-         [ -d "$d" ] || { echo "ERROR: expected pnpm vendored tar at $d"; exit 1; }; \
+    && for d in $(find /usr/local/lib/node_modules/pnpm \
+                    -type d -path '*/node_modules/tar' -prune -print); do \
          rm -rf "$d" && cp -R /tmp/tarfix/node_modules/tar "$d"; \
        done \
     && rm -rf /tmp/tarfix \
-    && grep -q "\"version\": \"${TAR_VERSION}\"" \
-         /usr/local/lib/node_modules/pnpm/dist/node_modules/tar/package.json
+    && for d in $(find /usr/local/lib/node_modules/pnpm \
+                    -type d -path '*/node_modules/tar' -prune -print); do \
+         grep -q "\"version\": \"${TAR_VERSION}\"" "$d/package.json" \
+           || { echo "ERROR: unpatched pnpm vendored tar at $d"; exit 1; }; \
+       done
 
 # Copy Go toolchain and golangci-lint from builder.
 # Builder uses golang:1.26-alpine; matching that here keeps build/vet runnable
@@ -192,6 +210,7 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
+COPY --from=builder /usr/local/bin/glab /usr/local/bin/glab
 
 # Create a non-root user
 RUN adduser -D -g '' appuser
@@ -215,6 +234,7 @@ RUN ln -s /usr/local/bin/shim /usr/local/bin/kubectl && \
     ln -s /usr/local/bin/shim /usr/local/bin/argocd && \
     ln -s /usr/local/bin/shim /usr/local/bin/clickhouse-client && \
     ln -s /usr/local/bin/shim /usr/local/bin/rabbitmqadmin && \
+    ln -s /usr/local/bin/shim /usr/local/bin/rabbitmq-api && \
     ln -s /usr/local/bin/shim /usr/local/bin/sqlcmd && \
     ln -s /usr/local/bin/shim /usr/local/bin/sqlplus && \
     ln -s /usr/local/bin/shim /usr/local/bin/ssh

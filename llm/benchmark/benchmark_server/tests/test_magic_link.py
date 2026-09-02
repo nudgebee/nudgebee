@@ -19,15 +19,23 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_token_store():
-    """Each test starts and ends with a clean magic-link token store."""
-    from benchmark_server.controllers.auth_controller import _magic_lock, _magic_tokens
+def _isolate_token_store(monkeypatch):
+    """Each test starts and ends with a clean magic-link token store.
 
-    with _magic_lock:
-        _magic_tokens.clear()
+    Force the auth_controller's ``db_engine`` reference to None so the
+    module's helpers exercise the in-memory fallback path — which is what
+    these tests validate (single-process one-shot / expiry / unknown-token
+    semantics). Integration tests against a real Postgres cover the
+    DB-backed path separately.
+    """
+    from benchmark_server.controllers import auth_controller as ac
+
+    monkeypatch.setattr(ac, "db_engine", None)
+    with ac._magic_lock:
+        ac._magic_tokens.clear()
     yield
-    with _magic_lock:
-        _magic_tokens.clear()
+    with ac._magic_lock:
+        ac._magic_tokens.clear()
 
 
 def test_consume_returns_email_for_valid_token():

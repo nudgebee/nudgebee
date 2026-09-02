@@ -116,7 +116,7 @@ function classifyQuery(query) {
 
 const getRandomDelay = () => Math.floor(Math.random() * (10000 - 4000 + 1)) + 4000;
 
-const ConversationLoader = ({ query }) => {
+const ConversationLoader = ({ query, startedAt = null }) => {
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [dotCount, setDotCount] = useState(1);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -153,10 +153,22 @@ const ConversationLoader = ({ query }) => {
   // Live elapsed timer. The rotating words cycle randomly and can read as a loop;
   // a monotonically increasing clock is honest proof that work is still progressing
   // during a long single step, so a stalled-looking screen still says "working".
+  // Recomputed from a start timestamp (wall-clock diff) rather than incremented by
+  // hand, so it self-corrects for tab-throttled intervals and reflects real elapsed
+  // time immediately when startedAt is provided (e.g. right after a page refresh).
   useEffect(() => {
-    const id = setInterval(() => setElapsedSec((prev) => prev + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+    const startTime = startedAt ? new Date(startedAt).getTime() : Date.now();
+
+    const updateElapsed = () => {
+      setElapsedSec(Math.max(0, Math.floor((Date.now() - startTime) / 1000)));
+    };
+
+    updateElapsed(); // Set initial value immediately
+
+    const timerId = setInterval(updateElapsed, 1000);
+
+    return () => clearInterval(timerId);
+  }, [startedAt]);
 
   const dots = ' .'.repeat(dotCount);
   const elapsedLabel = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, '0')}`;

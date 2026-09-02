@@ -1,12 +1,16 @@
 import React from 'react';
 import { Box, Button } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
+import Tooltip from '@ui/Tooltip';
 
 interface ToggleOption {
   value: string;
   label: React.ReactNode;
   icon?: any;
   disabled?: boolean;
+  /** When set, the button is wrapped in a tooltip. Works even while `disabled`
+   *  (e.g. explaining why a tab is unavailable to a read-only user). */
+  tooltip?: React.ReactNode;
 }
 
 interface ToggleButtonsProps {
@@ -110,7 +114,7 @@ const ToggleButtons: React.FC<ToggleButtonsProps> = ({ options, activeValue, wid
         const isActive = activeValue === option.value;
         const styles = getButtonStyles(isActive, isSmall);
 
-        return (
+        const button = (
           <Button
             key={option.value}
             id={`workflow-tab-${option.value}`}
@@ -159,6 +163,20 @@ const ToggleButtons: React.FC<ToggleButtonsProps> = ({ options, activeValue, wid
             {option.label}
           </Button>
         );
+
+        // A disabled MUI Button swallows pointer events, so wrap it in a span to
+        // keep the tooltip hoverable (e.g. the Editor tab for read-only users).
+        if (option.tooltip) {
+          return (
+            <Tooltip key={option.value} title={option.tooltip}>
+              <Box component='span' sx={{ flex: 1, display: 'flex', minWidth: 0 }}>
+                {button}
+              </Box>
+            </Tooltip>
+          );
+        }
+
+        return button;
       })}
     </Box>
   );

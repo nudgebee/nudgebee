@@ -164,6 +164,18 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 		if context.GetSecurityContext().GetTenantId() == "" {
 			return UserCreateResponse{}, fmt.Errorf("unauthorized")
 		}
+
+		// This handler had no role gate of its own — actions.yaml restricted the
+		// action to tenant_admin, so the gateway was the only check. A users:Write
+		// custom grant now also reaches it, which makes the gate load-bearing:
+		// without it any grant holder could create a user, and `role` below writes
+		// user_roles, so they could mint a tenant_admin.
+		if !canAdministerUsers(context.GetSecurityContext()) {
+			return UserCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
+		}
+		if userRequest.Role != "" && !mayAssignTenantRole(context.GetSecurityContext()) {
+			return UserCreateResponse{}, common.ErrorUnauthorized("Assigning a tenant role requires a tenant admin")
+		}
 	}
 
 	if !common.IsValidUserEmail(userRequest.Username) {
@@ -623,6 +635,22 @@ func SyncUserRoles(context *security.RequestContext, request UserSyncRolesReques
 		return UserSyncRolesResponse{}, fmt.Errorf("unauthorized: caller does not have access to tenant %s", request.TenantId)
 	}
 
+	// Membership in the tenant is NOT enough to hand out tenant roles. This
+	// handler writes user_roles rows verbatim from request.TargetRoles, so
+	// anyone who reaches it can mint themselves `tenant_admin` — a
+	// self-escalation. Two callers were able to:
+	//   - a dynamic-RBAC holder of `userroles:Execute` (userroles_sync classifies
+	//     to that), whose grant the gateway admits;
+	//   - any of the five non-admin built-in roles still listed in the action's
+	//     `permissions:` block (a pre-existing hole, e.g. account_admin_readonly).
+	// Role assignment is privilege administration, so it stays tenant-admin-only —
+	// the same gate CreateUser/UpdateUserProfile use for the `role` field.
+	// SAML group→role sync is unaffected: it runs server-side through
+	// bypassGraphQLAsServer's super-admin JWT, which IsSuperAdmin() admits above.
+	if !mayAssignTenantRole(context.GetSecurityContext()) {
+		return UserSyncRolesResponse{}, common.ErrorUnauthorized("Assigning tenant roles requires a tenant admin")
+	}
+
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return UserSyncRolesResponse{}, err
@@ -913,6 +941,14 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		if context.GetSecurityContext().GetTenantId() == "" {
 			return UserUpdateStatusResponse{}, fmt.Errorf("unauthorized")
 		}
+		// Deactivating a user is user administration, but this handler had no gate
+		// of its own and users_update_status is granted to all six built-in roles —
+		// so account_admin_readonly (and every other non-admin role) could lock any
+		// user in the tenant out, including the tenant admin. Same gate as its
+		// sibling UpdateUserProfile: tenant_admin or a users:Write custom grant.
+		if !canAdministerUsers(context.GetSecurityContext()) {
+			return UserUpdateStatusResponse{}, common.ErrorUnauthorized("Not Allowed")
+		}
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -920,7 +956,24 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		return UserUpdateStatusResponse{}, err
 	}
 
-	_, err = manager.Db.Exec(`UPDATE users SET status = $1 WHERE id = $2`, request.Status, request.UserId)
+	// Scope the write to the caller's tenant. `WHERE id = $1` alone is global, so
+	// any role that reaches this handler — and actions.yaml grants users_update_status
+	// to all six built-in roles — could deactivate a user in another tenant by id.
+	// Super admins are cross-tenant by design and carry no tenant id.
+	if context.GetSecurityContext().IsSuperAdmin() {
+		_, err = manager.Db.Exec(`UPDATE users SET status = $1 WHERE id = $2`, request.Status, request.UserId)
+	} else {
+		var result sql.Result
+		result, err = manager.Db.Exec(
+			`UPDATE users SET status = $1 WHERE id = $2 AND id IN (SELECT "user" FROM tenant_users WHERE tenant = $3)`,
+			request.Status, request.UserId, context.GetSecurityContext().GetTenantId(),
+		)
+		if err == nil {
+			if affected, aerr := result.RowsAffected(); aerr == nil && affected == 0 {
+				return UserUpdateStatusResponse{}, common.ErrorBadRequest("User not found in tenant")
+			}
+		}
+	}
 	if err != nil {
 		return UserUpdateStatusResponse{}, err
 	}
@@ -943,7 +996,8 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		return UserUpdateProfileResponse{}, err
 	}
 
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	sc := ctx.GetSecurityContext()
+	if !canAdministerUsers(sc) {
 		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
@@ -952,10 +1006,26 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		return UserUpdateProfileResponse{}, err
 	}
 
-	// Update display_name and status
+	target, found, err := lookupTenantUser(manager, sc.GetTenantId(), request.Username)
+	if err != nil {
+		ctx.GetLogger().Error("Error resolving user", "error", err)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("Error updating user profile")
+	}
+	if !found {
+		return UserUpdateProfileResponse{}, common.ErrorBadRequest("User not found: " + request.Username)
+	}
+	// A grant-admitted caller may edit the profile but not the privilege. Compared
+	// against the current role, not field presence — the modal always posts `role`.
+	roleChanged := request.Role != nil && target.changesTenantRole(*request.Role)
+	if roleChanged && !mayAssignTenantRole(sc) {
+		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Changing a user's role requires a tenant admin")
+	}
+
+	// Update display_name and status. Scoped by the id resolved within the tenant
+	// above — `WHERE username = $1` alone reaches every tenant.
 	_, err = manager.Db.Exec(
-		`UPDATE users SET display_name = $1, status = $2 WHERE username = $3`,
-		request.DisplayName, request.Status, request.Username,
+		`UPDATE users SET display_name = $1, status = $2 WHERE id = $3`,
+		request.DisplayName, request.Status, target.id,
 	)
 	if err != nil {
 		ctx.GetLogger().Error("Error updating user profile", "error", err)
@@ -971,11 +1041,16 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		NewData:       map[string]any{"username": request.Username, "display_name": request.DisplayName, "status": request.Status},
 	})
 
-	// Sync the tenant role only when the caller actually sent the field. A nil
-	// pointer means "role omitted — leave it untouched" (partial update); an
-	// explicit empty string means "remove the user's direct tenant role" —
-	// UpsertTenantUserRole's empty branch DELETEs the row.
-	if request.Role != nil {
+	// Sync the tenant role only when the caller actually sent the field AND it
+	// differs from what the user already holds. A nil pointer means "role omitted
+	// — leave it untouched" (partial update); an explicit empty string means
+	// "remove the user's direct tenant role" — UpsertTenantUserRole's empty branch
+	// DELETEs the row. Skipping the no-op case matters twice over: the modal posts
+	// `role` on every save, and UpsertTenantUserRole is tenant-admin-only, so a
+	// grant-admitted caller would otherwise be refused on an edit that changes
+	// nothing about the role. It also spares an audit entry and a security-context
+	// cache bust per unrelated profile edit.
+	if roleChanged {
 		_, err = tenant.UpsertTenantUserRole(ctx, tenant.TenantUserRoleUpsertRequest{
 			Username: request.Username,
 			Role:     *request.Role,

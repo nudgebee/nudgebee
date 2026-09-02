@@ -1,0 +1,12 @@
+{{- if .Values.extraEnvVarsCM }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "app.fullname" . }}-extra-env
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.extraEnvVarsCM }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+{{- end }}

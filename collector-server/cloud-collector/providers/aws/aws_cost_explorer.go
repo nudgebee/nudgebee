@@ -297,10 +297,14 @@ func (a *awsCostExplorer) getSavingsPlanRecommendations(ctx providers.CloudProvi
 					data["hourly_commitment"] = *summary.HourlyCommitmentToPurchase
 				}
 				if summary.EstimatedOnDemandCostWithCurrentCommitment != nil {
-					data["estimated_on_demand_cost"] = *summary.EstimatedOnDemandCostWithCurrentCommitment
+					if v, err := parseFloat64(*summary.EstimatedOnDemandCostWithCurrentCommitment); err == nil {
+						data["estimated_on_demand_cost"] = lookbackToMonthly(v, cetypes.LookbackPeriodInDaysThirtyDays)
+					}
 				}
 				if summary.EstimatedTotalCost != nil {
-					data["estimated_total_cost"] = *summary.EstimatedTotalCost
+					if v, err := parseFloat64(*summary.EstimatedTotalCost); err == nil {
+						data["estimated_total_cost"] = lookbackToMonthly(v, cetypes.LookbackPeriodInDaysThirtyDays)
+					}
 				}
 
 				// Only add if there are actual savings
@@ -339,6 +343,27 @@ func (a *awsCostExplorer) getSavingsPlanRecommendations(ctx providers.CloudProvi
 
 func parseFloat64(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
+}
+
+// Cost Explorer purchase recommendations return cost totals for the request's
+// lookback window (e.g. 720h for THIRTY_DAYS) while savings amounts are
+// normalized to a 730-hour month (365*24/12). Costs must be converted to the
+// same monthly basis before storing, otherwise the displayed costs and savings
+// disagree: on_demand - total != monthly_savings (issue #27489).
+const hoursPerMonth = 730.0
+
+var lookbackHoursByPeriod = map[cetypes.LookbackPeriodInDays]float64{
+	cetypes.LookbackPeriodInDaysSevenDays:  7 * 24,
+	cetypes.LookbackPeriodInDaysThirtyDays: 30 * 24,
+	cetypes.LookbackPeriodInDaysSixtyDays:  60 * 24,
+}
+
+func lookbackToMonthly(v float64, lookback cetypes.LookbackPeriodInDays) float64 {
+	hours, ok := lookbackHoursByPeriod[lookback]
+	if !ok || hours <= 0 {
+		return v
+	}
+	return v / hours * hoursPerMonth
 }
 
 func (a *awsCostExplorer) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
@@ -421,8 +446,9 @@ func (a *awsCostExplorer) getDatabaseSavingsPlanRecommendations(ctx providers.Cl
 					}
 					if detail.EstimatedReservationCostForLookbackPeriod != nil {
 						if v, err := parseFloat64(*detail.EstimatedReservationCostForLookbackPeriod); err == nil {
-							// Convert to monthly cost (lookback is 30 days)
-							riRec.riCost = v
+							// The request doesn't pin a lookback period (AWS defaults to
+							// SEVEN_DAYS), so convert using the period the response reports.
+							riRec.riCost = lookbackToMonthly(v, rec.LookbackPeriodInDays)
 						}
 					}
 					if detail.UpfrontCost != nil {
@@ -486,12 +512,12 @@ func (a *awsCostExplorer) getDatabaseSavingsPlanRecommendations(ctx providers.Cl
 			}
 			if summary.EstimatedOnDemandCostWithCurrentCommitment != nil {
 				if v, err := parseFloat64(*summary.EstimatedOnDemandCostWithCurrentCommitment); err == nil {
-					spOnDemandCost = v
+					spOnDemandCost = lookbackToMonthly(v, cetypes.LookbackPeriodInDaysThirtyDays)
 				}
 			}
 			if summary.EstimatedTotalCost != nil {
 				if v, err := parseFloat64(*summary.EstimatedTotalCost); err == nil {
-					spEstimatedCost = v
+					spEstimatedCost = lookbackToMonthly(v, cetypes.LookbackPeriodInDaysThirtyDays)
 				}
 			}
 
@@ -534,8 +560,7 @@ func (a *awsCostExplorer) getDatabaseSavingsPlanRecommendations(ctx providers.Cl
 					ctx.GetLogger().Warn("failed to parse hourly commitment for break-even", "error", err)
 				} else if hourlyCommitment > 0 && spSavings > 0 {
 					// For All Upfront: total upfront payment = hourly rate * hours in term
-					// 730 hours/month is average (365*24/12)
-					upfrontCost := hourlyCommitment * 730 * termMonths
+					upfrontCost := hourlyCommitment * hoursPerMonth * termMonths
 					// spSavings is already the monthly savings amount from AWS API
 					breakEvenMonths = upfrontCost / spSavings
 					breakEvenViable = breakEvenMonths <= termMonths

@@ -4,7 +4,7 @@ import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 import { ds } from '@utils/colors';
 
-const TenantAccountCommonSettings = ({ logSettings, setLogSettings }) => {
+const TenantAccountCommonSettings = ({ logSettings, setLogSettings, disabled = false }) => {
   const handleChange = (field) => (value) => {
     setLogSettings((prev) => ({
       ...prev,
@@ -26,7 +26,15 @@ const TenantAccountCommonSettings = ({ logSettings, setLogSettings }) => {
       </Typography>
       <Box display='grid' gridTemplateColumns='1fr 1fr' gap={ds.space[4]}>
         {fields.map(({ label, field, placeholder }) => (
-          <Input key={field} size='sm' label={label} value={logSettings[field] || ''} placeholder={placeholder} onChange={handleChange(field)} />
+          <Input
+            key={field}
+            size='sm'
+            label={label}
+            value={logSettings[field] || ''}
+            placeholder={placeholder}
+            onChange={handleChange(field)}
+            disabled={disabled}
+          />
         ))}
       </Box>
     </Box>
@@ -36,6 +44,9 @@ const TenantAccountCommonSettings = ({ logSettings, setLogSettings }) => {
 TenantAccountCommonSettings.propTypes = {
   logSettings: PropTypes.object.isRequired,
   setLogSettings: PropTypes.func.isRequired,
+  // Read-only mode — set by callers whose user may view but not change the
+  // tenant/account config these inputs write (see canEditTenantSettings).
+  disabled: PropTypes.bool,
 };
 
 export default TenantAccountCommonSettings;

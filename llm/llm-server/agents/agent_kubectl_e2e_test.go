@@ -36,7 +36,7 @@ func TestK8sAgentExecute(t *testing.T) {
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
 
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -73,7 +73,7 @@ func TestK8sAgentExecute1(t *testing.T) {
 		}
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -110,7 +110,7 @@ func TestK8sAgentExecute2(t *testing.T) {
 		}
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -147,7 +147,7 @@ func TestK8sAgentExecuteDirectCommand(t *testing.T) {
 		}
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -200,7 +200,7 @@ func TestK8sAgentExecuteCRUD(t *testing.T) {
 		}
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -253,7 +253,7 @@ func TestK8sAgentExecuteCRUDNo(t *testing.T) {
 		}
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -308,7 +308,7 @@ func TestFollowupCanAgentProcessToolRequest(t *testing.T) {
 		}
 
 	for _, tc := range testCases {
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -351,7 +351,7 @@ func TestFollowupCanAgentProcessToolRequest2(t *testing.T) {
 
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -390,7 +390,7 @@ func TestK8sAgentExecuteMultiCommand(t *testing.T) {
 
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -429,7 +429,7 @@ func TestK8sAgentExecuteLogTruncate(t *testing.T) {
 		}
 
 	for _, tc := range testCases {
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -468,7 +468,7 @@ func TestK8sAgentExecuteDiscovery(t *testing.T) {
 
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -507,7 +507,7 @@ func TestK8sAgentExecuteRefine(t *testing.T) {
 
 	for _, tc := range testCases {
 		sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-		k8sAgent := newKubectlAgent(tc.AccountId)
+		k8sAgent := KubectlAgent{}
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

@@ -641,6 +641,11 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 	}
 	var allResolved []resolvedRow
 
+	// A failed fingerprint must not abandon the ones already updated: their rows
+	// are committed as RESOLVED, so the next sync's UPDATE skips them and their
+	// notification and history would be lost for good. Collect and continue.
+	var updateErrs []error
+
 	for _, fp := range fps {
 		re := fpToEvent[fp]
 		resolvedAt := re.Date.UTC()
@@ -654,13 +659,30 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 			accountID, fp, resolvedAt)
 		if err != nil {
 			ctx.GetLogger().Error("failed to resolve event by fingerprint", "error", err, "component", funcName, "fingerprint", fp)
-			return err
+			updateErrs = append(updateErrs, err)
+			continue
 		}
 		allResolved = append(allResolved, rows...)
 	}
 
 	if len(allResolved) > 0 {
 		ctx.GetLogger().Info("resolved existing events by fingerprint", "component", funcName, "count", len(allResolved))
+	}
+
+	// Only a genuine open->resolved transition reaches here (the UPDATE excludes
+	// rows already CLOSED/RESOLVED), so repeat syncs of the same resolved alarm
+	// publish nothing. api-server routes this to the resolved reply, threaded
+	// under the original alert message.
+	for _, row := range allResolved {
+		if err := common.MqPublish(
+			config.Config.RabbitMqEventPostProcessExchange,
+			config.Config.RabbitMqEventPostProcessQueue,
+			map[string]any{"event_id": row.ID, "notify_resolved": true},
+			common.MqPublishWithExpiration(1*time.Hour),
+			common.MqPublishWithContext(ctx.GetContext()),
+		); err != nil {
+			ctx.GetLogger().Error("failed to publish resolved notification", "error", err, "component", funcName, "eventId", row.ID)
+		}
 	}
 
 	// Record event_history for each resolved event
@@ -693,7 +715,7 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 		}
 	}
 
-	return nil
+	return errors.Join(updateErrs...)
 }
 
 // hasCloudResourceId checks whether an event already has a non-nil cloud_resource_id.

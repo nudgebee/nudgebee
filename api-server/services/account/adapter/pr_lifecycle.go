@@ -3,12 +3,15 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/llm"
+	"nudgebee/services/recommendation/coordinator"
 	"nudgebee/services/security"
 )
 
@@ -32,10 +35,10 @@ type prMetadata struct {
 	Repo        string `json:"repo"`
 	PRBranch    string `json:"pr_branch"`
 	ProjectPath string `json:"project_path"`
-	// TenantID is stored by agent_code_2 for conversation-originated PRs where
+	// TenantID is stored by the code_analyzer agent for conversation-originated PRs where
 	// the events LEFT JOIN returns no tenant (no event row exists).
 	TenantID string `json:"tenant_id"`
-	// AccountID is stored by agent_code_2 and echoed back on the followup
+	// AccountID is stored by the code_analyzer agent and echoed back on the followup
 	// request so llm-server can resolve account-scoped state (conversation,
 	// workspace, budget) instead of rejecting the request for missing account.
 	AccountID string `json:"account_id"`
@@ -534,7 +537,45 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 	state, status, msg := prTerminalFields(merged)
 
 	var total int64
+	var settleErrs error
 	for _, tableName := range tables {
+		// Under the coordinator, recommendation lifecycle status is not this
+		// reconciler's to write: the UPDATE here keeps only the PR-machinery
+		// columns, and the status transition (plus the recommendation
+		// projection) is requested per row — a duplicate webhook/poll delivery
+		// lands as a recorded no-op instead of an overwrite. event_resolution
+		// stays on the legacy path; the coordinator governs recommendations only.
+		if tableName == "recommendation_resolution" {
+			outcome := models.RecommendationResolutionStatusFailed
+			if merged {
+				outcome = models.RecommendationResolutionStatusSuccess
+			}
+			dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+			ids := []string{}
+			err := dbms.Db.SelectContext(dbCtx, &ids,
+				`UPDATE recommendation_resolution SET pr_lifecycle_state = $1,
+					pr_followup_pending = false, last_pr_check_at = $2
+					WHERE data->>'pr_url' = $3 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing', 'stale')
+					RETURNING id`,
+				state, time.Now(), prURL)
+			cancel()
+			if err != nil {
+				return total, fmt.Errorf("failed to mark recommendation_resolution rows terminal: %w", err)
+			}
+			for _, id := range ids {
+				// A failure here leaves pr_lifecycle_state terminal with the status
+				// still InProgress; the resolution poll settles such rows on its
+				// next tick, so the pair converges rather than wedges. Errors are
+				// joined instead of short-circuiting, so every row still gets its
+				// settle attempt and no table's marking is skipped.
+				if _, err := coordinator.SettleResolution(ctx, id, outcome, msg, coordinator.SourceWebhook); err != nil {
+					settleErrs = errors.Join(settleErrs, fmt.Errorf("failed to settle recommendation resolution %s: %w", id, err))
+					continue
+				}
+				total++
+			}
+			continue
+		}
 		dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
 		res, execErr := dbms.Db.ExecContext(dbCtx,
 			fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, status = $2, status_message = $3,
@@ -551,7 +592,7 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 	}
 	ctx.GetLogger().Info("pr_lifecycle: marked PR resolutions terminal",
 		"pr_url", prURL, "merged", merged, "state", state, "status", status, "rows", total)
-	return total, nil
+	return total, settleErrs
 }
 
 // resurrectStaleResolution returns a cron-retired ('stale') row to active
@@ -696,7 +737,7 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 
 	// For conversation-originated PRs (Slack flow), the events LEFT JOIN returns
 	// empty tenant because event_id holds a conversation UUID, not an event UUID.
-	// Fall back to tenant_id stored in the PR metadata by agent_code_2.
+	// Fall back to tenant_id stored in the PR metadata by the code_analyzer agent.
 	tenantID := row.TenantID
 	if tenantID == "" && meta.TenantID != "" {
 		tenantID = meta.TenantID
@@ -725,57 +766,10 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 		"id", row.ID, "pr_url", meta.PRURL, "current_iteration_count", oldIters)
 	common.MetricsPRFollowupDispatch(ctx.GetContext(), row.TableName, trigger)
 
-	prBranch := meta.PRBranch
-	if prBranch == "" {
-		prBranch = meta.Branch
-	}
+	chatRequest := buildPRFollowupChatRequest(meta, gitToken,
+		fmt.Sprintf("Follow up on PR %s — address CI failures and review comments", meta.PRURL))
 
-	// Build JSON query that agent_code_2 will unmarshal into CodeAgent2Request
-	followupQuery := map[string]any{
-		"query":     fmt.Sprintf("Follow up on PR %s — address CI failures and review comments", meta.PRURL),
-		"followup":  true,
-		"pr_url":    meta.PRURL,
-		"git_repo":  meta.RepoURL,
-		"pr_branch": prBranch,
-		"git_token": gitToken,
-	}
-	followupQueryJSON, _ := json.Marshal(followupQuery)
-
-	chatRequest := llm.ConversationApiRequest{
-		Query:     "@agent_code_2 " + string(followupQueryJSON),
-		Source:    "pr_lifecycle",
-		AccountId: meta.AccountID,
-	}
-
-	// llm-server requires x-tenant-id for auth; the cron ctx has no
-	// tenant so ChatCompletion would fail 401. Build a tenant-scoped context from
-	// the tenant stored on the resolution row (or in the PR metadata fallback).
-	tenantCtx := security.NewRequestContextForTenantAdmin(tenantID, ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
-
-	go func() {
-		// Recover so a panic in the LLM client or response parser doesn't
-		// take down the api-server process. The cron has many goroutines in
-		// flight at once; one bad followup must not kill the rest.
-		defer func() {
-			if r := recover(); r != nil {
-				tenantCtx.GetLogger().Error("pr_lifecycle: panic in followup goroutine",
-					"id", row.ID, "recover", r)
-			}
-		}()
-
-		// Bound the followup so a stuck llm-server cannot leak this goroutine
-		// indefinitely. 35 min is slightly larger than llm-server
-		// executeFollowup's maxPollDuration of 30 min, so we never preempt a
-		// legitimate poll loop but still cap unbounded hangs. Built on
-		// context.Background() because the caller's ctx may be the cron
-		// handler's request ctx — we don't want this background work to die
-		// when the handler returns.
-		bgCtx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
-		defer cancel()
-		boundedCtx := security.NewRequestContext(bgCtx, tenantCtx.GetSecurityContext(),
-			tenantCtx.GetLogger(), tenantCtx.GetTracer(), tenantCtx.GetMeter())
-
-		response, err := llm.ChatCompletion(boundedCtx, chatRequest)
+	runPRFollowupAgent(ctx, tenantID, chatRequest, "id", row.ID, func(tenantCtx *security.RequestContext, response *llm.ChatCompletionResponse, err error) {
 		var outcome followupOutcome
 		if err != nil {
 			tenantCtx.GetLogger().Error("pr_lifecycle: followup failed", "id", row.ID, "error", err)
@@ -811,9 +805,73 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 				tenantCtx.GetLogger().Error("pr_lifecycle: re-dispatch failed", "id", row.ID, "error", perr)
 			}
 		}
-	}()
+	})
 
 	return nil
+}
+
+// buildPRFollowupChatRequest builds the envelope that re-runs the code agent
+// against an already-open pull request. The agent (invoked via its
+// "@agent_code_2" back-compat alias) unmarshals it into CodeAgent2Request and,
+// because followup is set with a pr_url, works on that pull request's existing
+// branch rather than opening a new one.
+//
+// prompt is the only thing that varies between callers: the lifecycle cron asks
+// it to address CI failures and review comments, while a value refresh asks it to
+// apply changed rightsizing numbers (#34959). Keeping one builder means both get
+// the same branch fallback and credential handling.
+func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt string) llm.ConversationApiRequest {
+	prBranch := meta.PRBranch
+	if prBranch == "" {
+		prBranch = meta.Branch
+	}
+
+	followupQuery := map[string]any{
+		"query":     prompt,
+		"followup":  true,
+		"pr_url":    meta.PRURL,
+		"git_repo":  meta.RepoURL,
+		"pr_branch": prBranch,
+		"git_token": gitToken,
+	}
+	followupQueryJSON, _ := json.Marshal(followupQuery)
+
+	return llm.ConversationApiRequest{
+		Query:     "@agent_code_2 " + string(followupQueryJSON),
+		Source:    "pr_lifecycle",
+		AccountId: meta.AccountID,
+	}
+}
+
+// runPRFollowupAgent runs a pull-request followup conversation in the background
+// and hands the result to onDone.
+//
+// It owns the parts every caller needs identically: a tenant-scoped context
+// (llm-server requires x-tenant-id, and the cron's own context has no tenant), a
+// 35-minute bound so a stuck llm-server cannot leak the goroutine — slightly
+// above executeFollowup's 30-minute poll so a legitimate run is never preempted —
+// and panic recovery, because many of these are in flight at once and one bad
+// followup must not take the process down.
+func runPRFollowupAgent(ctx *security.RequestContext, tenantID string, chatRequest llm.ConversationApiRequest, logKey string, logID any, onDone func(*security.RequestContext, *llm.ChatCompletionResponse, error)) {
+	tenantCtx := security.NewRequestContextForTenantAdmin(tenantID, ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				tenantCtx.GetLogger().Error("pr_lifecycle: panic in followup goroutine", logKey, logID, "recover", r)
+			}
+		}()
+
+		// Built on context.Background() because the caller's ctx may be a request
+		// context — this background work must not die when the handler returns.
+		bgCtx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+		defer cancel()
+		boundedCtx := security.NewRequestContext(bgCtx, tenantCtx.GetSecurityContext(),
+			tenantCtx.GetLogger(), tenantCtx.GetTracer(), tenantCtx.GetMeter())
+
+		response, err := llm.ChatCompletion(boundedCtx, chatRequest)
+		onDone(tenantCtx, response, err)
+	}()
 }
 
 // followupOutcome encapsulates how a single followup result should mutate the

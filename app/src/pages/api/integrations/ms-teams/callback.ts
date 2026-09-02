@@ -81,12 +81,13 @@ async function fetchAndGetResponse(url: string, identity: IntegrationIdentity, r
 }
 
 function handleErrorResponse(res: NextApiResponse, error: any, requestId: string): void {
-  console.log('api error', error);
-  res
-    .status(error.status || 500)
-    .setHeader('x-request-id', requestId)
-    .json({
-      code: error.code,
-      error: error.message,
-    });
+  console.error('MS Teams callback error:', error);
+  if (res.headersSent) {
+    if (!res.writableEnded) res.end();
+    return;
+  }
+  res.status(500).setHeader('x-request-id', requestId).json({
+    code: 'internal_error',
+    error: 'Internal Server Error',
+  });
 }

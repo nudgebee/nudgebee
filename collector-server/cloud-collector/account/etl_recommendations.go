@@ -148,7 +148,10 @@ func StoreRecommendations(ctx *security.RequestContext, accountId string, filter
 	}()
 
 	if len(recommendations.Items) == 0 {
-		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
+		// Only Open recommendations are this sync's to archive. Anything a user
+		// or agent has touched (InProgress, Assigned, Closed, Dismissed — and any
+		// future status) is not reset by a provider run.
+		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
 		r, err := dbms.Exec(query, accountId, strings.ToLower(filter.ServiceName))
 		if err != nil {
 			ctx.GetLogger().Error("unable to archive recommendations", "error", err)
@@ -267,9 +270,11 @@ func StoreRecommendations(ctx *security.RequestContext, accountId string, filter
 		recommendationsToStore = append(recommendationsToStore, dbData)
 		onConflictKeys[key] = true
 	}
-	// archive existing recommendations
+	// Archive existing recommendations, touching only Open rows: anything a user
+	// or agent has claimed or settled must survive the sync with its status
+	// intact, while its payload, savings and severity keep refreshing below.
 	_, err = dbms.DoInTransaction(func(dmt common.DatabaseManagerTx) (any, error) {
-		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2 )`
+		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2 )`
 
 		_, err := dmt.Exec(query, accountId, strings.ToLower(filter.ServiceName))
 		if err != nil {
@@ -285,7 +290,7 @@ func StoreRecommendations(ctx *security.RequestContext, accountId string, filter
 							recommendation_action = EXCLUDED.recommendation_action,
 							severity = EXCLUDED.severity,
 							estimated_savings = EXCLUDED.estimated_savings,
-							status = EXCLUDED.status,
+							status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') THEN recommendation.status ELSE EXCLUDED.status END,
 							updated_at = EXCLUDED.updated_at,
 							dedupe_group = EXCLUDED.dedupe_group
 						`
@@ -316,10 +321,24 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 		ctx.GetLogger().Error("unable to get dbms", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err
 	}
-	query := `select created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name 
+	query := `select created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
 	from cloud_resourses
-	where account = $1 and lower(service_name) = $2 and lower(status) = 'active'`
-	rows, err := databaseManager.Query(query, accountId, strings.ToLower(filter.ServiceName))
+	where account = $1 and lower(status) = 'active'`
+	args := []interface{}{accountId}
+	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
+	// own — it needs the account's full resource set to derive which
+	// regions/zones to query (see resolveRecommenderLocations in
+	// providers/gcloud). Gate this on the GCP provider: the account-level
+	// StoreRecommendationsAll runs the "recommender" native-service sync for
+	// every provider, and dropping the filter for AWS/Azure would hand their
+	// dispatchers the full active fleet — Azure's ListRecommendations would then
+	// fall through to re-crawl every registered service. Every other case keeps
+	// the service_name filter, preserving the pre-change behavior exactly.
+	if !strings.EqualFold(filter.ServiceName, "recommender") || !strings.EqualFold(provider, "gcp") {
+		query += ` and lower(service_name) = $2`
+		args = append(args, strings.ToLower(filter.ServiceName))
+	}
+	rows, err := databaseManager.Query(query, args...)
 	if err != nil {
 		ctx.GetLogger().Error("unable to fetch existing resources", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err

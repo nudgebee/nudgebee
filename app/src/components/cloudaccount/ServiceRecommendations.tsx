@@ -122,6 +122,7 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
 
     fetchKeyRef.current = currentKey;
     setLoading(true);
+    let cancelled = false;
 
     const allCategories = ['RightSizing', 'Configuration', 'Security', 'InfraUpgrade'];
     const categoryParam: any = selectedCategory === ALL_CATEGORIES ? allCategories : selectedCategory;
@@ -137,6 +138,7 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
         severity: '',
       })
       .then((res: any) => {
+        if (cancelled) return;
         const recommendations = res.data?.recommendation || [];
         const totalCount = res.data?.recommendation_aggregate?.aggregate?.count || 0;
 
@@ -239,10 +241,18 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
         setLoading(false);
       })
       .catch(() => {
+        if (cancelled) return;
         setLoading(false);
         setRecommendations([]);
         setRecommendationsCount(0);
       });
+
+    return () => {
+      cancelled = true;
+      // Reset the dedup key so a Strict-Mode remount (or any re-mount) re-fetches
+      // instead of matching the stale key and returning early into a stuck loading state.
+      fetchKeyRef.current = '';
+    };
   }, [accountId, serviceName, page, rowsPerPage, selectedCategory]);
 
   return (

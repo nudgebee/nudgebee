@@ -46,10 +46,11 @@ const (
 )
 
 type SecurityContext struct {
-	tenantId   string
-	accountIds []string
-	userId     string
-	roles      []string
+	tenantId    string
+	accountIds  []string
+	userId      string
+	displayName string
+	roles       []string
 	// scopedEntityIds maps a role -> the account ids it is scoped to (for k8s
 	// namespace roles the value is the account-id half of "<accountId>:<ns>").
 	// Mirrors the api-server's security_context_v2 wire shape
@@ -60,6 +61,18 @@ type SecurityContext struct {
 	k8sUser         map[string]string
 	k8sGroup        map[string][]string
 	k8sNamespaces   map[string][]string
+	// customPermissions is the set of dynamic-RBAC custom-role grants the user
+	// holds, keyed "<module>:<class>" (e.g. "notifications:Write"). Mirrors the
+	// api-server's security_context_v2 wire shape (scPub.CustomPermissions); the
+	// two structs are hand-kept in sync — dropping this field silently discards
+	// every custom grant on the wire (see security_context_wire_test.go).
+	// Additive: operation-surface only, never widens data scope.
+	customPermissions map[string]bool
+	// scopedCustomPermissions holds account-scoped custom-role grants
+	// (accountId -> "<module>:<class>" -> true). Mirrors api-server's
+	// scPub.ScopedCustomPermissions wire field — kept in sync (see wire test).
+	// See HasScopedPermission. Additive; never widens data scope.
+	scopedCustomPermissions map[string]map[string]bool
 	// isServerInternal marks contexts constructed by NewSecurityContextForSuperAdmin
 	// for synthetic server-side calls. Set only inside this package — never
 	// derived from a user's role string — so a user assigned a stray role
@@ -68,28 +81,34 @@ type SecurityContext struct {
 }
 
 type scPub struct {
-	TenantId         string
-	AccountIds       []string
-	UserId           string
-	Roles            []string
-	ScopedEntityIds  map[string][]string
-	K8sUser          map[string]string
-	K8sGroup         map[string][]string
-	K8sNamespaces    map[string][]string
-	IsServerInternal bool
+	TenantId                string
+	AccountIds              []string
+	UserId                  string
+	DisplayName             string
+	Roles                   []string
+	ScopedEntityIds         map[string][]string
+	K8sUser                 map[string]string
+	K8sGroup                map[string][]string
+	K8sNamespaces           map[string][]string
+	CustomPermissions       map[string]bool
+	ScopedCustomPermissions map[string]map[string]bool
+	IsServerInternal        bool
 }
 
 func (sc *SecurityContext) MarshalJSON() ([]byte, error) {
 	data := scPub{
-		TenantId:         sc.tenantId,
-		AccountIds:       sc.accountIds,
-		UserId:           sc.userId,
-		Roles:            sc.roles,
-		ScopedEntityIds:  sc.scopedEntityIds,
-		K8sUser:          sc.k8sUser,
-		K8sGroup:         sc.k8sGroup,
-		K8sNamespaces:    sc.k8sNamespaces,
-		IsServerInternal: sc.isServerInternal,
+		TenantId:                sc.tenantId,
+		AccountIds:              sc.accountIds,
+		UserId:                  sc.userId,
+		DisplayName:             sc.displayName,
+		Roles:                   sc.roles,
+		ScopedEntityIds:         sc.scopedEntityIds,
+		K8sUser:                 sc.k8sUser,
+		K8sGroup:                sc.k8sGroup,
+		K8sNamespaces:           sc.k8sNamespaces,
+		CustomPermissions:       sc.customPermissions,
+		ScopedCustomPermissions: sc.scopedCustomPermissions,
+		IsServerInternal:        sc.isServerInternal,
 	}
 
 	j, err := common.MarshalJson(data)
@@ -108,11 +127,14 @@ func (sc *SecurityContext) UnmarshalJSON(data []byte) error {
 	sc.tenantId = scPub1.TenantId
 	sc.accountIds = scPub1.AccountIds
 	sc.userId = scPub1.UserId
+	sc.displayName = scPub1.DisplayName
 	sc.roles = scPub1.Roles
 	sc.scopedEntityIds = scPub1.ScopedEntityIds
 	sc.k8sUser = scPub1.K8sUser
 	sc.k8sGroup = scPub1.K8sGroup
 	sc.k8sNamespaces = scPub1.K8sNamespaces
+	sc.customPermissions = scPub1.CustomPermissions
+	sc.scopedCustomPermissions = scPub1.ScopedCustomPermissions
 	sc.isServerInternal = scPub1.IsServerInternal
 
 	return nil
@@ -124,6 +146,11 @@ func (sc *SecurityContext) GetTenantId() string {
 
 func (sc *SecurityContext) GetAccountIds() []string {
 	return sc.accountIds
+}
+
+// User display name from the context (best-effort; "" for synthetic/stale contexts).
+func (sc *SecurityContext) GetDisplayName() string {
+	return sc.displayName
 }
 
 func (sc *SecurityContext) GetUserId() string {
@@ -173,6 +200,83 @@ func (sc *SecurityContext) IsTenantAdmin() bool {
 
 func (sc *SecurityContext) IsTenantReadAdmin() bool {
 	return slices.Contains(sc.roles, AUTH_TENANT_READ_ADMIN_ROLE)
+}
+
+func (sc *SecurityContext) IsAccountAdmin() bool {
+	return slices.Contains(sc.roles, AUTH_ACCOUNT_ADMIN_ROLE)
+}
+
+func (sc *SecurityContext) IsAccountReadAdmin() bool {
+	return slices.Contains(sc.roles, AUTH_ACCOUNT_READ_ADMIN_ROLE)
+}
+
+// HasPermission reports whether the user holds a dynamic-RBAC custom-role grant
+// for the given (module, class), e.g. HasPermission("notifications", "Write").
+// module/class MUST be the normalized values produced by
+// app/src/lib/permissionCatalog.ts. Purely additive: never widens data scope
+// (HasAccountAccess / ListAccountIds are unchanged) — only "may this op run".
+func (sc *SecurityContext) HasPermission(module string, class string) bool {
+	if sc.customPermissions == nil {
+		return false
+	}
+	return sc.customPermissions[module+":"+class]
+}
+
+// HasScopedPermission reports whether the holder has a custom-role grant for
+// (module, class) applying to accountId — tenant-global (HasPermission) OR an
+// account-scoped grant for accountId. Additive; grants the operation only.
+func (sc *SecurityContext) HasScopedPermission(accountId string, module string, class string) bool {
+	// A tenant-global grant covers every account IN THE CALLER'S TENANT. The
+	// membership check is load-bearing: unlike HasAccountAccess (whose first act
+	// is this same check), a grant carries no account of its own, so without it any
+	// account id the request supplies — including one belonging to another tenant —
+	// would authorize. accountIds is every cloud_account of the context's tenant,
+	// populated for every user regardless of role, so this never narrows an
+	// in-tenant grant.
+	if sc.HasPermission(module, class) && slices.Contains(sc.accountIds, accountId) {
+		return true
+	}
+	if sc.scopedCustomPermissions == nil {
+		return false
+	}
+	// Account-scoped grants are in-tenant by construction — the resolver reads them
+	// from custom_role_assignments rows filtered by the context's tenant.
+	perAccount, ok := sc.scopedCustomPermissions[accountId]
+	if !ok {
+		return false
+	}
+	return perAccount[module+":"+class]
+}
+
+// GetCustomPermissions returns the holder's custom-role grant keys
+// ("<module>:<class>").
+func (sc *SecurityContext) GetCustomPermissions() []string {
+	keys := make([]string, 0, len(sc.customPermissions))
+	for k := range sc.customPermissions {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// CanManage gates a non-privilege tenant-config operation: tenant admin OR a
+// matching custom-role grant. NOTE: do NOT use this for privilege-administration
+// handlers (role / group / user-role assignment) — those must stay
+// IsTenantAdmin()-only so a custom role can never escalate its own privileges.
+func (sc *SecurityContext) CanManage(module string, class string) bool {
+	return sc.IsTenantAdmin() || sc.HasPermission(module, class)
+}
+
+// CanReadAccountData reports whether the caller may READ data for accountId in
+// `module` — via a built-in account role (HasAccountAccess read) OR a
+// dynamic-RBAC custom grant for the module (Read, or Write which implies Read).
+// Account-scoped via HasScopedPermission; never widens which accounts exist.
+// Use in account-scoped read handlers so a pure custom-role user (empty built-in
+// account scope) can read the data their custom grant authorizes. Mirrors the
+// api-server SecurityContext helper of the same name — keep the two in sync.
+func (sc *SecurityContext) CanReadAccountData(accountId string, module string) bool {
+	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
+		sc.HasScopedPermission(accountId, module, "Read") ||
+		sc.HasScopedPermission(accountId, module, "Write")
 }
 
 func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAccessType) bool {

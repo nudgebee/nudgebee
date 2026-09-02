@@ -804,6 +804,7 @@ func GenerateAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly) erro
 		StartsAt:         anomaly.EvaluatedAt,
 		Fingerprint:      fmt.Sprintf("anomaly-%s-%s-%s-%s", anomaly.AccountId, anomaly.AnomalyType, anomaly.Name, anomaly.Namespace),
 		Cluster:          accountName,
+		Labels:           metricStatLabels(anomaly),
 	}
 	_, err = event.InsertEvent(eventObj, "")
 	if err != nil {

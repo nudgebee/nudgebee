@@ -23,11 +23,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	jsonata "github.com/xiatechs/jsonata-go"
 	"go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
@@ -43,7 +45,8 @@ type WorkflowService interface {
 	ExecuteWorkflow(ctx *security.RequestContext, accountId, id string, triggerType model.WorkflowTrigger, inputs map[string]any) (string, error)
 	TriggerWorkflowFromDraft(ctx *security.RequestContext, accountId, id string, inputs map[string]any) (string, error)
 	RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error)
-	ListWorkflows(ctx *security.RequestContext, accountId string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
+	ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
+	SearchAIInvocableWorkflows(ctx *security.RequestContext, accountId, query string, limit int) (model.AIWorkflowSearchResponse, error)
 	GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error)
 	UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error)
 	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
@@ -67,6 +70,9 @@ type WorkflowService interface {
 	DryRunWorkflowAsync(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (string, string, error)
 	CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error)
 	CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error)
+	// Cross-automation execution dashboard (see execution_dashboard.go)
+	ListAccountExecutions(ctx *security.RequestContext, req model.ListAccountExecutionsRequest) (model.ListAccountExecutionsResponse, error)
+	AggregateExecutions(ctx *security.RequestContext, req model.AggregateExecutionsRequest) (model.AggregateExecutionsResponse, error)
 	// Template operations (type=system uses global store, type=user reserved for future)
 	ListTemplates(ctx *security.RequestContext, request model.ListWorkflowTemplateRequest) (model.ListWorkflowTemplateResponse, error)
 	GetTemplate(ctx *security.RequestContext, id string) (*model.WorkflowTemplate, error)
@@ -113,6 +119,11 @@ type Service struct {
 	taskRegistry     *tasks.TaskRegistry
 	workflowExecutor *WorkflowExecutor
 	configService    configSvc.ConfigService
+
+	// Temporal namespace retention, read lazily and cached once known. It is
+	// the hard ceiling on how far back the execution dashboard can look.
+	retentionMu   sync.RWMutex
+	retentionDays int
 }
 
 func NewService(temporalClient client.Client, store model.WorkflowStore, dataConverter converter.DataConverter, taskRegistry *tasks.TaskRegistry, workflowExecutor *WorkflowExecutor, configService configSvc.ConfigService, templateStore ...model.WorkflowTemplateStore) *Service {
@@ -484,13 +495,30 @@ func normalizeWebhookTriggers(workflowID string, wf *model.Workflow) {
 }
 
 func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) (string, string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
-		return "", "", common.ErrorUnauthorized("account not accessible")
+	// Authorize the create: the built-in account-role path (unchanged — the only
+	// path in OSS and for built-in roles), OR a workflows:Write custom grant. The
+	// grant alone is sufficient, matching every other workflow operation: reads go
+	// through CanReadAccountData and the mutations below through canWriteWorkflows,
+	// so requiring built-in Read on top here would make create the one write a
+	// pure custom-role holder could not perform.
+	sc := ctx.GetSecurityContext()
+	if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canWriteWorkflows(sc, accountId) {
+		return "", "", common.ErrorUnauthorized("not allowed to create workflows on this account")
 	}
 
 	wf.CreatedBy = ctx.GetSecurityContext().GetUserId()
 	wf.UpdatedBy = ctx.GetSecurityContext().GetUserId()
 	wf.ID = uuid.New().String() // Always generate a new ID for CreateWorkflow
+
+	// An AI-authored automation is never born AI-invocable. Nothing stops the model
+	// putting ai_invocable:true in the definition it composes, and letting that
+	// through would mean the AI granting itself permission to run its own creation
+	// — the opt-in exists precisely so a human decides that, in the settings UI,
+	// after reading what the automation does.
+	if ctx.IsAITriggered() {
+		wf.AIInvocable = false
+	}
 
 	validStatuses := []model.WorkflowStatus{model.WorkflowStatusActive, model.WorkflowStatusPaused, model.WorkflowStatusInactive}
 	isValidStatus := false
@@ -563,7 +591,11 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	// Only handle schedule triggers here, webhooks are handled by a generic endpoint
 	_, token, err := s.handleWorkflowTrigger(ctx, storedId, ctx.GetSecurityContext().GetTenantId(), accountId, &wf)
 	if err != nil {
-		return storedId, "", err
+		// Stage 1 above is durable, this stage is not. Leaving the row behind on a
+		// trigger-registration failure reports "not saved" for an automation that is
+		// sitting in the user's list, and blocks the retry on the duplicate-name
+		// guard (#35385).
+		return s.rollbackFailedCreate(ctx, accountId, storedId, &wf, err)
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
@@ -631,10 +663,20 @@ func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenant
 					}
 					scheduleCount++
 				}
+			} else {
+				// A schedule trigger with no cron registers nothing, so the workflow
+				// looks scheduled and active and never fires. Trigger.Validate now
+				// rejects this on create and update, which is where it can still be
+				// fixed; the paths that reach here without validating (status change,
+				// version publish) only ever see rows that were stored before that
+				// check existed. Failing them would leave such a row unpauseable and
+				// unactivatable with no in-product repair, so log and carry on.
+				slog.Warn("schedule trigger has no cron expression; no schedule registered",
+					"workflowID", id, "accountID", accountId, "triggerIndex", i)
 			}
 		case model.WorkflowTriggerWebhook:
 			if trigger.Internal == nil || trigger.Internal.Name == "" {
-				return nil, "", common.ErrorBadRequest("webhook trigger missing internal name after normalization")
+				return nil, "", common.ErrorBadRequest("webhook trigger requires params.integration_name")
 			}
 			integrationID := trigger.Internal.Name
 
@@ -928,7 +970,8 @@ func (s *Service) resolveLiveExecution(ctx context.Context, id string) (model.Wo
 }
 
 func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id string, triggerType model.WorkflowTrigger, inputs map[string]any) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -945,10 +988,17 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 		switch wf.Status {
 		case model.WorkflowStatusPaused:
 			if triggerType != model.WorkflowTriggerManual {
-				return "", fmt.Errorf("workflow %s is paused", id)
+				return "", common.ErrorBadRequest(fmt.Sprintf("workflow %s is paused and can only be run manually", id))
 			}
 		default:
-			return "", fmt.Errorf("workflow %s is not active, status is %s", id, wf.Status)
+			// Manual triggers may run ACTIVE or PAUSED workflows; all other
+			// trigger types require ACTIVE. Reflect that in the message so an
+			// INACTIVE workflow reads accurately for the caller's trigger type.
+			expected := "ACTIVE"
+			if triggerType == model.WorkflowTriggerManual {
+				expected = "ACTIVE or PAUSED"
+			}
+			return "", common.ErrorBadRequest(fmt.Sprintf("workflow cannot be run because its status is %s (must be %s)", wf.Status, expected))
 		}
 	}
 
@@ -966,6 +1016,16 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 	// Run the live version snapshot; the Memo stamps its identity so the
 	// execution detail UI can render exactly what ran.
 	wf.Definition = execDef
+
+	// AI-originated runs face extra restrictions on top of the caller's own
+	// permissions. Checked after the live definition is resolved so the gate
+	// inspects what will actually run, not the draft.
+	if ctx.IsAITriggered() {
+		if err := s.assertAIInvocationAllowed(ctx, accountId, wf); err != nil {
+			return "", err
+		}
+	}
+
 	return s.runWorkflow(ctx, accountId, id, wf, memo, triggerType, inputs)
 }
 
@@ -981,8 +1041,19 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 //   - Writes no workflow_versions row and never touches the live pointer.
 //   - Trigger type is forced to manual.
 func (s *Service) TriggerWorkflowFromDraft(ctx *security.RequestContext, accountId, id string, inputs map[string]any) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
+	}
+
+	// The AI never runs drafts. This path deliberately skips the live-version
+	// pointer, so allowing it would let an AI caller sidestep every check in
+	// assertAIInvocationAllowed that reads the published definition simply by
+	// asking for the draft. AI exposure is tied to what has been published.
+	if ctx.IsAITriggered() {
+		ctx.GetLogger().Warn("refused AI-originated draft workflow run",
+			"workflow_id", id, "account_id", accountId)
+		return "", common.ErrorUnauthorized("the AI assistant cannot run draft workflows")
 	}
 
 	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
@@ -994,7 +1065,7 @@ func (s *Service) TriggerWorkflowFromDraft(ctx *security.RequestContext, account
 	// manual triggers). Only fully Inactive / unknown statuses are refused, so a
 	// disabled workflow can't be hot-revived through the draft path.
 	if wf.Status != model.WorkflowStatusActive && wf.Status != model.WorkflowStatusPaused {
-		return "", fmt.Errorf("workflow %s is not runnable, status is %s", id, wf.Status)
+		return "", common.ErrorBadRequest(fmt.Sprintf("workflow cannot be run because its status is %s (must be ACTIVE or PAUSED)", wf.Status))
 	}
 
 	// wf.Definition is the current draft as loaded by Find — run it as-is.
@@ -1046,6 +1117,14 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	// GetDetailedWorkflowExecution for display, never a filter.
 	if memo == nil {
 		memo = map[string]any{}
+	}
+
+	// Stamp AI-initiated runs so their blast radius is measurable — the whole
+	// point of shipping this behind a flag is being able to see what it did.
+	// Set here, on the shared tail, so no execution path can start an AI run
+	// without the marker.
+	if ctx.IsAITriggered() {
+		memo[model.MemoWorkflowAITriggered] = true
 	}
 
 	// Determine workflow timeout
@@ -1227,7 +1306,8 @@ func (s *Service) FanOutWebhookEvent(ctx *security.RequestContext, integrationNa
 }
 
 func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1380,7 +1460,8 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 }
 
 func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (model.DryRunWorkflowResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return model.DryRunWorkflowResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1500,7 +1581,8 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 // with the workflow ID and execution ID for polling. The caller should use
 // GetDetailedWorkflowExecution to poll for the result.
 func (s *Service) DryRunWorkflowAsync(ctx *security.RequestContext, accountId string, request model.DryRunWorkflowRequest) (string, string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return "", "", common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1672,16 +1754,101 @@ func (s *Service) validateWorkflowInputs(definedInputs []model.Input, providedPa
 	return nil
 }
 
-func (s *Service) ListWorkflows(ctx *security.RequestContext, accountId string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
-		return model.ListWorkflowResponse{}, common.ErrorUnauthorized("account not accessible")
+// ResolveReadableAccounts turns the account filter sent by a tenant-level
+// listing into the concrete set of accounts to query.
+//
+// `requested` empty  → every account the caller can read (the tenant-level default).
+// `requested` set    → the requested accounts, minus any the caller can't read.
+//
+// It deliberately does NOT fall back to HasTenantAccess the way configAccountScope
+// does: that would 401 account admins, who are exactly the users the account
+// filter exists for. An empty result is an authorization failure rather than an
+// empty page — a caller with no readable accounts should be told so, and an
+// unbounded `account_id = ANY('{}')` is a bug we want surfaced, not answered.
+func ResolveReadableAccounts(ctx *security.RequestContext, requested []string) ([]string, error) {
+	scope, err := ResolveAccountScope(ctx, requested)
+	if err != nil {
+		return nil, err
+	}
+	return scope.AccountIDs, nil
+}
+
+// AccountScope is a resolved account filter.
+type AccountScope struct {
+	// AccountIDs is the concrete set to filter on. Never empty.
+	AccountIDs []string
+	// TenantWide reports that AccountIDs is exactly "every account in the
+	// tenant": the caller holds tenant-level read and asked for no subset. A
+	// query that already scopes by tenant can then drop the per-account
+	// predicate entirely — it is equivalent, and it avoids enumerating every
+	// account of a large tenant into the query.
+	TenantWide bool
+}
+
+// ResolveAccountScope is ResolveReadableAccounts plus the tenant-wide signal.
+func ResolveAccountScope(ctx *security.RequestContext, requested []string) (AccountScope, error) {
+	sc := ctx.GetSecurityContext()
+
+	// Built-in account scope UNION the accounts a dynamic-RBAC workflows grant
+	// reaches. ListAccountIds() alone is empty for a pure custom-role holder, so
+	// every tenant-level listing would answer "no accessible accounts" for exactly
+	// the users the grant was created for.
+	readable := readableWorkflowAccounts(sc)
+	if len(readable) == 0 {
+		return AccountScope{}, common.ErrorUnauthorized("no accessible accounts")
+	}
+
+	// A tenant-global workflows grant reads the whole tenant, so it earns the same
+	// drop-the-per-account-predicate shortcut as a built-in tenant read role. An
+	// account-scoped grant must NOT: its accounts stay enumerated.
+	tenantWide := sc.HasTenantAccess(security.SecurityAccessTypeRead) || hasTenantWideWorkflowsGrant(sc)
+
+	if len(requested) == 0 {
+		return AccountScope{
+			AccountIDs: readable,
+			TenantWide: tenantWide,
+		}, nil
+	}
+
+	scoped := make([]string, 0, len(requested))
+	for _, accountId := range requested {
+		if accountId == "" {
+			continue
+		}
+		if !sc.CanReadAccountData(accountId, workflowsModule) {
+			continue
+		}
+		scoped = append(scoped, accountId)
+	}
+	if len(scoped) == 0 {
+		return AccountScope{}, common.ErrorUnauthorized("account not accessible")
+	}
+
+	// Selecting every account you can see is the same request as selecting
+	// none — the account filter's per-provider "Select All" makes that a click
+	// away, and on a large tenant enumerating the result would blow the
+	// downstream filter-size cap for no reason.
+	if len(scoped) == len(readable) && tenantWide {
+		return AccountScope{AccountIDs: scoped, TenantWide: true}, nil
+	}
+
+	return AccountScope{AccountIDs: scoped}, nil
+}
+
+// ListWorkflows lists automations across `accountIds`. The Automations page is
+// tenant-level with an account filter (#35113), so an empty `accountIds` means
+// "every account this caller can read" rather than "none".
+func (s *Service) ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
+	scopedAccountIds, err := ResolveReadableAccounts(ctx, accountIds)
+	if err != nil {
+		return model.ListWorkflowResponse{}, err
 	}
 
 	if request.Limit <= 0 {
 		request.Limit = 50
 	}
 
-	workflows, totalCount, err := s.store.List(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, request)
+	workflows, totalCount, err := s.store.List(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), scopedAccountIds, request)
 	if err != nil {
 		return model.ListWorkflowResponse{}, err
 	}
@@ -1706,7 +1873,7 @@ func (s *Service) ListWorkflows(ctx *security.RequestContext, accountId string, 
 	// Reconcile stale RUNNING statuses by checking Temporal's actual execution status.
 	// When WorkflowExecutionTimeout fires, Temporal terminates the workflow server-side
 	// without running cleanup code, leaving last_execution_status as RUNNING in the DB.
-	s.reconcileRunningStatuses(ctx, accountId, workflows)
+	s.reconcileRunningStatuses(ctx, workflows)
 
 	var nextPageToken string
 	if len(workflows) == request.Limit {
@@ -1726,7 +1893,9 @@ func (s *Service) ListWorkflows(ctx *security.RequestContext, accountId string, 
 // NOTE: This makes one Temporal visibility query per RUNNING workflow. This is acceptable
 // because (a) very few workflows are in RUNNING state at any time, and (b) after the first
 // reconciliation the DB is corrected so subsequent calls won't re-query for that workflow.
-func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, accountId string, workflows []model.Workflow) {
+// A page can span several accounts, so the visibility query is built from each
+// row's own account rather than a single page-level one.
+func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflows []model.Workflow) {
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 	for i := range workflows {
 		if workflows[i].LastExecutionStatus != model.WorkflowExecutionStatusRunning {
@@ -1735,7 +1904,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 
 		query := fmt.Sprintf("%s='%s' AND %s='%s' AND %s='%s'",
 			model.SearchAttrTenantID, tenantID,
-			model.SearchAttrAccountID, accountId,
+			model.SearchAttrAccountID, workflows[i].AccountID,
 			model.SearchAttrWorkflowID, workflows[i].ID)
 
 		resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
@@ -1769,6 +1938,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 
 		// Asynchronously update the DB so future reads are correct
 		wfID := workflows[i].ID
+		wfAccountID := workflows[i].AccountID
 		closeTime := time.Now().UTC()
 		if latestExec.CloseTime != nil {
 			closeTime = latestExec.CloseTime.AsTime()
@@ -1780,7 +1950,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 		go func() {
 			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := s.store.SetLastExecutionStatus(dbCtx, tenantID, accountId, wfID, latestStatus, closeTime, statusMessage, runVersion); err != nil {
+			if err := s.store.SetLastExecutionStatus(dbCtx, tenantID, wfAccountID, wfID, latestStatus, closeTime, statusMessage, runVersion); err != nil {
 				slog.Error("Failed to reconcile stale workflow status", "workflowID", wfID, "error", err)
 			}
 		}()
@@ -1788,7 +1958,7 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, account
 }
 
 func (s *Service) GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1892,7 +2062,8 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 	if accountId == "" || id == "" {
 		return model.Workflow{}, fmt.Errorf("tenantId, accountId, id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return model.Workflow{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -1925,6 +2096,34 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 	}
 	// Always preserve LastExecutionStatus (system managed)
 	workflow.LastExecutionStatus = existingWf.LastExecutionStatus
+
+	// Preserve Description when the payload omits it. It is a *string, so a caller
+	// clearing the description sends "" — an absent key is not the same statement,
+	// and reading it as one wiped the column for every caller that sends the
+	// {name, definition} pair the AI's workflow_update builds.
+	if workflow.Description == nil {
+		workflow.Description = existingWf.Description
+	}
+
+	// ai_invocable is a grant a human makes in the settings UI, so an AI-originated
+	// update never changes it, in either direction. That closes both halves at once:
+	// the AI editing a definition cannot silently revoke the opt-in (the payload it
+	// builds omits the field, and an absent bool is indistinguishable from false),
+	// and it cannot grant itself one either.
+	//
+	// Deliberately keyed on the request being AI-originated rather than on the field
+	// being absent: a plain bool cannot tell absent from false, and of the two
+	// readings, "a non-AI caller that omits it means false" is the safe one — it
+	// revokes rather than grants.
+	//
+	// The one case where the grant does not survive is an edit that leaves the
+	// definition unable to support it — no llm_description, or no manual trigger.
+	// Carrying the flag through then would fail the whole save on struct validation
+	// instead of the edit landing, and dropping it is what the settings UI already
+	// does when those preconditions stop holding.
+	if ctx.IsAITriggered() {
+		workflow.AIInvocable = existingWf.AIInvocable && workflow.Definition.SupportsAIInvocation()
+	}
 
 	if workflow.Definition.Version == "" {
 		workflow.Definition.Version = "v1"
@@ -2047,7 +2246,7 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 // Caveats: templated `workflow_name` values (`{{ ... }}`) can't be resolved
 // statically and are excluded — UI should note that the list is best-effort.
 func (s *Service) ListWorkflowCallers(ctx *security.RequestContext, accountId, id string) (model.ListWorkflowCallersResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return model.ListWorkflowCallersResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 	tenantID := ctx.GetSecurityContext().GetTenantId()
@@ -2079,20 +2278,23 @@ func (s *Service) ListWorkflowCallers(ctx *security.RequestContext, accountId, i
 	return model.ListWorkflowCallersResponse{Callers: filtered}, nil
 }
 
-func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) {
-		return common.ErrorUnauthorized("account not accessible")
-	}
-	// Retrieve the workflow to check for schedule triggers
-	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
-		}
-		return fmt.Errorf("failed to retrieve workflow: %w", err)
-	}
-
-	normalizeWebhookTriggers(id, wf)
+// teardownWorkflowExternals removes the resources a workflow owns outside its own
+// row: the auto-managed webhook integrations it created, and every Temporal
+// schedule registered under its id. It deliberately does NOT touch the database
+// row, the audit trail, or running executions — DeleteWorkflow owns those, and a
+// create-rollback must do none of them (#35385).
+//
+// Returns false if any step failed or could not be verified. DeleteWorkflow
+// ignores the result: a user-intent delete is best-effort and unchanged. The
+// create-rollback path uses it to decide whether removing the row is safe —
+// deleting the row while a schedule survives turns a visible orphan the user can
+// delete into an invisible one that still fires on its cron.
+//
+// The caller must have normalized the workflow's webhook triggers first;
+// Internal.Name is what distinguishes an auto-managed shadow integration from a
+// user-managed one the workflow merely binds to.
+func (s *Service) teardownWorkflowExternals(ctx *security.RequestContext, accountId, id string, wf *model.Workflow) bool {
+	clean := true
 
 	autoManagedPrefix := fmt.Sprintf("wf-%s-", id)
 	for _, trigger := range wf.Definition.Triggers {
@@ -2113,6 +2315,7 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 			}
 			err := integrations.DeleteWorkflowWebhookTrigger(ctx, accountId, integrationID)
 			if err != nil {
+				clean = false
 				slog.Warn("failed to delete webhook trigger during deletion", "workflowID", id, "integrationID", integrationID, "error", err)
 			}
 		}
@@ -2124,7 +2327,10 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 	// Try to delete legacy
 	legacyScheduleID := "workflow-schedule-" + id
 	if _, err := scheduleClient.GetHandle(ctx.GetContext(), legacyScheduleID).Describe(ctx.GetContext()); err == nil {
-		_ = scheduleClient.GetHandle(ctx.GetContext(), legacyScheduleID).Delete(ctx.GetContext())
+		if err := scheduleClient.GetHandle(ctx.GetContext(), legacyScheduleID).Delete(ctx.GetContext()); err != nil {
+			clean = false
+			slog.Warn("failed to delete legacy schedule", "workflowID", id, "scheduleID", legacyScheduleID, "error", err)
+		}
 	}
 
 	// List ALL schedules for this workflow using Search Attribute and delete them.
@@ -2133,6 +2339,11 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, id),
 	})
 	if err != nil {
+		// The schedules cannot be enumerated, so the sequential probe below is a
+		// guess at how many exist — it stops at the first id that does not answer.
+		// That is good enough for a best-effort delete but never proof the workflow
+		// owns no schedules, so this is not a clean teardown either way.
+		clean = false
 		slog.Error("failed to list schedules for deletion cleanup", "workflowID", id, "error", err)
 		// Fallback to sequential cleanup if list fails
 		for i := 0; ; i++ {
@@ -2147,15 +2358,99 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 		for listView.HasNext() {
 			sEntry, err := listView.Next()
 			if err != nil {
+				clean = false
 				slog.Error("failed to iterate schedule list during deletion", "error", err)
 				break
 			}
 			// Double check if this schedule belongs to us (redundant if query works, but safe)
 			if strings.HasPrefix(sEntry.ID, "workflow-schedule-"+id) {
-				_ = scheduleClient.GetHandle(ctx.GetContext(), sEntry.ID).Delete(ctx.GetContext())
+				if err := scheduleClient.GetHandle(ctx.GetContext(), sEntry.ID).Delete(ctx.GetContext()); err != nil {
+					clean = false
+					slog.Warn("failed to delete schedule", "workflowID", id, "scheduleID", sEntry.ID, "error", err)
+				}
 			}
 		}
 	}
+
+	return clean
+}
+
+// rollbackTimeout bounds the detached cleanup in rollbackFailedCreate. Generous
+// enough for a schedule listing plus a delete against a degraded Temporal, short
+// enough that a hung cleanup cannot pin the request goroutine indefinitely.
+const rollbackTimeout = 30 * time.Second
+
+// rollbackFailedCreate undoes a create whose trigger-registration stage failed
+// after the workflow row was already committed (#35385). Without it the caller is
+// told the automation was not saved while it sits in their list half-configured,
+// and the retry is refused by the duplicate-name guard in CreateWorkflow.
+//
+// The row is removed only when the external teardown came back clean. When it did
+// not — which is the common case, because the thing that fails trigger
+// registration is usually the same Temporal/integrations outage that fails the
+// teardown — the row is deliberately left behind: it is visible in the automation
+// list and the user can delete it, whereas a surviving schedule with no row is
+// invisible and keeps firing.
+//
+// Always returns the original error. A rollback problem is logged, never
+// substituted for the failure the caller actually needs to see.
+func (s *Service) rollbackFailedCreate(ctx *security.RequestContext, accountId, storedId string, wf *model.Workflow, cause error) (string, string, error) {
+	// Detach from the request's context first. One way trigger registration fails
+	// is the request timing out or being cancelled — and on that same context every
+	// call below (schedule teardown, the audit write, the row delete) would fail
+	// instantly, making the rollback a guaranteed no-op precisely in the case it
+	// exists for. The replacement carries its own deadline so a hung cleanup cannot
+	// outlive the process.
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), rollbackTimeout)
+	defer cancel()
+	ctx = ctx.WithContext(rollbackCtx)
+
+	// Record the failure before removing the evidence of it. Nothing else on this
+	// path writes an audit event, so without this the rollback would erase the only
+	// durable trace that the create was attempted at all.
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutomationCreate, audit.EventActionCreate, audit.EventStatusFailure,
+		storedId, nil, workflowAuditSnapshot(wf),
+		map[string]any{"error": cause.Error()},
+	)
+
+	if !s.teardownWorkflowExternals(ctx, accountId, storedId, wf) {
+		slog.Error("create rollback: external teardown incomplete, keeping workflow row so it stays visible and deletable",
+			"workflowID", storedId, "accountID", accountId, "error", cause)
+		return storedId, "", cause
+	}
+
+	if err := s.store.Delete(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, storedId); err != nil {
+		slog.Error("create rollback: failed to delete workflow row after a failed create",
+			"workflowID", storedId, "accountID", accountId, "error", err, "cause", cause)
+		return storedId, "", cause
+	}
+
+	slog.Info("create rollback: removed workflow left behind by a failed trigger registration",
+		"workflowID", storedId, "accountID", accountId, "cause", cause)
+	return "", "", cause
+}
+
+func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
+		return common.ErrorUnauthorized("account not accessible")
+	}
+	// Retrieve the workflow to check for schedule triggers
+	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
+		}
+		return fmt.Errorf("failed to retrieve workflow: %w", err)
+	}
+
+	normalizeWebhookTriggers(id, wf)
+
+	// A user-intent delete stays best-effort: the row goes regardless of what the
+	// external teardown managed to remove, because the user asked for it gone.
+	_ = s.teardownWorkflowExternals(ctx, accountId, id, wf)
 
 	// Delete workflow from database
 	err = s.store.Delete(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
@@ -2192,7 +2487,8 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 }
 
 func (s *Service) UpdateWorkflowStatus(ctx *security.RequestContext, accountId, id string, status model.WorkflowStatus) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2280,7 +2576,7 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 	if accountId == "" || workflowId == "" {
 		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("tenantId, accountId, and workflowId are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2437,7 +2733,7 @@ func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, a
 	if accountId == "" || eventId == "" {
 		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("accountId and eventId are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -2512,7 +2808,7 @@ func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, a
 		for id := range idSet {
 			ids = append(ids, id)
 		}
-		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, accountId, ids)
+		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, []string{accountId}, ids)
 		if nameErr != nil {
 			ctx.GetLogger().Error("failed to get workflow names for executions", "error", nameErr)
 		} else {
@@ -2535,7 +2831,7 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	if accountId == "" || workflowId == "" || executionId == "" {
 		return nil, fmt.Errorf("tenantId, accountId, workflowId, executionId are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3000,7 +3296,8 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 		return common.ErrorBadRequest("status is required")
 	}
 
-	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountID) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3065,7 +3362,8 @@ func (s *Service) fetchApprovalIMContext(ctx context.Context, workflowID, runID,
 }
 
 func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3087,7 +3385,8 @@ func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountI
 }
 
 func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3127,7 +3426,8 @@ func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id stri
 }
 
 func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id string) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3219,6 +3519,9 @@ func convertSchemaPropertiesToMapAny(properties map[string]types.Property) map[s
 		}
 		if v.SubType != "" {
 			propMap["sub_type"] = v.SubType
+		}
+		if len(v.SubTypes) > 0 {
+			propMap["sub_types"] = v.SubTypes
 		}
 		if len(v.Options) > 0 {
 			propMap["options"] = v.Options
@@ -3322,6 +3625,7 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 		ctx.GetSecurityContext().GetTenantId(),
 		accountId,
 		"", // workflowID — isolated run, not tied to a workflow execution
+		"", // eventID — isolated run, no triggering event
 		ctx.GetSecurityContext().GetUserId(),
 		"", // workflowName — empty so the tracing footer/link is omitted
 		"", // userDisplayName
@@ -3336,7 +3640,12 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 }
 
 func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType string, params map[string]any) (any, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	// Built-in account role, or a dynamic-RBAC workflows:Execute grant (Write
+	// covers it too). A pure custom-role holder has no built-in account role, so
+	// the role check alone would 401 the Task Runner the gateway already admitted.
+	sc := ctx.GetSecurityContext()
+	if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canRunWorkflows(sc, accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3398,7 +3707,7 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 }
 
 func (s *Service) ListMCPTools(ctx *security.RequestContext, accountId string, params map[string]any) (any, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3413,7 +3722,8 @@ func (s *Service) ListMCPTools(ctx *security.RequestContext, accountId string, p
 }
 
 func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
+		!canInspectWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -3480,6 +3790,54 @@ func (s *Service) ResolveTemporalWorkflowID(reqCtx *security.RequestContext, acc
 	return "", common.ErrorNotFound(fmt.Sprintf("workflow execution not found for definition ID '%s' and run ID '%s'", workflowDefinitionID, runID))
 }
 
+// formatTemporalFailure renders a Temporal failure into the single-line
+// message shape the executions panel already displays for activity failures.
+func formatTemporalFailure(failure *failurepb.Failure, fallback string) string {
+	if failure == nil {
+		return fallback
+	}
+	var sb strings.Builder
+	sb.WriteString(failure.GetMessage())
+	if cause := failure.GetCause(); cause != nil {
+		if causeMsg := cause.GetMessage(); causeMsg != "" {
+			sb.WriteString(" | Cause: ")
+			sb.WriteString(causeMsg)
+		}
+	}
+	if stack := failure.GetStackTrace(); stack != "" {
+		sb.WriteString(" | StackTrace: ")
+		sb.WriteString(stack)
+	}
+	return sb.String()
+}
+
+// resolveChildParentTaskID recovers the parent task ID a child workflow was
+// spawned for. The ID lives in the child's Memo (set by the executor); the
+// Workflow ID is parsed as a fallback for runs started before the memo existed.
+func (s *Service) resolveChildParentTaskID(ctx *security.RequestContext, childWorkflowID, childRunID string) (string, bool) {
+	childDescribe, err := s.temporalClient.DescribeWorkflowExecution(ctx.GetContext(), childWorkflowID, childRunID)
+	if err == nil {
+		if memo, ok := childDescribe.GetWorkflowExecutionInfo().GetMemo().GetFields()["parent_task_id"]; ok {
+			var parentTaskID string
+			if err := s.dataConverter.FromPayload(memo, &parentTaskID); err == nil {
+				return parentTaskID, true
+			}
+		}
+	}
+
+	parts := strings.Split(childWorkflowID, "/")
+	if len(parts) > 0 {
+		compositeID := parts[len(parts)-1]
+		if len(compositeID) > 74 {
+			remaining := compositeID[37:]
+			if len(remaining) > 37 {
+				return remaining[:len(remaining)-37], true
+			}
+		}
+	}
+	return "", false
+}
+
 func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID string, historyIterator client.HistoryEventIterator, wfDef model.WorkflowDefinition) (*model.WorkflowExecutionDetails, error) {
 	logger := ctx.GetLogger()
 	workflowDetails := &model.WorkflowExecutionDetails{
@@ -3515,6 +3873,59 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		}
 	}
 	buildDefinedTaskIDs(wfDef.Tasks)
+
+	// Steps selected by a case-routing task (core.switch) do not run under their
+	// own ID: the executor hydrates them into the switch's inline child workflow
+	// as "{switchID}-{branchID}" (executor.go, originalToRenamedID). History
+	// events therefore carry the renamed ID, which matches no node in the
+	// definition. switchBranchOwner maps branchID -> switchID so those runtime
+	// IDs can be resolved back to the graph node the user drew.
+	// branchIDByRuntimeID is the same relation keyed by the runtime ID
+	// ("{switchID}-{branchID}") so resolution is a single map lookup.
+	switchBranchOwner := make(map[string]string)
+	branchIDByRuntimeID := make(map[string]string)
+	var buildSwitchBranchOwners func(tasks []model.Task)
+	buildSwitchBranchOwners = func(tasks []model.Task) {
+		own := func(switchID, branchID string) {
+			if branchID == "" {
+				return
+			}
+			switchBranchOwner[branchID] = switchID
+			branchIDByRuntimeID[switchID+"-"+branchID] = branchID
+		}
+		for _, task := range tasks {
+			if cases, ok := task.Params["cases"].([]any); ok {
+				for _, c := range cases {
+					cm, ok := c.(map[string]any)
+					if !ok {
+						continue
+					}
+					next, _ := cm["next"].(string)
+					own(task.ID, next)
+				}
+			}
+			defaultNext, _ := task.Params["default_next"].(string)
+			own(task.ID, defaultNext)
+			if len(task.Tasks) > 0 {
+				buildSwitchBranchOwners(task.Tasks)
+			}
+		}
+	}
+	buildSwitchBranchOwners(wfDef.Tasks)
+
+	// resolveGraphTaskID maps a runtime task ID back to the definition node it
+	// belongs to. Only "{switchID}-{branchID}" pairs that the definition actually
+	// declares are rewritten, so a task whose own ID contains a dash is left
+	// alone. Returns the input unchanged when it is already a defined ID.
+	resolveGraphTaskID := func(runtimeID string) string {
+		if _, ok := definedTaskIDs[runtimeID]; ok {
+			return runtimeID
+		}
+		if branchID, ok := branchIDByRuntimeID[runtimeID]; ok {
+			return branchID
+		}
+		return runtimeID
+	}
 
 	for historyIterator.HasNext() {
 		event, err := historyIterator.Next()
@@ -3723,12 +4134,18 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			}
 
 			if found {
-				if _, ok := definedTaskIDs[parentTaskID]; ok {
+				// A switch-selected branch spawns its child workflow under the
+				// hydrated ID "{switchID}-{branchID}", which is absent from the
+				// definition. Resolve it so the branch is kept (it used to be
+				// dropped here, leaving the step statusless) and so its Type and
+				// Params are read from the node it belongs to.
+				graphTaskID := resolveGraphTaskID(parentTaskID)
+				if _, ok := definedTaskIDs[graphTaskID]; ok {
 					// Prefer the real task Type/Params from the definition so the UI can render
 					// a typed icon, schema-aware input panel, and the right detail label.
 					// Falls back to the legacy "uses" placeholder when the parent task
 					// isn't found in the definition (e.g. mid-edit workflow).
-					defTask, hasDef := definedTaskByID[parentTaskID]
+					defTask, hasDef := definedTaskByID[graphTaskID]
 					taskType := "uses"
 					if hasDef && defTask.Type != "" {
 						taskType = defTask.Type
@@ -3886,6 +4303,37 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 					}
 				}
 			}
+
+		case enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED, enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_TIMED_OUT:
+			// Without these the step that spawned a child workflow (a branch of a
+			// switch, or any core.call-workflow) stays SCHEDULED forever once the
+			// child fails — the run view then shows a completed workflow with a
+			// step stuck mid-flight.
+			var childWorkflowId, childRunId, errMsg string
+			status := model.TaskStatusFailed
+			if event.GetEventType() == enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_FAILED {
+				attrs := event.GetChildWorkflowExecutionFailedEventAttributes()
+				childWorkflowId = attrs.GetWorkflowExecution().GetWorkflowId()
+				childRunId = attrs.GetWorkflowExecution().GetRunId()
+				errMsg = formatTemporalFailure(attrs.GetFailure(), "Child workflow failed (no details)")
+			} else {
+				attrs := event.GetChildWorkflowExecutionTimedOutEventAttributes()
+				childWorkflowId = attrs.GetWorkflowExecution().GetWorkflowId()
+				childRunId = attrs.GetWorkflowExecution().GetRunId()
+				status = model.TaskStatusTimedOut
+				errMsg = "Child workflow timed out"
+			}
+
+			parentTaskID, found := s.resolveChildParentTaskID(ctx, childWorkflowId, childRunId)
+			if !found {
+				logger.Error("Failed to resolve parent task ID for failed child workflow", "workflowID", childWorkflowId)
+				continue
+			}
+			if parentTask, ok := taskMap[parentTaskID]; ok {
+				parentTask.Status = status
+				parentTask.EndTime = timestampPBToTimestamp(event.GetEventTime())
+				parentTask.Error = errMsg
+			}
 		}
 	}
 
@@ -3944,6 +4392,9 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		tasks = append(tasks, *task)
 	}
 
+	// Redact secret values from task inputs before returning to API
+	RedactSecretsFromTasks(tasks, wfDef)
+
 	// Virtualize container tasks. We detect containers by parameter shape so any
 	// task adopting these conventions is handled uniformly:
 	//   - `Tasks` / `params["tasks"]` — task lists embedded directly (group, foreach).
@@ -3955,6 +4406,12 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 	//                                    already populated and is folded back into the
 	//                                    synthesized container below.
 	containerTasks := make(map[string]bool)
+	// Case-routing containers are handled differently from task-list containers:
+	// their branches are nodes the user drew on the canvas, so they are hoisted
+	// back to the top level under their original ID instead of being nested as
+	// children of the switch. That is what lets the run view give the selected
+	// branch its own status.
+	caseRoutingContainers := make(map[string]bool)
 	for _, t := range wfDef.Tasks {
 		if len(t.Tasks) > 0 {
 			containerTasks[t.ID] = true
@@ -3962,6 +4419,7 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			containerTasks[t.ID] = true
 		} else if _, ok := t.Params["cases"]; ok {
 			containerTasks[t.ID] = true
+			caseRoutingContainers[t.ID] = true
 		}
 	}
 
@@ -3981,10 +4439,21 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 				continue
 			}
 			matchedContainer := ""
-			// Find if task belongs to any container
-			for containerID := range containerTasks {
-				prefix := containerID + "-"
-				if strings.HasPrefix(t.ID, prefix) {
+			// A task the definition declares under this exact ID ran in its own
+			// right — never treat it as a container child, even when its name
+			// happens to start with a container's ID ("dispatch-report").
+			if _, isDefined := definedTaskIDs[t.ID]; !isDefined {
+				// Find if task belongs to any container
+				for containerID := range containerTasks {
+					prefix := containerID + "-"
+					if !strings.HasPrefix(t.ID, prefix) {
+						continue
+					}
+					// Case-routing containers only own the branches they declare,
+					// so an unrelated "{switchID}-…" task is not adopted.
+					if caseRoutingContainers[containerID] && switchBranchOwner[strings.TrimPrefix(t.ID, prefix)] != containerID {
+						continue
+					}
 					// Check if it's the longest match (handle nested naming if ambiguous)
 					if len(containerID) > len(matchedContainer) {
 						matchedContainer = containerID
@@ -3995,7 +4464,14 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 			if matchedContainer != "" {
 				child := t
 				child.ID = strings.TrimPrefix(t.ID, matchedContainer+"-")
-				containerChildren[matchedContainer] = append(containerChildren[matchedContainer], child)
+				if caseRoutingContainers[matchedContainer] {
+					// Branch selected by a switch: keep it at the top level under the
+					// graph node's own ID so the run view and the API report its real
+					// status instead of leaving the node blank.
+					newTasks = append(newTasks, child)
+				} else {
+					containerChildren[matchedContainer] = append(containerChildren[matchedContainer], child)
+				}
 			} else {
 				newTasks = append(newTasks, t)
 			}
@@ -4180,6 +4656,60 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		tasks = newTasks
 	}
 
+	// Branches a switch did NOT take never reach Temporal, so history carries no
+	// event for them and they would otherwise be indistinguishable from a step
+	// that ran without reporting. Derive their outcome from the switch's own
+	// `routed_to` output and stamp them SKIPPED.
+	if len(switchBranchOwner) > 0 {
+		present := make(map[string]bool, len(tasks))
+		taskByID := make(map[string]model.TaskExecutionDetails, len(tasks))
+		for _, t := range tasks {
+			present[t.ID] = true
+			taskByID[t.ID] = t
+		}
+
+		var skippedIDs []string
+		for branchID, switchID := range switchBranchOwner {
+			if present[branchID] {
+				continue
+			}
+			switchTask, ok := taskByID[switchID]
+			if !ok || switchTask.Status != model.TaskStatusCompleted {
+				continue // switch never resolved — nothing to infer from
+			}
+			out, ok := switchTask.Output.(map[string]any)
+			if !ok {
+				continue
+			}
+			routed, ok := out["routed_to"].([]any)
+			if !ok {
+				continue // legacy switch shape (embedded_tasks) — leave as-is
+			}
+			wasRouted := false
+			for _, r := range routed {
+				if id, ok := r.(string); ok && id == branchID {
+					wasRouted = true
+					break
+				}
+			}
+			if wasRouted {
+				continue // selected branch missing for some other reason; don't mislabel
+			}
+			skippedIDs = append(skippedIDs, branchID)
+		}
+
+		sort.Strings(skippedIDs) // map iteration order would otherwise vary per call
+		for _, branchID := range skippedIDs {
+			defTask := definedTaskByID[branchID]
+			tasks = append(tasks, model.TaskExecutionDetails{
+				ID:     branchID,
+				Type:   defTask.Type,
+				Status: model.TaskStatusSkipped,
+				Input:  defTask.Params,
+			})
+		}
+	}
+
 	workflowDetails.Tasks = tasks
 
 	var sanitizeTaskExecutionDetails func([]model.TaskExecutionDetails)
@@ -4201,13 +4731,14 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 
 // CountWorkflows counts workflows with optional filters for status and trigger type.
 func (s *Service) CountWorkflows(ctx *security.RequestContext, req model.WorkflowCountRequest) (model.WorkflowCountResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
-		return model.WorkflowCountResponse{}, common.ErrorUnauthorized("account not accessible")
+	accountIDs, err := ResolveReadableAccounts(ctx, req.AccountIDs)
+	if err != nil {
+		return model.WorkflowCountResponse{}, err
 	}
 
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
-	count, err := s.store.CountWorkflows(ctx.GetContext(), tenantID, req.AccountID, req.Status, req.TriggerType)
+	count, err := s.store.CountWorkflows(ctx.GetContext(), tenantID, accountIDs, req.Status, req.TriggerType)
 	if err != nil {
 		return model.WorkflowCountResponse{}, fmt.Errorf("failed to count workflows: %w", err)
 	}
@@ -4217,7 +4748,7 @@ func (s *Service) CountWorkflows(ctx *security.RequestContext, req model.Workflo
 
 // CountWorkflowExecutions counts workflow executions with optional filters using Temporal's CountWorkflow API.
 func (s *Service) CountWorkflowExecutions(ctx *security.RequestContext, req model.WorkflowExecutionCountRequest) (model.WorkflowExecutionCountResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountID, "workflows") {
 		return model.WorkflowExecutionCountResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -4293,7 +4824,7 @@ func (s *Service) ListWorkflowVersions(ctx *security.RequestContext, accountId, 
 	if accountId == "" || id == "" {
 		return nil, fmt.Errorf("accountId and id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if _, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err != nil {
@@ -4310,7 +4841,7 @@ func (s *Service) GetWorkflowVersion(ctx *security.RequestContext, accountId, id
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if _, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err != nil {
@@ -4337,7 +4868,8 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return model.Workflow{}, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return model.Workflow{}, common.ErrorUnauthorized("account not accessible")
 	}
 
@@ -4361,6 +4893,20 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	// updateWorkflowInternal handles updated_by, validation, webhook side-effects.
 	toApply := *current
 	toApply.Definition = target.Definition
+
+	// Drop the AI-invocation grant if the version being restored cannot carry it.
+	// Every version saved before this feature existed lacks an llm_description, so
+	// carrying the flag through would fail struct validation and make rollback
+	// impossible for any automation that has since been opted in — the common case,
+	// not an edge one. Dropping it matches what an AI edit and the settings UI both
+	// do when the preconditions stop holding: the automation is genuinely no longer
+	// describable to the assistant, so the grant cannot stand.
+	if toApply.AIInvocable && !toApply.Definition.SupportsAIInvocation() {
+		toApply.AIInvocable = false
+		ctx.GetLogger().Info("restore dropped AI invocation: restored version cannot support it",
+			"workflow_id", id, "account_id", accountId, "version_number", versionNumber)
+	}
+
 	updated, err := s.updateWorkflowInternal(ctx, accountId, id, toApply)
 	if err != nil {
 		return updated, err
@@ -4407,7 +4953,8 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 	if accountId == "" || id == "" {
 		return nil, fmt.Errorf("accountId and id are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if status == "" {
@@ -4497,7 +5044,8 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	target, err := s.store.GetWorkflowVersion(ctx.GetContext(), id, versionNumber)
@@ -4547,7 +5095,8 @@ func (s *Service) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, ac
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	if _, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err != nil {
@@ -4592,7 +5141,8 @@ func (s *Service) UpdateWorkflowVersionStatus(ctx *security.RequestContext, acco
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return nil, fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
 	validStatuses := map[model.WorkflowStatus]struct{}{
@@ -4650,7 +5200,8 @@ func (s *Service) DeleteWorkflowVersion(ctx *security.RequestContext, accountId,
 	if accountId == "" || id == "" || versionNumber <= 0 {
 		return fmt.Errorf("accountId, id, version_number are required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		!canWriteWorkflows(ctx.GetSecurityContext(), accountId) {
 		return common.ErrorUnauthorized("account not accessible")
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()

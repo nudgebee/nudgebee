@@ -37,6 +37,29 @@
   "hooks": {...}                      // *Hooks (optional)
 }
 
+## TRIGGER STRUCTURE:
+{
+  "type": "string (required)",        // one of: manual, schedule, webhook, event, optimization
+  "params": {},                       // map[string]any — EVERY trigger setting lives in here
+  "layout": {"x": 0, "y": 0}          // optional canvas position
+}
+"type" and "params" are the ONLY keys you may write on a trigger. A trigger setting placed
+at the top level instead of inside "params" is DISCARDED when the definition is decoded,
+which produces a trigger that can never fire. The "Requires params:" lists below name the
+keys that go INSIDE "params" — they are never trigger-level keys.
+
+  WRONG: {"type": "webhook", "integration_name": "my-hook", "filter": "..."}
+  RIGHT: {"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}
+
+  WRONG: {"type": "schedule", "cron": "0 9 * * *"}
+  RIGHT: {"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}
+
+  WRONG: {"type": "event", "event_type": "alert"}
+  RIGHT: {"type": "event", "params": {"event_type": "alert"}}
+
+"manual" is the ONLY type that takes no params — {"type": "manual"} is complete as written.
+Do not generalise from it to the other four types.
+
 ## TRIGGER TYPES:
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
 - "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.

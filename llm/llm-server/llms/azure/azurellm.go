@@ -136,13 +136,18 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 
 		chatMsgs = append(chatMsgs, msg)
 	}
+	var tempPtr *float64
+	if opts.Temperature >= 0 {
+		t := opts.Temperature
+		tempPtr = &t
+	}
 	req := &azureclient.ChatRequest{
 		Model:            o.client.Model,
 		StopWords:        opts.StopWords,
 		Messages:         chatMsgs,
 		Adapter:          o.client.Adapter,
 		StreamingFunc:    opts.StreamingFunc,
-		Temperature:      opts.Temperature,
+		Temperature:      tempPtr,
 		MaxTokens:        opts.MaxTokens,
 		N:                opts.N,
 		FrequencyPenalty: opts.FrequencyPenalty,

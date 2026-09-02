@@ -1,7 +1,10 @@
 package storage
 
 import (
+	"context"
 	"testing"
+
+	"nudgebee/runbook/internal/model"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -93,4 +96,45 @@ func TestBuildOptimizationFilter_EscapesSingleQuotes(t *testing.T) {
 	input := `{"categories":["it's a test","normal"]}`
 	expected := "{{ event.category in ['it\\'s a test', 'normal'] }}"
 	assert.Equal(t, expected, buildOptimizationFilter(input))
+}
+
+// List and CountWorkflows now take a set of accounts (the Automations listing is
+// tenant-level with an account filter). An empty set must fail loudly: it would
+// otherwise become `account_id = ANY('{}')`, which matches nothing but still
+// costs a scan, and would report "no automations" for what is really a bug in
+// the caller's scope resolution.
+func TestWorkflowDaoList_RejectsEmptyScope(t *testing.T) {
+	dao := &WorkflowDao{}
+
+	_, _, err := dao.List(context.Background(), "t1", nil, model.ListWorkflowRequest{})
+	assert.Error(t, err)
+
+	_, _, err = dao.List(context.Background(), "", []string{"acct-1"}, model.ListWorkflowRequest{})
+	assert.Error(t, err)
+}
+
+func TestWorkflowDaoCountWorkflows_RejectsEmptyScope(t *testing.T) {
+	dao := &WorkflowDao{}
+
+	_, err := dao.CountWorkflows(context.Background(), "t1", nil, "", "")
+	assert.Error(t, err)
+
+	_, err = dao.CountWorkflows(context.Background(), "", []string{"acct-1"}, "", "")
+	assert.Error(t, err)
+}
+
+// A dry-run execution stamps "dry-run-<uuid>" into the nb_workflow_id search
+// attribute, so the ids reaching GetWorkflowNames are not all UUIDs. Passing one
+// through to `id = ANY($3::uuid[])` failed the whole statement with "invalid
+// input syntax for type uuid", which blanked the automation name on every row of
+// the executions dashboard. They must be dropped before the query runs — the nil
+// db here is the assertion: reaching QueryContext would panic.
+func TestWorkflowDaoGetWorkflowNames_DropsNonUUIDIDs(t *testing.T) {
+	dao := &WorkflowDao{}
+
+	names, err := dao.GetWorkflowNames(context.Background(), "t1", []string{"acct-1"},
+		[]string{"dry-run-98091125-f8fb-4681-ad83-b86f7be4f370", "inline-group-1", ""})
+
+	assert.NoError(t, err)
+	assert.Empty(t, names)
 }

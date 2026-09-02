@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -48,16 +49,20 @@ func traceAgentV2Enabled() bool {
 func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent services_server.ObservabilityProvider) core.NBAgent {
 	var agentsToTry []core.NBAgent
 
-	provider := strings.ToLower(primaryAgent.Provider)
+	provider := strings.ToLower(strings.TrimSpace(primaryAgent.Provider))
 	isClickhouse := provider == "clickhouse" || provider == "otel_clickhouse" || provider == "last9"
 	isDatadog := provider == "datadog"
+	// Cloud-only GCP/Azure/AWS accounts (no first-class trace provider) read traces
+	// via the cloud CLI/REST API, not the canonical services-server path — so
+	// they stay on their dedicated agents like ClickHouse/Datadog.
+	isCloudCLI := provider == "gcp" || provider == "azure" || provider == "aws"
 
 	// Integration-agnostic (v2) routing: when enabled, every where-clause-capable
 	// provider goes through the canonical TracesDefaultAgentV2 (llm-server emits one
 	// canonical query; services-server translates it per provider). ClickHouse (raw-SQL
 	// aggregations) and Datadog (facet syntax) can't be expressed canonically, so they
 	// stay on their dedicated agents. Flag off → the v1 switch below, byte-identical.
-	if traceAgentV2Enabled() && !isClickhouse && !isDatadog {
+	if traceAgentV2Enabled() && !isClickhouse && !isDatadog && !isCloudCLI {
 		return &fallbackTracesAgent{
 			accountId: accountId,
 			agents:    []core.NBAgent{newTracesDefaultAgentV2(accountId, primaryAgent)},
@@ -79,6 +84,17 @@ func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent
 		agentsToTry = append(agentsToTry, TracesChronosphereAgent{accountId: accountId})
 	case "datadog":
 		agentsToTry = append(agentsToTry, NewDatadogTracesAgent(accountId))
+	case "aws":
+		// Cloud-only AWS account — read X-Ray traces via AWS CLI.
+		agentsToTry = append(agentsToTry, aws.NewAwsTracesAgent(accountId))
+	case "gcp":
+		// Cloud-only GCP account — read Cloud Trace via the v1 REST API (gcloud
+		// token + curl). GetTraceProvider resolves this from the account's cloud
+		// type (see cloudFallbackProvider).
+		agentsToTry = append(agentsToTry, newGcpTracesAgent(accountId))
+	case "azure":
+		// Cloud-only Azure account — read distributed traces via Application Insights.
+		agentsToTry = append(agentsToTry, newAzureTracesAgent(accountId))
 	default:
 		// Any provider without a dedicated agent (e.g. Dynatrace) falls through to
 		// the generic default agent, which sends the unified JSON query schema to
@@ -396,13 +412,11 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 		}
 		shouldSave := false
 
-		if config.Config.LlmServerShellToolEnabled {
-			if outputFile != "" {
-				shouldSave = true
-			} else if len(traceData) > 2000 {
-				shouldSave = true
-				outputFile = fmt.Sprintf("traces_%d.txt", time.Now().UnixNano())
-			}
+		if outputFile != "" {
+			shouldSave = true
+		} else if len(traceData) > 2000 {
+			shouldSave = true
+			outputFile = fmt.Sprintf("traces_%d.txt", time.Now().UnixNano())
 		}
 
 		if shouldSave {

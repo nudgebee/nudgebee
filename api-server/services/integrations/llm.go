@@ -32,7 +32,7 @@ func IsLLMSecretFieldName(name string) bool {
 // llmProviders is the set of accepted llm_provider / llm_provider_summary_agent
 // values. It MUST stay in sync with the Enum declared in ConfigSchema; the
 // drift-guard test in llm_test.go enforces that.
-var llmProviders = []string{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "sagemaker", "vertexai"}
+var llmProviders = []string{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"}
 
 // providerRequiredFields returns the base field names that must be non-empty
 // for a given provider. These mirror the RequiredWhen contracts declared in
@@ -48,6 +48,11 @@ func providerRequiredFields(provider string) []string {
 		return []string{"llm_provider_api_key", "llm_provider_api_endpoint", "llm_provider_api_version"}
 	case "anthropic", "googleai", "huggingface", "openai", "vertexai":
 		return []string{"llm_provider_api_key"}
+	case "custom":
+		// Unlike "openai" there is no default base URL to fall back on, so a
+		// missing endpoint would silently send the request to api.openai.com
+		// carrying someone else's key.
+		return []string{"llm_provider_api_key", "llm_provider_api_endpoint"}
 	default:
 		return nil
 	}
@@ -67,6 +72,8 @@ func providerRequiredSummaryFields(provider string) []string {
 		return []string{"llm_provider_api_key_summary_agent", "llm_provider_api_endpoint_summary_agent", "llm_provider_api_version_summary_agent"}
 	case "anthropic", "googleai", "huggingface", "openai", "vertexai":
 		return []string{"llm_provider_api_key_summary_agent"}
+	case "custom":
+		return []string{"llm_provider_api_key_summary_agent", "llm_provider_api_endpoint_summary_agent"}
 	default:
 		return nil
 	}
@@ -112,10 +119,19 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				AutoGenerateFunc: "",
 				Priority:         21,
 			},
+			core.DefaultLLMProvider: {
+				Type: core.ToolSchemaTypeBoolean,
+				// An account may have several enabled LLM configs; this marks the
+				// one used when a request doesn't pin a specific config.
+				Description:      "Make this the default LLM config for the selected accounts",
+				Default:          false,
+				AutoGenerateFunc: "",
+				Priority:         23,
+			},
 			"llm_provider": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Name of the LLM provider (e.g., openai, bedrock, sagemaker, huggingface, azure, googleai, vertexai, anthropic).",
-				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "sagemaker", "vertexai"},
+				Description: "Name of the LLM provider. Use custom for any service exposing the OpenAI Chat Completions API at its own base URL (OpenRouter, vLLM, Ollama, Groq, Together, LiteLLM); it requires llm_provider_api_endpoint including the version segment, e.g. https://openrouter.ai/api/v1.",
+				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"},
 				Priority:    20,
 			},
 			"llm_model_name": {
@@ -138,7 +154,60 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				// working; new edits auto-upgrade to encrypted.
 				IsEncrypted: true,
 				RequiredWhen: map[string]any{
-					"llm_provider": []string{"anthropic", "azure", "googleai", "huggingface", "openai", "vertexai"},
+					"llm_provider":  []string{"anthropic", "azure", "googleai", "huggingface", "openai", "custom", "vertexai"},
+					"llm_auth_type": []string{"api_key"},
+				},
+			},
+			"llm_auth_type": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "How to authenticate with the LLM provider. api_key sends the static API key; oauth_client_credentials fetches a bearer token from an OAuth2 token endpoint and refreshes it automatically (for corporate AI gateways that reject static keys).",
+				Enum:        []any{"api_key", "oauth_client_credentials"},
+				Default:     "api_key",
+				Priority:    18,
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"custom"},
+				},
+			},
+			"llm_oauth_token_url": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "OAuth2 token endpoint URL (e.g. https://api.example.com/oauth2/token). The client-credentials grant is POSTed here to obtain the bearer token.",
+				Priority:    17,
+				RequiredWhen: map[string]any{
+					"llm_auth_type": []string{"oauth_client_credentials"},
+				},
+			},
+			"llm_oauth_client_id": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "OAuth2 client ID for the client-credentials grant.",
+				Priority:    17,
+				RequiredWhen: map[string]any{
+					"llm_auth_type": []string{"oauth_client_credentials"},
+				},
+			},
+			"llm_oauth_client_secret": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "OAuth2 client secret for the client-credentials grant.",
+				Priority:    17,
+				// IsEncrypted=true — see llm_provider_api_key above for rationale.
+				IsEncrypted: true,
+				RequiredWhen: map[string]any{
+					"llm_auth_type": []string{"oauth_client_credentials"},
+				},
+			},
+			"llm_oauth_scope": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "OAuth2 scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.",
+				Priority:    16,
+				ShowWhen: map[string]any{
+					"llm_auth_type": []string{"oauth_client_credentials"},
+				},
+			},
+			"llm_extra_headers": {
+				Type:        core.ToolSchemaTypeString,
+				Description: `Extra HTTP headers sent with every LLM request, as a JSON object (e.g. {"projectId": "abc-123"}). Authorization and api-key are managed by the auth settings and cannot be set here. Optional.`,
+				Priority:    16,
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"custom"},
 				},
 			},
 			"llm_provider_api_endpoint": {
@@ -146,18 +215,21 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Description: "Custom API endpoint for the LLM provider.",
 				Priority:    17,
 				RequiredWhen: map[string]any{
-					"llm_provider": []string{"azure", "sagemaker"},
+					"llm_provider": []string{"azure", "custom", "sagemaker"},
 				},
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"azure", "openai", "sagemaker"},
+					"llm_provider": []string{"azure", "openai", "custom", "sagemaker"},
 				},
 			},
 			"llm_provider_api_version": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "API version of the LLM provider to be used. Optional, used for version-specific compatibility.",
+				Description: "API version of the LLM provider. Required for azure; for custom it is the api-version query parameter Azure-shaped gateways expect (e.g. 2025-01-01-preview).",
 				Priority:    16,
 				RequiredWhen: map[string]any{
 					"llm_provider": []string{"azure"},
+				},
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"azure", "custom"},
 				},
 			},
 			"llm_provider_region": {
@@ -199,10 +271,18 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 			},
 			"llm_provider_api_type": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Type of the API. Optional.",
+				Description: "Type of the API. Optional. Set to \"azure\" or \"azure_ad\" for Azure-shaped gateways (URL becomes /openai/deployments/{deployment}/chat/completions?api-version=...).",
 				Priority:    14,
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"openai"},
+					"llm_provider": []string{"openai", "custom"},
+				},
+			},
+			"llm_provider_deployment_name": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Azure-shaped gateways only: the deployment segment in the URL when it differs from the model name (e.g. deployment \"gpt-5.6-terra_2026-07-09\" serving model \"gpt-5.6-terra\"). The request body still carries the model name. Optional.",
+				Priority:    14,
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"custom"},
 				},
 			},
 			"llm_provider_adapter_id": {
@@ -235,7 +315,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 			"llm_provider_summary_agent": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of the LLM provider to be used specifically for summarization tasks.",
-				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "sagemaker", "vertexai"},
+				Enum:        []any{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"},
 				Priority:    9,
 				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,
@@ -274,7 +354,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Priority:    6,
 				RequiredWhen: map[string]any{
 					"add_model_for_summarization": true,
-					"llm_provider_summary_agent":  []string{"azure", "sagemaker"},
+					"llm_provider_summary_agent":  []string{"azure", "custom", "sagemaker"},
 				},
 				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,
@@ -355,12 +435,59 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 		errs = append(errs, fmt.Errorf("llm_model_name is required"))
 	}
 
+	// Authentication mode: api_key (default when unset) or OAuth2 client
+	// credentials. OAuth replaces the static API key, so the key requirement
+	// is skipped in that mode; llm-server's llmAuthTransport presents the
+	// bearer token instead.
+	authType := cfg["llm_auth_type"]
+	oauthMode := authType == "oauth_client_credentials"
+	if authType != "" && authType != "api_key" && !oauthMode {
+		errs = append(errs, fmt.Errorf("llm_auth_type %q is invalid; must be api_key or oauth_client_credentials", authType))
+	}
+	if oauthMode {
+		if provider != "" && provider != "custom" {
+			errs = append(errs, fmt.Errorf("llm_auth_type oauth_client_credentials is only supported for the custom provider"))
+		}
+		for _, f := range []string{"llm_oauth_token_url", "llm_oauth_client_id", "llm_oauth_client_secret"} {
+			if cfg[f] == "" {
+				errs = append(errs, fmt.Errorf("%s is required when llm_auth_type is oauth_client_credentials", f))
+			}
+		}
+		if tu := cfg["llm_oauth_token_url"]; tu != "" && !isValidHTTPURL(tu) {
+			errs = append(errs, fmt.Errorf("llm_oauth_token_url %q must be a valid http(s) URL", tu))
+		}
+	}
+
+	// Extra headers: a JSON object of string values. Auth-bearing headers are
+	// rejected here (not just silently dropped by llm-server) so the user
+	// learns at save time instead of debugging a header that never arrives.
+	if eh := cfg["llm_extra_headers"]; eh != "" {
+		// llm-server only attaches the header transport on the custom
+		// provider, so reject rather than silently ignore elsewhere.
+		if provider != "" && provider != "custom" {
+			errs = append(errs, fmt.Errorf("llm_extra_headers is only supported for the custom provider"))
+		}
+		headers := map[string]string{}
+		if err := json.Unmarshal([]byte(eh), &headers); err != nil {
+			errs = append(errs, fmt.Errorf("llm_extra_headers must be a JSON object of string values"))
+		} else {
+			for k := range headers {
+				if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "api-key") {
+					errs = append(errs, fmt.Errorf("llm_extra_headers must not set %q; authentication headers are managed by the auth settings", k))
+				}
+			}
+		}
+	}
+
 	// Provider enum + provider-specific contracts.
 	if provider != "" {
 		if !isLLMProvider(provider) {
 			errs = append(errs, fmt.Errorf("llm_provider %q is invalid; must be one of %s", provider, strings.Join(llmProviders, ", ")))
 		} else {
 			for _, f := range providerRequiredFields(provider) {
+				if f == "llm_provider_api_key" && oauthMode {
+					continue
+				}
 				if cfg[f] == "" {
 					errs = append(errs, fmt.Errorf("%s is required when llm_provider is %q", f, provider))
 				}

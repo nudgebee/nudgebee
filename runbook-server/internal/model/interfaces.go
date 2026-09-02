@@ -19,7 +19,7 @@ import (
 //     edits during a rollback.
 type WorkflowStore interface {
 	CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf Workflow) (workflowID string, version *WorkflowVersion, err error)
-	List(ctx context.Context, tenantID, accountID string, request ListWorkflowRequest) ([]Workflow, int, error)
+	List(ctx context.Context, tenantID string, accountIDs []string, request ListWorkflowRequest) ([]Workflow, int, error)
 	Find(ctx context.Context, tenantID, accountID, id string) (*Workflow, error)
 	FindByName(ctx context.Context, tenantID, accountID, name string) (*Workflow, error)
 	FindByIntegrationName(ctx context.Context, tenantID, accountID, integrationName string) (*Workflow, error)
@@ -35,6 +35,13 @@ type WorkflowStore interface {
 	// `{{ ... }}`) can't be matched statically and are returned only when the
 	// literal name appears in the field.
 	ListCallers(ctx context.Context, tenantID, accountID, calleeName string) ([]WorkflowCaller, error)
+	// ListAIInvocableWorkflows returns the automations an AI caller is allowed to
+	// run, paired with their LIVE version definition. It reads the live snapshot
+	// rather than workflows.definition (the draft) on purpose: llm_description is
+	// versioned content, so the AI must see what is published, not a half-edited
+	// draft. Callers still filter on the manual-trigger requirement, which lives
+	// inside the returned definition.
+	ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]AIInvocableWorkflow, error)
 	Update(ctx context.Context, tenantID, accountID, id string, wf Workflow) error
 	// UpdateInternal persists a workflow's definition WITHOUT touching the audit
 	// columns (updated_by / updated_at). Use for internal touch-ups that are not
@@ -51,8 +58,17 @@ type WorkflowStore interface {
 	SetState(ctx context.Context, workflowID string, updates []WorkflowStateUpdate) error
 	DeleteExpiredState(ctx context.Context, limit int) (int64, error)
 	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error
-	CountWorkflows(ctx context.Context, tenantID, accountID string, status WorkflowStatus, triggerType string) (int64, error)
-	GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error)
+	CountWorkflows(ctx context.Context, tenantID string, accountIDs []string, status WorkflowStatus, triggerType string) (int64, error)
+	GetWorkflowNames(ctx context.Context, tenantID string, accountIDs []string, ids []string) (map[string]string, error)
+	// ListWorkflowIDNames returns id -> name for every workflow in scope, up to
+	// limit rows. The most-failed leaderboard counts failures per automation
+	// rather than scanning failures, so it needs the automations first — and
+	// only their names, not their definitions.
+	ListWorkflowIDNames(ctx context.Context, tenantID string, accountIDs []string, limit int) (map[string]string, error)
+	// GetUserNames resolves user ids to display names. The execution dashboard
+	// needs it because Temporal only records the triggering user's id.
+	// Unknown ids are simply absent from the result.
+	GetUserNames(ctx context.Context, ids []string) (map[string]string, error)
 	ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]WorkflowVersion, error)
 	GetWorkflowVersion(ctx context.Context, workflowID string, versionNumber int) (*WorkflowVersion, error)
 	GetWorkflowVersionByID(ctx context.Context, versionID string) (*WorkflowVersion, error)

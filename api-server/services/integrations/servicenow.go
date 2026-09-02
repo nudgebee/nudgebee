@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -114,13 +115,10 @@ func (s ServiceNow) ValidateConfig(ctx *security.SecurityContext, values []core.
 	}
 
 	// Test connection by querying incident table
-	baseURL := fmt.Sprintf("https://%s/api/now", strings.TrimPrefix(url, "https://"))
-	requestBuilder := tableapi.NewTableRequestBuilder(client, map[string]string{
-		"baseurl": baseURL,
-		"table":   "incident",
-	})
-
-	if _, err := requestBuilder.Get(&tableapi.TableRequestBuilderGetQueryParameters{Limit: 1}); err != nil {
+	probe := &tableapi.TableRequestBuilder2GetRequestConfiguration{
+		QueryParameters: &tableapi.TableRequestBuilder2GetQueryParameters{Limit: 1},
+	}
+	if _, err := client.Now().Table("incident").Get(context.Background(), probe); err != nil {
 		return []error{interpretServiceNowError(err)}
 	}
 
@@ -132,17 +130,46 @@ const (
 	serviceNowMaxPages     = 200 // safety cap → up to 40k users
 )
 
+// normalizeServiceNowURL prepares the user-entered instance URL for the SDK.
+//
+// Two things depend on this. The SDK validates with url.ParseRequestURI, which
+// rejects a bare host like "acme.service-now.com" — the previous client built its
+// own URL with an "https://" prefix and so accepted one, and tenants configured
+// that way would otherwise stop connecting. And the SDK expands "{+baseurl}/api/now"
+// as an RFC 6570 reserved expansion, so a trailing slash produces "//api/now".
+//
+// Leading/trailing whitespace is handled by the SDK's own WithURL, but trimming
+// here too keeps the scheme check below correct.
+func normalizeServiceNowURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := neturl.Parse(s)
+	if err != nil || u.Host == "" {
+		return s // let the SDK report the problem
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String()
+}
+
 // newServiceNowClient builds a username/password ServiceNow client for the given
-// instance. Shared by ValidateConfig and ListUsers. The SDK's default HTTP session
-// has no timeout and its Get() ignores the context, so an unreachable instance
-// would otherwise stall the caller — bind a hard per-request timeout here.
-func newServiceNowClient(url, username, password string) (*servicenowsdkgo.ServiceNowClient, error) {
-	cred := credentials.NewUsernamePasswordCredential(username, password)
-	client, err := servicenowsdkgo.NewServiceNowClient2(cred, url)
+// instance. Shared by ValidateConfig and ListUsers. The SDK's default HTTP client
+// has no timeout, so an unreachable instance would otherwise stall the caller —
+// bind a hard per-request timeout here.
+func newServiceNowClient(url, username, password string) (*servicenowsdkgo.ServiceNowServiceClient, error) {
+	cred := credentials.NewBasicProvider(username, password)
+	client, err := servicenowsdkgo.NewServiceNowServiceClient(
+		servicenowsdkgo.WithAuthenticationProvider(cred),
+		servicenowsdkgo.WithURL(normalizeServiceNowURL(url)),
+		servicenowsdkgo.WithHTTPClient(&http.Client{Timeout: 20 * time.Second}),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("servicenow: failed to create client: %w", err)
 	}
-	client.Session = &http.Client{Timeout: 20 * time.Second}
 	return client, nil
 }
 
@@ -161,27 +188,35 @@ func (s ServiceNow) ListUsers(ctx context.Context, values []core.IntegrationConf
 	if err != nil {
 		return nil, err
 	}
-	baseURL := fmt.Sprintf("https://%s/api/now", strings.TrimPrefix(url, "https://"))
-	rb := tableapi.NewTableRequestBuilder(client, map[string]string{"baseurl": baseURL, "table": "sys_user"})
+	rb := client.Now().Table("sys_user")
 
 	var out []core.ExternalUser
 	for page := 0; page < serviceNowMaxPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		resp, err := rb.Get(&tableapi.TableRequestBuilderGetQueryParameters{
-			Fields: []string{"sys_id", "user_name", "name", "email"},
-			Query:  "active=true",
-			Limit:  serviceNowUserPageSize,
-			Offset: page * serviceNowUserPageSize,
+		resp, err := rb.Get(ctx, &tableapi.TableRequestBuilder2GetRequestConfiguration{
+			QueryParameters: &tableapi.TableRequestBuilder2GetQueryParameters{
+				Fields: []string{"sys_id", "user_name", "name", "email"},
+				Query:  "active=true",
+				Limit:  serviceNowUserPageSize,
+				Offset: page * serviceNowUserPageSize,
+			},
 		})
 		if err != nil {
 			return nil, interpretServiceNowError(err)
 		}
-		if resp == nil || len(resp.Result) == 0 {
+		if resp == nil {
 			break
 		}
-		for _, e := range resp.Result {
+		rows, err := resp.GetResult()
+		if err != nil {
+			return nil, interpretServiceNowError(err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, e := range rows {
 			if e == nil {
 				continue
 			}
@@ -189,7 +224,7 @@ func (s ServiceNow) ListUsers(ctx context.Context, values []core.IntegrationConf
 				out = append(out, u)
 			}
 		}
-		if len(resp.Result) < serviceNowUserPageSize {
+		if len(rows) < serviceNowUserPageSize {
 			break
 		}
 	}
@@ -198,7 +233,7 @@ func (s ServiceNow) ListUsers(ctx context.Context, values []core.IntegrationConf
 
 // mapServiceNowUser converts one sys_user row to an ExternalUser. Pure (no I/O) so
 // it's unit-testable without live credentials.
-func mapServiceNowUser(e *tableapi.TableEntry) core.ExternalUser {
+func mapServiceNowUser(e *tableapi.TableRecord) core.ExternalUser {
 	return core.ExternalUser{
 		ID:          serviceNowField(e, "sys_id"),
 		Username:    serviceNowField(e, "user_name"),
@@ -208,16 +243,29 @@ func mapServiceNowUser(e *tableapi.TableEntry) core.ExternalUser {
 }
 
 // serviceNowField reads a string field from a sys_user row, "" when absent.
-func serviceNowField(e *tableapi.TableEntry, key string) string {
-	v := e.Value(key)
-	if v == nil {
+//
+// The HasAttribute check is load-bearing, not defensive padding: TableRecord.Get
+// returns `&elem` where elem is a zero-value RecordElement when the key is absent,
+// so the pointer is non-nil but its backing store is nil and GetValue panics on it.
+// ServiceNow omits fields entirely for rows that have none, so an account without
+// an email would otherwise take down the whole sync.
+func serviceNowField(e *tableapi.TableRecord, key string) string {
+	if e == nil || !e.HasAttribute(key) {
 		return ""
 	}
-	s, err := v.String()
+	element, err := e.Get(key)
+	if err != nil || element == nil {
+		return ""
+	}
+	v, err := element.GetValue()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(s)
+	s, err := v.GetStringValue()
+	if err != nil || s == nil {
+		return ""
+	}
+	return strings.TrimSpace(*s)
 }
 
 // interpretServiceNowError translates the SDK's terse "no error factory is

@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -10,26 +9,19 @@ import (
 
 const HelmAgentName = "helm"
 
-func init() {
-	// This describes the 'helm' agent when it is used as a tool by another agent (e.g., k8s_debug).
-	toolDescription := `Manages Kubernetes applications using Helm. Can list releases, install, upgrade, or uninstall charts based on natural language requests.`
-	toolInput := "Provide question in natural language to interact with kubernetes cluster using helm"
-	toolOutput := "The tool will return the output of the question"
+// Phase 3c (#32503): agent registration removed. The helm agent was a thin
+// single-CLI wrapper (system prompt + HelmExecuteTool); its guidance now lives
+// on the tool itself via HelmExecuteTool.ToolPrompt(), reached directly when a
+// caller names `helm_execute` in delegate_agent(tools=[...]). Callers reaching
+// the old "helm" agent name now fall to search_tools + delegate_agent, which
+// surfaces helm_execute and folds its ToolPrompt into the sub-agent's brief.
+// The type/methods stay for one release so external references to HelmAgentName
+// still compile; delete after the bake period.
 
-	core.RegisterNBAgentFactoryAndTool(HelmAgentName, func(accountId string) (core.NBAgent, error) {
-		return newHelmAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
-}
-
-func newHelmAgent(accountId string) HelmAgent {
-	return HelmAgent{
-		accountId: accountId,
-	}
-}
-
-type HelmAgent struct {
-	accountId string
-}
+// HelmAgent is deprecated (Phase 3c #32503). Its runtime registration is gone;
+// the type is kept only so the Flattenable-path tests (which use `HelmAgent{}`
+// as a concrete example of a static/flattenable agent) still compile.
+type HelmAgent struct{}
 
 func (l HelmAgent) GetName() string {
 	return HelmAgentName
@@ -47,6 +39,12 @@ func (l HelmAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NB
 	tools := []toolcore.NBTool{tools.HelmExecuteTool{}}
 	return tools
 }
+
+// Flattenable implements flattenableAgent: helm's GetSystemPrompt is static and its whole
+// contribution is that prompt + helm_execute, so a delegate_agent call naming "helm"
+// inlines the leaf tool (single hop) and carries its GetSystemPrompt guidance, instead of
+// nesting the whole agent (which would run its own ReAct loop).
+func (l HelmAgent) Flattenable() bool { return true }
 
 func (l HelmAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
@@ -69,13 +67,11 @@ func (l HelmAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAg
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteHelmCommand] = []string{
-			"Executes Helm commands (e.g., `helm list`, `helm history`, `helm status`).",
-			"Input: A valid Helm command.",
-			"Output: Data returned by the Helm CLI.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the helm output.",
-		}
+	toolUsage[tools.ToolExecuteHelmCommand] = []string{
+		"Executes Helm commands (e.g., `helm list`, `helm history`, `helm status`).",
+		"Input: A valid Helm command.",
+		"Output: Data returned by the Helm CLI.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the helm output.",
 	}
 	examples := []core.NBAgentPromptExample{
 		{

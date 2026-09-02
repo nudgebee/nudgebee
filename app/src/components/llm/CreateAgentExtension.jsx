@@ -68,6 +68,7 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
 
   // Intersection Observer for scroll-based step detection
   useEffect(() => {
+    let observer;
     // Wait for refs to be populated
     const timeoutId = setTimeout(() => {
       const validRefs = stepRefs.current.filter((ref) => ref !== null);
@@ -75,7 +76,7 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
         return;
       }
 
-      const observer = new IntersectionObserver(
+      observer = new IntersectionObserver(
         (entries) => {
           // Find the entry with the highest intersection ratio that's actually intersecting
           let mostVisibleEntry = null;
@@ -107,17 +108,14 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
           observer.observe(ref);
         }
       });
-
-      return () => {
-        validRefs.forEach((ref) => {
-          if (ref) {
-            observer.unobserve(ref);
-          }
-        });
-      };
     }, 100); // Small delay to ensure refs are populated
 
-    return () => clearTimeout(timeoutId);
+    return () => {
+      clearTimeout(timeoutId);
+      if (observer) {
+        observer.disconnect();
+      }
+    };
   }, []);
 
   // Step validation errors

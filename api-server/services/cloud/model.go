@@ -21,12 +21,15 @@ type QueryMetricsRequest struct {
 	Query     MetricsQuery `json:"query" validate:"required"`
 }
 type MetricsQuery struct {
-	StartDate       *time.Time          `json:"start_date"`
-	EndDate         *time.Time          `json:"end_date"`
-	ResourceIds     []string            `json:"resource_ids"`
-	ResourceType    string              `json:"resource_type"`
-	ServiceName     string              `json:"service_name" validate:"required"`
-	Region          string              `json:"region" validate:"required"`
+	StartDate    *time.Time `json:"start_date"`
+	EndDate      *time.Time `json:"end_date"`
+	ResourceIds  []string   `json:"resource_ids"`
+	ResourceType string     `json:"resource_type"`
+	// Neither is required on a query-only request: a provider-native query (see
+	// Query below) names its own namespace, and the region falls back to the
+	// account's. QueryMetrics enforces the "selector or query" rule itself.
+	ServiceName     string              `json:"service_name"`
+	Region          string              `json:"region"`
 	MetricNames     []string            `json:"metric_names"`
 	Step            time.Duration       `json:"step"`
 	Dimensions      []map[string]string `json:"dimensions,omitempty"`
@@ -71,6 +74,26 @@ type MetricListItem struct {
 	// Dimensions holds the deduped dimension sets observed for this metric
 	// (each a name->value map), populated by the dynamic CloudWatch lister.
 	Dimensions []map[string]string `json:"dimensions,omitempty"`
+}
+
+type ListNotificationTargetsRequest struct {
+	AccountId string `json:"account_id" validate:"required"`
+	// Region scopes the listing for providers with regional targets (AWS SNS
+	// topics). Ignored by GCP and Azure.
+	Region string `json:"region"`
+}
+
+// NotificationTarget is a provider-side notification destination an alarm can
+// be wired to at creation time: an SNS topic (AWS), a notification channel
+// (GCP), or an action group (Azure).
+type NotificationTarget struct {
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type ListNotificationTargetsResponse struct {
+	Targets []NotificationTarget `json:"targets"`
 }
 
 type QueryResourceRequest struct {
@@ -209,6 +232,7 @@ type LogQuery struct {
 	ResourceLabels map[string]string `json:"resource_labels"`
 	MetricType     string            `json:"metric_type"`
 	AlertType      string            `json:"alert_type"`
+	PolicyID       string            `json:"policy_id"`
 }
 
 type QueryLogResponse struct {

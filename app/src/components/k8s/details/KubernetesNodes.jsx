@@ -1006,6 +1006,7 @@ const KubernetesNodesTable = ({ accountId, heading = 'All Nodes' }) => {
               { text: 'Recent Events', value: 4, key: 'events' },
               { text: 'Network', value: 5, key: 'network' },
               { text: 'Storage', value: 6, key: 'node-storage' },
+              { text: 'Disk I/O', value: 7, key: 'disk_io' },
             ],
           }}
           rowsPerPage={recordsPerPage}

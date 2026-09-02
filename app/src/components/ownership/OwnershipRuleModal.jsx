@@ -52,7 +52,7 @@ const INFO = {
   namespaceScope: 'The Kubernetes namespace to match. Every workload in this namespace is owned by the selected owner.',
   namespaceCascade: 'Pick the namespace whose workloads you want to select below.',
   workloads: 'Select one or more workloads in this namespace. The rule matches these workloads by name within the chosen account + namespace.',
-  owner: 'The Nudgebee user or group that owns the matched resources.',
+  owner: 'The Nudgebee user or group that owns the matched resources. Only active users appear here - make sure the user you want is active.',
   cloudAccountOptional: 'Optional. Restrict this rule to one cloud account. Leave empty to apply across all cloud accounts.',
   cloudAccountRequired: 'The cloud account the resources belong to. Required — it drives the resource list.',
   cloudTagKey: 'The cloud resource tag key to match, e.g. "team".',

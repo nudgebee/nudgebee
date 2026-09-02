@@ -82,11 +82,24 @@ func ownerFromLabels(labels map[string]string) (string, string) {
 //     in k8s_workloads recovers the parent without needing a separate
 //     ReplicaSet table.
 //
+// The lookup key $3 matches the pod's own name, its workload_name, or — for a
+// subject that is itself a ReplicaSet name (e.g. an alert on
+// cloud-collector-server-5cbd8ddb97 with an empty owner) — the pods that belong
+// to that ReplicaSet, by name prefix: its pods are named "<rs>-<suffix>". The
+// workload_name arm alone cannot cover that case because the k8s collector
+// stores each pod's TOP-LEVEL controller (the Deployment) in workload_name,
+// never the ReplicaSet name (verified live, #34656). $4 is $3 with LIKE
+// wildcards escaped, suffixed "-%".
+//
 // The join doubles as validation — only resolves to workloads currently known
-// to k8s state. ORDER BY length(kw.name) DESC prefers the longest (most
-// specific) deployment match, so a ReplicaSet for "payment-service" doesn't
-// false-positive against a sibling "payment" deployment via prefix-LIKE.
-// last_seen DESC is the secondary tiebreak for cluster-recreate cases.
+// to k8s state. The prefix arm carries its own guard: the subject must itself
+// extend the matched workload's name ($3 LIKE kw.name || '-%'), so a subject
+// that IS a plain workload name can never ride a prefix collision onto a
+// longer sibling (subject "app" must not gain owner "app-prod" via app-prod's
+// pods). ORDER BY prefers exact matches, then length(kw.name) DESC so a
+// ReplicaSet for "payment-service" doesn't false-positive against a sibling
+// "payment" deployment via prefix-LIKE; last_seen DESC is the final tiebreak
+// for cluster-recreate cases.
 const podOwnerLookupSQL = `
 	SELECT kw.name, kw.kind
 	FROM k8s_pods kp
@@ -97,8 +110,12 @@ const podOwnerLookupSQL = `
 	        (kp.workload_name = kw.name AND kp.workload_type = kw.kind)
 	     OR (kp.workload_type = 'ReplicaSet' AND kw.kind = 'Deployment' AND kp.workload_name LIKE kw.name || '-%')
 	     )
-	WHERE kp.tenant_id = $1 AND kp.namespace = $2 AND kp.name = $3
-	ORDER BY length(kw.name) DESC, kp.last_seen DESC
+	WHERE kp.tenant_id = $1 AND kp.namespace = $2
+	  AND (
+	        kp.name = $3 OR kp.workload_name = $3
+	     OR (kp.name LIKE $4 AND $3 LIKE kw.name || '-%')
+	     )
+	ORDER BY (kp.name = $3 OR kp.workload_name = $3) DESC, length(kw.name) DESC, kp.last_seen DESC
 	LIMIT 1
 `
 
@@ -128,6 +145,11 @@ const podCloudResourceSQL = `
 	LIMIT 1
 `
 
+// sqlLikeEscaper escapes SQL LIKE wildcards in a subject name before it is used
+// as a prefix pattern ($4 of podOwnerLookupSQL). Package-level: lookupPodOwner
+// runs on the per-event hot path, so the replacer must not be rebuilt per call.
+var sqlLikeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 // lookupPodOwner resolves a pod → owning workload via the cached k8s state
 // snapshot (k8s_pods JOIN k8s_workloads). Returns ("", "") when the pod is
 // unknown — caller leaves SubjectOwner empty rather than guess. Errors are
@@ -147,8 +169,13 @@ func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager,
 		return "", "" // negative-cached
 	}
 
+	// $4: the subject as a pod-name prefix pattern ("<subject>-%"), LIKE wildcards
+	// escaped — webhook subjects are not guaranteed to be clean k8s names (e.g. a
+	// datname like "temporal_visibility" would otherwise wildcard-match on "_").
+	likePrefix := sqlLikeEscaper.Replace(podName) + "-%"
+
 	var ownerName, ownerKind string
-	err := dbms.Db.QueryRowx(podOwnerLookupSQL, tenantId, namespace, podName).Scan(&ownerName, &ownerKind)
+	err := dbms.Db.QueryRowx(podOwnerLookupSQL, tenantId, namespace, podName, likePrefix).Scan(&ownerName, &ownerKind)
 	switch {
 	case err == sql.ErrNoRows:
 		// Negative-cache so we don't keep querying for a pod that isn't in
@@ -856,16 +883,55 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		if r.Fingerprint == nil || r.AggregationKey == nil {
 			return EventRecommendationApplyResponse{}, common.ErrorBadRequest("event has no fingerprint or aggregation key; cannot look up its log analysis")
 		}
-		eventLogAnalysisRow := dbms.Db.QueryRowx("SELECT analysis from event_log_analysis WHERE analysis_type = 'log_analysis' and cloud_account_id = $1 AND event_fingerprint = $2 AND event_aggregation_key = $3 AND status = 'COMPLETED'", query.AccountId, *r.Fingerprint, *r.AggregationKey)
+		// Select the status alongside the analysis instead of filtering on
+		// status = 'COMPLETED'. Filtering collapsed three distinct states —
+		// still-running, failed, and genuinely-missing — into a single
+		// sql.ErrNoRows, so a failed analysis surfaced a misleading "wait for it
+		// Reading the status back lets us report each state
+		// accurately. We fetch the mapped log analysis entry for this event ID,
+		// falling back to the latest log analysis for this fingerprint if unmapped.
+		// event_id is a uuid column, so bind NULL rather than "" — the join then
+		// simply never matches instead of erroring on the cast.
+		var dbEventId any
+		if query.EventId != "" {
+			dbEventId = query.EventId
+		}
+		// Order on COALESCE(updated_at, recorded_at): updated_at is nullable and
+		// NULLs sort first on DESC, which would rank legacy rows as the newest.
+		eventLogAnalysisRow := dbms.Db.QueryRowx(`
+			SELECT ela.analysis, ela.status, ela.status_reason
+			FROM event_log_analysis ela
+			LEFT JOIN event_analysis_mapping eam ON ela.id = eam.analysis_id AND eam.event_id = $4 AND eam.analysis_type = 'log_analysis'
+			WHERE ela.analysis_type = 'log_analysis' AND ela.cloud_account_id = $1 AND ela.event_fingerprint = $2 AND ela.event_aggregation_key = $3
+			ORDER BY (eam.event_id IS NOT NULL) DESC, COALESCE(ela.updated_at, ela.recorded_at) DESC
+			LIMIT 1
+		`, query.AccountId, *r.Fingerprint, *r.AggregationKey, dbEventId)
 		if eventLogAnalysisRow.Err() != nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("invalid event_log_analysis - %s", query.EventId)
 		}
 		eventLogAnalysisDetail := map[string]any{}
 		if err = eventLogAnalysisRow.MapScan(eventLogAnalysisDetail); err != nil {
+			// No log_analysis row at all: the user clicked Raise PR before the
+			// analysis was created. Surface that instead of the raw sql.ErrNoRows,
+			// which is meaningless in the UI and invisible in the logs.
 			if errors.Is(err, sql.ErrNoRows) {
-				return EventRecommendationApplyResponse{}, common.ErrorNotFound("no completed log analysis found for this event; re-run the analysis before raising a PR")
+				ctx.GetLogger().Warn("raise PR requested before event log analysis started", "event_id", query.EventId, "account_id", query.AccountId)
+				return EventRecommendationApplyResponse{}, common.ErrorBadRequest("log analysis for this event has not completed yet; wait for it to finish and retry")
 			}
+			ctx.GetLogger().Error("failed to load event log analysis", "error", err, "event_id", query.EventId, "account_id", query.AccountId)
 			return EventRecommendationApplyResponse{}, err
+		}
+		// The row exists but may not be usable yet. Report a failed run distinctly
+		// from a still-running one so the user knows whether to re-run the analysis
+		// or simply wait and retry.
+		if analysisStatus, _ := eventLogAnalysisDetail["status"].(string); analysisStatus != "COMPLETED" {
+			if analysisStatus == "FAILED" {
+				statusReason, _ := eventLogAnalysisDetail["status_reason"].(string)
+				ctx.GetLogger().Warn("raise PR requested but event log analysis failed", "event_id", query.EventId, "account_id", query.AccountId, "status_reason", statusReason)
+				return EventRecommendationApplyResponse{}, common.ErrorBadRequest("log analysis for this event failed; re-run the analysis before raising a PR")
+			}
+			ctx.GetLogger().Warn("raise PR requested before event log analysis completed", "event_id", query.EventId, "account_id", query.AccountId, "status", analysisStatus)
+			return EventRecommendationApplyResponse{}, common.ErrorBadRequest("log analysis for this event has not completed yet; wait for it to finish and retry")
 		}
 		analysisStr, _ := eventLogAnalysisDetail["analysis"].(string)
 		var result map[string]any
@@ -1209,6 +1275,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		eventResolutionsToCheck = append(eventResolutionsToCheck, resolution)
 		eventIds = append(eventIds, resolution.EventId)
 	}
+	if err := rows.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating event resolutions", "error", err)
+		return err
+	}
 
 	if len(eventResolutionsToCheck) == 0 {
 		return nil
@@ -1240,6 +1310,13 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			return err
 		}
 		events[event.Id] = event
+	}
+	// A truncated read here is destructive: the reconcile below permanently marks
+	// every resolution whose event is missing from this map as FAILED, so a partial
+	// map would fail resolutions whose events actually exist.
+	if err := rows1.Err(); err != nil {
+		ctx.GetLogger().Error("error iterating events", "error", err)
+		return err
 	}
 
 	ctx.GetLogger().Info("Checking resolutions", "resolutions", len(eventResolutionsToCheck))
@@ -1653,7 +1730,13 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	// fallback to SubjectName. We deliberately do not regex-strip the pod
 	// hash — false positives on Job/CronJob/bare pods would be worse than a
 	// missing owner.
-	if webhookEvent.SubjectOwner == "" {
+	//
+	// Skip logical-database subjects: their name is a datname, not a pod, and
+	// the k8s_pods.workload_name arm of lookupPodOwner would otherwise re-pin a
+	// database onto a same-named same-namespace workload (e.g. db "keycloak" →
+	// the keycloak workload). The nb_skip_workload_match label is already
+	// consumed by MatchWorkloadAndEnrich by now, so gate on subject_type here.
+	if webhookEvent.SubjectOwner == "" && !isNonWorkloadDatastoreSubject(webhookEvent.SubjectType) {
 		if name, kind := ownerFromLabels(webhookEvent.Labels); name != "" {
 			webhookEvent.SubjectOwner = name
 			if webhookEvent.SubjectOwnerKind == "" {
@@ -1778,6 +1861,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 				SubjectName:             webhookEvent.SubjectName,
 				SubjectType:             webhookEvent.SubjectType,
 				SubjectOwner:            webhookEvent.SubjectOwner,
+				SubjectOwnerKind:        webhookEvent.SubjectOwnerKind,
 				SubjectNamespace:        webhookEvent.SubjectNamespace,
 				SubjectNode:             webhookEvent.SubjectNode,
 				AggregationKey:          webhookEvent.AggregationKey,
@@ -2019,6 +2103,7 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		SubjectName:      *event.SubjectName,
 		SubjectType:      *event.SubjectType,
 		SubjectOwner:     subjectOwner,
+		SubjectOwnerKind: common.StrVal(event.SubjectOwnerKind),
 		SubjectNamespace: subjectNamespace,
 		SubjectNode:      subjectNode,
 		AggregationKey:   *event.AggregationKey,
@@ -2233,6 +2318,20 @@ func mergeAggregatedAlertLabels(labels map[string]string, aggregationKey string,
 	return updated
 }
 
+// isNonWorkloadDatastoreSubject reports whether subject_type names a logical
+// datastore (e.g. a PostgreSQL database) rather than a k8s workload. Such
+// subjects must never be name-matched against k8s_workloads: doing so re-pins
+// the datastore onto an unrelated same-named workload (the G2 mis-match). Both
+// the owner lookup in InvestigateEvent and linkK8sCloudResourceId skip them.
+func isNonWorkloadDatastoreSubject(subjectType string) bool {
+	switch strings.ToLower(subjectType) {
+	case "database", "cloudsql_database":
+		return true
+	default:
+		return false
+	}
+}
+
 // linkK8sCloudResourceId resolves cloud_resource_id for Kubernetes-sourced
 // events (kubernetes_api_server, prometheus, anomaly, slo, ...) from the cached
 // k8s state snapshot. Cloud-provider events get their resource id from playbook
@@ -2282,6 +2381,15 @@ func linkK8sCloudResourceId(sc *security.RequestContext, dbms *database.Database
 	}
 
 	// Determine the workload name to resolve against k8s_workloads.
+	// A logical-database subject (e.g. a PostgreSQL datname) is not a k8s
+	// workload; name-matching it against k8s_workloads is how a "database
+	// nudgebee" alert lands on an unrelated same-named workload. A host-named DB
+	// subject (RDS endpoint / postgres service DNS) never matches k8s_workloads
+	// by name anyway, so skipping here changes nothing for it.
+	if isNonWorkloadDatastoreSubject(webhookEvent.SubjectType) {
+		return
+	}
+
 	var workloadName string
 	switch strings.ToLower(webhookEvent.SubjectType) {
 	case "", "pod":

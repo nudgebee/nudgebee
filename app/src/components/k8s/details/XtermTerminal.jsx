@@ -5,6 +5,50 @@ import { getRelayServerEndpoint } from '@lib/HttpService';
 import { ds } from '@utils/colors';
 
 /**
+ * Pull a human-readable reason out of a parsed error body.
+ *
+ * The two upstreams disagree on shape: the relay proxy answers
+ * `{ error, description }` while relay-server answers
+ * `{ errors: [{ code, message }] }` (`utils.BuildError`). Walk either one down to
+ * the first string rather than stringifying an object into `[object Object]`.
+ */
+const pickErrorMessage = (value, depth = 0) => {
+  if (typeof value === 'string') return value;
+  if (depth >= 5 || value == null) return '';
+  if (Array.isArray(value)) return pickErrorMessage(value[0], depth + 1);
+  if (typeof value === 'object') {
+    return pickErrorMessage(value.message ?? value.description ?? value.error ?? value.errors, depth + 1);
+  }
+  return '';
+};
+
+/**
+ * Build an error message for a failed terminal request.
+ *
+ * `res.statusText` is empty over HTTP/2, so failures used to surface as a bare
+ * `HTTP 400:` with no reason — that is what a relay-proxy rejection looked like in
+ * #36589. The response body carries the actual cause, so prefer it.
+ */
+const describeHttpError = async (res) => {
+  let detail = '';
+  try {
+    const body = await res.text();
+    if (body) {
+      try {
+        detail = pickErrorMessage(JSON.parse(body)) || body;
+      } catch {
+        detail = body;
+      }
+    }
+  } catch {
+    // Body unreadable (already consumed, or the connection dropped) — fall back below.
+  }
+  // Cap it: an upstream HTML error page would otherwise flood the terminal.
+  const reason = (detail || res.statusText || '').trim().slice(0, 200);
+  return `HTTP ${res.status}: ${reason}`;
+};
+
+/**
  * HTTP-based TerminalComponent with improved polling logic and dimension handling
  * Features:
  * - Prevents concurrent read requests
@@ -175,7 +219,7 @@ const TerminalComponent = ({ accountId, httpEndpoint = getRelayServerEndpoint() 
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        throw new Error(await describeHttpError(res));
       }
 
       const json = await res.json();
@@ -259,7 +303,7 @@ const TerminalComponent = ({ accountId, httpEndpoint = getRelayServerEndpoint() 
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        throw new Error(await describeHttpError(res));
       }
 
       const { session_id } = await res.json();

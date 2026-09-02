@@ -8,6 +8,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 
 const requiredEnv = ["SSH_INTEGRATION_CONFIG_NAME", "SSH_SECRET"];
@@ -62,9 +63,7 @@ test.describe.serial("SSH Account Integration", () => {
     await locators.sshBtn.click();
     await locators.addSshAccountBtn.click();
 
-    await locators.sshAccountIdDropdown.click();
-    await locators.sshAccountIdOption(process.env.CLUSTER!).first().click();
-    await locators.sshAccountIdDropdown.press("Escape");
+    await selectAccountFromDropdown(page, locators.sshAccountIdDropdown, process.env.CLUSTER!);
     await locators.sshConfigNameInput.fill(configName);
     await locators.sshK8sSecretInput.fill(process.env.SSH_SECRET!);
 

@@ -1150,11 +1150,33 @@ func pinotJavaToGoFormatObs(javaFmt string) string {
 
 // ---- Response parsers ----
 
+// maxPinotErrorBodyChars bounds how much of a non-JSON Pinot response is echoed back.
+// Pinot stack traces run to kilobytes; the first line carries the actual reason.
+const maxPinotErrorBodyChars = 400
+
+// summarizePinotErrorBody renders a non-JSON Pinot response as a single-line, bounded
+// message. Without this the caller sees only the JSON decoder's complaint ("invalid
+// character 'P'"), which says nothing about why Pinot rejected the query.
+func summarizePinotErrorBody(data []byte) string {
+	body := strings.TrimSpace(string(data))
+	if body == "" {
+		return "empty response"
+	}
+	body = strings.Join(strings.Fields(body), " ")
+	if len(body) > maxPinotErrorBodyChars {
+		return body[:maxPinotErrorBodyChars] + "…"
+	}
+	return body
+}
+
 // parsePinotResultTableBytes converts a Pinot resultTable JSON payload to []OutputLog.
 func parsePinotResultTableBytes(data []byte, tsCol, msgCol, sevCol string, tsConv func(any) string) ([]OutputLog, error) {
 	var r pinotQueryResponse
 	if err := json.Unmarshal(data, &r); err != nil {
-		return nil, fmt.Errorf("pinot: failed to unmarshal resultTable: %w", err)
+		// Pinot does not always answer with JSON: a rejected query can come back as a
+		// plain-text exception. Unmarshalling that yields "invalid character 'P'",
+		// which hides the reason the query failed. Surface the body instead.
+		return nil, fmt.Errorf("pinot: query failed: %s", summarizePinotErrorBody(data))
 	}
 	if len(r.Exceptions) > 0 {
 		return nil, fmt.Errorf("pinot query exception: %v", r.Exceptions[0])
@@ -1284,6 +1306,12 @@ func pinotFormatValue(val any) string {
 	switch v := val.(type) {
 	case string:
 		return "'" + pinotEscapeString(v) + "'"
+	// Integers render bare and exactly. float64 cannot hold every int64 (only below
+	// 2^53), so epoch-nanosecond values would lose precision if routed through it.
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case int:
+		return fmt.Sprintf("%d", v)
 	case float64:
 		if v == float64(int64(v)) {
 			return fmt.Sprintf("%d", int64(v))

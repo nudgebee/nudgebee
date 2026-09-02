@@ -81,7 +81,21 @@ type TableDefinition struct {
 	TenantIdColumnName  string
 	AccountIdColumnName string
 	NamespaceColumnName string
-	UpdateFilters       func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error)
+	// PermissionModule opts a table into dynamic-RBAC reads: a non-admin holding a
+	// custom-role Read grant on this module reads the whole tenant's rows (tenant_id
+	// filter only, no account restriction) — or, when the grant is account-scoped
+	// (V798), only the granted accounts (via the ScopedAccountIdsForModule branch in
+	// service.go, available when the table also has AccountIdColumnName). Set on
+	// tenant-catalog tables (accounts/audits/notifications/integrations) AND on the
+	// operational modules the product has deliberately made grantable tenant-wide
+	// (events, tickets, ai_*, recommendations, insights, k8s — see the RBAC entries
+	// in docs/architecture-decisions.md). Setting it on an account-scoped table
+	// intentionally lets a tenant-global grant read cross-account rows, so add it
+	// only for a module meant to be a tenant-level read persona; leaving it empty
+	// keeps the table strictly built-in-role-gated. Module values must match
+	// classifyAction in app/src/lib/permissionCatalog.ts.
+	PermissionModule string
+	UpdateFilters    func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error)
 	// TenantWideReadable makes tenant-wide rows (account_id IS NULL) visible to
 	// account-scoped roles. When true, the account-id restriction injected for
 	// those roles becomes `account_id IN (...) OR account_id IS NULL` instead of
@@ -241,6 +255,20 @@ func GetTracesTableNames(ctx *security.RequestContext, accountId string) []strin
 		defaultTables[0] = traceTable.(string)
 	}
 	return defaultTables
+}
+
+// traceSourceExpr returns the SQL deriving the synthetic `trace_source` column for a traces
+// table without materialized columns. Our own agent table (account.AgentTraceTableConfigKey,
+// i.e. otel_traces) carries the instrumentation scope in the ScopeName column the collector's
+// clickhouse exporter writes; SpanAttributes['otel.scope.name'] is only populated by exporters
+// predating that column, so both are matched. Third-party ClickHouse stores (Last9's
+// otel.traces) keep the attribute-only form — they may not expose ScopeName at all, and an
+// unknown identifier there would fail every trace query instead of just the eBPF filter.
+func traceSourceExpr(tableName string) string {
+	if tableName == account.AgentTraceTableConfigKey {
+		return "CASE WHEN ScopeName = 'nudgebee-node-agent' OR SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END"
+	}
+	return "CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END"
 }
 
 func GetTracesProviderAndUrl(ctx *security.RequestContext, accountId string) (string, string, bool) {
@@ -624,6 +652,13 @@ var prDependentColumns = map[string]bool{
 	"pr_title": true,
 }
 
+// Columns that depend on the event_correlations same_incident JOINs
+// (same-subject incident grouping, epic #34655).
+var incidentDependentColumns = map[string]bool{
+	"incident_leader_id":    true,
+	"incident_member_count": true,
+}
+
 func whereReferencesColumns(where QueryWhereClause, cols map[string]bool) bool {
 	for col := range where.Binary {
 		if cols[col] {
@@ -722,10 +757,125 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 			sql = " AND " + sqlColumn + " IN (" + strings.Join(quoted, ",") + ")"
 		}
 	}
-	if sql != "" {
+	// Only drop the filter when it came from the top-level Binary map. A filter found
+	// inside an _and clause is left in place so the outer WHERE keeps enforcing it, and
+	// the pushed-down copy acts purely as a planner hint.
+	//
+	// This matters because extractFilterSQL is shared by ~14 DefGenerators, and not all
+	// of them push into a subquery that constrains the same rows the outer filter would.
+	// k8s_workloads_cloud_account_monitoring_v2 pushes account_id into the LEFT JOINed
+	// event_count CTE while workload_list stays unscoped and the outer WHERE carries no
+	// account predicate — so removing an account restriction there widens the result set
+	// across accounts instead of narrowing it. The security layer (service.go) appends
+	// exactly such tenant/account restrictions as _and clauses, which is why _and is the
+	// dangerous case to delete from and the top-level map is not.
+	//
+	// (Deleting a top-level Binary filter is long-standing behaviour and is preserved
+	// as-is. The same widening is possible through that path for a caller-supplied
+	// account_id filter on that table, but it predates this function's _and support and
+	// is left for a separate fix.)
+	_, fromTopLevelBinary := request.Where.Binary[filterName]
+	if sql != "" && fromTopLevelBinary {
 		delete(holder, filterName)
 	}
 	return sql
+}
+
+// VulnerabilityRecommendationSQL reconstructs the legacy recommendation.recommendation
+// JSON shape (the one every consumer — frontend, LLM security tool, PR-prompt
+// generator — was written against) from the deduplicated vulnerabilities row,
+// for vm_package_vulnerability and image_scan rows. recAlias is the
+// recommendation table's alias in the surrounding query. vulnAccessor is a
+// prefix that reaches the joined vulnerabilities row's fields when
+// concatenated directly with a field name (id, source, vuln_id,
+// package_name, package_arch, package_type, severity, cvss_score,
+// cvss_vector, description, data_source, details) — pass "v." for a real
+// `LEFT JOIN vulnerabilities v ON v.id = recAlias.vulnerability_id` still in
+// scope where this Def is embedded, or "r1.v_" when that join only happens
+// inside an inner subquery/CTE and its columns were re-exposed at the outer
+// level as sibling columns named v_id, v_source, v_vuln_id, etc. (needed
+// wherever the surrounding query does `SELECT r.*, ...` — a bare join alias
+// isn't visible past that subquery's boundary, but `r.*`'s sibling columns
+// are).
+//
+// Falls back to the raw, un-reconstructed recAlias.recommendation whenever
+// the vulnerabilities row's id IS NULL — covers both any row the migration's
+// one-time backfill couldn't match (malformed historical JSON) and any other
+// rule_name, which never gets a vulnerability_id and must pass through
+// completely unchanged. Without this fallback, jsonb_build_object's
+// NULL-valued keys for an unmatched row would silently overwrite real inline
+// data with `null` on ||.
+//
+// package_version/InstalledVersion/fixed_version/FixedVersion/image_name stay
+// out of the reconstructed object: the writers (vmpackage/persist.go,
+// scan_orchestrator/parser_image_scan.go) already keep those directly in
+// recAlias.recommendation — they're per-finding facts (which version is
+// installed, which image), not properties of the CVE+package shared by every
+// resource/image that has it, so they never lived on the vulnerabilities row.
+//
+// package.version falls back to the OLD nested {package:{version:...}} path
+// (COALESCE) for any historical row the migration's JSON-trim step hasn't
+// touched yet — package_version only exists as a flat key from this PR
+// forward.
+//
+// image_scan's reconstructed 'Severity' is the mapped canonical form
+// (Critical/High/.../Info, via trivySeverity) from vulnerabilities.severity,
+// NOT the raw Trivy value (CRITICAL/HIGH/...) the pre-migration inline
+// payload held — deliberate: severity is a property of the CVE+package, so
+// it lives once on the shared row rather than per-finding. Known readers
+// were checked and none hard-break (KubernetesSecurityDetails.jsx lowercases
+// via toDsSeverityLevel for the icon, though it still displays the raw
+// Severity string verbatim in one spot; github.go's formatCVELogs
+// upper-cases), but any future `=== 'HIGH'` case-sensitive comparison
+// against this key will stop matching — mapped form is intentional, not a
+// bug. A rescan self-heals any row whose severity this changes; the
+// migration's one-time backfill can also pick an arbitrary severity among
+// historical duplicates for the same CVE+package.
+//
+// TODO(vulnerabilities-cleanup): the `v.id IS NULL` fallback branch — and the
+// nested `{package,version}` arm of the package_version COALESCE below — must
+// outlive V867. Three independent reasons:
+//   - V867 is DDL only: it adds vulnerability_id but backfills nothing, because a
+//     bulk backfill measured 1.2-3.1 ms/row and would hold ACCESS EXCLUSIVE on
+//     recommendation for hours on a production-sized table. Every pre-existing
+//     finding is unlinked the moment the column appears;
+//   - rescans converge live findings within ~a week, but findings whose image or
+//     host no longer exists never get rewritten, so unlinked rows are a permanent
+//     supported state, not a transient window;
+//   - V867 deliberately does not trim recommendation.recommendation, so the raw
+//     payload is still the live source for all of those rows.
+//
+// Removing either arm is only conceivable after the deferred payload trim (see
+// the TODO at the foot of the V867 migration) has run everywhere AND unlinked
+// rows have been dealt with. vulnerability_fallback_test.go pins the contract, so
+// deleting a guard fails a test rather than silently blanking CVE identity.
+func VulnerabilityRecommendationSQL(recAlias, vulnAccessor string) string {
+	r, v := recAlias, vulnAccessor
+	return `CASE WHEN ` + v + `id IS NULL THEN ` + r + `.recommendation
+		WHEN ` + v + `source = 'vm_package_vulnerability' THEN
+			(` + r + `.recommendation - 'package_version') || jsonb_build_object(
+				'vuln_id', ` + v + `vuln_id,
+				'package', jsonb_build_object(
+					'name', ` + v + `package_name,
+					'version', COALESCE(` + r + `.recommendation->>'package_version', ` + r + `.recommendation#>>'{package,version}'),
+					'arch', ` + v + `package_arch, 'type', ` + v + `package_type),
+				'cvss_v3_score', ` + v + `cvss_score, 'cvss_v3_vector', ` + v + `cvss_vector,
+				'kev', ` + v + `details->'kev', 'epss', ` + v + `details->'epss', 'risk', ` + v + `details->'risk',
+				'advisory_ids', ` + v + `details->'advisory_ids', 'data_source', ` + v + `data_source,
+				'fix_channel', ` + v + `details->'fix_channel',
+				'description', ` + v + `description)
+		WHEN ` + v + `source = 'image_scan' THEN
+			` + r + `.recommendation || jsonb_build_object(
+				'VulnerabilityID', ` + v + `vuln_id, 'PkgID', ` + v + `details->'pkg_id', 'PkgName', ` + v + `package_name,
+				'Severity', ` + v + `severity, 'CVSS', ` + v + `details->'cvss', 'Title', ` + v + `details->'title',
+				'Description', ` + v + `description, 'CweIDs', ` + v + `details->'cwe_ids', 'VendorIDs', ` + v + `details->'vendor_ids',
+				'References', ` + v + `details->'references', 'PrimaryURL', ` + v + `details->'primary_url',
+				'DataSource', ` + v + `details->'data_source', 'PublishedDate', ` + v + `details->'published_date',
+				'LastModifiedDate', ` + v + `details->'last_modified_date', 'Status', ` + v + `details->'status',
+				'SeveritySource', ` + v + `details->'severity_source', 'VendorSeverity', ` + v + `details->'vendor_severity',
+				'PkgIdentifier', ` + v + `details->'pkg_identifier', 'Layer', ` + v + `details->'layer')
+		ELSE ` + r + `.recommendation
+		END`
 }
 
 var table_metadata = map[string]TableDefinition{
@@ -733,6 +883,12 @@ var table_metadata = map[string]TableDefinition{
 		Type:   Normal,
 		Source: database.Metastore,
 		Name:   "k8s_cluster_groupings_v2",
+		// Cluster catalog/summary backs the cluster picker — an accounts:Read
+		// (or Write) grant reads it tenant-wide, the same accounts-catalog
+		// exception as accounts_list/agent health. Per-cluster operational data
+		// (pods/workloads/metrics) stays k8s-gated. Kept in sync with
+		// permissionCatalog.ts MODULE_OVERRIDES.
+		PermissionModule: "accounts",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			accountFilter := extractFilterSQL(&request, "account_id", "ksn.cloud_account_id")
 			// Build matching filters for workload and pod subqueries using same account
@@ -859,6 +1015,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_metrics_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              getSource("k8s_metrics_groupings_v2"),
 		Def:                 "cloud_resource_metrics",
@@ -1124,8 +1281,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_groupings_v2": {
-		Type:   Aggregate,
-		Source: getSource("event_groupings_v2"),
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "events",
+		Type:             Aggregate,
+		Source:           getSource("event_groupings_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			if requestReferencesColumns(request, fingerprintDependentColumns) {
 				return "events LEFT JOIN event_duplicates ed ON ed.event_id = events.id AND ed.cloud_account_id = events.cloud_account_id", request, nil
@@ -1250,6 +1411,11 @@ var table_metadata = map[string]TableDefinition{
 			"latest_title": {
 				Type:         ColumnDefinitionTypeString,
 				Def:          "(array_agg(title ORDER BY events.created_at DESC))[1]",
+				IsAggregated: true,
+			},
+			"latest_snoozed_until": {
+				Type:         ColumnDefinitionTypeDatetime,
+				Def:          "(array_agg(events.snoozed_until ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			"max_created_at": {
@@ -1429,40 +1595,54 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"events_v2": {
-		Type:   Normal,
-		Source: getSource("events_v2"),
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "events",
+		Type:             Normal,
+		Source:           getSource("events_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
-			needsPr := requestReferencesColumns(request, prDependentColumns)
-			needsFingerprint := requestReferencesColumns(request, fingerprintDependentColumns)
-
-			switch {
-			case needsPr && needsFingerprint:
-				return `(SELECT e.*, ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url,
-					ela.analysis::jsonb->'automated_fix_pr'->>'title' as pr_title,
-					ed.absolute_first_seen_at as fingerprint_first_seen_at
-					FROM events e LEFT JOIN event_log_analysis ela
+			// Composable optional joins: each requested column family adds its
+			// SELECT extras + JOIN once, so families combine without a
+			// combinatorial switch.
+			var selects, joins []string
+			if requestReferencesColumns(request, prDependentColumns) {
+				selects = append(selects,
+					`ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url`,
+					`ela.analysis::jsonb->'automated_fix_pr'->>'title' as pr_title`)
+				joins = append(joins, `LEFT JOIN event_log_analysis ela
 					ON ela.event_id = e.id
 					AND ela.analysis_type = 'log_analysis'
 					AND ela.status = 'COMPLETED'
 					AND ela.analysis LIKE '{%'
-					AND ela.analysis::jsonb->'automated_fix_pr'->>'url' != ''
-					LEFT JOIN event_duplicates ed ON ed.event_id = e.id AND ed.cloud_account_id = e.cloud_account_id) as events`, request, nil
-			case needsPr:
-				return `(SELECT e.*, ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url,
-					ela.analysis::jsonb->'automated_fix_pr'->>'title' as pr_title
-					FROM events e LEFT JOIN event_log_analysis ela
-					ON ela.event_id = e.id
-					AND ela.analysis_type = 'log_analysis'
-					AND ela.status = 'COMPLETED'
-					AND ela.analysis LIKE '{%'
-					AND ela.analysis::jsonb->'automated_fix_pr'->>'url' != '') as events`, request, nil
-			case needsFingerprint:
-				return `(SELECT e.*, ed.absolute_first_seen_at as fingerprint_first_seen_at
-					FROM events e
-					LEFT JOIN event_duplicates ed ON ed.event_id = e.id AND ed.cloud_account_id = e.cloud_account_id) as events`, request, nil
-			default:
+					AND ela.analysis::jsonb->'automated_fix_pr'->>'url' != ''`)
+			}
+			if requestReferencesColumns(request, fingerprintDependentColumns) {
+				selects = append(selects, `ed.absolute_first_seen_at as fingerprint_first_seen_at`)
+				joins = append(joins, `LEFT JOIN event_duplicates ed ON ed.event_id = e.id AND ed.cloud_account_id = e.cloud_account_id`)
+			}
+			if requestReferencesColumns(request, incidentDependentColumns) {
+				// Same-subject incident grouping (#34655): a child's leader, and
+				// a leader's member count. DISTINCT ON guards against a child
+				// carrying links to two leaders (concurrent-attach race) fanning
+				// the event row out.
+				selects = append(selects,
+					`ecl.related_event_id as incident_leader_id`,
+					`coalesce(ecc.incident_member_count, 0) as incident_member_count`)
+				joins = append(joins,
+					`LEFT JOIN (SELECT DISTINCT ON (event_id, cloud_account_id) event_id, cloud_account_id, related_event_id
+						FROM event_correlations WHERE correlation_type = 'same_incident') ecl
+						ON ecl.event_id = e.id AND ecl.cloud_account_id = e.cloud_account_id`,
+					`LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
+						FROM event_correlations WHERE correlation_type = 'same_incident'
+						GROUP BY related_event_id, cloud_account_id) ecc
+						ON ecc.related_event_id = e.id AND ecc.cloud_account_id = e.cloud_account_id`)
+			}
+			if len(joins) == 0 {
 				return "events", request, nil
 			}
+			return `(SELECT e.*, ` + strings.Join(selects, ",\n\t\t\t\t") + `
+				FROM events e ` + strings.Join(joins, "\n\t\t\t\t") + `) as events`, request, nil
 		},
 		Name:                "events_v2",
 		TenantIdColumnName:  "tenant_id",
@@ -1598,6 +1778,12 @@ var table_metadata = map[string]TableDefinition{
 			"is_new_issue": {
 				Type: ColumnDefinitionTypeBoolean,
 				Def:  "CASE WHEN fingerprint_first_seen_at > NOW() - INTERVAL '7 days' THEN true ELSE false END",
+			},
+			"incident_leader_id": {
+				Type: ColumnDefinitionTypeString,
+			},
+			"incident_member_count": {
+				Type: ColumnDefinitionTypeInt,
 			},
 		},
 	},
@@ -2072,6 +2258,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"spend_groupings_v2": {
+		// spend:Read — matches classifyAction("spend_groupings_v2") in
+		// permissionCatalog.ts, which is also the gateway gate for the same-named
+		// action. Without it a custom-role holder could pass the gateway and still
+		// be denied by the engine, and the cost dashboards had no grant to ask for.
+		PermissionModule:    "spend",
 		Type:                Aggregate,
 		Source:              getSource("spend_groupings_v2"),
 		Def:                 "spends",
@@ -2146,6 +2337,7 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "audits_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		PermissionModule:    "audits",
 		UpdateFilters: func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error) {
 			if binaryClause, ok := request.Where.Binary["username"]; ok {
 				if usernameAny, ok := binaryClause[Eq]; ok {
@@ -2234,6 +2426,7 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "audits_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		PermissionModule:    "audits",
 		UpdateFilters: func(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error) {
 			if binaryClause, ok := request.Where.Binary["username"]; ok {
 				if usernameAny, ok := binaryClause[Eq]; ok {
@@ -2324,7 +2517,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, workload_namespace, workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, tableName)
+				baseQuery = fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT extendedFields.traceId AS trace_id, span.spanId AS span_id, span.parentSpanId AS parent_span_id, span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.displayName.value AS span_name, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace, CASE WHEN span.attributes.attributeMap.destination_name IS NOT NULL THEN span.attributes.attributeMap.destination_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_name, span.attributes.attributeMap.http_headers AS headers, span.attributes.attributeMap._http_status_code AS http_status_code, span.attributes.attributeMap.http_request_payload AS request_payload, span.attributes.attributeMap.http_response AS http_response, CASE WHEN span.attributes.attributeMap.otel_scope_name = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM %s) AS traces_v2`, traceProviderUrl)
@@ -2483,6 +2676,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"ticket_groupings_v2": {
+		// tickets:Read — the aggregate twin of tickets_v2, which already carries
+		// the same module. Reading the counts without being able to read the rows
+		// was an inconsistency, not a deliberate narrowing.
+		PermissionModule:    "tickets",
 		Type:                Aggregate,
 		Source:              getSource("ticket_groupings_v2"),
 		Def:                 "tickets",
@@ -2544,7 +2741,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT workload_zone, destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, cloud_availability_zone, workload_namespace,workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source FROM %s) AS traces_grouping_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availablity_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM %s) AS traces_grouping_v2`, tableName)
+				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availablity_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, span.displayName.value AS span_name, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.attributes.attributeMap._http_status_code as http_status_code, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace FROM %s) AS traces_grouping_v2`, traceProviderUrl)
@@ -2733,9 +2930,14 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
-		Name:   "recommendation_groupings_v2",
+		// recommendations:Read (or Write) reads recommendations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule: "recommendations",
+		Type:             Aggregate,
+		Source:           database.Metastore,
+		Name:             "recommendation_groupings_v2",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Push down these filters into the subquery so the planner can use
 			// idx_recommendation_tenant_account_status(tenant_id, cloud_account_id, status, category, rule_name)
@@ -2766,52 +2968,149 @@ var table_metadata = map[string]TableDefinition{
 			// needed (e.g. pure count queries like count_recommendations), skip the CTE
 			// entirely and scan recommendation directly. This avoids the LEFT JOINs to
 			// cloud_resourses / cloud_accounts and the ROW_NUMBER() window function.
+			//
+			// joinRequiringCols is only the columns projected out of the cloud_resourses /
+			// cloud_accounts joins. The two dedup columns are tracked separately in
+			// windowRequiringCols: they need the ROW_NUMBER() window but not the
+			// cloud_resourses join, so a savings roll-up (count + sum over
+			// is_primary_recommendation — no display column anywhere in it) gets a CTE
+			// without it instead of the full one.
+			//
+			// This does not change any plan Postgres picks: when no display column is
+			// referenced, remove_unused_subquery_outputs() nulls them out and the LEFT
+			// JOIN on cloud_resourses.id — a primary key, so join removal is legal —
+			// is dropped anyway. Measured on PG 17.9 over a 218904-row tenant, the full
+			// and lean CTEs produce identical buffers (shared read 250635 vs 250539),
+			// identical temp spill (2503 vs 2504 blocks) and identical cost; only
+			// planning time moves (5.1ms -> 3.4ms). The split is here so the emitted SQL
+			// says what it means rather than leaning on that rewrite. The 6074ms mean in
+			// #35107 is the parallel seq scan over recommendation, not this join — see
+			// #35172.
 			joinRequiringCols := map[string]bool{
-				"resource_name":             true,
-				"account_name":              true,
-				"account_cloud_provider":    true,
-				"resource_cloud_service":    true,
-				"resource_region":           true,
-				"resource_k8s_namespace":    true,
-				"resource_meta":             true,
-				"resource_type":             true,
+				"resource_name":          true,
+				"account_name":           true,
+				"account_cloud_provider": true,
+				"resource_cloud_service": true,
+				"resource_region":        true,
+				"resource_k8s_namespace": true,
+				"resource_meta":          true,
+				"resource_type":          true,
+				"resource_names":         true, // aggregates resource_name, which only the join supplies
+			}
+			windowRequiringCols := map[string]bool{
 				"sum_estimated_savings":     true, // uses is_primary_recommendation — needs window fn
-				"is_primary_recommendation": true, // fast path hardcodes TRUE; slow path uses window fn
+				"is_primary_recommendation": true, // fast path hardcodes TRUE; window paths compute it
 			}
-			needsJoin := false
-			for _, col := range request.Columns {
-				if joinRequiringCols[col.Name] {
-					needsJoin = true
-					break
+			// Deliberately not the shared requestReferencesColumns helper: that one also
+			// inspects Having and treats an empty Columns list as "references everything",
+			// either of which would re-route requests that take the fast path today. This
+			// closure performs exactly the checks the previous inline loops did, so
+			// needsJoin is unchanged for every request.
+			references := func(cols map[string]bool) bool {
+				for _, col := range request.Columns {
+					if cols[col.Name] {
+						return true
+					}
 				}
-			}
-			if !needsJoin {
 				for _, col := range request.GroupBy {
-					if joinRequiringCols[col] {
-						needsJoin = true
-						break
+					if cols[col] {
+						return true
 					}
 				}
-			}
-			if !needsJoin {
-				needsJoin = whereReferencesColumns(request.Where, joinRequiringCols)
-			}
-			if !needsJoin {
+				if whereReferencesColumns(request.Where, cols) {
+					return true
+				}
 				for _, ob := range request.OrderBy {
-					if joinRequiringCols[ob.Column] {
-						needsJoin = true
-						break
+					if cols[ob.Column] {
+						return true
 					}
 				}
+				return false
+			}
+			needsJoin := references(joinRequiringCols)
+			needsWindow := references(windowRequiringCols)
+
+			// The vulnerabilities join is its own opt-in, separate from needsJoin
+			// above: unlike cloud_resourses/cloud_accounts (needed by many common
+			// columns), it's only relevant to the 3 columns that actually read
+			// from it. Gating it here — rather than joining unconditionally the
+			// way an earlier version of this table did — matters because this
+			// table backs nearly every recommendation type in the product, not
+			// just security ones; an unconditional join here adds cost (plus a
+			// wider CTE tuple) to every single request through it, even ones with
+			// nothing to do with vulnerabilities. Mirrors the existing
+			// needsRecommendation/needsVulnerabilityId/needsPackageId pattern in
+			// recommendation_security_groupings_v2 below.
+			needsVulnJoin := requestReferencesColumns(request, map[string]bool{
+				"recommendation": true, "vuln_id": true, "package_name": true,
+			})
+			vulnJoin, vulnCols := "", ""
+			if needsVulnJoin {
+				vulnJoin = "LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id"
+				vulnCols = `,
+				v.id AS v_id, v.source AS v_source, v.vuln_id AS v_vuln_id, v.package_name AS v_package_name,
+				v.package_arch AS v_package_arch, v.package_type AS v_package_type, v.severity AS v_severity,
+				v.cvss_score AS v_cvss_score, v.cvss_vector AS v_cvss_vector, v.description AS v_description,
+				v.data_source AS v_data_source, v.details AS v_details`
+			}
+
+			if !needsJoin && !needsWindow {
+				def := `(
+		SELECT
+			r.*` + vulnCols + `,
+			TRUE AS is_primary_recommendation
+		FROM recommendation r
+		` + vulnJoin + `
+		WHERE r.cloud_account_id IN (SELECT id FROM cloud_accounts WHERE status = 'active')` + pushdownFilters + `
+	) as r1`
+				return def, request, nil
 			}
 
 			if !needsJoin {
+				// Window-only path: the dedup rank is needed but no display column is.
+				// Computes the identical ROW_NUMBER() over the identical row set, minus
+				// the cloud_resourses join and the display projection.
+				//
+				// cloud_accounts stays joined — the PARTITION BY's Azure branch gates on
+				// ca.cloud_provider, so dropping it would change resource_rank. It is one
+				// indexed row per account and is the same join the fast path expresses as
+				// an IN (SELECT id FROM cloud_accounts WHERE status = 'active') subquery.
+				//
+				// Dropping cloud_resourses cannot change the result: it is a LEFT JOIN on
+				// cr.id, the table's primary key, so it adds and removes no rows, and no
+				// surviving expression references cr. resource_rank, and therefore
+				// is_primary_recommendation, are byte-for-byte identical.
 				def := `(
+		WITH all_recommendations AS (
+			SELECT
+				r.*,
+				ROW_NUMBER() OVER (
+					PARTITION BY
+						CASE
+							WHEN r.dedupe_group IS NOT NULL AND r.dedupe_group <> '' THEN r.dedupe_group
+							WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
+							WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL
+								THEN r.cloud_account_id::text || ':'
+									|| COALESCE(r.recommendation->>'recommendation_type_id', '') || ':'
+									|| COALESCE(r.recommendation->>'ext_subid', r.recommendation->>'subscription_id', '') || ':'
+									|| COALESCE(r.recommendation->>'ext_sku', '')
+							ELSE r.id::text
+						END,
+						r.category
+					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
+				) AS resource_rank` + vulnCols + `
+			FROM recommendation r
+			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+			` + vulnJoin + `
+			WHERE ca.status = 'active'` + pushdownFilters + `
+		)
 		SELECT
-			r.*,
-			TRUE AS is_primary_recommendation
-		FROM recommendation r
-		WHERE r.cloud_account_id IN (SELECT id FROM cloud_accounts WHERE status = 'active')` + pushdownFilters + `
+			a.*,
+			CASE
+				WHEN a.resource_rank = 1 THEN TRUE
+				ELSE FALSE
+			END AS is_primary_recommendation
+		FROM all_recommendations a
 	) as r1`
 				return def, request, nil
 			}
@@ -2849,7 +3148,19 @@ var table_metadata = map[string]TableDefinition{
 							-- Per-resource recommendations: one primary per (resource, category) wins.
 							WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
 							-- Azure-shaped fallback (kept while Azure ingestion still relies on it).
-							WHEN r.recommendation->>'recommendation_type_id' IS NOT NULL
+							-- Gated on cloud_provider FIRST so the jsonb tests are only reached for
+							-- Azure rows. Without the gate every non-Azure row that falls through the
+							-- branches above detoasts the recommendation jsonb up to four times just
+							-- to conclude it is not Azure — and on a K8s-heavy tenant that is nearly
+							-- every row (545161 K8s / 488 GCP / 352 AWS rows reach this branch on dev,
+							-- and NONE of them carry recommendation_type_id; only Azure does, 891/976).
+							-- Measured on one account (118377 rows): 8594ms -> 915ms, shared buffers
+							-- 518400 -> 55244. LOWER() because the provider column is free-form mixed
+							-- case (dev holds 'K8s', 'GCP', 'OpenAi', ...); an exact-match gate would
+							-- silently disable the Azure branch in any environment storing it
+							-- differently, marking every Azure row primary. It costs nothing:
+							-- cloud_accounts is one indexed row here and buffer counts are identical.
+							WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL
 								THEN r.cloud_account_id::text || ':'
 									|| COALESCE(r.recommendation->>'recommendation_type_id', '') || ':'
 									|| COALESCE(r.recommendation->>'ext_subid', r.recommendation->>'subscription_id', '') || ':'
@@ -2858,10 +3169,11 @@ var table_metadata = map[string]TableDefinition{
 						END,
 						r.category
 					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
-				) AS resource_rank
+				) AS resource_rank` + vulnCols + `
 			FROM recommendation r
 			LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+			` + vulnJoin + `
 			WHERE ca.status = 'active'` + pushdownFilters + `
 		)
 		SELECT
@@ -2948,7 +3260,7 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"recommendation": {
 				Type: ColumnDefinitionTypeJson,
-				Def:  "recommendation",
+				Def:  VulnerabilityRecommendationSQL("r1", "r1.v_"),
 			},
 			"recommendation_action": {
 				Type: ColumnDefinitionTypeString,
@@ -2976,6 +3288,45 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "sum(CASE WHEN is_primary_recommendation THEN estimated_savings ELSE 0 END)",
 				IsAggregated: true,
 			},
+			// VM package-scan findings (rule_name = 'vm_package_vulnerability') keep
+			// the CVE id and the affected package on the linked vulnerabilities row
+			// (r1.v_vuln_id/r1.v_package_name — see the LEFT JOIN vulnerabilities in
+			// this table's DefGenerator), not inline in the payload anymore. Exposed
+			// as group-by columns so /vm can roll findings up by CVE or by package.
+			// COALESCE falls back to the old inline JSON path for any row the
+			// migration's backfill couldn't link — same safety net
+			// VulnerabilityRecommendationSQL uses for the full payload.
+			// TODO(vulnerabilities-cleanup): keep the fallback until the
+			// out-of-band backfill has run on every environment — see the TODO on
+			// VulnerabilityRecommendationSQL.
+			"vuln_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "COALESCE(r1.v_vuln_id, r1.recommendation ->> 'vuln_id')",
+			},
+			"package_name": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "COALESCE(r1.v_package_name, r1.recommendation -> 'package' ->> 'name')",
+			},
+			// The resources behind a group, as one comma-separated string — a VM
+			// grouping's rows name the machines the CVE or package was found on.
+			// In joinRequiringCols above: resource_name comes from the join.
+			"resource_names": {
+				Type:         ColumnDefinitionTypeString,
+				IsAggregated: true,
+				Def:          "string_agg(DISTINCT resource_name, ', ')",
+			},
+			// Worst severity in the group — same weights as severity_weight on
+			// recommendations_v2 and the security/misconfig tables.
+			"max_severity_weight": {
+				Type:         ColumnDefinitionTypeFloat,
+				IsAggregated: true,
+				Def: `max(case when severity = 'Critical' then 10
+						when severity = 'High' then 8
+						when severity = 'Medium' then 5
+						when severity = 'Low' then 2
+						when severity = 'Info' then 1
+						else 0 end)`,
+			},
 			"deleted_version": {
 				Type: ColumnDefinitionTypeFloat,
 				Def:  "COALESCE(NULLIF(r1.recommendation ->> 'deleted_version', '')::FLOAT, 0)",
@@ -2984,6 +3335,19 @@ var table_metadata = map[string]TableDefinition{
 				Type: ColumnDefinitionTypeFloat,
 				Def:  "COALESCE(NULLIF(r1.recommendation ->> 'deprecated_version', '')::FLOAT, 0)",
 			},
+			// Alias of "timestamp" above. The frontend list query shares one where
+			// clause between recommendations_list and this aggregate, and the list
+			// view exposes the column as updated_at — both names must resolve here.
+			"updated_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "updated_at",
+			},
+			// Mirrors recommendations_v2: safety band is stamped into the finops
+			// breakdown JSONB, not a dedicated column.
+			"safety_band": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "r1.finops_score_breakdown ->> 'safety_band'",
+			},
 		},
 	},
 	"integrations_get_all_accounts": {
@@ -2991,6 +3355,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:             database.Metastore,
 		Name:               "integrations_all_accounts",
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "integrations",
 		Def: `(
 			WITH accounts AS (
 				SELECT
@@ -3054,8 +3419,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_security_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		// recommendations:Read — the vulnerability rows are a recommendation
+		// surface (they are driven off `recommendation`), and the same-named action
+		// classifies to `recommendations` at the gateway.
+		PermissionModule: "recommendations",
+		Type:             Normal,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Drive from recommendation using idx_recommendation_security_status_weight
 			// (cloud_account_id, status, severity_weight DESC) so the planner can seek to
@@ -3097,15 +3466,16 @@ var table_metadata = map[string]TableDefinition{
 				END                                     AS severity_weight,
 				rec.status,
 				rec.recommendation->>'image_name'       AS image,
-				rec.recommendation->>'VulnerabilityID'  AS vulnerability_id,
-				rec.recommendation->>'PkgID'            AS package_id,
+				COALESCE(v.vuln_id, rec.recommendation->>'VulnerabilityID')       AS vulnerability_id,
+				COALESCE(v.details->>'pkg_id', rec.recommendation->>'PkgID')     AS package_id,
 				rec.created_at,
 				rec.updated_at,
 				cr.workload_name,
 				cr.workload_type,
 				cr.namespace,
-				rec.recommendation::varchar             AS recommendation
+				(` + VulnerabilityRecommendationSQL("rec", "v.") + `)::varchar    AS recommendation
 			FROM recommendation rec
+			LEFT JOIN vulnerabilities v ON v.id = rec.vulnerability_id
 			` + joinKeyword + ` (
 				SELECT DISTINCT
 					pc.workload_name,
@@ -3183,8 +3553,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_security_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
+		// recommendations:Read (or Write) reads recommendations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule: "recommendations",
+		Type:             Aggregate,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Extract filters before building the query. Status and severity filters go
 			// inside the LATERAL (referencing rec2.*) so the planner can use the partial
@@ -3276,19 +3651,29 @@ var table_metadata = map[string]TableDefinition{
 			includeCleanImages := !requestReferencesColumns(request, map[string]bool{"vulnerability_id": true}) &&
 				recSeverityFilter == ""
 
+			// v2 joins vulnerabilities against rec2.vulnerability_id — only added
+			// when at least one of the three columns below actually needs it, same
+			// "pay for what you use" rule the conditional columns themselves follow.
+			// COALESCE falls back to the raw JSON-embedded value (pre-migration
+			// shape) for any row the backfill couldn't link — see
+			// VulnerabilityRecommendationSQL's doc comment for why that matters.
+			lateralVulnJoin := ""
 			lateralVulnCol, outerVulnCol := "", ""
 			if needsVulnerabilityId {
-				lateralVulnCol = ",\n\t\t\t\t\trec2.recommendation->>'VulnerabilityID' as vulnerability_id"
+				lateralVulnJoin = "\n\t\t\t\tLEFT JOIN vulnerabilities v2 ON v2.id = rec2.vulnerability_id"
+				lateralVulnCol = ",\n\t\t\t\t\tCOALESCE(v2.vuln_id, rec2.recommendation->>'VulnerabilityID') as vulnerability_id"
 				outerVulnCol = ",\n\t\t\t\t\tr.vulnerability_id as vulnerability_id"
 			}
 			lateralPkgCol, outerPkgCol := "", ""
 			if needsPackageId {
-				lateralPkgCol = ",\n\t\t\t\t\trec2.recommendation->>'PkgID' as package_id"
+				lateralVulnJoin = "\n\t\t\t\tLEFT JOIN vulnerabilities v2 ON v2.id = rec2.vulnerability_id"
+				lateralPkgCol = ",\n\t\t\t\t\tCOALESCE(v2.details->>'pkg_id', rec2.recommendation->>'PkgID') as package_id"
 				outerPkgCol = ",\n\t\t\t\t\tr.package_id as package_id"
 			}
 			lateralRecCol, outerRecCol := "", ""
 			if needsRecommendation {
-				lateralRecCol = ",\n\t\t\t\t\trec2.recommendation::varchar as recommendation"
+				lateralVulnJoin = "\n\t\t\t\tLEFT JOIN vulnerabilities v2 ON v2.id = rec2.vulnerability_id"
+				lateralRecCol = ",\n\t\t\t\t\t(" + VulnerabilityRecommendationSQL("rec2", "v2.") + `)::varchar as recommendation`
 				outerRecCol = ",\n\t\t\t\t\tr.recommendation as recommendation"
 			}
 
@@ -3391,7 +3776,7 @@ var table_metadata = map[string]TableDefinition{
 			FROM pod_container pc,
 			LATERAL (
 				SELECT rec2.id, rec2.severity, rec2.status, rec2.created_at, rec2.updated_at, NULL::text as scan_status` + lateralVulnCol + lateralPkgCol + lateralRecCol + `
-				FROM recommendation rec2
+				FROM recommendation rec2` + lateralVulnJoin + `
 				WHERE rec2.cloud_account_id = pc.cloud_account_id
 					AND rec2.tenant_id      = pc.tenant_id
 					AND rec2.recommendation->>'image_name' = pc.image
@@ -3530,6 +3915,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_feedback_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Ask-Nudgebee data-widening entry in
+		// docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "llm_conversation_feedback",
@@ -3673,6 +4063,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workloads_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_workloads",
@@ -3777,6 +4168,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_pods_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_pods",
@@ -3889,6 +4281,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_namespaces_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_namespaces",
@@ -3961,6 +4354,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workload_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_workloads",
@@ -4077,6 +4471,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_pod_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_pods",
@@ -4174,6 +4569,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_namespace_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_namespaces",
@@ -4235,8 +4631,9 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workloads_cloud_account_monitoring_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Push down account_id filter into the event_count CTE to avoid full scan of events table (61GB)
 			eventAccountFilter := extractFilterSQL(&request, "account_id", "e2.cloud_account_id")
@@ -4271,7 +4668,7 @@ var table_metadata = map[string]TableDefinition{
 				good_events_count,
 				RANK() OVER (
 					PARTITION BY config_id
-					ORDER BY sr.created_at
+					ORDER BY sr.created_at DESC
 				) rn
 			FROM
 				slo_report sr
@@ -4422,8 +4819,9 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_workloads_cloud_account_monitoring_recommendations_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
 		Def: `(SELECT
 			kw.name as workload_name,
 			kw.namespace,
@@ -4440,7 +4838,6 @@ var table_metadata = map[string]TableDefinition{
 			AND kw.cloud_resource_id = r.resource_id
 		WHERE
 			r.status = 'Open'
-			AND category = 'RightSizing'
 			AND rule_name = 'pod_right_sizing'
 		GROUP BY
 			kw.name,
@@ -4542,8 +4939,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_security_cis_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
+		// recommendations:Read — same module as recommendation_security_v2.
+		PermissionModule: "recommendations",
+		Type:             Aggregate,
+		Source:           database.Metastore,
 		Def: `(select *
 								, (case when severity = 'Critical' then 10 
 										when severity = 'High' then 8 
@@ -4599,8 +4998,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendations_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
+		// recommendations:Read (or Write) reads recommendations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule: "recommendations",
+		Type:             Normal,
+		Source:           database.Metastore,
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			pushdownFilters := extractFilterSQL(&request, "account_id", "r.cloud_account_id")
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
@@ -4638,6 +5042,23 @@ var table_metadata = map[string]TableDefinition{
 			if tenantId != "" {
 				pushdownFilters += " AND r.tenant_id = " + (&postgresDialect{}).QuoteLiteral(tenantId)
 			}
+			// Opt-in vulnerabilities join, gated the same way as the sibling
+			// recommendation_groupings_v2 generator above (see its comment): this
+			// table backs nearly every recommendation type in the product, so an
+			// unconditional join here would add cost to every request through it,
+			// not just security ones.
+			needsVulnJoin := requestReferencesColumns(request, map[string]bool{
+				"recommendation": true, "vuln_id": true, "package_name": true,
+			})
+			vulnJoin, vulnCols := "", ""
+			if needsVulnJoin {
+				vulnJoin = "LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id"
+				vulnCols = `,
+							v.id AS v_id, v.source AS v_source, v.vuln_id AS v_vuln_id, v.package_name AS v_package_name,
+							v.package_arch AS v_package_arch, v.package_type AS v_package_type, v.severity AS v_severity,
+							v.cvss_score AS v_cvss_score, v.cvss_vector AS v_cvss_vector, v.description AS v_description,
+							v.data_source AS v_data_source, v.details AS v_details`
+			}
 			def := `(
 					WITH all_recommendations AS (
 						SELECT
@@ -4668,7 +5089,11 @@ var table_metadata = map[string]TableDefinition{
 								PARTITION BY
 									CASE
 										WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
-										WHEN r.recommendation->>'recommendation_type_id' IS NOT NULL
+										-- Azure-shaped fallback, gated on cloud_provider first: see the
+										-- sibling generator above. Reaching the jsonb tests for non-Azure
+										-- rows detoasts the recommendation jsonb up to four times per
+										-- row to conclude it is not Azure.
+										WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL
 											THEN r.cloud_account_id::text || ':'
 												|| COALESCE(r.recommendation->>'recommendation_type_id', '') || ':'
 												|| COALESCE(r.recommendation->>'ext_subid', r.recommendation->>'subscription_id', '') || ':'
@@ -4677,10 +5102,11 @@ var table_metadata = map[string]TableDefinition{
 									END,
 									r.category
 								ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
-							) AS resource_rank
+							) AS resource_rank` + vulnCols + `
 						FROM recommendation r
 						LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 						LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+						` + vulnJoin + `
 						WHERE ca.status = 'active'` + pushdownFilters + `
 					)
 					SELECT
@@ -4719,6 +5145,7 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"recommendation": {
 				Type: ColumnDefinitionTypeJson,
+				Def:  VulnerabilityRecommendationSQL("r1", "r1.v_"),
 			},
 			"recommendation_action": {
 				Type: ColumnDefinitionTypeString,
@@ -4728,6 +5155,20 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"severity": {
 				Type: ColumnDefinitionTypeString,
+			},
+			// Ordering rank for severity — ORDER BY severity puts 'Medium' above
+			// 'High' alphabetically. Same weights as the security/misconfig
+			// tables so a severity sort ranks identically everywhere. Callers
+			// that order by it must also select it: generateOrderByClause emits
+			// the column name, which Postgres resolves against the SELECT alias.
+			"severity_weight": {
+				Type: ColumnDefinitionTypeInt,
+				Def: `(case when severity = 'Critical' then 10
+						when severity = 'High' then 8
+						when severity = 'Medium' then 5
+						when severity = 'Low' then 2
+						when severity = 'Info' then 1
+						else 0 end)`,
 			},
 			"estimated_savings": {
 				Type: ColumnDefinitionTypeFloat,
@@ -4746,6 +5187,9 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"is_dismissed": {
 				Type: ColumnDefinitionTypeBoolean,
+			},
+			"snoozed_until": {
+				Type: ColumnDefinitionTypeDatetime,
 			},
 			"account_object_id": {
 				Type: ColumnDefinitionTypeString,
@@ -4798,6 +5242,24 @@ var table_metadata = map[string]TableDefinition{
 			"safety_band": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "r1.finops_score_breakdown ->> 'safety_band'",
+			},
+			// CVE id and affected package of a VM package-scan finding — the /vm
+			// grouped views drill down by filtering the list on these. Sourced from
+			// the linked vulnerabilities row (r1.v_vuln_id/r1.v_package_name — see
+			// the LEFT JOIN vulnerabilities in this table's DefGenerator), not
+			// inline in the payload anymore. COALESCE falls back to the old inline
+			// JSON path for any row the migration's backfill couldn't link — same
+			// safety net VulnerabilityRecommendationSQL uses for the full payload.
+			// TODO(vulnerabilities-cleanup): keep the fallback until the
+			// out-of-band backfill has run on every environment — see the TODO on
+			// VulnerabilityRecommendationSQL.
+			"vuln_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "COALESCE(r1.v_vuln_id, r1.recommendation ->> 'vuln_id')",
+			},
+			"package_name": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "COALESCE(r1.v_package_name, r1.recommendation -> 'package' ->> 'name')",
 			},
 			"deleted_version": {
 				Type: ColumnDefinitionTypeFloat,
@@ -5058,6 +5520,9 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_v2": {
+		// anomalies:Read — matches classifyAction on the anomaly_* action family
+		// (anomaly_grouping_v2, anomaly_type_v2, anomaly_template_list).
+		PermissionModule:    "anomalies",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 `anomaly`,
@@ -5110,6 +5575,8 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_grouping_v2": {
+		// anomalies:Read — same module as anomaly_v2; this is its grouped twin.
+		PermissionModule:    "anomalies",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 `anomaly`,
@@ -5369,6 +5836,15 @@ var table_metadata = map[string]TableDefinition{
 			// Strip "resource_" prefix from column names to match actual DB columns
 			resourcesWhereClause = renameWhereColumns(resourcesWhereClause, "resource_")
 
+			// Per-service spend must NOT be gated by the live-resource status filter
+			// (the Services tab defaults resource_status=Active). A service's period cost
+			// includes resources that are now Deleted — churned mid-period, or billing rows
+			// a later discovery reconciliation mislabelled Deleted. So split the status
+			// predicate out: the resource COUNT keeps the full (status) filter, while the
+			// spend rollup uses this status-agnostic clause. All other resource filters
+			// (service/region/tag) still apply to both.
+			_, resourcesWhereClauseNoStatus := splitWhereClause(resourcesWhereClause, []string{"status"})
+
 			// Reject if remaining contains mixed-family _or/_not filters that reference
 			// pushdown-only columns — these can't be evaluated on the outer query
 			if whereReferencesColumns(remaining, pushdownOnlyColumns) {
@@ -5376,7 +5852,7 @@ var table_metadata = map[string]TableDefinition{
 			}
 
 			request.Where = remaining
-			var spendsWhereStr, recommendationWhereStr, resourceWhereStr string
+			var spendsWhereStr, recommendationWhereStr, resourceWhereStr, resourceWhereStrNoStatus string
 			var err error
 			if hasFilters(spendWhereClause) {
 				tempTableDef := TableDefinition{
@@ -5433,53 +5909,63 @@ var table_metadata = map[string]TableDefinition{
 				recommendationWhereStr = "1 = 1"
 			}
 
-			if hasFilters(resourcesWhereClause) {
-				tempTableDef := TableDefinition{
-					Columns: map[string]ColumnDefinition{
-						"id": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"name": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"status": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"type": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"arn": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"region": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"service_name": {
-							Type: ColumnDefinitionTypeString,
-						},
-						"tags": {
-							Type: ColumnDefinitionTypeJson,
-						},
+			resourceTableDef := TableDefinition{
+				Columns: map[string]ColumnDefinition{
+					"id": {
+						Type: ColumnDefinitionTypeString,
 					},
-					Type:   Normal,
-					Def:    "cloud_resourses",
-					Name:   "cloud_resourses",
-					Source: database.Metastore,
-				}
-				resourceWhereStr, err = generateWhereClause(resourcesWhereClause, tempTableDef)
+					"name": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"status": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"type": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"arn": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"region": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"service_name": {
+						Type: ColumnDefinitionTypeString,
+					},
+					"tags": {
+						Type: ColumnDefinitionTypeJson,
+					},
+				},
+				Type:   Normal,
+				Def:    "cloud_resourses",
+				Name:   "cloud_resourses",
+				Source: database.Metastore,
+			}
+			if hasFilters(resourcesWhereClause) {
+				resourceWhereStr, err = generateWhereClause(resourcesWhereClause, resourceTableDef)
 				if err != nil {
 					return "", request, fmt.Errorf("failed to generate resources where clause: %w", err)
 				}
 			} else {
 				resourceWhereStr = "1 = 1"
 			}
+			// Status-agnostic variant for the spend rollup (see the status split above).
+			if hasFilters(resourcesWhereClauseNoStatus) {
+				resourceWhereStrNoStatus, err = generateWhereClause(resourcesWhereClauseNoStatus, resourceTableDef)
+				if err != nil {
+					return "", request, fmt.Errorf("failed to generate status-agnostic resources where clause: %w", err)
+				}
+			} else {
+				resourceWhereStrNoStatus = "1 = 1"
+			}
 
 			// Push account_id and tenant_id into the CTE so the planner can use
 			// the account/tenant index before the full status+type scan.
 			// extractFilterSQL also removes them from request.Where to avoid
 			// redundant re-application on the outer query.
-			resourceWhereStr += extractFilterSQL(&request, "account_id", "account")
-			resourceWhereStr += extractFilterSQL(&request, "tenant_id", "tenant")
+			accountTenantWhereSQL := extractFilterSQL(&request, "account_id", "account") + extractFilterSQL(&request, "tenant_id", "tenant")
+			resourceWhereStr += accountTenantWhereSQL
+			resourceWhereStrNoStatus += accountTenantWhereSQL
 
 			// Skip joins that aren't needed by this request — avoids scanning
 			// spends/recommendation when the caller only wants resource counts.
@@ -5504,8 +5990,13 @@ var table_metadata = map[string]TableDefinition{
 			}
 
 			if isServiceRollup {
+				spendResourceBaseCTE := ""
 				if needsSpend {
-					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
+					// Aggregate spend against the status-agnostic resource set so a service's
+					// cost includes spend on now-Deleted resources. resource_count below still
+					// comes from the status-filtered resource_base.
+					spendResourceBaseCTE = `, spend_resource_base as (select tenant, account, id, service_name from cloud_resourses where __resources_nostatus__where__)`
+					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join spend_resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
 				}
 				if needsRec {
 					recJoin = `left join (select count(*) as recommendation_count, sum(r1.recommendation_estimated_savings) as recommendation_estimated_savings, r1.cloud_account_id, cr3.tenant, cr3.service_name from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation) r1 join resource_base cr3 on cr3.id = r1.resource_id and cr3.account = r1.cloud_account_id where __recommendations__where__ group by cr3.tenant, cr3.service_name, r1.cloud_account_id) r on r.tenant = cr.tenant and r.service_name = cr.service_name and r.cloud_account_id = cr.account`
@@ -5513,7 +6004,7 @@ var table_metadata = map[string]TableDefinition{
 				baseQuery = fmt.Sprintf(`(
 					with resource_base as (
 						select tenant, account, id, service_name from cloud_resourses where __resources__where__
-					)
+					)%s
 					select cr.tenant as tenant_id, cr.account as account_id, cr.service_name
 						, resource_count::int
 						, %s
@@ -5521,7 +6012,7 @@ var table_metadata = map[string]TableDefinition{
 					from (select tenant, account, service_name, count(*) as resource_count from resource_base group by tenant, account, service_name) cr
 					%s
 					%s
-				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
+				) as resource_group`, spendResourceBaseCTE, spendSelect, recSelect, spendJoin, recJoin)
 			} else {
 				if needsSpend {
 					spendJoin = `left join (select sum(spend_amount) as spend_amount, cloud_resource_id, cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 where __spends__where__ group by cloud_resource_id, cloud_account) s on s.cloud_resource_id = cr.id and s.cloud_account = cr.account`
@@ -5540,6 +6031,7 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
 			}
 
+			baseQuery = strings.ReplaceAll(baseQuery, "__resources_nostatus__where__", resourceWhereStrNoStatus)
 			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)
@@ -5788,7 +6280,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Derived,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_users_by_tenant_v2",
+		// Tenant-scoped user directory — a users:Read (or Write) custom grant
+		// authorizes this tenant-wide read.
+		PermissionModule: "users",
+		Name:             "admin_get_users_by_tenant_v2",
 		Def: `(
 			SELECT
 				u.id::text as id,
@@ -5877,7 +6372,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Aggregate,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_users_grouping_by_tenant_v2",
+		// Aggregate companion of the tenant-scoped user directory — same
+		// users:Read (or Write) grant authorizes the tenant-wide read.
+		PermissionModule: "users",
+		Name:             "admin_get_users_grouping_by_tenant_v2",
 		Def: `(
 			SELECT
 				u.id::text as id,
@@ -5925,7 +6423,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Derived,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_user_groups_v2",
+		// Tenant-scoped groups directory — a usergroups:Read (or Write) grant
+		// authorizes this tenant-wide read.
+		PermissionModule: "usergroups",
+		Name:             "admin_get_user_groups_v2",
 		Def: `(
 			SELECT
 				ug.id::text as id,
@@ -5995,6 +6496,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Aggregate,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "usergroups",
 		Name:               "admin_get_user_groups_grouping_v2",
 		Def: `(
 			SELECT
@@ -6039,10 +6541,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"admin_get_notification_rules_v2": {
-		Type:               Derived,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		Name:               "admin_get_notification_rules_v2",
+		Type:                Derived,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "notifications",
+		Name:                "admin_get_notification_rules_v2",
 		Def: `(
 			SELECT
 					nr.id::text as id,
@@ -6158,10 +6662,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"admin_get_notification_rules_grouping_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		Name:               "admin_notification_rules_grouping_v2",
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "notifications",
+		Name:                "admin_notification_rules_grouping_v2",
 		Def: `(
 			SELECT
 				nr.id::text as id,
@@ -6233,6 +6739,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Derived,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "integrations",
 		Name:               "admin_get_integrations_v2",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Extract optional config_value_name and config_value_value filters
@@ -6288,7 +6795,8 @@ var table_metadata = map[string]TableDefinition{
 						'cloud_account_name', ca.account_name,
 						'default_log_provider', ica.default_log_provider,
 						'default_traces_provider', ica.default_traces_provider,
-						'default_metrics_provider', ica.default_metrics_provider
+						'default_metrics_provider', ica.default_metrics_provider,
+						'default_llm_provider', ica.default_llm_provider
 					)) as cloud_accounts
 				FROM integrations_cloud_accounts ica
 				LEFT JOIN cloud_accounts ca ON ca.id = ica.cloud_account_id
@@ -6324,10 +6832,12 @@ var table_metadata = map[string]TableDefinition{
 								icv.name LIKE 'llm_provider_access_key%' OR
 								icv.name LIKE 'llm_provider_secret_key%' OR
 								icv.name LIKE 'llm_provider_session_token%' OR
+								icv.name LIKE 'llm_oauth_client_secret%' OR
 								icv.name LIKE 'llm_tier_api_key%' OR
 								icv.name LIKE 'llm_tier_access_key%' OR
 								icv.name LIKE 'llm_tier_secret_key%' OR
-								icv.name LIKE 'llm_tier_session_token%'
+								icv.name LIKE 'llm_tier_session_token%' OR
+								icv.name LIKE 'llm_tier_oauth_client_secret%'
 							) THEN ''
 							ELSE icv.value
 						END,
@@ -6409,6 +6919,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Aggregate,
 		Source:             database.Metastore,
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "integrations",
 		Name:               "admin_get_integrations_grouping_v2",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			// Mirror the cloud_account_id pushdown from admin_get_integrations_v2
@@ -6473,7 +6984,15 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "id",
-		Name:                "get_cloud_accounts_v2",
+		// Deliberate exception to the "account-scoped tables get no
+		// PermissionModule" rule: the accounts *catalog* (names/ids/status/
+		// provider) is tenant-level metadata backing the account/cluster pickers
+		// app-wide, so an accounts:Read custom grant enumerates all tenant
+		// accounts. Per-account operational data (k8s/metrics/spend) stays
+		// built-in-role-gated — those tables carry no PermissionModule. See
+		// docs/architecture-decisions.md (RBAC v1 — scoped data-widening).
+		PermissionModule: "accounts",
+		Name:             "get_cloud_accounts_v2",
 		Def: `(
 			SELECT
 				ca.account_name,
@@ -6508,20 +7027,28 @@ var table_metadata = map[string]TableDefinition{
 				GROUP BY cloud_account_id
 			) caa_agg ON caa_agg.cloud_account_id = ca.id
 			LEFT JOIN (
-				SELECT cloud_account_id,
+				SELECT a.cloud_account_id,
 					json_agg(json_build_object(
-						'last_connected_at', last_connected_at,
-						'status', status,
-						'version', version,
-						'connection_status', connection_status,
-						'k8s_provider', k8s_provider,
-						'k8s_version', k8s_version,
-						'status_message', status_message,
-						'last_synced_at', last_synced_at
+						'last_connected_at', a.last_connected_at,
+						'status', a.status,
+						'version', a.version,
+						'connection_status', a.connection_status,
+						'k8s_provider', a.k8s_provider,
+						'k8s_version', a.k8s_version,
+						'status_message', a.status_message,
+						'last_synced_at', a.last_synced_at
 					)) as agents
-				FROM agent
-				WHERE type NOT IN ('proxy', 'eventbridge', 'gcp_monitoring_webhook')
-				GROUP BY cloud_account_id
+				FROM agent a
+				JOIN cloud_accounts aca ON aca.id = a.cloud_account_id
+				WHERE a.type NOT IN ('eventbridge', 'gcp_monitoring_webhook')
+					-- On a K8s or cloud account a proxy agent is a secondary
+					-- integration and must not mask the real agent's health. A
+					-- self-hosted fleet has no other agent, so excluding it there
+					-- left the header with no status to show at all (grey dot on a
+					-- perfectly healthy forager). Columns are alias-qualified
+					-- because cloud_accounts shares names with agent (status, id).
+					AND (a.type <> 'proxy' OR aca.cloud_provider = 'SelfHosted')
+				GROUP BY a.cloud_account_id
 			) ag ON ag.cloud_account_id = ca.id
 		) as cloud_accounts_v2`,
 		Columns: map[string]ColumnDefinition{
@@ -6604,7 +7131,10 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "id",
-		Name:                "get_cloud_accounts_grouping_v2",
+		// Aggregate companion of get_cloud_accounts_v2 — same accounts-catalog
+		// exception: an accounts:Read (or Write) grant reads it tenant-wide.
+		PermissionModule: "accounts",
+		Name:             "get_cloud_accounts_grouping_v2",
 		Def: `(
 			SELECT
 				ca.id::text AS id,
@@ -6689,6 +7219,14 @@ var table_metadata = map[string]TableDefinition{
 		Name:               "tenant_attributes_v2",
 		Def:                "tenant_attrs",
 		TenantIdColumnName: "tenant_id",
+		// Tenant attributes are tenant settings, so tenant_attributes_v2 classifies
+		// as tenants:Read at the gateway (app/src/lib/permissionCatalog.ts). Without
+		// naming the module here the query engine does not accept that grant, and
+		// because this table has no AccountIdColumnName the caller falls into the
+		// account-restriction branch of service.go and gets "account id column not
+		// found in table tenant_attributes_v2" — a 400, not a 403. Same lockstep
+		// requirement as feature_flag_v2 below.
+		PermissionModule: "tenants",
 		Columns: map[string]ColumnDefinition{
 			"id":        {Type: ColumnDefinitionTypeString, Def: "id"},
 			"name":      {Type: ColumnDefinitionTypeString, Def: "name"},
@@ -6748,6 +7286,7 @@ var table_metadata = map[string]TableDefinition{
 					(SELECT json_agg(json_build_object(
 						'name', ug.name,
 						'id', ug.id,
+						'tenant', ug.tenant,
 						'description', ug.description,
 						'group_roles', COALESCE(
 							(SELECT json_agg(json_build_object(
@@ -6843,6 +7382,7 @@ var table_metadata = map[string]TableDefinition{
 					(SELECT json_agg(json_build_object(
 						'name', ug.name,
 						'id', ug.id,
+						'tenant', ug.tenant,
 						'group_roles', COALESCE(
 							(SELECT json_agg(json_build_object(
 								'role', gr.role,
@@ -6883,6 +7423,10 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "get_agent_health_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
+		// Per-account agent connectivity status — surfaced with the accounts
+		// catalog, so an accounts:Read (or Write) grant reads it tenant-wide.
+		// Kept in sync with permissionCatalog.ts MODULE_OVERRIDES (agents_list_health).
+		PermissionModule: "accounts",
 		Def: `(
 			SELECT
 				id::text as id,
@@ -6951,6 +7495,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_rules_v2": {
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "events",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "event_rules",
@@ -6986,6 +7534,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_rules_groupings_v2": {
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "events",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "event_rules",
@@ -7069,6 +7621,8 @@ var table_metadata = map[string]TableDefinition{
 			"bad_events_count":       {Type: ColumnDefinitionTypeString},
 			"sli_measurement":        {Type: ColumnDefinitionTypeString},
 			"slo_config":             {Type: ColumnDefinitionTypeJson},
+			"severity":               {Type: ColumnDefinitionTypeString},
+			"burn_rates":             {Type: ColumnDefinitionTypeJson},
 			"timestamp":              {Type: ColumnDefinitionTypeDatetime},
 		},
 	},
@@ -7098,6 +7652,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"insight_v2": {
+		// insights:Read (or Write) reads cluster insights tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. Backs the Ask-Nudgebee cluster-insights cards. See the
+		// [2026-07] Ask-Nudgebee data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "insights",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "insight",
@@ -7142,9 +7701,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"tickets_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "tickets_v2",
+		// tickets:Read (or Write) reads tickets tenant-wide — dynamic-RBAC custom
+		// grant, same query-engine mechanism as the events tables. See the
+		// [2026-07] Troubleshoot cross-module data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "tickets",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "tickets_v2",
 		Def: `(SELECT t.*,
 			u.display_name AS created_by_display_name
 			FROM tickets t
@@ -7276,6 +7839,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_v2": {
+		PermissionModule:    "k8s",
 		Type:                Normal,
 		Source:              database.Metastore,
 		Def:                 "k8s_nodes",
@@ -7314,6 +7878,7 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_groupings_v2": {
+		PermissionModule:    "k8s",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "k8s_nodes",
@@ -7335,9 +7900,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "cloud_resource_v2",
+		PermissionModule: "cloud",
 		Def: `(SELECT cr.*,
 			ca.account_name as account_name,
 			cr.resourse_id as resource_id,
@@ -7616,6 +8182,7 @@ var table_metadata = map[string]TableDefinition{
 	"cloud_resource_groupings_v2": {
 		Type:                Aggregate,
 		Source:              database.Metastore,
+		PermissionModule:    "cloud",
 		Def:                 "cloud_resourses",
 		Name:                "cloud_resource_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
@@ -7655,9 +8222,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resources_list_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resources_list_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "cloud_resources_list_v2",
+		PermissionModule: "cloud",
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			baseQuery := `(
 				SELECT cr.region, cr.resourse_id, cr.service_name, cr.status, cr.name, cr.id,
@@ -7854,6 +8422,88 @@ var table_metadata = map[string]TableDefinition{
 			"metric":                  {Type: ColumnDefinitionTypeString},
 		},
 	},
+	// Installed-package inventory pulled off a self-hosted VM by
+	// services/vmpackage. Read-only here: the only writer is that package's
+	// archive-then-upsert. `cloud` module because every row is anchored to a
+	// cloud_accounts / cloud_resourses pair, same as the sibling
+	// cloud_resources_list_v2.
+	"cloud_vm_packages_v2": {
+		Type:               Normal,
+		Source:             database.Metastore,
+		Def:                "vm_package",
+		Name:               "cloud_vm_packages_v2",
+		TenantIdColumnName: "tenant_id",
+		// The Columns key, not the physical column: the security layer looks this
+		// name up in Columns and emits that entry's Def (cloud_account_id).
+		// Naming the physical column here makes the lookup miss.
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "cloud",
+		Columns: map[string]ColumnDefinition{
+			"id":                {Type: ColumnDefinitionTypeString},
+			"tenant_id":         {Type: ColumnDefinitionTypeString},
+			"account_id":        {Type: ColumnDefinitionTypeString, Def: "cloud_account_id"},
+			"cloud_resource_id": {Type: ColumnDefinitionTypeString},
+			"os_family":         {Type: ColumnDefinitionTypeString},
+			"os_version":        {Type: ColumnDefinitionTypeString},
+			"pkg_type":          {Type: ColumnDefinitionTypeString},
+			"name":              {Type: ColumnDefinitionTypeString},
+			"version":           {Type: ColumnDefinitionTypeString},
+			"arch":              {Type: ColumnDefinitionTypeString},
+			"epoch":             {Type: ColumnDefinitionTypeInt},
+			"source_name":       {Type: ColumnDefinitionTypeString},
+			"source_version":    {Type: ColumnDefinitionTypeString},
+			"is_active":         {Type: ColumnDefinitionTypeBoolean},
+			"first_seen_at":     {Type: ColumnDefinitionTypeDatetime},
+			"last_seen_at":      {Type: ColumnDefinitionTypeDatetime},
+			"updated_at":        {Type: ColumnDefinitionTypeDatetime},
+		},
+	},
+	// Counts for the package listing's pagination, and the per-VM package
+	// totals shown on the VM inventory table.
+	"cloud_vm_package_groupings_v2": {
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		Def:                 "vm_package",
+		Name:                "cloud_vm_package_groupings_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    "cloud",
+		Columns: map[string]ColumnDefinition{
+			"tenant_id":         {Type: ColumnDefinitionTypeString},
+			"account_id":        {Type: ColumnDefinitionTypeString, Def: "cloud_account_id"},
+			"cloud_resource_id": {Type: ColumnDefinitionTypeString},
+			"os_family":         {Type: ColumnDefinitionTypeString},
+			"os_version":        {Type: ColumnDefinitionTypeString},
+			"pkg_type":          {Type: ColumnDefinitionTypeString},
+			"name":              {Type: ColumnDefinitionTypeString},
+			"is_active":         {Type: ColumnDefinitionTypeBoolean},
+			"last_seen_at":      {Type: ColumnDefinitionTypeDatetime},
+			// The rest of a package's identity, so /vm can roll the inventory up
+			// per package instead of per (package, VM).
+			"version":        {Type: ColumnDefinitionTypeString},
+			"arch":           {Type: ColumnDefinitionTypeString},
+			"epoch":          {Type: ColumnDefinitionTypeInt},
+			"source_name":    {Type: ColumnDefinitionTypeString},
+			"source_version": {Type: ColumnDefinitionTypeString},
+			"count": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "count(*)",
+				IsAggregated: true,
+			},
+			// The VMs a grouped row covers, as ids — the caller already holds an
+			// id → name map, so aggregating ids here keeps this table join-free.
+			"resource_ids": {
+				Type:         ColumnDefinitionTypeString,
+				IsAggregated: true,
+				Def:          "string_agg(DISTINCT cloud_resource_id::text, ',')",
+			},
+			"max_last_seen_at": {
+				Type:         ColumnDefinitionTypeDatetime,
+				Def:          "max(last_seen_at)",
+				IsAggregated: true,
+			},
+		},
+	},
 	"resource_spend_trend_v2": {
 		Type:   Aggregate,
 		Source: database.Metastore,
@@ -7901,9 +8551,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_attributes_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_attributes_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "cloud_resource_attributes_v2",
+		PermissionModule: "cloud",
 		Def: `(SELECT cra.*,
 			cr.id as resource_uuid,
 			cr.arn as resource_arn,
@@ -7945,6 +8596,10 @@ var table_metadata = map[string]TableDefinition{
 		Type:   Derived,
 		Source: database.Metastore,
 		Name:   "notification_channel_account_mapping_v2",
+		// Channel↔account mapping is Message Platform config — a messagingplatforms
+		// Read (or Write) custom grant authorizes this tenant-wide read. Kept in
+		// sync with permissionCatalog.ts MODULE_OVERRIDES for the same actions.
+		PermissionModule: "messagingplatforms",
 		Def: `(SELECT ncam.*,
 			ca.account_name as account_name,
 			ca.cloud_provider as cloud_provider,
@@ -8106,8 +8761,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_task_groupings_v2": {
-		Type:   Aggregate,
-		Source: database.Metastore,
+		// autooptimize:Read — the Autopilot surface is served by the
+		// autooptimize_* action family (autooptimize_list_tasks and friends), so
+		// that is the grant an admin ticks for it.
+		PermissionModule: "autooptimize",
+		Type:             Aggregate,
+		Source:           database.Metastore,
 		Def: `(SELECT apt.*, ap.category as auto_pilot_category, ap.account_id as auto_pilot_account_id
 			FROM auto_pilot_task apt
 			LEFT JOIN auto_pilot ap ON ap.id = apt.auto_pilot_id
@@ -8131,9 +8790,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_approvals_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_approvals_v2",
+		// autooptimize:Read — same module as auto_pilot_task_groupings_v2
+		// (autooptimize_list_approvals is the action behind the same surface).
+		PermissionModule: "autooptimize",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_approvals_v2",
 		Def: `(SELECT apa.*,
 			apas.description as approval_status_description,
 			u.display_name as reviewer_display_name
@@ -8290,9 +8952,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_resolution_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "event_resolution_v2",
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule: "events",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "event_resolution_v2",
 		// event_id is polymorphic: for event-backed resolutions it is an events.id,
 		// for AI-investigation-raised resolutions (e.g. agent rightsizing PRs) it is an
 		// llm_conversations.id. Tenant/account are COALESCEd across both joins so
@@ -8341,6 +9007,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"event_resolution_groupings_v2": {
+		// events:Read (or Write) reads the events surface tenant-wide — same
+		// query-engine mechanism as audits/notifications/accounts-catalog. See
+		// the [2026-07] events data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "events",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		Def:                 "(SELECT er.*, COALESCE(e.tenant, c.tenant_id) as tenant_id, COALESCE(e.cloud_account_id, c.account_id) as account_id, COALESCE(e.cloud_account_id, c.account_id) as event_cloud_account_id FROM event_resolution er LEFT JOIN events e ON e.id = er.event_id LEFT JOIN llm_conversations c ON c.id = er.event_id) as er_agg",
@@ -8385,6 +9055,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_functions_v2": {
+		// ai_functions:Read (or Write) reads AI functions tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Ask-Nudgebee data-widening entry in
+		// docs/architecture-decisions.md.
+		PermissionModule:    "ai_functions",
 		Type:                Normal,
 		Def:                 "llm_functions",
 		Name:                "llm_functions_v2",
@@ -8409,6 +9084,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_list_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Derived,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
@@ -8769,6 +9449,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_detail_polling_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. Backs the Ask-Nudgebee open-conversation poller. See the
+		// [2026-07] Ask-Nudgebee data-widening entry in docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Derived,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
@@ -8909,6 +9594,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_conversation_groupings_v2": {
+		// ai_conversations:Read (or Write) reads AI conversations tenant-wide —
+		// dynamic-RBAC custom grant, same query-engine mechanism as the events
+		// tables. See the [2026-07] Troubleshoot cross-module data-widening entry
+		// in docs/architecture-decisions.md.
+		PermissionModule:    "ai_conversations",
 		Type:                Aggregate,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
@@ -9103,6 +9793,12 @@ var table_metadata = map[string]TableDefinition{
 		Def:                 "feature_flag",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
+		// Feature flags are tenant settings — the standalone `featureflags` module
+		// was folded into `tenants`. Keep in lockstep with MODULE_ALIASES in
+		// app/src/lib/permissionCatalog.ts: featureflags_list classifies as
+		// tenants:Read at the gateway, so the query engine must accept the same
+		// grant or the call clears the gateway and 403s here.
+		PermissionModule: "tenants",
 		// Tenant-wide feature flags (account_id IS NULL) must be readable by
 		// account-scoped users; otherwise b-Cortex tabs show "not enabled for
 		// your tenant" for Account Admin/Readonly roles (#34510).
@@ -9185,6 +9881,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Derived,
 		Source:              database.Metastore,
 		Name:                "cloud_account_attrs_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Def: `(
@@ -9214,6 +9911,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:             database.Metastore,
 		Name:               "usergroup_users_v2",
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "usergroups",
 		Def: `(
 			SELECT
 				ugu.id::text as id,
@@ -9267,6 +9965,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:             database.Metastore,
 		Name:               "usergroup_users_grouping_v2",
 		TenantIdColumnName: "tenant_id",
+		PermissionModule:   "usergroups",
 		Def: `(
 			SELECT
 				ugu.id::text as id,
@@ -9310,7 +10009,8 @@ var table_metadata = map[string]TableDefinition{
 						'id', ur.id,
 						'role', ur.role,
 						'entity_type', ur.entity_type,
-						'entity_id', ur.entity_id
+						'entity_id', ur.entity_id,
+						'tenant_id', ur.tenant_id
 					))
 					FROM user_roles ur
 					WHERE ur.user_id = u.id),
@@ -9492,6 +10192,25 @@ func GetTableMetadata(name string) (TableDefinition, bool) {
 	return def, ok
 }
 
+// AccountScopableModules returns the set of dynamic-RBAC modules that own at
+// least one query-engine table carrying BOTH a PermissionModule and a per-account
+// column (AccountIdColumnName). These are the only modules for which an
+// account-scoped custom grant can be honored: the query engine's
+// account-restriction block filters reads by AccountIdColumnName, so a module
+// whose PermissionModule table has no account column (tenant-catalog tables like
+// notifications) cannot be scoped to an account. Derived from table_metadata so
+// the customrole write-path guard can never drift from the actual enforcement
+// surface. See query/service.go's scoped-grant branch.
+func AccountScopableModules() map[string]bool {
+	out := make(map[string]bool)
+	for _, def := range table_metadata {
+		if def.PermissionModule != "" && def.AccountIdColumnName != "" {
+			out[def.PermissionModule] = true
+		}
+	}
+	return out
+}
+
 func getColumnTypeFromClickhouseType(chType string) ColumnDefinitionType {
 	switch strings.ToLower(chType) {
 	case "string":
@@ -9535,40 +10254,46 @@ func init() {
 		if v.Type == Aggregate || v.Type == Derived {
 			continue
 		}
-		tableDef := v
+		// Scoped to its own function so the deferred close runs at the end of THIS
+		// iteration. Deferring directly in the loop body stacks every cursor until
+		// init() returns, and the MapScan `break` below leaves the cursor undrained
+		// — so database/sql does not auto-close it either, pinning one warehouse
+		// connection per scan-error table for the rest of init().
+		func() {
+			tableDef := v
 
-		rows, err := warehouse.Db.Queryx("select name, type from system.columns where table = ? and database = ? ", v.Def, config.Config.ClickhouseDatabase)
-		if err != nil {
-			slog.Error("unable to query warehouse connector", "error", err, "table", k)
-			continue
-		}
-		defer func() {
-			err := rows.Close()
+			rows, err := warehouse.Db.Queryx("select name, type from system.columns where table = ? and database = ? ", v.Def, config.Config.ClickhouseDatabase)
 			if err != nil {
-				slog.Error("query: unable to close rows", "error", err)
+				slog.Error("unable to query warehouse connector", "error", err, "table", k)
+				return
 			}
-		}()
+			defer func() {
+				if err := rows.Close(); err != nil {
+					slog.Error("query: unable to close rows", "error", err, "table", k)
+				}
+			}()
 
-		columnDefs := tableDef.Columns
-		for rows.Next() {
-			var row = make(map[string]any)
-			err = rows.MapScan(row)
-			if err != nil {
-				slog.Error("unable to scan rows", "error", err, "table", k)
-				break
-			}
-			columnName := row["name"].(string)
-			columnType := getColumnTypeFromClickhouseType(row["type"].(string))
-			if _, ok := columnDefs[columnName]; !ok {
-				columnDefs[columnName] = ColumnDefinition{
-					IsAggregated: false,
-					Type:         ColumnDefinitionType(columnType),
-					Def:          columnName,
+			columnDefs := tableDef.Columns
+			for rows.Next() {
+				var row = make(map[string]any)
+				err = rows.MapScan(row)
+				if err != nil {
+					slog.Error("unable to scan rows", "error", err, "table", k)
+					break
+				}
+				columnName := row["name"].(string)
+				columnType := getColumnTypeFromClickhouseType(row["type"].(string))
+				if _, ok := columnDefs[columnName]; !ok {
+					columnDefs[columnName] = ColumnDefinition{
+						IsAggregated: false,
+						Type:         ColumnDefinitionType(columnType),
+						Def:          columnName,
+					}
 				}
 			}
-		}
-		slog.Info("updating table definition", "table", k, "columns", columnDefs)
-		tableDef.Columns = columnDefs
-		table_metadata[k] = tableDef
+			slog.Info("updating table definition", "table", k, "columns", columnDefs)
+			tableDef.Columns = columnDefs
+			table_metadata[k] = tableDef
+		}()
 	}
 }

@@ -9,6 +9,38 @@ import (
 	"nudgebee/services/security"
 )
 
+// categoryCustomGrantModule maps a validate_access `category` to the dynamic-RBAC
+// permission module whose custom-role grant may additionally satisfy the check
+// (account-scoped, via HasScopedPermission — operation-surface widening only).
+// Categories absent here stay built-in-role-only: notably ACCOUNTS (the
+// relay/grafana proxy access check in app/src/lib/accountAccess.ts) must remain
+// gated on a real account role, per the accounts-catalog "visible-but-inert"
+// decision in docs/architecture-decisions.md — a custom accounts:Read grant
+// enumerates the catalog but must NOT unlock per-account operational access.
+var categoryCustomGrantModule = map[string]string{
+	"TICKETS": "tickets",
+}
+
+// hasCustomCategoryAccess reports whether a dynamic-RBAC custom-role grant
+// authorizes `permission` on `category` for `accountId`. Read is satisfied by a
+// Read or Write grant (Write implies Read); create/update/delete require Write.
+// Returns false for categories not opted in above, so unmapped categories keep
+// their built-in-role-only behavior unchanged.
+func hasCustomCategoryAccess(sc *security.SecurityContext, accountId, category string, permission security.SecurityAccessType) bool {
+	module, ok := categoryCustomGrantModule[category]
+	if !ok || accountId == "" {
+		return false
+	}
+	switch permission {
+	case security.SecurityAccessTypeRead:
+		return sc.HasScopedPermission(accountId, module, "Read") || sc.HasScopedPermission(accountId, module, "Write")
+	case security.SecurityAccessTypeCreate, security.SecurityAccessTypeUpdate, security.SecurityAccessTypeDelete:
+		return sc.HasScopedPermission(accountId, module, "Write")
+	default:
+		return false
+	}
+}
+
 func ValidateAccess(request ValidateAccessRequest) (ValidateAccessResponse, error) {
 	err := common.ValidateStruct(request)
 	if err != nil {
@@ -43,6 +75,12 @@ func ValidateAccess(request ValidateAccessRequest) (ValidateAccessResponse, erro
 		} else if securityContext.IsTenantReadAdmin() && access.Permission == security.SecurityAccessTypeRead {
 			allowed = true
 		} else if access.Args.AccountId != "" && securityContext.HasAccountAccess(access.Args.AccountId, access.Permission) {
+			allowed = true
+		} else if hasCustomCategoryAccess(securityContext, access.Args.AccountId, string(access.Category), access.Permission) {
+			// Dynamic-RBAC: a custom-role grant for this category's module
+			// (currently only TICKETS→tickets) authorizes the operation even
+			// without a built-in account role. Account-scoped; never widens
+			// which accounts exist for the user.
 			allowed = true
 		}
 		if IsFeatureEnabled(security.NewRequestContextForSuperAdmin(slog.Default(), nil, nil), access.TenantId, FEATURE_RBACK_K8S_ACCESS) && access.Args.K8sObjectName != "" && access.Args.K8sObjectType != "" {

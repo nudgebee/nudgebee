@@ -7,7 +7,21 @@ const withBundleAnalyzer = require('@next/bundle-analyzer')({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Core Next.js flags
-  reactStrictMode: false,
+  reactStrictMode: true,
+  // Emit browser source maps for the production bundle. Without them a captured
+  // client error reads `Cannot access 'eH' before initialization at t1
+  // (3i_ir1qtupbf3.js:1:611377)` — true, and useless: no file, no symbol.
+  //
+  // Off by default because the maps are served publicly at
+  // /_next/static/**/*.js.map, which un-minifies the whole client bundle
+  // (including src/ee/** UI code) for anyone who can reach the host. That is an
+  // IP call rather than a security one — minification was never a control, and
+  // the bundle itself already ships to every browser — but it is not a default
+  // to flip on prod without asking.
+  //
+  // Build-time only, so it must be set on the image build (same dev-only
+  // posture as CLIENT_ERROR_CAPTURE_BODIES in pages/api/client-errors.ts).
+  productionBrowserSourceMaps: process.env.BROWSER_SOURCE_MAPS === 'true',
   async headers() {
     // Anti-framing (clickjacking) + standard hardening applied to every
     // response. CSP here only carries frame-ancestors — it does not restrict
@@ -55,6 +69,16 @@ const nextConfig = {
         destination: '/automation',
         permanent: true,
       },
+      {
+        source: '/workflow',
+        destination: '/automation',
+        permanent: true,
+      },
+      {
+        source: '/workflow/:path*',
+        destination: '/automation/:path*',
+        permanent: true,
+      },
     ];
   },
   async rewrites() {
@@ -77,6 +101,13 @@ const nextConfig = {
   // Environment variables (safe for Turbopack)
   env: {
     NEXT_PUBLIC_APP_VERSION: process.env.NEXT_PUBLIC_APP_VERSION,
+    // Bridge the same NUDGEBEE_DEPLOYMENT_MODE the backend (llm-server,
+    // api-server) uses into the client bundle. Next.js only inlines
+    // NEXT_PUBLIC_-prefixed vars by default; listing it here promotes
+    // the unprefixed name to the client so both sides share one env
+    // var. Convention matches api-server/services/ee/license/
+    // deployment_mode.go. Values: 'oss' | 'ee' | 'saas' | unset.
+    NUDGEBEE_DEPLOYMENT_MODE: process.env.NUDGEBEE_DEPLOYMENT_MODE || '',
   },
   // Sass support (fully Turbopack-compatible)
   sassOptions: {
@@ -116,33 +147,7 @@ const nextConfig = {
       },
     },
   },
-  webpack(config, { isServer, webpack }) {
-    if (!isServer) {
-      // `@prometheus-io/codemirror-promql` depends on lru-cache v11, whose build
-      // imports `node:diagnostics_channel` for optional instrumentation that
-      // never runs in a browser. Webpack treats `node:` as a URI scheme rather
-      // than a module request, so it fails the client build outright with
-      // `UnhandledSchemeError: Reading from "node:diagnostics_channel" is not
-      // handled by plugins` — taking down every page that reaches the PromQL
-      // editor (optimise, the Nubi chat sidebar, k8s log stash). Turbopack
-      // stubs these silently, which is why this only shows up under webpack.
-      //
-      // Rewrite the scheme away so the request goes through normal resolution,
-      // then stub the module for the browser. Stripping the prefix generally
-      // (rather than special-casing this one specifier) also means any future
-      // `node:*` import fails with a plain "Can't resolve 'x'" instead of the
-      // much more opaque scheme error.
-      config.plugins.push(
-        new webpack.NormalModuleReplacementPlugin(/^node:/, (resource) => {
-          resource.request = resource.request.replace(/^node:/, '');
-        })
-      );
-      config.resolve.fallback = {
-        ...config.resolve.fallback,
-        diagnostics_channel: false,
-      };
-    }
-
+  webpack(config) {
     const fileLoaderRule = config.module.rules.find((rule) => rule.test?.test?.('.svg'));
 
     config.module.rules.push({

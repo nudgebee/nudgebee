@@ -13,8 +13,10 @@
  *   - `reactIcon` (already a node) is passed straight through
  *   - `releaseIcon` (the sup-badge) is not supported by DropdownMenu and is dropped
  *
- * Submenu (V1 `subMenu`) is intentionally NOT carried over — the DS spec caps
- * nesting at one level. No production call site uses subMenu today.
+ * A V1 item may also carry `subMenu: [...]` (same v1 item shape, one level only) —
+ * mapped to the DS `items` field, which DropdownMenu renders as an inline
+ * expand/collapse group with a chevron. Per the DS spec, nesting caps at one level,
+ * so sub-items must not themselves declare a `subMenu`.
  */
 import React from 'react';
 import PropTypes from 'prop-types';
@@ -54,15 +56,35 @@ const ThreeDotsMenu = ({
   if (!menuItems?.length) return null;
 
   // Adapt v1 items → DS items. Stable per render (cheap mapping); no memo needed.
-  const dsItems = menuItems.map((item, index) => ({
-    id: item.id != null ? String(item.id) : `tdm-${index}`,
-    label: item.label,
-    icon: resolveIconNode(item),
-    disabled: item.disabled ?? false,
-    onSelect: () => {
-      if (onMenuClick && data) onMenuClick(item, data);
-    },
-  }));
+  const dsItems = menuItems.map((item, index) => {
+    const id = item.id != null ? String(item.id) : `tdm-${index}`;
+    if (item.subMenu?.length) {
+      return {
+        id,
+        label: item.label,
+        icon: resolveIconNode(item),
+        disabled: item.disabled ?? false,
+        items: item.subMenu.map((subItem, subIndex) => ({
+          id: subItem.id != null ? String(subItem.id) : `${id}-sub-${subIndex}`,
+          label: subItem.label,
+          icon: resolveIconNode(subItem),
+          disabled: subItem.disabled ?? false,
+          onSelect: () => {
+            if (onMenuClick && data) onMenuClick(subItem, data);
+          },
+        })),
+      };
+    }
+    return {
+      id,
+      label: item.label,
+      icon: resolveIconNode(item),
+      disabled: item.disabled ?? false,
+      onSelect: () => {
+        if (onMenuClick && data) onMenuClick(item, data);
+      },
+    };
+  });
 
   return (
     <DropdownMenu

@@ -6,6 +6,7 @@ import {
   deleteIntegration,
   disableIntegration,
   enableIntegration,
+  selectAccountFromDropdown,
 } from "./util";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
@@ -60,9 +61,7 @@ test.describe.serial("Redis Account Integration", () => {
     await locators.addRedisAccountBtn.click();
 
     await locators.redisConfigNameInput.fill(configName);
-    await locators.redisAccountIdDropdown.click();
-    await locators.redisAccountIdOption(process.env.CLUSTER!).first().click();
-    await locators.redisAccountIdDropdown.press("Escape");
+    await selectAccountFromDropdown(page, locators.redisAccountIdDropdown, process.env.CLUSTER!);
     await locators.redisK8sSecretInput.fill(process.env.REDIS_SECRET!);
 
     await waitForGraphQLAndValidate(

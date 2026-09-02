@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import { writeIcon } from '@assets';
 import { TourLauncher } from '@components/common/tour';
 import apiUserManagement from '@api1/user';
 import { useSession } from 'next-auth/react';
-import { hasWriteAccess } from '@lib/auth';
+import { canManage, isTenantWideRole, hasPermission, canReadCustomRoles } from '@lib/auth';
+import { listCustomRoles } from '@api1/roles';
 import UserModal from './modal/UserModal';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
@@ -20,10 +22,37 @@ import UserGroup from './UserGroup';
 import IntegrationProfiles from './IntegrationProfiles';
 import { toast as snackbar } from '@ui/Toast';
 import { safeJSONParse } from 'src/utils/common';
+import { ds } from 'src/utils/colors';
+
+// The Role cell: the built-in role on the first line, any directly-assigned
+// custom roles under it. Custom roles were previously only visible by opening
+// the Edit User modal, so the list read as "this user has one role" when they
+// could hold several.
+function UserRoleCell({ user, customRoleNames }) {
+  const builtIn = user?.user_roles?.[0]?.role_display_name || user?.user_roles?.[0]?.role || '-';
+  if (!customRoleNames.length) {
+    return <Text value={builtIn} />;
+  }
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+      <Text value={builtIn} />
+      <Text value={`Custom: ${customRoleNames.join(', ')}`} sx={{ color: ds.gray[600] }} />
+    </Box>
+  );
+}
+
+UserRoleCell.propTypes = {
+  user: PropTypes.object.isRequired,
+  customRoleNames: PropTypes.arrayOf(PropTypes.string).isRequired,
+};
 
 const AllUsers = () => {
   const [loading, setLoading] = useState(false);
-  const [allUserTableData, setAllUserTableData] = useState();
+  // Raw rows, not built cells: the Role column also renders dynamic-RBAC custom
+  // roles, which load on their own clock. Deriving the table from both keeps a
+  // late custom-roles response from needing a second users fetch to show up.
+  const [users, setUsers] = useState([]);
+  const [customRoles, setCustomRoles] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [editUserModalVisible, setEditUserModalVisible] = useState(false);
@@ -47,7 +76,7 @@ const AllUsers = () => {
     'Status',
     {
       name: 'Role',
-      info: 'Your effective role is determined by your assigned roles but may change if you belong to a group with a role for a specific namespace or account.',
+      info: 'Built-in role plus any custom roles assigned to the user. Your effective role is determined by your assigned roles but may change if you belong to a group with a role for a specific namespace or account.',
     },
     { name: 'Email', sortEnabled: true },
     'Group',
@@ -59,6 +88,7 @@ const AllUsers = () => {
     setAddUserModalVisible(false);
     if (updated) {
       fetchUsers();
+      fetchCustomRoles();
     }
   };
 
@@ -118,62 +148,17 @@ const AllUsers = () => {
       statusSearch: selectedStatus,
     };
     setLoading(true);
-    setAllUserTableData([]);
+    setUsers([]);
     setTotalCount(0);
     getUsersByTenant(data)
       .then((res) => {
-        let result = res?.users_list_by_tenant?.rows;
-        const totalParticipants = res?.users_aggregate_by_tenant?.rows?.[0]?.count ?? 0;
-        let tableComponentsList = [];
-        for (let user of result || []) {
+        const result = res?.users_list_by_tenant?.rows ?? [];
+        for (let user of result) {
           user.user_groups = safeJSONParse(user.user_groups) || [];
           user.user_roles = safeJSONParse(user.user_roles) || [];
-          tableComponentsList.push([
-            {
-              component: <Text value={user.display_name} showAutoEllipsis />,
-              drilldownQuery: { groupNames: user.user_groups.map((group) => group.name), userId: user.id },
-            },
-            {
-              component: <Label margin='auto' text={user.status} />,
-            },
-            {
-              component: <Text value={user?.user_roles[0]?.role_display_name || user?.user_roles[0]?.role} />,
-            },
-            {
-              component: <Text value={user.username} />,
-            },
-            {
-              component: <Text value={showGroupNames(user?.user_groups) || '-'} />,
-            },
-            {
-              component: <Datetime value={user?.last_accessed_at} baseDate={new Date()} maxLevel={1} />,
-            },
-            {
-              component: (
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-                  {hasWriteAccess() && currentUser.user.email != user.username ? (
-                    <DsButton
-                      tone='ghost'
-                      composition='icon-only'
-                      size='sm'
-                      icon={<SafeIcon src={writeIcon} alt='edit' width={16} height={16} />}
-                      aria-label='Edit user'
-                      id='edit-user-button'
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditUserModal(e, user);
-                      }}
-                    />
-                  ) : (
-                    <></>
-                  )}
-                </Box>
-              ),
-            },
-          ]);
         }
-        setAllUserTableData(tableComponentsList);
-        setTotalCount(totalParticipants);
+        setUsers(result);
+        setTotalCount(res?.users_aggregate_by_tenant?.rows?.[0]?.count ?? 0);
       })
       .finally(() => {
         setLoading(false);
@@ -183,14 +168,114 @@ const AllUsers = () => {
     fetchUsers();
   }, [currentPage, selectedStatus, sortObject, perPage, selectedName]);
 
+  // Gated on canReadCustomRoles: customroles_list 403s for a plain users:Read
+  // holder and 400s tenant-wide when CUSTOM_ROLES is off. The Role column is an
+  // enrichment, so a failure here must leave the built-in role rendering rather
+  // than break the page.
+  // Re-run after any user write, not just on mount: the Role column is derived
+  // from each role's `user_ids`, which the Edit User modal changes via the
+  // role-side replace-all assignment API. Refetching only the users left a
+  // custom role the admin had just unassigned rendering in the column until a
+  // full page reload.
+  const fetchCustomRoles = useCallback(() => {
+    if (!canReadCustomRoles()) {
+      return;
+    }
+    listCustomRoles()
+      .then((roles) => setCustomRoles(roles ?? []))
+      .catch((err) => {
+        console.error('Failed to load custom roles for the users list:', err);
+      });
+  }, []);
+
+  useEffect(() => {
+    fetchCustomRoles();
+  }, [fetchCustomRoles]);
+
+  // user id → names of the custom roles assigned directly to them. Group-derived
+  // custom roles are deliberately NOT folded in: they belong to the group and
+  // are shown on the Groups tab, and merging them here would read as a direct
+  // assignment that the Edit User modal doesn't show.
+  const customRoleNamesByUser = useMemo(() => {
+    const map = new Map();
+    for (const role of customRoles) {
+      for (const userId of role.user_ids ?? []) {
+        if (!map.has(userId)) map.set(userId, []);
+        map.get(userId).push(role.name);
+      }
+    }
+    return map;
+  }, [customRoles]);
+
+  const allUserTableData = useMemo(
+    () =>
+      users.map((user) => [
+        {
+          component: <Text value={user.display_name} showAutoEllipsis />,
+          drilldownQuery: { groupNames: user.user_groups.map((group) => group.name), userId: user.id },
+        },
+        {
+          component: <Label margin='auto' text={user.status} />,
+        },
+        {
+          component: <UserRoleCell user={user} customRoleNames={customRoleNamesByUser.get(user.id) ?? []} />,
+        },
+        {
+          component: <Text value={user.username} />,
+        },
+        {
+          component: <Text value={showGroupNames(user?.user_groups) || '-'} />,
+        },
+        {
+          component: <Datetime value={user?.last_accessed_at} baseDate={new Date()} maxLevel={1} />,
+        },
+        {
+          component: (
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+              {/* The email must be present before it is compared: this cell is
+                  now built during render (it used to be built inside the fetch
+                  callback, by which time the session had resolved), so an
+                  unresolved `currentUser` would make `undefined !== username`
+                  true and flash an Edit button on the user's own row. */}
+              {canManage('users', 'Write') && currentUser?.user?.email && currentUser.user.email !== user.username ? (
+                <DsButton
+                  tone='ghost'
+                  composition='icon-only'
+                  size='sm'
+                  icon={<SafeIcon src={writeIcon} alt='edit' width={16} height={16} />}
+                  aria-label='Edit user'
+                  id='edit-user-button'
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEditUserModal(e, user);
+                  }}
+                />
+              ) : (
+                <></>
+              )}
+            </Box>
+          ),
+        },
+      ]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [users, customRoleNamesByUser, currentUser]
+  );
+
   const handleEditUserModalClose = (updated) => {
     setEditUserModalVisible(false);
     if (updated) {
       fetchUsers();
+      fetchCustomRoles();
     }
   };
 
   const selectedStatusOption = statusOptions.find((o) => o.value === selectedStatus) ?? null;
+
+  // The user-drilldown "Groups" tab renders group data, so it's gated by the
+  // same usergroups:Read permission as the top-level Groups tab (tenant-wide
+  // admins always qualify). Without it the tab is hidden rather than showing an
+  // empty "No Data Available" for a section the user can't read.
+  const canReadGroups = isTenantWideRole() || hasPermission('usergroups', 'Read');
 
   return (
     <>
@@ -222,7 +307,7 @@ const AllUsers = () => {
       <ListingLayout id='box-all-users'>
         <ListingLayout.Toolbar
           actions={
-            hasWriteAccess() ? (
+            canManage('users', 'Write') ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <TourLauncher tourId='create-user' label='How to add a user' />
                 <DsButton id='new-user' tone='primary' size='md' onClick={() => setAddUserModalVisible(true)}>
@@ -280,18 +365,25 @@ const AllUsers = () => {
             id='all-users'
             pageNumber={currentPage + 1}
             expandable={{
+              // `value` must equal the tab's array index (TabPanel matches by
+              // index) — so Integration profiles shifts to 0 when the
+              // usergroups-gated Groups tab is hidden.
               tabs: [
-                {
-                  text: 'Groups',
-                  value: 0,
-                  key: 'groups',
-                  componentFn: (option, query) => {
-                    return <UserGroup groupNames={query.groupNames.length ? query.groupNames : null} onUserUpdate={fetchUsers} />;
-                  },
-                },
+                ...(canReadGroups
+                  ? [
+                      {
+                        text: 'Groups',
+                        value: 0,
+                        key: 'groups',
+                        componentFn: (option, query) => {
+                          return <UserGroup groupNames={query.groupNames.length ? query.groupNames : null} onUserUpdate={fetchUsers} />;
+                        },
+                      },
+                    ]
+                  : []),
                 {
                   text: 'Integration profiles',
-                  value: 1,
+                  value: canReadGroups ? 1 : 0,
                   key: 'integration-profiles',
                   componentFn: (option, query) => (
                     <ListingLayout id='box-user-integration-profiles'>

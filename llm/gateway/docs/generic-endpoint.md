@@ -24,6 +24,12 @@ Two forms are accepted for the `model` field:
   (`google/…` is accepted as an alias for `gemini/…`).
 - **Bare** well-known name — resolved by prefix: `claude*` → Anthropic,
   `gpt*` / `o1|o3|o4*` / `chatgpt*` → OpenAI, `gemini*` → Gemini.
+- **Tier alias** — a provider-agnostic name the gateway maps to a concrete model:
+  `nb-fast` (low-latency/cheap), `nb-cheap` (cheapest), `nb-smart` (highest quality).
+  Send it in `model` and the routing layer resolves it to a provider/model — so a
+  tool need not know which model to pick, and an org can remap a tier centrally
+  (a tenant routing rule overrides the shipped default). The response records the
+  concrete model that served it. Requires a credential for the resolved provider.
 
 A name that matches neither is a clear `400 invalid_request_error`, never a guessed
 provider.

@@ -1003,6 +1003,14 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 	metricGroups := map[string][]any{}
 
 	for _, item := range resourceResp.Items {
+		// Drop series CloudWatch returned with no datapoints. It answers with one
+		// result per query whether or not the metric recorded anything, so a metric
+		// that simply never fired (no 5xx, no rejected connections) or that needs a
+		// dimension we don't send arrives as an empty series and renders as a blank
+		// chart. Half the charts on a healthy load balancer were blank this way.
+		if len(item.Values) == 0 {
+			continue
+		}
 		metricObj := map[string]any{
 			"service_name": item.ServiceName,
 			"region":       item.Region,
@@ -1036,10 +1044,14 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 		metricGroups[metricKey] = append(metricGroups[metricKey], data)
 	}
 
-	// Skip storing evidence when no metric series were returned — avoids empty
+	// Skip storing evidence when nothing was actually measured — avoids empty
 	// "prometheus_enricher" cards that mislead the LLM into reporting empty Prometheus data.
+	// Counting series is not enough: CloudWatch returns one result per query even
+	// when the metric matched no data, so a wrong namespace or dimension yields a
+	// full set of series that every one of them is empty.
 	if len(seriesList) == 0 {
-		ctx.GetLogger().Warn("cloud_list_metrics: query returned zero time series",
+		ctx.GetLogger().Warn("cloud_list_metrics: query returned no datapoints",
+			"series_returned", len(resourceResp.Items),
 			"service_name", params.ServiceName,
 			"region", params.Region,
 			"resource_ids", params.ResourceIds,
@@ -1225,6 +1237,7 @@ type cloudLogsActionParams struct {
 	ResourceLabels map[string]string `json:"resource_labels" mapstructure:"resource_labels"`
 	MetricType     string            `json:"metric_type" mapstructure:"metric_type"`
 	AlertType      string            `json:"alert_type" mapstructure:"alert_type"`
+	PolicyID       string            `json:"policy_id" mapstructure:"policy_id"`
 }
 
 func (a *cloudLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
@@ -1312,6 +1325,59 @@ func gcpResourceLabels(labels map[string]string) map[string]string {
 	return out
 }
 
+// gcpLogRawParams builds the cloud_logs action params for a GCP event from its labels
+// alone. Split out of AutoExecute so the scope context forwarded to the collector's
+// resolver is unit-testable without cloud or DB access; the caller adds account_id.
+func gcpLogRawParams(labels map[string]string) map[string]any {
+	// gcp_event_instance falls back to the incident ID when the alert payload has
+	// no resource-scoped identifier. Scoping a per-service log filter by the
+	// incident ID matches nothing, so drop it and let the query scope by the
+	// service and/or the resolver's resource scope instead.
+	resourceID := labels["gcp_event_instance"]
+	if resourceID == labels["gcp_incident_id"] {
+		resourceID = ""
+	}
+
+	params := map[string]any{
+		"resource_id":  resourceID,
+		"region":       labels["gcp_region"],
+		"service_name": labels["gcp_service_name"],
+		// Generic-scope context: lets the collector resolve scope when the
+		// per-service / log-metric path scopes nothing.
+		"resource_type":   labels["gcp_event_resource_type"],
+		"resource_labels": gcpResourceLabels(labels),
+		"metric_type":     labels["gcp_metric_type"],
+		"alert_type":      labels["gcp_alert_type"],
+		// Native log alerts scope themselves: the policy's own log-match filter is
+		// authoritative where the monitored-resource type is not (a gke_nodepool
+		// alert's notification records are written under gke_cluster).
+		"policy_id": labels["gcp_policy_id"],
+	}
+
+	if resourceID != "" {
+		params["title"] = "Logs For - " + resourceID
+	} else {
+		params["title"] = "Logs For - " + labels["gcp_service_name"]
+	}
+
+	// For log-based metric alerts, narrow the log query to the specific log
+	// that the metric monitors (e.g., postgres.log for slow-query metrics).
+	// The metric_log label is populated from alert.Metric.Labels by the
+	// incident processor (gcloud_monitoring_incidents_v3.go).
+	if metricLog := labels["metric_log"]; metricLog != "" && labels["gcp_project_id"] != "" {
+		params["log_group_name"] = fmt.Sprintf("projects/%s/logs/%s",
+			labels["gcp_project_id"], url.PathEscape(metricLog))
+	}
+
+	// For GCP log-based metric alerts, pass the metric name so the
+	// cloud-collector can fetch its filter and apply it to the log query.
+	if metricType := labels["gcp_metric_type"]; strings.HasPrefix(metricType, "logging.googleapis.com/user/") {
+		params["log_metric_name"] = strings.TrimPrefix(metricType, "logging.googleapis.com/user/")
+	}
+
+	return params
+}
+
 func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	labels := ctx.GetEvent().Labels
 
@@ -1329,41 +1395,7 @@ func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playb
 	if (labels["gcp_account"] != "" || labels["gcp_project_id"] != "") &&
 		((resourceType != "" && resourceType != "unknown") || gcpLogMetric || gcpLogAlert) {
 
-		// gcp_event_instance falls back to the incident ID when the alert payload has
-		// no resource-scoped identifier. Scoping a per-service log filter by the
-		// incident ID matches nothing, so drop it and let the query scope by the
-		// service and/or the resolver's resource scope instead.
-		resourceID := labels["gcp_event_instance"]
-		if resourceID == labels["gcp_incident_id"] {
-			resourceID = ""
-		}
-
-		rawParams := map[string]any{
-			"resource_id":  resourceID,
-			"region":       labels["gcp_region"],
-			"service_name": labels["gcp_service_name"],
-			// Generic-scope context: lets the collector resolve scope when the
-			// per-service / log-metric path scopes nothing.
-			"resource_type":   resourceType,
-			"resource_labels": gcpResourceLabels(labels),
-			"metric_type":     labels["gcp_metric_type"],
-			"alert_type":      labels["gcp_alert_type"],
-		}
-
-		if resourceID != "" {
-			rawParams["title"] = "Logs For - " + resourceID
-		} else {
-			rawParams["title"] = "Logs For - " + labels["gcp_service_name"]
-		}
-
-		// For log-based metric alerts, narrow the log query to the specific log
-		// that the metric monitors (e.g., postgres.log for slow-query metrics).
-		// The metric_log label is populated from alert.Metric.Labels by the
-		// incident processor (gcloud_monitoring_incidents_v3.go).
-		if metricLog := labels["metric_log"]; metricLog != "" && labels["gcp_project_id"] != "" {
-			rawParams["log_group_name"] = fmt.Sprintf("projects/%s/logs/%s",
-				labels["gcp_project_id"], url.PathEscape(metricLog))
-		}
+		rawParams := gcpLogRawParams(labels)
 
 		if labels["gcp_account"] != "" {
 			accountId, err := getCloudAccountIdByNumber(labels["gcp_account"], ctx.GetTenantId())
@@ -1373,13 +1405,6 @@ func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playb
 			} else {
 				rawParams["account_id"] = accountId
 			}
-		}
-
-		// For GCP log-based metric alerts, pass the metric name so the
-		// cloud-collector can fetch its filter and apply it to the log query.
-		if metricType := labels["gcp_metric_type"]; strings.HasPrefix(metricType, "logging.googleapis.com/user/") {
-			metricName := strings.TrimPrefix(metricType, "logging.googleapis.com/user/")
-			rawParams["log_metric_name"] = metricName
 		}
 
 		return a.Execute(ctx, rawParams)
@@ -1525,6 +1550,7 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 			ResourceLabels: params.ResourceLabels,
 			MetricType:     params.MetricType,
 			AlertType:      params.AlertType,
+			PolicyID:       params.PolicyID,
 		},
 	})
 
@@ -3831,6 +3857,15 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGT"[exp])
+}
+
+// BuildVPCFlowLogsParsePattern is the exported entry point to the flow-log
+// format→parse-pattern builder. The knowledge-graph aws-vpc-flow flow source
+// reuses it so the graph builder parses the customer's actual configured
+// LogFormat (including custom v3+ fields like pkt-srcaddr/pkt-dstaddr) exactly
+// the way the on-demand cloud_vpc_flowlogs action does.
+func BuildVPCFlowLogsParsePattern(logFormat string) string {
+	return buildVpcFlowLogsParsePattern(logFormat)
 }
 
 // buildVpcFlowLogsParsePattern builds a CloudWatch Logs Insights parse pattern from VPC Flow Logs format

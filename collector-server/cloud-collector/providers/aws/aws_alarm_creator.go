@@ -47,6 +47,7 @@ func CreateCloudWatchAlarm(ctx context.Context, account providers.Account, confi
 		ComparisonOperator: comparisonOperator,
 		TreatMissingData:   aws.String(treatMissingData),
 		ActionsEnabled:     aws.Bool(true),
+		AlarmActions:       config.NotificationTargets,
 	}
 
 	// Check if this is a metric math alarm or simple metric alarm

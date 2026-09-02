@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"nudgebee/llm/common"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -178,6 +181,63 @@ func TestKBCollectionName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, kbCollectionName(tt.kbType, tt.integrationID, tt.kbID))
+		})
+	}
+}
+
+func TestFallbackDescriptionFromContent(t *testing.T) {
+	cases := []struct {
+		name        string
+		description string
+		data        string
+		wantDesc    string
+	}{
+		{
+			name:        "explicit description is preserved",
+			description: "Custom description",
+			data:        "Line 1\nLine 2",
+			wantDesc:    "Custom description",
+		},
+		{
+			name:        "empty description falls back to first non-empty line",
+			description: "",
+			data:        "\n\nFirst meaningful line of runbook\nSecond line",
+			wantDesc:    "First meaningful line of runbook",
+		},
+		{
+			name:        "whitespace description falls back to first line",
+			description: "   ",
+			data:        "Single line content",
+			wantDesc:    "Single line content",
+		},
+		{
+			name:        "long first line is capped at 200 chars",
+			description: "",
+			data:        strings.Repeat("a", 250),
+			wantDesc:    strings.Repeat("a", 200),
+		},
+		{
+			name:        "long first line with multi-byte utf8 at 200-byte boundary does not split rune",
+			description: "",
+			data:        strings.Repeat("a", 199) + "é" + " tail",
+			wantDesc:    strings.Repeat("a", 199),
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			desc := strings.TrimSpace(tt.description)
+			if desc == "" && tt.data != "" {
+				for _, line := range strings.Split(tt.data, "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						desc = common.TruncateHead(line, 200)
+						break
+					}
+				}
+			}
+			assert.Equal(t, tt.wantDesc, desc)
+			assert.True(t, utf8.ValidString(desc), "description must be valid UTF-8")
 		})
 	}
 }

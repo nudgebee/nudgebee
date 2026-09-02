@@ -514,6 +514,28 @@ var mutatingVerbPatterns = []*regexp.Regexp{
 	// are read; deletes / rerun-failed / disable are writes.
 	regexp.MustCompile(`(?i)^\s*gh\s+(release|repo|secret|variable|workflow|run|api)\s+(delete|disable|cancel|rerun|set|create|edit|deploy)\b`),
 	regexp.MustCompile(`(?i)^\s*gh\s+(pr|issue)\s+(close|merge|reopen|delete|edit|comment|create)\b`),
+	// GitLab CLI write paths, mirroring the gh pair above. `glab ci list|get|trace`
+	// and `glab mr|issue view|list` are reads; run/retry/cancel/trigger/delete and
+	// the mr/issue mutations are writes. `glab mr note` and `glab issue note` post
+	// comments, so they belong here too.
+	regexp.MustCompile(`(?i)^\s*glab\s+(release|repo|variable|securefile|token|schedule|ci)\s+(delete|create|update|set|run|retry|cancel|trigger|run-trig)\b`),
+	regexp.MustCompile(`(?i)^\s*glab\s+(mr|issue)\s+(close|merge|reopen|delete|update|create|note|approve|revoke|rebase)\b`),
+	// `glab api` is deliberately NOT in the alternation above: it takes an
+	// endpoint, not a verb, so a verb-position match can never see it and
+	// listing it there only looks like coverage. Its mutations are expressed
+	// two ways, both matched here:
+	//   1. an explicit method — `-X POST` / `--method DELETE`
+	//   2. implicitly — `-f/-F/--field/--raw-field/--form` flip glab's default
+	//      method to POST, so `glab api projects/1/issues -f title=x` writes
+	//      with no -X at all.
+	// Matching the method keyword only in the position right after -X/--method
+	// keeps prose from tripping it (`-f body="please delete this"` is not a
+	// DELETE). Rule 2 also blocks read-only `glab api graphql -f query=...`;
+	// that false positive is accepted deliberately — watch sources are meant to
+	// be simple idempotent status polls, and this list is intentionally
+	// conservative.
+	regexp.MustCompile(`(?i)^\s*glab\s+api\b.*(?:-X|--method)[=\s]+(?:POST|PUT|PATCH|DELETE)\b`),
+	regexp.MustCompile(`(?i)^\s*glab\s+api\b.*\s(?:-f|-F|--field|--raw-field|--form)[=\s]`),
 	// AWS CLI write paths. Anything whose verb starts with `delete-`,
 	// `terminate-`, `create-`, `put-`, `update-`, `modify-`, `stop-`,
 	// `start-`, `reboot-`, `attach-`, `detach-`, `tag-`, `untag-`. The

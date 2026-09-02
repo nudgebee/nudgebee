@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -73,13 +72,11 @@ func (l ServerAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecuteServerCommand] = []string{
-			"Executes shell commands on a remote server using SSH.",
-			"Input: A JSON object with 'command', 'args', and 'instance' keys.",
-			"Output: Data returned by the remote server.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the server output.",
-		}
+	toolUsage[tools.ToolExecuteServerCommand] = []string{
+		"Executes shell commands on a remote server using SSH.",
+		"Input: A JSON object with 'command', 'args', and 'instance' keys.",
+		"Output: Data returned by the remote server.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the server output.",
 	}
 
 	examples := []core.NBAgentPromptExample{

@@ -99,6 +99,14 @@ const EventResolutions = () => {
     // nested holds action-specific params
     const nested = data.data && typeof data.data === 'object' ? data.data : {};
 
+    // A command execution: the command is the detail. Without this the row showed "-", so the list
+    // recorded that something ran against the cluster without saying what.
+    if (typeof data.command === 'string' && data.command.trim()) {
+      const exitCode = data.exit_code;
+      const suffix = typeof exitCode === 'number' && exitCode !== 0 ? ` (exit ${exitCode})` : '';
+      return `${data.command.trim()}${suffix}`;
+    }
+
     // Check for container-level cpu/memory resource changes
     const containerInfo = getContainerDetails(nested);
     if (containerInfo) {
@@ -360,7 +368,13 @@ const EventResolutions = () => {
     },
     {
       type: 'dropdown',
-      options: ['PullRequest', 'Ticket', 'DeploymentChange'].map((t) => ({ label: snakeToTitleCase(t), value: t })),
+      // Every type the event_resolution CHECK constraint allows, so a resolution kind cannot be
+      // recorded but be unreachable through the filter — CommandExecution and WorkflowExecution rows
+      // were both invisible here.
+      options: ['PullRequest', 'Ticket', 'DeploymentChange', 'WorkflowExecution', 'CommandExecution'].map((t) => ({
+        label: snakeToTitleCase(t),
+        value: t,
+      })),
       onSelect: (e) => {
         setSelectedType(e.target.value);
         setCurrentPage(0);

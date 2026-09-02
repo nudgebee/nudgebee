@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import { Switch } from '@ui/Switch';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -124,6 +126,8 @@ const IntegrationDynamicFormModal = ({
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   const [connectionVerified, setConnectionVerified] = useState(!!editData);
+  // Which encrypted secret fields are currently revealed (eye toggle), keyed by field key.
+  const [revealedSecrets, setRevealedSecrets] = useState({});
   // Cluster indices for the ES per-account index picker; fetched once the
   // connection is verified. Cleared when a testable field changes (handleChange).
   const [esIndexes, setEsIndexes] = useState([]);
@@ -184,7 +188,16 @@ const IntegrationDynamicFormModal = ({
         // check lowercases it, so 'es' — not 'elasticsearch' — is what matches here.
         const CLOUD_CAPABLE_INTEGRATIONS = ['datadog', 'observe', 'dynatrace', 'splunk_observability_platform', 'solarwinds', 'elasticsearch', 'es'];
         const isWebhook = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
-        const showAllAccounts = isWebhook || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
+        // The VM agent (forager) is the exception to the !isAgentSource rule above.
+        // That rule excludes agent-sourced providers because they need an
+        // in-cluster relay agent a cloud account does not have — but a forager is
+        // not in-cluster. It is a per-network-segment process dialling out to the
+        // relay, and reaching EC2 or Azure VMs inside a customer's VPC is exactly
+        // what it is for. Filtering cloud accounts out here is what forces VM
+        // fleets to be onboarded under a Kubernetes account (#35683).
+        const isVmAgent = (integrationName || '').toLowerCase() === 'vm_agent' || configs.type === 'vm_agent';
+        const showAllAccounts =
+          isWebhook || isVmAgent || (!isAgentSource && CLOUD_CAPABLE_INTEGRATIONS.includes((integrationName || '').toLowerCase()));
         for (const key in updatedConfig.properties) {
           const field = updatedConfig.properties[key];
           if (field.auto_generate_func && field.auto_generate_func === 'listAccounts') {
@@ -247,7 +260,7 @@ const IntegrationDynamicFormModal = ({
               setProviderFields(extractedProviderFields);
             }
             const filteredProperties = Object.fromEntries(
-              Object.entries(configs.properties || {}).filter(([_, prop]) => {
+              Object.entries(configs.properties || {}).filter(([_key, prop]) => {
                 // If it's true, filter it out.
                 // If it's undefined, null, or false, keep it.
                 return prop.avoid_to_show !== true;
@@ -1450,6 +1463,14 @@ const IntegrationDynamicFormModal = ({
         text: 'how to configure SolarWinds Observability Webhook',
       },
     },
+    elasticsearch_webhook: {
+      endpoint: 'elasticsearch',
+      message: 'Configure the following URL in a Kibana Webhook connector (Stack Management \u2192 Connectors)',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/elasticsearch_webhook/'),
+        text: 'how to configure Elasticsearch/Kibana Webhook',
+      },
+    },
     workflow_webhook: {
       endpoint: 'workflow',
       message: 'Point your external system at the following URL to trigger the associated automation',
@@ -1609,6 +1630,7 @@ const IntegrationDynamicFormModal = ({
             'splunk_webhook',
             'grafana_webhook',
             'solarwinds_webhook',
+            'elasticsearch_webhook',
             'workflow_webhook',
           ].includes(integrationName)
         }
@@ -2048,9 +2070,50 @@ const IntegrationDynamicFormModal = ({
                                     key={key}
                                     id={toKebabCase(field.display_name || key)}
                                     label={field.display_name || snakeToTitleCase(key)}
-                                    type={field.multiline ? 'textarea' : 'text'}
+                                    type={
+                                      // Password masking (with the eye toggle) applies to SINGLE-LINE secrets only —
+                                      // a multiline encrypted field (e.g. a service-account JSON) can't be a password
+                                      // input, so it renders as a textarea (still encrypted at rest + masked on edit).
+                                      field.is_encrypted && !field.multiline
+                                        ? // Reveal only applies to a freshly-typed value. A stored secret is
+                                          // never sent to the UI — on edit the field holds the mask, which stays
+                                          // masked (and offers no eye), so a saved key can't be exposed.
+                                          revealedSecrets[key] && formValues[key] && formValues[key] !== ENCRYPTED_MASK
+                                          ? 'text'
+                                          : 'password'
+                                        : field.multiline
+                                        ? 'textarea'
+                                        : 'text'
+                                    }
                                     value={formValues[key] || ''}
                                     onChange={(value) => handleChange(key, value)}
+                                    trailingIcon={
+                                      // Eye toggle only while inserting a new single-line value (not for the stored
+                                      // mask, and not for multiline secrets which render as a textarea).
+                                      field.is_encrypted && !field.multiline && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
+                                        <Box
+                                          component='button'
+                                          type='button'
+                                          aria-label={revealedSecrets[key] ? 'Hide value' : 'Show value'}
+                                          onClick={() => setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
+                                          sx={{
+                                            cursor: 'pointer',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            padding: 0,
+                                            border: 'none',
+                                            background: 'none',
+                                            color: ds.gray[500],
+                                          }}
+                                        >
+                                          {revealedSecrets[key] ? (
+                                            <VisibilityOffIcon sx={{ fontSize: 16 }} />
+                                          ) : (
+                                            <VisibilityIcon sx={{ fontSize: 16 }} />
+                                          )}
+                                        </Box>
+                                      ) : undefined
+                                    }
                                     size='sm'
                                     error={errorText || undefined}
                                     minRows={field.multiline ? 3 : undefined}

@@ -35,7 +35,8 @@ func ragQuery(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(payload["account_id"].(string), security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().HasAccountAccess(payload["account_id"].(string), security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), payload["account_id"].(string), moduleAiKbs, "Read", "Write") {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
@@ -88,7 +89,8 @@ func createAgentRagData(c *gin.Context, context *security.RequestContext, payloa
 	}
 
 	// Check if user has create access to account
-	if !context.GetSecurityContext().HasAccountAccess(payload["account_id"].(string), security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().HasAccountAccess(payload["account_id"].(string), security.SecurityAccessTypeCreate) &&
+		!grantedWrite(context.GetSecurityContext(), payload["account_id"].(string), moduleAiKbs) {
 		c.JSON(403, buildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,

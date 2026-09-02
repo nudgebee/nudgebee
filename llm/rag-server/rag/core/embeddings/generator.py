@@ -195,9 +195,12 @@ def get_openai_llm(model_name: str, config: Optional[dict] = None) -> LLM:
     from rag.core.llm.providers import OpenAILLM
 
     api_key = _get_str_config(config, "llm_provider_api_key")
-    api_type = _get_str_config(config, "llm_provider_api_type")
-    api_endpoint = _get_str_config(config, "llm_provider_api_endpoint")
-    base_url = api_endpoint if api_type and api_type.lower() != "openai" else None
+    api_endpoint = _get_str_config(config, "llm_provider_api_endpoint").strip()
+    # Use the configured endpoint as the OpenAI base URL whenever it is set
+    # (OpenAI-compatible custom endpoints); fall back to the default OpenAI host
+    # only when none is configured. The endpoint must already include the version
+    # segment (e.g. https://host/v1) — the OpenAI SDK appends /chat/completions.
+    base_url = api_endpoint or None
     return OpenAILLM(model=model_name, api_key=api_key, base_url=base_url)
 
 
@@ -231,13 +234,30 @@ def get_vertexai_llm(model_name: str, config: Optional[dict] = None) -> LLM:
 
 
 def get_hf_llm(model_name: str, config: Optional[dict] = None) -> LLM:
+    api_type = _get_str_config(config, "llm_provider_api_type")
+    endpoint = _get_str_config(config, "llm_provider_api_endpoint").strip()
+    api_key = _get_str_config(config, "llm_provider_api_key")
+
+    # OpenAI-compatible HF Dedicated Endpoints (vLLM / TGI 3.x) speak the OpenAI
+    # Chat Completions API at {endpoint}/v1/chat/completions. Route them through
+    # the OpenAI client (mirrors llm-server's huggingface WithAPIType="openai").
+    # The OpenAI SDK appends /chat/completions, so we add the /v1 segment here;
+    # the native HuggingFace Inference API posts to the endpoint root instead.
+    if api_type.lower() == "openai":
+        if not endpoint:
+            raise ValueError("HuggingFace provider with api_type='openai' requires llm_provider_api_endpoint")
+        from rag.core.llm.providers import OpenAILLM
+
+        # Append /v1 only when the endpoint doesn't already carry it, so a config
+        # stored either bare (HF convention) or with /v1 both resolve correctly.
+        base_url = endpoint.rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        return OpenAILLM(model=model_name, api_key=api_key, base_url=base_url)
+
     from rag.core.llm.providers import HuggingFaceLLM
 
-    return HuggingFaceLLM(
-        model=model_name,
-        endpoint_url=_get_str_config(config, "llm_provider_api_endpoint"),
-        api_key=_get_str_config(config, "llm_provider_api_key"),
-    )
+    return HuggingFaceLLM(model=model_name, endpoint_url=endpoint, api_key=api_key)
 
 
 def get_sagemaker_llm(config: Optional[dict] = None) -> LLM:
@@ -246,6 +266,27 @@ def get_sagemaker_llm(config: Optional[dict] = None) -> LLM:
     return SageMakerLLM(
         endpoint_name=_get_str_config(config, "llm_provider_api_endpoint"),
         region_name=_get_str_config(config, "llm_provider_region"),
+    )
+
+
+def get_custom_llm(model_name: str, config: Optional[dict] = None) -> LLM:
+    """Any provider exposing OpenAI's Chat Completions API at its own base URL.
+
+    Mirrors llm-server's getCustomLLM: the wire format is identical, so it reuses
+    the OpenAI client. There is no sensible default endpoint, so a missing one is
+    an error rather than a silent fall-through to api.openai.com. The configured
+    endpoint must already include the version segment (e.g. https://host/v1) — the
+    OpenAI SDK appends /chat/completions verbatim.
+    """
+    from rag.core.llm.providers import OpenAILLM
+
+    endpoint = _get_str_config(config, "llm_provider_api_endpoint").strip()
+    if not endpoint:
+        raise ValueError("custom provider requires llm_provider_api_endpoint (e.g. https://openrouter.ai/api/v1)")
+    return OpenAILLM(
+        model=model_name,
+        api_key=_get_str_config(config, "llm_provider_api_key"),
+        base_url=endpoint,
     )
 
 
@@ -264,6 +305,7 @@ def validate_llm_provider_keys(selected_provider: str, get_config_value: Callabl
         "sagemaker": ["llm_provider_api_endpoint", "llm_provider_region"],
         "huggingface": ["llm_provider_api_key", "llm_provider_api_endpoint", "llm_model_name"],
         "anthropic": ["llm_provider_api_key", "llm_model_name"],
+        "custom": ["llm_provider_api_key", "llm_provider_api_endpoint", "llm_model_name"],
     }
     if selected_provider in required_keys:
         missing = [k for k in required_keys[selected_provider] if not get_config_value(k)]
@@ -283,6 +325,7 @@ def build_llm_provider_map(
         "sagemaker": lambda: get_sagemaker_llm(integration_config),
         "huggingface": lambda: get_hf_llm(model_name, integration_config),
         "anthropic": lambda: get_anthropic_llm(model_name, integration_config),
+        "custom": lambda: get_custom_llm(model_name, integration_config),
     }, get_bedrock_llm
 
 

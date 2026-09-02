@@ -185,7 +185,16 @@ func CacheDeleteWithTag(namespace string, tags ...string) error {
 	if err != nil {
 		return err
 	}
-	tags = append(tags, "namespace:"+namespace)
+	if len(tags) == 0 {
+		// No tags to invalidate — a no-op. Never fall through to Invalidate with
+		// an empty tag set, whose behavior is store-dependent (could wipe all).
+		return nil
+	}
+	// Do NOT append the namespace tag here. Every entry is tagged with
+	// "namespace:<ns>" at set time, and gocache tag-invalidation is an OR over
+	// the given tags — so including it would invalidate the whole namespace
+	// (every user) on every call, not just the entries matching the caller's
+	// tags. The namespace tag is reserved for CacheClear.
 	return cache.Invalidate(context.Background(), store.WithInvalidateTags(tags))
 }
 

@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"nudgebee/llm-gateway/config"
@@ -12,6 +13,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFirstUserMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"openai string content", `{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"what is up"}]}`, "what is up"},
+		{"anthropic text blocks", `{"messages":[{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"there"}]}]}`, "hello there"},
+		{"gemini contents/parts", `{"contents":[{"role":"user","parts":[{"text":"gem question"}]}]}`, "gem question"},
+		{"gemini roleless", `{"contents":[{"parts":[{"text":"no role"}]}]}`, "no role"},
+		{"whitespace collapsed", "{\"messages\":[{\"role\":\"user\",\"content\":\"line1\\n\\n   line2\"}]}", "line1 line2"},
+		{"wrapper tokens kept raw", `{"messages":[{"role":"user","content":"<session> hi"}]}`, "<session> hi"},
+		{"no user message", `{"messages":[{"role":"system","content":"sys"}]}`, ""},
+		{"no messages field", `{"model":"x"}`, ""},
+		{"invalid json", `garbage`, ""},
+		{"empty", ``, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, firstUserMessage([]byte(c.body)))
+		})
+	}
+
+	// Length cap: 300-rune content is truncated to firstMessageMaxLen runes.
+	long := `{"messages":[{"role":"user","content":"` + strings.Repeat("a", 300) + `"}]}`
+	assert.Len(t, []rune(firstUserMessage([]byte(long))), firstMessageMaxLen)
+}
 
 func withCapture(t *testing.T, on bool) {
 	t.Helper()
@@ -33,8 +62,8 @@ func TestResolveSession_HeaderWins(t *testing.T) {
 	c.Request.Header.Set("x-nb-session-id", "sess-1")
 
 	body := []byte(`{"metadata":{"user_id":"user-9"}}`)
-	id, src := resolveSession(c, body)
-	assert.Equal(t, "sess-1", id)
+	id, src := resolveSession(c, body, "fp-abc")
+	assert.Equal(t, "sess-1", id, "header wins over metadata + fingerprint")
 	assert.Equal(t, "header", src)
 }
 
@@ -44,9 +73,41 @@ func TestResolveSession_FallsBackToMetadataUserID(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
 
-	id, src := resolveSession(c, []byte(`{"metadata":{"user_id":"user-9"}}`))
-	assert.Equal(t, "user-9", id)
+	id, src := resolveSession(c, []byte(`{"metadata":{"user_id":"user-9"}}`), "fp-abc")
+	assert.Equal(t, "user-9", id, "metadata wins over fingerprint")
 	assert.Equal(t, "metadata.user_id", src)
+}
+
+func TestResolveSession_NestedSessionIDInUserID(t *testing.T) {
+	withCapture(t, true)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
+
+	// Claude Code encodes user_id as a JSON blob carrying the real session_id.
+	uid := `{\"device_id\":\"254a15e1\",\"account_uuid\":\"\",\"session_id\":\"85692b00-741d-436a-9189-3db01c5200fe\"}`
+	id, src := resolveSession(c, []byte(`{"metadata":{"user_id":"`+uid+`"}}`), "fp-abc")
+	assert.Equal(t, "85692b00-741d-436a-9189-3db01c5200fe", id, "nested session_id wins over the raw blob")
+	assert.Equal(t, "metadata.session_id", src)
+
+	// A JSON user_id with no session_id must NOT become a raw-JSON session id;
+	// it falls through to the inferred fingerprint.
+	uid2 := `{\"device_id\":\"abc\"}`
+	id2, src2 := resolveSession(c, []byte(`{"metadata":{"user_id":"`+uid2+`"}}`), "fp-abc")
+	assert.Equal(t, "fp-abc", id2)
+	assert.Equal(t, "inferred", src2)
+}
+
+func TestResolveSession_InferredFromFingerprint(t *testing.T) {
+	withCapture(t, true)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
+
+	// No header, no metadata → fall back to the inferred prefix fingerprint.
+	id, src := resolveSession(c, []byte(`{"model":"x"}`), "fp-abc")
+	assert.Equal(t, "fp-abc", id)
+	assert.Equal(t, "inferred", src)
 }
 
 func TestResolveSession_NoneWhenAbsent(t *testing.T) {
@@ -55,7 +116,7 @@ func TestResolveSession_NoneWhenAbsent(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", nil)
 
-	id, src := resolveSession(c, []byte(`{"model":"x"}`))
+	id, src := resolveSession(c, []byte(`{"model":"x"}`), "")
 	assert.Empty(t, id)
 	assert.Empty(t, src)
 }
@@ -100,6 +161,80 @@ func TestExtractRequestAttributes_GeminiToolShape(t *testing.T) {
 	a := extractRequestAttributes(schemas.Gemini, body)
 	assert.Equal(t, []string{"get_weather", "search"}, a["tool_names"])
 	assert.Equal(t, 2, a["tool_count"])
+}
+
+func TestExtractToolActivity_Anthropic(t *testing.T) {
+	// A mid-conversation request: the last assistant turn made two parallel tool_use
+	// calls; the following user turn returned results — one of them an error.
+	body := []byte(`{
+		"model":"claude-haiku-4-5",
+		"messages":[
+			{"role":"user","content":"weather in SF and NYC?"},
+			{"role":"assistant","content":[
+				{"type":"text","text":"let me check"},
+				{"type":"tool_use","id":"a1","name":"get_weather","input":{"city":"SF"}},
+				{"type":"tool_use","id":"a2","name":"get_weather","input":{"city":"NYC"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"a1","content":"72F"},
+				{"type":"tool_result","tool_use_id":"a2","is_error":true,"content":"timeout"}
+			]}
+		]
+	}`)
+	called, failed := extractToolActivity(body)
+	assert.Equal(t, []string{"get_weather", "get_weather"}, called) // 2 calls this turn
+	assert.Equal(t, []string{"get_weather"}, failed)                // the a2 error only
+}
+
+func TestExtractToolActivity_OpenAICallsNoFailure(t *testing.T) {
+	// OpenAI: assistant tool_calls give calls; tool-role results carry no is_error, so
+	// no failures are inferred.
+	body := []byte(`{
+		"messages":[
+			{"role":"user","content":"lookup foo"},
+			{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"lookup"}}]},
+			{"role":"tool","tool_call_id":"c1","content":"error: not found"}
+		]
+	}`)
+	called, failed := extractToolActivity(body)
+	assert.Equal(t, []string{"lookup"}, called)
+	assert.Empty(t, failed)
+}
+
+func TestExtractToolActivity_GeminiCalls(t *testing.T) {
+	body := []byte(`{"contents":[
+		{"role":"user","parts":[{"text":"weather?"}]},
+		{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"SF"}}}]}
+	]}`)
+	called, failed := extractToolActivity(body)
+	assert.Equal(t, []string{"get_weather"}, called)
+	assert.Empty(t, failed)
+}
+
+func TestExtractToolActivity_NoToolsEmpty(t *testing.T) {
+	called, failed := extractToolActivity([]byte(`{"messages":[{"role":"user","content":"hi"}]}`))
+	assert.Empty(t, called)
+	assert.Empty(t, failed)
+}
+
+func TestExtractRequestAttributes_ToolActivity(t *testing.T) {
+	withCapture(t, true)
+	body := []byte(`{
+		"model":"claude-haiku-4-5","tools":[{"name":"get_weather"}],
+		"messages":[
+			{"role":"assistant","content":[{"type":"tool_use","id":"a1","name":"get_weather","input":{"city":"SF"}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"a1","is_error":true,"content":"boom"}]}
+		]
+	}`)
+	a := extractRequestAttributes(schemas.Anthropic, body)
+	assert.Equal(t, []string{"get_weather"}, a["called_tools"])
+	assert.Equal(t, 1, a["called_count"])
+	assert.Equal(t, []string{"get_weather"}, a["failed_tools"])
+	assert.Equal(t, 1, a["failed_count"])
+	// Tool ARGUMENTS must never be captured — only names.
+	for _, v := range a {
+		assert.NotEqual(t, "SF", v)
+	}
 }
 
 func TestExtractRequestAttributes_DisabledReturnsNil(t *testing.T) {

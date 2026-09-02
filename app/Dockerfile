@@ -27,7 +27,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json* ./
 COPY next.config.js ./
 COPY tsconfig.json ./
-COPY postcss.config.js ./
+COPY postcss.config.cjs ./
 # Copy other necessary config files if they exist, e.g., babel.config.js
 
 # Copy the rest of the application code

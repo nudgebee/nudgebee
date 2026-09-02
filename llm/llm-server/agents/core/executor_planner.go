@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -452,9 +452,23 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		// Fast-fail: if the LLM returned no parseable actions OR only failures,
 		// count consecutive bad iterations. Breaking after 2 prevents burning
 		// 5+ iterations × 16s on a stuck model.
+		//
+		// NOTE (pre-existing, not introduced by the circuit breaker work):
+		// allFailed is seeded from len(steps)==0, so for any non-empty steps
+		// it starts false and the loop below can only ever leave it false —
+		// the "every step in this iteration failed" branch is dead today;
+		// only the zero-actions case reaches consecutiveFailedIters++. The
+		// `|| s.IsCircuitOpen` guard is therefore inert too. Left in place
+		// (rather than removed as dead code) because it's the correct
+		// exclusion for the moment someone fixes the seed — a circuit-open
+		// step is the breaker fast-failing, not the LLM spinning on a
+		// genuinely broken action, and shouldn't count toward this abort.
+		// Fixing the seed itself would revive a long-dormant abort path
+		// across every agent, which is a behavior change well beyond this
+		// PR's scope — tracked as separate follow-up, not done here.
 		allFailed := len(steps) == 0
 		for _, s := range steps {
-			if s.Status != ToolStatusFailure {
+			if s.Status != ToolStatusFailure || s.IsCircuitOpen {
 				allFailed = false
 				break
 			}
@@ -467,6 +481,34 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			}
 		} else {
 			consecutiveFailedIters = 0
+		}
+
+		// No-progress brake (flag-gated, stats-based): the executor already counts
+		// consecutive same-tool no-progress calls in NoProgressRepeatCount (which
+		// unifies the prior byte-identical / trivial-result / access-denied counters
+		// — see countConsecutiveNoProgressForTool). A static notice "demonstrably
+		// does not break these loops." When the counter crosses the brake threshold
+		// the model is fishing (re-formulating queries that keep coming back
+		// empty / identical). Break and fall through to summarizeConversation with
+		// what's been gathered. Keys on OUTCOMES, not command sameness.
+		if config.Config.LlmServerNoProgressBrakeEnabled {
+			brakeAt := config.Config.LlmServerNoProgressBrakeThreshold
+			if brakeAt < 2 {
+				brakeAt = 3
+			}
+			stuck := false
+			for j := range steps {
+				if stepIsStuck(&steps[j], brakeAt) {
+					e.ctx.GetLogger().Warn("plannerexecutor: no-progress brake — breaking; tool stuck on repeated/trivial results (fishing)",
+						"agent", e.agent.GetName(), "iteration", i, "tool", steps[j].Action.Tool,
+						"noProgressCount", steps[j].NoProgressRepeatCount, "threshold", brakeAt)
+					stuck = true
+					break
+				}
+			}
+			if stuck {
+				break
+			}
 		}
 	}
 
@@ -485,7 +527,9 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 // summarizer prompt and returns whether any genuine FAILURE was observed.
 //
 // Status mapping:
-//   - ToolStatusFailure     → "FAILED"            (counts as failure)
+//   - ToolStatusFailure     → "FAILED"            (counts as failure), unless
+//     IsCircuitOpen is set → "TEMPORARILY_UNAVAILABLE" (NOT a failure — the
+//     breaker fast-failed the call, the tool itself never ran)
 //   - ToolStatusEmptyResult → "SUCCESS_NO_OUTPUT" (NOT a failure — exit 0
 //     with empty stdout is the normal success signal for write/mutation
 //     CLIs like `gh run rerun`, `kubectl apply`, `helm upgrade`,
@@ -506,13 +550,15 @@ func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
 	hasAnyFailure := false
 	for i, step := range steps {
 		status := "SUCCESS"
-		switch step.Status {
-		case ToolStatusFailure:
+		switch {
+		case step.Status == ToolStatusFailure && step.IsCircuitOpen:
+			status = "TEMPORARILY_UNAVAILABLE"
+		case step.Status == ToolStatusFailure:
 			status = "FAILED"
 			hasAnyFailure = true
-		case ToolStatusEmptyResult:
+		case step.Status == ToolStatusEmptyResult:
 			status = "SUCCESS_NO_OUTPUT"
-		case ToolStatusWaiting, ToolStatusWaitingForClient:
+		case step.Status == ToolStatusWaiting, step.Status == ToolStatusWaitingForClient:
 			status = "WAITING"
 		}
 		toolName := step.Action.Tool
@@ -1115,11 +1161,22 @@ func (e *plannerExecutor) doIterationParallel(
 	// BEFORE any goroutines are spawned. This prevents duplicate followup messages when
 	// multiple parallel tool calls need the same tool config (#28127).
 	preResolveToolConfigs := func() *NBAgentPlannerFinishAction {
-		checkedTools := map[string]bool{}
+		// Snapshot the dispatchable set under mu. This runs while earlier workers are
+		// still in flight, and those workers write node.Status under mu — reading it
+		// unlocked is a data race. The snapshot is taken rather than holding the lock
+		// across the loop because the config resolution below can block on IO, and
+		// holding mu through that would stall every in-flight worker.
+		mu.Lock()
+		dispatchable := make([]*ActionNode, 0, len(nodes))
 		for _, node := range nodes {
-			if len(node.Dependencies) != 0 || node.Status != "pending" {
-				continue
+			if len(node.Dependencies) == 0 && node.Status == "pending" {
+				dispatchable = append(dispatchable, node)
 			}
+		}
+		mu.Unlock()
+
+		checkedTools := map[string]bool{}
+		for _, node := range dispatchable {
 			toolName := node.Action.Tool
 			if checkedTools[toolName] {
 				continue
@@ -1164,11 +1221,13 @@ func (e *plannerExecutor) doIterationParallel(
 				// Without this, only the triggering node is saved in currentAction
 				// and siblings are re-planned by the LLM on resume, wasting tokens.
 				var sameToolActions []NBAgentPlannerToolAction
+				mu.Lock()
 				for _, n2 := range nodes {
 					if n2.Status == "pending" && strings.EqualFold(n2.Action.Tool, toolName) {
 						sameToolActions = append(sameToolActions, n2.Action)
 					}
 				}
+				mu.Unlock()
 				if len(sameToolActions) == 0 {
 					sameToolActions = []NBAgentPlannerToolAction{node.Action}
 				}
@@ -1181,8 +1240,23 @@ func (e *plannerExecutor) doIterationParallel(
 
 	// Helper to submit ready nodes
 	submitReadyNodes := func() {
-		for _, node := range nodes {
+		// In-flight workers write node.Status under mu, so read it the same way. The
+		// dispatchable set is resolved in one locked pass rather than locking per node:
+		// those workers are contending for mu to publish their own results, so N
+		// acquisitions here would interleave with theirs for no benefit. Nothing else
+		// moves a node out of "pending" — workers only transition nodes they already
+		// own — so this snapshot cannot go stale in a way that matters.
+		mu.Lock()
+		readyIDs := make(map[string]bool, len(nodes))
+		for id, node := range nodes {
 			if len(node.Dependencies) == 0 && node.Status == "pending" {
+				readyIDs[id] = true
+			}
+		}
+		mu.Unlock()
+
+		for id, node := range nodes {
+			if readyIDs[id] {
 				if err := workCtx.Err(); err != nil {
 					return
 				}
@@ -1194,7 +1268,20 @@ func (e *plannerExecutor) doIterationParallel(
 				case <-workCtx.Done():
 					return
 				}
+				// select chooses pseudo-randomly when both cases are ready, so the
+				// acquire can win against an already-cancelled context. Re-check and
+				// hand the permit back rather than dispatching a worker that would
+				// immediately skip itself.
+				if workCtx.Err() != nil {
+					<-e.semaphore
+					return
+				}
+				// The lock is deliberately not held across the acquire above:
+				// blocking on a permit while holding mu would deadlock, because the
+				// workers holding those permits need mu to finish and release them.
+				mu.Lock()
 				node.Status = "ready"
+				mu.Unlock()
 				n := node
 				e.ctx.GetLogger().Info("plannerexecutor: submitting tool for parallel execution", "tool", n.Action.Tool, "toolId", n.Action.ToolID)
 				// Create a new variable to track whether to release the permit
@@ -1643,6 +1730,16 @@ func isNoMatchEnvelope(data string) bool {
 		strings.Contains(data, `"no_matches": true`)
 }
 
+// stepIsStuck reports whether the executor's consecutive no-progress counter
+// for this step has crossed the brake threshold — the model has driven this
+// tool through enough failure / trivial / byte-identical outcomes in a row
+// this turn that it's fishing, not progressing. Command-agnostic: keys on the
+// unified NoProgressRepeatCount the executor already maintains, not on command
+// sameness (the model re-formulates the query rather than repeating it).
+func stepIsStuck(step *NBAgentPlannerToolActionStep, threshold int) bool {
+	return step.NoProgressRepeatCount >= threshold
+}
+
 // formatToolMetadataFooter renders the trailing
 // "[exitStatus: N | executionDuration: Xms]" marker the planner sees
 // appended to every tool observation. Built from Metadata at prompt-render
@@ -1706,20 +1803,6 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 	return truncated, originalLen
 }
 
-// writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
-// watch_resource is exempt: it's Create only for the access gate and mutates nothing (source is read-only).
-func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName string) bool {
-	if requestType == nil {
-		return false
-	}
-	switch *requestType {
-	case toolcore.ToolRequestTypeCreate, toolcore.ToolRequestTypeUpdate, toolcore.ToolRequestTypeDelete:
-		return !strings.EqualFold(toolName, tools.ToolWatchResource)
-	default:
-		return false
-	}
-}
-
 // recordFailedActionStep converts an action-level error (auth rejection,
 // condition-evaluation failure, input parsing, panic recovery) into a
 // ToolStatusFailure step instead of an iteration-aborting error. The error
@@ -1740,6 +1823,50 @@ func (e *plannerExecutor) recordFailedActionStep(action NBAgentPlannerToolAction
 		Action:      action,
 		Observation: observation,
 		Status:      ToolStatusFailure,
+	}
+}
+
+// confirmationKeyForAction returns the key a write-confirmation is recorded and
+// checked under. Default is the tool name — one approval covers every later
+// call to that tool in the conversation. Tools implementing
+// toolcore.ToolConfirmationScope get a per-action key (varying with the
+// input), so each distinct invocation pauses for its own approval.
+func confirmationKeyForAction(tool toolcore.NBTool, action NBAgentPlannerToolAction) string {
+	if scoped, ok := tool.(toolcore.ToolConfirmationScope); ok {
+		if key := scoped.ConfirmationKey(action.ToolInput); key != "" {
+			return key
+		}
+	}
+	return action.Tool
+}
+
+// confirmationApprovedForAction mirrors isToolConfirmationApproved but resolves
+// the per-action confirmation key when the tool is available, so resume paths
+// agree with the doAction gate about which entry an approval lives under.
+func confirmationApprovedForAction(confirmations map[string]string, nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction) bool {
+	return isToolConfirmationApproved(confirmations, resumeConfirmationKey(nameToTool, action))
+}
+
+// resumeConfirmationKey is the key a resume looks an approval up under: the
+// per-action key when the tool scopes its confirmations, else the tool name.
+func resumeConfirmationKey(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction) string {
+	if tool, ok := nameToTool[strings.ToUpper(strings.TrimSpace(action.Tool))]; ok && tool != nil {
+		return confirmationKeyForAction(tool, action)
+	}
+	return action.Tool
+}
+
+// writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
+// watch_resource is exempt: it's Create only for the access gate and mutates nothing (source is read-only).
+func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName string) bool {
+	if requestType == nil {
+		return false
+	}
+	switch *requestType {
+	case toolcore.ToolRequestTypeCreate, toolcore.ToolRequestTypeUpdate, toolcore.ToolRequestTypeDelete:
+		return !strings.EqualFold(toolName, tools.ToolWatchResource)
+	default:
+		return false
 	}
 }
 
@@ -1777,6 +1904,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 			"tool", action.Tool, "toolId", action.ToolID, "phase", "pre-rewrite")
 		cachedStep.Action.ToolID = action.ToolID
+		cachedStep.IsDuplicateCacheHit = !cachedStep.IsTerminal
 		return cachedStep, nil, nil
 	}
 	originalInput := action.ToolInput
@@ -1804,8 +1932,10 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 					"tool", action.Tool, "toolId", action.ToolID, "phase", "post-rewrite")
 				cachedStep.Action.ToolID = action.ToolID
-				// Also cache under original input for future pre-rewrite hits
+				// Also cache under original input for future pre-rewrite hits. Cache the
+				// step BEFORE flagging it, so the stored entry stays a clean result.
 				e.toolCallCache.Put(action.Tool, originalInput, cachedStep)
+				cachedStep.IsDuplicateCacheHit = !cachedStep.IsTerminal
 				return cachedStep, nil, nil
 			}
 		}
@@ -1888,8 +2018,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// so the executor doesn't fail with "tool not found".
 		if isNotebookToolName(action.Tool) {
 			e.ctx.GetLogger().Info("plannerexecutor: notebook tool call intercepted as no-op", "tool", action.Tool)
-			common.MetricsToolOperationsTotal(toolName, "success", accountID)
-			common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+			common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, toolName, "success", accountID)
+			common.MetricsToolLatencySeconds(toolcore.ToolImplTypeBuiltin, toolName, accountID, time.Since(start).Seconds())
 			return NBAgentPlannerToolActionStep{
 				Action:      action,
 				Observation: "Notebook content noted. Use the <update_notebook> XML tag instead of a tool call for notebook updates. Continue with your investigation.",
@@ -1911,9 +2041,9 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		if err != nil {
 			e.ctx.GetLogger().Error("plannerexecutor: failed to save agent call to DB", "error", err.Error())
 		}
-		// Metrics: record fail
-		common.MetricsToolOperationsTotal(toolName, "fail", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		// Metrics: record fail (tool not resolved, so impl type is unknown — label as builtin)
+		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, toolName, "fail", accountID)
+		common.MetricsToolLatencySeconds(toolcore.ToolImplTypeBuiltin, toolName, accountID, time.Since(start).Seconds())
 
 		// Provide helpful observation with available tools list
 		// Sanitize tool name to prevent CDATA breakout in scratchpad XML
@@ -1934,17 +2064,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	}
 
 	// validate user access
+	implType := toolcore.ImplTypeFor(tool)
 	finish2, requestType, err2 := IsAgentToolAuthorizedToProcessRequest(e.ctx, e.agent, e.agentRequest, action)
 	if err2 != nil {
 		// Metrics: record fail
-		common.MetricsToolOperationsTotal(toolName, "fail", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, nil, err2
 	}
 	if finish2 != nil {
 		// Metrics: record success (finish2 is a finish action, not an error)
-		common.MetricsToolOperationsTotal(toolName, "success", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "success", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, finish2, nil
 	}
 
@@ -1955,9 +2086,17 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
 		if writeConfirmationRequired(requestType, action.Tool) {
+			confirmationKey := confirmationKeyForAction(tool, action)
+			// Operator-readable card text, when the tool can provide it — the
+			// default rendering shows the raw tool input, which for id-driven
+			// tools describes nothing the approver can judge.
+			confirmationQuestion := ""
+			if prompter, ok := tool.(toolcore.ToolConfirmationPrompt); ok {
+				confirmationQuestion = strings.TrimSpace(prompter.ConfirmationQuestion(action.ToolInput))
+			}
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
-				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[action.Tool]; exists {
+				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {
 					isFollowupFound = true
 					previousData = strings.TrimSpace(previousData)
 					if !slices.Contains([]string{"ok", "yes", "true"}, strings.ToLower(previousData)) {
@@ -1971,7 +2110,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
-				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType)
+				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion)
 				if err != nil {
 					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
@@ -2051,7 +2190,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				if custom := responder.OnMissingRequiredFields(request, missing); custom != nil && custom.Data != "" {
 					e.ctx.GetLogger().Warn("plannerexecutor: tool input missing required fields (responder-emitted)",
 						"tool", action.Tool, "toolId", action.ToolID, "missing", missing)
-					common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+					common.MetricsToolOperationsTotal(implType, toolName, "fail_validation", accountID)
 					// Deliberately NOT recording MetricsToolLatencySeconds here:
 					// no Call() ran, so a near-zero latency sample would skew
 					// the p50/p99 downward for tools like `think` and pollute
@@ -2068,7 +2207,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		if validationErr := toolcore.ValidateToolInput(tool, action.ToolInput); validationErr != nil {
 			e.ctx.GetLogger().Warn("plannerexecutor: tool input failed schema validation",
 				"tool", action.Tool, "toolId", action.ToolID, "error", *validationErr)
-			common.MetricsToolOperationsTotal(toolName, "fail_validation", accountID)
+			common.MetricsToolOperationsTotal(implType, toolName, "fail_validation", accountID)
 			// Deliberately NOT recording MetricsToolLatencySeconds here — see
 			// the responder branch above for the rationale.
 			// ToolStatusFailure (not a new status): downstream consumers treat it
@@ -2135,8 +2274,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	if err != nil {
 		// Metrics: record fail
-		common.MetricsToolOperationsTotal(toolName, "fail", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, nil, err
 	}
 
@@ -2185,8 +2324,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	if observation.Status == toolcore.NBToolResponseStatusWaiting || observation.Status == toolcore.NBToolResponseStatusWaitingForClient {
 		// Metrics: record waiting
-		common.MetricsToolOperationsTotal(toolName, "waiting", accountID)
-		common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+		common.MetricsToolOperationsTotal(implType, toolName, "waiting", accountID)
+		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 
 		// check if it's a client tool and return specific waiting status
 		if _, isClientTool := tool.(*toolcore.ClientToolWrapper); isClientTool || observation.Status == toolcore.NBToolResponseStatusWaitingForClient {
@@ -2236,9 +2375,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			}, nil
 	}
 
-	// Metrics: record success
-	common.MetricsToolOperationsTotal(toolName, "success", accountID)
-	common.MetricsToolLatencySeconds(toolName, accountID, time.Since(start).Seconds())
+	// Metrics: record outcome. Tools that report failure via
+	// NBToolResponseStatusError + nil err (the MCP integration pattern)
+	// were previously mis-attributed as "success" because we only
+	// checked err. Use the classified status set above instead.
+	metricStatus := "success"
+	if observation.IsCircuitOpen {
+		metricStatus = "circuit_open"
+	} else if status == ToolStatusFailure {
+		metricStatus = "fail"
+	}
+	common.MetricsToolOperationsTotal(implType, toolName, metricStatus, accountID)
+	common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 
 	result := NBAgentPlannerToolActionStep{
 		Action:           action,
@@ -2248,6 +2396,27 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		References:       observation.References,
 		Metadata:         observation.Metadata,
 		SubAgentEvidence: observation.SubAgentEvidence,
+		IsCircuitOpen:    observation.IsCircuitOpen,
+	}
+	// Single generic loop-breaker: same tool returning "no progress" outcomes
+	// consecutively. Replaces the previous per-error-class counters
+	// (byte-identical, trivial-result, access-denied) — one detector covers
+	// 403 / 503 / 429 / empty / byte-identical / anything new, using signals
+	// the executor already computes (status + isTrivialObservation) plus a
+	// byte-identical guard for the specific "status=success but stuck"
+	// subclass (the DBInstanceIdentifier mis-typo pattern from the OG DB
+	// audit). Rationale: per-class detectors don't scale — each new error
+	// shape needs its own counter + notice + tests. This generic version
+	// catches any current or future unproductive-response pattern by
+	// construction. Tool-agnostic — same signal for shell / kubectl /
+	// postgres / github / aws / gcp / az uniformly.
+	if !observation.IsTerminal {
+		if n := e.countConsecutiveNoProgressForTool(action, result); n >= noProgressLoopThreshold {
+			result.NoProgressRepeatCount = n
+			e.ctx.GetLogger().Warn("plannerexecutor: tool returned no-progress (error / empty / byte-identical to prior) consecutively this turn",
+				"tool", action.Tool, "toolId", action.ToolID, "occurrences", result.NoProgressRepeatCount)
+			common.MetricsToolOperationsTotal(implType, toolName, "no_progress_loop", accountID)
+		}
 	}
 
 	// Cache successful results under both original and rewritten inputs
@@ -2261,8 +2430,125 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	return result, nil, nil
 }
 
-func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
-	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType)
+// isTrivialObservation reports whether an observation carries no findings — an empty
+// body, the no-data sentinel, or an empty JSON container. Repeats of these are normal:
+// a sweep across regions or namespaces where most come back empty produces the same
+// `[]` over and over, and flagging that would train the planner to abandon a scan that
+// is working correctly.
+func isTrivialObservation(observation string) bool {
+	switch strings.TrimSpace(observation) {
+	case "", "[]", "{}", "null", plannerToolNoData:
+		return true
+	}
+	return false
+}
+
+// isNoProgressStep reports whether a completed tool step advanced the
+// investigation. "No progress" is intentionally broad — anything the model
+// cannot productively act on:
+//
+//   - Explicit failure: status = ToolStatusFailure (any error class — 403,
+//     404, 503, 429, invalid-flag, timeout — all covered).
+//   - Structured empty: status = ToolStatusEmptyResult (the empty-envelope
+//     path the executor uses when a tool returns success-with-no-rows).
+//   - Trivial observation: `[]`, `{}`, `null`, "", the no-data sentinel —
+//     covers the case where a tool returned success + exit 0 but the raw
+//     output was empty (backup for callers that didn't tag EmptyResult).
+//
+// Deliberately does NOT parse error text for specific classes (denied /
+// rate-limit / not-found). Per-class detection was the design that came
+// before this consolidation and didn't scale — every new CLI error shape
+// meant another counter, another notice, another test file. This uses only
+// signals the executor already computes.
+func isNoProgressStep(s NBAgentPlannerToolActionStep) bool {
+	return s.Status == ToolStatusFailure ||
+		s.Status == ToolStatusEmptyResult ||
+		isTrivialObservation(s.Observation)
+}
+
+// countConsecutiveNoProgressForTool walks the turn's steps back-to-front
+// counting consecutive same-tool no-progress outcomes. Steps for OTHER tools
+// are skipped (don't break the chain — they're unrelated work). The first
+// same-tool step that DID make progress breaks the chain.
+//
+// The current step is passed in explicitly (via `current`) because it hasn't
+// been appended to e.steps yet at the call site — the caller decides whether
+// to fire the notice based on the returned count INCLUDING the current step.
+// Byte-identical-to-any-prior-same-tool-step also counts as no-progress
+// (guards the OG DBInstanceIdentifier subclass: status=success but stuck).
+//
+// Once the walk crosses a genuine-progress step that happens to match the
+// current observation (i.e. we're detecting a repeated-success loop), any
+// steps ENTERED BEFORE THAT progress step only count if they ALSO match the
+// observation. Without that guard an old failure that predated real progress
+// gets retroactively absorbed into the chain, inflating the count and firing
+// the loop-breaker on what is really just the second repeat of a good answer.
+func (e *plannerExecutor) countConsecutiveNoProgressForTool(action NBAgentPlannerToolAction, current NBAgentPlannerToolActionStep) int {
+	if !isNoProgressStep(current) && !e.matchesAnyPriorSameToolObservation(action, current.Observation) {
+		return 0
+	}
+	n := 1 // current step
+	// Flips once we've counted a "progress-but-duplicate" step; from then on
+	// we only accept OLDER steps that share the same observation. Failures
+	// or trivial-empties older than a matched progress step are unrelated
+	// history and must not be counted.
+	onlyMatchObservation := false
+	for i := len(e.steps) - 1; i >= 0; i-- {
+		s := e.steps[i]
+		if s.Action.Tool != action.Tool {
+			continue // other tool — skip, don't reset
+		}
+		matchesObs := !isTrivialObservation(current.Observation) && s.Observation == current.Observation
+		if onlyMatchObservation {
+			if matchesObs {
+				n++
+				continue
+			}
+			break
+		}
+		if isNoProgressStep(s) || matchesObs {
+			n++
+			if !isNoProgressStep(s) {
+				// This step was genuine progress that happens to match the
+				// current observation — future (older) steps must also match.
+				onlyMatchObservation = true
+			}
+			continue
+		}
+		break // same-tool success — chain ends
+	}
+	return n
+}
+
+// matchesAnyPriorSameToolObservation is the byte-identical guard: returns
+// true when `obs` (non-trivial) matches ANY prior same-tool step's
+// observation under a DIFFERENT input. Preserves the OG DBInstanceIdentifier
+// detection: status=success + non-trivial observation + repeats across
+// rewritten commands = model is stuck on the same argument-level mistake.
+func (e *plannerExecutor) matchesAnyPriorSameToolObservation(action NBAgentPlannerToolAction, obs string) bool {
+	if isTrivialObservation(obs) {
+		return false
+	}
+	for _, s := range e.steps {
+		if s.Action.Tool == action.Tool && s.Action.ToolInput != action.ToolInput && s.Observation == obs {
+			return true
+		}
+	}
+	return false
+}
+
+// noProgressLoopThreshold is the CONSECUTIVE-count at which the notice
+// starts firing. Set to 3 so the THIRD consecutive no-progress call is
+// the first with the notice. Chosen empirically from the 7d prod loop
+// distribution: the median problematic pattern hits 4-5 consecutive
+// unproductive calls before the model breaks out on its own; firing at
+// 3 catches the tail without noisy false positives on 1-2 turn legit
+// checks ("prod + staging both empty" = 2 consecutive trivials and
+// shouldn't fire).
+const noProgressLoopThreshold = 3
+
+func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType, confirmationKey, questionOverride)
 	if err != nil {
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 		return nil, nil, err
@@ -2384,8 +2670,10 @@ func (e *plannerExecutor) selectConfigUsingLLM(userQuery string, configs []toolc
 	questionText = fmt.Sprintf("Based on the user's input%s, which configuration should be used?\n\n", contextPart)
 
 	// Use the prompt template
-	promptText := prompts_repo.GetPrompt(
-		prompts_repo.PromptToolConfigAutoSelection,
+	promptText := prompts.GetPrompt(
+		e.ctx.GetContext(),
+		prompts.PromptConfigAutoSelection,
+		e.agentRequest.AccountId,
 		headerText,
 		userQuery,
 		toolName,
@@ -3353,6 +3641,9 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		toolContext.InheritSkillsFromAgents = delegationSkillScope(agentRequest.InheritSkillsFromAgents, parentAgentName)
 		toolContext.SelectedSkillIds = agentRequest.SelectedSkillIds
 	}
+	toolContext.KBPrestepContent = agentRequest.KBPrestepContent
+	toolContext.KBPrestepExecuted = agentRequest.KBPrestepExecuted
+	toolContext.KBReferences = agentRequest.KBReferences
 
 	// Check if this tool requires configuration
 	if _, ok := tool.(toolcore.NBToolConfig); ok {
@@ -3414,8 +3705,29 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		}
 	}
 
+	implType := toolcore.ImplTypeFor(tool)
+
 	if resp := validateToolInput(tool, request); resp != nil {
 		return *resp, nil
+	}
+
+	// Circuit-breaker pre-check. A tool opts in by implementing
+	// CircuitBreakerKeyer; tools that don't implement it never touch the
+	// breaker. When the circuit is open we short-circuit before the
+	// (relay) round-trip and surface a uniform circuit_open response so
+	// the LLM sees a consistent "upstream temporarily unavailable"
+	// signal regardless of tool type. doAction (the sole caller) records
+	// the circuit_open outcome on the generic nb_llm_tool_operations
+	// counter via NBToolResponse.IsCircuitOpen — not recorded here, to
+	// avoid double-counting the same call.
+	var breakerKey toolcore.CircuitBreakerKey
+	breakerActive := false
+	if keyer, ok := tool.(toolcore.CircuitBreakerKeyer); ok {
+		breakerKey, breakerActive = keyer.CircuitBreakerKey(toolContext, request)
+		if breakerActive && !toolcore.ToolCircuitBreaker().IsHealthy(implType, breakerKey) {
+			nbRequestContext.GetLogger().Warn("plannerexecutor: skipping call — circuit open", "tool", tool.Name(), "account_id", breakerKey.AccountId, "instance_id", breakerKey.InstanceId, "impl_type", implType)
+			return toolcore.NewCircuitOpenResponse(tool.Name(), toolcore.ToolCircuitBreaker().Threshold()), nil
+		}
 	}
 
 	t0 := time.Now()
@@ -3427,7 +3739,21 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", input)
 	// Record tool latency metric
 	// Use context.Background() for metrics, as security.RequestContext does not expose context.Context
-	common.MetricsToolLatencySeconds(tool.Name(), agentRequest.AccountId, latency)
+	common.MetricsToolLatencySeconds(implType, tool.Name(), agentRequest.AccountId, latency)
+
+	// Circuit-breaker post-record. Only opt-in tools (breakerActive) get
+	// recorded. The classifier decides whether the outcome counts: tools
+	// with a clean transport/logic separation (MCP, custom_container)
+	// can use the default "any non-nil err = infra" rule; tools wrapping
+	// CLIs MUST implement CircuitBreakerFailureClassifier so the breaker
+	// doesn't trip on logical errors like resource-not-found.
+	if breakerActive {
+		if toolcore.ClassifyAsInfraFailure(tool, err, data) {
+			toolcore.ToolCircuitBreaker().RecordFailure(implType, breakerKey)
+		} else {
+			toolcore.ToolCircuitBreaker().RecordSuccess(implType, breakerKey)
+		}
+	}
 	if err != nil {
 		nbRequestContext.GetLogger().Error("tool execution error", "error", err, "tool", tool.Name())
 		responseData := data.Data
@@ -3515,6 +3841,10 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 
 		// read tool followup o/p as observation
 		if len(executor.currentAction) > 0 {
+			// Resolved once for the whole resume pass: the confirmation checks below
+			// must look under the same per-action key doAction recorded under, which
+			// requires the tool instance (confirmationApprovedForAction).
+			resumeNameToTool := getNameToTool(nbAgentPlanner.GetTools())
 			// read all current actions as steps
 			for _, action := range executor.currentAction {
 				toolId := action.ToolID
@@ -3529,7 +3859,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					executor.steps = append(executor.steps, step)
 					executor.stepKeys[action.ToolID] = true
 					ctx.GetLogger().Info("plannerexecutor: recovered tool result from DB", "toolId", toolId)
-				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool) {
+				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action) {
 					// No row found in DB for this tool AND neither a config nor a write-confirmation
 					// was resolved. This means the tool was waiting for a config selection that never
 					// arrived. A confirmation-gated tool whose confirmation was just approved is NOT
@@ -3537,8 +3867,14 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// empty/wrong credentials and silently produce "No Data". Fail fast instead.
 					// Note: only the "no row" case is treated as a config failure; transient DB errors
 					// fall through to the next branch so they remain retriable.
+					// The confirmation key is logged alongside the keys actually
+					// present: when this fires on a tool the user DID approve, the
+					// cause is a key mismatch, not a missing config, and the
+					// message above sends triage down the wrong path.
 					ctx.GetLogger().Error("plannerexecutor: no tool record found in DB and config not resolved, failing fast to avoid running with wrong credentials",
-						"tool", action.Tool, "toolId", toolId, "error", err)
+						"tool", action.Tool, "toolId", toolId, "error", err,
+						"expectedConfirmationKey", resumeConfirmationKey(resumeNameToTool, action),
+						"presentConfirmationKeys", slices.Sorted(maps.Keys(executor.agentRequest.QueryConfig.ToolConfirmations)))
 					step := NBAgentPlannerToolActionStep{
 						Action:      action,
 						Observation: fmt.Sprintf("Error: tool %q could not be executed because its configuration was not resolved. Please select a valid configuration and retry.", action.Tool),
@@ -3583,7 +3919,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					}
 					ctx.GetLogger().Info("plannerexecutor: using completed child agent response for WAITING parent tool_call",
 						"toolId", toolId, "tool", action.Tool, "childStatus", childOut.status)
-				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)))) {
+				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action)))) {
 					// [Changed for TicketV2] Tool is still waiting — execute it IMMEDIATELY so the planner starts with the result.
 					// Previously, the user's response always replaced tool input. But for tool_config followups
 					// (e.g., user selecting a Jira integration), the user's response is the config choice, not
@@ -3599,7 +3935,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// we ensure doAction runs again with the newly resolved config — triggering the next
 					// config step (e.g., project selection after integration selection).
 					isConfigResolved := isToolConfigResolved(request.QueryConfig.ToolConfigs, action.Tool)
-					isConfirmationApproved := isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)
+					isConfirmationApproved := confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action)
 					if isConfigResolved || isConfirmationApproved {
 						// The user's answer was a config/confirmation choice, not the tool input — keep the original command.
 						ctx.GetLogger().Info("plannerexecutor: resuming tool after config/confirmation, keeping original input",
@@ -3610,11 +3946,8 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 						action.ToolInput = request.Query
 					}
 
-					// We need to call doAction directly. We'll use the existing nameToTool mapping.
-					nameToTool := getNameToTool(nbAgentPlanner.GetTools())
-
 					// Build query context (for resumption, we use the request's query context).
-					stepResponse, finishAct, errAct := executor.doAction(nameToTool, action, request.QueryContext)
+					stepResponse, finishAct, errAct := executor.doAction(resumeNameToTool, action, request.QueryContext)
 					if errAct == nil && finishAct == nil {
 						executor.steps = append(executor.steps, stepResponse)
 						executor.stepKeys[action.ToolID] = true
@@ -3665,7 +3998,13 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			ctx.GetLogger().Info("agentexecutor: applying agent timeout", "agent", agent.GetName(), "timeout", d.String())
 		}
 	}
-	response, err := chains.Run(runCtx, executor, request.Query)
+	// Bound the per-iteration query handed to the planner: oversized queries
+	// (automation CI/cluster dumps, user-pasted logs) are offloaded to the
+	// workspace and grep-retrievable rather than re-sent uncached every
+	// iteration. No-op unless the query is oversized AND the agent is a
+	// shell-capable orchestrator. request.Query itself is left untouched.
+	plannerQuery := capOrchestratorQuery(ctx, agent, request)
+	response, err := chains.Run(runCtx, executor, plannerQuery)
 	if err != nil {
 		// On timeout with accumulated steps, summarize partial results instead of losing them
 		if errors.Is(err, context.DeadlineExceeded) && len(executor.steps) > 0 {
@@ -3806,13 +4145,24 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			ctx.GetLogger().Info("agentexecutor: triggering long-term memory extraction", "notebook_len", len(notebook), "has_notebook", notebook != "")
 
 			err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
-				_ = extractLongTermMemory(bgCtx, request, response, notebook)
+				_ = extractLongTermMemory(bgCtx, agent, request, response, notebook, len(toolInvocations))
 			})
 			if err != nil {
 				ctx.GetLogger().Error("agentexecutor: failed to submit memory extraction task", "error", err)
 			}
 		} else {
 			ctx.GetLogger().Info("agentexecutor: skipping long-term memory extraction (trivial query, no notebook)", "query_len", len(queryForClassification))
+		}
+
+		// Session working memory — refresh the typed blob the next turn's
+		// Compose will inject under <session_working_memory>. Internal gating
+		// (module on + tenant allowlist + session layer enabled + non-empty
+		// SessionId) lives inside the extractor; submission is unconditional
+		// so the gate can be flipped without redeploying.
+		if serr := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
+			extractSessionWorkingMemory(bgCtx, request, response, notebook)
+		}); serr != nil {
+			ctx.GetLogger().Error("agentexecutor: failed to submit session-extractor task", "error", serr)
 		}
 	} else {
 		ctx.GetLogger().Info("agentexecutor: skipping memory extraction - conditions not met",
@@ -3834,7 +4184,10 @@ func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, quer
 	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:RewriteInput")
 	defer span.End()
 
-	promptTemplate := prompts_repo.GetPrompt(prompts_repo.PromptPlannerAgentRewriteToolInput)
+	promptTemplate, promptErr := prompts.GetPromptStrict(e.ctx.GetContext(), prompts.PromptAgentRewriteToolInput, e.agentRequest.AccountId)
+	if promptErr != nil {
+		return "", fmt.Errorf("rewriteToolInput: loading prompt: %w", promptErr)
+	}
 
 	// Using a simple string replacement for the template here for clarity.
 	// In a real implementation, use a proper template engine if it gets more complex.
@@ -3975,8 +4328,16 @@ func generateAsyncAgentSummary(ctx *security.RequestContext, request NBAgentRequ
 	// "%!(EXTRA ...)" overflow, inflating summary inputs past 200k tokens. The
 	// response is also capped, since a one-sentence summary needs only the gist.
 	truncatedResponse := SmartTruncateToolOutput(response, maxSummaryInputBytes)
+	// Fail safe rather than silently: this function has no error return, and summarizing
+	// under an empty instruction yields a bare "User request: ..." blob that reads like a
+	// real summary. Skipping the async summary is the honest outcome.
+	summarySystemPrompt, summaryPromptErr := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptAgentResponseSummary, request.AccountId)
+	if summaryPromptErr != nil {
+		ctx.GetLogger().Error("plannerexecutor: response-summary prompt failed to load, skipping async summary", "error", summaryPromptErr)
+		return
+	}
 	summaryPrompt := fmt.Sprintf("%s\n\nUser request: %s\n\nResponse to summarize:\n%s",
-		prompts_repo.GetPrompt(prompts_repo.PromptAgentResponseSummary), request.Query, truncatedResponse)
+		summarySystemPrompt, request.Query, truncatedResponse)
 	summaryMessages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, summaryPrompt),
 	}

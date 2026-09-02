@@ -16,6 +16,8 @@ import (
 	"nudgebee/services/ml"
 	"nudgebee/services/notification"
 	"nudgebee/services/observability"
+	"nudgebee/services/query"
+	"nudgebee/services/recommendation/coordinator"
 	"nudgebee/services/scan_orchestrator"
 	"nudgebee/services/security"
 	"strings"
@@ -29,11 +31,20 @@ func GetRecommendation(context *security.RequestContext, id string) (models.Reco
 	if err != nil {
 		return models.Recommendation{}, err
 	}
-	r := databaseManager.Db.QueryRowx(`SELECT id, created_at, updated_at, tenant_id, cloud_account_id, resource_id,
-			recommendation, recommendation_action, severity, estimated_savings, status, category,
-			rule_name, account_object_id, note, dismissed_reason, is_dismissed, updated_by,
-			finops_score, finops_band, finops_score_breakdown, last_nudged_at, dedupe_group
-		FROM recommendation WHERE id = $1`, id)
+	// recommendation.recommendation is trimmed for vm_package_vulnerability/image_scan
+	// rows (see V867 migration) — the shared CVE+package fields now live on the
+	// linked vulnerabilities row. Rebuild the legacy full payload via the same
+	// reconstruction consumers like the LLM security tool and the security
+	// code-agent PR flow (ApplySecurityRecommendationUsingCodeAgent -> formatCVELogs)
+	// expect, so callers of GetRecommendation keep seeing CVE id/package/severity
+	// instead of the trimmed husk.
+	r := databaseManager.Db.QueryRowx(`SELECT r.id, r.created_at, r.updated_at, r.tenant_id, r.cloud_account_id, r.resource_id,
+			`+query.VulnerabilityRecommendationSQL("r", "v.")+` AS recommendation, r.recommendation_action, r.severity, r.estimated_savings, r.status, r.category,
+			r.rule_name, r.account_object_id, r.note, r.dismissed_reason, r.is_dismissed, r.updated_by,
+			r.finops_score, r.finops_band, r.finops_score_breakdown, r.last_nudged_at, r.dedupe_group, r.snoozed_until
+		FROM recommendation r
+		LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id
+		WHERE r.id = $1`, id)
 	if r.Err() != nil {
 		return models.Recommendation{}, r.Err()
 	}
@@ -52,7 +63,8 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 	// Also exclude any stuck > 2 hours (safety mechanism to prevent duplicate creation)
 	r, err := databaseManager.Db.Queryx(`
 		SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution
 		WHERE recommendation_id = $1
 		AND type = $2
@@ -92,13 +104,22 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 // recommendation whose PR is still open on the remote, or nil when none exists.
 //
 // A resolution counts as "open" when it carries a real PR URL (type_reference_id
-// like http...) and its pr_lifecycle_state is not one of the terminal states
-// ('merged' / 'closed' / 'unresolvable') that the reconciler in
-// account/adapter/pr_lifecycle.go drives rows to once a PR is resolved. Failed
+// like http...), is still InProgress, and its pr_lifecycle_state is not one of
+// the terminal states ('merged' / 'closed' / 'unresolvable') that the reconciler
+// in account/adapter/pr_lifecycle.go drives rows to once a PR is resolved. Failed
 // PR-creation attempts leave type_reference_id empty, so they are ignored. NULL
 // lifecycle rows with a URL are treated as open (a PR was raised but the
 // reconciler has not classified it yet) to stay on the safe side of not opening
 // a duplicate.
+//
+// The status filter is not redundant with the lifecycle filter: it keeps this
+// query's idea of "open" the same as the reconciler's, which selects on
+// status = 'InProgress' throughout. A row the reconciler will never look at
+// again must not be able to block a recommendation here, because nothing can
+// ever release it — a row stuck at ('Success', 'created') pinned llm-server and
+// relay-server to PRs that had already merged, and no new PR was raised for
+// either for a month. status only moves off InProgress via prTerminalFields,
+// i.e. the PR really did merge or close, so this cannot hide a live PR.
 func findOpenPRResolution(recommendationId string) (*models.RecommendationResolution, error) {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -106,15 +127,18 @@ func findOpenPRResolution(recommendationId string) (*models.RecommendationResolu
 	}
 	row := databaseManager.Db.QueryRowx(`
 		SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution
 		WHERE recommendation_id = $1
 		AND type = $2
 		AND type_reference_id LIKE 'http%'
+		AND status = $3
 		AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable'))
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, recommendationId, string(models.RecommendationResolutionTypePullRequest))
+	`, recommendationId, string(models.RecommendationResolutionTypePullRequest),
+		string(models.RecommendationResolutionStatusInProgress))
 	resolution := models.RecommendationResolution{}
 	if err := row.StructScan(&resolution); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -287,6 +311,12 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 			resolutionType = models.RecommendationResolutionTypeDeploymentChange
 		case "EventResolution":
 			resolutionType = models.RecommendationEventResolutionType
+		case "Configuration":
+			// requests-unset pod recs live under Configuration but apply the
+			// same way as any other pod_right_sizing rec
+			if recommendationRequest.Recommendation.RuleName == "pod_right_sizing" {
+				resolutionType = models.RecommendationResolutionTypeDeploymentChange
+			}
 		}
 	case "aws", "azure", "gcp":
 		// For cloud providers, use CloudResource for all recommendation types
@@ -320,18 +350,37 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 			if existingPR.PRLifecycleState != nil {
 				lifecycleState = *existingPR.PRLifecycleState
 			}
-			ctx.GetLogger().Info("skipping duplicate PR: recommendation already has an open PR",
+
+			// The open PR stays the only PR — but it should not be allowed to go on
+			// proposing numbers that are no longer true. When the recommendation has
+			// moved materially since this PR was raised, rewrite it in place rather
+			// than leaving it stale (#34959). Anything the refresh cannot establish
+			// leaves the PR exactly as it was.
+			decision := maybeRefreshOpenPR(ctx, existingPR, newValuesFromApplyRequest(query), query.RefreshOpenPRChangePct)
+
+			ctx.GetLogger().Info("recommendation already has an open PR",
 				"recommendation_id", r.Id,
 				"existing_resolution_id", existingPR.Id,
 				"pr_url", existingPR.TypeReferenceId,
-				"pr_lifecycle_state", lifecycleState)
+				"pr_lifecycle_state", lifecycleState,
+				"refreshed", decision.Refreshed,
+				"decision", decision.Reason)
+
+			message := fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId)
+			action := PRActionUnchanged
+			if decision.Refreshed {
+				message = fmt.Sprintf("%s - %s", existingPR.TypeReferenceId, decision.Reason)
+				action = PRActionRefreshed
+			}
+
 			return RecommendationApplyResponse{
 				Data: []any{map[string]any{
-					"message": fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId),
+					"message": message,
 					"pr_url":  existingPR.TypeReferenceId,
 				}},
 				Resolution: *existingPR,
 				Status:     models.RecommendationStatusInProgress,
+				PRAction:   action,
 			}, nil
 		}
 	}
@@ -430,11 +479,15 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	if err != nil {
 		ctx.GetLogger().Error("error triggering notification", "error", err)
 	}
-	return RecommendationApplyResponse{
+	applyResponse := RecommendationApplyResponse{
 		Data:       []any{resp.Data},
 		Resolution: resolution,
 		Status:     models.RecommendationStatus(string(recommendationStatus)),
-	}, nil
+	}
+	if resolutionType == models.RecommendationResolutionTypePullRequest {
+		applyResponse.PRAction = PRActionCreated
+	}
+	return applyResponse, nil
 }
 
 // RetryRecommendationResolution retries a failed recommendation resolution
@@ -451,7 +504,8 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 	// Get the existing resolution
 	var resolution models.RecommendationResolution
 	row := dbms.Db.QueryRowx(`SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution WHERE id = $1`, query.ResolutionId)
 	if err := row.StructScan(&resolution); err != nil {
 		ctx.GetLogger().Error("error getting recommendation resolution", "error", err)
@@ -595,7 +649,8 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 
 	// Refresh resolution data
 	row = dbms.Db.QueryRowx(`SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
-			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at,
+			value_refresh_count, last_value_refresh_at
 		FROM recommendation_resolution WHERE id = $1`, resolution.Id)
 	_ = row.StructScan(&resolution)
 
@@ -841,6 +896,14 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 				req.DatadogAppKey = appKey
 				req.DatadogSite = site
 			}
+			if mp == "ES" {
+				esCfg, esErr := observability.ElasticsearchRightsizingConfig(ctx, query.AccountId)
+				if esErr != nil {
+					ctx.GetLogger().Error("volume_analyzer: error getting elasticsearch config", "error", esErr, "account_id", query.AccountId)
+					return RecommendationJobCreateResponse{}, esErr
+				}
+				req.Elasticsearch = esCfg
+			}
 			if _, err := ml.TriggerVolumeRightsizing(ctx, req); err != nil {
 				ctx.GetLogger().Error("volume_analyzer: error triggering ml-k8s-server", "error", err, "account_id", query.AccountId, "metrics_provider", mp)
 				return RecommendationJobCreateResponse{}, err
@@ -867,6 +930,14 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 				req.DatadogApiKey = apiKey
 				req.DatadogAppKey = appKey
 				req.DatadogSite = site
+			}
+			if mp == "ES" {
+				esCfg, esErr := observability.ElasticsearchRightsizingConfig(ctx, query.AccountId)
+				if esErr != nil {
+					ctx.GetLogger().Error("krr_scan: error getting elasticsearch config", "error", esErr, "account_id", query.AccountId)
+					return RecommendationJobCreateResponse{}, esErr
+				}
+				req.Elasticsearch = esCfg
 			}
 			if _, err := ml.TriggerVerticalRightsizing(ctx, req); err != nil {
 				ctx.GetLogger().Error("krr_scan: error triggering ml-k8s-server", "error", err, "account_id", query.AccountId, "metrics_provider", mp)
@@ -917,6 +988,34 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 	}, nil
 }
 
+// reopenOrphanedInProgressRecommendations returns InProgress recommendations that have
+// no resolution behind them to Open. Every writer that claims a recommendation inserts
+// its recommendation_resolution row before flipping the status (ApplyRecommendation,
+// CreateTicketResolution), so InProgress with no resolution at all means nobody is
+// working it. Such a row is unreachable: the settle statement in UpdateResolutionStatus
+// joins recommendation_resolution and never sees it, and every retirement path skips
+// InProgress — so it stays visible in Optimise indefinitely, outliving the workload it
+// points at. Open is the safe landing state; it hands the row back to its producer's
+// normal archive cycle, which retires it when the resource is gone.
+func reopenOrphanedInProgressRecommendations(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	res, err := dbms.Db.Exec(`update recommendation r
+	set
+		status = $1,
+		updated_at = NOW()
+	where
+		r.status = $2
+		and not exists (select 1 from recommendation_resolution rr where rr.recommendation_id = r.id)`,
+		models.RecommendationStatusOpen, models.RecommendationStatusInProgress)
+	if err != nil {
+		return err
+	}
+	if count, err := res.RowsAffected(); err == nil && count > 0 {
+		ctx.GetLogger().Info("reopened orphaned in-progress recommendations", "count", count)
+	}
+
+	return nil
+}
+
 func UpdateResolutionStatus(ctx *security.RequestContext) error {
 	t0 := time.Now()
 	defer func() {
@@ -928,15 +1027,36 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// Open recommendations that are in progress and have failed resolutions
-	_, err = dbms.Db.Exec("update recommendation set status = $1 where status = $2 and id in (select recommendation_id from recommendation_resolution where status = $3)", models.RecommendationStatusOpen, models.RecommendationStatusInProgress, models.RecommendationResolutionStatusFailed)
-	if err != nil {
-		ctx.GetLogger().Error("error updating recommendation status", "error", err)
+	// The pull request webhook and the followup cron retire resolution rows
+	// directly, so the per-resolution loop below — which only reads InProgress
+	// rows — never sees those outcomes. The set-based reconcile that settles
+	// their recommendations lives with the coordinator.
+	if err := coordinator.ReconcileSettledRecommendations(ctx); err != nil {
+		ctx.GetLogger().Error("error reconciling settled recommendations", "error", err)
 	}
 
-	// only check resolutions that are in progress and are user resolutions
-	// only check resolutions that are in progress and are user or auto-optimize resolutions
-	rows, err := dbms.Db.Queryx("select * from recommendation_resolution where status = $1 and resolver_type IN ($2, $3)", models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser, models.RecommendationResolutionResolverTypeAutoOptimize)
+	// Ticket delegations settle from the local tickets table — the poll below
+	// deliberately skips Ticket rows because no adapter can poll a ticket.
+	if err := SyncTicketResolutions(ctx); err != nil {
+		ctx.GetLogger().Error("error syncing ticket resolutions", "error", err)
+	}
+
+	if _, err := coordinator.ExpireSnoozes(ctx); err != nil {
+		ctx.GetLogger().Error("error expiring snoozed recommendations", "error", err)
+	}
+
+	if err := reopenOrphanedInProgressRecommendations(ctx, dbms); err != nil {
+		ctx.GetLogger().Error("error reopening orphaned in-progress recommendations", "error", err)
+	}
+
+	// Poll every in-progress resolution regardless of who raised it — agent
+	// (NBLLM) and runbook (AutoRunbook) rows previously never advanced because
+	// only User/AutoOptimize were selected here, leaving their recommendations
+	// stuck InProgress with the webhook as the only way out. Ticket resolutions
+	// are excluded instead: no adapter can poll a ticket's state, so they would
+	// only log an adapter-not-found error every run; they settle via the
+	// ticket-status sync.
+	rows, err := dbms.Db.Queryx("select * from recommendation_resolution where status = $1 and type <> $2", models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionTypeTicket)
 	if err != nil {
 		ctx.GetLogger().Error("error getting recommendation resolutions", "error", err)
 		return err
@@ -1001,11 +1121,13 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		// if recommendation is closed, then close the resolution
 		if recommendation.Status == models.RecommendationStatusClosed {
 			ctx.GetLogger().Info("Closing resolution as recommendation is already closed", "resolution", resolution.Id)
-			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET status = $2, updated_at = $3 WHERE id = $1", resolution.Id, models.RecommendationResolutionStatusSuccess, time.Now().UTC().Format(time.RFC3339))
-			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
+			if _, err := coordinator.SettleResolution(ctx, resolution.Id, models.RecommendationResolutionStatusSuccess, "recommendation already closed", coordinator.SourcePoll); err != nil {
+				ctx.GetLogger().Error("error settling resolution for closed recommendation", "error", err)
 				return err
 			}
+			// Settled — polling the adapter now could only overwrite this Success
+			// (and a Failed poll result would even reopen the Closed recommendation).
+			continue
 		}
 
 		adptr := adapter.GetAdapterFromResolutionProvider(resolution.Type)
@@ -1030,38 +1152,25 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			status = models.RecommendationResolutionStatus(string(resp.Status))
 			statusMsg = resp.StatusMessage
 		}
-		if status == models.RecommendationResolutionStatusFailed {
-			// resetting recommendation to open status if resolution failed
-			ctx.GetLogger().Error("resolution failed", "resolution", resolution.Id, "status", statusMsg)
-			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $1 where id = $2 and cloud_account_id = $3 and tenant_id = $4", models.RecommendationStatusOpen, recommendation.Id, recommendation.CloudAccountId, recommendation.TenantId)
+		if status == models.RecommendationResolutionStatusInProgress {
+			// Not a transition — refresh the polled message only. Guarded on the
+			// row still being InProgress so a webhook that settled it between our
+			// read and this write is not overwritten back to InProgress.
+			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET updated_at = $3, status_message = $4 WHERE id = $1 AND status = $2", resolution.Id, models.RecommendationResolutionStatusInProgress, time.Now().UTC().Format(time.RFC3339), statusMsg)
 			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation", "error", err)
+				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
 				return err
 			}
+			continue
 		}
 
-		_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, status, time.Now().UTC().Format(time.RFC3339), statusMsg)
-		if err != nil {
-			ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
+		if status == models.RecommendationResolutionStatusFailed {
+			ctx.GetLogger().Error("resolution failed", "resolution", resolution.Id, "status", statusMsg)
+		}
+		if _, err := coordinator.SettleResolution(ctx, resolution.Id, status, statusMsg, coordinator.SourcePoll); err != nil {
+			ctx.GetLogger().Error("error settling recommendation resolution", "error", err)
 			return err
 		}
-
-		// update recommendation if issue is resolved
-		recommendationStatus := recommendation.Status
-		switch status {
-		case models.RecommendationResolutionStatusSuccess:
-			recommendationStatus = models.RecommendationStatusClosed
-		case models.RecommendationResolutionStatusFailed:
-			recommendationStatus = models.RecommendationStatusDismissed
-		}
-		if recommendation.Status != recommendationStatus {
-			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $2, updated_at = $3 WHERE id = $1", recommendation.Id, models.RecommendationStatusClosed, time.Now().UTC().Format(time.RFC3339))
-			if err != nil {
-				ctx.GetLogger().Error("error updating recommendation", "error", err)
-				return err
-			}
-		}
-
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-import { queryGraphQL } from '@lib/HttpService';
+import { queryGraphQL, unwrapGraphQL } from '@lib/HttpService';
 import { getUserById, getUsers, getUserGroups, getUserGroup, getUserGroupUsers, createUserGroup } from '@lib/UserService';
 import cache from '@lib/cache';
 
@@ -27,6 +27,10 @@ const RECENT_PAGE_SEARCHES_LIMIT = 3;
 export const PREFERENCE_K8S_AGENT_SNACKBAR = 'k8s_agent_snackbar';
 // Set once the first-login app-overview tour has been shown (per browser).
 export const PREFERENCE_APP_TOUR_SEEN = 'app_tour_seen';
+// Epoch-ms until which the app-overview welcome card stays snoozed (24h per
+// Snooze click). Stale values are harmless — past timestamps just fail the
+// `Date.now() < value` check.
+export const PREFERENCE_APP_TOUR_SNOOZED_UNTIL = 'app_tour_snoozed_until';
 // Set once the corresponding first-visit Troubleshoot tour has been shown, one
 // flag per top-level view (All Events overview / Investigations / Knowledge
 // Graph). Per browser, like the app-overview flag above.
@@ -49,6 +53,7 @@ const availablePreferences = [
   PREFERENCE_TABLE_PAGE_SIZE,
   PREFERENCE_K8S_AGENT_SNACKBAR,
   PREFERENCE_APP_TOUR_SEEN,
+  PREFERENCE_APP_TOUR_SNOOZED_UNTIL,
   PREFERENCE_TROUBLESHOOT_TOUR_SEEN,
   PREFERENCE_TROUBLESHOOT_INVESTIGATIONS_TOUR_SEEN,
   PREFERENCE_TROUBLESHOOT_KG_TOUR_SEEN,
@@ -162,9 +167,19 @@ mutation UpsertUserGroupAccountNamespaceRoles($data:auth_k8saccount_namespace_gr
 }
 `;
 
-export const UPSERT_USER_TENANT_ACCOUNT_ROLES = `
-mutation UpsertUserTenantAccountRoles($data:auth_tenant_group_roles_upsert_one_input) {
-  tenant_group_roles_upsert_one: userroles_upsert_group(role:$auth_tenant_group_roles_upsert_one_input) {
+// The group mutations below route their result through unwrapGraphQL
+// (@lib/HttpService): queryGraphQL resolves rather than rejects on a
+// GraphQL-level error, and these previously swallowed the failure (returning
+// the error as a value), reporting a successful save after the write had
+// actually been rejected upstream.
+
+// Sets (or clears, with role: "") a group's tenant-level built-in role, without
+// touching name/description. usergroup_update also accepts a `role`, but its
+// name/description columns are unconditional overwrites — calling it to change
+// only the role blanks both. Use this action for role-only saves.
+export const UPSERT_USER_GROUP_TENANT_ROLE = `
+mutation UpsertUserGroupTenantRole($data: auth_tenant_group_roles_upsert_one_input!) {
+  userroles_upsert_group(role: $data) {
     status
   }
 }
@@ -388,39 +403,31 @@ const apiUser = {
       data: response,
     };
   },
+  // role: '' clears the group's tenant role (backend DELETEs the group_roles row).
+  upsertGroupTenantRole: async function ({ group_id, role }) {
+    const response = await queryGraphQL(UPSERT_USER_GROUP_TENANT_ROLE, 'UpsertUserGroupTenantRole', {
+      data: { group_id, role: role ?? '' },
+    });
+    return unwrapGraphQL(response, 'Failed to update tenant role')?.userroles_upsert_group;
+  },
   upsertGroupAccountRoles: async function (data) {
-    try {
-      let response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_ROLES, 'UpsertUserGroupAccountRoles', { data: data });
-      return {
-        data: response.data,
-      };
-    } catch (err) {
-      return err;
-    }
+    const response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_ROLES, 'UpsertUserGroupAccountRoles', { data: data });
+    unwrapGraphQL(response, 'Failed to update account roles');
+    return { data: response.data };
   },
   upsertGroupAccountNamespaceRoles: async function (data) {
-    try {
-      let response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_NAMESPACE_ROLES, 'UpsertUserGroupAccountNamespaceRoles', { data: data });
-      return {
-        data: response.data,
-      };
-    } catch (err) {
-      return err;
-    }
+    const response = await queryGraphQL(UPSERT_USER_GROUP_ACCOUNT_NAMESPACE_ROLES, 'UpsertUserGroupAccountNamespaceRoles', { data: data });
+    unwrapGraphQL(response, 'Failed to update namespace roles');
+    return { data: response.data };
   },
   manageGroupUsers: async function (data) {
-    try {
-      let response = await queryGraphQL(MANAGE_GROUP_USERS, 'ManageGroupUsers', {
-        group_id: data.group_id,
-        add_usernames: data.add_usernames || [],
-        remove_usernames: data.remove_usernames || [],
-      });
-      return {
-        data: response,
-      };
-    } catch (err) {
-      return err;
-    }
+    const response = await queryGraphQL(MANAGE_GROUP_USERS, 'ManageGroupUsers', {
+      group_id: data.group_id,
+      add_usernames: data.add_usernames || [],
+      remove_usernames: data.remove_usernames || [],
+    });
+    unwrapGraphQL(response, 'Failed to update group members');
+    return { data: response };
   },
   updateUser: async function (data) {
     try {
@@ -436,11 +443,12 @@ const apiUser = {
       return err;
     }
   },
+  // Pass createUserGroup's `{ data: <created group> }` straight through. It used
+  // to be re-wrapped as `{ data: { data: ... } }`, which forced the single caller
+  // to read `result.data.data.id` — correct, but it reads like a bug and was
+  // reported as one in review. The extra level carried no information.
   addUserGroup: async function (group, desc) {
-    let response = await createUserGroup(group, desc);
-    return {
-      data: response,
-    };
+    return createUserGroup(group, desc);
   },
   listIntegrationAccounts: async function (userId) {
     try {
@@ -486,7 +494,7 @@ const apiUser = {
       description: request.description,
       role: request.role,
     });
-    return response.data.data.usergroup_update;
+    return unwrapGraphQL(response, 'Failed to update group')?.usergroup_update;
   },
   getAllRoles: async function (_request) {
     const response = await queryGraphQL(GET_ALL_TENANT_ROLES, 'getAllRoles');
@@ -605,6 +613,92 @@ const apiUser = {
     const updated = [value, ...currentList.filter((v) => v !== value)].slice(0, RECENT_PAGE_SEARCHES_LIMIT);
     const map = { ...existing, [tenantId]: updated };
     apiUser.storeUserPreferences(PREFERENCE_RECENT_PAGE_SEARCHES, map);
+  },
+
+  // Drops `values` from the tenant's recent list and returns what's left, so a
+  // caller can write the result straight back into its own state. For entries
+  // whose target is gone for good (a deleted dashboard): the list is capped at
+  // RECENT_PAGE_SEARCHES_LIMIT, so a value that can never resolve again would
+  // otherwise hold one of those few slots until enough new picks push it out.
+  // A no-op (returning the untouched list) when nothing matches.
+  removeRecentPageSearches: function (values, tenantId) {
+    const currentList = apiUser.getRecentPageSearches(tenantId);
+    if (!values?.length || !tenantId) {
+      return currentList;
+    }
+    const dropped = new Set(values);
+    const updated = currentList.filter((v) => !dropped.has(v));
+    if (updated.length === currentList.length) {
+      return currentList;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const existing = prefs[PREFERENCE_RECENT_PAGE_SEARCHES] || {};
+    apiUser.storeUserPreferences(PREFERENCE_RECENT_PAGE_SEARCHES, { ...existing, [tenantId]: updated });
+    return updated;
+  },
+
+  // Whether the K8s-agent banner for a given cluster has been dismissed by the
+  // user. Stored as a single consolidated map instead of one localStorage key
+  // per cluster.
+  isK8sAgentSnackbarDismissed: function (clusterValue) {
+    if (!clusterValue) {
+      return false;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = prefs[PREFERENCE_K8S_AGENT_SNACKBAR] || {};
+    return !!map[clusterValue];
+  },
+
+  setK8sAgentSnackbarDismissed: function (clusterValue, dismissed) {
+    if (!clusterValue) {
+      return;
+    }
+    const prefs = apiUser.getUserPreferences() || {};
+    const map = { ...(prefs[PREFERENCE_K8S_AGENT_SNACKBAR] || {}) };
+    if (dismissed) {
+      map[clusterValue] = true;
+    } else {
+      delete map[clusterValue];
+    }
+    apiUser.storeUserPreferences(PREFERENCE_K8S_AGENT_SNACKBAR, map);
+  },
+
+  // One-time migration: fold any legacy per-cluster `latest-<clusterValue>-K8sAgentSnackbar`
+  // keys into the consolidated preference map, then delete the orphaned keys.
+  // Idempotent and safe to call on every mount. Wrapped in try/catch because
+  // localStorage access can throw (SecurityError/DOMException) in restricted
+  // contexts, and this runs on Header mount — a throw must not crash the app.
+  migrateLegacyK8sAgentSnackbarPrefs: function () {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+    try {
+      const legacyKeys = [];
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const storageKey = localStorage.key(i);
+        if (storageKey && storageKey.startsWith('latest-') && storageKey.endsWith('-K8sAgentSnackbar')) {
+          legacyKeys.push(storageKey);
+        }
+      }
+      if (legacyKeys.length === 0) {
+        return;
+      }
+      const prefs = apiUser.getUserPreferences() || {};
+      const map = { ...(prefs[PREFERENCE_K8S_AGENT_SNACKBAR] || {}) };
+      legacyKeys.forEach((storageKey) => {
+        // Only 'false' meant "dismissed"; anything else was an ephemeral shown-flag.
+        if (localStorage.getItem(storageKey) === 'false') {
+          const clusterValue = storageKey.slice('latest-'.length, -'-K8sAgentSnackbar'.length);
+          if (clusterValue) {
+            map[clusterValue] = true;
+          }
+        }
+        localStorage.removeItem(storageKey);
+      });
+      apiUser.storeUserPreferences(PREFERENCE_K8S_AGENT_SNACKBAR, map);
+    } catch (err) {
+      console.error('Failed to migrate legacy K8s agent snackbar preferences', err);
+    }
   },
 
   getHistory: async function ({ accountId, module, limit, offset }) {

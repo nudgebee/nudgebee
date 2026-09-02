@@ -59,6 +59,13 @@ var ErrConversationPendingFollowup = errors.New("conversation: previous turn is 
 // alongside the preserved-but-in-flight ones.
 var ErrCleanupRefusedActiveFollowup = errors.New("conversation: cleanup refused; active followup references agents from this message")
 
+// ErrAmbiguousLLMConfig is returned when an LLM integration-config result set
+// spans more than one integration. Collapsing those rows into one map yields a
+// credential nobody configured (one integration's api key against another's
+// endpoint), so the reader refuses instead. Callers must scope the query to a
+// single integration before it gets here.
+var ErrAmbiguousLLMConfig = errors.New("llm config: result set spans multiple integrations; refusing to merge")
+
 func ErrLlmUnableToGenerate(err error) error {
 	if err == nil {
 		return errLlmUnableToGenerate

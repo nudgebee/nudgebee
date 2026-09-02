@@ -5,7 +5,8 @@
  *              side  = 'bottom' | 'top' | 'left' | 'right'
  *              size  = 'sm' | 'md'
  *              item.tone = 'default' | 'danger'
- *              composition: items | sections | +kbd | +icons (auto from item shape)
+ *              composition: items | sections | +kbd | +icons | +description
+ *                (auto from item shape; `description` renders a two-line item)
  *              searchable = boolean (optional sticky search header — geometry/styling
  *                lifted verbatim from `ds/FilterDropdown` so the two
  *                primitives stay visually identical)
@@ -26,10 +27,13 @@
  * Don't (per spec):
  *   - Don't put > 7 items in one menu without sections.
  *   - Don't put a multi-step action behind a menu item — open a Dialog instead.
- *   - Don't nest DropdownMenus more than one level deep.
+ *   - Don't nest DropdownMenus more than one level deep. A single level is
+ *     supported via `item.items` (see DropdownMenuItemAction) — an inline
+ *     expand/collapse group with a chevron, not a flyout. Items inside a
+ *     submenu must not themselves declare `items`.
  */
 import * as React from 'react';
-import { Box, InputBase } from '@mui/material';
+import { Box, Collapse, InputBase } from '@mui/material';
 import { ds } from '@utils/colors';
 import {
   OverlayItem,
@@ -52,12 +56,21 @@ export type DropdownMenuItemTone = OverlayItemTone;
 export interface DropdownMenuItemAction {
   type?: 'item';
   label: React.ReactNode;
+  /**
+   * Optional secondary line under the label (two-line item) — e.g. a preset's
+   * value, a task reference, or a short "what this does" hint. Renders as a
+   * dimmed caption; a caller-provided node keeps its own styling.
+   */
+  description?: React.ReactNode;
   icon?: React.ReactNode;
   /** Keyboard shortcut hint (right-aligned). e.g. "⌘D" */
   kbd?: string;
   tone?: DropdownMenuItemTone;
   disabled?: boolean;
-  onSelect: () => void;
+  /** Mark this item as the currently active/selected value. */
+  active?: boolean;
+  /** Omit when `items` is set — a submenu parent toggles expand instead of selecting. */
+  onSelect?: () => void;
   id?: string;
   /**
    * Plain-text used by the built-in search header when `searchable` is set.
@@ -65,6 +78,12 @@ export interface DropdownMenuItemAction {
    * decorations like a disabled "No automations" placeholder).
    */
   searchText?: string;
+  /**
+   * One-level inline submenu. When set, this item renders a chevron and
+   * toggles an expand/collapse group instead of calling `onSelect`. Nested
+   * items must not set `items` themselves (spec caps nesting at one level).
+   */
+  items?: DropdownMenuItemAction[];
 }
 
 export interface DropdownMenuSeparator {
@@ -121,6 +140,13 @@ export interface DropdownMenuProps {
   headerActions?: React.ReactNode;
   /** Called after any item.onSelect (or after dismissal) */
   onClose?: () => void;
+  /**
+   * Class applied to the overlay root (portaled Menu/Modal root). Use for host
+   * integrations that inspect a click's DOM ancestry — e.g. pass `'nodrag nopan'`
+   * when the trigger lives inside a ReactFlow node so clicking the menu or its
+   * backdrop isn't handled as a canvas node click.
+   */
+  className?: string;
   disablePortal?: boolean;
   /**
    * Mount the panel (hidden) before first open so item icons that lazy-load
@@ -140,7 +166,7 @@ const SearchIcon: React.FC = () => (
     height='12'
     viewBox='0 0 12 12'
     fill='none'
-    style={{ opacity: 0.35, position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }}
+    style={{ opacity: 0.35, position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', zIndex: 1 }}
   >
     <circle cx='5' cy='5' r='4' stroke='currentColor' strokeWidth='1.5' />
     <line x1='8' y1='8' x2='11' y2='11' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
@@ -151,6 +177,19 @@ const RefreshIconSvg: React.FC = () => (
   <svg width='12' height='12' viewBox='0 0 12 12' fill='none'>
     <path d='M10 6a4 4 0 1 1-1.17-2.83' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' fill='none' />
     <path d='M10 1.5V4H7.5' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' fill='none' />
+  </svg>
+);
+
+/** Submenu expand chevron — rotates 90° when the group is open. */
+const SubmenuChevron: React.FC<{ expanded: boolean }> = ({ expanded }) => (
+  <svg
+    width='12'
+    height='12'
+    viewBox='0 0 12 12'
+    fill='none'
+    style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform var(--ds-motion-micro) var(--ds-motion-ease)' }}
+  >
+    <path d='M4.5 2.5L8 6L4.5 9.5' stroke='var(--ds-gray-400)' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' fill='none' />
   </svg>
 );
 
@@ -169,23 +208,26 @@ export function DropdownMenu({
   refreshLabel = 'Refresh',
   headerActions,
   onClose,
+  className,
   disablePortal = true,
   keepMounted = false,
 }: DropdownMenuProps) {
   const [anchorEl, setAnchorEl] = React.useState<HTMLElement | null>(null);
   const [search, setSearch] = React.useState('');
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const open = Boolean(anchorEl);
   const showHeader = searchable || !!onRefresh || !!headerActions;
 
   const close = () => {
     setAnchorEl(null);
     setSearch('');
+    setExpandedId(null);
     onClose?.();
   };
 
   const handleSelect = (item: DropdownMenuItemAction) => {
     if (item.disabled) return;
-    item.onSelect();
+    item.onSelect?.();
     close();
   };
 
@@ -224,6 +266,7 @@ export function DropdownMenu({
         side={side}
         minWidth={minWidth}
         role='menu'
+        className={className}
         disablePortal={disablePortal}
         keepMounted={keepMounted}
       >
@@ -321,13 +364,54 @@ export function DropdownMenu({
               if (item.type === 'section') {
                 return <OverlaySection key={`section-${i}-${item.label}`}>{item.label}</OverlaySection>;
               }
+              if (item.items?.length) {
+                const groupKey = item.id ?? `item-${i}`;
+                const groupOpen = expandedId === groupKey || (searchable && search.trim() !== '');
+                return (
+                  <React.Fragment key={groupKey}>
+                    <OverlayItem
+                      size={size}
+                      disabled={item.disabled}
+                      icon={item.icon}
+                      trailingIcon={<SubmenuChevron expanded={groupOpen} />}
+                      id={item.id}
+                      onClick={() => {
+                        if (item.disabled) return;
+                        setExpandedId((prev) => (prev === groupKey ? null : groupKey));
+                      }}
+                    >
+                      {item.label}
+                    </OverlayItem>
+                    <Collapse in={groupOpen} timeout='auto' unmountOnExit>
+                      {item.items.map((subItem, subIndex) => (
+                        <OverlayItem
+                          key={subItem.id ?? `${groupKey}-sub-${subIndex}`}
+                          size={size}
+                          tone={subItem.tone}
+                          disabled={subItem.disabled}
+                          selected={subItem.active}
+                          icon={subItem.icon}
+                          description={subItem.description}
+                          kbd={subItem.kbd}
+                          id={subItem.id}
+                          onClick={() => handleSelect(subItem)}
+                        >
+                          {subItem.label}
+                        </OverlayItem>
+                      ))}
+                    </Collapse>
+                  </React.Fragment>
+                );
+              }
               return (
                 <OverlayItem
                   key={item.id ?? `item-${i}`}
                   size={size}
                   tone={item.tone}
                   disabled={item.disabled}
+                  selected={item.active}
                   icon={item.icon}
+                  description={item.description}
                   kbd={item.kbd}
                   id={item.id}
                   onClick={() => handleSelect(item)}

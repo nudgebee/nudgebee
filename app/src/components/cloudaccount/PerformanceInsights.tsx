@@ -18,7 +18,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import useTicketFliter from '@hooks/useTicketFliter';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { md5 } from '@lib/encode';
 import {
   queryDatabasePerformance,
@@ -411,9 +411,7 @@ const PerformanceInsights: React.FC<PerformanceInsightsProps> = ({ accountId, da
     endDate: new Date().getTime(),
   });
 
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiSessionId, setNubiSessionId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   const {
     ticketData,
@@ -446,11 +444,14 @@ Query Performance Metrics:
 Query:
 ${query.query_text || query.query_id}`;
 
-      setNubiQuery(analysisPrompt);
-      setNubiSessionId(md5([JSON.stringify(query)]));
-      setNubiSidebarVisible(true);
+      openNubiChat({
+        accountId,
+        sessionId: md5([JSON.stringify(query)]),
+        query: analysisPrompt,
+        source: 'query_analysis',
+      });
     },
-    [data?.provider, databaseIdentifier, region]
+    [data?.provider, databaseIdentifier, region, accountId, openNubiChat]
   );
 
   const fetchData = useCallback(async () => {
@@ -593,19 +594,6 @@ ${query.query_text || query.query_id}`;
 
   return (
     <Box>
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={accountId}
-        query={nubiQuery}
-        context={{ type: 'general', data: { conversationId: nubiSessionId, databaseIdentifier } }}
-        apiMode='investigate'
-        source='query_analysis'
-        position='right'
-        mode='overlay'
-        width={ds.space.mul(0, 250)}
-      />
-
       <TicketCreatePopupForm
         open={isTicketCreateFormOpen}
         handleClose={closeTicketCreateForm}

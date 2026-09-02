@@ -132,7 +132,7 @@ func (d *reproductionDao) ListConversationAgents(messageId, agentId string) ([]C
 	return nil, nil // empty → same-agent dedup branch skipped on the create path
 }
 
-func (d *reproductionDao) SaveConversationMessage(id, conversationId, accountId, userId string, role MessageRole, messageType MessageType, message, response, agentName string, agentId uuid.UUID, messageConfig any, messageContext, queryConfig, evalMetrics string) (uuid.UUID, error) {
+func (d *reproductionDao) SaveConversationMessage(id, conversationId, accountId, userId string, role MessageRole, messageType MessageType, message, response, agentName string, agentId uuid.UUID, messageConfig any, messageContext, queryConfig, evalMetrics string, status ConversationStatus) (uuid.UUID, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.saveCallCount++

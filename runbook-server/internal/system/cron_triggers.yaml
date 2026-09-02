@@ -233,6 +233,19 @@
     num_retries: 0
     timeout_seconds: 600
   comment: Sweep all workloads and refresh derived criticality nightly, after the knowledge-graph build
+- name: VM Vulnerability Scan
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  schedule: '45 10 * * *'
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    retry_interval_seconds: 30
+    timeout_seconds: 600
+    tolerance_seconds: 21600
+  comment: Daily sweep of every forager discovery datasource's network for VMs, inventoried and matched against CVEs, at 10:45 AM UTC (4:15 PM IST)
 - name: cloud-account-webhook-sync
   webhook: '{{CLOUD_COLLECTOR_SERVER_URL}}/rpc/rpc-cron'
   schedule: '0 2 * * *'
@@ -263,6 +276,14 @@
     num_retries: 0
     timeout_seconds: 600
   comment: Sync ticket configurations every 2 hours
+- name: Ticket Status Sync
+  webhook: http://ticket-server:8080/tickets/sync-tickets
+  schedule: '0 * * * *'
+  payload: {}
+  retry_conf:
+    num_retries: 0
+    timeout_seconds: 600
+  comment: Hourly pull of ticket status/severity/assignee from the upstream tool so ticket-backed resolutions can settle
 - name: Anomaly Execute
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   schedule: '1 * * * *'
@@ -333,6 +354,19 @@
     num_retries: 0
     timeout_seconds: 600
   comment: Sync LLM conversation status hourly
+- name: AI Cost Daily Report
+  webhook: http://llm-server:8000/v1/cost/ai-cost-daily-report
+  schedule: '0 6 * * *'
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: LLM_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    retry_interval_seconds: 10
+    timeout_seconds: 300
+    tolerance_seconds: 21600
+  comment: Daily + MTD AI cost digest per account, published to Slack, at 6 AM UTC
 - name: Recommendation Resolution Update
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   schedule: '*/5 * * * *'

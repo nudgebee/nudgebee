@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"slices"
 	"sync"
 
 	"github.com/lib/pq"
@@ -14,6 +15,10 @@ import (
 const (
 	defaultFilterLimit = 500
 	maxFilterLimit     = 1000
+
+	// filterQueryConcurrency caps how many filter queries one request runs at
+	// once, and so how much of the connection pool (20 per pod) it can hold.
+	filterQueryConcurrency = 4
 )
 
 // SQL query templates for each filter type - WITH COUNT (slower)
@@ -340,7 +345,17 @@ func GetEventFilterValues(ctx *security.RequestContext, req GetEventFilterValues
 	results := make([]FilterResult, len(req.FilterTypes))
 	var mu sync.Mutex
 
-	g, gCtx := errgroup.WithContext(context.Background())
+	// Tie the fan-out to the caller. With context.Background() these queries had
+	// no way to stop: a goroutine queued for a pool connection kept waiting even
+	// after the caller had gone away, so abandoned requests held pool demand
+	// indefinitely (see #34973). The request context ends when the client
+	// disconnects, so that queue drains instead.
+	//
+	// SetLimit caps how much of the pool one request can take. There are 10 filter
+	// types and the pool is 20 per pod, so an unbounded fan-out let two concurrent
+	// callers ask for every connection at once.
+	g, gCtx := errgroup.WithContext(ctx.GetContext())
+	g.SetLimit(filterQueryConcurrency)
 
 	for i, filterType := range req.FilterTypes {
 		i, filterType := i, filterType // capture loop variables
@@ -397,15 +412,30 @@ func validateFilterRequest(req GetEventFilterValuesRequest) error {
 func getAccessibleAccountIDs(ctx *security.RequestContext, requestedAccountID *string) ([]string, error) {
 	sc := ctx.GetSecurityContext()
 
-	// If specific account requested, verify access
+	// A tenant-wide events:Read (or Write, which implies Read) custom-role grant
+	// reads events across every account in the tenant — the same relaxation the
+	// query engine applies via PermissionModule="events" (query/service.go). A
+	// pure custom-role user holds no built-in account role, so ListAccountIds()
+	// is empty for them; without this they'd hit "no accessible accounts found".
+	hasEventsGrant := sc.HasPermission("events", "Read") || sc.HasPermission("events", "Write")
+
+	// If specific account requested, verify access.
 	if requestedAccountID != nil && *requestedAccountID != "" {
-		if !sc.HasAccountAccess(*requestedAccountID, security.SecurityAccessTypeRead) {
-			return nil, fmt.Errorf("access denied to account: %s", *requestedAccountID)
+		if sc.HasAccountAccess(*requestedAccountID, security.SecurityAccessTypeRead) {
+			return []string{*requestedAccountID}, nil
 		}
-		return []string{*requestedAccountID}, nil
+		// The events grant authorizes any account within the caller's tenant.
+		if hasEventsGrant && slices.Contains(sc.GetAccountIds(), *requestedAccountID) {
+			return []string{*requestedAccountID}, nil
+		}
+		return nil, fmt.Errorf("access denied to account: %s", *requestedAccountID)
 	}
 
-	// Return all accessible accounts
+	// No specific account: aggregate across the accessible accounts. The events
+	// grant reads tenant-wide; otherwise scope to the built-in role's accounts.
+	if hasEventsGrant {
+		return sc.GetAccountIds(), nil
+	}
 	return sc.ListAccountIds(), nil
 }
 

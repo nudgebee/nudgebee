@@ -294,7 +294,6 @@ func TestGetPromptTemplateForReWoo(t *testing.T) {
 }
 
 func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
-	enableImageSupport(t)
 	mockReq := NBAgentRequest{
 		Query:          "What's wrong with this pod?",
 		AccountId:      uuid.NewString(),
@@ -324,7 +323,6 @@ func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
 }
 
 func TestGetPromptTemplate_ImageInstructions_ReAct(t *testing.T) {
-	enableImageSupport(t)
 	mockReq := NBAgentRequest{
 		Query:          "Check this error screenshot",
 		AccountId:      uuid.NewString(),
@@ -350,4 +348,40 @@ func TestGetPromptTemplate_ImageInstructions_ReAct(t *testing.T) {
 	assert.Contains(t, promptString, "</image_analysis_instructions>")
 	assert.Contains(t, promptString, "attached image(s)")
 	assert.Contains(t, promptString, "error codes, metric values")
+}
+
+// TestDefaultReactOutputFormat_UsesCanonicalHeader guards against a class of
+// data-quality bug where a ReAct agent with no explicit OutputFormat gets
+// injected the default template that used to hardcode `### Causality Chain
+// (5-Whys)`. That header is on planner_react_3_base.txt's forbidden-variant
+// list; downstream DB consumers pattern-match on the canonical
+// `### Causality Chain (Root Cause)`. The formatter (which would rewrite the
+// variant) only runs on multi-agent turns per executor.go:1035, so single-agent
+// orchestrator turns leaked ~80 responses/week with the un-normalized header
+// until this test's underlying fix landed.
+func TestDefaultReactOutputFormat_UsesCanonicalHeader(t *testing.T) {
+	// Empty OutputFormat + ReAct planner → defaultReactOutputFormat is injected.
+	p := NBAgentPrompt{
+		Role:         "Investigation Agent",
+		Instructions: []string{"Do the thing"},
+	}
+	req := NBAgentRequest{
+		Query:          "why is the pod restarting",
+		AccountId:      uuid.NewString(),
+		ConversationId: uuid.NewString(),
+		UserId:         uuid.NewString(),
+		MessageId:      uuid.NewString(),
+	}
+
+	promptTemplate := GetPromptTemplate(p, req, AgentPlannerTypeReAct3)
+	promptString, err := promptTemplate.Format(map[string]any{"input": req.Query})
+	assert.NoError(t, err)
+
+	assert.Contains(t, promptString, "### Causality Chain (Root Cause)",
+		"canonical Causality Chain header must be present in the default ReAct output format")
+	// Forbid the OLD un-normalized variant everywhere in the injected prompt.
+	assert.NotContains(t, promptString, "### Causality Chain (5-Whys)",
+		"forbidden variant `(5-Whys)` must not appear in the default output format — downstream DB consumers pattern-match on `(Root Cause)`")
+	assert.NotContains(t, promptString, "### Causality Chain (Five Whys)",
+		"forbidden variant `(Five Whys)` must not appear either")
 }

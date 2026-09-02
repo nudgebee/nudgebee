@@ -153,11 +153,11 @@ describe('canAccessTour', () => {
   });
 
   describe('requiresUiFeature (deployment-level UI_ENABLE_* toggle)', () => {
-    const uiTour = tour({ requiresUiFeature: 'llmAnalyser' });
+    const uiTour = tour({ requiresUiFeature: 'llmGateway' });
 
     it('offers the guide when the deployment toggle is on', () => {
       asReadOnly();
-      mockIsUiFeatureEnabled.mockImplementation((f: string) => f === 'llmAnalyser');
+      mockIsUiFeatureEnabled.mockImplementation((f: string) => f === 'llmGateway');
       expect(canAccessTour(uiTour)).toBe(true);
     });
 
@@ -167,11 +167,11 @@ describe('canAccessTour', () => {
       expect(canAccessTour(uiTour)).toBe(false);
     });
 
-    it('resolves the specific toggle the guide names, not any toggle', () => {
+    it('resolves the specific toggle the guide names', () => {
       asReadOnly();
       mockIsUiFeatureEnabled.mockImplementation((f: string) => f === 'llmGateway');
-      expect(canAccessTour(uiTour)).toBe(false);
-      expect(mockIsUiFeatureEnabled).toHaveBeenCalledWith('llmAnalyser');
+      expect(canAccessTour(uiTour)).toBe(true);
+      expect(mockIsUiFeatureEnabled).toHaveBeenCalledWith('llmGateway');
     });
 
     it('does not consult the tenant feature-flag cache — these are per-deployment, not per-tenant', () => {
@@ -246,24 +246,31 @@ describe('TOURS gating contract', () => {
   );
 
   it('only uses requiresFeature for opt-in flags', () => {
-    expect(TOURS['automation-with-ai'].requiresFeature).toBe('WORKFLOWS');
-    expect(TOURS['automation-from-template'].requiresFeature).toBe('WORKFLOW_TEMPLATES');
+    expect(TOURS['llm-analyser'].requiresFeature).toBe('LLM_ANALYSER');
   });
 
-  it.each([
-    ['llm-analyser', 'llmAnalyser'],
-    ['ai-gateway', 'llmGateway'],
-  ])('gates %s on its deployment toggle, not a tenant feature flag', (id, toggle) => {
-    // UI_ENABLE_* are per-deployment env vars and never appear in
-    // featureflags_list, so requiresFeature could never resolve them.
-    expect(TOURS[id].requiresUiFeature).toBe(toggle);
-    expect(TOURS[id].requiresFeature).toBeUndefined();
+  it('gates ai-gateway on its deployment toggle, not a tenant feature flag', () => {
+    // UI_ENABLE_LLM_GATEWAY is a per-deployment env var and never appears in
+    // featureflags_list, so requiresFeature could never resolve it.
+    expect(TOURS['ai-gateway'].requiresUiFeature).toBe('llmGateway');
+    expect(TOURS['ai-gateway'].requiresFeature).toBeUndefined();
   });
 
-  it.each(['llm-analyser', 'ai-gateway'])('hides %s wherever its tab is not deployed', (id) => {
+  it('gates llm-analyser on the tenant LLM_ANALYSER feature flag, not a deployment toggle', () => {
+    expect(TOURS['llm-analyser'].requiresFeature).toBe('LLM_ANALYSER');
+    expect(TOURS['llm-analyser'].requiresUiFeature).toBeUndefined();
+  });
+
+  it('hides ai-gateway wherever its tab is not deployed', () => {
     asTenantAdmin();
     mockIsUiFeatureEnabled.mockReturnValue(false);
-    expect(canAccessTour(TOURS[id])).toBe(false);
+    expect(canAccessTour(TOURS['ai-gateway'])).toBe(false);
+  });
+
+  it('hides llm-analyser wherever its tenant flag is not enabled', () => {
+    asTenantAdmin();
+    mockHasFeatureAccessCached.mockReturnValue(false);
+    expect(canAccessTour(TOURS['llm-analyser'])).toBe(false);
   });
 });
 

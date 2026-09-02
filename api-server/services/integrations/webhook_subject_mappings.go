@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// tenant_attrs keys per source
+// webhook_subject_mappings.attr_key values per source
 const (
 	TenantAttrPagerDutyIncidentsKey = "PAGERDUTY_INCIDENT_TITLE_SERVICE_MAPPING"
 	TenantAttrZendutyIncidentsKey   = "ZENDUTY_INCIDENT_TITLE_SERVICE_MAPPING"
@@ -62,67 +63,128 @@ func mergeAndSaveMappings(sc *security.RequestContext, tenantId, attrKey string,
 		return nil, fmt.Errorf("failed to get database manager: %w", err)
 	}
 
-	// Use transaction with row-level lock to prevent lost updates from concurrent writes
-	tx, err := dbms.Db.Beginx()
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var existingJSON string
-	// FOR UPDATE locks the row until commit, preventing concurrent read-modify-write races
-	_ = tx.Get(&existingJSON,
-		`SELECT value FROM tenant_attrs WHERE tenant_id = $1 AND name = $2 FOR UPDATE LIMIT 1`,
-		tenantId, attrKey)
-
-	var existing []HistoricalIncident
-	if existingJSON != "" {
-		if err := common.UnmarshalJson([]byte(existingJSON), &existing); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal existing mappings (corrupt data?): %w", err)
-		}
-	}
-
-	existingMap := make(map[string]int, len(existing))
-	for i, inc := range existing {
-		existingMap[strings.ToLower(inc.Title)] = i
-	}
-
 	newCount := 0
 	for _, f := range fetched {
-		key := strings.ToLower(f.Title)
-		if idx, ok := existingMap[key]; ok {
-			existing[idx].Service = &f.Service
-		} else {
-			svc := f.Service
-			existing = append(existing, HistoricalIncident{Title: f.Title, Service: &svc})
-			existingMap[key] = len(existing) - 1
+		isNew, _, err := upsertSubjectMapping(dbms, tenantId, attrKey, f.Title, f.Service)
+		if err != nil {
+			return nil, fmt.Errorf("failed to save mapping for title %q: %w", f.Title, err)
+		}
+		if isNew {
 			newCount++
 		}
 	}
-
-	mergedJSON, err := json.Marshal(existing)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal merged mappings: %w", err)
-	}
-
-	_, err = tx.Exec(
-		`INSERT INTO tenant_attrs (tenant_id, name, value) VALUES ($1, $2, $3)
-		 ON CONFLICT (tenant_id, name) DO UPDATE SET value = $3, updated_at = now()`,
-		tenantId, attrKey, string(mergedJSON))
-	if err != nil {
-		return nil, fmt.Errorf("failed to save merged mappings to tenant_attrs: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	invalidateSubjectMappingsCache(tenantId, attrKey)
 
 	return &WebhookSubjectMappingsSyncResponse{
 		Status:      "success",
 		SyncedCount: newCount,
 	}, nil
+}
+
+// subjectMappingRow mirrors the id/services columns fetched for an existing
+// (tenant_id, attr_key, title) row.
+type subjectMappingRow struct {
+	ID       string `db:"id"`
+	Services string `db:"services"`
+}
+
+// upsertSubjectMapping records that title resolved to service, creating the
+// row for (tenantId, attrKey, title) if it doesn't exist yet, or appending
+// service to the existing comma-separated services list if it isn't already
+// present. Title matching is case-insensitive (same title text, different
+// casing, is one row); service matching within the list is exact, since k8s
+// workload names are case-sensitive identifiers. A title can legitimately
+// resolve to more than one real service over time (the same generic alert
+// title fires for many different pods), so services accumulates rather than
+// being overwritten, capped at maxServicesPerTitle with the oldest evicted
+// first.
+func upsertSubjectMapping(dbms *database.DatabaseManager, tenantId, attrKey, title, service string) (isNew bool, changed bool, err error) {
+	tx, err := dbms.Db.Beginx()
+	if err != nil {
+		return false, false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Try the insert first, deferring to the unique index on conflict rather
+	// than pre-checking with SELECT ... FOR UPDATE: that SELECT locks nothing
+	// when no row matches yet, so two concurrent first-writers of the same new
+	// title would both pass the check and one would fail on the INSERT. With
+	// ON CONFLICT DO NOTHING, a losing concurrent insert blocks on the index
+	// entry until the winner commits, then falls through to the update path
+	// below and sees the winner's row.
+	res, err := tx.Exec(
+		`INSERT INTO webhook_subject_mappings (tenant_id, attr_key, title, services) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (tenant_id, attr_key, lower(title)) DO NOTHING`,
+		tenantId, attrKey, title, service)
+	if err != nil {
+		return false, false, fmt.Errorf("failed to insert mapping: %w", err)
+	}
+	if inserted, err := res.RowsAffected(); err != nil {
+		return false, false, fmt.Errorf("failed to check insert result: %w", err)
+	} else if inserted > 0 {
+		if err := tx.Commit(); err != nil {
+			return false, false, fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		return true, true, nil
+	}
+
+	// Row already existed. FOR UPDATE locks it so concurrent updaters serialize.
+	var row subjectMappingRow
+	if err = tx.Get(&row,
+		`SELECT id, services FROM webhook_subject_mappings
+		 WHERE tenant_id = $1 AND attr_key = $2 AND lower(title) = lower($3) FOR UPDATE`,
+		tenantId, attrKey, title); err != nil {
+		return false, false, fmt.Errorf("failed to query existing mapping: %w", err)
+	}
+
+	updatedServices, changed := addServiceToList(row.Services, service)
+	if !changed {
+		return false, false, nil
+	}
+
+	if _, err = tx.Exec(
+		`UPDATE webhook_subject_mappings SET services = $1, updated_at = now() WHERE id = $2`,
+		updatedServices, row.ID,
+	); err != nil {
+		return false, false, fmt.Errorf("failed to update mapping: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, false, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	return false, true, nil
+}
+
+// maxServicesPerTitle caps how many distinct services a single title can
+// accumulate. Once full, the oldest (first-added) service is evicted to make
+// room, so the list tracks the most recently seen services for a title.
+const maxServicesPerTitle = 5
+
+// addServiceToList appends service to the comma-separated services list if it
+// isn't already present (exact match), evicting the oldest entry first if the
+// list is already at maxServicesPerTitle, and returns the updated list and
+// whether anything changed.
+func addServiceToList(existing, service string) (updated string, changed bool) {
+	if existing == "" {
+		return service, true
+	}
+	services := strings.Split(existing, ",")
+	for _, s := range services {
+		if strings.TrimSpace(s) == service {
+			return existing, false
+		}
+	}
+	services = append(services, service)
+	if len(services) > maxServicesPerTitle {
+		services = services[len(services)-maxServicesPerTitle:]
+	}
+
+	var normalized []string
+	for _, s := range services {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			normalized = append(normalized, trimmed)
+		}
+	}
+
+	return strings.Join(normalized, ","), true
 }
 
 type incidentMapping struct {
@@ -180,9 +242,13 @@ type incidentWithFields struct {
 	Labels  map[string]string // all extracted labels (env, namespace, etc.)
 }
 
-// resolveIncidentsWithLLM takes fetched incidents (some with Service already set, some without),
-// applies account mapping, fetches workloads, and calls LLM for unresolved incidents.
-// Returns flat incidentMappings ready to save.
+// resolveIncidentsWithLLM takes fetched incidents (some with Service already set
+// deterministically, some without) and calls the LLM to resolve the rest.
+// Returns only the LLM-resolved mappings, ready to save: a deterministic Service
+// came from structured alert metadata (a service tag, a Labels: block), not from
+// the title's wording, so it isn't a genuine title→service pattern and would
+// misleadingly bias future historicalPatterns() prompts if learned — it's used
+// here only to skip incidents that don't need an LLM call, never saved.
 func resolveIncidentsWithLLM(
 	sc *security.RequestContext,
 	incidents []incidentWithFields,
@@ -191,19 +257,14 @@ func resolveIncidentsWithLLM(
 	accountMapping *core.AccountMapping,
 ) []incidentMapping {
 	tenantId := sc.GetSecurityContext().GetTenantId()
-	llmEnabled := tenant.IsFeatureEnabled(sc, tenantId, tenant.FEATURE_WEBHOOK_LLM_RESOLUTION)
+	if !tenant.IsFeatureEnabled(sc, tenantId, tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
+		return nil
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		sc.GetLogger().Error("sync: failed to get database manager", "error", err)
-		// Return only deterministic matches
-		var mappings []incidentMapping
-		for _, inc := range incidents {
-			if inc.Service != "" {
-				mappings = append(mappings, incidentMapping{Title: inc.Title, Service: inc.Service})
-			}
-		}
-		return mappings
+		return nil
 	}
 
 	workloadCache := make(map[string][]string)
@@ -211,11 +272,6 @@ func resolveIncidentsWithLLM(
 
 	for _, inc := range incidents {
 		if inc.Service != "" {
-			allMappings = append(allMappings, incidentMapping{Title: inc.Title, Service: inc.Service})
-			continue
-		}
-
-		if !llmEnabled {
 			continue
 		}
 
@@ -228,6 +284,7 @@ func resolveIncidentsWithLLM(
 		if len(candidateAccountIds) == 0 {
 			candidateAccountIds = []string{resolvedAccountId}
 		}
+		sort.Strings(candidateAccountIds)
 
 		cacheKey := strings.Join(candidateAccountIds, ",")
 
@@ -265,6 +322,28 @@ func resolveIncidentsWithLLM(
 	}
 
 	return allMappings
+}
+
+// normalizeDatadogServicesFieldValue cleans an incident's "services" custom
+// field value before it's trusted as a deterministic service name. Datadog
+// incidents can have that field populated with the monitor's raw k8s
+// group-by facets (e.g. "kube_cluster_name:c,kube_namespace:ns,pod_name:p")
+// instead of an actual service name — the same "key:value,key:value" shape
+// ProcessEventWebook parses via parseDatadogK8sSubject for the live webhook
+// path. Route it through the same parser here so a facet string resolves to
+// the clean pod/workload name instead of being stored verbatim; a value with
+// no colon, or one whose keys don't match any recognized k8s facet, is
+// assumed to already be a clean name and is returned unchanged rather than
+// dropped to empty.
+func normalizeDatadogServicesFieldValue(v string) string {
+	v = strings.TrimSpace(v)
+	if !strings.Contains(v, ":") {
+		return v
+	}
+	if name := parseDatadogK8sSubject([]string{v}).Name; name != "" {
+		return name
+	}
+	return v
 }
 
 // fetchDatadogResolvedIncidentsWithFields fetches resolved incidents from Datadog
@@ -340,7 +419,7 @@ func fetchDatadogResolvedIncidentsWithFields(sc *security.RequestContext, apiKey
 					case string:
 						labels[normalizedName] = v
 						if normalizedName == "services" {
-							serviceName = v
+							serviceName = normalizeDatadogServicesFieldValue(v)
 						}
 					case []any:
 						parts := make([]string, 0, len(v))
@@ -352,7 +431,13 @@ func fetchDatadogResolvedIncidentsWithFields(sc *security.RequestContext, apiKey
 						if len(parts) > 0 {
 							labels[normalizedName] = parts[0]
 							if normalizedName == "services" {
-								serviceName = strings.Join(parts, ", ")
+								normalized := make([]string, 0, len(parts))
+								for _, p := range parts {
+									if n := normalizeDatadogServicesFieldValue(p); n != "" {
+										normalized = append(normalized, n)
+									}
+								}
+								serviceName = strings.Join(normalized, ", ")
 							}
 						}
 					}
@@ -874,7 +959,7 @@ func detachedContext(sc *security.RequestContext) *security.RequestContext {
 	)
 }
 
-// --- Auto-learn: save confirmed title → service mapping back to tenant_attrs ---
+// --- Auto-learn: save confirmed title → service mapping back to webhook_subject_mappings ---
 
 func LearnSubjectMapping(sc *security.RequestContext, tenantId, attrKey, title, serviceName string) {
 	if title == "" || serviceName == "" {
@@ -890,164 +975,15 @@ func LearnSubjectMapping(sc *security.RequestContext, tenantId, attrKey, title, 
 			return
 		}
 
-		tx, err := dbms.Db.Beginx()
-		if err != nil {
-			sc.GetLogger().Error("webhook: failed to begin transaction for auto-learn", "error", err)
-			return
-		}
-		defer func() { _ = tx.Rollback() }()
-
-		var existingJSON string
-		_ = tx.Get(&existingJSON,
-			`SELECT value FROM tenant_attrs WHERE tenant_id = $1 AND name = $2 FOR UPDATE LIMIT 1`,
-			tenantId, attrKey)
-
-		var existing []HistoricalIncident
-		if existingJSON != "" {
-			if err := common.UnmarshalJson([]byte(existingJSON), &existing); err != nil {
-				sc.GetLogger().Error("webhook: failed to unmarshal existing mappings for auto-learn", "error", err)
-				return
-			}
-		}
-
-		titleLower := strings.ToLower(title)
-		for i, inc := range existing {
-			if strings.ToLower(inc.Title) == titleLower {
-				if inc.Service != nil && *inc.Service == serviceName {
-					return
-				}
-				existing[i].Service = &serviceName
-				goto save
-			}
-		}
-		existing = append(existing, HistoricalIncident{Title: title, Service: &serviceName})
-
-	save:
-		mergedJSON, err := json.Marshal(existing)
-		if err != nil {
-			sc.GetLogger().Error("webhook: failed to marshal auto-learned mapping", "error", err)
-			return
-		}
-
-		_, err = tx.Exec(
-			`INSERT INTO tenant_attrs (tenant_id, name, value) VALUES ($1, $2, $3)
-			 ON CONFLICT (tenant_id, name) DO UPDATE SET value = $3, updated_at = now()`,
-			tenantId, attrKey, string(mergedJSON))
+		_, changed, err := upsertSubjectMapping(dbms, tenantId, attrKey, title, serviceName)
 		if err != nil {
 			sc.GetLogger().Error("webhook: failed to save auto-learned mapping", "error", err)
 			return
 		}
-
-		if err := tx.Commit(); err != nil {
-			sc.GetLogger().Error("webhook: failed to commit auto-learn transaction", "error", err)
+		if !changed {
 			return
 		}
 
-		invalidateSubjectMappingsCache(tenantId, attrKey)
 		sc.GetLogger().Info("webhook: auto-learned subject mapping", "title", title, "service", serviceName, "source", attrKey)
 	}()
-}
-
-// --- Tenant-scoped TTL cache for historical incident mappings ---
-
-type subjectMappingsCache struct {
-	mu      sync.RWMutex
-	entries map[string]*subjectMappingsCacheEntry
-}
-
-type subjectMappingsCacheEntry struct {
-	mappings []HistoricalIncident
-	expiry   time.Time
-}
-
-var mappingsCache = &subjectMappingsCache{
-	entries: make(map[string]*subjectMappingsCacheEntry),
-}
-
-const mappingsCacheTTL = 30 * time.Minute
-
-func invalidateSubjectMappingsCache(tenantId, attrKey string) {
-	mappingsCache.mu.Lock()
-	defer mappingsCache.mu.Unlock()
-	delete(mappingsCache.entries, tenantId+":"+attrKey)
-}
-
-// GetSubjectMappingsForPrompt returns historical incident mappings for a tenant
-// from the tenant_attrs JSON blob for the given source key.
-func GetSubjectMappingsForPrompt(sc *security.RequestContext, tenantId, attrKey string, limit int) ([]HistoricalIncident, error) {
-	if limit <= 0 {
-		limit = 1000
-	}
-
-	cacheKey := tenantId + ":" + attrKey
-
-	mappingsCache.mu.RLock()
-	entry, ok := mappingsCache.entries[cacheKey]
-	mappingsCache.mu.RUnlock()
-
-	if ok && time.Now().Before(entry.expiry) {
-		if len(entry.mappings) > limit {
-			return entry.mappings[:limit], nil
-		}
-		return entry.mappings, nil
-	}
-
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database manager: %w", err)
-	}
-
-	var jsonValue string
-	err = dbms.Db.Get(&jsonValue,
-		`SELECT value FROM tenant_attrs WHERE tenant_id = $1 AND name = $2 LIMIT 1`,
-		tenantId, attrKey)
-	if err != nil {
-		sc.GetLogger().Warn("webhook: no historical incidents in tenant_attrs", "key", attrKey, "error", err)
-		return nil, nil
-	}
-
-	var incidents []HistoricalIncident
-	if err := common.UnmarshalJson([]byte(jsonValue), &incidents); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal historical incidents: %w", err)
-	}
-
-	mappingsCache.mu.Lock()
-	mappingsCache.entries[cacheKey] = &subjectMappingsCacheEntry{
-		mappings: incidents,
-		expiry:   time.Now().Add(mappingsCacheTTL),
-	}
-	mappingsCache.mu.Unlock()
-
-	if len(incidents) > limit {
-		return incidents[:limit], nil
-	}
-	return incidents, nil
-}
-
-// FormatSubjectMappingsForPrompt formats mappings as a string for LLM prompts.
-func FormatSubjectMappingsForPrompt(mappings []HistoricalIncident, limit int) string {
-	if limit <= 0 {
-		limit = 50
-	}
-	if len(mappings) == 0 {
-		return "(No historical data available)"
-	}
-
-	var sb strings.Builder
-	count := 0
-	for _, m := range mappings {
-		if m.Service == nil || *m.Service == "" {
-			continue
-		}
-		fmt.Fprintf(&sb, "  - \"%s\" → \"%s\"\n", m.Title, *m.Service)
-		count++
-		if count >= limit {
-			break
-		}
-	}
-
-	if sb.Len() == 0 {
-		return "(No historical data available)"
-	}
-	return sb.String()
 }

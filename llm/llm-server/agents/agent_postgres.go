@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -74,12 +73,10 @@ func (l PostgresDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 		},
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		toolUsage[tools.ToolExecutePostgresQuery] = []string{
-			"Executes `SELECT` SQL queries against PostgreSQL. Input MUST be a JSON object with a `query` key (SQL query string) and optional `database` and `instance` keys. Include `database` or `instance` if explicitly mentioned by the user. Example: `{\"query\": \"SELECT * FROM users;\", \"database\": \"mydb\", \"instance\": \"dev\"}`.",
-			"Output: The data returned by the SQL query.",
-			"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the query output.",
-		}
+	toolUsage[tools.ToolExecutePostgresQuery] = []string{
+		"Executes `SELECT` SQL queries against PostgreSQL. Input MUST be a JSON object with a `query` key (SQL query string) and optional `database` and `instance` keys. Include `database` or `instance` if explicitly mentioned by the user. Example: `{\"query\": \"SELECT * FROM users;\", \"database\": \"mydb\", \"instance\": \"dev\"}`.",
+		"Output: The data returned by the SQL query.",
+		"You can use standard shell features like pipes (|), redirects (>), and command substitutions ($( )) if necessary to process the query output.",
 	}
 	examples := []core.NBAgentPromptExample{
 		{

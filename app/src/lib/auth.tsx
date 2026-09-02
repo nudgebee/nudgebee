@@ -137,6 +137,54 @@ export function isTenantWideRole(): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic RBAC (custom roles) — the front-end half of the on/off switch.
+//
+// isCustomRolesEnabled() mirrors the backend security.CustomRolesEnabled():
+// it is the tenant's CUSTOM_ROLES feature state, resolved once at session build
+// (see resolveUserCustomPermissions). Every UI gate this feature introduced hangs
+// off it, so with the feature off the app renders exactly as it did before
+// dynamic RBAC existed — no disabled nav icons, no gated tabs, no Roles tab.
+//
+// It is deliberately NOT inferred from `permissions.length`: "feature on, user
+// holds no grants" and "feature off" are different states, and only the first
+// one may gate anything.
+// ---------------------------------------------------------------------------
+export function isCustomRolesEnabled(): boolean {
+  return userData?.customRolesEnabled === true;
+}
+
+// True when the user holds any dynamic-RBAC custom-role grant. Like a
+// tenant-wide role, a custom-grant holder's per-account session lists are NOT
+// authoritative for their reach — custom grants are tenant-global operation
+// surface and are never reflected in `accountIds`/`readOnlyAccountIds`/… — so a
+// pure custom-role user has EMPTY session lists yet can reach accounts across
+// the tenant. Callers deciding "is this account in the user's tenant?" must
+// therefore consult the live accounts list for these users too, not the
+// session (which would wrongly block them). See useAccountGuard.
+export function hasAnyCustomGrant(): boolean {
+  return isCustomRolesEnabled() && (userData?.permissions?.length ?? 0) > 0;
+}
+
+// True for a user whose access comes PURELY from dynamic-RBAC grants: no
+// tenant-wide role and no account/namespace grant in the session. Their built-in
+// role authorizes nothing, so per-module UI gating is meaningful for them and
+// only for them — every other user keeps every surface, exactly as before.
+//
+// Returns false whenever the feature is off, which is what makes the whole
+// permission-gating layer (nav icons, cluster tabs, quick links, Troubleshoot
+// sub-tabs) vanish with the switch. `accountId === 'demo'` callers pass the demo
+// account so the shared product showcase is never hobbled.
+export function isGrantsOnlyUser(accountId?: string): boolean {
+  if (!isCustomRolesEnabled()) {
+    return false;
+  }
+  if (accountId === 'demo') {
+    return false;
+  }
+  return !isTenantWideRole() && getSessionAccountIds().length === 0;
+}
+
 // Union of every account id the session explicitly grants the user (in the
 // current tenant). Authoritative ONLY for non-tenant-wide users — see
 // isTenantWideRole. Useful as an instant hint before the live accounts list
@@ -237,6 +285,105 @@ export function isTenantAdmin(): boolean {
   return false;
 }
 
+// Dynamic-RBAC: does the current user hold a custom-role grant for
+// (module, class)? UI-gating helper only (hide buttons / tabs) — the
+// authoritative gate is the rpcGateway + Go handlers. `module`/`class` must be
+// the normalized values from @lib/permissionCatalog (e.g. hasPermission(
+// 'notifications', 'Write')).
+export function hasPermission(module: string, permissionClass: 'Read' | 'Write' | 'Execute'): boolean {
+  if (!isCustomRolesEnabled()) {
+    return false;
+  }
+  return userData?.permissions?.includes(`${module}:${permissionClass}`) ?? false;
+}
+
+// Dynamic-RBAC: may the current user READ the tenant's custom roles? Mirrors
+// ee/customrole/service.go canReadCustomRoles — tenant-wide roles (including the
+// read-only flavors, which isTenantAdmin() deliberately excludes) plus the
+// `customroles:Read` grant. There is no Write counterpart: authoring and
+// assigning roles is privilege administration and stays tenant-admin-only, so
+// the customroles write actions are non-grantable (@lib/permissionCatalog).
+//
+// Use it to decide whether to CALL listCustomRoles() at all — the action 403s
+// for everyone else, and 400s tenant-wide when the CUSTOM_ROLES feature is off.
+export function canReadCustomRoles(): boolean {
+  if (!isCustomRolesEnabled()) {
+    return false;
+  }
+  return isTenantWideRole() || hasPermission('customroles', 'Read');
+}
+
+// Standard message for a disabled/greyed control the current user lacks the grant
+// for. Names the exact `<module>:<Class>` permission so the user can ask an admin
+// for precisely that grant (e.g. `tickets:Write`, `k8s:Read`). Use as the tooltip
+// on any permission-disabled tab/button.
+export function missingPermissionMessage(permission: string): string {
+  return `You need the "${permission}" permission. Ask an admin to grant it.`;
+}
+
+// Modules backing the sections of the Admin page (/user-management): Users,
+// Groups, Audits, Notifications, Integrations, Ownership, and the EE Roles &
+// Permissions tab. Kept in sync with baseFilters in
+// app/src/pages/user-management/index.jsx.
+// Cross-tenant super admin (full, not the read-only flavor). Kept distinct from
+// isTenantWideRole() because destructive / write gates must not accept
+// super_admin_readonly.
+export function isSuperAdmin(): boolean {
+  return userData?.isSuperAdmin === true;
+}
+
+// Advisory mirror of the backend SecurityContext.CanManage(module, class): a
+// full tenant admin, a full super admin, OR a custom-role holder with the
+// (module, class) grant.
+// Use to show/hide write actions in tenant-config surfaces (the Admin page).
+// tenant_admin_readonly and super_admin_readonly are intentionally excluded
+// (isTenantAdmin() / isSuperAdmin() are false for them) so read-only admins never
+// see write controls. The backend re-checks, so this is purely to avoid surfacing
+// actions that would 403.
+export function canManage(module: string, permissionClass: 'Read' | 'Write' | 'Execute'): boolean {
+  return isTenantAdmin() || isSuperAdmin() || hasPermission(module, permissionClass);
+}
+
+// Tenant Settings (the avatar-menu modal) splits into two questions, because
+// seeing the tenant's configuration and changing it are different privileges.
+//
+// VIEW — any tenant-wide role (including the read-only flavors) or a
+// `tenants:Read` grant. The reads behind the modal (tenant_attributes_v2,
+// featureflags_list, features_list) are all classified `tenants:Read` and
+// actions.yaml already grants them to the read-only roles, so this mirrors the
+// backend rather than being stricter than it.
+export function canViewTenantSettings(): boolean {
+  return isTenantWideRole() || hasPermission('tenants', 'Read') || canEditTenantSettings();
+}
+
+// EDIT — mirrors CanManage("tenants","Write") in
+// api-server/services/tenant/service.go, which gates all four writes the modal
+// makes (tenant_attribute_upsert / _delete, tenant_update_name,
+// featureflag_upsert). Note a `tenants:Write` grant still cannot flip the
+// privileged keys carved out in tenant/privileged_config.go (entitlement_bypass,
+// RBAC_K8S, …) — those stay tenant-admin/super-admin only, and the backend
+// rejects them per-key rather than per-request.
+export function canEditTenantSettings(): boolean {
+  return canManage('tenants', 'Write');
+}
+
+const ADMIN_SURFACE_MODULES = ['users', 'usergroups', 'audits', 'notifications', 'integrations', 'ownership', 'customroles', 'roles'];
+
+// Should the Admin sidebar tab / route be reachable for the current user?
+// True for tenant-wide admins (hasReadAccess) and for any custom-role holder
+// with a grant on an Admin-page module — e.g. an Audit-Read-only reviewer. The
+// per-section visibility inside the page is gated separately (disabled tabs).
+export function hasAdminSurfaceAccess(): boolean {
+  if (hasReadAccess()) {
+    return true;
+  }
+  if (!isCustomRolesEnabled()) {
+    return false;
+  }
+  const perms: string[] = userData?.permissions ?? [];
+  return perms.some((p) => ADMIN_SURFACE_MODULES.includes(p.split(':')[0]));
+}
+
 /**
  * Deployment-level UI toggle (a `UI_ENABLE_*` env var on the pod), read off the
  * session — see `uiFeatures` in [...nextauth].ts.
@@ -245,13 +392,13 @@ export function isTenantAdmin(): boolean {
  * `hasFeatureAccess` / `requiresFeature` can't answer it. Use it when a surface
  * is gated on one of these vars but the code asking isn't the page that receives
  * them as props — e.g. the guided-tour catalog deciding whether /optimise will
- * render its LLM Analyser / AI Gateway tabs.
+ * render its AI Gateway tab.
  *
  * Sync and needs no warming (unlike `hasFeatureAccessCached`): `withAuth`
  * populates `userData` before any of this renders. Fails closed if the session
  * predates the field.
  */
-export function isUiFeatureEnabled(feature: 'llmAnalyser' | 'llmGateway'): boolean {
+export function isUiFeatureEnabled(feature: 'llmGateway'): boolean {
   return Boolean(userData?.uiFeatures?.[feature]);
 }
 
@@ -335,6 +482,27 @@ export async function fetchFeatureFlagsForTenant(refresh = false): Promise<any[]
   }
 
   return featureData[tenantKey];
+}
+
+/**
+ * Account-or-tenant feature check, mirroring runbook-server's
+ * `common.IsFeatureEnabledForAccount`: an account-scoped row wins, then a
+ * tenant-wide row, otherwise disabled.
+ *
+ * `hasFeatureAccess` alone reads only tenant-wide rows
+ * (`account_id IS NULL`), so a per-account rollout — the documented way to
+ * pilot a feature — turns the backend on while leaving the UI believing the
+ * feature is off. Any UI gate gating the same capability as a server-side
+ * account-aware check must use this instead.
+ */
+export async function hasFeatureAccessForAccount(featureName: string, accountId?: string): Promise<boolean> {
+  if (accountId) {
+    const accountFlags = await fetchFeatureFlagsForAccount(accountId);
+    if (accountFlags.some((f) => f['feature_id'] === featureName && f['status'] === 'enabled')) {
+      return true;
+    }
+  }
+  return hasFeatureAccess(featureName);
 }
 
 export async function fetchFeatureFlagsForAccount(accountId: string, refresh: boolean = false): Promise<any[]> {

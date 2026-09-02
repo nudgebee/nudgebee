@@ -1,30 +1,30 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { Box } from '@mui/material';
+import React, { useEffect, useState, useMemo } from 'react';
+import { Box, Typography } from '@mui/material';
 import { useForm } from 'react-hook-form';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
 import apiUserManagement from '@api1/user';
+import { listCustomRoles, updateRoleUserAssignments } from '@api1/roles';
+import { isCustomRolesEnabled, isTenantAdmin } from '@lib/auth';
 import { textValidation, emailValidation } from '@lib/validation';
-import { hasWriteAccess } from '@lib/auth';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
-import { Chip } from '@ui/Chip';
-import SafeIcon from '@shared/icons/SafeIcon';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
-import slackLogo from '@assets/slack_icon.icon.svg';
-import githubLogo from '@assets/github-icon.icon.svg';
-import pagerdutyLogo from '@assets/auto-pilot/pager-duty.svg';
-import zendutyLogo from '@assets/zenduty.jpeg';
+import { Card } from '@ui/Card';
+import { ToggleGroup } from '@ui/ToggleGroup';
+import IntegrationProfiles from '../IntegrationProfiles';
 
-const ROLE_DESCRIPTIONS = {
-  tenant_admin: 'Full access to manage users, integrations, and settings.',
-  tenant_admin_readonly: 'View everything but cannot make changes.',
-  admin: 'Full access to manage users, integrations, and settings.',
-  readonly: 'View everything but cannot make changes.',
-};
+function CardHeader({ title, description }) {
+  return (
+    <Box>
+      <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{title}</Typography>
+      {description && <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mt: ds.space[0] }}>{description}</Typography>}
+    </Box>
+  );
+}
 
 const STATUS_OPTIONS = [
   { value: 'active', label: 'Active', dotColor: ds.green[600], helper: 'User can sign in and access the tenant.' },
@@ -32,347 +32,16 @@ const STATUS_OPTIONS = [
   { value: 'suspended', label: 'Suspended', dotColor: ds.red[600], helper: 'Sign-in blocked. Active sessions revoked immediately.' },
 ];
 
-function StatusSegmented({ value, onChange }) {
-  return (
+const STATUS_TOGGLE_OPTIONS = STATUS_OPTIONS.map((opt) => ({
+  value: opt.value,
+  label: opt.label,
+  icon: (
     <Box
-      role='radiogroup'
-      aria-label='User status'
-      sx={{
-        display: 'inline-flex',
-        padding: 'var(--ds-space-1)',
-        background: ds.background[300],
-        borderRadius: 'var(--ds-radius-lg)',
-        gap: 'var(--ds-space-1)',
-      }}
-    >
-      {STATUS_OPTIONS.map((opt) => {
-        const selected = value === opt.value;
-        return (
-          <Box
-            key={opt.value}
-            component='button'
-            type='button'
-            role='radio'
-            aria-checked={selected}
-            onClick={() => onChange(opt.value)}
-            data-testid={`user-modal-status-${opt.value}`}
-            sx={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 'var(--ds-space-2)',
-              padding: 'var(--ds-space-2) var(--ds-space-3)',
-              borderRadius: 'var(--ds-radius-md)',
-              background: selected ? ds.background[100] : 'transparent',
-              color: selected ? ds.gray[700] : ds.gray[600],
-              boxShadow: selected ? colors.shadow.softBlack : 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: 'Roboto',
-              fontWeight: selected ? 600 : 500,
-              fontSize: ds.text.small,
-              transition: 'all 0.15s',
-            }}
-          >
-            <Box
-              component='span'
-              sx={{
-                width: ds.space.mul(0, 3),
-                height: ds.space.mul(0, 3),
-                borderRadius: 'var(--ds-radius-pill)',
-                background: opt.dotColor,
-                flexShrink: 0,
-              }}
-            />
-            {opt.label}
-          </Box>
-        );
-      })}
-    </Box>
-  );
-}
-
-StatusSegmented.propTypes = {
-  value: PropTypes.string,
-  onChange: PropTypes.func,
-};
-
-// Provider display metadata for the Integration Profiles section. Keys match the
-// integration_type values produced by the Identity Sync job.
-const PROVIDER_META = {
-  slack: { label: 'Slack', logo: slackLogo },
-  github: { label: 'GitHub', logo: githubLogo },
-  pagerduty: { label: 'PagerDuty', logo: pagerdutyLogo },
-  zenduty: { label: 'ZenDuty', logo: zendutyLogo },
-};
-const providerLabel = (t) => PROVIDER_META[t]?.label || t;
-const providerLogo = (t) => PROVIDER_META[t]?.logo;
-
-// IntegrationProfiles shows every external account (Slack/GitHub/PagerDuty/ZenDuty)
-// linked to this user — auto-matched by email or mapped manually — and lets a
-// tenant admin map an as-yet-unmatched account or unmap an existing one.
-function IntegrationProfiles({ userId, onNotify }) {
-  const [accounts, setAccounts] = useState([]);
-  const [unmapped, setUnmapped] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [selectedType, setSelectedType] = useState('');
-  const [selectedAccount, setSelectedAccount] = useState('');
-  const [selectedToMap, setSelectedToMap] = useState('');
-  const [busy, setBusy] = useState(false);
-  const canEdit = hasWriteAccess();
-
-  const load = useCallback(async () => {
-    if (!userId) return;
-    setLoading(true);
-    const [mapped, free] = await Promise.all([
-      apiUserManagement.listIntegrationAccounts(userId),
-      canEdit ? apiUserManagement.listUnmappedAccounts(null) : Promise.resolve([]),
-    ]);
-    setAccounts(Array.isArray(mapped) ? mapped : []);
-    setUnmapped(Array.isArray(free) ? free : []);
-    setLoading(false);
-  }, [userId, canEdit]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const handleMap = async () => {
-    if (!selectedToMap) return;
-    setBusy(true);
-    try {
-      const res = await apiUserManagement.createAccountMapping({ mappingId: selectedToMap, userId });
-      if (res?.id) {
-        onNotify?.({ message: 'Integration account mapped', severity: 'success' });
-        setSelectedToMap('');
-        setSelectedAccount('');
-        setSelectedType('');
-        await load();
-      } else {
-        onNotify?.({ message: 'Failed to map account', severity: 'error' });
-      }
-    } catch (err) {
-      onNotify?.({ message: err?.message || 'Failed to map account', severity: 'error' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleUnmap = async (mappingId) => {
-    setBusy(true);
-    try {
-      const res = await apiUserManagement.deleteAccountMapping({ mappingId });
-      if (res?.id) {
-        onNotify?.({ message: 'Mapping removed', severity: 'success' });
-        await load();
-      } else {
-        onNotify?.({ message: 'Failed to remove mapping', severity: 'error' });
-      }
-    } catch (err) {
-      onNotify?.({ message: err?.message || 'Failed to remove mapping', severity: 'error' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Tenant-scoped integrations (messaging/ticketing) have no account_id — show them
-  // under an "All accounts" group rather than a blank header.
-  const accountLabel = (a) => (a.account_id ? a.account_name || a.account_id : 'All accounts');
-  const hasUnmapped = unmapped.length > 0;
-
-  // Cascading filters keep the picker uncluttered: choose integration type, then
-  // account, then the specific profile. Each step is scoped to the prior choice.
-  const typeOptions = Array.from(new Set(unmapped.map((a) => a.integration_type))).map((t) => ({ value: t, label: providerLabel(t) }));
-
-  const accountsForType = unmapped.filter((a) => a.integration_type === selectedType);
-  const accountOptions = Array.from(
-    new Map(accountsForType.map((a) => [a.account_id || '', { value: a.account_id || '', label: accountLabel(a) }])).values()
-  );
-  // With a single account (the common tenant-scoped case) there's nothing to choose.
-  const showAccountStep = selectedType !== '' && accountOptions.length > 1;
-  const effectiveAccount = showAccountStep ? selectedAccount : accountOptions[0]?.value ?? '';
-
-  const profileOptions = accountsForType
-    .filter((a) => (a.account_id || '') === effectiveAccount)
-    .map((a) => ({
-      value: a.id,
-      label: `${a.display_name || a.username || a.external_user_id}${a.email ? ` (${a.email})` : ''}`,
-    }));
-
-  // Group mapped profiles by cloud account — an identity scoped to multiple
-  // accounts shows once under each account.
-  const accountGroups = [];
-  const groupIndex = new Map();
-  for (const a of accounts) {
-    const key = a.account_id || 'unknown';
-    if (!groupIndex.has(key)) {
-      const group = { key, name: accountLabel(a), items: [] };
-      groupIndex.set(key, group);
-      accountGroups.push(group);
-    }
-    groupIndex.get(key).items.push(a);
-  }
-
-  return (
-    <Box data-testid='user-modal-integration-profiles'>
-      <Box component='label' sx={{ display: 'block', font: "500 12px/1.2 'Roboto'", color: ds.gray[700], mb: 'var(--ds-space-2)' }}>
-        Integration profiles
-      </Box>
-
-      {loading ? (
-        <Box sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[400] }}>Loading…</Box>
-      ) : accounts.length === 0 ? (
-        <Box sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[400] }}>
-          No linked integration accounts yet. The Identity Sync maps accounts to users by email automatically.
-        </Box>
-      ) : (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-          {accountGroups.map((group) => (
-            <Box key={group.key} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-              <Box
-                sx={{
-                  font: "600 11px/1.2 'Roboto'",
-                  letterSpacing: '0.04em',
-                  textTransform: 'uppercase',
-                  color: ds.gray[400],
-                }}
-              >
-                {group.name}
-              </Box>
-              {group.items.map((a) => (
-                <Box
-                  key={a.id}
-                  data-testid={`integration-account-${a.integration_type}`}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--ds-space-2)',
-                    padding: 'var(--ds-space-2) var(--ds-space-3)',
-                    border: `1px solid ${ds.background[300]}`,
-                    borderRadius: 'var(--ds-radius-md)',
-                  }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', width: 96, flexShrink: 0 }}>
-                    {providerLogo(a.integration_type) && (
-                      <Box
-                        sx={{
-                          width: 18,
-                          height: 18,
-                          flexShrink: 0,
-                          display: 'flex',
-                          '& img, & svg': { width: 18, height: 18, objectFit: 'contain' },
-                        }}
-                      >
-                        <SafeIcon src={providerLogo(a.integration_type)} alt={providerLabel(a.integration_type)} width={18} height={18} />
-                      </Box>
-                    )}
-                    <Box sx={{ font: "500 12px/1.2 'Roboto'", color: ds.gray[700] }}>{providerLabel(a.integration_type)}</Box>
-                  </Box>
-                  <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Box
-                      sx={{ font: "500 12px/1.3 'Roboto'", color: ds.gray[700], overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                    >
-                      {a.display_name || a.username || a.external_user_id}
-                    </Box>
-                    {(a.email || a.username) && (
-                      <Box
-                        sx={{
-                          font: "400 11px/1.3 'Roboto'",
-                          color: ds.gray[400],
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {a.email || a.username}
-                      </Box>
-                    )}
-                  </Box>
-                  <Chip variant='tag' size='2xs' hue={a.mapped_via === 'manual' ? 'blue' : 'green'}>
-                    {a.mapped_via === 'manual' ? 'Manual' : 'Auto'}
-                  </Chip>
-                  {canEdit && (
-                    <Button id={`integration-account-unmap-${a.id}`} tone='secondary' size='sm' disabled={busy} onClick={() => handleUnmap(a.id)}>
-                      Unmap
-                    </Button>
-                  )}
-                </Box>
-              ))}
-            </Box>
-          ))}
-        </Box>
-      )}
-
-      {canEdit && !loading && (
-        <Box sx={{ mt: 'var(--ds-space-3)' }}>
-          <Box component='label' sx={{ display: 'block', font: "500 12px/1.2 'Roboto'", color: ds.gray[700], mb: 'var(--ds-space-2)' }}>
-            Map an integration account
-          </Box>
-
-          {!hasUnmapped ? (
-            <Box sx={{ font: "400 11px/1.4 'Roboto'", color: ds.gray[400] }}>
-              No unmatched accounts to map. Accounts the Identity Sync discovered but couldn&apos;t match by email appear here; the sync runs every 30
-              minutes across your Slack, GitHub, PagerDuty and ZenDuty integrations.
-            </Box>
-          ) : (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-              {/* Step 1: integration type, + account when the type spans several */}
-              <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', '& > *': { flex: 1, minWidth: 0 } }}>
-                <Select
-                  id='user-modal-map-type'
-                  placeholder='Integration type'
-                  value={selectedType}
-                  options={typeOptions}
-                  onChange={(next) => {
-                    setSelectedType(next);
-                    setSelectedAccount('');
-                    setSelectedToMap('');
-                  }}
-                  minWidth='100%'
-                />
-                {showAccountStep && (
-                  <Select
-                    id='user-modal-map-account-filter'
-                    placeholder='Account'
-                    value={selectedAccount}
-                    options={accountOptions}
-                    onChange={(next) => {
-                      setSelectedAccount(next);
-                      setSelectedToMap('');
-                    }}
-                    minWidth='100%'
-                  />
-                )}
-              </Box>
-
-              {/* Step 2: the specific unmatched profile, scoped to the choices above */}
-              <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--ds-space-2)' }}>
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Select
-                    id='user-modal-map-account'
-                    placeholder={selectedType ? 'Select an account' : 'Pick an integration type first'}
-                    value={selectedToMap}
-                    options={profileOptions}
-                    onChange={(next) => setSelectedToMap(next)}
-                    disabled={!selectedType || (showAccountStep && !selectedAccount)}
-                    minWidth='100%'
-                  />
-                </Box>
-                <Button id='user-modal-map-account-button' size='md' disabled={!selectedToMap || busy} loading={busy} onClick={handleMap}>
-                  Map
-                </Button>
-              </Box>
-            </Box>
-          )}
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-IntegrationProfiles.propTypes = {
-  userId: PropTypes.string,
-  onNotify: PropTypes.func,
-};
+      component='span'
+      sx={{ width: ds.space.mul(0, 3), height: ds.space.mul(0, 3), borderRadius: 'var(--ds-radius-pill)', background: opt.dotColor, flexShrink: 0 }}
+    />
+  ),
+}));
 
 function UserModal({ open, handleClose, handleSnackBarData, mode, userData = null }) {
   const { reset, handleSubmit } = useForm();
@@ -391,6 +60,10 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
   const [userList, setUserList] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [userRole, setUserRole] = useState('');
+  // Dynamic-RBAC custom roles: full role objects (with user_ids) for the diff,
+  // and the ids currently picked in the multi-select.
+  const [customRolesList, setCustomRolesList] = useState([]);
+  const [selectedCustomRoles, setSelectedCustomRoles] = useState([]);
   const [groupList, setGroupList] = useState([]);
   const [userGroups, setUserGroups] = useState([]);
   const [userStatus, setUserStatus] = useState('active');
@@ -403,6 +76,7 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
     setLastNameValue('');
     setEmailValue('');
     setUserRole('');
+    setSelectedCustomRoles([]);
     setUserGroups([]);
     setUserStatus('active');
     setValidationError({});
@@ -414,6 +88,20 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
       apiUserManagement.getAllRoles().then((res) => {
         setRolesList(res || []);
       });
+      // Custom roles are tenant_admin-only; a non-admin caller gets an empty
+      // list and the picker stays hidden. Skipped outright while the tenant's
+      // CUSTOM_ROLES feature is off — the service refuses the call then, and the
+      // modal must look exactly as it did before dynamic RBAC.
+      if (isCustomRolesEnabled()) {
+        listCustomRoles()
+          .then((roles) => {
+            setCustomRolesList(roles ?? []);
+            if (isEditMode && userData?.id) {
+              setSelectedCustomRoles((roles ?? []).filter((r) => (r.user_ids ?? []).includes(userData.id)).map((r) => r.id));
+            }
+          })
+          .catch(() => setCustomRolesList([]));
+      }
       apiUserManagement.listUserGroups().then((res) => {
         if (res?.data?.usergroups_list?.rows?.length > 0) {
           setGroupList([...res.data.usergroups_list.rows]);
@@ -571,76 +259,127 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
     return userData?.user_groups?.map((u) => u.id)?.filter((id) => !currentIds.includes(id)) ?? [];
   }
 
+  // Apply custom-role (dynamic RBAC) assignments for this user. The backend
+  // assignment API is role-side replace-all (customroles_update_user_assignments
+  // replaces a role's entire user list), so from a per-user modal we
+  // read-modify-write only the roles whose membership for THIS user changed,
+  // starting from the freshly-loaded snapshot. Returns false (and toasts) on
+  // failure so the caller can skip the success path.
+  async function applyCustomRoleAssignments(userId) {
+    if (!userId) return true;
+    try {
+      const desired = new Set(selectedCustomRoles);
+      const initial = new Set(customRolesList.filter((r) => (r.user_ids ?? []).includes(userId)).map((r) => r.id));
+      const changed = customRolesList.filter((r) => desired.has(r.id) !== initial.has(r.id));
+      const promises = changed.map((r) => {
+        const current = r.user_ids ?? [];
+        const nextIds = desired.has(r.id) ? Array.from(new Set([...current, userId])) : current.filter((id) => id !== userId);
+        return updateRoleUserAssignments(r.id, nextIds);
+      });
+      if (promises.length > 0) await Promise.all(promises);
+      return true;
+    } catch {
+      handleSnackBarData({ message: 'Failed to update custom roles', severity: 'error' });
+      return false;
+    }
+  }
+
+  // Assigning roles — built-in or custom — is privilege administration, and both
+  // write paths (users_create / users_update_profile's role sync, and
+  // customroles_update_user_assignments) are tenant-admin-only on purpose. A
+  // users:Write grant admits everything else in this modal, so show the picker
+  // read-only for those callers rather than letting them submit a guaranteed 403.
+  const canAssignRoles = isTenantAdmin();
+
   const submitForm = async (data) => {
     setLoading(true);
     if (!validateForm()) {
       setLoading(false);
       return;
     }
-    if (isAddMode) {
-      for (const element of userList) {
-        if (element.username === emailValue.toString()) {
-          snackbar.error('This email is already in use');
+    // The group/role mutations reject on an upstream error (they no longer
+    // swallow it). Without this guard a rejection here — after the user has
+    // already been created — left the modal spinning with no message. Surface
+    // the reason and stop the spinner; the success paths still return early.
+    try {
+      if (isAddMode) {
+        for (const element of userList) {
+          if (element.username === emailValue.toString()) {
+            snackbar.error('This email is already in use');
+            setLoading(false);
+            reset({ username: '' });
+            return;
+          }
+        }
+
+        const addData = {
+          ...data,
+          firstname: firstNameValue,
+          lastname: lastNameValue,
+          email: emailValue,
+          role: userRole,
+        };
+
+        const res = await apiUserManagement.addUser(addData);
+        if (res?.data?.users_create?.status === 'Ok') {
+          if (userGroups.length > 0) {
+            const newUsername = emailValue;
+            const groupPromises = userGroups.map((group) =>
+              apiUserManagement.manageGroupUsers({
+                group_id: group?.value ?? group,
+                add_usernames: [newUsername],
+                remove_usernames: [],
+              })
+            );
+            await Promise.all(groupPromises);
+          }
+          const rolesOk = await applyCustomRoleAssignments(res?.data?.users_create?.id);
+          if (!rolesOk) {
+            setLoading(false);
+            return;
+          }
+          handleSnackBarData({ message: 'User Added Successfully', icon: '', severity: 'success' });
+          handleClose(true);
+          resetForm();
           setLoading(false);
-          reset({ username: '' });
           return;
         }
-      }
-
-      const addData = {
-        ...data,
-        firstname: firstNameValue,
-        lastname: lastNameValue,
-        email: emailValue,
-        role: userRole,
-      };
-
-      const res = await apiUserManagement.addUser(addData);
-      if (res?.data?.users_create?.status === 'Ok') {
-        if (userGroups.length > 0) {
-          const newUsername = emailValue;
-          const groupPromises = userGroups.map((group) =>
-            apiUserManagement.manageGroupUsers({
-              group_id: group?.value ?? group,
-              add_usernames: [newUsername],
-              remove_usernames: [],
-            })
-          );
-          await Promise.all(groupPromises);
-        }
-        handleSnackBarData({ message: 'User Added Successfully', icon: '', severity: 'success' });
-        handleClose(true);
-        resetForm();
+        handleSnackBarData({ message: res.message, severity: 'error' });
         setLoading(false);
-        return;
-      }
-      handleSnackBarData({ message: res.message, severity: 'error' });
-      setLoading(false);
-    } else {
-      const formData = {
-        username: userData?.username,
-        display_name: `${firstNameValue} ${lastNameValue}`,
-        status: userStatus,
-        role: userRole ?? '',
-      };
-      const response = await apiUserManagement.updateUser(formData);
-      const updateResult = response?.data?.users_update_profile;
-      if (updateResult?.status === 'success') {
-        if (await handleGroupChanges()) {
-          handleSnackBarData({ message: 'User updated', severity: 'success' });
-          setUserGroups([]);
+      } else {
+        const formData = {
+          username: userData?.username,
+          display_name: `${firstNameValue} ${lastNameValue}`,
+          status: userStatus,
+          role: userRole ?? '',
+        };
+        const response = await apiUserManagement.updateUser(formData);
+        const updateResult = response?.data?.users_update_profile;
+        if (updateResult?.status === 'success') {
+          if (await handleGroupChanges()) {
+            if (!(await applyCustomRoleAssignments(userData?.id))) {
+              setLoading(false);
+              return;
+            }
+            handleSnackBarData({ message: 'User updated', severity: 'success' });
+            setUserGroups([]);
+            setTimeout(() => {
+              handleClose(true);
+              router.push(`/user-management#${currentFragment}`);
+            }, 2000);
+          }
+        } else {
+          handleSnackBarData({ message: 'Failed to edit user', severity: 'error' });
           setTimeout(() => {
-            handleClose(true);
+            handleClose();
             router.push(`/user-management#${currentFragment}`);
           }, 2000);
         }
-      } else {
-        handleSnackBarData({ message: 'Failed to edit user', severity: 'error' });
-        setTimeout(() => {
-          handleClose();
-          router.push(`/user-management#${currentFragment}`);
-        }, 2000);
+        setLoading(false);
       }
+    } catch (error) {
+      console.error('Error submitting user form:', error);
+      handleSnackBarData({ message: error?.message || 'An error occurred', severity: 'error' });
       setLoading(false);
     }
   };
@@ -669,9 +408,10 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
   return (
     <Modal
       open={open}
-      handleClose={handleModalClose}
+      handleClose={() => (loading ? undefined : handleModalClose())}
       title={isAddMode ? 'Add User' : 'Edit User'}
       width='sm'
+      loader={loading}
       sx={{ '& .MuiDialog-paper': { maxWidth: ds.space.mul(0, 280), maxHeight: '90vh' } }}
       contentStyles={{ padding: 'var(--ds-space-4) var(--ds-space-5)', overflowX: 'hidden' }}
       actionButtons={
@@ -682,7 +422,7 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
             gap: 'var(--ds-space-2)',
           }}
         >
-          <Button id='user-modal-cancel-button' tone='secondary' size='md' onClick={handleModalClose}>
+          <Button id='user-modal-cancel-button' tone='secondary' size='md' onClick={handleModalClose} disabled={loading}>
             Cancel
           </Button>
           <Button
@@ -707,111 +447,151 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
         onKeyDown={handleKeyDown}
         sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}
       >
-        {/* First + Last name */}
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--ds-space-3)', '& > *': { minWidth: 0 } }}>
-          <Box data-testid='user-modal-firstname'>
-            <Input
-              id='user-modal-firstname'
-              name='firstname'
-              label='First name'
-              required
-              placeholder='Alex'
-              value={firstNameValue || ''}
-              onChange={(next) => {
-                const v = next.trimStart();
-                setFirstNameValue(v);
-                textValidation(v.trim(), validationError, setValidationError, 'firstname', ['required', 'firstLetterAlpha', 'alphaNumWithSpace']);
-              }}
-              onBlur={(e) => setFirstNameValue(e.currentTarget.value.trim())}
-              error={validationError.firstname}
-            />
-          </Box>
-          <Box data-testid='user-modal-lastname'>
-            <Input
-              id='user-modal-lastname'
-              name='lastname'
-              label='Last name'
-              required
-              placeholder='Morgan'
-              value={lastNameValue || ''}
-              onChange={(next) => {
-                const v = next.trimStart();
-                setLastNameValue(v);
-                textValidation(v.trim(), validationError, setValidationError, 'lastname', ['required', 'firstLetterAlpha', 'alphaNumWithSpace']);
-              }}
-              onBlur={(e) => setLastNameValue(e.currentTarget.value.trim())}
-              error={validationError.lastname}
-            />
-          </Box>
-        </Box>
-
-        {/* Email */}
-        <Box data-testid='user-modal-email'>
-          <Input
-            id='user-modal-email'
-            name='email'
-            label='Work email'
-            required={isAddMode}
-            type='email'
-            placeholder='name@yourcompany.com'
-            value={emailValue || ''}
-            disabled={isEditMode}
-            onChange={(next) => {
-              if (!isAddMode) return;
-              setEmailValue(next);
-              emailValidation(next, setEmailValidationError, ['required', 'validate']);
-            }}
-            error={isAddMode ? emailValidationError : undefined}
-          />
-        </Box>
-
-        {/* Tenant role */}
-        {rolesList.length > 0 && (
-          <Box data-testid='user-modal-tenant-role'>
-            <Select
-              id='user-modal-tenant-role'
-              label='Tenant role'
-              value={userRole || ''}
-              options={rolesList.map((r) => ({ value: r.value, label: r.display_name || r.value }))}
-              onChange={(next) => setUserRole(next)}
-              placeholder='Select tenant role'
-              help={userRole ? ROLE_DESCRIPTIONS[userRole] : 'Leave empty if no tenant-level role is needed.'}
-              minWidth='100%'
-            />
-          </Box>
-        )}
-
-        {/* Status (edit only) */}
-        {isEditMode && (
-          <Box data-testid='user-modal-status'>
-            {fieldLabel('Status', true)}
-            <StatusSegmented value={userStatus} onChange={setUserStatus} />
-            <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[400], mt: 'var(--ds-space-1)' }}>
-              {STATUS_OPTIONS.find((s) => s.value === userStatus)?.helper || ''}
+        {/* User Info */}
+        <Card variant='outlined' elevation='flat' header={<CardHeader title='User Info' />}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--ds-space-3)', '& > *': { minWidth: 0 } }}>
+              <Box data-testid='user-modal-firstname'>
+                <Input
+                  id='user-modal-firstname'
+                  name='firstname'
+                  label='First name'
+                  required
+                  placeholder='Alex'
+                  value={firstNameValue || ''}
+                  onChange={(next) => {
+                    const v = next.trimStart();
+                    setFirstNameValue(v);
+                    textValidation(v.trim(), validationError, setValidationError, 'firstname', ['required', 'firstLetterAlpha', 'alphaNumWithSpace']);
+                  }}
+                  onBlur={(e) => setFirstNameValue(e.currentTarget.value.trim())}
+                  error={validationError.firstname}
+                />
+              </Box>
+              <Box data-testid='user-modal-lastname'>
+                <Input
+                  id='user-modal-lastname'
+                  name='lastname'
+                  label='Last name'
+                  required
+                  placeholder='Morgan'
+                  value={lastNameValue || ''}
+                  onChange={(next) => {
+                    const v = next.trimStart();
+                    setLastNameValue(v);
+                    textValidation(v.trim(), validationError, setValidationError, 'lastname', ['required', 'firstLetterAlpha', 'alphaNumWithSpace']);
+                  }}
+                  onBlur={(e) => setLastNameValue(e.currentTarget.value.trim())}
+                  error={validationError.lastname}
+                />
+              </Box>
             </Box>
-            {validationError.status && (
-              <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.red[600], mt: 'var(--ds-space-1)' }}>Status selection is mandatory</Box>
-            )}
+            <Box data-testid='user-modal-email'>
+              <Input
+                id='user-modal-email'
+                name='email'
+                label='Work email'
+                required={isAddMode}
+                type='email'
+                placeholder='name@yourcompany.com'
+                value={emailValue || ''}
+                disabled={isEditMode}
+                onChange={(next) => {
+                  if (!isAddMode) return;
+                  setEmailValue(next);
+                  emailValidation(next, setEmailValidationError, ['required', 'validate']);
+                }}
+                error={isAddMode ? emailValidationError : undefined}
+              />
+            </Box>
           </Box>
+        </Card>
+
+        {/* Access */}
+        {(rolesList.length > 0 || isEditMode || customRolesList.length > 0) && (
+          <Card variant='outlined' elevation='flat' header={<CardHeader title='Access' />}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+              {(rolesList.length > 0 || customRolesList.length > 0) && (
+                <Box data-testid='user-modal-role'>
+                  <Select
+                    multiple
+                    id='user-modal-tenant-role'
+                    label='Role'
+                    placeholder='Select role(s)'
+                    value={[...(userRole ? [userRole] : []), ...selectedCustomRoles]}
+                    onChange={(next) => {
+                      // One merged picker over built-in roles + custom roles. Built-in
+                      // roles still write to user_roles (single — that's what carries
+                      // data scope); custom roles write to custom_role_assignments
+                      // (additive permissions). Enforce a single built-in by keeping the
+                      // most recently selected one.
+                      const builtinSet = new Set(rolesList.map((r) => r.value));
+                      const builtins = next.filter((v) => builtinSet.has(v));
+                      const customs = next.filter((v) => !builtinSet.has(v));
+                      setUserRole(builtins.length ? builtins[builtins.length - 1] : '');
+                      setSelectedCustomRoles(customs);
+                    }}
+                    options={[
+                      ...rolesList.map((r) => ({ value: r.value, label: r.display_name || r.value })),
+                      ...customRolesList.map((r) => ({ value: r.id, label: r.name })),
+                    ]}
+                    maxChips={4}
+                    disabled={!canAssignRoles}
+                    help={
+                      canAssignRoles
+                        ? 'Built-in roles grant access to accounts; custom roles add extra action permissions. Pick one built-in role plus any custom roles.'
+                        : 'Only a tenant admin can change a user’s roles. You can still edit the profile and status.'
+                    }
+                    minWidth='100%'
+                  />
+                </Box>
+              )}
+              {isEditMode && (
+                <Box data-testid='user-modal-status'>
+                  {fieldLabel('Status', true)}
+                  <ToggleGroup
+                    selection='single'
+                    options={STATUS_TOGGLE_OPTIONS}
+                    value={userStatus}
+                    onChange={setUserStatus}
+                    size='md'
+                    ariaLabel='User status'
+                  />
+                  <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[400], mt: 'var(--ds-space-1)' }}>
+                    {STATUS_OPTIONS.find((s) => s.value === userStatus)?.helper || ''}
+                  </Box>
+                  {validationError.status && (
+                    <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.red[600], mt: 'var(--ds-space-1)' }}>Status selection is mandatory</Box>
+                  )}
+                </Box>
+              )}
+            </Box>
+          </Card>
         )}
 
         {/* Groups */}
-        <Box data-testid='user-modal-group'>
-          <Select
-            multiple
-            id='user-modal-group'
-            label='Groups'
-            placeholder='Select groups'
-            value={userGroups || []}
-            onChange={handleGroupChange}
-            options={(groupList || []).map((v) => ({ value: v.id, label: v.name }))}
-            maxChips={4}
-            help={isAddMode ? 'Groups control which clusters and dashboards this user can access.' : undefined}
-          />
-        </Box>
+        <Card variant='outlined' elevation='flat' header={<CardHeader title='Groups' />}>
+          <Box data-testid='user-modal-group'>
+            <Select
+              multiple
+              id='user-modal-group'
+              label={null}
+              placeholder='Select groups'
+              value={userGroups || []}
+              onChange={handleGroupChange}
+              options={(groupList || []).map((v) => ({ value: v.id, label: v.name }))}
+              maxChips={4}
+              help={isAddMode ? 'Groups control which clusters and dashboards this user can access.' : undefined}
+            />
+          </Box>
+        </Card>
 
         {/* Integration profiles (edit only — requires a persisted user id) */}
-        {isEditMode && userData?.id && <IntegrationProfiles userId={userData.id} onNotify={handleSnackBarData} />}
+        {isEditMode && userData?.id && (
+          <Card variant='outlined' elevation='flat' header={<CardHeader title='Integration Profiles' />}>
+            <IntegrationProfiles userId={userData.id} onNotify={handleSnackBarData} hideHeading />
+          </Card>
+        )}
       </Box>
     </Modal>
   );

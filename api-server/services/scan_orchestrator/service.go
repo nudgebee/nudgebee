@@ -60,6 +60,18 @@ func RunScan(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		return nil, fmt.Errorf("wait: %w", err)
 	}
 	if final.Status != "Complete" {
+		// Terminal but not successful — typically Failed, which now includes a pod
+		// wedged in ImagePullBackOff that the agent surfaces as Failed (it earns no
+		// Job Failed condition, so neither the TTL controller nor the agent reaper —
+		// both finished-only — would ever collect it). There are no logs to fetch on
+		// this path, so delete the Job now rather than letting it linger and re-pile
+		// each scan cycle. NotFound means it's already gone. Best-effort: the agent
+		// reaper + Job TTL remain backstops, so a delete failure is non-fatal.
+		if final.Status != "NotFound" {
+			if delErr := deleteJob(account.AccountID, jobName); delErr != nil {
+				logger.Warn("scan_orchestrator: failed-job delete failed; relying on agent reaper/TTL", "error", delErr)
+			}
+		}
 		return nil, fmt.Errorf("scan_orchestrator: job %s ended in %s: %s", jobName, final.Status, final.FailureReason)
 	}
 

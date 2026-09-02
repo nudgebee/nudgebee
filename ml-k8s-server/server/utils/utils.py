@@ -244,6 +244,164 @@ class OTELConfig:
     service_name = os.environ.get("OTEL_SERVICE_NAME", "ml-k8s-server")
 
 
+class ScrubConfig:
+    """Configuration for the universal data-scrubbing API.
+
+    Tier-1 regex is always applied when ``enabled``. Tier-2 NER is requested
+    per HTTP call but uses the model/lang configured here. ``reversible_types``
+    is the set of soft-PII types eligible for reversible tokenisation;
+    secrets are always irreversible regardless.
+    """
+
+    enabled = os.environ.get("SCRUB_ENABLED", "true").lower() == "true"
+    ner_model = os.environ.get("SCRUB_NER_MODEL", "en_core_web_sm")
+    ner_lang = os.environ.get("SCRUB_NER_LANG", "en")
+    # Comma-separated subset of PERSON,LOCATION,EMAIL,PHONE.
+    reversible_types = frozenset(
+        t.strip().upper()
+        for t in os.environ.get("SCRUB_REVERSIBLE_TYPES", "PERSON,LOCATION,EMAIL,PHONE").split(",")
+        if t.strip()
+    )
+    # Regexes (matched against an NER span's text) that mark a hit as an
+    # infrastructure identifier to PRESERVE rather than redact — whole-token
+    # cases like deployments/hosts named after envs or DNS. Sub-token cases
+    # (a name inside a compound id) are handled separately in the scrubber.
+    # Override with SCRUB_INFRA_ALLOWLIST (pipe-separated regexes).
+    #
+    # Additions 2026-08-01 driven by curl evidence against dev — on a
+    # user's "hello" turn the scrubber found 47 hits, dominated by:
+    #   - spaCy tagging bare ops-tool names ("grafana") as PERSON
+    #   - spaCy tagging bare English infra vocab ("node") as LOCATION
+    # These require whole-span allowlist entries (the existing entries
+    # only match tokens that already have a separator or a suffix like
+    # "-prod", so bare words fall through).
+    _default_infra_allowlist = [
+        # Env-suffixed identifiers: nginx-prod, api-staging, checkout-canary.
+        r"(?i).*-(prod|dev|develop|staging|stage|qa|uat|canary|test|sandbox)\b",
+        # DNS-shaped infra hostnames: my-svc.svc.cluster.local, api.internal.
+        r"(?i).*\.(svc|local|internal|cluster\.local)\b",
+        # k8s owner-ref prefixes: pod/nginx, deployment.apps/api, ns/prod.
+        r"(?i)^(pod|deployment|deployment\.apps|replicaset|statefulset|daemonset"
+        r"|cronjob|job|ns|namespace|svc|service|node)/",
+        # Well-known ops / observability tool names — spaCy routinely tags
+        # these as PERSON/LOCATION on SRE text ("grafana" observed hitting
+        # PERSON in dev; "prometheus" and "alertmanager" happen to be safe
+        # today but not guaranteed across model versions, so allowlist them
+        # explicitly).
+        r"(?i)^(grafana|prometheus|alertmanager|nginx|httpd|apache|"
+        r"mysql|postgres(?:ql)?|mongo(?:db)?|redis|memcached|kafka|zookeeper|"
+        r"rabbitmq|elasticsearch|opensearch|kibana|logstash|fluent(?:d|bit)|"
+        r"jaeger|zipkin|envoy|istio|argo(?:cd)?|linkerd|consul|vault|nomad|"
+        r"traefik|calico|cilium|weave|coredns|kube-proxy|kubelet|"
+        r"kube-apiserver|etcd|"
+        # Additions 2026-08-02 measured on session 17276ae7 remainders:
+        # Loki, Cortex, Honeycomb (all NER-tagged despite being obs tools).
+        r"loki|tempo|mimir|thanos|cortex|victoria(?:metrics)?|"
+        r"chronosphere|honeycomb|dynatrace|appdynamics|wavefront|"
+        r"splunk|datadog|sentry|pagerduty|opsgenie|victorops|xmatters|"
+        r"cloudwatch|stackdriver|sumo(?:logic)?)$",
+        # Bare k8s / cloud vocabulary words that spaCy mis-tags as
+        # LOCATION or PERSON when they appear standalone in English text
+        # ("check node ip-...", "restart pod X").
+        r"(?i)^(node|pod|service|cluster|namespace|container|deployment|"
+        r"replica(?:set)?|statefulset|daemonset|cronjob|job|ingress|"
+        r"configmap|secret|volume|region|zone|az)$",
+        # Additions 2026-08-02 driven by empirical /scrub run against the
+        # k8s_orchestrator_lean system-prompt corpus (55KB). 16 of the
+        # observed PERSON/LOCATION hits were false-fires on ops vocabulary
+        # NOT covered by the existing entries above. The extensions below
+        # are curated to preserve zero recall on real names — every
+        # regex is a whole-token match, and case-sensitive where the
+        # false-fire pattern is UPPERCASE (SQL keywords, short acronyms,
+        # k8s state names). Ambiguous English words that ARE also given
+        # names (Mark, Max, Running as name) were deliberately NOT added.
+        #
+        # CI/CD, VCS, build, container, IaC tools. False-fires observed:
+        # Git → PERSON_1, Helm → PERSON_14, k8s / K8s → PERSON_6/PERSON_13.
+        # Case-insensitive whole-token — "GitHub Actions" (two-token span)
+        # is not matched by ^github$.
+        r"(?i)^(git|github|gitlab|bitbucket|helm|kubectl|oc|crictl|"
+        r"kustomize|k8s|k3s|k9s|kind|minikube|rancher|openshift|"
+        r"docker|podman|buildah|kaniko|containerd|"
+        r"terraform|tofu|pulumi|ansible|chef|puppet|jenkins|tekton|"
+        r"drone|circleci|spinnaker|flux|"
+        r"npm|pnpm|yarn|pip|poetry|cargo|gradle|maven|bazel|make|cmake|"
+        r"vim|nvim|emacs)$",
+        # Data-format / protocol / short-acronym vocabulary — same class
+        # of bare-word false-fires (JSON → PERSON_3, DB → PERSON_9,
+        # METADATA → PERSON_2, H1 → PERSON_7 in the corpus). Upper-case
+        # whole-token only — real names never look like "JSON".
+        r"^(JSON|XML|YAML|YML|HCL|TOML|INI|CSV|TSV|HTML|CSS|SCSS|"
+        r"SQL|DDL|DML|CRUD|REST|GraphQL|gRPC|RPC|API|SDK|CLI|TUI|GUI|"
+        r"HTTP|HTTPS|TCP|UDP|TLS|SSL|SSH|DNS|DHCP|NTP|SMTP|IMAP|"
+        r"FTP|SFTP|JWT|OAuth|SAML|LDAP|MFA|SSO|OTP|RBAC|ACL|"
+        r"DB|IP|IO|OS|UI|UX|QA|VM|VPC|VPN|CDN|CORS|CSRF|CSP|"
+        r"DTO|POJO|ETL|ELT|OLAP|OLTP|CQRS|BFF|SPA|SSR|SSG|"
+        r"H1|H2|H3|H4|H5|H6|METADATA)$",
+        # SQL keywords as bare UPPERCASE tokens — the exact false-fire
+        # pattern in query plans / prompt examples (EXPLAIN → PERSON_11
+        # in the corpus). Zero recall risk (no real name is "SELECT").
+        r"^(SELECT|INSERT|UPDATE|DELETE|EXPLAIN|ANALYZE|VACUUM|"
+        r"CREATE|DROP|ALTER|TRUNCATE|COMMIT|ROLLBACK|SAVEPOINT|"
+        r"BEGIN|GRANT|REVOKE|DECLARE|RETURN|RETURNS|"
+        r"JOIN|INNER|OUTER|LEFT|RIGHT|CROSS|WHERE|FROM|GROUP|BY|"
+        r"ORDER|LIMIT|OFFSET|HAVING|UNION|INTERSECT|EXCEPT|EXISTS|"
+        r"CASCADE|RESTRICT|COALESCE|CAST|WITH|RECURSIVE|OVER|"
+        r"PARTITION|WINDOW|LATERAL|LANGUAGE|IMMUTABLE|VOLATILE|STABLE|"
+        r"NULL|TRUE|FALSE|AND|OR|NOT|IN|IS|AS|ON)$",
+        # K8s pod-lifecycle state / event names — CamelCase compound
+        # tokens that spaCy tags as LOCATION on their own
+        # (CrashLoopBackOff → LOCATION_1, OOMKilled → LOCATION_2 in the
+        # corpus). Case-sensitive: these are literals from kubectl
+        # output, not free-text English.
+        r"^(CrashLoopBackOff|OOMKilled|ImagePullBackOff|ErrImagePull|"
+        r"ContainerCreating|PodInitializing|Terminating|Pending|"
+        r"Succeeded|Failed|Completed|Evicted|Preempted|"
+        r"CreateContainerConfigError|CreateContainerError|"
+        r"RunContainerError|InvalidImageName|KillingContainer|"
+        r"RegisteredNode|NodeNotReady|NodeReady|"
+        r"NodeHasSufficientMemory|NodeHasNoDiskPressure|"
+        r"NodeHasSufficientPID|BackOff|Unhealthy|Killing|Pulling|"
+        r"Pulled|Started|Created|Scheduled|SuccessfulCreate|"
+        r"SuccessfulDelete|FailedScheduling|FailedMount|"
+        r"FailedAttachVolume|FailedCreatePodSandBox|"
+        # Additions 2026-08-02 measured on session 17276ae7:
+        # ContainerStatusUnknown seen as PERSON in dev.
+        r"ContainerStatusUnknown|ContainerCannotRun|ImageInspectError)$",
+        # Multi-word cloud service names — spaCy tags "Cloud Logging"
+        # etc. as a single PERSON span. Case-sensitive because the
+        # provider-branded forms are always Title-Case ("cloud storage"
+        # lowercase is generic English). Covers the GCP "Cloud X" family
+        # + a handful of well-known compound names across clouds.
+        r"^(Cloud (?:Logging|SQL|Storage|Run|Functions|Trace|Monitoring|"
+        r"Build|Spanner|Bigtable|Dataflow|Composer|Armor|NAT|CDN|DNS|"
+        r"KMS|IAM|Pub/Sub|Datastore|Tasks|Scheduler|Endpoints|Endpoint|"
+        r"Load Balancing|Interconnect|Router|VPN)|"
+        r"New Relic|Sumo Logic|Elastic Cloud|Grafana Cloud|"
+        r"Elastic Beanstalk|CloudFront Origin|"
+        r"Kafka (?:Connect|Streams|Broker)|"
+        r"Cosmos DB|Service Bus|Event Grid|Event Hub|Blob Storage|"
+        r"App Service|Application Insights|Log Analytics|"
+        r"Container Instances|Container Apps|Container Registry|"
+        r"App Engine)$",
+        # Linux distribution / release codenames — spaCy tags these as
+        # LOCATION (Bullseye, Bookworm are Debian releases; Bionic /
+        # Focal / Jammy are Ubuntu). Compound "Debian Bookworm" is
+        # spanned as PERSON.
+        r"(?i)^(bullseye|bookworm|trixie|sid|buster|stretch|jessie|wheezy|" r"squeeze|"
+        # Ubuntu release codenames — bare word or with "Ubuntu" prefix.
+        r"noble|mantic|jammy|focal|bionic|xenial|trusty|precise|"
+        # Fedora / RHEL / Alpine — codenames + short "el7/el8" family.
+        r"alpine|centos|rocky|almalinux|amazonlinux|"
+        r"debian bookworm|debian bullseye|debian trixie|debian sid|"
+        r"debian buster|debian stretch|"
+        r"ubuntu noble|ubuntu jammy|ubuntu focal|ubuntu bionic)$",
+    ]
+    infra_allowlist = [
+        p for p in os.environ.get("SCRUB_INFRA_ALLOWLIST", "").split("|") if p.strip()
+    ] or _default_infra_allowlist
+
+
 class DatabaseEngine:
     _instance: Optional[Engine] = None
 

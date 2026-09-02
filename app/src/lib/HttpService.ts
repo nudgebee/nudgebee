@@ -1,5 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import { getGqlString } from '@lib/datetime';
+import { reportAccessDeniedForOperation } from '@lib/accessDenied';
+import { reportClientError } from '@lib/clientErrorReporter';
 import crypto from 'crypto';
 //import { loadProgressBar } from 'axios-progress-bar';
 
@@ -9,6 +11,12 @@ export const getClient = () => Axios;
 
 function isServer() {
   return typeof window === 'undefined' ? true : false;
+}
+
+// Best-effort extraction of the GraphQL root field (≈ upstream action) from the
+// operation document, e.g. `query GetPods { k8s_pods_v2(...) }` → "k8s_pods_v2".
+function extractAction(doc: string): string | undefined {
+  return doc.match(/\{\s*([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
 }
 
 export function getGQLEndpoint() {
@@ -91,8 +99,10 @@ export const queryGraphQL = async (
   // server-only value — see ServerGateway.tenantOverride for the rule.
   serverTenantOverride?: string
 ) => {
+  // Declared in function scope (not inside try) so the catch below can include
+  // it in the API-failure report.
+  const updatedVariables: any = {};
   try {
-    const updatedVariables: any = {};
     if (variables) {
       for (const [k, v] of Object.entries(variables)) {
         if (v instanceof Date) {
@@ -152,12 +162,62 @@ export const queryGraphQL = async (
       if (result.data.errors && result.data.errors[0].extensions && result.data.errors[0].extensions.code == 'invalid-jwt') {
         window.location.href = '/api/auth/signin';
       }
+    } else if (!isServer()) {
+      // Surface a consolidated "access denied" toast naming the section that
+      // failed to load when this operation 403s (GraphQL errors resolve with
+      // status 200, so a denial otherwise renders as a silent empty section).
+      reportAccessDeniedForOperation(operationName, result);
+    }
+
+    // Report GraphQL errors returned on a non-thrown response — the gateway
+    // answers HTTP 200 with an `errors` array for most backend failures, which
+    // the catch below never sees. Skip the invalid-jwt case (handled as a
+    // redirect above) and 401.
+    if (!isServer() && result?.data?.errors?.length && result.status !== 401) {
+      const isInvalidJwt = result.data.errors[0]?.extensions?.code === 'invalid-jwt';
+      if (!isInvalidJwt) {
+        reportClientError({
+          kind: 'api-failure',
+          message: result.data.errors[0]?.message ?? 'graphql error',
+          source: operationName,
+          action: extractAction(operationsDoc),
+          status: result.status,
+          errors: result.data.errors,
+          variables: updatedVariables,
+          responseBody: result.data,
+        });
+      }
     }
 
     return result;
   } catch (error) {
     const e = error as any;
-    console.error('error on api call', e?.response?.status ?? e?.code ?? 'unknown', e?.message);
+    const status = e?.response?.status;
+    // A caller-initiated cancellation (the `signal` argument) is not a failure —
+    // the consumer navigated away or superseded the request. Reporting it would
+    // file a fake api-failure on every such navigation, and the fall-through
+    // below would hand back a bare XHR as if it were a response. Rethrow so the
+    // caller's own catch can ignore it.
+    if (axios.isCancel(e)) {
+      throw e;
+    }
+    console.error('error on api call', status ?? e?.code ?? 'unknown', e?.message);
+    // Report genuine breaks (network failures, 4xx, 5xx) to Loki — 4xx like 403/422
+    // are strong signals in real sessions (permission gaps, schema mismatches).
+    // Skip 401 — that's the expected auth-expiry redirect below, not a failure.
+    if (!isServer() && status !== 401) {
+      reportClientError({
+        kind: 'api-failure',
+        message: e?.message ?? 'api call failed',
+        stack: e?.stack,
+        source: operationName,
+        action: extractAction(operationsDoc),
+        status,
+        errors: e?.response?.data?.errors,
+        variables: updatedVariables,
+        responseBody: e?.response?.data,
+      });
+    }
     if (e.response?.status == 401 && !isServer()) {
       window.location.href = '/api/auth/signin';
     } else if (e.response?.status == 500 && !isServer()) {
@@ -169,6 +229,18 @@ export const queryGraphQL = async (
     }
   }
 };
+
+// queryGraphQL RESOLVES (never rejects) on a GraphQL-level error — it returns
+// { data: { data: null, errors: [...] } }. A caller that reads response.data.data
+// straight through therefore turns a rejected mutation into a silent success (or
+// a generic "failed" message with the real reason discarded). Route mutation/
+// query results through this so the upstream message propagates as a thrown
+// Error. Returns response.data.data for convenient chaining on the happy path.
+export function unwrapGraphQL(response: any, fallback: string) {
+  const errors = response?.data?.errors;
+  if (errors?.length) throw new Error(errors[0]?.message || fallback);
+  return response?.data?.data;
+}
 
 export type ParallelQueryConfig = {
   query: string;

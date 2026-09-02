@@ -1,4 +1,4 @@
-import { Box, Typography, Divider } from '@mui/material';
+import { Box, Typography, Divider, Tooltip } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import LinkIcon from '@mui/icons-material/Link';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -19,7 +19,7 @@ import CustomDrawer from '@shared/CustomDrawer';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import recommendationApi from '@api1/recommendation';
-import { daysSinceLong, getResourceDisplayName } from './utils';
+import { daysSinceLong, dismissalLabel, getResourceDisplayName } from './utils';
 import CommandExecutionHistory from '@components/cloudaccount/CommandExecutionHistory';
 
 // Severity → DS Label tone (mirrors the summary list mapping).
@@ -38,6 +38,14 @@ const resolutionTone = (status: string): LabelTone => {
   return 'neutral';
 };
 
+// Terminal resolution states, keyed by status. A status absent from this map is
+// still running, and falls back to the in-progress wording below. `Success`
+// means no PR was raised — a PR that was raised keeps its resolution InProgress.
+const RESOLUTION_SUMMARY: Record<string, { dot: string; title: string; fallback: string }> = {
+  Failed: { dot: ds.red[500], title: 'Resolution failed', fallback: 'PR creation failed' },
+  Success: { dot: ds.green[500], title: 'No PR needed', fallback: 'No change was required' },
+};
+
 interface RecommendationDetailPanelProps {
   open: boolean;
   onClose: () => void;
@@ -45,6 +53,7 @@ interface RecommendationDetailPanelProps {
   accounts?: Record<string, { name: string; cloud_provider: string; account_access?: string }>;
   initialTab?: number;
   onCreateTicket?: (rec: any) => void;
+  onDismiss?: (rec: any) => void;
   onResolve?: (rec: any) => void;
   onCopyCli?: (rec: any) => void;
   onAskNubi?: (rec: any) => void;
@@ -73,18 +82,26 @@ const InlineResolutionHistory = ({ recommendationId, refreshKey }: { recommendat
 
   useEffect(() => {
     if (!recommendationId) return;
+    let cancelled = false;
     setLoading(true);
     recommendationApi
       .listRecommendationResolution(recommendationId, rowsPerPage, page * rowsPerPage)
       .then((res: any) => {
+        if (cancelled) return;
         setResolutions(res?.data?.recommendation_resolution || []);
         setTotalCount(res?.data?.recommendation_resolution_aggregate?.aggregate?.count || 0);
       })
       .catch(() => {
+        if (cancelled) return;
         setResolutions([]);
         setTotalCount(0);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [recommendationId, page, rowsPerPage, refreshKey]);
 
   const tableData = resolutions.map((r: any) => {
@@ -159,6 +176,7 @@ const RecommendationDetailPanel = ({
   accounts = {},
   initialTab = 0,
   onCreateTicket,
+  onDismiss,
   onResolve,
   onCopyCli,
   onAskNubi,
@@ -214,9 +232,19 @@ const RecommendationDetailPanel = ({
               <Label size='sm' tone={SEVERITY_TONE[severity] ?? 'neutral'}>
                 {severity}
               </Label>
-              <Label size='sm' tone={status === 'Open' ? 'info' : 'neutral'}>
-                {status}
-              </Label>
+              {status === 'Dismissed' ? (
+                <Tooltip title={rec.dismissed_reason ? `Reason: ${rec.dismissed_reason}` : ''} placement='bottom'>
+                  <Box component='span'>
+                    <Label size='sm' tone='neutral'>
+                      {dismissalLabel(rec.snoozed_until)}
+                    </Label>
+                  </Box>
+                </Tooltip>
+              ) : (
+                <Label size='sm' tone={status === 'Open' ? 'info' : 'neutral'}>
+                  {status}
+                </Label>
+              )}
               <Label size='sm' tone='neutral'>
                 {category.replace(/([A-Z])/g, ' $1').trim()}
               </Label>
@@ -382,14 +410,20 @@ const RecommendationDetailPanel = ({
                       width: ds.space[2],
                       height: ds.space[2],
                       borderRadius: '50%',
-                      backgroundColor: ds.amber[500],
+                      backgroundColor: RESOLUTION_SUMMARY[rec.resolution.status]?.dot ?? ds.amber[500],
                       mt: ds.space[1],
                       flexShrink: 0,
                     }}
                   />
                   <Box>
-                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>Resolution in progress</Typography>
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>PR: {rec.resolution.pr_url || 'Pending'}</Typography>
+                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
+                      {RESOLUTION_SUMMARY[rec.resolution.status]?.title ?? 'Resolution in progress'}
+                    </Typography>
+                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
+                      {RESOLUTION_SUMMARY[rec.resolution.status]
+                        ? rec.resolution.status_message || RESOLUTION_SUMMARY[rec.resolution.status].fallback
+                        : `PR: ${rec.resolution.pr_url || 'Pending'}`}
+                    </Typography>
                   </Box>
                 </Box>
               )}
@@ -419,7 +453,15 @@ const RecommendationDetailPanel = ({
           </Box>
         </Box>
 
-        <ActionBar fullRecommendation={rec} onCreateTicket={onCreateTicket} onResolve={onResolve} onCopyCli={onCopyCli} onAskNubi={onAskNubi} />
+        <ActionBar
+          fullRecommendation={rec}
+          provider={accounts[rec.account_id]?.cloud_provider}
+          onCreateTicket={onCreateTicket}
+          onDismiss={onDismiss}
+          onResolve={onResolve}
+          onCopyCli={onCopyCli}
+          onAskNubi={onAskNubi}
+        />
       </Box>
     </CustomDrawer>
   );

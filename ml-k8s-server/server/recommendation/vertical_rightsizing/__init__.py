@@ -11,7 +11,8 @@ import json
 import math
 from server.utils.utils import get_trace, DatabaseEngine
 from sqlalchemy import text
-from server.recommendation.vertical_rightsizing.models.result import ResourceType
+from server.recommendation.vertical_rightsizing.models.result import ResourceType, scan_severity_to_priority
+from server.recommendation.vertical_rightsizing.models.severity import Severity
 
 logger = logging.getLogger("krr")
 tracer = get_trace(__name__)
@@ -35,7 +36,7 @@ class RecommendationData:
     name: str
     kind: str
     container: str
-    priority: float
+    priority: int
     content: List[Dict[str, Any]]
 
 
@@ -85,6 +86,7 @@ async def generate_recommendations(
     datadog_api_key: Optional[str] = None,
     datadog_app_key: Optional[str] = None,
     datadog_site: Optional[str] = None,
+    elasticsearch: Optional[Dict[str, Any]] = None,
 ):
     config = Config(
         namespaces=None if namespace is None else [namespace],
@@ -106,6 +108,7 @@ async def generate_recommendations(
         datadog_api_key=datadog_api_key,
         datadog_app_key=datadog_app_key,
         datadog_site=datadog_site,
+        elasticsearch=elasticsearch,
     )
     return await runner.run()
 
@@ -149,16 +152,136 @@ def round_resource_value(value, resource: ResourceType) -> Optional[float]:
     return max(rounded, minimal)
 
 
-def get_severity(priority: float) -> str:
-    """Convert priority to severity level."""
-    if priority >= 0.8:
+# A GOOD scan means the recommendation matches what is already allocated, so
+# there is nothing to act on. Derived from the enum rather than hardcoded so it
+# tracks scan_severity_to_priority.
+GOOD_PRIORITY = scan_severity_to_priority(Severity.GOOD)
+
+
+def is_no_change_workload(container_priorities: List[int]) -> bool:
+    """True iff every container of a workload scanned GOOD.
+
+    Evaluated per workload, never per container: one container already being
+    right-sized says nothing about its siblings. A workload with no scanned
+    container is not a no-change workload — there is simply nothing to judge.
+    """
+    return bool(container_priorities) and all(priority == GOOD_PRIORITY for priority in container_priorities)
+
+
+def get_severity(priority: int) -> str:
+    """Map a scan priority to a recommendation severity.
+
+    priority is the 0-4 integer from scan_severity_to_priority (CRITICAL=4,
+    WARNING=3, OK=2, GOOD=1, UNKNOWN=0), NOT a normalized 0-1 score. Every
+    returned value must exist in recommendation_severity_type, which the
+    severity column references via recommendation_severity_fkey.
+
+    UNKNOWN outranks GOOD deliberately: a scan we could not compute still
+    warrants a look, whereas a GOOD one is already right-sized.
+
+    Thresholds are inequalities, not equalities, so a value off the expected
+    scale degrades to the nearest higher severity instead of falling through to
+    the bottom. Silently bottoming out is how the original 0-1 misreading hid.
+    """
+    if priority >= 4:
         return "Critical"
-    elif priority >= 0.6:
+    elif priority >= 3:
         return "High"
-    elif priority >= 0.4:
+    elif priority >= 2:
         return "Medium"
+    elif priority >= 1:
+        return "Info"
     else:
         return "Low"
+
+
+# Mirrors the severity_weight CASE that the recommendation_groupings_v2 views
+# apply, so "worst" here means the same thing as the UI's "Most severe" sort.
+SEVERITY_WEIGHT = {"Critical": 10, "High": 8, "Medium": 5, "Low": 2, "Info": 1}
+
+
+def worst_priority(container_priorities: List[int]) -> int:
+    """The container priority that ranks highest in severity for the workload.
+
+    Deliberately not max() over the raw priorities: priority is not ordered by
+    severity. UNKNOWN (0) maps to Low, which outranks GOOD (1) -> Info, so a
+    workload mixing a GOOD container with one we could not compute has to
+    surface as Low. Ranking by the severity weight rather than a second copy of
+    the priority order keeps this from drifting out of sync with get_severity.
+    """
+    return max(container_priorities, key=lambda priority: SEVERITY_WEIGHT[get_severity(priority)])
+
+
+def _has_allocated_request(entry: Any) -> bool:
+    """True iff this KRR content entry carries a real allocated request.
+
+    None (unset), a missing key, "?" (KRR's NaN placeholder) and 0 all count as
+    NOT set — matching the truthiness test calculate_container_savings uses,
+    which keeps the invariant "fully unset => estimated_savings == 0".
+    """
+    if not isinstance(entry, dict):
+        return False
+    allocated = entry.get("allocated")
+    if not isinstance(allocated, dict):
+        return False
+    request = allocated.get("request")
+    if isinstance(request, bool):
+        return False
+    return isinstance(request, (int, float)) and request > 0
+
+
+def classify_pod_right_sizing_category(merged_content: Any) -> str:
+    """Category for a pod_right_sizing row, from its merged workload payload.
+
+    merged_content is the workload-level JSONB shape {container: [entry, ...]}.
+    A workload where no container has any cpu/memory request set is a
+    best-practice finding ("set requests"), not a cost one, so it lands under
+    Configuration; any set request keeps the row under RightSizing. Keep in
+    sync with the twin in collector-server/k8s-collector event_handler.py and
+    with the backfill migration's SQL predicate.
+    """
+    if not isinstance(merged_content, dict):
+        return "RightSizing"
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            saw_entry = True
+            if _has_allocated_request(entry):
+                return "RightSizing"
+    return "Configuration" if saw_entry else "RightSizing"
+
+
+def finalize_workload_rows(
+    recommendations_to_insert: Dict[Any, Dict[str, Any]],
+    priorities_by_resource: Dict[Any, List[int]],
+) -> int:
+    """Rate and classify each merged workload row in place, dropping no-change ones.
+
+    Both passes run on the MERGED payload rather than per container, because a
+    per-container pass lets the last container processed decide the whole
+    workload's category and severity. Severity takes the worst container by
+    severity rank, which is not the same as the highest priority number.
+
+    Dropped workloads must also leave the archive keep-set the caller builds from
+    this dict, otherwise the rows already stored for them stay Open forever.
+
+    Returns the number of workloads dropped.
+    """
+    for resource_id, row in recommendations_to_insert.items():
+        row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
+        row["severity"] = get_severity(worst_priority(priorities_by_resource[resource_id]))
+
+    no_change_resource_ids = [
+        resource_id
+        for resource_id in recommendations_to_insert
+        if is_no_change_workload(priorities_by_resource[resource_id])
+    ]
+    for resource_id in no_change_resource_ids:
+        del recommendations_to_insert[resource_id]
+
+    return len(no_change_resource_ids)
 
 
 def calculate_container_savings(
@@ -215,6 +338,8 @@ def archive_existing_krr_recommendations(
     recommendations: List[RecommendationData],
     namespace_filter: Optional[str] = None,
     resource_names_filter: Optional[List[str]] = None,
+    kept_categories_by_object_id: Optional[Dict[str, str]] = None,
+    kept_object_ids: Optional[List[str]] = None,
 ) -> None:
     """Archive stale KRR recommendations that no longer correspond to a live workload.
 
@@ -230,6 +355,21 @@ def archive_existing_krr_recommendations(
       - Namespace-only run: reconcile within that namespace.
       - resource_names run: the scan only covers specific requested resources, so absence
         does NOT mean deletion — fall back to refreshing just the targeted resources.
+
+    kept_categories_by_object_id maps each account_object_id about to be (re)written to
+    its intended category. pod_right_sizing rows live under RightSizing or Configuration
+    (requests-unset workloads), and category is part of the upsert conflict key — so when
+    a workload's category flips between scans the insert misses the old row. A second
+    sweep archives kept workloads' rows stored under the other category, in both flip
+    directions.
+
+    kept_object_ids narrows the keep-set to the workloads actually about to be written,
+    which is not every workload the scan reported: a scan can legitimately cover a
+    workload and still decline to emit a row for it (nothing to change). Those have to
+    be archived like a deleted workload, or their stored rows stay Open forever. It
+    stays distinct from the scanned set, which still defines what the scan covered —
+    conflating the two would either strand no-change rows or let a partial scan
+    mass-archive. Defaults to every scanned workload.
     """
     if not tenant_id or not account_id:
         raise ValueError("archive_existing_krr_recommendations: tenant_id and account_id are required")
@@ -248,35 +388,45 @@ def archive_existing_krr_recommendations(
 
             engine = DatabaseEngine.get_engine()
 
-            # account_object_ids present in the current scan — the workloads to keep Open.
+            # Two distinct sets: what the scan covered, and what stays Open. They differ
+            # whenever the scan covered a workload but emitted no row for it.
             # Bind as a single array param (= ANY) rather than dynamic :keep_N placeholders:
             # keeps the SQL text static (one cached plan), avoids the parameter-count ceiling
             # on large full-account scans, and matches the = ANY(:namespaces) pattern used
             # elsewhere in this file.
-            kept_object_ids = list(set([f"{rec.namespace}/{rec.kind}/{rec.name}" for rec in recommendations]))
+            scanned_object_ids = list(set([f"{rec.namespace}/{rec.kind}/{rec.name}" for rec in recommendations]))
+            keep_ids = scanned_object_ids if kept_object_ids is None else list(set(kept_object_ids))
 
-            params = {
+            params: Dict[str, Any] = {
                 "tenant_id": tenant_id,
                 "account_id": account_id,
-                "kept_object_ids": kept_object_ids,
             }
 
             if resource_names_filter:
                 # Non-exhaustive scan: only specific resources were requested, so a workload's
                 # absence from the scan tells us nothing about whether it still exists. Restrict
                 # to refreshing just the targeted resources (legacy archive-then-reinsert).
-                scope_clause = "AND account_object_id = ANY(:kept_object_ids)"
+                # Keyed on the scanned set, not the keep-set: a targeted workload that turned
+                # out to need no change must still have its stored row archived here, since the
+                # insert will not re-open it.
+                scope_clause = "AND account_object_id = ANY(:scanned_object_ids ::text[])"
                 scope_label = "resource_names"
+                params["scanned_object_ids"] = scanned_object_ids
             else:
-                # Exhaustive over its scope → archive anything in scope that vanished.
-                scope_clause = "AND NOT (account_object_id = ANY(:kept_object_ids))"
+                # Exhaustive over its scope → archive anything in scope that vanished or
+                # needs no change. The keep-set can legitimately be empty here (every
+                # workload already right-sized), hence the explicit cast: an untyped empty
+                # array gives Postgres nothing to infer the element type from.
+                scope_clause = "AND NOT (account_object_id = ANY(:kept_object_ids ::text[]))"
                 scope_label = "account"
+                params["kept_object_ids"] = keep_ids
                 if namespace_filter:
                     scope_clause += " AND account_object_id LIKE :ns_prefix"
                     params["ns_prefix"] = f"{namespace_filter}/%"
                     scope_label = "namespace"
 
-            span.set_attribute("krr.kept_resources", len(kept_object_ids))
+            span.set_attribute("krr.kept_resources", len(keep_ids))
+            span.set_attribute("krr.scanned_resources", len(scanned_object_ids))
             span.set_attribute("krr.archive_scope", scope_label)
 
             update_query = text(f"""
@@ -284,7 +434,7 @@ def archive_existing_krr_recommendations(
                 SET status = 'Archive'
                 WHERE tenant_id = :tenant_id
                 AND cloud_account_id = :account_id
-                AND category = 'RightSizing'
+                AND category IN ('RightSizing', 'Configuration')
                 AND rule_name = 'pod_right_sizing'
                 AND status NOT IN ('Closed', 'InProgress', 'Archive')
                 {scope_clause}
@@ -297,9 +447,39 @@ def archive_existing_krr_recommendations(
                 rows_updated = result.rowcount
                 span.set_attribute("krr.archived_recommendations", rows_updated)
                 ctx_logger.info(
-                    f"Archived {rows_updated} stale KRR recommendations "
-                    f"(scope={scope_label}, kept={len(kept_object_ids)})"
+                    f"Archived {rows_updated} stale KRR recommendations (scope={scope_label}, kept={len(keep_ids)})"
                 )
+
+            # Kept workloads whose stored category differs from the intended one:
+            # the row about to be written has a different conflict key, so archive
+            # the stale-category twin. Keys on explicit object ids from this scan,
+            # so it is inherently scope-safe and never touches the row being
+            # written (its category matches).
+            if kept_categories_by_object_id:
+                sweep_query = text("""
+                    UPDATE recommendation r
+                    SET status = 'Archive'
+                    FROM unnest(:kept_ids ::text[], :kept_categories ::text[]) AS k(object_id, category)
+                    WHERE r.tenant_id = :tenant_id
+                    AND r.cloud_account_id = :account_id
+                    AND r.rule_name = 'pod_right_sizing'
+                    AND r.category IN ('RightSizing', 'Configuration')
+                    AND r.status NOT IN ('Closed', 'InProgress', 'Archive')
+                    AND r.account_object_id = k.object_id
+                    AND r.category <> k.category
+                """)
+                sweep_params = {
+                    "tenant_id": tenant_id,
+                    "account_id": account_id,
+                    "kept_ids": list(kept_categories_by_object_id.keys()),
+                    "kept_categories": list(kept_categories_by_object_id.values()),
+                }
+                with engine.connect() as conn:
+                    result = conn.execute(sweep_query, sweep_params)
+                    conn.commit()
+                    if result.rowcount:
+                        span.set_attribute("krr.category_flipped_recommendations", result.rowcount)
+                        ctx_logger.info(f"Archived {result.rowcount} KRR recommendations under a stale category")
 
         except Exception as e:
             span.set_attribute("krr.archive_error", str(e))
@@ -590,17 +770,13 @@ def store_krr_recommendations_to_db(
             # Get existing resource mappings - same as collector-server
             resource_map = get_existing_resources(account_id, tenant_id, recommendations)
 
-            # Reconcile: archive stale recs for workloads that vanished from this scan,
-            # scoped to what the scan was exhaustive over (account / namespace / specific
-            # resources). The insert below re-opens the workloads still present.
-            archive_existing_krr_recommendations(
-                account_id, tenant_id, recommendations, namespace_filter, resource_names_filter
-            )
-
             engine = DatabaseEngine.get_engine()
 
-            # Generate recommendations using same logic as collector-server
+            # Generate recommendations using same logic as collector-server. Built
+            # before the archive pass so it can reconcile stored categories against
+            # the ones about to be written.
             recommendations_to_insert = {}
+            priorities_by_resource: Dict[Any, List[int]] = defaultdict(list)
 
             for rec in recommendations:
                 resource_key = f"{rec.kind}/{rec.namespace}/{rec.name}/{rec.container}"
@@ -670,6 +846,8 @@ def store_krr_recommendations_to_db(
                     "status": "Open",  # All new recommendations start as "Open"
                 }
 
+                priorities_by_resource[resource_id].append(rec.priority)
+
                 if resource_id in recommendations_to_insert:
                     # Combine with existing recommendation for same resource
                     existing_rec = json.loads(recommendations_to_insert[resource_id]["recommendation"])
@@ -681,7 +859,28 @@ def store_krr_recommendations_to_db(
                 else:
                     recommendations_to_insert[resource_id] = recommendation
 
+            no_change_count = finalize_workload_rows(recommendations_to_insert, priorities_by_resource)
+            main_span.set_attribute("krr.no_change_workloads_skipped", no_change_count)
+            if no_change_count:
+                ctx_logger.info(f"Skipped {no_change_count} workloads that need no resource change")
+
             ctx_logger.info(f"Generated {len(recommendations_to_insert)} recommendation records for database insertion")
+
+            # Reconcile: archive stale recs for workloads that vanished from this scan,
+            # scoped to what the scan was exhaustive over (account / namespace / specific
+            # resources), plus kept workloads whose stored category no longer matches the
+            # one about to be written. The insert below re-opens the workloads still present.
+            archive_existing_krr_recommendations(
+                account_id,
+                tenant_id,
+                recommendations,
+                namespace_filter,
+                resource_names_filter,
+                kept_categories_by_object_id={
+                    row["account_object_id"]: row["category"] for row in recommendations_to_insert.values()
+                },
+                kept_object_ids=[row["account_object_id"] for row in recommendations_to_insert.values()],
+            )
 
             # Insert recommendations using same approach as collector-server
             with tracer.start_as_current_span("insert_recommendations") as insert_span:
@@ -703,7 +902,12 @@ def store_krr_recommendations_to_db(
                         DO UPDATE SET
                             recommendation = EXCLUDED.recommendation,
                             estimated_savings = EXCLUDED.estimated_savings,
-                            status = EXCLUDED.status
+                            status = CASE
+                                WHEN recommendation.status NOT IN ('Open', 'Archive')
+                                THEN recommendation.status
+                                ELSE EXCLUDED.status
+                            END,
+                            severity = EXCLUDED.severity
                     """)
 
                     # Batch execute: pass entire list so SQLAlchemy sends one
@@ -1168,6 +1372,7 @@ async def generate_and_process_recommendation(
     datadog_api_key: Optional[str] = None,
     datadog_app_key: Optional[str] = None,
     datadog_site: Optional[str] = None,
+    elasticsearch: Optional[Dict[str, Any]] = None,
 ) -> RecommendationProcessingResult:
     """Generate and process KRR recommendations with improved modularity."""
     ctx_logger = get_contextual_logger(tenant_id, account_id, namespace)
@@ -1209,6 +1414,7 @@ async def generate_and_process_recommendation(
                     datadog_api_key=datadog_api_key,
                     datadog_app_key=datadog_app_key,
                     datadog_site=datadog_site,
+                    elasticsearch=elasticsearch,
                 )
                 gen_span.set_attribute("krr.recommendations_generated", len(rightsizing_recommendations.scans))
             except Exception as e:

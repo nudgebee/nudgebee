@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -121,6 +123,132 @@ func (t *ToolInvocationTracker) GetInvocations() []TrackedToolInvocation {
 	copy(invocations, t.invocations)
 
 	return invocations
+}
+
+// FileEvidence is one file the run actually opened, with a short extract of
+// what was returned.
+type FileEvidence struct {
+	Path    string
+	Snippet string
+}
+
+// evidenceSnippetLines bounds the extract kept per file. Enough to show a reader
+// what was looked at, short enough that an answer's evidence does not become a
+// second copy of the repository.
+const evidenceSnippetLines = 3
+
+// ReadFileEvidence returns the distinct files this session actually looked at,
+// in first-seen order, from successful file_view reads and ripgrep hits.
+//
+// This is the run's evidence trail as recorded by the tools themselves, which is
+// a stronger source than the model's own account of what it looked at: a model
+// can under-report (weaker ones routinely omit citations entirely) or
+// over-report (cite a file it never opened). Explore-mode submission uses it to
+// back an answer whose citations are missing, so the contract is satisfied by
+// what happened rather than by what the model remembered to declare.
+func (t *ToolInvocationTracker) ReadFileEvidence() []FileEvidence {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var evidence []FileEvidence
+	add := func(path, snippet string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		evidence = append(evidence, FileEvidence{Path: path, Snippet: snippet})
+	}
+
+	for _, inv := range t.invocations {
+		if inv.Status != "success" {
+			continue
+		}
+		result := invocationResultText(inv.Output)
+		switch {
+		case strings.EqualFold(inv.ToolName, "file_view"):
+			path, _ := inv.Input["file_path"].(string)
+			add(path, firstLines(result, evidenceSnippetLines))
+		case strings.EqualFold(inv.ToolName, "rg"):
+			// Search hits are evidence too, and in practice the stronger source:
+			// a run can locate its answer entirely through rg without ever
+			// opening a file — the production failure this fix targets used rg
+			// three times and file_view not at all. Counting only file_view
+			// would have left that exact run with no evidence to cite.
+			for _, hit := range ripgrepHits(result) {
+				add(hit.Path, hit.Snippet)
+			}
+		}
+	}
+	return evidence
+}
+
+// ripgrepHits extracts the files named by ripgrep output, handling both shapes
+// the tool emits: bare paths (files_only mode) and "path:line:match".
+func ripgrepHits(result string) []FileEvidence {
+	var hits []FileEvidence
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		path, snippet := line, ""
+		// "path:line:match" — require the middle field to be a number so a bare
+		// path containing a colon is not mistaken for a match line.
+		if i := strings.Index(line, ":"); i > 0 {
+			rest := line[i+1:]
+			if j := strings.Index(rest, ":"); j > 0 {
+				if _, err := strconv.Atoi(rest[:j]); err == nil {
+					path, snippet = line[:i], strings.TrimSpace(rest[j+1:])
+				}
+			}
+		}
+		if !looksLikePath(path) {
+			continue
+		}
+		hits = append(hits, FileEvidence{Path: path, Snippet: snippet})
+	}
+	return hits
+}
+
+// looksLikePath screens out prose lines ripgrep may print around its results
+// (counts, warnings) without trying to validate that the file exists.
+func looksLikePath(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t") {
+		return false
+	}
+	return strings.Contains(s, "/") || strings.Contains(s, ".")
+}
+
+// invocationResultText digs the human-readable payload out of a recorded
+// invocation output, which the tracked wrapper stores as a sanitized map.
+func invocationResultText(output any) string {
+	m, ok := output.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"result", "observation"} {
+		if s, ok := m[key].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// firstLines returns the first n non-blank lines of s.
+func firstLines(s string, n int) string {
+	var kept []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		kept = append(kept, line)
+		if len(kept) >= n {
+			break
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // GetInvocationCount returns the total number of invocations

@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, field_validator
 
 from notifications_server.configs.settings import URLRoutes, settings
+from notifications_server.message_templates.base import format_burn_rate, format_burn_rate_window
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_CRITICAL,
     legacy_attachment,
@@ -28,6 +29,10 @@ class SLOAlertParams(BaseModel):
     good_event_count: int
     threshold: Union[str, float, int]
     burn_rate: Optional[Union[str, float, int]] = None
+    # Window (seconds) and threshold of the multi-window burn-rate rule that
+    # fired. Absent on notifications from an api-server that predates them.
+    burn_rate_window: Optional[Union[str, float, int]] = None
+    burn_rate_threshold: Optional[Union[str, float, int]] = None
     error_budget_remaining: Optional[Union[str, float, int]] = None
     end_time: Optional[Union[str, float, int]] = None
 
@@ -82,6 +87,12 @@ def get_slo_alert_message_template(params: SLOAlertParams):
     if params.bad_event_count is not None or params.good_event_count is not None:
         events = f"{params.bad_event_count} bad / {params.good_event_count} good"
 
+    # Name the window that actually breached — "14× over 1 hour" is actionable
+    # in a way a bare multiplier is not.
+    window = format_burn_rate_window(params.burn_rate_window)
+    burn_rate = format_burn_rate(params.burn_rate, params.burn_rate_window)
+    burn_rate_threshold = f"{params.burn_rate_threshold}×" if params.burn_rate_threshold else None
+
     fields = [
         f
         for f in [
@@ -89,7 +100,8 @@ def get_slo_alert_message_template(params: SLOAlertParams):
             _short_field("Workload", workload),
             _short_field("Target", params.slo_target),
             _short_field("Current", params.current_value),
-            _short_field("Burn rate", params.burn_rate),
+            _short_field("Burn rate", burn_rate),
+            _short_field("Burn-rate threshold", burn_rate_threshold),
             _short_field("Budget remaining", params.error_budget_remaining),
             _short_field("Threshold", params.threshold),
             _short_field("Events (bad/good)", events),
@@ -98,9 +110,10 @@ def get_slo_alert_message_template(params: SLOAlertParams):
         if f is not None
     ]
 
+    over_window = f" over the last {window}" if window else ""
     summary = (
-        f"Error budget is being consumed at `{params.burn_rate}×`, leaving `{params.error_budget_remaining}` remaining."
-        " Immediate action is required to protect the service."
+        f"Error budget is being consumed at `{params.burn_rate}×`{over_window}, leaving"
+        f" `{params.error_budget_remaining}` remaining. Immediate action is required to protect the service."
     )
 
     attachment = legacy_attachment(

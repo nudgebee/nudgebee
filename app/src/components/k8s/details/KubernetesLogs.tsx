@@ -19,7 +19,7 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { RefreshSubmitButton } from '@components/k8s/common/RefreshSubmitButton';
 import UserHistoryButton from '@shared/widgets/UserHistory';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import QueryModeSwitcher from '@components/k8s/common/QueryModeSwitcher';
 import { OperatorDescriptor } from '@components/k8s/common/operatorCatalog';
 import { LogDate } from '@components/k8s/common/LogDate';
@@ -167,14 +167,14 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   const [llmQueryResponse, setLlmQueryResponse] = useState('');
   const [generateQuestionText, setGenerateQuestionText] = useState('');
   const [conversationId, setConversationId] = useState('');
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiSessionId, setNubiSessionId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [logQueryItems, setLogQueryItems] = useState<any[]>([]);
   const [logOperations, setLogOperations] = useState<any[]>([]);
   const [qLEditor, setQLEditor] = useState('code');
   const [esIndex, setEsIndex] = useState('');
+  // ES Code-tab query language ('dsl' | 'kql'), driven by QueryModeSwitcher.
+  const [esQueryType, setEsQueryType] = useState('dsl');
   // Tracks the currently-selected provider so an async index resolve (on ES
   // override) can bail if the user has switched away before it returns.
   const selectedLogProviderRef = useRef('');
@@ -236,14 +236,13 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
   const resetStates = () => {
     setData([]);
+    setExecutedQuery('');
     setErrorMsg('');
     setLlmQueryResponse('');
     setGenerateQuestionText('');
     setConversationId('');
     setLogQuery('');
     setLogQueryItems([]);
-    setNubiQuery('');
-    setNubiSidebarVisible(false);
     setInterval(0);
     setPollLogs(false);
     setRunInitialQuery(false);
@@ -314,7 +313,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
       // for JSON-parsed log attributes, which 404 against tag facets).
       if (logProvider === 'datadog') {
         const key = String(item.label).trim();
-        const value = String(item.value ?? '').replace(/"/g, '\\"');
+        const value = String(item.value ?? '')
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"');
         const include = item.operator !== '!=';
         const positive = `${key}:"${value}"`;
         const negative = `-${key}:"${value}"`;
@@ -341,14 +342,21 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     [logProvider]
   );
 
-  const handleGenerateLogAnalysis = useCallback((stream: any, message: string) => {
-    const analysisPrompt = `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue \n\n ${JSON.stringify(
-      stream
-    )} message:${message}`;
-    setNubiQuery(analysisPrompt);
-    setNubiSessionId(md5([JSON.stringify(stream)]));
-    setNubiSidebarVisible(true);
-  }, []);
+  const handleGenerateLogAnalysis = useCallback(
+    (stream: any, message: string) => {
+      const analysisPrompt = `@loganalysis analyse the following log and provide the root cause and possible actions to resolve the issue \n\n ${JSON.stringify(
+        stream
+      )} message:${message}`;
+      openNubiChat({
+        accountId,
+        sessionId: md5([JSON.stringify(stream)]),
+        query: analysisPrompt,
+        source: 'log_analysis',
+        aboveModal: nubiAboveModal,
+      });
+    },
+    [accountId, nubiAboveModal, openNubiChat]
+  );
 
   const formatLogResults = useCallback(
     (allResults: any[]) => {
@@ -598,7 +606,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           };
           requestBody.query = '';
         } else if (logProvider == 'ES' && qLEditor == 'code') {
-          requestBody['request'] = { query_type: 'dsl', ...(esIndex ? { index: esIndex } : {}) };
+          requestBody['request'] = { query_type: esQueryType || 'dsl', ...(esIndex ? { index: esIndex } : {}) };
         } else if (logProvider == 'ES' && qLEditor == 'build') {
           if (logQueryItems && logQueryItems.length > 0) {
             const mapESOperatorToBackend = (uiOperator: string): string => {
@@ -622,6 +630,13 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 value = false;
               } else if (item.operator === '!exists') {
                 backendOp = '_is_null';
+                value = true;
+              }
+
+              // The IS NULL chip is value-less, so the builder gives it value ''.
+              // _is_null carries its meaning in the value and the backend requires a
+              // boolean there, so '' was rejected and the whole filter was dropped.
+              if (backendOp === '_is_null' && typeof value !== 'boolean') {
                 value = true;
               }
 
@@ -693,6 +708,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
       logQueryItems,
       logOperations,
       esIndex,
+      esQueryType,
       formatLogResults,
       generateQuestionText,
       conversationId,
@@ -968,20 +984,6 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
   return (
     <div>
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={accountId}
-        query={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiSessionId } }}
-        apiMode='investigate'
-        source='log_analysis'
-        position='right'
-        mode='overlay'
-        width='500px'
-        aboveModal={nubiAboveModal}
-      />
-
       <TicketCreatePopupForm
         open={isTicketCreateFormOpen}
         handleClose={closeTicketCreateForm}
@@ -1136,7 +1138,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               options={[
                 ...(logProvider !== 'datadog' ? [{ value: 'build', label: 'Builder' }] : []),
                 { value: 'code', label: 'Code' },
-                ...(logProvider === 'loki' || logProvider === 'signoz' ? [{ value: 'ai', label: 'AI' }] : []),
+                ...(logProvider && !['datadog', 'prometheus', 'chronosphere', 'victoria-metrics'].includes(logProvider)
+                  ? [{ value: 'ai', label: 'AI' }]
+                  : []),
               ]}
             />
           )}
@@ -1156,16 +1160,19 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           {showQueryTextBox && (
             <Box sx={{ display: 'flex', alignItems: 'flex-start', flexDirection: 'column', paddingTop: 'var(--ds-space-1)' }}>
               <QueryModeSwitcher
+                key={logProvider}
                 accountId={accountId}
                 initialQuery={logQuery}
                 onQueryChange={(e: any) => {
                   setLogQuery(e.query);
                   if (e.index !== undefined) setEsIndex(e.index);
+                  if (e.queryType !== undefined) setEsQueryType(e.queryType);
                 }}
                 logProvider={logProvider}
                 providerOverride={logProvider && defaultProvider && logProvider !== defaultProvider ? logProvider : undefined}
                 operatorDescriptors={operatorDescriptors}
                 params={{ ...time }}
+                limit={logLimit}
                 queryItems={logQueryItems}
                 setQueryItems={setLogQueryItems}
                 _queryOperations={logOperations}

@@ -228,7 +228,7 @@ class MemoryAllocationCard {
             if (jsonData.name === 'noisy_neighbours') {
               for (let n of jsonData.data.neighbours) {
                 if (n.pod_name === this.event.subject_name && n.namespace === this.event.subject_namespace) {
-                  let kind = n.kind[0];
+                  let kind = n.kind?.[0];
                   if (kind) {
                     workload = kind.name;
                     workloadType = kind.kind;

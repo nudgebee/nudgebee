@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { Tabs, Tab, Box, Stack, Table, TableBody, TableCell, TableRow, IconButton, Collapse, Typography } from '@mui/material';
+import { Tabs, Tab, Box, Stack, Table, TableBody, TableCell, TableRow, IconButton, Collapse, Typography, Link as MuiLink } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import Chip from '@ui/Chip';
 import CustomTablePagination from '@shared/tables/CustomTablePagination';
 
@@ -62,11 +63,14 @@ const categorizeRef = (type) => {
 
 // deriveSubject picks the best short label for a row's Subject cell.
 // Memory-v2 rows carry `metadata.subject` (populated by the bridge);
-// older rows may only have `content`. Fall back to the first non-empty
-// line of content so no row ever renders blank.
+// knowledge-base rows carry `metadata.name` (the KB / runbook name); older
+// rows may only have `content`. Fall back through all three so no row ever
+// renders blank — KB rows previously fell straight to "(unnamed)".
 const deriveSubject = (ref) => {
   const s = ref?.metadata?.subject;
   if (typeof s === 'string' && s.trim()) return s;
+  const n = ref?.metadata?.name;
+  if (typeof n === 'string' && n.trim()) return n;
   if (typeof ref?.content === 'string' && ref.content.trim()) {
     const line = ref.content.split('\n').find((l) => l.trim());
     if (line) return line.length > 60 ? `${line.slice(0, 60)}…` : line;
@@ -112,6 +116,12 @@ const ReferencesDrawerContent = ({ references = [] }) => {
   const buckets = useMemo(() => {
     const acc = {};
     for (const ref of references) {
+      // Channel-context provenance has its own drawer (ChannelContextDrawerContent,
+      // via the meta-rail "channel" chip); in this panel it would land in the
+      // generic Other bucket as an unreadable metadata blob.
+      if (ref?.type === 'channel_context') {
+        continue;
+      }
       const cat = categorizeRef(ref?.type);
       if (!acc[cat]) acc[cat] = { total: 0, usedCount: 0, bySubtype: {}, rows: [] };
       acc[cat].total += 1;
@@ -364,6 +374,22 @@ const ReferencesDrawerContent = ({ references = [] }) => {
                               <Chip variant='tag' size='xs'>
                                 {`score ${scoreLabel}`}
                               </Chip>
+                            )}
+                            {typeof ref?.metadata?.url === 'string' && /^https?:\/\//.test(ref.metadata.url) && (
+                              // Source-document link (e.g. the Confluence
+                              // runbook page a KB reference came from).
+                              // stopPropagation so the click doesn't collapse
+                              // the row it lives in.
+                              <MuiLink
+                                href={ref.metadata.url}
+                                target='_blank'
+                                rel='noopener noreferrer'
+                                onClick={(e) => e.stopPropagation()}
+                                sx={{ fontSize: 12, alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 0.25 }}
+                              >
+                                Open source page
+                                <OpenInNewIcon sx={{ fontSize: 13 }} />
+                              </MuiLink>
                             )}
                           </Stack>
                           <Box

@@ -205,15 +205,16 @@ func ConvertServiceMapToGraph(
 				properties["cluster"] = cluster
 			}
 		}
-		// Scope the node ID by account + tenant (matching core.SaveNodes' compositeKey
-		// scheme) so the same logical name across tenants/accounts never collides on a
-		// single deterministic UUID. UniqueKey alone (NodeType:name:env) is not tenant-safe.
-		nodeID := core.GenerateNodeID(fmt.Sprintf("%s:%s:%s", uniqueKey, cloudAccountID, tenantID))
+		// Scope the node ID by account + tenant so the same logical name across
+		// tenants/accounts never collides on a single deterministic UUID.
+		// UniqueKey alone (NodeType:name:env) is not tenant-safe.
+		nodeID := core.NodeIDFor(uniqueKey, tenantID, cloudAccountID)
 		properties["node_id"] = nodeID
 
 		node := &core.DbNode{
 			ID:              nodeID,
 			NodeType:        nodeType,
+			SpecificType:    string(nodeType),
 			UniqueKey:       uniqueKey,
 			Properties:      properties,
 			Labels:          extractLabelsForDbNode(labels),
@@ -442,10 +443,12 @@ func convertK8sMetadataToGraph(
 
 	// Create cluster nodes
 	for _, cluster := range metadata.Clusters {
+		uniqueKey := fmt.Sprintf("Cluster:%s:%s", cluster.Name, cluster.Environment)
 		node := &core.DbNode{
-			ID:        uuid.New().String(),
-			NodeType:  core.NodeTypeCluster,
-			UniqueKey: fmt.Sprintf("Cluster:%s:%s", cluster.Name, cluster.Environment),
+			ID:           core.NodeIDFor(uniqueKey, tenantID, cloudAccountID),
+			NodeType:     core.NodeTypeCluster,
+			SpecificType: string(core.NodeTypeCluster),
+			UniqueKey:    uniqueKey,
 			Properties: map[string]interface{}{
 				"name":        cluster.Name,
 				"environment": cluster.Environment,
@@ -464,10 +467,12 @@ func convertK8sMetadataToGraph(
 
 	// Create namespace nodes and edges to clusters
 	for _, ns := range metadata.Namespaces {
+		uniqueKey := fmt.Sprintf("Namespace:%s:%s:%s", ns.Cluster, ns.Name, ns.Environment)
 		node := &core.DbNode{
-			ID:        uuid.New().String(),
-			NodeType:  core.NodeTypeNamespace,
-			UniqueKey: fmt.Sprintf("Namespace:%s:%s:%s", ns.Cluster, ns.Name, ns.Environment),
+			ID:           core.NodeIDFor(uniqueKey, tenantID, cloudAccountID),
+			NodeType:     core.NodeTypeNamespace,
+			SpecificType: string(core.NodeTypeNamespace),
+			UniqueKey:    uniqueKey,
 			Properties: map[string]interface{}{
 				"name":        ns.Name,
 				"cluster":     ns.Cluster,
@@ -507,10 +512,12 @@ func convertK8sMetadataToGraph(
 
 	// Create worker node nodes and edges to clusters
 	for _, n := range metadata.Nodes {
+		uniqueKey := fmt.Sprintf("Node:%s:%s:%s", n.Cluster, n.Name, n.Environment)
 		node := &core.DbNode{
-			ID:        uuid.New().String(),
-			NodeType:  core.NodeTypeNode,
-			UniqueKey: fmt.Sprintf("Node:%s:%s:%s", n.Cluster, n.Name, n.Environment),
+			ID:           core.NodeIDFor(uniqueKey, tenantID, cloudAccountID),
+			NodeType:     core.NodeTypeNode,
+			SpecificType: string(core.NodeTypeNode),
+			UniqueKey:    uniqueKey,
 			Properties: map[string]interface{}{
 				"name":        n.Name,
 				"cluster":     n.Cluster,

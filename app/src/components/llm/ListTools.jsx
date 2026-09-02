@@ -13,10 +13,11 @@ import CreateTool from './CreateTool';
 import { Modal } from '@ui/Modal';
 import { hasWriteAccess } from '@lib/auth';
 import { useTenantBranding } from '@hooks/useTenantBranding';
-import { PlusIcon, EditIcon, ErrorIcon } from '@assets';
+import { PlusIcon, EditIcon, ErrorIcon, DeleteIconRed } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { snakeToTitleCase } from 'src/utils/common';
-import { Box, Stack } from '@mui/material';
+import { toast as snackbar } from '@ui/Toast';
+import { Box, Stack, Typography } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
 import { ds } from 'src/utils/colors';
 import { TOOL_CONFIGURATION_WARNING } from '@data/constants';
@@ -48,6 +49,9 @@ const ListTools = ({ accountId, stickyTable = false }) => {
   const [searchToolByName, setSearchToolByName] = React.useState('');
   const [createdByFilter, setCreatedByFilter] = React.useState(null);
   const [statusFilter, setStatusFilter] = React.useState(null);
+  const [deleteModal, setDeleteModal] = React.useState(false);
+  const [isDeleting, setIsDeleting] = React.useState(false);
+  const [toolToDelete, setToolToDelete] = React.useState(null);
 
   React.useEffect(() => {
     listTools();
@@ -98,6 +102,34 @@ const ListTools = ({ accountId, stickyTable = false }) => {
     setSelectedTool(tool);
     setEditMode(true);
     setCreateToolModal(true);
+  };
+
+  const handleDeleteTool = (tool) => {
+    setToolToDelete(tool);
+    setDeleteModal(true);
+  };
+
+  const confirmDeleteTool = async () => {
+    if (!toolToDelete) {
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      const response = await apiAskNudgebee.deleteTool(accountId, toolToDelete.name);
+      if (!(response?.data?.data?.ai_delete_tool?.data?.status === 'ok')) {
+        snackbar.error('Failed to delete tool');
+        return;
+      }
+      snackbar.success(`Tool "${snakeToTitleCase(toolToDelete.name)}" deleted successfully`);
+      setDeleteModal(false);
+      setToolToDelete(null);
+      listTools();
+    } catch (error) {
+      console.error('Error deleting tool:', error);
+      snackbar.error('Failed to delete tool');
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const listTools = () => {
@@ -169,14 +201,24 @@ const ListTools = ({ accountId, stickyTable = false }) => {
                     {
                       component:
                         tool.type === 'custom' && tool.nb_tool_type == 'tool' && hasWriteAccess(accountId) ? (
-                          <Button
-                            tone='secondary'
-                            size='xs'
-                            composition='icon-only'
-                            icon={<SafeIcon src={EditIcon} alt='edit' height={20} width={20} />}
-                            aria-label='Edit tool'
-                            onClick={() => handleEditTool(tool)}
-                          />
+                          <Stack direction='row' alignItems='center' spacing={1}>
+                            <Button
+                              tone='secondary'
+                              size='xs'
+                              composition='icon-only'
+                              icon={<SafeIcon src={EditIcon} alt='edit' height={20} width={20} />}
+                              aria-label='Edit tool'
+                              onClick={() => handleEditTool(tool)}
+                            />
+                            <Button
+                              tone='secondary'
+                              size='xs'
+                              composition='icon-only'
+                              icon={<SafeIcon src={DeleteIconRed} alt='delete' height={20} width={20} />}
+                              aria-label='Delete tool'
+                              onClick={() => handleDeleteTool(tool)}
+                            />
+                          </Stack>
                         ) : null,
                     },
                   ]),
@@ -220,6 +262,39 @@ const ListTools = ({ accountId, stickyTable = false }) => {
           editMode={editMode}
           toolData={selectedTool}
         />
+      </Modal>
+      <Modal
+        handleClose={() => {
+          if (isDeleting) return;
+          setDeleteModal(false);
+          setToolToDelete(null);
+        }}
+        title={`Delete Tool: ${toolToDelete ? snakeToTitleCase(toolToDelete.name) : ''}`}
+        open={deleteModal}
+        loader={isDeleting}
+      >
+        <Typography variant='body1' sx={{ mt: 2, mb: 1 }}>
+          Are you sure you want to delete the tool &quot;<strong>{toolToDelete ? snakeToTitleCase(toolToDelete.name) : ''}</strong>&quot;?
+          <br />
+          <br />
+          This action cannot be undone. All associated configurations and data will be permanently removed.
+        </Typography>
+        <Box sx={{ p: 1, mb: ds.space[2], display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: ds.space[4] }}>
+          <Button
+            tone='secondary'
+            size='sm'
+            onClick={() => {
+              setDeleteModal(false);
+              setToolToDelete(null);
+            }}
+            disabled={isDeleting}
+          >
+            Cancel
+          </Button>
+          <Button tone='primary' size='sm' onClick={confirmDeleteTool} loading={isDeleting}>
+            Delete
+          </Button>
+        </Box>
       </Modal>
       <ListingLayout id='all-tools'>
         <ListingLayout.Toolbar

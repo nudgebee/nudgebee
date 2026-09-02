@@ -16,15 +16,17 @@ import (
 type taskOutcome int
 
 const (
-	outcomeApplied  taskOutcome = iota // in-place / direct cluster change (synchronous, no PR)
-	outcomePR                          // GitOps PR requested (created asynchronously)
-	outcomeTicket                      // ticket created
-	outcomeFailed                      // execution failed
-	outcomeNoChange                    // skipped or dry-run — not a change
+	outcomeApplied     taskOutcome = iota // in-place / direct cluster change (synchronous, no PR)
+	outcomePR                             // GitOps PR requested (created asynchronously)
+	outcomeTicket                         // ticket created
+	outcomeFailed                         // execution failed
+	outcomeNoChange                       // skipped or dry-run — not a change
+	outcomePRUnchanged                    // a PR was already open and this run left it alone — not a change
 )
 
 // classifyTask maps a completed task row to its outcome. See the decision table
-// in the plan: only Status + Attributes.{ResolutionID,TicketLink} are needed.
+// in the plan: only Status + Attributes.{ResolutionID,TicketLink,PRAction} are
+// needed.
 func classifyTask(t model.AutoOptimizeTask) taskOutcome {
 	switch t.Status {
 	case string(model.AutopilotTaskStatusFailed):
@@ -37,6 +39,14 @@ func classifyTask(t model.AutoOptimizeTask) taskOutcome {
 		return outcomeTicket
 	}
 	if t.Attributes.ResolutionID != nil {
+		// A resolution id is not evidence of a change. Since #34959 an open pull
+		// request no longer blocks its own recommendation, so every run re-applies
+		// it and the api-server's guard hands the same resolution straight back.
+		// Treating that as a change made an hourly auto optimize announce the same
+		// pull requests every hour, for as long as they stayed open.
+		if t.Attributes.PRAction == model.PRActionUnchanged {
+			return outcomePRUnchanged
+		}
 		return outcomePR
 	}
 	return outcomeApplied
@@ -116,7 +126,7 @@ func (s *optimizerService) sendCompletionSummary(ctx context.Context, ao *model.
 // change or failure). The hasChange result is platform-independent.
 func buildCompletionSummary(ao *model.AutoOptimize, tasks []model.AutoOptimizeTask, platform string) (string, bool) {
 	var applied, prs, tickets, failed []model.AutoOptimizeTask
-	skipped := 0
+	skipped, prUnchanged := 0, 0
 	for _, t := range tasks {
 		switch classifyTask(t) {
 		case outcomeApplied:
@@ -129,6 +139,8 @@ func buildCompletionSummary(ao *model.AutoOptimize, tasks []model.AutoOptimizeTa
 			failed = append(failed, t)
 		case outcomeNoChange:
 			skipped++
+		case outcomePRUnchanged:
+			prUnchanged++
 		}
 	}
 
@@ -171,6 +183,12 @@ func buildCompletionSummary(ao *model.AutoOptimize, tasks []model.AutoOptimizeTa
 				fmt.Fprintf(&b, "  - %s\n", resourceLabel(t))
 			}
 		}
+	}
+	// Reported separately from "skipped": these workloads have a pull request
+	// waiting, which is worth knowing, but only alongside something that did
+	// change — on their own they never reach here.
+	if prUnchanged > 0 {
+		fmt.Fprintf(&b, "\n%d already have an open pull request.\n", prUnchanged)
 	}
 	if skipped > 0 {
 		fmt.Fprintf(&b, "\n%d skipped.\n", skipped)

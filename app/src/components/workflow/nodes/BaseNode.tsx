@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
-import { Menu, MenuItem } from '@mui/material';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import { DeleteIconRed } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 
@@ -82,23 +82,9 @@ const BaseNode: React.FC<BaseNodeProps> = ({
   const [deleteButtonHovered, setDeleteButtonHovered] = useState(false);
   const [primaryButtonHovered, setPrimaryButtonHovered] = useState(false);
   const [moreButtonHovered, setMoreButtonHovered] = useState(false);
-  const [moreMenuAnchorEl, setMoreMenuAnchorEl] = useState<null | HTMLElement>(null);
-  const moreMenuOpen = Boolean(moreMenuAnchorEl);
-
-  const handleMoreClick = (event: React.MouseEvent<HTMLElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setMoreMenuAnchorEl(event.currentTarget);
-  };
-
-  const handleMoreClose = () => {
-    setMoreMenuAnchorEl(null);
-  };
-
-  const handleMenuItemClick = (onClick: () => void) => {
-    onClick();
-    handleMoreClose();
-  };
+  // Open state is tracked locally only to drive the trigger's open/hover
+  // highlight; DropdownMenu owns the actual anchor/positioning.
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
 
   // Default styles for icon container
   const defaultIconContainerStyle: React.CSSProperties = {
@@ -313,84 +299,57 @@ const BaseNode: React.FC<BaseNodeProps> = ({
           </button>
         )}
 
-        {/* More Options Button */}
+        {/* More Options Menu */}
         {menuItems.length > 0 && (
-          <button
-            type='button'
+          <DropdownMenu
+            disablePortal={false}
             className='nodrag nopan'
-            onMouseEnter={() => setMoreButtonHovered(true)}
-            onMouseLeave={() => setMoreButtonHovered(false)}
-            onClick={handleMoreClick}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                e.stopPropagation();
-                handleMoreClick(e as any);
-              }
-            }}
-            tabIndex={0}
-            style={{
-              background: 'none',
-              padding: 0,
-              width: '24px',
-              height: '24px',
-              borderRadius: 'var(--ds-radius-md)',
-              backgroundColor: moreButtonHovered || moreMenuOpen ? 'var(--ds-gray-100)' : 'white',
-              border: moreButtonHovered || moreMenuOpen ? '1px solid var(--ds-gray-400)' : '1px solid var(--ds-gray-300)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 var(--ds-space-0) var(--ds-space-1) var(--ds-gray-alpha-300)',
-            }}
-            title='More options'
-          >
-            <MoreVertIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-brand-400)', pointerEvents: 'none' }} />
-          </button>
+            minWidth={72}
+            onClose={() => setMoreMenuOpen(false)}
+            trigger={
+              <button
+                type='button'
+                className='nodrag nopan'
+                onMouseEnter={() => setMoreButtonHovered(true)}
+                onMouseLeave={() => setMoreButtonHovered(false)}
+                onClick={() => setMoreMenuOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.stopPropagation();
+                  }
+                }}
+                tabIndex={0}
+                style={{
+                  background: 'none',
+                  padding: 0,
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: 'var(--ds-radius-md)',
+                  backgroundColor: moreButtonHovered || moreMenuOpen ? 'var(--ds-gray-100)' : 'white',
+                  border: moreButtonHovered || moreMenuOpen ? '1px solid var(--ds-gray-400)' : '1px solid var(--ds-gray-300)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease-in-out',
+                  boxShadow: '0 var(--ds-space-0) var(--ds-space-1) var(--ds-gray-alpha-300)',
+                }}
+                title='More options'
+              >
+                <MoreVertIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-brand-400)', pointerEvents: 'none' }} />
+              </button>
+            }
+            items={menuItems.map((item, index) => ({
+              id: `basenode-menu-item-${index}`,
+              label: item.label,
+              icon: item.icon ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 16, height: 16 }}>{item.icon}</span>
+              ) : undefined,
+              onSelect: item.onClick,
+            }))}
+          />
         )}
       </div>
-
-      {/* More Options Menu */}
-      {menuItems.length > 0 && (
-        <Menu
-          anchorEl={moreMenuAnchorEl}
-          open={moreMenuOpen}
-          onClose={handleMoreClose}
-          className='nodrag nopan'
-          slotProps={{
-            paper: {
-              className: 'nodrag nopan',
-              sx: {
-                boxShadow: 'var(--ds-overlay-shadow)',
-                borderRadius: 'var(--ds-radius-xl)',
-                minWidth: '72px',
-                mt: 1,
-              },
-            },
-          }}
-        >
-          {menuItems.map((item, index) => (
-            <MenuItem
-              key={index}
-              onClick={() => handleMenuItemClick(item.onClick)}
-              sx={{
-                fontSize: 'var(--ds-text-small)',
-                padding: 'var(--ds-space-1) var(--ds-space-2)',
-                gap: 'var(--ds-space-2)',
-                '&:hover': {
-                  backgroundColor: 'var(--ds-background-300)',
-                },
-              }}
-            >
-              {item.icon && (
-                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 16, height: 16 }}>{item.icon}</span>
-              )}
-              <span>{item.label}</span>
-            </MenuItem>
-          ))}
-        </Menu>
-      )}
     </div>
   );
 };

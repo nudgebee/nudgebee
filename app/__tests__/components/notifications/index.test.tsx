@@ -2,9 +2,9 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
-const mockHasWriteAccess = jest.fn();
+const mockCanManage = jest.fn();
 jest.mock('@lib/auth', () => ({
-  hasWriteAccess: (...args: any[]) => mockHasWriteAccess(...args),
+  canManage: (...args: any[]) => mockCanManage(...args),
 }));
 
 jest.mock('@api1/notification', () => ({
@@ -252,7 +252,7 @@ const mockRulesResponse = (rows = sampleRules, count?: number) => ({
 describe('Notifications (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockHasWriteAccess.mockReturnValue(true);
+    mockCanManage.mockReturnValue(true);
     apiDashboard.getCloudAccounts.mockResolvedValue(sampleAccounts);
     apiKubernetes.getAllK8sNamespaces.mockResolvedValue({ data: sampleNamespaces });
     apiKubernetes.getAllK8sWorkload.mockResolvedValue({ data: sampleWorkloads });
@@ -301,7 +301,7 @@ describe('Notifications (integration)', () => {
   });
 
   it('shows Create Rule button only with write access', async () => {
-    mockHasWriteAccess.mockReturnValue(false);
+    mockCanManage.mockReturnValue(false);
     render(<Notifications />);
     await waitFor(() => expect(apiNotifications.getNotificationRules).toHaveBeenCalled());
     expect(screen.queryByTestId('notification-rule')).not.toBeInTheDocument();

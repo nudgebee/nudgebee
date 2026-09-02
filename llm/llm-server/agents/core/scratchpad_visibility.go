@@ -287,7 +287,7 @@ func CountCompressionVisibilityRecords(conversationId string) int {
 	var count int
 	err := dao.dbManager.Db.Get(&count,
 		`SELECT COUNT(*) FROM llm_conversation_tool_calls
-		 WHERE conversation_id = $1 AND tool_name = $2`,
+		 WHERE conversation_id = $1 AND tool_name = $2 AND metadata->>'parent_tool_call_id' IS NULL`,
 		conversationId, compressionVisibilityToolName)
 	if err != nil {
 		slog.Warn("scratchpad: failed to count compression visibility records", "error", err)

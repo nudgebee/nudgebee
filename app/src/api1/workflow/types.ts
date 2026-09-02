@@ -105,6 +105,9 @@ export interface WorkflowDefinition {
   retry_policy?: WorkflowDefinitionRetryPolicy;
   timeout?: string;
   layout?: WorkflowDefinitionLayout;
+  /** What the automation does and when the AI should reach for it. Versioned
+   * with the definition so the AI reads what is published, not a draft. */
+  llm_description?: string;
 }
 
 export interface WorkflowRequest {
@@ -113,6 +116,12 @@ export interface WorkflowRequest {
   name: string;
   status?: string;
   created_from_session_id?: string;
+  /** Human-facing description. Sent on every save so a canvas save does not
+   * null the column. */
+  description?: string;
+  /** Opt-in for AI invocation. Workflow-level rather than in the definition so
+   * revoking it takes effect immediately, without a publish. */
+  ai_invocable?: boolean;
 }
 
 export interface WorkflowCreateRequest {
@@ -136,6 +145,75 @@ export interface WorkflowExecutionGetRequest {
   account_id: string;
   id: string;
   workflow_id: string;
+}
+
+// --- Cross-automation execution dashboard ---
+
+/** Filters shared by the execution list and its aggregate. */
+export interface ExecutionDashboardFilterRequest {
+  start_date?: string;
+  end_date?: string;
+  workflow_ids?: string[];
+  triggered_by?: string[];
+  statuses?: string[];
+  trigger_types?: string[];
+}
+
+export interface AccountExecutionListRequest extends ExecutionDashboardFilterRequest {
+  limit?: number;
+  /** 1-based. Ignored when next_page_token is set. */
+  page?: number;
+  next_page_token?: string;
+  include_failure_reason?: boolean;
+}
+
+export interface ExecutionAggregateRequest extends ExecutionDashboardFilterRequest {
+  top_failed_limit?: number;
+}
+
+export interface AccountExecutionItem {
+  id: string;
+  /** The run's own account — a page can span several. */
+  account_id?: string;
+  workflow_id: string;
+  workflow_name?: string;
+  status: string;
+  start_time?: string;
+  close_time?: string;
+  duration_ms?: number;
+  trigger_type?: string;
+  /** User id of whoever triggered the run. Empty for scheduled runs. */
+  triggered_by?: string;
+  user_name?: string;
+  failure_reason?: string;
+  version_number?: number;
+}
+
+export interface AccountExecutionListResponse {
+  executions: AccountExecutionItem[];
+  next_page_token?: string;
+  total_count: number;
+  total_is_approximate: boolean;
+}
+
+export interface FailedAutomationCount {
+  workflow_id: string;
+  workflow_name?: string;
+  failure_count: number;
+}
+
+export interface ExecutionAggregateResponse {
+  total: number;
+  succeeded: number;
+  failed: number;
+  running: number;
+  /** Subset of `failed` — runs that hit the execution timeout rather than erroring. */
+  timed_out: number;
+  counts_are_approximate: boolean;
+  top_failed: FailedAutomationCount[];
+  top_failed_is_approximate: boolean;
+  /** Temporal namespace retention. 0 means unknown — do not clamp the picker. */
+  retention_days: number;
 }
 
 export interface WorkflowExecutionTaskResponse {

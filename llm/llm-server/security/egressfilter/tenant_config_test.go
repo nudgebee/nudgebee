@@ -255,3 +255,106 @@ func TestApplyTenantOverrides_FailsClosedOnBadOffsets(t *testing.T) {
 	out := applyTenantOverrides(r, "short", tcfg)
 	assert.Len(t, out.Hits, 3, "malformed offsets must keep the hit (fail-closed)")
 }
+
+// --- PII effective-value helpers (V827) --------------------------------------
+//
+// The wrapper reads env baselines and per-tenant overrides through these
+// helpers; the merging rule (nil / empty = inherit env; non-nil / non-empty =
+// explicit override) is the tri-state semantics locked in by the DB schema
+// (all four columns nullable-or-empty-default).
+
+func ptrBool(v bool) *bool { return &v }
+
+func TestEffectivePIIEnabled(t *testing.T) {
+	// 2026-07-30 semantics: per-tenant opt-in. Only an explicit TRUE turns
+	// PII on. Nil / missing / explicit false all mean off. Env doesn't
+	// factor into this helper anymore (env is a hard gate at wrapper
+	// install time; if the wrapper is running, this call decides).
+
+	// Nil receiver (no row / no tenant) → off.
+	var nilCfg *TenantConfig
+	assert.False(t, nilCfg.EffectivePIIEnabled())
+
+	// Tenant row exists but PIIEnabled is nil (tenant hasn't opted in) → off.
+	tcfg := &TenantConfig{}
+	assert.False(t, tcfg.EffectivePIIEnabled(), "tenant that hasn't touched PII stays off")
+
+	// Explicit true → on.
+	tcfg.PIIEnabled = ptrBool(true)
+	assert.True(t, tcfg.EffectivePIIEnabled())
+
+	// Explicit false → off.
+	tcfg.PIIEnabled = ptrBool(false)
+	assert.False(t, tcfg.EffectivePIIEnabled())
+}
+
+func TestEffectivePIIMode(t *testing.T) {
+	var nilCfg *TenantConfig
+	// Empty env falls back to "detect" so ops don't need to worry about
+	// missing env producing an unknown mode.
+	assert.Equal(t, "detect", nilCfg.EffectivePIIMode(""))
+	assert.Equal(t, "enforce", nilCfg.EffectivePIIMode("enforce"))
+
+	tcfg := &TenantConfig{}
+	assert.Equal(t, "enforce", tcfg.EffectivePIIMode("enforce"))
+	tcfg.PIIMode = "detect"
+	assert.Equal(t, "detect", tcfg.EffectivePIIMode("enforce"), "tenant explicit detect must override env enforce")
+	tcfg.PIIMode = "enforce"
+	assert.Equal(t, "enforce", tcfg.EffectivePIIMode("detect"))
+}
+
+func TestIsPIICategoryDisabled(t *testing.T) {
+	var nilCfg *TenantConfig
+	assert.False(t, nilCfg.IsPIICategoryDisabled("EMAIL"))
+
+	tcfg := &TenantConfig{PIIDisabledCategories: []string{"EMAIL", "PHONE"}}
+	assert.True(t, tcfg.IsPIICategoryDisabled("EMAIL"))
+	assert.True(t, tcfg.IsPIICategoryDisabled("email"), "case-insensitive")
+	assert.True(t, tcfg.IsPIICategoryDisabled("  Phone  "), "trims whitespace")
+	assert.False(t, tcfg.IsPIICategoryDisabled("PERSON"))
+	assert.False(t, tcfg.IsPIICategoryDisabled(""))
+}
+
+// FilterPIIMappingByCategory: the routing rule underneath the wrapper's
+// per-tenant category filter. Kept + unscrub sets partition the input
+// mapping so downstream code can rehydrate disabled-category tokens back
+// to real values BEFORE sending to the LLM.
+func TestFilterPIIMappingByCategory(t *testing.T) {
+	mapping := map[string]string{
+		"[EMAIL_1]":  "alice@acme.co",
+		"[EMAIL_2]":  "bob@acme.co",
+		"[PERSON_1]": "Alice Doe",
+		"[PHONE_1]":  "+1-555-0100",
+	}
+
+	t.Run("empty disabled set returns mapping unchanged", func(t *testing.T) {
+		kept, unscrub := FilterPIIMappingByCategory(mapping, nil)
+		assert.Equal(t, mapping, kept)
+		assert.Nil(t, unscrub)
+	})
+
+	t.Run("splits by category (case-insensitive)", func(t *testing.T) {
+		kept, unscrub := FilterPIIMappingByCategory(mapping, []string{"email"})
+		assert.Len(t, kept, 2)
+		assert.Contains(t, kept, "[PERSON_1]")
+		assert.Contains(t, kept, "[PHONE_1]")
+		assert.Len(t, unscrub, 2)
+		assert.Equal(t, "alice@acme.co", unscrub["[EMAIL_1]"])
+		assert.Equal(t, "bob@acme.co", unscrub["[EMAIL_2]"])
+	})
+
+	t.Run("all categories disabled empties kept", func(t *testing.T) {
+		kept, unscrub := FilterPIIMappingByCategory(mapping, []string{"EMAIL", "PERSON", "PHONE"})
+		assert.Empty(t, kept)
+		assert.Len(t, unscrub, 4)
+	})
+
+	t.Run("unknown category is a no-op", func(t *testing.T) {
+		// Admin API rejects unknown categories at write time, but the
+		// helper must still behave sanely if the wrapper is somehow passed
+		// one (defensive).
+		kept, unscrub := FilterPIIMappingByCategory(mapping, []string{"NONSENSE"})
+		assert.Len(t, kept, 4)
+		assert.Empty(t, unscrub)
+	})
+}

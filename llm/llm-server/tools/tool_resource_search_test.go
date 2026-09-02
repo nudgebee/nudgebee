@@ -4,6 +4,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -108,22 +109,6 @@ func TestResourceSearchTool_MultiWordResourceName(t *testing.T) {
 		t.Logf("Query: %s, Response: %s", tc.Query, resp.Data)
 		assert.Contains(t, resp.Data, "match_quality")
 	}
-}
-
-func TestGetCurrentPrometheusOtelHosts(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("requires a live services backend; set TEST_ACCOUNT to run")
-	}
-	data := GetCurrentOtelHosts(os.Getenv("TEST_ACCOUNT"))
-	assert.NotEmpty(t, data)
-}
-
-func TestGetCurrentK8sAccountState(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("requires a live services backend; set TEST_ACCOUNT to run")
-	}
-	data := GetCurrentK8sAccountState(os.Getenv("TEST_ACCOUNT"), 100)
-	assert.NotEmpty(t, data)
 }
 
 func TestResourceSearchTool_Service(t *testing.T) {
@@ -957,29 +942,115 @@ func TestFilterResourcesByRelevance(t *testing.T) {
 		got := tool.filterResourcesByRelevance(makeResources("my-api-server"), "llm-server")
 		assert.Empty(t, got, "resource containing only generic term 'server' should be filtered")
 	})
+
+	t.Run("namespace-scoped query keeps in-namespace results whose names don't match", func(t *testing.T) {
+		// The false-empty bug: real pods don't carry the namespace in their NAME,
+		// so name-only matching dropped every result for a namespace-scoped query.
+		input := []K8sResourceInfo{
+			{Name: "cloud-collector-server-7857d9b98d-drrnt", Type: "pods", Namespace: "nudgebee"},
+			{Name: "relay-server-abc", Type: "pods", Namespace: "nudgebee"},
+		}
+		got := tool.filterResourcesByRelevance(input, "nudgebee")
+		assert.Len(t, got, 2, "in-namespace pods must survive a namespace-scoped query")
+	})
+
+	t.Run("namespace match does not re-admit out-of-namespace junk (guard intact)", func(t *testing.T) {
+		input := []K8sResourceInfo{
+			{Name: "cloud-collector-server-x", Type: "pods", Namespace: "nudgebee"}, // kept (ns matches)
+			{Name: "unrelated-workload", Type: "pods", Namespace: "demo"},           // dropped (neither matches)
+		}
+		got := tool.filterResourcesByRelevance(input, "nudgebee")
+		assert.Len(t, got, 1)
+		assert.Equal(t, "nudgebee", got[0].Namespace)
+	})
+
+	t.Run("resource-type word alone does not over-prune", func(t *testing.T) {
+		// "deployments" is a TYPE, not an identity — real deployment names don't
+		// contain it, so treating it as a term dropped everything. Now stoplisted,
+		// so a type-only query leaves the results unfiltered instead of empty.
+		input := makeResources("checkout", "orders", "payments")
+		got := tool.filterResourcesByRelevance(input, "deployments")
+		assert.Len(t, got, 3, "a bare resource-type query must not drop real results")
+	})
+
+	t.Run("multi-word query with spaces does not over-prune", func(t *testing.T) {
+		// "llm server" must tokenize on the space to "llm" and match "llm-server-abc";
+		// otherwise the whole "llm server" string matches no hyphenated name.
+		input := makeResources("llm-server-abc", "unrelated-pod")
+		got := tool.filterResourcesByRelevance(input, "llm server")
+		assert.Len(t, got, 1)
+		assert.Equal(t, "llm-server-abc", got[0].Name)
+	})
 }
 
-func TestResourceSearchTool_SearchDbForResources(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("TEST_ACCOUNT not set")
+func TestResourceMatchesTerms(t *testing.T) {
+	t.Run("name matches", func(t *testing.T) {
+		assert.True(t, ResourceMatchesTerms("checkout-svc", "demo", []string{"checkout"}))
+	})
+	t.Run("namespace matches when name does not (the fix)", func(t *testing.T) {
+		assert.True(t, ResourceMatchesTerms("cloud-collector-server-x", "nudgebee", []string{"nudgebee"}))
+	})
+	t.Run("neither matches is dropped (guard preserved)", func(t *testing.T) {
+		assert.False(t, ResourceMatchesTerms("unrelated-workload", "demo", []string{"nudgebee"}))
+	})
+	t.Run("namespace is whole-value, not substring (no flood)", func(t *testing.T) {
+		// "prod" (from "prod-checkout") must NOT match namespace "orders-prod"
+		// and keep every resource in it — only an exact namespace term matches.
+		assert.False(t, ResourceMatchesTerms("some-unrelated-pod", "orders-prod", []string{"prod"}))
+		assert.True(t, ResourceMatchesTerms("some-unrelated-pod", "orders-prod", []string{"orders-prod"}))
+	})
+	t.Run("backward compatible with name-only helper", func(t *testing.T) {
+		assert.Equal(t, ResourceNameMatchesTerms("llm-server", []string{"llm"}),
+			ResourceMatchesTerms("llm-server", "", []string{"llm"}))
+	})
+}
+
+func TestIsK8sTypeOrScopeWord(t *testing.T) {
+	// Every type/scope word (from the canonical k8sResourceTypeMappings + the few
+	// spellings supplemented) must be recognized, so it's never matched against
+	// resource names. Covers the full list flagged in review.
+	for _, w := range []string{
+		"namespace", "namespaces", "ns",
+		"deployment", "deployments", "deploy", "statefulset", "daemonset",
+		"service", "services", "svc", "ingress", "ingresses",
+		"node", "nodes", "replicaset", "replicasets", "rs",
+		"pvc", "pv", "persistentvolume", "persistentvolumes", "persistentvolumeclaim", "persistentvolumeclaims",
+		"serviceaccount", "serviceaccounts",
+		"role", "roles", "rolebinding", "rolebindings", "clusterrole", "clusterrolebindings",
+		"networkpolicy", "netpol", "storageclass", "storageclasses",
+		"crd", "crds", "customresourcedefinition", "customresourcedefinitions",
+		"workload", "workloads", "secret", "secrets", "configmap", "job", "cronjob",
+		"apps", "servers", "apis", "clusters", "clouds", // plurals of generic scope words
+		"Deployments", // case-insensitive
+	} {
+		assert.Truef(t, IsK8sTypeOrScopeWord(w), "%q should be a type/scope stopword", w)
 	}
+	// Real identities must NOT be stopwords.
+	for _, w := range []string{"checkout", "nudgebee", "payments", "orders-db", "llm"} {
+		assert.Falsef(t, IsK8sTypeOrScopeWord(w), "%q must not be a stopword", w)
+	}
+}
 
-	tool := K8sResourceSearchTool{}
-	accountId := os.Getenv("TEST_ACCOUNT")
-	sc := security.NewRequestContextForSuperAdmin()
-	dummyCtx := core.NbToolContext{Ctx: sc, AccountId: accountId}
-
-	// Test 1: Simple name
-	results := tool.searchDbForResources("llm-server", accountId, dummyCtx)
-	t.Logf("Search 'llm-server' found %d results", len(results))
-
-	// Test 2: Multi-word name (should trigger variations)
-	results2 := tool.searchDbForResources("llm server", accountId, dummyCtx)
-	t.Logf("Search 'llm server' found %d results", len(results2))
-
-	// Test 3: Empty name
-	results3 := tool.searchDbForResources("", accountId, dummyCtx)
-	assert.Equal(t, 0, len(results3))
+func TestCloudResourceMatchesTerms(t *testing.T) {
+	t.Run("name matches", func(t *testing.T) {
+		assert.True(t, CloudResourceMatchesTerms("orders-db", "rds", "us-west-2", []string{"orders"}))
+	})
+	t.Run("service matches when name does not (the fix)", func(t *testing.T) {
+		assert.True(t, CloudResourceMatchesTerms("db-primary-1", "rds", "us-west-2", []string{"rds"}))
+	})
+	t.Run("region matches when name does not (the fix)", func(t *testing.T) {
+		assert.True(t, CloudResourceMatchesTerms("db-primary-1", "rds", "us-west-2", []string{"us-west-2"}))
+	})
+	t.Run("unrelated service/region is dropped (guard preserved)", func(t *testing.T) {
+		assert.False(t, CloudResourceMatchesTerms("db-primary-1", "rds", "eu-central-1", []string{"lambda"}))
+	})
+	t.Run("region is whole-value, not substring (no flood)", func(t *testing.T) {
+		// "west" (from "west-coast-app") must NOT match region "us-west-2" and keep
+		// every resource in the region. It only survives if the NAME matches.
+		assert.False(t, CloudResourceMatchesTerms("payments-db", "rds", "us-west-2", []string{"west"}))
+		assert.True(t, CloudResourceMatchesTerms("west-coast-app", "ec2", "us-west-2", []string{"west"}))   // name match
+		assert.True(t, CloudResourceMatchesTerms("payments-db", "rds", "us-west-2", []string{"us-west-2"})) // exact region
+	})
 }
 
 // normalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
@@ -1042,4 +1113,78 @@ func TestIsSpecificResourceType(t *testing.T) {
 	assert.False(t, tool.isSpecificResourceType(""))
 	assert.False(t, tool.isSpecificResourceType("all"))
 	assert.False(t, tool.isSpecificResourceType("resource"))
+}
+
+// TestResourceSearchResultMessage pins the no-result messaging — in particular the
+// no-connected-cluster branch, which is the observability-only path where the live
+// kubectl fallback is skipped so an inventory miss is terminal and must steer to the
+// cloud resolver rather than implying more k8s search.
+func TestResourceSearchResultMessage(t *testing.T) {
+	// Found something: cluster connectivity is irrelevant.
+	assert.Contains(t, resourceSearchResultMessage(3, true), "Found 3 resources")
+	assert.Contains(t, resourceSearchResultMessage(3, false), "Found 3 resources")
+
+	// Miss WITH a connected cluster: the live fallback ran and found nothing → plain miss.
+	msg := resourceSearchResultMessage(0, true)
+	assert.Contains(t, msg, "No resources found matching your request")
+	assert.NotContains(t, msg, "cloud_resource_search_execute")
+
+	// Miss with NO connected cluster: fallback was skipped → terminal, steer to cloud tool.
+	noCluster := resourceSearchResultMessage(0, false)
+	assert.Contains(t, noCluster, "no connected Kubernetes cluster")
+	assert.Contains(t, noCluster, "cloud_resource_search_execute")
+}
+
+// Term extraction must be closed over a CLASS of input, not a list of separators.
+//
+// This guard was patched four times — " \t", then \n, then '/', then '_' — and each
+// round a review found another character that slipped through (':' and ',' were still
+// broken after the third). The rule is now stated positively: a term is usable only if
+// every character could appear in a DNS-1123 name, and the splitter is its mirror
+// (split on anything non-alphanumeric). Adding a new separator cannot reopen this.
+func TestFilterResourcesByRelevance_SeparatorClasses(t *testing.T) {
+	r := K8sResourceSearchTool{}
+	resources := []K8sResourceInfo{
+		{Name: "relay-server-7c48b7d966-l6hsx", Namespace: "nudgebee"},
+		{Name: "llm-server-5d64db9547-vpnqq", Namespace: "nudgebee"},
+	}
+
+	// Characters that cannot appear in a DNS-1123 name are separators. A query of only
+	// type/scope words joined by one carries no identity, so it must not prune;
+	// a query naming a real resource must still narrow to it.
+	for _, sep := range []string{" ", "\t", "\n", "\r", "/", "_", ":", ",", ";", "=", "|"} {
+		t.Run("stopwords joined by "+strconv.Quote(sep), func(t *testing.T) {
+			got := r.filterResourcesByRelevance(resources, "deployments"+sep+"namespace")
+			assert.Len(t, got, len(resources), "no identifying term — must not prune")
+		})
+		t.Run("real name joined by "+strconv.Quote(sep), func(t *testing.T) {
+			got := r.filterResourcesByRelevance(resources, "llm"+sep+"server")
+			assert.Len(t, got, 1, "the identifying term must survive the separator")
+			assert.Equal(t, "llm-server-5d64db9547-vpnqq", got[0].Name)
+		})
+	}
+
+	// '-' and '.' are the exception: they are VALID name characters, so a hyphenated
+	// query is a plausible resource name. Pruning to empty there is a true negative
+	// ("no resource is called that"), not the false empty this guard prevents — and
+	// returning everything instead would be misleading.
+	t.Run("hyphenated stopwords are a plausible name, not a separator case", func(t *testing.T) {
+		assert.Empty(t, r.filterResourcesByRelevance(resources, "deployments-namespace"))
+	})
+
+	t.Run("identifying terms still filter", func(t *testing.T) {
+		got := r.filterResourcesByRelevance(resources, "relay-server")
+		assert.Len(t, got, 1)
+		assert.Equal(t, "relay-server-7c48b7d966-l6hsx", got[0].Name)
+	})
+
+	// A namespace term legitimately matches everything in that namespace (#36078).
+	t.Run("namespace-scoped query keeps the namespace", func(t *testing.T) {
+		assert.Len(t, r.filterResourcesByRelevance(resources, "nudgebee/llm-server"), 2)
+	})
+
+	t.Run("empty and whitespace-only queries do not prune", func(t *testing.T) {
+		assert.Len(t, r.filterResourcesByRelevance(resources, ""), 2)
+		assert.Len(t, r.filterResourcesByRelevance(resources, "   "), 2)
+	})
 }

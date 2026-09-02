@@ -3,6 +3,7 @@ package reports
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"nudgebee/services/account"
@@ -15,6 +16,7 @@ import (
 	"nudgebee/services/tenant"
 	"nudgebee/services/user"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -29,15 +31,16 @@ func getEmailsFromUsers(users []models.User) []string {
 	return lo.Uniq(emails)
 }
 
-func prepareEmailMessage(emails []string, totalPotentialSavings float64, totalOpportunityLost float64, dayMinus1Highlights any, dayMinus2Highlights any, insights any, tenant models.Tenant) map[string]interface{} {
-	today := time.Now().Format("2 January 2006")
+func prepareEmailMessage(emails []string, totalPotentialSavings float64, totalOpportunityLost float64, dayMinus1Highlights any, dayMinus2Highlights any, insights any, tenant models.Tenant, clusterCount, attentionCount int) map[string]interface{} {
+	today := time.Now().Format("2 Jan")
+	subject := config.Config.BrandingName + subjectClausePart(dailySummarySubjectClause(attentionCount, totalPotentialSavings), "Daily Insights") + " - " + today
 	return map[string]interface{}{
 		"kind":      "email",
 		"email":     emails,
 		"source":    "daily_recap",
 		"tenant_id": tenant.Id,
 		"type":      "daily_highlight_report",
-		"subject":   config.Config.BrandingName + " Daily Insights - " + today,
+		"subject":   subject,
 		"parameters": map[string]interface{}{
 			"title":                   "Daily highlight report",
 			"total_potential_savings": totalPotentialSavings,
@@ -46,11 +49,155 @@ func prepareEmailMessage(emails []string, totalPotentialSavings float64, totalOp
 			"highlight2":              dayMinus2Highlights,
 			"insights":                insights,
 			"organization_name":       tenant.Name,
+			"cluster_count":           clusterCount,
+			"attention_count":         attentionCount,
 			"base_url":                config.Config.BaseUrl,
 			"links": map[string]interface{}{
 				"base_url": config.Config.BaseUrl,
 			},
 		},
+	}
+}
+
+// dailySummarySubjectClause builds the dynamic clause inserted between
+// "{Brand}" and " - {date}" in the daily recap subject, e.g.
+// " · 2 clusters need attention, $535.79/mo savings". Returns "" when nothing
+// needs attention, so the subject falls back to the static
+// "{Brand} - {date}" form with the date still at the end.
+func dailySummarySubjectClause(attentionCount int, totalPotentialSavings float64) string {
+	if attentionCount <= 0 {
+		return ""
+	}
+	clusterWord := "clusters need"
+	if attentionCount == 1 {
+		clusterWord = "cluster needs"
+	}
+	suffix := fmt.Sprintf(" · %d %s attention", attentionCount, clusterWord)
+	if totalPotentialSavings > 0 {
+		suffix += fmt.Sprintf(", $%.2f/mo savings", totalPotentialSavings)
+	}
+	return suffix
+}
+
+// subjectClausePart returns the dynamic clause when non-empty, otherwise a
+// short static label (e.g. " Daily Insights") so an all-healthy subject still
+// identifies which report it is instead of collapsing to a bare
+// "{Brand} - {date}" that's indistinguishable across report types.
+func subjectClausePart(clause, fallbackLabel string) string {
+	if clause != "" {
+		return clause
+	}
+	return " " + fallbackLabel
+}
+
+// computeDailySummaryStats mirrors the per-account cluster/attention counting
+// logic in daily_highlight_report.html (events + recommendations + security +
+// insights) so the email subject and body always report the same numbers.
+func computeDailySummaryStats(insights common.GqlResponse, highlight1 map[string]interface{}) (clusterCount, attentionCount int) {
+	accounts := toStringMapSlice(insights.Data["cloud_accounts"])
+	insightRows := toStringMapSlice(insights.Data["insight"])
+	securityRows := toStringMapSlice(rowsOf(insights.Data["recommendation_security_groupings_v2"]))
+
+	h1Data, _ := highlight1["data"].(map[string]interface{})
+	recommendationRows := toStringMapSlice(rowsOf(h1Data["recommendation_groupings"]))
+	appRows := toStringMapSlice(rowsOf(h1Data["app_events"]))
+	nodeRows := toStringMapSlice(rowsOf(h1Data["node_events"]))
+	podRows := toStringMapSlice(rowsOf(h1Data["pod_events"]))
+
+	clusterCount = len(accounts)
+	for _, acc := range accounts {
+		accountId, _ := acc["id"].(string)
+
+		insightCount := countForAccount(insightRows, accountId)
+		recCount := countForAccount(recommendationRows, accountId)
+		secCount := countForAccount(securityRows, accountId)
+		evTotal := sumEventCountForAccount(appRows, accountId) +
+			sumEventCountForAccount(nodeRows, accountId) +
+			sumEventCountForAccount(podRows, accountId)
+
+		if int64(insightCount+recCount+secCount)+evTotal > 0 {
+			attentionCount++
+		}
+	}
+	return clusterCount, attentionCount
+}
+
+// rowsOf extracts the "rows" slice from a {"rows": [...]} shaped map, as
+// produced by getTroubleshootHighlights and the security groupings payload.
+func rowsOf(v interface{}) interface{} {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m["rows"]
+	}
+	return nil
+}
+
+// toStringMapSlice normalizes a rows value into []map[string]interface{},
+// accepting either the []interface{} shape (JSON round-tripped payloads like
+// cloud_accounts/insight) or the []query.QueryRow shape (raw query results).
+func toStringMapSlice(v interface{}) []map[string]interface{} {
+	switch rows := v.(type) {
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(rows))
+		for _, r := range rows {
+			if m, ok := r.(map[string]interface{}); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	case []query.QueryRow:
+		out := make([]map[string]interface{}, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, map[string]interface{}(r))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func countForAccount(rows []map[string]interface{}, accountId string) int {
+	count := 0
+	for _, row := range rows {
+		if id, _ := row["account_id"].(string); id == accountId {
+			count++
+		}
+	}
+	return count
+}
+
+func sumEventCountForAccount(rows []map[string]interface{}, accountId string) int64 {
+	var total int64
+	for _, row := range rows {
+		if id, _ := row["account_id"].(string); id != accountId {
+			continue
+		}
+		total += toInt64(row["event_count"])
+	}
+	return total
+}
+
+func toInt64(v interface{}) int64 {
+	switch val := v.(type) {
+	case int64:
+		return val
+	case int:
+		return int64(val)
+	case int32:
+		return int64(val)
+	case float64:
+		return int64(val)
+	case float32:
+		return int64(val)
+	case string:
+		var n int64
+		_, _ = fmt.Sscan(val, &n)
+		return n
+	case []uint8:
+		var n int64
+		_, _ = fmt.Sscan(string(val), &n)
+		return n
+	default:
+		return 0
 	}
 }
 
@@ -302,7 +449,8 @@ func SendDailyHighlightEmailReport(context *security.RequestContext, request Ten
 
 		context.GetLogger().Info("preparing daily_highlight_report email to ", "users", slog.AnyValue(emails), "tenant", tenant.Id)
 		insights.Data["recommendation_security_groupings_v2"] = map[string]interface{}{"rows": []interface{}{}}
-		message := prepareEmailMessage(emails, totalPotentialSavings, totalOpportunityLost, highlight1, highlight2, insights, tenant)
+		clusterCount, attentionCount := computeDailySummaryStats(insights, highlight1)
+		message := prepareEmailMessage(emails, totalPotentialSavings, totalOpportunityLost, highlight1, highlight2, insights, tenant, clusterCount, attentionCount)
 		context.GetLogger().Debug("Payload", "Payload", message)
 		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
@@ -409,7 +557,8 @@ func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantRep
 
 		context.GetLogger().Info("Preparing daily_agent_status report email", "users", emails, "tenant", tenant.Id)
 
-		message := prepareAgentEmailMessage(emails, accountAgentStatus, tenant)
+		total, disconnected, partial := computeAgentStatusStats(accounts, agentsByAccount)
+		message := prepareAgentEmailMessage(emails, accountAgentStatus, tenant, total, disconnected, partial)
 		context.GetLogger().Debug("Message payload prepared", "payload", message)
 		err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(context.GetContext()))
 		if err != nil {
@@ -422,25 +571,96 @@ func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantRep
 	return nil
 }
 
-func prepareAgentEmailMessage(emails []string, accountAgentStatus any, tenant models.Tenant) map[string]interface{} {
-	today := time.Now().Format("2 January 2006")
+func prepareAgentEmailMessage(emails []string, accountAgentStatus any, tenant models.Tenant, total, disconnected, partial int) map[string]interface{} {
+	today := time.Now().Format("2 Jan")
+	subject := config.Config.BrandingName + subjectClausePart(agentStatusSubjectClause(disconnected, partial), "Agent Status") + " - " + today
 	return map[string]interface{}{
 		"kind":      "email",
 		"email":     emails,
 		"source":    "daily_recap",
 		"tenant_id": tenant.Id,
 		"type":      "agent_status_report",
-		"subject":   config.Config.BrandingName + " Agent Status - " + today,
+		"subject":   subject,
 		"parameters": map[string]interface{}{
-			"title":             "Agent Status Report",
-			"accounts":          accountAgentStatus,
-			"organization_name": tenant.Name,
-			"base_url":          config.Config.BaseUrl,
+			"title":              "Agent Status Report",
+			"accounts":           accountAgentStatus,
+			"organization_name":  tenant.Name,
+			"agent_total":        total,
+			"agent_disconnected": disconnected,
+			"agent_partial":      partial,
+			"base_url":           config.Config.BaseUrl,
 			"links": map[string]interface{}{
 				"base_url": config.Config.BaseUrl,
 			},
 		},
 	}
+}
+
+// agentStatusSubjectClause builds the dynamic clause inserted between
+// "{Brand}" and " - {date}" in the agent-status subject, e.g.
+// " · 1 agent disconnected, 2 agents partial connectivity". Returns "" when
+// every agent is fully healthy, so the subject falls back to the static
+// "{Brand} - {date}" form.
+func agentStatusSubjectClause(disconnected, partial int) string {
+	if disconnected <= 0 && partial <= 0 {
+		return ""
+	}
+	var parts []string
+	if disconnected > 0 {
+		agentWord := "agent"
+		if disconnected != 1 {
+			agentWord = "agents"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s disconnected", disconnected, agentWord))
+	}
+	if partial > 0 {
+		agentWord := "agent"
+		if partial != 1 {
+			agentWord = "agents"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s partial connectivity", partial, agentWord))
+	}
+	return " · " + strings.Join(parts, ", ")
+}
+
+// computeAgentStatusStats mirrors the per-account connectivity counting logic
+// in agent_status_report.html so the email subject and body always report the
+// same numbers. An account with no agent row is counted as disconnected.
+func computeAgentStatusStats(accounts []models.Account, agentsByAccount map[string][]interface{}) (total, disconnected, partial int) {
+	connectionKeys := []string{"alertManagerConnection", "grafanaEnabled", "karpenterEnabled", "logsConnection", "opencostConnection"}
+
+	for _, acc := range accounts {
+		total++
+		agents := agentsByAccount[acc.Id]
+		if len(agents) == 0 {
+			disconnected++
+			continue
+		}
+		agentMap, ok := agents[0].(map[string]interface{})
+		if !ok {
+			disconnected++
+			continue
+		}
+		status, _ := agentMap["status"].(string)
+		switch strings.ToLower(status) {
+		case "running", "connected", "active":
+		default:
+			disconnected++
+			continue
+		}
+
+		connStatus, _ := agentMap["connection_status"].(map[string]interface{})
+		connectedCount := 0
+		for _, key := range connectionKeys {
+			if v, ok := connStatus[key].(bool); ok && v {
+				connectedCount++
+			}
+		}
+		if connectedCount < len(connectionKeys) {
+			partial++
+		}
+	}
+	return total, disconnected, partial
 }
 
 func prepareDailyTroubleshootCountsQuery(tenant, startDate, endDate string, accountIds []string) query.QueryRequest {
@@ -589,7 +809,8 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 			continue
 		}
 
-		message := prepareEventsSummaryEmailMessage(emails, dailyEventCounts, dailyEventSummarised, accountList, tenant)
+		totalEvents, totalHigh, accountCount := computeEventsSummaryStats(accountList, dailyEventCounts)
+		message := prepareEventsSummaryEmailMessage(emails, dailyEventCounts, dailyEventSummarised, accountList, tenant, totalEvents, totalHigh, accountCount)
 		eventCountRows, err := ExtractEventsSummarisedRows(message, "parameters")
 		if err != nil {
 			context.GetLogger().Warn("could not extract summarized rows", "error", err)
@@ -616,27 +837,72 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 	return nil
 }
 
-func prepareEventsSummaryEmailMessage(emails []string, dailyEventCounts any, dailyEventSummarised any, accountList any, tenant models.Tenant) map[string]interface{} {
-	today := time.Now().Format("2 January 2006")
+func prepareEventsSummaryEmailMessage(emails []string, dailyEventCounts any, dailyEventSummarised any, accountList any, tenant models.Tenant, totalEvents, totalHigh int64, accountCount int) map[string]interface{} {
+	today := time.Now().Format("2 Jan")
+	subject := config.Config.BrandingName + subjectClausePart(eventsSummarySubjectClause(totalHigh), "Events Summary") + " - " + today
 	return map[string]interface{}{
 		"kind":      "email",
 		"email":     emails,
 		"source":    "daily_recap",
 		"tenant_id": tenant.Id,
 		"type":      "events_summary",
-		"subject":   config.Config.BrandingName + " Troubleshoot Summary - " + today,
+		"subject":   subject,
 		"parameters": map[string]interface{}{
-			"title":             "Events Summary",
-			"accounts":          accountList,
-			"event_counts":      dailyEventCounts,
-			"events_summarised": dailyEventSummarised,
-			"organization_name": tenant.Name,
-			"base_url":          config.Config.BaseUrl,
+			"title":               "Events Summary",
+			"accounts":            accountList,
+			"event_counts":        dailyEventCounts,
+			"events_summarised":   dailyEventSummarised,
+			"organization_name":   tenant.Name,
+			"total_events":        totalEvents,
+			"total_high_events":   totalHigh,
+			"event_account_count": accountCount,
+			"base_url":            config.Config.BaseUrl,
 			"links": map[string]interface{}{
 				"base_url": config.Config.BaseUrl,
 			},
 		},
 	}
+}
+
+// eventsSummarySubjectClause builds the dynamic clause inserted between
+// "{Brand}" and " - {date}" in the events-summary subject, e.g.
+// " · 12 high-priority events". Returns "" when nothing is high priority, so
+// the subject falls back to the static "{Brand} - {date}" form.
+func eventsSummarySubjectClause(totalHigh int64) string {
+	if totalHigh <= 0 {
+		return ""
+	}
+	eventWord := "events"
+	if totalHigh == 1 {
+		eventWord = "event"
+	}
+	return fmt.Sprintf(" · %d high-priority %s", totalHigh, eventWord)
+}
+
+// computeEventsSummaryStats mirrors the per-account event counting logic in
+// events_summary.html so the email subject and body always report the same
+// numbers.
+func computeEventsSummaryStats(accountList common.GqlResponse, dailyEventCounts map[string]interface{}) (totalEvents, totalHigh int64, accountCount int) {
+	accounts := toStringMapSlice(accountList.Data["accounts"])
+	ecData, _ := dailyEventCounts["data"].(map[string]interface{})
+	eventRows := toStringMapSlice(rowsOf(ecData["event_groupings"]))
+
+	for _, acc := range accounts {
+		accountId, _ := acc["id"].(string)
+		rows := 0
+		for _, row := range eventRows {
+			if id, _ := row["account_id"].(string); id != accountId {
+				continue
+			}
+			rows++
+			totalEvents += toInt64(row["event_count"])
+			totalHigh += toInt64(row["count_priority_high"])
+		}
+		if rows > 0 {
+			accountCount++
+		}
+	}
+	return totalEvents, totalHigh, accountCount
 }
 
 func ExtractEventCountRows(root map[string]interface{}, parameter string) ([]interface{}, error) {

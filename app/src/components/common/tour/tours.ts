@@ -11,6 +11,9 @@
  * update the selector here in the same change.
  */
 import { getAssistantName, getBrandTitle } from '@hooks/useTenantBranding';
+import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
+import { isUiFeatureEnabled, hasFeatureAccessCached, getUserSession, isTenantAdmin } from '@lib/auth';
+import apiUser from '@api1/user';
 
 /**
  * Resolves the `{brand}` and `{assistant}` tokens in tour copy to the tenant's
@@ -74,6 +77,32 @@ export interface TourStepDef {
    * detached, centered popover.
    */
   optional?: boolean;
+  /**
+   * Predicts whether an `optional` step will actually be available, for
+   * progress-count purposes — the engine calls this to know, *before* ever
+   * reaching the step, whether it'll show (so "X of Y" and "which step is
+   * really last" are right from the first popover on). Only meaningful for a
+   * condition that's real, stable, and checkable from anywhere in the tour —
+   * a permission or deployment toggle, say. Leave it undeclared for a step
+   * that only becomes checkable once an earlier step's `onBeforeNext` has
+   * run (a table that mounts after a tab click); the engine assumes those
+   * will show and self-corrects once goTo actually reaches them. Doesn't
+   * affect whether the step is actually shown or skipped — goTo's own DOM
+   * wait is still authoritative for that; pair with `optional: true`.
+   */
+  isAvailable?: () => boolean;
+  /**
+   * Overrides how long the engine waits for this step's element to mount
+   * (default: 5s for a required step, 600ms for `optional`). For a required
+   * step whose content depends on a real network fetch that can legitimately
+   * run long on a cold load (a metrics query, say) — the default 5s is tuned
+   * for "did the click even work", not "is the backend just slow today", and
+   * without this the step (and the whole tour, since it's required) would
+   * die on a slow fetch. If the content only *sometimes* shows at all,
+   * prefer `optional` instead — this is for content that will always arrive,
+   * just not always quickly.
+   */
+  waitMs?: number;
 }
 
 export interface TourDef {
@@ -102,8 +131,8 @@ export interface TourDef {
    */
   requires?: TourCapability;
   /**
-   * Tenant feature flag (a `feature_id`) this guide needs — e.g. the "Ask AI"
-   * guide, whose card only renders when WORKFLOWS is on. Resolved via the cached
+   * Tenant feature flag (a `feature_id`) this guide needs — e.g. the LLM
+   * Analyser guide, whose tab only renders when LLM_ANALYSER is on. Resolved via the cached
    * feature flags (`hasFeatureAccessCached`); see `canAccessTour`.
    *
    * ONLY for opt-in flags (absent row = feature off). `hasFeatureAccessCached`
@@ -120,15 +149,15 @@ export interface TourDef {
   requiresFeature?: string;
   /**
    * Deployment-level UI toggle (a `UI_ENABLE_*` env var) this guide's surface
-   * needs — e.g. the LLM Analyser tab, which only renders when the pod has
-   * UI_ENABLE_LLM_ANALYSER=true.
+   * needs — e.g. the AI Gateway tab, which only renders when the pod has
+   * UI_ENABLE_LLM_GATEWAY=true.
    *
    * Distinct from `requiresFeature`, and not interchangeable with it: these are
    * per-DEPLOYMENT, not per-tenant, so they aren't in `featureflags_list` and
    * `hasFeatureAccessCached` can never see them. Resolved via
    * `isUiFeatureEnabled`, which reads the session — sync, and needs no warming.
    */
-  requiresUiFeature?: 'llmAnalyser' | 'llmGateway';
+  requiresUiFeature?: 'llmGateway';
 }
 
 /**
@@ -391,17 +420,10 @@ const appOverviewTour: TourDef = {
       align: 'start',
     },
     {
-      element: '#clusters-sidenavbutton',
-      title: 'Clusters',
-      description: 'Drill into your Kubernetes clusters — health, workloads, security, and configuration.',
-      side: 'right',
-      align: 'start',
-      optional: true,
-    },
-    {
-      element: '#cloud-sidenavbutton',
-      title: 'Cloud',
-      description: 'Your connected cloud accounts (AWS, Azure, GCP) — spend, inventory, and security posture.',
+      element: '#infra-sidenavbutton',
+      title: 'Infra',
+      description:
+        'Everything you run, in one place — K8s for cluster health, workloads, security, and configuration; Cloud for your connected AWS, Azure, and GCP accounts.',
       side: 'right',
       align: 'start',
       optional: true,
@@ -429,8 +451,10 @@ const appOverviewTour: TourDef = {
         'Nubi is the AI that runs alongside you — ask it anything from Home, or about any finding you’re looking at. b-Cortex is its memory: what it has learned about your estate and past incidents, so its answers get sharper over time.',
       side: 'right',
       align: 'start',
-      // Hidden in OSS deployments (NUDGEBEE_DEPLOYMENT_MODE=oss).
+      // Hidden in OSS deployments (NUDGEBEE_DEPLOYMENT_MODE=oss) — see
+      // NubiBrainNav.jsx, which gates the button on the same check.
       optional: true,
+      isAvailable: () => !isOSSDeploymentMode(),
     },
     {
       element: '#global-cluster-filter',
@@ -763,7 +787,10 @@ const knowledgeGraphTour: TourDef = {
       description: 'Admins can tune what the graph ingests and how it’s built here.',
       side: 'bottom',
       align: 'end',
+      // Tenant admins only — see KnowledgeGraph.jsx, which gates the button
+      // on the same check.
       optional: true,
+      isAvailable: () => isTenantAdmin(),
     },
   ],
 };
@@ -1077,8 +1104,7 @@ const connectAzureTour: TourDef = {
  * walks one path. Anchors — the option cards + "Create Automation" button +
  * builder trigger cards (#wf-builder-trigger-option-*-card) pre-exist; the
  * sub-modal ids (#wf-code-*, #wf-ai-*, #wf-template-*) were added alongside
- * these guides. AI and templates are feature-gated, so those two guides declare
- * `requiresFeature` (WORKFLOWS / WORKFLOW_TEMPLATES) and hide where it's off.
+ * these guides.
  *
  * All four are 'account-write': the "Create Automation" button they drive is
  * gated on `hasWriteAccess(accountId)` (WorkflowListing.tsx), which account
@@ -1137,8 +1163,6 @@ const automationWithAiTour: TourDef = {
   description: 'Describe what you want in plain language and let AI draft the automation.',
   route: '/automation',
   requires: 'account-write',
-  // The "Ask AI" card is enabled by the WORKFLOWS feature flag.
-  requiresFeature: 'WORKFLOWS',
   steps: [
     {
       element: '#workflow-listing-create-btn',
@@ -1185,8 +1209,6 @@ const automationFromTemplateTour: TourDef = {
   description: 'Start from a pre-built automation for a common scenario.',
   route: '/automation',
   requires: 'account-write',
-  // The "From a template" card is enabled by the WORKFLOW_TEMPLATES flag.
-  requiresFeature: 'WORKFLOW_TEMPLATES',
   steps: [
     {
       element: '#workflow-listing-create-btn',
@@ -1259,7 +1281,7 @@ const automationFromScratchTour: TourDef = {
       description: 'Build it yourself in the visual editor. Click Next to open the builder.',
       side: 'bottom',
       align: 'start',
-      // Navigates to /workflow/new — the builder's trigger picker mounts next.
+      // Navigates to /automation/new — the builder's trigger picker mounts next.
       onBeforeNext: () => {
         document.querySelector<HTMLElement>('#wf-create-from-scratch-card')?.click();
       },
@@ -1317,19 +1339,22 @@ const automationFromScratchTour: TourDef = {
  * Recommendations instead, which also makes the guide robust when launched from
  * any tab.
  *
- * Anchors (all pre-existing except #optimize-card-savings, added with this
- * guide):
+ * Anchors:
  *   #anchor-tab-summary|recommendations|resolutions|auto-optimize
  *                          → AnchorComponent renders id=`anchor-tab-<opt.id>`
+ *   #anchor-tab-llm-analyser|ai-gateway → same, but these two entries only exist
+ *                          in filterOptions (pages/optimise/index.jsx) when their
+ *                          UI_ENABLE_* toggle is on AND hasReadAccess passes, so
+ *                          both steps are `optional` and silently skip otherwise
  *   #optimize-card-savings → the "Total Savings" WidgetCard
- *   [data-testid="severity-summary-bar"] → the category + severity chip bar (the
- *                                          category FilterDropdown became chips in
- *                                          this bar in PR #34425, so there is no
- *                                          separate category step)
- *   [data-testid="top-issues-bar"]       → Top Issues band (data-dependent, so
- *                                          optional: absent when there are none)
+ *   #optimize-card-all     → the "All Recommendations" card — the category
+ *                            stat-cards double as tabs (the category chips and
+ *                            the Top Issues band were folded into the cards +
+ *                            the Rules filter in the filter-bar redesign)
+ *   [data-testid="severity-summary-bar"] → the severity + safety chip bar
  *   #auto-complete-optimize-account-filter
  *                          → FilterDropdown rewrites `id` to `auto-complete-<id>`
+ *   #auto-complete-optimize-rules-filter → the Rules filter (grouped by category)
  *   #optimize-search       → the search input
  *   #optimize-recommendations-table → the recommendations table (renders even
  *                                     while loading/empty, so it's a safe anchor)
@@ -1363,33 +1388,38 @@ const optimizeTour: TourDef = {
     {
       element: '#optimize-card-savings',
       title: 'Your total savings',
-      description:
-        'Estimated monthly savings if every recommendation here were applied. The cards to the left break the same findings down by category.',
+      description: 'Estimated monthly savings if every recommendation here were applied.',
       side: 'bottom',
       align: 'end',
     },
     {
-      element: '[data-testid="severity-summary-bar"]',
-      title: 'Filter by category & severity',
+      element: '#optimize-card-all',
+      title: 'The cards are your category tabs',
       description:
-        'One chip bar, two levers — Category narrows to the kind of change you’re ready to make (Right Sizing, Config, Spot…), Severity to how urgent it is. Start with Critical and High — that’s where the money and the risk usually are.',
+        'Each category card filters the list to that kind of change (Right Sizing, Config, Spot…) — click one to narrow, click it again to unselect. This card brings back everything.',
       side: 'bottom',
       align: 'start',
     },
     {
-      element: '[data-testid="top-issues-bar"]',
-      title: 'Top issues',
+      element: '[data-testid="severity-summary-bar"]',
+      title: 'Filter by severity & safety',
       description:
-        'The rules firing most often right now. Click one to see just those recommendations — the fastest way to fix a whole class of problem at once.',
+        'Two levers — Severity for how urgent a finding is, Safety for its blast radius (Safe means no dependents in the way). Start with Critical and High — that’s where the money and the risk usually are.',
       side: 'bottom',
       align: 'start',
-      // Data-dependent: only renders when there are top issues to show.
-      optional: true,
     },
     {
       element: '#auto-complete-optimize-account-filter',
       title: 'Scope to an account',
       description: 'Narrow the list to a single cloud account or cluster.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#auto-complete-optimize-rules-filter',
+      title: 'Filter by rule',
+      description:
+        'Every rule with open findings, grouped by category and sorted by how often it fires. Pick one to fix a whole class of problem at once — Savings and Last seen next to it narrow by value and freshness.',
       side: 'bottom',
       align: 'start',
     },
@@ -1428,6 +1458,33 @@ const optimizeTour: TourDef = {
       description: 'Let {brand} apply right-sizing continuously instead of one row at a time, with approvals if you want a human in the loop.',
       side: 'bottom',
       align: 'start',
+    },
+    // Both optional: the tab (and therefore the anchor) only renders when its
+    // own gate is on AND the user has read access to the selected
+    // account/cluster — see filterOptions in pages/optimise/index.jsx. `optional`
+    // makes the engine skip the step instead of showing a detached popover when
+    // either condition fails, which is exactly the access check we want here.
+    //
+    // The two gates are NOT the same kind: LLM Analyser is a per-tenant feature
+    // flag (read from the warmed cache, like llmAnalyserTour's requiresFeature),
+    // while AI Gateway is still a per-deployment UI_ENABLE_* toggle.
+    {
+      element: '#anchor-tab-llm-analyser',
+      title: 'LLM Analyser',
+      description: 'What your AI is costing you — by model, agent, conversation, and user.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+      isAvailable: () => hasFeatureAccessCached('LLM_ANALYSER'),
+    },
+    {
+      element: '#anchor-tab-ai-gateway',
+      title: 'AI Gateway',
+      description: 'Route your own LLM traffic through {brand} and see every request, model, and user.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+      isAvailable: () => isUiFeatureEnabled('llmGateway'),
     },
   ],
 };
@@ -1737,28 +1794,42 @@ const optimizeAutoOptimizeTour: TourDef = {
 /**
  * "Optimize: LLM Analyser" deep-dive.
  *
- * Gated on `requiresUiFeature: 'llmAnalyser'`, NOT `requiresFeature`: the tab is
- * gated on `enableLlmAnalyser` (the pod's UI_ENABLE_LLM_ANALYSER env var, read in
- * /optimise's getServerSideProps) — a per-deployment toggle that never appears in
- * `featureflags_list`, so the tenant-flag machinery can't see it. The session
- * carries it instead (see `uiFeatures`), which is what `isUiFeatureEnabled` reads.
+ * Gated on `requiresFeature: 'LLM_ANALYSER'` — a per-tenant feature flag
+ * (`featureflags_list`), resolved via the cached tenant flags
+ * (`hasFeatureAccessCached`); see `canAccessTour`. Tenant admins toggle it from
+ * the Feature Flags section of Tenant Settings.
  *
  * The tab's second gate is `hasReadAccess(selectedCluster?.value)`. That's not
  * resolvable from the global catalog (no cluster context there, same limitation as
  * 'account-write'), and it passes for anyone with read on the selected account —
- * the deployment toggle is the gate that actually decides visibility.
+ * the tenant flag is the gate that actually decides visibility.
  *
  * Anchors (all pre-existing):
  *   #anchor-tab-llm-analyser → the tab (id 'llm-analyser'; note its hash is
  *                              'cost-analyser' — fragment and id differ here)
  *   #cost-kpi-row / #cost-over-time / #cost-filter-bar / #cost-filter-reset
  *   #auto-complete-cost-filter-{account,model,user} → FilterDropdown rewrites ids
- *   #tab-conversations / #tab-models / #tab-agents → inner Tabs. These declare no
- *        `id`, so a11yProps falls back to `tab-${index}` where index is opt.value
- *        (a string) — hence #tab-models, not #tab-2. They use behavior='filter',
- *        so they're buttons that don't touch the URL: the guide must click them.
+ *   #tab-conversations / #tab-models / #tab-agents / #tab-tools / #tab-users /
+ *   #tab-critiques / #tab-overview → inner Tabs. These declare no `id`, so
+ *        a11yProps falls back to `tab-${index}` where index is opt.value (a
+ *        string) — hence #tab-models, not #tab-2. They use behavior='filter',
+ *        so they're buttons that don't touch the URL: the guide must click
+ *        them. Unlike the others, #tab-critiques' own content is gated
+ *        server-side to tenant_admin+ (CritiqueAnalyser.tsx) — the tab button
+ *        itself isn't, so this guide only points at it rather than opening it.
  * `isMounted` starts false, so the tab appears a tick after mount; the engine's
  * element-wait covers it.
+ *
+ * CostAnalyser's inner `tab` state is local (`useState<TabId>('overview')`) and
+ * survives switching away to another top-level Optimize tab and back, since
+ * CostAnalyser stays mounted the whole time (only the outer AnchorComponent
+ * swaps what's visible). So a user who was sitting on, say, Conversations
+ * before launching this guide is still on Conversations once step 1 opens the
+ * LLM Analyser tab — #cost-kpi-row (Overview-only, required) would then never
+ * mount and the guide would dead-end after REQUIRED_WAIT_MS. Step 1's
+ * onBeforeNext clicks #tab-overview too, landing back on Overview regardless
+ * of where the user started; harmless no-op on a fresh mount, which already
+ * defaults there.
  */
 const llmAnalyserTour: TourDef = {
   id: 'llm-analyser',
@@ -1766,7 +1837,7 @@ const llmAnalyserTour: TourDef = {
   module: 'Optimize',
   description: 'See what your AI is costing you — by model, agent, conversation, and user.',
   route: '/optimise',
-  requiresUiFeature: 'llmAnalyser',
+  requiresFeature: 'LLM_ANALYSER',
   steps: [
     {
       element: '#anchor-tab-llm-analyser',
@@ -1776,6 +1847,9 @@ const llmAnalyserTour: TourDef = {
       align: 'start',
       onBeforeNext: () => {
         document.querySelector<HTMLElement>('#anchor-tab-llm-analyser')?.click();
+        // Land back on Overview even if the user was already on this tab and
+        // had switched to a different inner one — see the docblock above.
+        document.querySelector<HTMLElement>('#tab-overview')?.click();
       },
     },
     {
@@ -1784,6 +1858,11 @@ const llmAnalyserTour: TourDef = {
       description: 'Total spend, call volume, and token usage for the period and filters you’ve selected.',
       side: 'bottom',
       align: 'start',
+      // Required (the tour can't meaningfully continue without Overview's data),
+      // but on a cold load the metrics query can run past the default 5s —
+      // CostAnalyser shows a spinner, not this row, until it resolves. Give it
+      // real room rather than let a slow-but-healthy fetch collapse the tour.
+      waitMs: 20000,
     },
     {
       element: '#cost-over-time',
@@ -1841,25 +1920,82 @@ const llmAnalyserTour: TourDef = {
       align: 'start',
       optional: true,
     },
+    {
+      element: '#tab-tools',
+      title: 'Tools',
+      description: 'Every tool your agents call — usage, reliability, and latency, so you can see which ones are slow or failing.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#tab-users',
+      title: 'Users',
+      description: 'Who’s driving the spend — cost, volume, and cache efficiency per user, ranked highest first.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#tab-critiques',
+      title: 'Critiques',
+      description: 'How good the answers actually are — a cross-tenant quality dashboard scored across themes and agents. Tenant admins only.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+    },
   ],
 };
 
 /**
- * "Optimize: AI Gateway" deep-dive. Same gating story as the LLM Analyser, on the
- * sibling UI_ENABLE_LLM_GATEWAY toggle — see llmAnalyserTour's docblock.
+ * "Optimize: AI Gateway" deep-dive.
+ *
+ * Gated on `requiresUiFeature: 'llmGateway'` — a per-deployment toggle (the pod's
+ * UI_ENABLE_LLM_GATEWAY env var, read in /optimise's getServerSideProps) that
+ * never appears in `featureflags_list`, so the tenant-flag machinery can't see
+ * it. The session carries it instead (see `uiFeatures`), which is what
+ * `isUiFeatureEnabled` reads. Unlike the LLM Analyser's tab (see
+ * llmAnalyserTour), this one hasn't been converted to a tenant feature flag.
  *
  * The Analyser covers {brand}'s own agent traffic; the Gateway covers your BYO-token
  * traffic forwarded through it, which is why they're separate guides.
  *
  * Anchors (all pre-existing):
  *   #anchor-tab-ai-gateway → the tab
- *   #tab-connect / #tab-overview / #tab-requests / #tab-models → inner Tabs
- *        (`tab-${opt.value}`; behavior='filter', so click — no URL change)
+ *   #tab-connect / #tab-overview / #tab-models / #tab-users / #tab-requests /
+ *   #tab-sessions / #tab-tools / #tab-governance → inner Tabs
+ *        (`tab-${opt.value}`; behavior='filter', so click — no URL change).
+ *        This is GatewayUsage.tsx's own `tabOptions` order, i.e. the real UI
+ *        order — the GUIDE'S step order deliberately differs (Overview before
+ *        Connect; see below), so don't "fix" one to match the other.
  *   #gateway-connect / #gateway-connect-generate-token-btn → the Connect pane
  *   #gateway-kpi-row / #gateway-usage-over-time → Overview
- *   #gateway-requests-table → the Requests log
- * Connect is the default landing view, so the guide starts there rather than
- * assuming Overview.
+ *
+ * Step order is Overview, then Connect — opposite of the tab bar's own left-
+ * to-right order — because of how landing on each is actually driven:
+ *
+ *   Overview: GatewayUsage.tsx's default sub-tab is Overview (`DEFAULT_TAB`),
+ *   and opening the top-level tab (step 1) always lands there, even if the
+ *   user was already sitting on a different sub-tab: the click navigates to
+ *   the bare `#ai-gateway` hash, and GatewayUsage's own hash-sync effect
+ *   resolves a sub-tab-less hash to `DEFAULT_TAB` and overwrites whatever
+ *   `tab` state it had. So step 1 alone is enough to reliably land on
+ *   Overview — no extra click needed, which is exactly why it goes first.
+ *
+ *   Connect: reached from Overview by clicking `#tab-connect` directly — an
+ *   ordinary in-tab click (CustomTabs' own onChange), not a re-click of the
+ *   outer tab, so it doesn't touch the top-level hash and doesn't race the
+ *   reset above. `optional: true` is enough for it.
+ *
+ * (Putting Connect first, as this guide originally did, meant every
+ * subsequent "go to Overview" had to fight that same hash-reset race — a
+ * same-tick second click loses to the async effect that fires after it.
+ * Overview-first sidesteps the race entirely instead of winning it.)
+ *
+ * `#gateway-kpi-row` is required, with a longer `waitMs`, for the same reason
+ * `llmAnalyserTour`'s KPI row needs one: it's the first real content after
+ * opening the tab, and GatewayUsage is a `dynamic()` import — a cold load can
+ * outrun the default wait.
  */
 const aiGatewayTour: TourDef = {
   id: 'ai-gateway',
@@ -1870,6 +2006,12 @@ const aiGatewayTour: TourDef = {
   requiresUiFeature: 'llmGateway',
   steps: [
     {
+      // Opening the tab always lands on Overview regardless of where the user
+      // was sitting before — see the docblock above — so the second click
+      // here is belt-and-suspenders, not load-bearing like it is in
+      // llmAnalyserTour's equivalent step: a no-op once already on Overview,
+      // and a safety net for the one tick before the hash-sync effect would
+      // otherwise land there on its own.
       element: '#anchor-tab-ai-gateway',
       title: 'The AI Gateway',
       description: 'Point your own apps at {brand}’s gateway and it prices, logs, and attributes every LLM call they make. Let’s open it.',
@@ -1877,6 +2019,41 @@ const aiGatewayTour: TourDef = {
       align: 'start',
       onBeforeNext: () => {
         document.querySelector<HTMLElement>('#anchor-tab-ai-gateway')?.click();
+        document.querySelector<HTMLElement>('#tab-overview')?.click();
+      },
+    },
+    {
+      element: '#gateway-kpi-row',
+      title: 'Usage at a glance',
+      description: 'Spend, requests, and tokens across everything routed through the gateway.',
+      side: 'bottom',
+      align: 'start',
+      // Required, with room for a cold dynamic-import + first fetch: this is
+      // the first real content after opening the tab, same reasoning as
+      // llmAnalyserTour's KPI row.
+      waitMs: 20000,
+    },
+    {
+      element: '#gateway-usage-over-time',
+      title: 'Usage over time',
+      description: 'The trend, so a runaway job or a retry loop shows up as a spike rather than a surprise bill.',
+      side: 'top',
+      align: 'center',
+      optional: true,
+    },
+    {
+      // Switching FROM Overview TO Connect via this tab button is a plain
+      // in-tab click (CustomTabs' own onChange) — unlike the outer tab click
+      // above, it doesn't touch the URL's top-level fragment, so there's no
+      // hash-reset race to win here. Optional is enough.
+      element: '#tab-connect',
+      title: 'Connect',
+      description: 'This is where you point your own apps at the gateway. Let’s look.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#tab-connect')?.click();
       },
     },
     {
@@ -1896,30 +2073,19 @@ const aiGatewayTour: TourDef = {
       optional: true,
     },
     {
-      element: '#tab-overview',
-      title: 'Overview',
-      description: 'Once traffic is flowing, this is the summary. Let’s look.',
-      side: 'bottom',
-      align: 'start',
-      optional: true,
-      onBeforeNext: () => {
-        document.querySelector<HTMLElement>('#tab-overview')?.click();
-      },
-    },
-    {
-      element: '#gateway-kpi-row',
-      title: 'Usage at a glance',
-      description: 'Spend, requests, and tokens across everything routed through the gateway.',
+      element: '#tab-models',
+      title: 'Models',
+      description: 'Per-model cost, requests, and latency — see which model your traffic actually favors.',
       side: 'bottom',
       align: 'start',
       optional: true,
     },
     {
-      element: '#gateway-usage-over-time',
-      title: 'Usage over time',
-      description: 'The trend, so a runaway job or a retry loop shows up as a spike rather than a surprise bill.',
-      side: 'top',
-      align: 'center',
+      element: '#tab-users',
+      title: 'Users',
+      description: 'Who’s driving the traffic — spend, tokens, and latency per user, with cache-hit rate.',
+      side: 'bottom',
+      align: 'start',
       optional: true,
     },
     {
@@ -1931,9 +2097,25 @@ const aiGatewayTour: TourDef = {
       optional: true,
     },
     {
-      element: '#tab-models',
-      title: 'Models & users',
-      description: 'Who and what is spending: per-model and per-user breakdowns, for chargeback or just for finding the outlier.',
+      element: '#tab-sessions',
+      title: 'Sessions',
+      description: 'Every session, most recently active first — user, models, requests, cost. Drill into one for its full request history.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#tab-tools',
+      title: 'Tools',
+      description: 'How often each tool was offered, called, and how many of those calls failed.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#tab-governance',
+      title: 'Governance',
+      description: 'Reliability and routing at a glance — error rates, tail latency, rule-routed vs. passthrough traffic, and DLP hits.',
       side: 'bottom',
       align: 'start',
       optional: true,
@@ -2188,6 +2370,173 @@ const cloudTour: TourDef = {
   ],
 };
 
+/**
+ * Sets a controlled `<input>`'s value the way a real keystroke would: via the
+ * native value setter (bypassing React's tracked-value shortcut) plus a real
+ * `input` event, so the owning component's own onChange fires and its state
+ * updates exactly as if the user had typed it. Typing "@" is a harmless,
+ * in-place text change — not a destructive/irreversible side-effect like
+ * creating an account — so driving it here is the same kind of thing every
+ * other guide's `onBeforeNext` already does by clicking a button; this is just
+ * a keystroke's worth of the same idea. Only used by `globalSearchTour` below.
+ */
+function typeIntoInput(selector: string, value: string): void {
+  const input = document.querySelector<HTMLInputElement>(selector);
+  if (!input) {
+    return;
+  }
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+/**
+ * "Explore Global Search" orientation — the Ctrl/⌘+K search box mounted in the
+ * header on every page. Read-only: no step touches a gated action, so the guide
+ * is ungated. Anchors (ids added alongside this guide except the first, which
+ * GlobalPageSearch.jsx already emitted):
+ *   #auto-complete-global-page-search → the header trigger pill
+ *   #global-search-ask-ai-row     → the pinned "Ask {assistant}" row inside the
+ *        popover (always visible once it's open, even with zero results)
+ *   #global-search-section-suggested-pages → "Suggested Pages" caption (always
+ *        renders once the box has been opened)
+ *   #global-search-section-recents → "Recents" caption — only present once the
+ *        user has picked a search result before at least once → optional
+ *   #global-search-input          → the popover's search input
+ *   #global-search-options-list[data-mention-mode="true"] → the results list,
+ *        specifically while showing the "@" account picker (GlobalPageSearch
+ *        stamps data-mention-mode on the same list container so this guide can
+ *        tell the two states apart). Only mounts if the tenant has ≥1 eligible
+ *        account for scoped search → optional.
+ *   #global-search-footer-hints   → the keyboard-hint / search-tip bar
+ *   #global-search-trigger-ask-ai → the standalone header avatar button next to
+ *        the search pill — a direct /ask-nudgebee shortcut, distinct from the
+ *        pinned row above (that one reuses whatever's typed into search).
+ *        Deliberately the LAST step, after the popover has closed: it sits
+ *        right next to the search pill, so spotlighting it while the popover
+ *        is still open would fight for attention with the (much bigger)
+ *        overlay right beside it.
+ *
+ * The tour opens the popover right after step 1 (onBeforeNext) and closes it
+ * again right before the final step (a real Escape keydown on the search
+ * input — see that step's own comment), so the avatar sits unobstructed for
+ * its close-out spotlight.
+ *
+ * The "type @" step actually drives the live input (typeIntoInput) rather than
+ * just describing the feature, so the next step can show the real account list
+ * instead of a screenshot-in-words. The following step then clears it back to
+ * '' before pointing at the footer, so that bar shows its normal acronym/path
+ * tip instead of the mention-mode-specific one.
+ */
+const globalSearchTour: TourDef = {
+  id: 'global-search',
+  title: 'Global Search',
+  module: 'Getting started',
+  get description() {
+    return `Jump to any page instantly, revisit recent searches, scope to one account, or hand the question to ${getAssistantName()}.`;
+  },
+  route: '/home',
+  steps: [
+    {
+      element: '#auto-complete-global-page-search',
+      title: 'Search, from anywhere',
+      description: 'Press Ctrl/⌘+K any time to jump straight to a page — no digging through the sidebar. Click Next and we’ll open it.',
+      side: 'bottom',
+      align: 'start',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#auto-complete-global-page-search')?.click();
+      },
+    },
+    {
+      element: '#global-search-ask-ai-row',
+      get title() {
+        return `Or just ask ${getAssistantName()}`;
+      },
+      get description() {
+        return `Whatever you’ve typed above gets asked to ${getAssistantName()}, word for word, if you click here instead of picking a page below. It stays put even when your search already matches something.`;
+      },
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#global-search-section-suggested-pages',
+      title: 'Suggested Pages',
+      description:
+        'Every page you can jump to — top-level views, cluster/cloud-account detail tabs, and (if you’re an admin) user management — all in one searchable list.',
+      side: 'top',
+      align: 'start',
+    },
+    {
+      element: '#global-search-section-recents',
+      title: 'Recents',
+      description: 'Your last few picks show up first, so getting back to somewhere you just were is one click, not a re-search.',
+      side: 'top',
+      align: 'start',
+      // Only present once the user has actually picked a search result before
+      // — same localStorage read GlobalPageSearch.jsx itself gates on.
+      optional: true,
+      isAvailable: () => {
+        const tenantId = getUserSession()?.tenant?.id;
+        return tenantId ? apiUser.getRecentPageSearches(tenantId).length > 0 : false;
+      },
+    },
+    {
+      element: '#global-search-input',
+      title: 'Scope it to one account',
+      description:
+        'Connected to more than one cluster or cloud account? Type “@” to search within just one of them instead of everywhere. Let’s see it.',
+      side: 'bottom',
+      align: 'start',
+      onBeforeNext: () => {
+        typeIntoInput('#global-search-input', '@');
+      },
+    },
+    {
+      element: '#global-search-options-list[data-mention-mode="true"]',
+      title: 'Pick an account',
+      description: 'Every connected AWS, Azure, GCP, and Kubernetes account you can scope to. Pick one and your next search only looks at its pages.',
+      side: 'top',
+      align: 'center',
+      // Only mounts for a tenant with at least one eligible account.
+      optional: true,
+      onBeforeNext: () => {
+        // Clear the "@" demo so the footer hint below reverts to its normal tip.
+        typeIntoInput('#global-search-input', '');
+      },
+    },
+    {
+      element: '#global-search-footer-hints',
+      title: 'A shortcut worth knowing',
+      description:
+        'You don’t need the full name — type the first letters of each part of a page’s path, e.g. “umu” finds user-management/users. Arrow keys navigate, Enter selects.',
+      side: 'top',
+      align: 'start',
+      // Close the popover so the last step can spotlight the header button
+      // behind it unobstructed. Dispatched on the search input specifically
+      // (not document.activeElement) since focus is on the driver.js "Next"
+      // button at this point, not the input — a real Escape keydown there
+      // bubbles into InputBase's own onKeyDown, which closes the popover the
+      // same way a user pressing Escape would.
+      onBeforeNext: () => {
+        document
+          .querySelector<HTMLElement>('#global-search-input')
+          ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      },
+    },
+    {
+      element: '#global-search-trigger-ask-ai',
+      get title() {
+        return `A direct line to ${getAssistantName()}`;
+      },
+      get description() {
+        return `One more thing — this button skips search entirely. Click it any time to start a fresh conversation with ${getAssistantName()} straight away.`;
+      },
+      side: 'bottom',
+      align: 'end',
+    },
+  ],
+};
+
 export const TOURS: Record<string, TourDef> = {
   [createUserTour.id]: createUserTour,
   [connectClusterTour.id]: connectClusterTour,
@@ -2195,6 +2544,7 @@ export const TOURS: Record<string, TourDef> = {
   [connectGcpTour.id]: connectGcpTour,
   [connectAzureTour.id]: connectAzureTour,
   [appOverviewTour.id]: appOverviewTour,
+  [globalSearchTour.id]: globalSearchTour,
   [troubleshootTour.id]: troubleshootTour,
   [investigationsTour.id]: investigationsTour,
   [knowledgeGraphTour.id]: knowledgeGraphTour,

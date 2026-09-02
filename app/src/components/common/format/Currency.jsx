@@ -114,7 +114,7 @@ export default function Currency({
       placement='bottom-start'
       tooltipStyle={{ margin: '0px' }}
     >
-      <Box>
+      <Box sx={{ display: 'inline-flex', alignItems: 'baseline' }}>
         {parseFloat(actualValue) < 1 && precison === 0 && (
           <Typography
             sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-regular)', ...sxPrefix }}

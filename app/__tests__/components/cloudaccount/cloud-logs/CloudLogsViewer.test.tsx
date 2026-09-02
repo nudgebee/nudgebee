@@ -191,7 +191,7 @@ const sampleLogsLabelsOnly = [
 ];
 
 const mockLogsResponse = (logs: any[] = sampleLogsWithMessages) => ({
-  data: { data: { logs_list: logs } },
+  data: { data: { logs_list: { logs, query: '', provider: 'aws_cloudwatch' } } },
 });
 
 describe('CloudLogsViewer (integration)', () => {
@@ -275,7 +275,7 @@ describe('CloudLogsViewer (integration)', () => {
     expect(payload.request.log_group).toBeUndefined();
   });
 
-  it('fetches with GCP payload including cloud sql service_name', async () => {
+  it('fetches account-wide GCP payload with no service_name scope', async () => {
     render(<CloudLogsViewer accountId='acc-1' provider='GCP' />);
     await waitFor(() => expect(screen.getByTestId('qp-emit-valid')).toBeInTheDocument());
 
@@ -284,7 +284,8 @@ describe('CloudLogsViewer (integration)', () => {
 
     await waitFor(() => expect(observability.fetchLogs).toHaveBeenCalled());
     const payload = observability.fetchLogs.mock.calls[0][0];
-    expect(payload.request).toMatchObject({ region: 'us-east-1', service_name: 'cloud sql' });
+    expect(payload.request).toMatchObject({ region: 'us-east-1' });
+    expect(payload.request.service_name).toBeUndefined();
     expect(payload.request.log_group).toBeUndefined();
     expect(payload.request.resource_id).toBeUndefined();
   });

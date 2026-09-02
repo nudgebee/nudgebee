@@ -28,6 +28,7 @@ import { Chip } from '@ui/Chip';
 import { Label } from '@ui/Label';
 import { CostCallout } from '@ui/CostCallout';
 import { EmptyState } from '@ui/EmptyState';
+import { Skeleton } from '@ui/Skeleton';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import FilterDropdown from '@ui/FilterDropdown';
 import HeaderLabel from '../components/HeaderLabel';
@@ -252,6 +253,18 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
   const [includeAgents, setIncludeAgents] = React.useState<string[]>([]);
   const [excludeAgents, setExcludeAgents] = React.useState<string[]>(DEFAULT_EXCLUDE);
   const [latencyPctile, setLatencyPctile] = React.useState<AgentLatencyPercentile>(90);
+  // Tracks a genuine user edit to include/exclude — as opposed to reference equality
+  // against DEFAULT_EXCLUDE, which only holds on the very first prune and would
+  // wrongly freeze excludeAgents on whatever agentOptions produced that first time
+  // (e.g. never re-deriving after an account/date-range switch changes agentOptions).
+  const excludeModifiedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (agentOptions.length === 0 || excludeModifiedRef.current) {
+      return;
+    }
+    setExcludeAgents(DEFAULT_EXCLUDE.filter((a) => agentOptions.includes(a)));
+  }, [agentOptions]);
   const [state, setState] = React.useState<{
     loading: boolean;
     error: string | null;
@@ -287,7 +300,10 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
         statuses: filters.statuses,
         userId: filters.userId || undefined,
         agents: includeAgents,
-        agentsExclude: excludeAgents,
+        // No-op once include is set (include already restricts to those agents) —
+        // don't send the now-inert exclude list. Kept in state (not cleared) so it
+        // reappears if the user clears the include filter.
+        agentsExclude: includeAgents.length > 0 ? [] : excludeAgents,
         sortBy,
         limit: 100,
         latencyPercentile: latencyPctile,
@@ -367,15 +383,26 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
               multiple
               options={agentOptions}
               value={includeAgents}
-              onSelect={(_e: unknown, sel: FDOption[]) => setIncludeAgents(toValues(sel))}
+              onSelect={(_e: unknown, sel: FDOption[]) => {
+                const next = toValues(sel);
+                excludeModifiedRef.current = true;
+                setIncludeAgents(next);
+                setExcludeAgents((prev) => prev.filter((a) => !next.includes(a)));
+              }}
             />
             <FilterDropdown
               id='agents-filter-exclude'
               label='Agents (exclude)'
               multiple
               options={agentOptions}
-              value={excludeAgents}
-              onSelect={(_e: unknown, sel: FDOption[]) => setExcludeAgents(toValues(sel))}
+              value={agentOptions.length > 0 ? excludeAgents : []}
+              isOptionsLoading={agentOptions.length === 0}
+              onSelect={(_e: unknown, sel: FDOption[]) => {
+                const next = toValues(sel);
+                excludeModifiedRef.current = true;
+                setExcludeAgents(next);
+                setIncludeAgents((prev) => prev.filter((a) => !next.includes(a)));
+              }}
             />
             <FilterDropdown
               id='agents-filter-latency'
@@ -405,20 +432,25 @@ export function AgentsView({ accountId, filters, agentOptions = [], onSelectRun 
 
         {state.error && <Banner tone='critical' title='Could not load agents' message={state.error} />}
 
-        {!state.error && state.profiles.length > 0 && (
+        {!state.error && (state.profiles.length > 0 || state.loading) && (
           <Box>
             <SectionHeader
               title='Agent latency profile'
               icon={<TimerOutlinedIcon />}
               subtitle='p50 / p90 / p99 of total invocation latency per agent. Dashed line = selected pXX threshold (24h baseline). Click a bar to filter the table.'
             />
-            <AgentLatencyBars
-              id='agent-latency-bars'
-              profiles={state.profiles}
-              thresholdSeconds={state.thresholdSec}
-              percentile={state.appliedPctile}
-              onSelectAgent={(name) => setIncludeAgents(name ? [name] : [])}
-            />
+            {state.profiles.length > 0 ? (
+              <AgentLatencyBars
+                id='agent-latency-bars'
+                profiles={state.profiles}
+                thresholdSeconds={state.thresholdSec}
+                percentile={state.appliedPctile}
+                onSelectAgent={(name) => setIncludeAgents(name ? [name] : [])}
+                loading={state.loading}
+              />
+            ) : (
+              <Skeleton shape='rect' height={200} width='100%' />
+            )}
           </Box>
         )}
 

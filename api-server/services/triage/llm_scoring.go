@@ -50,8 +50,37 @@ var blastAdj = map[string]int{
 	"monitoring_backbone": 6, "single_workload": 0, "expected_change": -8,
 }
 
+// criticalityAdj is how much a workload's resolved business criticality moves an alert's score.
+//
+// This is applied HERE, per event, rather than as prompt grounding on the cached class verdict —
+// which is where it used to live and why it did not work. A class verdict is keyed on
+// (aggregation_key, finding_type, subject_owner) and shared across the whole tenant, so injecting one
+// workload's criticality into it served that tier to every workload with the same NAME: a prod and a
+// test deployment called `services-server` shared one answer, and whichever minted first decided it.
+// Nothing invalidated that cache when a tier changed either, so an operator's override on the review
+// screen never reached scoring at all. Resolving per event fixes both at once.
+//
+// Magnitudes sit alongside the other terms (blast maxes at +10, env at -15, recurrence at ±15): a
+// large enough nudge to reorder a queue, not large enough to overrule the alert's own semantics.
+var criticalityAdj = map[string]int{
+	CriticalityCritical: 12, CriticalityHigh: 6, CriticalityMedium: 0, CriticalityLow: -10,
+}
+
 var bandFloorScore = map[string]int{"P0": 80, "P1": 60, "P2": 40, "P3": 0}
 var bandCeilScore = map[string]int{"P0": 100, "P1": 79, "P2": 59, "P3": 39}
+
+// userCriticalityBand is the priority band an OPERATOR's explicit criticality forces. Only
+// source='user' rows appear here: a human declaring a workload critical is the most authoritative
+// signal in the system and must be able to overrule a class verdict that capped the band lower,
+// which an additive term alone cannot do. Auto-derived tiers (fact_signal / llm_inferred) stay
+// advisory — they only move the score, never the band.
+//
+// Expressed as (floor, ceiling) overrides; an empty string leaves that end of the band alone.
+var userCriticalityBand = map[string]struct{ floor, ceiling string }{
+	CriticalityCritical: {floor: "P1"},
+	CriticalityHigh:     {floor: "P2"},
+	CriticalityLow:      {ceiling: "P3"},
+}
 
 // clampToBand re-asserts the LLM verdict's priority band on a score. score_factors carries the
 // band as "<floor>..<ceiling>" (least-severe..most-severe). Additive scoring rules run AFTER the
@@ -118,9 +147,73 @@ func correlationTypeAdjustment(corrType string) int {
 	}
 }
 
+// workloadTier is the resolved business criticality of the workload an event is about, as it enters
+// scoring. The zero value means "no row" — the medium default — and contributes nothing.
+type workloadTier struct {
+	level  string // critical | high | medium | low, or "" when the workload has no row
+	source string // user | fact_signal | llm_inferred
+}
+
+// isUserDeclared reports whether an operator set this tier explicitly, which is what earns it the
+// power to move the priority band rather than just the score.
+func (t workloadTier) isUserDeclared() bool { return t.source == CriticalitySourceUser }
+
+// bandFloorOf and bandCeilOf resolve a P-level to its score, defaulting to the OPEN end of the range
+// when the level is absent or unrecognised. Reading the maps directly is a trap: a missing key yields
+// 0, so a verdict with no ceiling reads as "ceiling at 0" rather than "no ceiling", which both
+// silently discards an operator's cap and makes every band look inverted.
+func bandFloorOf(p string) int {
+	if s, ok := bandFloorScore[strings.ToUpper(p)]; ok {
+		return s
+	}
+	return 0
+}
+
+func bandCeilOf(p string) int {
+	if s, ok := bandCeilScore[strings.ToUpper(p)]; ok {
+		return s
+	}
+	return 100
+}
+
+// applyCriticalityBand returns the verdict's band with an operator-declared criticality's bound
+// applied. It never widens the band beyond what the operator asked for and never inverts it: a floor
+// is only raised, a ceiling only lowered, and a bound that would cross the other end wins with the
+// other end giving way.
+func applyCriticalityBand(floorP, ceilP string, tier workloadTier) (string, string) {
+	if !tier.isUserDeclared() {
+		return floorP, ceilP
+	}
+	bound, ok := userCriticalityBand[tier.level]
+	if !ok {
+		return floorP, ceilP
+	}
+	newFloor, newCeil := floorP, ceilP
+	if bound.floor != "" && bandFloorOf(bound.floor) > bandFloorOf(floorP) {
+		newFloor = bound.floor
+	}
+	if bound.ceiling != "" && bandCeilOf(bound.ceiling) < bandCeilOf(ceilP) {
+		newCeil = bound.ceiling
+	}
+	// A user `low` ceiling under a verdict floor of P1, or a user `critical` floor over a ceiling of
+	// P3, would invert the band. Prefer the operator's end and let the other end give way — silently
+	// dropping an explicit human decision is the worse failure.
+	if bandFloorOf(newFloor) > bandCeilOf(newCeil) {
+		if bound.floor != "" {
+			newCeil = "P0"
+		} else {
+			newFloor = "P3"
+		}
+	}
+	return newFloor, newCeil
+}
+
 // computeVerdictScore turns a (cached) LLM verdict + live context into a 0-100 score and
 // a P-level, bounded inside the verdict's priority band. Pure function — no I/O.
-func computeVerdictScore(v *SignalVerdict, envCategory string, recurrenceCount int) (int, string, map[string]interface{}) {
+//
+// `tier` is the event's own workload criticality, applied here rather than as grounding baked into
+// the shared class verdict — see criticalityAdj for why that distinction is the whole point.
+func computeVerdictScore(v *SignalVerdict, envCategory string, recurrenceCount int, tier workloadTier) (int, string, map[string]interface{}) {
 	base, ok := intrinsicBase[strings.ToLower(v.Intrinsic)]
 	if !ok {
 		base = intrinsicBase["low"]
@@ -138,15 +231,14 @@ func computeVerdictScore(v *SignalVerdict, envCategory string, recurrenceCount i
 
 	blast := blastAdj[strings.ToLower(v.Blast)] // missing -> 0 (single_workload)
 	recur := recurrenceAdjustment(recurrenceCount, strings.ToLower(v.RecurrenceSemantics))
+	crit := criticalityAdj[strings.ToLower(tier.level)] // missing / no row -> 0 (the medium default)
 
-	raw := base + envTerm + blast + recur
+	raw := base + envTerm + blast + recur + crit
 
-	floor := bandFloorScore[strings.ToUpper(v.BandFloor)]     // missing -> P3 floor (0)
-	ceil, ok := bandCeilScore[strings.ToUpper(v.BandCeiling)] // missing -> treat as no ceiling
-	if !ok {
-		ceil = 100
-	}
-	score := clamp(clamp(raw, floor, ceil), 0, 100)
+	// An operator's explicit tier can move the band; a derived one cannot.
+	floorP, ceilP := applyCriticalityBand(v.BandFloor, v.BandCeiling, tier)
+
+	score := clamp(clamp(raw, bandFloorOf(floorP), bandCeilOf(ceilP)), 0, 100)
 
 	factors := map[string]interface{}{
 		"scoring_path":         "llm_verdict",
@@ -162,11 +254,22 @@ func computeVerdictScore(v *SignalVerdict, envCategory string, recurrenceCount i
 		"recurrence_count":     recurrenceCount,
 		"recurrence_adjust":    recur,
 		"raw_score":            raw,
-		"band":                 v.BandFloor + ".." + v.BandCeiling,
-		"verdict_source":       v.SourceModel,
-		"verdict_confidence":   v.Confidence,
-		"reasoning":            v.Reasoning, // human-readable "why" for the UI/score breakdown
-		"final_score":          score,
+		// The band written here is the ADJUSTED one, because processor.go re-applies clampToBand
+		// after additive rules — writing the verdict's original band would silently undo an
+		// operator's override the moment any scoring rule touched the event.
+		"band":               floorP + ".." + ceilP,
+		"verdict_source":     v.SourceModel,
+		"verdict_confidence": v.Confidence,
+		"reasoning":          v.Reasoning, // human-readable "why" for the UI/score breakdown
+		"final_score":        score,
+	}
+	if tier.level != "" {
+		factors["criticality"] = tier.level
+		factors["criticality_source"] = tier.source
+		factors["criticality_adjustment"] = crit
+		if floorP != v.BandFloor || ceilP != v.BandCeiling {
+			factors["criticality_band_override"] = v.BandFloor + ".." + v.BandCeiling + " -> " + floorP + ".." + ceilP
+		}
 	}
 	return score, scoreToPriority(score), factors
 }

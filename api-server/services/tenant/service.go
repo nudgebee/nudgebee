@@ -1190,7 +1190,10 @@ func UpsertK8sAccountNamespaceGroupRole(ctx *security.RequestContext, request Ac
 
 func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequest) (ManageGroupUsersResponse, error) {
 	ctx.GetLogger().Info("manage group users", "request", slog.AnyValue(request))
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// tenant_admin or a usergroups:Write grant. The privilege check that keeps the
+	// grant from being an escalation runs after the tenant-membership check below,
+	// once we know the group is real and belongs to this tenant.
+	if !canAdministerUserGroups(ctx.GetSecurityContext()) {
 		return ManageGroupUsersResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
@@ -1213,6 +1216,20 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 	err = groupRow.MapScan(groupCount)
 	if err != nil || groupCount["count"].(int64) == 0 {
 		return ManageGroupUsersResponse{}, common.ErrorUnauthorized("Group not found in tenant")
+	}
+
+	// Membership of a group that carries a tenant-wide role or a custom role
+	// stays tenant-admin-only: every member inherits that group's authority, so
+	// a usergroups:Write holder could otherwise add themselves to an admin group
+	// and elevate. Ordinary groups remain delegable. See authz_usergroups.go.
+	if !mayChangePrivilegedGroupMembership(ctx.GetSecurityContext()) {
+		privileged, err := groupConfersPrivilege(manager, ctx.GetSecurityContext().GetTenantId(), request.GroupId)
+		if err != nil {
+			return ManageGroupUsersResponse{}, common.ErrorInternal("Error validating group privileges")
+		}
+		if privileged {
+			return ManageGroupUsersResponse{}, common.ErrorUnauthorized("Changing membership of a group that carries a role requires a tenant admin")
+		}
 	}
 
 	// resolve add_usernames to user_ids — batch query instead of per-username lookup
@@ -1334,8 +1351,18 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 }
 
 func UpsertTenantAttributes(ctx *security.RequestContext, request TenantAttributeUpsertRequest) ([]models.TenantAttributes, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// Tenant config (non-privilege): tenant_admin OR a custom-role grant.
+	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
 		return nil, common.ErrorUnauthorized("Not Allowed")
+	}
+	// ...but a few attribute keys are billing/authorization controls, not config
+	// (see privileged_config.go). A `tenants:Write` grant must not carry those.
+	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
+		for _, attr := range request.Object {
+			if isPrivilegedTenantAttribute(attr.Name) {
+				return nil, common.ErrorUnauthorized("Setting '" + attr.Name + "' requires a tenant admin")
+			}
+		}
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	for i := range request.Object {
@@ -1442,7 +1469,7 @@ func GetTenantAttributeValueByTenantId(ctx *security.RequestContext, tenantId st
 }
 
 func UpdateTenantName(ctx *security.RequestContext, request TenantUpdateNameRequest) (TenantUpdateNameResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
 		return TenantUpdateNameResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1482,7 +1509,7 @@ func UpdateTenantName(ctx *security.RequestContext, request TenantUpdateNameRequ
 }
 
 func DeleteTenantAttributes(ctx *security.RequestContext, request TenantAttributeDeleteRequest) (TenantAttributeDeleteResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
 		return TenantAttributeDeleteResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1515,8 +1542,23 @@ func DeleteTenantAttributes(ctx *security.RequestContext, request TenantAttribut
 }
 
 func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertRequest) (FeatureFlagUpsertResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// Feature flags are tenant settings: the standalone `featureflags` module was
+	// folded into `tenants`, so this write is governed by tenants:Write — the same
+	// grant that already covers UpsertTenantAttributes. Keep in lockstep with
+	// MODULE_ALIASES in app/src/lib/permissionCatalog.ts.
+	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
 		return FeatureFlagUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
+	}
+	// A few flags govern authorization rather than product behavior — notably
+	// RBAC_K8S and CUSTOM_ROLES, the latter being the switch for the grant
+	// mechanism doing the checking here (see privileged_config.go). Those stay
+	// tenant-admin-only however broad the caller's tenants grant is.
+	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
+		for _, f := range request.Features {
+			if isPrivilegedFeatureFlag(f.FeatureId) {
+				return FeatureFlagUpsertResponse{}, common.ErrorUnauthorized("Toggling '" + f.FeatureId + "' requires a tenant admin")
+			}
+		}
 	}
 	err := common.ValidateStruct(request)
 	if err != nil {
@@ -1586,6 +1628,13 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 		if f.AccountId != "" {
 			_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":default:"+tenantId+":"+f.AccountId)
 		}
+		// CUSTOM_ROLES is read while BUILDING a security context, and contexts are
+		// cached for 30 minutes — so without this drop, turning dynamic RBAC off (or
+		// on) would keep leaking the old answer for up to half an hour. Dropping the
+		// tenant's contexts makes the switch take effect on the next request.
+		if f.FeatureId == security.FeatureCustomRoles {
+			_ = security.InvalidateCacheForTenant(tenantId)
+		}
 	}
 
 	return FeatureFlagUpsertResponse{
@@ -1594,8 +1643,20 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 	}, nil
 }
 
+// pgUniqueViolation reports whether err is a Postgres unique_violation (SQLSTATE
+// 23505) — used to tell a duplicate group name apart from other insert/update
+// failures (FK violation, connection loss) so those aren't masked as a name
+// conflict. user_groups_tenant_name_key backs the KG's NudgebeeGroup unique key,
+// which is now name-based (see ownership_enricher.go buildGroupNodes).
+func pgUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505"
+}
+
 func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateRequest) (UserGroupCreateResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// tenant_admin or a usergroups:Write grant — see authz_usergroups.go. A new
+	// group carries no roles, so creating one confers nothing on its own.
+	if !canAdministerUserGroups(ctx.GetSecurityContext()) {
 		return UserGroupCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1614,6 +1675,9 @@ func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateReques
 		request.Name, request.Description, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId(),
 	).Scan(&id)
 	if err != nil {
+		if pgUniqueViolation(err) {
+			return UserGroupCreateResponse{}, common.ErrorConflict("Group name already in use")
+		}
 		ctx.GetLogger().Error("Error creating user group", "error", err)
 		return UserGroupCreateResponse{}, common.ErrorInternal("Error creating user group")
 	}
@@ -1633,7 +1697,10 @@ func CreateUserGroup(ctx *security.RequestContext, request UserGroupCreateReques
 }
 
 func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateRequest) (UserGroupUpdateResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	// tenant_admin or a usergroups:Write grant — see authz_usergroups.go. This
+	// writes the group's name/description only; roles and membership are separate
+	// actions with their own gates.
+	if !canAdministerUserGroups(ctx.GetSecurityContext()) {
 		return UserGroupUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1659,6 +1726,9 @@ func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateReques
 		request.Name, request.Description, request.Id,
 	)
 	if err != nil {
+		if pgUniqueViolation(err) {
+			return UserGroupUpdateResponse{}, common.ErrorConflict("Group name already in use")
+		}
 		ctx.GetLogger().Error("Error updating user group", "error", err)
 		return UserGroupUpdateResponse{}, common.ErrorInternal("Error updating user group")
 	}
@@ -1694,7 +1764,7 @@ func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateReques
 }
 
 func UpdateIntegrationStatusByPk(ctx *security.RequestContext, request IntegrationUpdateStatusByPkRequest) (IntegrationUpdateStatusByPkResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("integrations", "Write") {
 		return IntegrationUpdateStatusByPkResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1724,7 +1794,7 @@ func UpdateIntegrationStatusByPk(ctx *security.RequestContext, request Integrati
 }
 
 func DeleteNotificationRule(ctx *security.RequestContext, request NotificationRuleDeleteRequest) (NotificationRuleDeleteResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("notifications", "Write") {
 		return NotificationRuleDeleteResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1752,7 +1822,7 @@ func DeleteNotificationRule(ctx *security.RequestContext, request NotificationRu
 }
 
 func CreateNotificationChannelMapping(ctx *security.RequestContext, request NotificationChannelMappingCreateRequest) (NotificationChannelMappingCreateResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("messagingplatforms", "Write") {
 		return NotificationChannelMappingCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1782,7 +1852,7 @@ func CreateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 }
 
 func DeleteNotificationChannelMapping(ctx *security.RequestContext, request NotificationChannelMappingDeleteRequest) (NotificationChannelMappingDeleteResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("messagingplatforms", "Write") {
 		return NotificationChannelMappingDeleteResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1813,7 +1883,7 @@ func DeleteNotificationChannelMapping(ctx *security.RequestContext, request Noti
 }
 
 func UpdateNotificationChannelMapping(ctx *security.RequestContext, request NotificationChannelMappingUpdateRequest) (NotificationChannelMappingUpdateResponse, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("messagingplatforms", "Write") {
 		return NotificationChannelMappingUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	err := common.ValidateStruct(request)
@@ -1896,7 +1966,7 @@ func CreateApplicationGroup(ctx *security.RequestContext, request ApplicationGro
 		return ApplicationGroupCreateResponse{}, err
 	}
 
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("applications", "Write") {
 		return ApplicationGroupCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
@@ -1951,7 +2021,7 @@ func UpdateApplicationGroup(ctx *security.RequestContext, request ApplicationGro
 		return ApplicationGroupUpdateResponse{}, err
 	}
 
-	if !ctx.GetSecurityContext().IsTenantAdmin() {
+	if !ctx.GetSecurityContext().CanManage("applications", "Write") {
 		return ApplicationGroupUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 

@@ -90,6 +90,12 @@ type Hit struct {
 	// tool-result hits. Empty when the offset couldn't be mapped to a
 	// region (rare; treated as "unknown" by consumers). See source.go.
 	Source Source `json:"source,omitempty"`
+
+	// CustomRuleName is the tenant-defined pattern name for a custom-rule hit
+	// (RuleID == CustomRuleRuleID). Empty for built-in rules. Carried for the
+	// audit log / FilterEvent so operators can see WHICH custom pattern fired;
+	// deliberately NOT a metric label (see metrics.go cardinality contract).
+	CustomRuleName string `json:"custom_rule_name,omitempty"`
 }
 
 // Redaction describes the action taken on a single hit when the wrapper is

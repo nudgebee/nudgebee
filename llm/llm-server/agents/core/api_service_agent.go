@@ -312,12 +312,18 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 
 		return agent, nil
 	})
+	if err != nil {
+		return AgentDto{}, err
+	}
+	if agentAny == nil {
+		return AgentDto{}, errors.New("agent: transaction failed")
+	}
 
 	if len(rags) > 0 {
 		for _, rag := range rags {
-			_, err = toolcore.CreateAgentRag(context, accountId, agent.Name, rag.Data, rag.Format, rag.Filename)
-			if err != nil {
-				getLogger(context).Error("agent: failed to create agent rag", "error", err)
+			_, ragErr := toolcore.CreateAgentRag(context, accountId, agent.Name, rag.Data, rag.Format, rag.Filename)
+			if ragErr != nil {
+				getLogger(context).Error("agent: failed to create agent rag", "error", ragErr)
 			}
 		}
 	}
@@ -349,7 +355,9 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 		// Don't return the audit error as it shouldn't affect the main operation
 	}
 
-	return agentAny.(AgentDto), err
+	InvalidateCustomAgentToolsCache(accountId, agent.Name)
+
+	return agentAny.(AgentDto), nil
 }
 
 // Define a struct to return both original and updated agent
@@ -649,16 +657,17 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 		return AgentUpdateDto{}, handleAgentError(context, err, "agent: transaction failed")
 	}
 
-	// Evict cached tool list only after the transaction commits so concurrent requests
-	// never see a warm cache backed by the pre-commit (now-stale) state.
-	if agent.Tools != nil {
-		InvalidateCustomAgentToolsCache(accountId, "")
-	}
-
 	// Type assertion to get the result from the transaction
 	result, ok := resultAny.(agentUpdateResult)
 	if !ok {
 		return AgentUpdateDto{}, handleAgentError(context, errors.New("invalid result type"), "agent: failed to cast transaction result")
+	}
+
+	// Evict cached tool list only after the transaction commits so concurrent requests
+	// never see a warm cache backed by the pre-commit (now-stale) state.
+	InvalidateCustomAgentToolsCache(accountId, result.Original.Name)
+	if agent.Name != nil && *agent.Name != "" && *agent.Name != result.Original.Name {
+		InvalidateCustomAgentToolsCache(accountId, *agent.Name)
 	}
 
 	// Create audit entry with both original and updated agent states
@@ -940,17 +949,18 @@ func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnable
 	// Joins cloud_accounts so we can both filter by tenant and surface the
 	// account name. The tenant filter on cloud_accounts.tenant closes the
 	// cross-tenant query path even when the caller's account list is large.
-	// JOIN on the UUID columns directly so PG can use the agent-id / account-id
-	// indexes — casting both sides to text forces a hash join across the
-	// entire installation table. The ::text cast survives in the SELECT
-	// list because AgentDto.AccountId scans into a string.
+	// llm_agents.id is uuid but llm_agents_installation.agent_id is text (and
+	// holds non-uuid values like "redis" for built-ins), so the join has to
+	// compare as text — uuid = text has no operator and the whole query errors.
+	// The tenant parameter arrives as a Go string, so it needs the ::uuid cast
+	// for the same reason, in the other direction.
 	baseSelect := `SELECT lg.*, lgi.account_id::text AS account_id,
 	                      COALESCE(ca.account_name, '') AS account_name
 	                 FROM llm_agents lg
-	                 JOIN llm_agents_installation lgi ON lg.id = lgi.agent_id
+	                 JOIN llm_agents_installation lgi ON lg.id::text = lgi.agent_id
 	            LEFT JOIN cloud_accounts ca           ON lgi.account_id = ca.id
 	                WHERE lg.type = $1
-	                  AND ca.tenant = $2`
+	                  AND ca.tenant = $2::uuid`
 
 	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
 		secCtx.IsSuperAdminReadonly() ||

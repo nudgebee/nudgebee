@@ -33,7 +33,7 @@ Takes a plan description via `$ARGUMENTS`. If `$ARGUMENTS` is empty, challenge t
 - Cross-service changes
 - New library / framework / pattern adoption
 - Anything architectural — anything that would be expensive to undo in three months
-- Hasura actions, metadata, migrations (per `CLAUDE.md → Hasura Migrations & Metadata`)
+- Database migrations and RPC actions (per `CLAUDE.md → Database Migrations & RPC Actions`)
 
 **Skip for:**
 - Typo / formatting / 1-line bug fixes

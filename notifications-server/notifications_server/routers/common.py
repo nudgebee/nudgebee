@@ -14,6 +14,7 @@ from notifications_server.schemas.message import (
     GetThreadMessagesRequest,
     GetThreadMessagesResponse,
 )
+from notifications_server.services.channel_watch import ChannelWatchService
 from notifications_server.services.common import CommonService
 from notifications_server.services.message import MessageService
 from notifications_server.services.rules import NotificationRulesService
@@ -142,6 +143,92 @@ async def list_users(request: Request, body: Dict[Any, Any]):
         return JSONResponse({"error": {"message": "Unable to list users"}})
 
 
+def _list_watchable_sync(tenant, team_id):
+    with ChannelWatchService(engine=sync_engine, slack_app=slack_app) as svc:
+        return svc.list_watchable_channels(tenant, team_id=team_id)
+
+
+def _enable_watch_sync(tenant, channel_id, team_id, channel_name, created_by):
+    with ChannelWatchService(engine=sync_engine, slack_app=slack_app) as svc:
+        return svc.enable_watch(tenant, channel_id, team_id=team_id, channel_name=channel_name, created_by=created_by)
+
+
+def _disable_watch_sync(tenant, channel_id, team_id):
+    with ChannelWatchService(engine=sync_engine, slack_app=slack_app) as svc:
+        return svc.disable_watch(tenant, channel_id, team_id=team_id)
+
+
+@router.post("/channels/watchable", dependencies=[Depends(verify_action_token)])
+async def list_watchable_channels(request: Request, body: Dict[Any, Any]):
+    try:
+        session_variables = body.get("session_variables", {})
+        tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
+        if not tenant:
+            return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}}, status_code=401)
+
+        payload = body.get("input", {}) or {}
+
+        # Slack pagination is blocking HTTP — keep it off the event loop.
+        result = await run_in_threadpool(_list_watchable_sync, tenant, payload.get("team_id"))
+        if "error" in result:
+            return JSONResponse(result, status_code=400)
+        return JSONResponse(content=result)
+    except Exception:
+        LOG.exception("Error in list_watchable_channels endpoint")
+        return JSONResponse({"error": {"message": "Unable to list watchable channels"}}, status_code=500)
+
+
+@router.post("/channels/watch", status_code=201, dependencies=[Depends(verify_action_token)])
+async def watch_channel(request: Request, body: Dict[Any, Any]):
+    try:
+        session_variables = body.get("session_variables", {})
+        tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
+        if not tenant:
+            return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}}, status_code=401)
+
+        payload = body.get("input", {}) or {}
+        channel_id = payload.get("channel_id")
+        if not channel_id:
+            return JSONResponse({"error": {"message": "Missing required field: channel_id"}}, status_code=400)
+
+        result = await run_in_threadpool(
+            _enable_watch_sync,
+            tenant,
+            channel_id,
+            payload.get("team_id"),
+            payload.get("channel_name"),
+            session_variables.get("user_id"),
+        )
+        if "error" in result:
+            return JSONResponse(result, status_code=400)
+        return JSONResponse(content=result, status_code=201)
+    except Exception:
+        LOG.exception("Error in watch_channel endpoint")
+        return JSONResponse({"error": {"message": "Unable to enable channel watch"}}, status_code=500)
+
+
+@router.post("/channels/unwatch", dependencies=[Depends(verify_action_token)])
+async def unwatch_channel(request: Request, body: Dict[Any, Any]):
+    try:
+        session_variables = body.get("session_variables", {})
+        tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
+        if not tenant:
+            return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}}, status_code=401)
+
+        payload = body.get("input", {}) or {}
+        channel_id = payload.get("channel_id")
+        if not channel_id:
+            return JSONResponse({"error": {"message": "Missing required field: channel_id"}}, status_code=400)
+
+        result = await run_in_threadpool(_disable_watch_sync, tenant, channel_id, payload.get("team_id"))
+        if "error" in result:
+            return JSONResponse(result, status_code=400)
+        return JSONResponse(content=result)
+    except Exception:
+        LOG.exception("Error in unwatch_channel endpoint")
+        return JSONResponse({"error": {"message": "Unable to disable channel watch"}}, status_code=500)
+
+
 @router.post("/channels/join", status_code=201, dependencies=[Depends(verify_action_token)])
 async def join_channel(request: Request, payload: Dict[Any, Any], background_tasks: BackgroundTasks):
     try:
@@ -157,8 +244,10 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
         account_id = payload.get("account_id")
         channel_id = payload.get("channel_id")
         session_id = payload.get("session_id")
+        bind_session_id = payload.get("bind_session_id")
         team_id = payload.get("team_id")
         text = payload.get("text")
+        bind_account = bool(payload.get("bind_account", False))
 
         # Validate required fields
         if not platform or not account_id or not channel_id:
@@ -186,8 +275,10 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
                 tenant_id=tenant_id,
                 channel_id=channel_id,
                 session_id=session_id,
+                bind_session_id=bind_session_id,
                 team_id=team_id,
                 text=text,
+                bind_account=bind_account,
             )
 
             if "error" in result:

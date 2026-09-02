@@ -84,7 +84,7 @@ func TestServiceQueryMetricsSeriesLabels(t *testing.T) {
 func TestGetObservabilityProvider(t *testing.T) {
 	requireLiveServices(t)
 	rc := *security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")})
-	data, err := GetObservabilityProvider(rc, os.Getenv("TEST_ACCOUNT"), "logs")
+	data, err := GetObservabilityProvider(rc, os.Getenv("TEST_ACCOUNT"), "logs", "")
 	assert.NotEmpty(t, data)
 	assert.Nil(t, err)
 }

@@ -458,8 +458,23 @@ func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderCont
 }
 
 func (a *awsProvider) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {
+	// A Metrics Insights query names its own namespace, metrics and grouping, so
+	// there is no service to resolve — going through the registry would reject it
+	// as an unsupported service and return an empty result.
+	if strings.TrimSpace(filter.Query) != "" {
+		return queryAwsMetricsInsights(ctx, account, filter)
+	}
 	service, ok := GetAwsService(filter.ServiceName)
 	if !ok {
+		// Callers that already know the CloudWatch namespace have no NudgeBee
+		// service name to dispatch on — the alarm-driven aws_get_metric action
+		// passes the namespace taken from the alarm itself (e.g.
+		// "AWS/ApplicationELB") as ServiceName, and no such service exists.
+		// Querying CloudWatch directly honours that namespace; returning an
+		// empty result here silently produced blank evidence cards instead.
+		if filter.MetricNamespace != "" {
+			return getAwsCloudwatchMetrics(ctx, account, filter)
+		}
 		return providers.QueryMetricsResponse{
 			Items: []providers.MetricItem{},
 		}, nil
@@ -531,7 +546,11 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	// egress failure would mass-archive live resources. See the all-unreachable
 	// guard after wg.Wait(), which mirrors the zero-regions safeguard in
 	// account.StoreResources.
-	var successCount, unreachableCount, throttledCount int
+	var successCount, unreachableCount, throttledCount, disabledCount int
+	// Regions requested but not observed this run (unreachable, throttled, or
+	// disabled for the account). Reported to the caller via SkippedRegions so
+	// archival never treats an unobserved region's absence as deletion.
+	var skippedRegions []string
 
 	service, ok := GetAwsService(query.ServiceName)
 	if !ok {
@@ -634,6 +653,15 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 					ctx.GetLogger().Warn("skipping unreachable region endpoint", "error", err, "service", query.ServiceName, "region", regionName)
 					mu.Lock()
 					unreachableCount++
+					skippedRegions = append(skippedRegions, regionName)
+					mu.Unlock()
+					return
+				}
+				if isRegionDisabled(err) {
+					ctx.GetLogger().Info("skipping region not enabled for this account", "error", err, "service", query.ServiceName, "region", regionName)
+					mu.Lock()
+					disabledCount++
+					skippedRegions = append(skippedRegions, regionName)
 					mu.Unlock()
 					return
 				}
@@ -641,6 +669,7 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 					ctx.GetLogger().Warn("skipping rate-limited region; will retry next sync", "error", err, "service", query.ServiceName, "region", regionName)
 					mu.Lock()
 					throttledCount++
+					skippedRegions = append(skippedRegions, regionName)
 					mu.Unlock()
 					return
 				}
@@ -669,8 +698,8 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	// resources". Returning nil here would let StoreResources archive every
 	// existing row for this service. Surface an error so the caller skips archival,
 	// exactly as it does when zero regions are queried.
-	if successCount == 0 && (unreachableCount > 0 || throttledCount > 0) {
-		allErrors = multierr.Append(allErrors, fmt.Errorf("all attempted region(s) failed for service %s (%d unreachable, %d throttled); refusing to report an empty result", query.ServiceName, unreachableCount, throttledCount))
+	if successCount == 0 && (unreachableCount > 0 || throttledCount > 0 || disabledCount > 0) {
+		allErrors = multierr.Append(allErrors, fmt.Errorf("all attempted region(s) failed for service %s (%d unreachable, %d throttled, %d disabled); refusing to report an empty result", query.ServiceName, unreachableCount, throttledCount, disabledCount))
 	}
 
 	// Client-side ResourceIds filter — only needed when we fell back to full GetResources
@@ -719,7 +748,8 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	}
 
 	return providers.ListResourcesResponse{
-		Items: resources,
+		Items:          resources,
+		SkippedRegions: skippedRegions,
 	}, allErrors
 }
 
@@ -1328,8 +1358,8 @@ func (a *awsProvider) QueryServiceMap(ctx providers.CloudProviderContext, accoun
 
 // shouldUseMultiSourceEngine checks if the multi-source engine should be used
 func (a *awsProvider) shouldUseMultiSourceEngine(account providers.Account) bool {
-	// Check environment variable for global toggle
-	if os.Getenv("ENABLE_MULTI_SOURCE_SERVICEMAP") == "true" {
+	// Global toggle (env: ENABLE_MULTI_SOURCE_SERVICEMAP)
+	if config.Config.EnableMultiSourceServicemap {
 		return true
 	}
 

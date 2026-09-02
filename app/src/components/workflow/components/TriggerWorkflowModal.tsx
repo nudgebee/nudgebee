@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Typography, Box, Checkbox, FormControlLabel } from '@mui/material';
+import React, { useState, useEffect, useRef } from 'react';
+import { Typography, Box } from '@mui/material';
+import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
-import { colors } from 'src/utils/colors';
 
 interface TriggerWorkflowModalProps {
   open: boolean;
@@ -54,9 +54,21 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
 
   const hasDefaults = inputSchema.some((input) => input.default !== undefined && input.default !== null && input.default !== '');
 
-  // Initialize inputs when modal opens or defaultInputs change
+  // Tracks the previous `open` value so the seeding effect below only fires on
+  // the closed -> open transition.
+  const wasOpenRef = useRef<boolean>(false);
+
+  // Seed the inputs once, when the modal opens.
+  //
+  // `defaultInputs` / `inputSchema` are built inline at every call site
+  // (getDefaultTriggerInputs(w) / getWorkflowInputSchema(w)), so they get a new
+  // identity on every parent render. The listing polls the workflow list every
+  // 10s and a running execution every 0.5-3s, so re-seeding on those deps wiped
+  // whatever the user had typed into the JSON box a moment later. Gate on the
+  // open transition instead, and leave the box alone for the rest of the
+  // session. Fixes #37242.
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       try {
         let initialInputs = {};
 
@@ -74,12 +86,15 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
 
         setInputsJson(JSON.stringify(initialInputs, null, 2));
         setJsonError('');
+        setUseDefaults(true);
       } catch (_error) {
         console.error(_error);
         setInputsJson('{}');
         setJsonError('');
+        setUseDefaults(true);
       }
     }
+    wasOpenRef.current = open;
   }, [open, defaultInputs, inputSchema]);
 
   const validateJson = (jsonString: string): boolean => {
@@ -177,7 +192,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
           <Typography
             sx={{
               fontSize: 'var(--ds-text-body-lg)',
-              color: colors.text.secondaryDark,
+              color: 'var(--ds-gray-400)',
               mb: 1,
             }}
           >
@@ -192,7 +207,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-body-lg)',
-                color: colors.text.secondaryDark,
+                color: 'var(--ds-gray-400)',
                 mb: 1,
               }}
               data-testid='trigger-modal-run-target'
@@ -204,7 +219,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
               <Typography
                 sx={{
                   fontSize: 'var(--ds-text-body-lg)',
-                  color: colors.text.secondaryDark,
+                  color: 'var(--ds-gray-400)',
                   mb: 1,
                 }}
                 data-testid='trigger-modal-run-target'
@@ -221,7 +236,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
               <Typography
                 sx={{
                   fontSize: 'var(--ds-text-small)',
-                  color: colors.text.secondaryDark,
+                  color: 'var(--ds-gray-400)',
                   mb: 1,
                   fontStyle: 'italic',
                 }}
@@ -232,7 +247,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
           <Typography
             sx={{
               fontSize: 'var(--ds-text-body-lg)',
-              color: colors.text.secondaryDark,
+              color: 'var(--ds-gray-400)',
               mb: 2,
             }}
           >
@@ -247,7 +262,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: 'var(--ds-brand-500)',
                 mb: 1,
               }}
             >
@@ -256,7 +271,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-small)',
-                color: colors.text.secondaryDark,
+                color: 'var(--ds-gray-400)',
                 mb: 2,
               }}
             >
@@ -293,7 +308,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
                         sx={{
                           fontSize: 'var(--ds-text-body)',
                           fontWeight: 'var(--ds-font-weight-semibold)',
-                          color: colors.text.secondary,
+                          color: 'var(--ds-brand-500)',
                           fontFamily: 'monospace',
                         }}
                       >
@@ -318,7 +333,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
                     <Typography
                       sx={{
                         fontSize: 'var(--ds-text-caption)',
-                        color: colors.text.secondaryDark,
+                        color: 'var(--ds-gray-400)',
                       }}
                     >
                       {input.description}
@@ -352,7 +367,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
-                color: colors.text.secondary,
+                color: 'var(--ds-brand-500)',
                 mb: 1,
               }}
             >
@@ -361,7 +376,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-small)',
-                color: colors.text.secondaryDark,
+                color: 'var(--ds-gray-400)',
                 mb: 2,
                 fontStyle: 'italic',
               }}
@@ -373,30 +388,27 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
 
         {/* Use default values checkbox */}
         {hasDefaults && (
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={useDefaults}
-                onChange={(e) => {
-                  setUseDefaults(e.target.checked);
-                  if (e.target.checked) {
-                    const defaults = inputSchema.reduce((acc, input) => {
-                      acc[input.id] = input.default;
-                      return acc;
-                    }, {} as any);
-                    setInputsJson(JSON.stringify(defaults, null, 2));
-                    setJsonError('');
-                  } else {
-                    setInputsJson('{}');
-                    setJsonError('');
-                  }
-                }}
-                size='small'
-              />
-            }
-            label='Use default values'
-            sx={{ mb: 2, '& .MuiFormControlLabel-label': { fontSize: 'var(--ds-text-body)', color: colors.text.secondary } }}
-          />
+          <Box sx={{ mb: 2 }}>
+            <Checkbox
+              checked={useDefaults}
+              size='sm'
+              label='Use default values'
+              onChange={(next) => {
+                setUseDefaults(next);
+                if (next) {
+                  const defaults = inputSchema.reduce((acc, input) => {
+                    acc[input.id] = input.default;
+                    return acc;
+                  }, {} as any);
+                  setInputsJson(JSON.stringify(defaults, null, 2));
+                  setJsonError('');
+                } else {
+                  setInputsJson('{}');
+                  setJsonError('');
+                }
+              }}
+            />
+          </Box>
         )}
 
         <Box sx={{ mb: 2 }}>
@@ -404,7 +416,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
             sx={{
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
-              color: colors.text.secondary,
+              color: 'var(--ds-brand-500)',
               mb: 1,
             }}
           >
@@ -413,7 +425,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
-              color: colors.text.secondaryDark,
+              color: 'var(--ds-gray-400)',
               mb: 2,
             }}
           >
@@ -434,16 +446,16 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
           sx={{
             mt: 2,
             p: 2,
-            backgroundColor: colors.background.primaryLightest,
-            borderRadius: 1,
-            border: `1px solid ${colors.border.vertical}`,
+            backgroundColor: 'var(--ds-blue-100)',
+            borderRadius: 'var(--ds-radius-sm)',
+            border: '1px solid var(--ds-gray-200)',
           }}
         >
           <Typography
             sx={{
               fontSize: 'var(--ds-text-body)',
               fontWeight: 'var(--ds-font-weight-medium)',
-              color: colors.text.secondary,
+              color: 'var(--ds-brand-500)',
               mb: 1,
             }}
           >
@@ -452,7 +464,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
           <Typography
             sx={{
               fontSize: 'var(--ds-text-small)',
-              color: colors.text.secondaryDark,
+              color: 'var(--ds-gray-400)',
               lineHeight: 1.5,
               fontFamily: 'monospace',
             }}

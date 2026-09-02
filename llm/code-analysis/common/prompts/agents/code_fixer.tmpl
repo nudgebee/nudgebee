@@ -56,6 +56,19 @@ The RCA agent has already read the following files during investigation. You can
 </pre-read-files>
 {{end}}
 
+{{if .AuditFindings._base_diff}}
+<proposed-diff>
+A previously drafted diff for this exact fix is below. Apply it with verify-and-adapt, not blindly:
+- For each hunk: `file_view` the target region, confirm the context lines still match, then apply via `replace`.
+- Where the code has drifted, adapt the hunk to achieve the same intent.
+- The diff may be truncated; anything missing follows from the implementation instructions above.
+
+```diff
+{{.AuditFindings._base_diff}}
+```
+</proposed-diff>
+{{end}}
+
 <workflow>
 For each step in the `implementation_instructions`, perform a "Read-Plan-Execute" cycle.
 

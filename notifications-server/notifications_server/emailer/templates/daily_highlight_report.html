@@ -3,24 +3,8 @@
 {% block title %}Daily Recap — {{ _brand_name }}{% endblock %}
 
 {% block content %}
-  {#- Compute totals for AI summary -#}
-  {% set ns = namespace(cluster_count=0, attention_count=0, total_savings=total_potential_savings|default(0)) %}
-  {% for account in insights.data.cloud_accounts %}
-    {% set insights_list = insights.data.insight | selectattr('account_id', 'equalto', account.id) | list %}
-    {% set recommendations = highlight1.data.recommendation_groupings.rows | selectattr('account_id', 'equalto', account.id) | list %}
-    {% set security_events = insights.data.recommendation_security_groupings_v2.rows | selectattr('account_id', 'equalto', account.id) | list %}
-    {% set current_app_event_row = highlight1.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set current_node_event_row = highlight1.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set current_pod_event_row = highlight1.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set ev_total = (current_app_event_row.event_count if current_app_event_row else 0) + (current_node_event_row.event_count if current_node_event_row else 0) + (current_pod_event_row.event_count if current_pod_event_row else 0) %}
-    {% set has_any_data = (ev_total > 0) or (recommendations | length > 0) or (security_events | length > 0) %}
-    {% if has_any_data %}
-      {% set ns.cluster_count = ns.cluster_count + 1 %}
-      {% if (insights_list | length + recommendations | length + security_events | length + ev_total) > 0 %}
-        {% set ns.attention_count = ns.attention_count + 1 %}
-      {% endif %}
-    {% endif %}
-  {% endfor %}
+  {#- cluster_count / attention_count are computed once in Go (report_service.go)
+     and reused for both the email subject and this summary, so the two never drift. -#}
 
   <!-- AI SUMMARY OPENING -->
   <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 20px; letter-spacing:-0.3px; font-weight:400;">
@@ -28,14 +12,14 @@
   </h1>
 
   <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 20px;">
-    I reviewed <strong style="color:#0D1B2A;">{{ ns.cluster_count }}</strong> cluster{{ 's' if ns.cluster_count != 1 else '' }} overnight.
-    {% if ns.attention_count > 0 %}
-      <strong style="color:#0D1B2A;">{{ ns.attention_count }}</strong> need{{ 's' if ns.attention_count == 1 else '' }} your attention
+    I reviewed <strong style="color:#0D1B2A;">{{ cluster_count|default(0) }}</strong> cluster{{ 's' if cluster_count|default(0) != 1 else '' }} overnight.
+    {% if attention_count|default(0) > 0 %}
+      <strong style="color:#0D1B2A;">{{ attention_count|default(0) }}</strong> need{{ 's' if attention_count|default(0) == 1 else '' }} your attention
     {% else %}
       Everything looks healthy
     {% endif %}
-    {% if ns.total_savings > 0 %}
-      and there's <strong style="color:#22C55E;">${{ ns.total_savings | round(2) }}/mo</strong> in savings you haven't acted on yet{% if total_opportunity_lost and total_opportunity_lost > 0 %} (<strong style="color:#EF4444;">${{ total_opportunity_lost | round(2) }}</strong> lost in the last 30 days){% endif %}.
+    {% if total_potential_savings|default(0) > 0 %}
+      and there's <strong style="color:#22C55E;">${{ total_potential_savings|default(0) | round(2) }}/mo</strong> in savings you haven't acted on yet{% if total_opportunity_lost and total_opportunity_lost > 0 %} (<strong style="color:#EF4444;">${{ total_opportunity_lost | round(2) }}</strong> lost in the last 30 days){% endif %}.
     {% else %}.{% endif %}
   </p>
 

@@ -17,7 +17,7 @@ import { ds } from '@utils/colors';
 import apiUser from '@api1/user';
 import observability from '@api1/observability';
 import { Button as DsButton } from '@ui/Button';
-import ConversationPopup from '@components/llm/ConversationPopup';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { md5 } from '@lib/encode';
@@ -87,9 +87,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   const [esIndex, setEsIndex] = useState('');
   const [esIndexList, setEsIndexList] = useState<string[]>([]);
   const [isEsIndexLoading, setIsEsIndexLoading] = useState(false);
-  const [analysisQuery, setAnalysisQuery] = useState<string>('');
-  const [isConversationPopupOpen, setIsConversationPopupOpen] = useState(false);
-  const [sessionId, setSessionId] = useState<string>('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [dbmsData, setDbmsData] = useState<any[]>([]);
   const [sortObject, setSortObject] = useState({
     name: 'Error Count',
@@ -128,7 +126,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
     try {
       // Reuse the shared ES index-list API (logs_list_labels); force the ES
       // provider so it resolves even when ES isn't the account's default log provider.
-      const res = await observability.fetchLogLabels({ account_id: selectedK8sAccount, log_provider: 'ES' });
+      const res = await observability.logIndexList(selectedK8sAccount as string, 'ES');
       const indexes = (res?.data?.data?.logs_list_labels || []).map((l: any) => l?.label).filter(Boolean);
       setEsIndexList(indexes);
     } catch {
@@ -180,7 +178,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
         formatDateForTrace(time.startTime),
         formatDateForTrace(time.endTime),
         '',
-        resource.replaceAll(/'/g, "\\'"),
+        resource.replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
         spanType,
         sortCol,
         sortObject.order,
@@ -378,8 +376,6 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
 
   const handleGenerateQueryAnalysis = (item: any) => {
     const agent = determineTypeOfAgent(item);
-    setAnalysisQuery(`Optimize the following ${agent} query: \n\n` + item.resource);
-    setIsConversationPopupOpen(true);
     const session = md5([
       item.workload_name +
         item.workload_namespace +
@@ -389,7 +385,11 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
         item.resource +
         item.trace_id,
     ]);
-    setSessionId(session);
+    openNubiChat({
+      accountId: router.query?.KubernetesDetails as string,
+      sessionId: session,
+      query: `Optimize the following ${agent} query: \n\n` + item.resource,
+    });
   };
 
   const determineTypeOfAgent = (item: any) => {
@@ -406,12 +406,6 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
       agent = dbms.type;
     }
     return agent;
-  };
-
-  const handleCloseConversationPopup = () => {
-    setIsConversationPopupOpen(false);
-    setSessionId('');
-    setAnalysisQuery('');
   };
 
   if (supportsFeature === false) {
@@ -496,14 +490,6 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
         />
       </ListingLayout.Toolbar>
       <ListingLayout.Body>
-        <ConversationPopup
-          open={isConversationPopupOpen}
-          handleClose={() => handleCloseConversationPopup()}
-          query={analysisQuery}
-          sessionId={sessionId}
-          accountId={router.query?.KubernetesDetails as string}
-          title='Query Optimization'
-        />
         <CustomTable
           id='k8s-trace-group-listing'
           // @ts-ignore: allow flexible header types

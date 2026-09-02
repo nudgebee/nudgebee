@@ -5,24 +5,28 @@ import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import AutoFixHighOutlinedIcon from '@mui/icons-material/AutoFixHighOutlined';
+import DoNotDisturbOnOutlinedIcon from '@mui/icons-material/DoNotDisturbOnOutlined';
+import RestartAltOutlinedIcon from '@mui/icons-material/RestartAltOutlined';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Button } from '@ui/Button';
 import { toast } from '@ui/Toast';
 import AlarmCreationModal from '@components/cloudaccount/AlarmCreationModal';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission, missingPermissionMessage } from '@lib/auth';
 import { safeParseJSON } from './utils';
 
 interface ActionBarProps {
   fullRecommendation: any;
+  provider?: string;
   onCreateTicket?: (rec: any) => void;
   onResolve?: (rec: any) => void;
   onCopyCli?: (rec: any) => void;
   onAskNubi?: (rec: any) => void;
+  onDismiss?: (rec: any) => void;
 }
 
-const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyCli, onAskNubi }: ActionBarProps) => {
+const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolve, onCopyCli, onAskNubi, onDismiss }: ActionBarProps) => {
   const { assistantName } = useTenantBranding();
   const [isAlarmModalOpen, setIsAlarmModalOpen] = useState(false);
 
@@ -31,7 +35,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
   const category = rec.category || '';
   const ruleName = rec.rule_name || '';
   const accountId = rec.account_id || '';
-  const isK8sRightSizing = category === 'RightSizing' && ruleName === 'pod_right_sizing';
+  const isK8sRightSizing = ruleName === 'pod_right_sizing';
   const isReplicaRightSizing = category === 'RightSizing' && ruleName === 'replica_right_sizing';
   const isPVResize = category === 'RightSizing' && ruleName === 'pv_rightsize';
   const isUnusedPVC = category === 'RightSizing' && ruleName === 'unused_pvc';
@@ -44,6 +48,17 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
   const recData = safeParseJSON(rec.recommendation);
   const hasAlarmConfig = recData?.alarm_config != null;
   const canWrite = hasWriteAccess(accountId);
+  // Creating a ticket needs write access to the recommendation's account OR the
+  // tickets:Write custom-role grant (tickets_create → tickets:Write). Without
+  // this the button was the one unconditional action in the bar: a read-only
+  // viewer could open the modal and only learn they couldn't when the create
+  // 403'd. Same gate as the events tables (KubernetesGroupedEventsTable).
+  const canCreateTicket = canWrite || hasPermission('tickets', 'Write');
+  const isDismissed = rec.status === 'Dismissed';
+  // Only offer what the backend legality matrix accepts: dismiss from Open,
+  // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive)
+  // would just earn an error toast.
+  const showDismissAction = canWrite && (isDismissed || !rec.status || rec.status === 'Open');
 
   const handleNavigateToDetail = () => {
     const detailUrl = `/kubernetes/details/${accountId}#optimize/right-sizing`;
@@ -87,8 +102,17 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
             iconPlacement='start'
             onClick={() => onCreateTicket?.(rec)}
             id='action-bar-create-ticket'
-            disabled={!!rec.ticket?.ticket_id}
-            tooltip={rec.ticket?.ticket_id ? `Ticket already created: ${rec.ticket.ticket_id}` : undefined}
+            disabled={!!rec.ticket?.ticket_id || !canCreateTicket}
+            // Disabled rather than hidden, matching the events tables: a
+            // read-only viewer still needs to see that a ticket exists (and
+            // which one), and why the action isn't available to them.
+            tooltip={
+              rec.ticket?.ticket_id
+                ? `Ticket already created: ${rec.ticket.ticket_id}`
+                : !canCreateTicket
+                ? missingPermissionMessage('tickets:Write')
+                : undefined
+            }
           >
             Create Ticket
           </Button>
@@ -126,6 +150,22 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
           >
             Ask {assistantName}
           </Button>
+          {/* Ghost tone keeps it subordinate to the actions above; it stays in this
+              row rather than the icon cluster so the label isn't clipped by the
+              floating chat button anchored over the drawer's bottom-right corner. */}
+          {showDismissAction && (
+            <Button
+              tone='ghost'
+              size='sm'
+              icon={isDismissed ? <RestartAltOutlinedIcon /> : <DoNotDisturbOnOutlinedIcon />}
+              iconPlacement='start'
+              tooltip={isDismissed ? 'Return this recommendation to the open list' : 'Suppress it permanently or until a chosen date'}
+              onClick={() => onDismiss?.(rec)}
+              id='action-bar-dismiss'
+            >
+              {isDismissed ? 'Reactivate' : 'Dismiss / Snooze'}
+            </Button>
+          )}
         </Box>
 
         {/* Secondary actions */}
@@ -164,6 +204,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
           onClose={() => setIsAlarmModalOpen(false)}
           recommendation={rec}
           accountId={accountId}
+          provider={provider}
           onSuccess={() => {
             setIsAlarmModalOpen(false);
             toast.success('CloudWatch alarm created successfully');

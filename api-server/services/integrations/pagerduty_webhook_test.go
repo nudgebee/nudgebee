@@ -247,6 +247,7 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 		expectedSubject   string
 		expectedNamespace string
 		expectedKind      string
+		wantSkip          bool // expects the nb_skip_workload_match label to be set
 	}{
 		{
 			name:            "Already has subject - skip",
@@ -447,6 +448,18 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			expectedSubject: "checkout",
 			expectedKind:    "deployment",
 		},
+		{
+			// A PostgreSQL database-name subject (datname) is a logical database,
+			// not a workload: typed as "database" and marked to skip the workload
+			// name-match so it isn't pinned onto an unrelated same-named workload.
+			name:            "datname resolves as database subject and opts out of workload match",
+			initialSubject:  "",
+			labels:          map[string]string{"datname": "nudgebee"},
+			title:           "PostgreSQLCacheHitRatio",
+			expectedSubject: "nudgebee",
+			expectedKind:    "database",
+			wantSkip:        true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -471,6 +484,10 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 				assert.Empty(t, payload.Investigation.Labels["pod"],
 					"non-pod subject should not fabricate a pod label")
 			}
+			// A logical-database (datname) subject must opt out of the workload
+			// name-match; other subjects must not.
+			_, gotSkip := payload.Investigation.Labels[core.SkipWorkloadMatchLabel]
+			assert.Equal(t, tt.wantSkip, gotSkip, "skip-workload-match label")
 		})
 	}
 }
@@ -917,4 +934,110 @@ func TestResolveEventTitleFromLabels(t *testing.T) {
 			assert.Equal(t, tt.want, resolveEventTitleFromLabels(tt.labels))
 		})
 	}
+}
+
+// stripPodTemplateHash — mesh/Alertmanager labels name the ReplicaSet, not the
+// workload, and no k8s_workloads strategy matches a hashed name.
+
+func TestStripPodTemplateHash(t *testing.T) {
+	t.Run("strips real replicaset hashes", func(t *testing.T) {
+		// Observed verbatim in Zenduty/Alertmanager destination_workload_name.
+		assert.Equal(t, "cloud-collector-server", stripPodTemplateHash("cloud-collector-server-64945c7bc6"))
+		assert.Equal(t, "relay-server", stripPodTemplateHash("relay-server-6d54bf56bb"))
+		assert.Equal(t, "frontend-proxy", stripPodTemplateHash("frontend-proxy-75cb44f865"))
+	})
+
+	t.Run("strips replicaset hash and pod suffix together", func(t *testing.T) {
+		assert.Equal(t, "relay-server", stripPodTemplateHash("relay-server-6d54bf56bb-xkq2t"))
+	})
+
+	t.Run("leaves real workload names alone", func(t *testing.T) {
+		// Every one of these has a vowel in its last segment, which a
+		// Kubernetes-generated hash can never contain.
+		for _, name := range []string{
+			"cloud-collector-server",
+			"otel-deployment-collector-collector",
+			"redis-master",
+			"k8s-collector-worker",
+			"frontend-proxy",
+			"vmalert-victoria-victoria-metrics-k8s-stack",
+			"kube-dns",
+			"nb-hog",
+			"services-server",
+			"pinot-broker",
+		} {
+			assert.Equal(t, name, stripPodTemplateHash(name), "must not strip %q", name)
+		}
+	})
+
+	t.Run("leaves names without a separator alone", func(t *testing.T) {
+		assert.Equal(t, "grafana", stripPodTemplateHash("grafana"))
+		assert.Equal(t, "-64945c7bc6", stripPodTemplateHash("-64945c7bc6"), "no name left to keep")
+	})
+}
+
+func TestLooksLikePodTemplateHash(t *testing.T) {
+	for _, s := range []string{"64945c7bc6", "6d54bf56bb", "75cb44f865", "xkq2t"} {
+		assert.True(t, looksLikePodTemplateHash(s), "%q is a hash", s)
+	}
+	for _, s := range []string{
+		"collector",    // has vowels
+		"master",       // has vowels
+		"server",       // has vowels
+		"abc",          // too short
+		"64945c7bc6ff", // too long
+		"64945C7BC6",   // uppercase is not the k8s alphabet
+	} {
+		assert.False(t, looksLikePodTemplateHash(s), "%q is not a hash", s)
+	}
+}
+
+// The ReplicaSet name is what mesh labels carry; core.MatchWorkloadAndEnrich
+// only stores owning workloads, so the owner must be offered as a candidate.
+
+func TestResolveSubjectFromLabels_OffersStrippedOwnerAsCandidate(t *testing.T) {
+	p := &core.EventIncomingWebhook{
+		Investigation: core.EventIncomingWebhookInvestigation{
+			Labels: map[string]string{
+				"alertname":                      "HighP95Latency",
+				"destination_workload_name":      "cloud-collector-server-64945c7bc6",
+				"destination_workload_namespace": "nudgebee",
+			},
+		},
+	}
+	resolveSubjectFromLabels(p)
+
+	assert.Equal(t, "cloud-collector-server-64945c7bc6", p.EventSubjectName, "label value stays the subject")
+	assert.Equal(t, "nudgebee", p.EventSubjectNamespace)
+	assert.Equal(t, "cloud-collector-server", p.Investigation.Labels["nb_workload_candidates"],
+		"owning workload offered so the shared matcher can find it")
+}
+
+func TestResolveSubjectFromLabels_NoCandidateForPlainNames(t *testing.T) {
+	p := &core.EventIncomingWebhook{
+		Investigation: core.EventIncomingWebhookInvestigation{
+			Labels: map[string]string{
+				"alertname":           "CollectorHighLatency",
+				"k8s_deployment_name": "cloud-collector-server",
+				"namespace":           "nudgebee",
+			},
+		},
+	}
+	resolveSubjectFromLabels(p)
+
+	assert.Equal(t, "cloud-collector-server", p.EventSubjectName, "k8s_deployment_name resolves the subject")
+	assert.Empty(t, p.Investigation.Labels["nb_workload_candidates"], "nothing to strip, no candidate added")
+}
+
+func TestAddWorkloadCandidate(t *testing.T) {
+	labels := map[string]string{}
+	addWorkloadCandidate(labels, "a")
+	addWorkloadCandidate(labels, "b")
+	addWorkloadCandidate(labels, "a") // duplicate
+	assert.Equal(t, "a,b", labels["nb_workload_candidates"])
+
+	addWorkloadCandidate(labels, "")
+	assert.Equal(t, "a,b", labels["nb_workload_candidates"], "empty name is a no-op")
+
+	assert.NotPanics(t, func() { addWorkloadCandidate(nil, "x") })
 }

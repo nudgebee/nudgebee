@@ -71,11 +71,13 @@ const apiOwnership = {
 
   // Batch-resolve effective owners. `resources` is an array of
   // { resource_type, resource_key }. Returns OwnerResult[] aligned to input.
-  resolveOwners: async function (resources) {
+  // `signal` (optional) aborts the in-flight request — pass one from callers that
+  // can be navigated away from mid-flight, so a stale resolve doesn't keep running.
+  resolveOwners: async function (resources, signal) {
     if (!resources || resources.length === 0) {
       return [];
     }
-    const response = await queryGraphQL(RESOLVE_OWNERS, 'OwnershipResolve', { resources });
+    const response = await queryGraphQL(RESOLVE_OWNERS, 'OwnershipResolve', { resources }, undefined, signal);
     return response?.data?.data?.ownership_resolve || [];
   },
 

@@ -51,8 +51,8 @@ type K8sWorkloadRow struct {
 	IsActive         bool            `db:"is_active"`
 	Meta             json.RawMessage `db:"meta"`
 	Labels           json.RawMessage `db:"labels"`
-	CreatedAt        time.Time       `db:"created_at"`
-	UpdatedAt        time.Time       `db:"updated_at"`
+	CreatedAt        sql.NullTime    `db:"created_at"`
+	UpdatedAt        sql.NullTime    `db:"updated_at"`
 	LastDeployedTime sql.NullTime    `db:"last_deployed_time"`
 }
 
@@ -311,7 +311,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	}
 	s.logger.Info("fetched K8s ServiceAccounts from relay", "count", len(k8sServiceAccounts))
 
-	saNodes, saEdges, saByKey := s.convertK8sServiceAccountsToGraph(k8sServiceAccounts, workloads, k8sNAmespaceMap, req)
+	saNodes, saEdges, saByKey := s.convertK8sServiceAccountsToGraph(k8sServiceAccounts, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, saNodes...)
 	edges = append(edges, saEdges...)
 
@@ -332,7 +332,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 		s.logger.Warn("failed to fetch K8s ConfigMaps from relay, continuing without them", "error", err)
 		k8sConfigMaps = []K8sConfigMapFromRelay{}
 	}
-	cmNodes, cmEdges, configMapByKey := s.convertK8sConfigMapsToGraph(k8sConfigMaps, workloads, k8sNAmespaceMap, req)
+	cmNodes, cmEdges, configMapByKey := s.convertK8sConfigMapsToGraph(k8sConfigMaps, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, cmNodes...)
 	edges = append(edges, cmEdges...)
 
@@ -341,7 +341,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 		s.logger.Warn("failed to fetch K8s Secrets from relay, continuing without them", "error", err)
 		k8sSecrets = []K8sSecretFromRelay{}
 	}
-	secNodes, secEdges, secretByKey := s.convertK8sSecretsToGraph(k8sSecrets, workloads, k8sNAmespaceMap, req)
+	secNodes, secEdges, secretByKey := s.convertK8sSecretsToGraph(k8sSecrets, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, secNodes...)
 	edges = append(edges, secEdges...)
 
@@ -659,6 +659,10 @@ const helmManagedByLabel = "app.kubernetes.io/managed-by"
 type workloadSpecRefs struct {
 	ConfigMaps []string
 	Secrets    []string
+	// SecretRefKinds maps a Secret name from Secrets to the sorted set of
+	// forms the spec consumed it in — "volume", "env", "env_from". See
+	// refsFromPodSpec.
+	SecretRefKinds map[string][]string
 }
 
 // K8sCRDMetadata captures the operator-CRD metadata shape we care about

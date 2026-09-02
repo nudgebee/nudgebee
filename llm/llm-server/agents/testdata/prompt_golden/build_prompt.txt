@@ -46,6 +46,29 @@ AUTOMATION SCHEMA REFERENCE:
   "hooks": {...}                      // *Hooks (optional)
 }
 
+## TRIGGER STRUCTURE:
+{
+  "type": "string (required)",        // one of: manual, schedule, webhook, event, optimization
+  "params": {},                       // map[string]any — EVERY trigger setting lives in here
+  "layout": {"x": 0, "y": 0}          // optional canvas position
+}
+"type" and "params" are the ONLY keys you may write on a trigger. A trigger setting placed
+at the top level instead of inside "params" is DISCARDED when the definition is decoded,
+which produces a trigger that can never fire. The "Requires params:" lists below name the
+keys that go INSIDE "params" — they are never trigger-level keys.
+
+  WRONG: {"type": "webhook", "integration_name": "my-hook", "filter": "..."}
+  RIGHT: {"type": "webhook", "params": {"integration_name": "my-hook", "filter": "..."}}
+
+  WRONG: {"type": "schedule", "cron": "0 9 * * *"}
+  RIGHT: {"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}
+
+  WRONG: {"type": "event", "event_type": "alert"}
+  RIGHT: {"type": "event", "params": {"event_type": "alert"}}
+
+"manual" is the ONLY type that takes no params — {"type": "manual"} is complete as written.
+Do not generalise from it to the other four types.
+
 ## TRIGGER TYPES:
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
 - "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.
@@ -215,4 +238,7 @@ REGRESSION PREVENTION:
 - When fixing one task, do NOT change other tasks unless directly affected.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: the params.account_id MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above. NEVER use the display name. The runbook server validates account_id as a UUID and will reject the save with "invalid input syntax for type uuid" otherwise.
+- MANY task types take an optional params.account_id — the CLI tasks (k8s.cli, cloud.*.cli) but also tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever you set it, not just to CLI tasks. Call get_task_schema if you are unsure whether a task takes one.
+- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely. Do not set it just to be explicit.
+- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
+- NEVER point account_id at a config: "{{ Configs.some_account_id }}" is NOT acceptable. It is a value the builder already knows, and deferring it either saves the automation INACTIVE until someone creates the config, or resolves to a placeholder string at run time. Inline the UUID or omit the parameter.

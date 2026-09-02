@@ -29,7 +29,7 @@ type ChatRequest struct {
 	Model            string         `json:"model"`
 	Messages         []*ChatMessage `json:"messages"`
 	Adapter          string         `json:"adapter_id,omitempty"`
-	Temperature      float64        `json:"temperature"`
+	Temperature      *float64       `json:"temperature,omitempty"`
 	TopP             float64        `json:"top_p,omitempty"`
 	MaxTokens        int            `json:"max_tokens,omitempty"`
 	N                int            `json:"n,omitempty"`

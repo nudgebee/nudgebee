@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
-	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -35,7 +34,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -82,7 +81,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -116,7 +115,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -150,7 +149,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -179,7 +178,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -213,7 +212,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -285,7 +284,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
@@ -314,7 +313,7 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}

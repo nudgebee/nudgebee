@@ -10,6 +10,7 @@ The controller sets BENCHMARK_AGENT_DIR to the agent directory before running py
 """
 
 import importlib
+import json
 import logging
 import math
 import os
@@ -166,6 +167,19 @@ def _default_answer_extractor(
 # ---------------------------------------------------------------------------
 
 
+def _env_tier_models():
+    """Per-tier picks handed to the pytest subprocess as JSON.
+
+    Raises on malformed JSON rather than returning None: silently dropping the
+    pin would leave the run resolving through whatever the layered walk picks,
+    and the results would look valid.
+    """
+    raw = os.getenv("LLM_TIER_MODELS")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
 def _execute_query(
     query: str,
     agent: str,
@@ -187,7 +201,11 @@ def _execute_query(
         tenant_id,
         user_id,
         config=llm_config,
-        log_provider_override=os.getenv("LOG_PROVIDER_OVERRIDE") or None,
+        k8s_orchestrator_mode=os.getenv("K8S_ORCHESTRATOR_MODE") or None,
+        llm_config_source=os.getenv("LLM_CONFIG_SOURCE") or None,
+        llm_provider=os.getenv("LLM_PIN_PROVIDER") or None,
+        llm_model_name=os.getenv("LLM_PIN_MODEL_NAME") or None,
+        llm_tier_models=_env_tier_models(),
     )
     elapsed = round(time.time() - start_time, 2)
     docs = extractor(llm_result.data, account_id, tool_names, db_tool_name)

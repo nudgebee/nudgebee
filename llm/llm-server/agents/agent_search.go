@@ -113,7 +113,7 @@ User Input: {{.input}}`
 		searchTool := tools.SearchExecuteTool{}
 		toolCtx := toolcore.NewNbToolContext(ctx, searchTool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.Value, nil, request.QueryContext, request.QueryConfig, "")
 
-		searchResp, err := searchTool.Call(toolCtx, toolcore.NBToolCallRequest{Command: analysis.Value})
+		searchResp, err := core.CallTool(toolCtx, searchTool, toolcore.NBToolCallRequest{Command: analysis.Value})
 		if err != nil {
 			return core.NBAgentResponse{}, fmt.Errorf("search: search failed: %w", err)
 		}
@@ -158,7 +158,7 @@ Search Results:
 	crawlTool := tools.CrawlExecuteTool{}
 	crawlToolCtx := toolcore.NewNbToolContext(ctx, crawlTool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, targetUrl, nil, request.QueryContext, request.QueryConfig, "")
 
-	crawlResp, err := crawlTool.Call(crawlToolCtx, toolcore.NBToolCallRequest{Command: targetUrl})
+	crawlResp, err := core.CallTool(crawlToolCtx, crawlTool, toolcore.NBToolCallRequest{Command: targetUrl})
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("search: crawl failed for %s: %w", targetUrl, err)
 	}

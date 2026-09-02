@@ -1,6 +1,47 @@
 import type { NextRouter } from 'next/router';
 import { v5 } from 'uuid';
 
+// Order-insensitive equality for two string lists. Used by dirty-checks that
+// compare a picker's current selection against a baseline where the order the
+// ids arrive in is not meaningful. Element-wise on the sorted lists so it is
+// correct even when a list carries duplicates — a length + Set-size heuristic
+// is NOT (['x','y'] vs ['x','x'] both collapse to size 2).
+export const sameIdSet = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const x = [...a].sort();
+  const y = [...b].sort();
+  return x.every((v, i) => v === y[i]);
+};
+
+// Maps a quick-link URL fragment to the dynamic-RBAC permission module that
+// gates it. Nav fragments are coarser than the permission modules — a single
+// `monitoring/*` area spans logs / metrics / traces / events, and the backend
+// gates each separately — so the sub-fragment decides. Anything unrecognized
+// falls back to `cloud`, the cloud-resource surfaces (ec2/rds/s3/ecs/vm/sql/
+// blob/services) that make up the rest of the quick-link set.
+//
+// Shared by every surface that renders permission-gated quick links (the Home
+// page and the Kubernetes cluster summary today). It lives here rather than
+// beside either caller because the two copies must not drift: a fragment that
+// resolves to different modules in different places would gate the same link
+// inconsistently. Module names must match `classifyAction` in
+// @lib/permissionCatalog — both sides resolve the same key.
+export const moduleForFragment = (fragment: string = ''): string => {
+  const [area, sub = ''] = fragment.split('/');
+  if (area === 'monitoring') {
+    if (sub === 'logs' || sub === 'cloud-logs') return 'logs';
+    if (sub === 'query') return 'metrics';
+    if (sub === 'traces' || sub === 'service-map') return 'traces';
+    if (sub === 'groups') return 'events';
+    return 'k8s';
+  }
+  if (area === 'kubernetes') return 'k8s';
+  if (area === 'security') return 'security';
+  if (area === 'events') return 'events';
+  if (area === 'optimize') return 'recommendations';
+  return 'cloud';
+};
+
 // Event aggregation_keys that are excluded from the Troubleshoot dashboard
 // (widgets + lists) only. These are low-signal records (e.g. K8s config-change
 // audit entries) that the backend still triages, but which we do not want
@@ -103,6 +144,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'CLOUDFOUNDRY':
       label = 'Cloud Foundry';
       break;
+    case 'SELFHOSTED':
+      label = 'Self-Hosted VMs';
+      break;
     case 'SNOWFLAKE':
       label = 'Snowflake';
       break;
@@ -199,6 +243,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'LLM':
       label = 'LLM';
       break;
+    case 'LLM_GATEWAY':
+      label = 'LLM Gateway';
+      break;
     case 'MCP':
       label = 'MCP';
       break;
@@ -213,6 +260,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       break;
     case 'OPENOBSERVE':
       label = 'OpenObserve';
+      break;
+    case 'OPENOBSERVE_WEBHOOK':
+      label = 'OpenObserve Webhook';
       break;
     case 'OBSERVE':
       label = 'Observe';
@@ -254,7 +304,7 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       label = 'SolarWinds Webhook';
       break;
     case 'WORKFLOW_WEBHOOK':
-      label = 'Workflow Webhook';
+      label = 'Automation Webhook';
       break;
     case 'BITBUCKET':
       label = 'Bitbucket';
@@ -267,6 +317,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       break;
     case 'ES':
       label = 'Elasticsearch';
+      break;
+    case 'ELASTICSEARCH_WEBHOOK':
+      label = 'Elasticsearch Webhook';
       break;
     case 'PINOT':
       label = 'Apache Pinot';
@@ -476,13 +529,6 @@ export const checkForZero = (value: number) => {
     return '0';
   }
   return value;
-};
-
-export const isCronValid = (freq: string) => {
-  const cronregex = new RegExp(
-    /^(\*|(\d|1\d|2\d|3\d|4\d|5\d)|\*\/(\d|1\d|2\d|3\d|4\d|5\d)) (\*|(\d|1\d|2[0-3])|\*\/(\d|1\d|2[0-3])) (\*|([1-9]|1\d|2\d|3[0-1])|\*\/([1-9]|1\d|2\d|3[0-1])) (\*|([1-9]|1[0-2])|\*\/([1-9]|1[0-2])) (\*|([0-6])|\*\/([0-6]))$/
-  );
-  return cronregex.test(freq);
 };
 
 export const isAlertNameValid = (name: string) => {
@@ -791,6 +837,15 @@ const UPPERCASE_ACRONYMS = new Set([
   'llm',
   'mcp',
 ]);
+
+/**
+ * Render an SLO goal (stored as a fraction) as a percentage string.
+ *
+ * `(goal * 100).toFixed()` rounded to a whole number, so 99.9 displayed as
+ * "100" — which made every sub-percent objective look like 100%. Rounding to
+ * 4 decimals also absorbs float noise (0.9995 * 100 = 99.95000000000001).
+ */
+export const formatObjectivePercent = (goal: number) => String(Number((goal * 100).toFixed(4)));
 
 export const snakeToTitleCase = (str: string) => {
   if (str === null || str === undefined) return '';

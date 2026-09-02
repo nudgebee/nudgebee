@@ -14,6 +14,44 @@ import (
 // my-bucket.s3) when the host has the same dot-count.
 var awsRegionPattern = regexp.MustCompile(`^[a-z]{2}-[-a-z]+-[0-9]+$`)
 
+// awsTruncatedRegionPattern matches an AWS region code whose trailing
+// "-<availability-number>" has been dropped: "us-east" (from us-east-1),
+// "ap-southeast" (from ap-southeast-1), "us-gov-east" (from us-gov-east-1).
+// The leading segment is pinned to AWS's finite, stable set of geographic
+// prefixes so ordinary two-word external hostname labels aren't mistaken for a
+// region. See reconstructTruncatedAWSHost.
+var awsTruncatedRegionPattern = regexp.MustCompile(`^(us|eu|ap|sa|ca|af|me|cn|il|mx)-[a-z]+(-[a-z]+)?$`)
+
+// reconstructTruncatedAWSHost repairs the region-truncated hostnames the eBPF
+// service-map sensor emits for AWS endpoints. That sensor drops the trailing
+// "-<N>.amazonaws.com", turning e.g. "kms.us-east-1.amazonaws.com" into
+// "kms.us-east" and "<account>.dkr.ecr.us-east-1.amazonaws.com" into
+// "<account>.dkr.ecr.us-east" (confirmed: 100% of truncated ExternalService
+// nodes are source=ebpf, 0 from traces). Only the availability number is
+// unrecoverable, and it is irrelevant to classification (service + region
+// determine the node type), so we append a canonical "-1.amazonaws.com" purely
+// so the suffix-based classifier logic below applies unchanged — the value is
+// used for classification only, never persisted as the node's name.
+//
+// Returns (canonicalHost, true) when a repair was made, else (hostname, false).
+// Hostnames already carrying ".amazonaws.com" are returned untouched.
+func reconstructTruncatedAWSHost(hostname string) (string, bool) {
+	h := strings.ToLower(strings.TrimSpace(hostname))
+	if h == "" || strings.Contains(h, AWSHostnameSuffix) {
+		return hostname, false
+	}
+	// Need a "<prefix>.<truncated-region>" shape — a lone region label carries
+	// no service prefix and isn't an endpoint.
+	idx := strings.LastIndex(h, ".")
+	if idx < 0 {
+		return hostname, false
+	}
+	if !awsTruncatedRegionPattern.MatchString(h[idx+1:]) {
+		return hostname, false
+	}
+	return h + "-1" + AWSHostnameSuffix, true
+}
+
 // AWSClassifier classifies AWS hostnames to their corresponding node types
 type AWSClassifier struct{}
 
@@ -26,6 +64,9 @@ func NewAWSClassifier() *AWSClassifier {
 // Returns (NodeType, serviceName) - NodeType will be empty string if not an AWS hostname
 func (c *AWSClassifier) ClassifyHostname(hostname string) (core.NodeType, string) {
 	hostnameLower := strings.ToLower(hostname)
+	if repaired, ok := reconstructTruncatedAWSHost(hostnameLower); ok {
+		hostnameLower = repaired
+	}
 
 	// Check if it's an AWS hostname
 	if !c.IsAWSHostname(hostnameLower) {
@@ -38,6 +79,9 @@ func (c *AWSClassifier) ClassifyHostname(hostname string) (core.NodeType, string
 // IsAWSHostname checks if the hostname is an AWS hostname
 func (c *AWSClassifier) IsAWSHostname(hostname string) bool {
 	hostnameLower := strings.ToLower(hostname)
+	if repaired, ok := reconstructTruncatedAWSHost(hostnameLower); ok {
+		hostnameLower = repaired
+	}
 	return strings.Contains(hostnameLower, AWSHostnameSuffix) ||
 		strings.Contains(hostnameLower, CloudfrontHostSuffix) ||
 		strings.HasPrefix(hostnameLower, ECRPublicHost)
@@ -90,6 +134,9 @@ func (c *AWSClassifier) IsBareAWSServiceEndpoint(hostname string) bool {
 	}
 	if h == ECRPublicHost {
 		return true
+	}
+	if repaired, ok := reconstructTruncatedAWSHost(h); ok {
+		h = repaired
 	}
 	if !strings.HasSuffix(h, AWSHostnameSuffix) {
 		return false

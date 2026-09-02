@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // lokiMaxLogLimit is the per-query cap Loki enforces (HTTP 400 above this).
@@ -130,6 +132,33 @@ func parseFetchLogConfigs(configs map[string]any) (fetchLogParams, error) {
 	return p, nil
 }
 
+// setRequestIndex puts the resolved index into the free-form `request` bag, which
+// is the ONLY place services-server reads it from. LogQueryRequest.Index is a
+// top-level field with no counterpart on services-server's FetchLogRequest — the
+// struct /rpc/logs decodes into for both logs_query and logs_get_query — so
+// setting it alone drops the index silently on the wire. Elasticsearch is the
+// only provider that consumes an index, and both its sources need this:
+// ElasticSaasSource falls back to the account's cfg.LogIndex (so a caller-chosen
+// index is ignored, and the label/type checks run against the wrong index — ES
+// field types are per-index), while the relay-backed ElasticSource has no
+// fallback at all and the agent rejects the query with "index is required".
+// Copies rather than assigns or mutates in place: the bag already carries
+// provider parameters on some paths, and parseFetchLogConfigs aliases it
+// straight from the caller's configs["request"] — writing through that alias
+// would leak the index back into a configs map the caller may reuse across
+// calls, or race a concurrent reader of it.
+func setRequestIndex(logRequest *services_server.LogQueryRequest, index string) {
+	if index == "" {
+		return
+	}
+	bag := make(map[string]any, len(logRequest.Request)+1)
+	for k, v := range logRequest.Request {
+		bag[k] = v
+	}
+	bag["index"] = index
+	logRequest.Request = bag
+}
+
 func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.ObservabilityProvider, query string, configs map[string]any) (core.ObservabilityLogResponse, error) {
 	if logProvider.Provider == "" {
 		return core.ObservabilityLogResponse{}, errors.New("log_provider is required")
@@ -163,6 +192,8 @@ func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.Observ
 		Request:           p.request,
 		Index:             p.index,
 	}
+	setRequestIndex(&logRequest, p.index)
+
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
 		return core.ObservabilityLogResponse{}, err
@@ -177,17 +208,16 @@ func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.Observ
 // provider-native Query); both share parseFetchLogConfigs. Used by the canonical
 // fetch_logs v2 tool (logs_execute_v2).
 //
-// LogProvider/LogProviderSource are intentionally NOT populated here. Unlike the
-// legacy path (which must name the provider it pre-built a native query for), the
-// canonical path forwards an empty Query + structured Where and lets services-server
-// resolve the account's provider+source itself — it already owns that per-account
-// mapping (getLogsMetricsTracesProviderWithIntegration), and a well-formed account
-// has exactly one default log provider (enforced on write), so the resolution is
-// deterministic and matches what the agent saw when building the prompt. Deferring
-// also sidesteps the integration_source echo (services-server resolves the real
-// source rather than us forwarding a stale one). The agent still resolves the
-// provider locally for the LLM prompt's label mappings/operators — that is
-// unaffected; this only drops the redundant routing fields from the wire request.
+// LogProvider/LogProviderSource ARE forwarded from the caller's already-resolved
+// logProvider (mirroring the legacy path) — services-server falls back to its own
+// account-default lookup when they're empty, so this is a no-op for the common
+// case FetchLogsAgentV2 relies on (a well-formed account with exactly one default
+// log provider: services-server would resolve the same provider either way). It
+// stops being a no-op for a per-request provider override (e.g.
+// ai_generate_log_query honoring the user's "Log Provider:" dropdown selection on
+// an account with multiple integrations) — without forwarding these fields,
+// services-server would silently re-resolve its own account default and ignore
+// the override the agent already used to build the prompt.
 func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_server.ObservabilityProvider, where core.QueryWhereClause, configs map[string]any) (core.ObservabilityLogResponse, error) {
 	p, err := parseFetchLogConfigs(configs)
 	if err != nil {
@@ -217,11 +247,9 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		Request:           p.request,
 		Index:             idx,
 		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
-		// Opt into label-name validation: on an empty/failed result the agent gets
-		// an actionable error naming the mistyped label instead of a silent empty
-		// result, so it can self-correct. Only meaningful on this canonical path,
-		// which sends the structured where-clause services-server validates.
-		ValidateRequest: false,
+		// On an empty/failed result, name the mistyped label so the agent can
+		// self-correct. Only meaningful on this where-clause path.
+		ValidateRequest: config.Config.LlmServerLogValidateRequestEnabled,
 	}
 
 	// Escape hatch: a pinned provider (env var or per-request override) may have no
@@ -232,6 +260,8 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		logRequest.LogProviderSource = logProvider.IntegrationSource
 	}
 
+	setRequestIndex(&logRequest, idx)
+
 	slog.Info("executeFetchLogsCanonical: sending LogQueryRequest", "account_id", ctx.AccountId, "provider", logProvider.Provider, "where", where, "index", idx)
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
 	if err != nil {
@@ -240,6 +270,39 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 	}
 	slog.Info("executeFetchLogsCanonical: QueryLogs complete", "log_count", len(logs.Logs), "suggestion", logs.Suggestion)
 	return logs, nil
+}
+
+// GetLogsQueryPreview resolves a canonical where-clause into the provider-native
+// query text via GetLogsQuery/logs_get_query — no execution against the real
+// backend, no log data fetched. Sibling to executeFetchLogsCanonical, but for
+// callers (ai_generate_log_query) whose job is only to show the resolved query
+// text, not to also validate it by actually running it. Exported for LogQueryAgent,
+// which calls it directly (not through a tool.Call) since there is no log data
+// to fetch or tool-config to resolve — just account/tenant context.
+func GetLogsQueryPreview(ctx *security.RequestContext, accountId string, logProvider services_server.ObservabilityProvider, where core.QueryWhereClause, configs map[string]any) (string, error) {
+	p, err := parseFetchLogConfigs(configs)
+	if err != nil {
+		return "", err
+	}
+
+	logRequest := services_server.LogQueryRequest{
+		StartTime:         p.startTime,
+		EndTime:           p.endTime,
+		Limit:             p.limit,
+		Offset:            p.offset,
+		AccountId:         accountId,
+		LogProvider:       logProvider.Provider,
+		LogProviderSource: logProvider.IntegrationSource,
+		Index:             p.index,
+		QueryRequest:      &services_server.LogsQueryBuilderRequest{Where: where},
+	}
+	setRequestIndex(&logRequest, p.index)
+
+	output, err := services_server.GetLogsQuery(*ctx, logRequest)
+	if err != nil {
+		return "", err
+	}
+	return output.Query, nil
 }
 
 func executeFetchLogLabels(accountId string, logProvider services_server.ObservabilityProvider) (core.ObservabilityLogLabelResponse, error) {
@@ -289,7 +352,7 @@ func FetchTraceLabelKeys(accountId string, traceProvider services_server.Observa
 	return labels
 }
 
-func getProvider(accountId, providerType string) (services_server.ObservabilityProvider, error) {
+func getProvider(accountId, providerType, requestedProvider string) (services_server.ObservabilityProvider, error) {
 	if accountId == "" || providerType == "" {
 		return services_server.ObservabilityProvider{}, fmt.Errorf("accountId or providerType cannot be empty")
 	}
@@ -299,7 +362,7 @@ func getProvider(accountId, providerType string) (services_server.ObservabilityP
 		return services_server.ObservabilityProvider{}, err
 	}
 	securityContext := security.NewRequestContextForTenantAccountAdmin(tenantId, "", []string{accountId})
-	provider, err := services_server.GetObservabilityProvider(*securityContext, accountId, providerType)
+	provider, err := services_server.GetObservabilityProvider(*securityContext, accountId, providerType, requestedProvider)
 	if err != nil {
 		return services_server.ObservabilityProvider{}, err
 	}
@@ -409,7 +472,7 @@ func executeFetchTraceCanonical(ctx core.NbToolContext, queryBuilder core.TraceQ
 }
 
 func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, error) {
-	providerFromServicesServer, err := getProvider(accountId, "traces")
+	providerFromServicesServer, err := getProvider(accountId, "traces", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
 			return providerFromServicesServer, nil
@@ -419,6 +482,19 @@ func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, 
 	if err != nil {
 		slog.Warn("trace: could not fetch provider from services-server, falling back to default provider", "error", err, "accountId", accountId)
 	}
+
+	// No first-class trace provider configured. For a cloud-ONLY GCP/Azure account
+	// (no connected k8s agent) the ClickHouse default can't answer, so fall back to
+	// the account's cloud CLI (Cloud Trace / Application Insights). The
+	// hasConnectedK8sAgent guard keeps a GKE/AKS account on its in-cluster
+	// ClickHouse. AWS/unknown keep the clickhouse default.
+	if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedK8sAgent(accountId) {
+		return services_server.ObservabilityProvider{
+			IntegrationSource: "agent",
+			Provider:          cloud,
+		}, nil
+	}
+
 	traceProvider := "clickhouse"
 	return services_server.ObservabilityProvider{
 		IntegrationSource: "agent",
@@ -428,15 +504,30 @@ func GetTraceProvider(accountId string) (services_server.ObservabilityProvider, 
 
 func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider, error) {
 	metricsConnectionProvider := "prometheus"
-	providerFromServicesServer, err := getProvider(accountId, "metrics")
+	providerFromServicesServer, err := getProvider(accountId, "metrics", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
-			return providerFromServicesServer, nil
+			if !isCloudObservabilityProvider(providerFromServicesServer.Provider) || hasActiveCloudProvider(accountId, providerFromServicesServer.Provider) {
+				return providerFromServicesServer, nil
+			}
+			slog.Warn("metrics: ignoring cloud provider for inactive account", "provider", providerFromServicesServer.Provider, "accountId", accountId)
 		}
 	}
 
 	if err != nil {
 		slog.Warn("metrics: could not fetch provider from services-server, falling back to local DB", "error", err, "accountId", accountId)
+	}
+
+	// No first-class metrics provider (Prometheus / Datadog / Elasticsearch) is
+	// configured. For a cloud-only account (no connected k8s agent) the
+	// in-cluster Prometheus default can't answer, so fall back to the account's
+	// cloud CLI. The hasConnectedK8sAgent guard keeps an account that merely also
+	// has cloud creds on its cluster's Prometheus.
+	if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedK8sAgent(accountId) {
+		return services_server.ObservabilityProvider{
+			Provider:          cloud,
+			IntegrationSource: "agent",
+		}, nil
 	}
 
 	return services_server.ObservabilityProvider{
@@ -445,45 +536,199 @@ func GetMetricsProvider(accountId string) (services_server.ObservabilityProvider
 	}, nil
 }
 
-// EffectiveLogProvider returns the provider for one call: request override, else
-// the account-resolved one. Callers MUST keep it a local — log tools/agents are
-// shared via 30-minute caches (custom_agent.go), so writing it back pins the
-// backend for the whole account and races parallel tool calls.
+// cloudFallbackProvider returns the CLI observability provider for an active
+// AWS/GCP/Azure cloud account, else "". A lookup failure degrades to "" (no
+// fallback) so provider resolution never enables a cloud capability on doubt.
+func cloudFallbackProvider(accountId string) string {
+	if _, err := uuid.Parse(accountId); err != nil {
+		return ""
+	}
+	cloudProvider, err := getActiveCloudProvider(accountId)
+	if err != nil {
+		slog.Warn("observability: could not resolve cloud type for CLI fallback", "error", err, "accountId", accountId)
+		return ""
+	}
+	return cloudProviderToObservabilityFallback(cloudProvider)
+}
+
+// getActiveCloudProvider deliberately reads only the provider field and only
+// from an active account. GetCloudAccountCredentials also returns disabled
+// rows, which is appropriate for some lifecycle operations but unsafe for
+// deciding whether an integration-backed runtime capability may execute.
+func getActiveCloudProvider(accountId string) (string, error) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return "", fmt.Errorf("get database manager: %w", err)
+	}
+
+	var cloudProviders []string
+	if err := dbms.Db.Select(&cloudProviders, `
+		SELECT cloud_provider
+		FROM cloud_accounts
+		WHERE id = $1 AND status = 'active'
+	`, accountId); err != nil {
+		return "", fmt.Errorf("get active cloud provider: %w", err)
+	}
+	if len(cloudProviders) == 0 {
+		return "", nil
+	}
+	return cloudProviders[0], nil
+}
+
+func isCloudObservabilityProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "aws", "gcp", "azure":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasActiveCloudProvider(accountId, requestedProvider string) bool {
+	activeProvider, err := getActiveCloudProvider(accountId)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(activeProvider), strings.TrimSpace(requestedProvider))
+}
+
+// cloudProviderToObservabilityFallback maps a cloud_accounts.cloud_provider value
+// to the observability fallback provider name, or "" when the cloud has no
+// fallback provider wired here. Pure (no DB) so the mapping — including the
+// case/whitespace normalization — is unit-testable without a database.
+func cloudProviderToObservabilityFallback(cloudProvider string) string {
+	switch strings.ToLower(strings.TrimSpace(cloudProvider)) {
+	case "aws":
+		return "aws"
+	case "gcp":
+		return "gcp"
+	case "azure":
+		return "azure"
+	}
+	return ""
+}
+
+// hasConnectedK8sAgent reports whether the account has a CONNECTED in-cluster
+// Kubernetes agent. When it does, in-cluster observability (Prometheus /
+// ClickHouse / streamed pod logs) is authoritative for the account's workloads,
+// so the cloud-CLI observability fallback must NOT fire — otherwise a GKE/AKS
+// account that also has GCP/Azure cloud creds connected would be pulled off its
+// cluster's Prometheus/ClickHouse and onto gcloud monitoring / Azure Monitor,
+// where the pod-level data the k8s orchestrator wants does not live. Mirrors the
+// connected-agent probe in tools/core/tool_config.go. Fails closed (treats a DB
+// error as "agent present") so a transient error never silently enables the
+// hijack this guard exists to prevent.
+func hasConnectedK8sAgent(accountId string) bool {
+	if _, err := uuid.Parse(accountId); err != nil {
+		return false
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Warn("observability: could not check k8s agent presence; assuming present", "error", err, "accountId", accountId)
+		return true
+	}
+	var connectedCount int
+	if err := dbms.Db.Get(&connectedCount, "select count(*) from agent where status = 'CONNECTED' and cloud_account_id = $1", accountId); err != nil {
+		slog.Warn("observability: k8s agent presence query failed; assuming present", "error", err, "accountId", accountId)
+		return true
+	}
+	return connectedCount > 0
+}
+
+// logProviderCacheNS caches the resolved observability log provider per account.
+// Resolution costs an HTTP round-trip to services-server (get_default_provider),
+// and a single fetch_logs call resolves it three times over — once when the
+// LogAgent picks its provider-specific variant (agent_log.go), once at
+// FetchLogsAgent construction, and once more at logs_execute_v2 construction.
+// None of those share an instance, so without this every log fetch pays three
+// round-trips before the query-generation LLM call even starts.
+const logProviderCacheNS = "llm_log_provider"
+
+// logProviderCacheTTL matches the 30-minute TTL used by the other
+// integration-derived caches (llm_tool_config, MCP tools). The value only
+// changes when the account's integrations change, and that path already busts
+// this cache via RegisterToolCacheInvalidator, so the TTL is a backstop rather
+// than the primary freshness mechanism.
+const logProviderCacheTTL = 30 * time.Minute
+
+// cachedLogProvider wraps the provider with an explicit expiry stamp.
 //
-// Not lowercased, IntegrationSource left empty: api-server's getLogSource switch
-// is case-sensitive ("ES") and resolves the true source itself; forcing "agent"
-// 400s datadog and every other user-source backend.
+// The TTL is enforced here rather than delegated to the cache store because the
+// default in_memory backend (bigcache) ignores per-entry expiration — gocache's
+// BigcacheStore.Set drops the option, and bigcache exposes only one global
+// LifeWindow shared across every namespace. Stamping keeps logProviderCacheTTL
+// meaningful under either backend. A zero ExpiresAt (entry from an older build)
+// reads as expired and triggers a fresh resolve, which is the safe direction.
+type cachedLogProvider struct {
+	Provider  services_server.ObservabilityProvider `json:"provider"`
+	ExpiresAt time.Time                             `json:"expires_at"`
+}
+
+func init() {
+	common.CacheCreateNamespace(logProviderCacheNS, common.CacheNamespaceWithExpiration(logProviderCacheTTL))
+	core.RegisterToolCacheInvalidator(func(accountId string) {
+		if err := common.CacheDelete(logProviderCacheNS, accountId); err != nil {
+			slog.Debug("logs: unable to evict cached log provider", "error", err, "account_id", accountId)
+		}
+	})
+}
+
+// GetLogProvider resolves the account's observability log provider, memoised for
+// logProviderCacheTTL.
+//
+// Only a successful, non-empty resolution is cached. An error or an empty
+// provider falls through to a fresh lookup on the next call rather than pinning
+// a degraded result for the whole TTL — a transient services-server blip must
+// not silently route an account down the kubectl path for half an hour.
+// EffectiveLogProvider returns the provider for one call: request override,
+// otherwise the account-resolved provider. Keep the result local because tool
+// instances are shared between requests.
 func EffectiveLogProvider(resolved services_server.ObservabilityProvider, requestOverride string) services_server.ObservabilityProvider {
 	override := strings.TrimSpace(requestOverride)
-	if override == "" {
-		return resolved
-	}
-	// Same backend restated: keep the resolved value — it carries Capabilities /
-	// DefaultIndex / IntegrationSource that query generation needs.
-	if strings.EqualFold(override, resolved.Provider) {
+	if override == "" || strings.EqualFold(override, resolved.Provider) {
 		return resolved
 	}
 	return services_server.ObservabilityProvider{Provider: override}
 }
 
 func GetLogProvider(accountId string) (services_server.ObservabilityProvider, error) {
-	// Dev-only override: bypass per-account routing. Normalized for common
-	// operator fumbles (case, whitespace). No allowlist — the authoritative
-	// provider set lives in api-server's dispatch table; mirroring would
-	// drift. Unknown values surface via this Warn and fail on the next query.
-	if override := strings.ToLower(strings.TrimSpace(config.Config.LLMServerLogProviderOverride)); override != "" {
-		slog.Warn("logs: using LLM_SERVER_LOG_PROVIDER_OVERRIDE — bypasses per-account routing; only intended for local dev / debugging",
-			"provider", override,
-			"raw", config.Config.LLMServerLogProviderOverride,
-			"accountId", accountId)
-		return services_server.ObservabilityProvider{
-			Provider:          override,
-			IntegrationSource: "agent",
-		}, nil
+	if accountId == "" {
+		return getLogProviderUncached(accountId)
+	}
+	if data, ok := common.CacheGet(logProviderCacheNS, accountId); ok {
+		var cached cachedLogProvider
+		if err := common.UnmarshalJson(data, &cached); err != nil {
+			// Evict rather than leave it: the success path below overwrites this
+			// key anyway, but if resolution keeps failing (an error or empty
+			// provider is never cached) the unreadable bytes would otherwise
+			// linger and re-warn on every call.
+			slog.Warn("logs: cached log provider is unreadable, resolving fresh", "account_id", accountId)
+			if err := common.CacheDelete(logProviderCacheNS, accountId); err != nil {
+				slog.Debug("logs: unable to evict unreadable provider entry", "error", err, "account_id", accountId)
+			}
+		} else if time.Now().Before(cached.ExpiresAt) {
+			return cached.Provider, nil
+		}
 	}
 
+	provider, err := getLogProviderUncached(accountId)
+	if err != nil || provider.Provider == "" {
+		return provider, err
+	}
+	data, err := common.MarshalJson(cachedLogProvider{Provider: provider, ExpiresAt: time.Now().Add(logProviderCacheTTL)})
+	if err != nil {
+		slog.Debug("logs: unable to serialize log provider for cache", "error", err, "account_id", accountId)
+		return provider, nil
+	}
+	if err := common.CacheSet(logProviderCacheNS, accountId, data, common.CacheSetWithExpiration(logProviderCacheTTL)); err != nil {
+		slog.Debug("logs: unable to cache log provider", "error", err, "account_id", accountId)
+	}
+	return provider, nil
+}
+
+func getLogProviderUncached(accountId string) (services_server.ObservabilityProvider, error) {
 	logConnectionProvider := "k8s"
-	providerFromServicesServer, err := getProvider(accountId, "logs")
+	providerFromServicesServer, err := getProvider(accountId, "logs", "")
 	if err == nil {
 		if providerFromServicesServer.Provider != "" {
 			return providerFromServicesServer, nil
@@ -494,13 +739,17 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 		slog.Warn("logs: could not fetch provider from services-server, falling back to local DB", "error", err, "accountId", accountId)
 	}
 
+	if _, err := uuid.Parse(accountId); err != nil {
+		return services_server.ObservabilityProvider{Provider: logConnectionProvider, IntegrationSource: "agent"}, nil
+	}
+
 	// Fallback to fetching from DB
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		slog.Error("logs: unable to fetch dbms", "error", err)
 		return services_server.ObservabilityProvider{}, err
 	}
-	rows, err := dbms.Db.Queryx("select connection_status::text from agent where cloud_account_id = $1", accountId)
+	rows, err := dbms.Db.Queryx("select connection_status::text, status from agent where cloud_account_id = $1", accountId)
 	if err != nil {
 		slog.Error("logs: unable to fetch dbms", "error", err)
 		return services_server.ObservabilityProvider{}, err
@@ -511,12 +760,18 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 		}
 	}()
 
+	explicitlySet := false
+	hasConnectedAgent := false
 	for rows.Next() {
 		var connectionStatusString *string
-		err := rows.Scan(&connectionStatusString)
+		var agentStatus string
+		err := rows.Scan(&connectionStatusString, &agentStatus)
 		if err != nil {
 			slog.Error("logs: unable to scan rows", "error", err)
 			break
+		}
+		if agentStatus == "CONNECTED" {
+			hasConnectedAgent = true
 		}
 		connectionStatus := map[string]any{}
 		if connectionStatusString != nil {
@@ -527,14 +782,52 @@ func GetLogProvider(accountId string) (services_server.ObservabilityProvider, er
 			}
 		}
 		logConnectionProvider1 := connectionStatus["logsConnectionProvider"]
-		if logConnectionProvider1 != nil {
-			logConnectionProvider = logConnectionProvider1.(string)
+		if s, ok := logConnectionProvider1.(string); ok {
+			logConnectionProvider = s
+			explicitlySet = true
 		} else {
 			slog.Info("logs: unable to find log connection provider, will be using default")
 		}
 	}
 
+	// No log provider was explicitly configured (neither services-server nor the
+	// agent connection_status named one). For a cloud-ONLY GCP/Azure account (no
+	// connected k8s agent) the bare "k8s" default can't read logs, so fall back to
+	// the account's cloud CLI (Cloud Logging / Log Analytics). Both gates matter: an
+	// explicit provider (even "k8s" from a GKE/AKS agent that streams logs) is
+	// respected via explicitlySet, and the hasConnectedAgent check additionally
+	// covers a connected agent whose status omitted logsConnectionProvider.
+	// AWS/unknown keep the k8s default.
+	if !explicitlySet {
+		if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedAgent {
+			return services_server.ObservabilityProvider{Provider: cloud, IntegrationSource: "agent"}, nil
+		}
+	}
+
 	return services_server.ObservabilityProvider{Provider: logConnectionProvider, IntegrationSource: "agent"}, nil
+}
+
+// GetLogProviderWithOverride resolves the account's log provider, optionally
+// pinned to requestedProvider (e.g. "loki") instead of the account default —
+// mirrors the logs tab's provider switcher (log_provider on observability.fetchLogs).
+// Empty requestedProvider behaves exactly like GetLogProvider. Unlike
+// GetLogProvider, an override that fails to resolve (or isn't configured for
+// this account) is returned as an error rather than silently falling back to
+// the account's default provider — a caller that explicitly asked for a
+// specific provider should be told it isn't available, not served a different
+// one without realizing it.
+func GetLogProviderWithOverride(accountId, requestedProvider string) (services_server.ObservabilityProvider, error) {
+	if requestedProvider == "" {
+		return GetLogProvider(accountId)
+	}
+	provider, err := getProvider(accountId, "logs", requestedProvider)
+	if err != nil {
+		return services_server.ObservabilityProvider{}, fmt.Errorf("logs: unable to resolve requested provider %q: %w", requestedProvider, err)
+	}
+	if provider.Provider == "" {
+		return services_server.ObservabilityProvider{}, fmt.Errorf("logs: requested provider %q is not configured for this account", requestedProvider)
+	}
+	return provider, nil
 }
 
 func HasDatadogIntegration(accountId string) bool {

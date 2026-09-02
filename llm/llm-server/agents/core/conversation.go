@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	toolcore "nudgebee/llm/tools/core"
@@ -33,6 +34,14 @@ var emptyQueryClarifications = []string{
 	"You rang? Just let me know what you'd like me to look into.",
 }
 
+// finalizeOnPanicDBBudget caps how long the panic-recovery defer in
+// handleConversationRequest waits for DB cleanup (message + tool-calls + conversation
+// status flips to FAILED). Beyond this, the defer propagates the panic without
+// waiting so a hung DB can't turn a panic into a permanent worker-goroutine zombie.
+// 5s is generous for three point updates on indexed columns; if we ever see this
+// budget tripping in production, the DB is the real problem to fix.
+const finalizeOnPanicDBBudget = 5 * time.Second
+
 var conversationAsyncTaskWorkerPool *common.WorkerPool
 
 func init() {
@@ -41,8 +50,12 @@ func init() {
 
 // generateConversationTitle uses an LLM to generate a concise title for a conversation based on the initial query.
 func generateConversationTitle(ctx *security.RequestContext, accountId string, conversationId string, messageId string, query string, userId string) (string, error) {
+	titlePrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptTitleGeneration, accountId)
+	if err != nil {
+		return "", fmt.Errorf("generateConversationTitle: loading prompt: %w", err)
+	}
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompts_repo.GetPrompt(prompts_repo.PromptTitleGeneration)),
+		llms.TextParts(llms.ChatMessageTypeSystem, titlePrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, query),
 	}
 
@@ -128,7 +141,7 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 }
 
 // processAcknowledgmentAsync handles creating and saving an acknowledgment using the worker pool
-func processAcknowledgmentAsync(ctx *security.RequestContext, accountId, query, agentName, conversationId, messageId, userId string) {
+func processAcknowledgmentAsync(ctx *security.RequestContext, accountId, query, agentName, conversationId, messageId, userId string, source ConversationSource) {
 	bgCtx := security.NewRequestContext(
 		context.Background(),
 		ctx.GetSecurityContext(),
@@ -147,6 +160,7 @@ func processAcknowledgmentAsync(ctx *security.RequestContext, accountId, query, 
 			agentName,
 			conversationId,
 			messageId,
+			source,
 		)
 		err := GetConversationDao().UpdateMessageAcknowledgement(messageId, accountId, ackResp.Acknowledgment)
 		if err != nil {
@@ -237,9 +251,9 @@ func computeProductivityMetricsAsync(ctx *security.RequestContext, userId, accou
 
 // generateCompactResponse generates a compact version of the response optimized for Slack using an LLM.
 func generateCompactResponse(ctx *security.RequestContext, accountId, conversationId, messageId, userId, query, response string) (string, error) {
-	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptResponseFormatterSlack, accountId)
-	if systemPrompt == "" {
-		systemPrompt = prompts_repo.GetPrompt(prompts_repo.PromptExecutorResponseFormatterSlack)
+	systemPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptResponseFormatterSlack, accountId)
+	if err != nil {
+		return "", fmt.Errorf("generateCompactResponse: loading slack formatter prompt: %w", err)
 	}
 
 	userPrompt := fmt.Sprintf(`
@@ -313,6 +327,8 @@ type additionalConversationSessionRequestConfig struct {
 	isNewConversation     bool
 	isResume              bool
 	images                []ImageAttachment
+	channelContext        string
+	channelContextRefs    map[string]any
 }
 
 type ConversationSessionRequestConfig interface {
@@ -339,6 +355,20 @@ func IsNewConversationRequest(configs ...ConversationSessionRequestConfig) bool 
 		c.apply(&cfg)
 	}
 	return cfg.isNewConversation
+}
+
+// QueryConfigFromRequests extracts the NBQueryConfig from a list of
+// ConversationSessionRequestConfig options. Mirrors IsNewConversationRequest —
+// used by callers (e.g. the router) that need to see per-request signals
+// (k8s_orchestrator_mode, tool_configs, capabilities…) before the agent is
+// picked, not only after HandleConversationSessionRequest carries the config
+// to the executor.
+func QueryConfigFromRequests(configs ...ConversationSessionRequestConfig) toolcore.NBQueryConfig {
+	cfg := additionalConversationSessionRequestConfig{}
+	for _, c := range configs {
+		c.apply(&cfg)
+	}
+	return cfg.config
 }
 
 type sessionRequestWithClientTools struct {
@@ -541,6 +571,40 @@ func ConversationSessionRequestWithImages(images []ImageAttachment) Conversation
 	}
 }
 
+type sessionRequestWithChannelContext struct {
+	channelContext string
+}
+
+func (h sessionRequestWithChannelContext) apply(c *additionalConversationSessionRequestConfig) {
+	c.channelContext = h.channelContext
+}
+
+// ConversationSessionRequestWithChannelContext carries conversation observed in
+// a watched messaging channel. Deliberately separate from the query so the
+// agent can distinguish what the user asked from what it merely overheard.
+func ConversationSessionRequestWithChannelContext(channelContext string) ConversationSessionRequestConfig {
+	return sessionRequestWithChannelContext{
+		channelContext: channelContext,
+	}
+}
+
+type sessionRequestWithChannelContextRefs struct {
+	channelContextRefs map[string]any
+}
+
+func (h sessionRequestWithChannelContextRefs) apply(c *additionalConversationSessionRequestConfig) {
+	c.channelContextRefs = h.channelContextRefs
+}
+
+// ConversationSessionRequestWithChannelContextRefs carries the provenance of
+// the channel context block — destined for a conversation reference row the
+// UI cites, never for the prompt.
+func ConversationSessionRequestWithChannelContextRefs(refs map[string]any) ConversationSessionRequestConfig {
+	return sessionRequestWithChannelContextRefs{
+		channelContextRefs: refs,
+	}
+}
+
 func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgent, userId string, accountId string, sessionId string, query string, configs ...ConversationSessionRequestConfig) (NBAgentResponse, error) {
 
 	defaultConfig := additionalConversationSessionRequestConfig{
@@ -604,6 +668,8 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		PreviousState:         defaultConfig.previousState,
 		IsResume:              defaultConfig.isResume,
 		Images:                defaultConfig.images,
+		ChannelContext:        defaultConfig.channelContext,
+		ChannelContextRefs:    defaultConfig.channelContextRefs,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
@@ -690,7 +756,32 @@ func markConversationActive(ctx *security.RequestContext, conversationId string,
 
 // Tier wins when both are supplied; DAO failures are logged, not propagated
 // (sticky-config write is best-effort and must not abort the chat turn).
-func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides ConversationTierOverrides) {
+//
+// llmConfigSource is handled outside the switch: pinning a config slot is
+// independent of picking a model, so it persists whichever of the two branches
+// below applies — or neither.
+func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
+	// A reset drops everything and takes no other write: the picker sends it
+	// only when nothing is selected, so there is nothing to persist after it.
+	if llmConfigReset {
+		if uerr := dao.ClearConversationModelConfig(conversationId); uerr != nil {
+			ctx.GetLogger().Warn("conversation: failed to clear llm model configuration", "error", uerr)
+			return
+		}
+		InvalidateConversationOverrideCache(conversationId)
+		ctx.GetLogger().Info("conversation: cleared sticky llm model configuration")
+		return
+	}
+
+	if llmConfigSource != "" {
+		if uerr := dao.UpdateConversationConfigSource(conversationId, llmConfigSource); uerr != nil {
+			ctx.GetLogger().Warn("conversation: failed to update pinned llm config source", "error", uerr)
+		} else {
+			InvalidateConversationOverrideCache(conversationId)
+			ctx.GetLogger().Info("conversation: updated sticky llm config source", "config_source", llmConfigSource)
+		}
+	}
+
 	switch {
 	case llmTierOverrides.HasAny():
 		if uerr := dao.UpdateConversationTierOverrides(conversationId, llmTierOverrides); uerr != nil {
@@ -715,6 +806,105 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		ctx.GetLogger().Info("conversation: validation failed", "error", err.Error(), "agent", agent.GetName())
 		return NBAgentResponse{}, common.ErrorBadRequest("conversation: unable to complete request, Please try again later")
 	}
+
+	// Finalize-on-panic: without this, a panic inside executeAgent (or any
+	// downstream sub-agent) unwinds the worker goroutine without reaching the
+	// save-back path at ~line 1268, leaving the message row stuck IN_PROGRESS
+	// until MarkInProgressConversationAsKilled runs (>=1h). Panic-only on purpose
+	// — normal errors reach the executeErr branch at ~line 1237 which flips
+	// status FAILED via the existing save-back; adding a general non-panic branch
+	// here would risk racing legitimate WAITING transitions on abnormal exits.
+	// Idempotent under a race with save-back: UpdateConversationMessage overwrites
+	// unconditionally, and FinalizeInFlightToolCalls is UPDATE ... WHERE status = 'in_progress'.
+	// Cost on happy path is a single defer registration (~30ns); the closure body
+	// only runs on panic. Re-throws so the worker goroutine still logs the panic.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		// Resolve logger defensively. The whole point of this defer is to make
+		// the process survive an unexpected panic in the executor chain — the
+		// worst outcome would be a nested nil-panic inside our recover block
+		// (masks the original panic, may crash the worker without any log).
+		// ctx is non-nil in production (constructed by handleRequestExecution in
+		// api/chains.go), but a test caller could pass nil, and ctx.GetLogger()
+		// could theoretically return nil for a partially-initialised request
+		// context. Falling back to slog.Default() (guaranteed non-nil) removes
+		// both risks for the cost of one nil check.
+		logger := slog.Default()
+		if ctx != nil {
+			if l := ctx.GetLogger(); l != nil {
+				logger = l
+			}
+		}
+		// Resolve agent name defensively — `agent` is an interface parameter and
+		// the panic could originate from anywhere in the call chain, including a
+		// path where a caller passed a nil agent (rare — most callers construct
+		// the agent before invoking us — but a nil-deref inside a recover block
+		// masks the original panic and is much harder to debug).
+		agentName := ""
+		if agent != nil {
+			agentName = agent.GetName()
+		}
+		messageId := request.MessageId
+		conversationId := request.ConversationId
+		logger.Error("conversation: panic in handleConversationRequest — finalizing message as FAILED before re-throw",
+			"panic", r, "agent", agentName, "message_id", messageId, "conversation_id", conversationId)
+
+		// DB cleanup uses a ctx-cancellable path (MarkMessageFailedOnPanic uses
+		// ExecContext internally) with a hard budget, so a hung DB connection
+		// unblocks the SQL driver at the deadline — no leaked goroutine holding
+		// a pool slot indefinitely, no zombie worker. dao is checked for nil to
+		// avoid a nested panic in early-startup / test contexts where the
+		// singleton isn't set.
+		if dao := GetConversationDao(); dao != nil {
+			finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeOnPanicDBBudget)
+			if err := dao.MarkMessageFailedOnPanic(finalizeCtx, messageId, conversationId,
+				fmt.Sprintf("execution panicked: %v", r)); err != nil {
+				logger.Error("conversation: finalize-on-panic DB update failed",
+					"error", err, "message_id", messageId, "conversation_id", conversationId)
+			}
+			cancel()
+		} else {
+			logger.Error("conversation: finalize-on-panic — GetConversationDao returned nil, cannot finalize DB state")
+		}
+		panic(r)
+	}()
+
+	// Attach the egressfilter event reporter for the duration of this turn.
+	// The wrapper invokes the callback once per outbound LLM call that
+	// produces hits; we accumulate them under egressFilterEvents and write
+	// the slice to the message's metadata column at the finalize step.
+	//
+	// A single message can produce multiple LLM calls (planner thinks, tool
+	// runs, planner thinks again, ...) so events is a slice, not a single
+	// value. Mutated under egressFilterEventsMu because the wrapper may be
+	// called from multiple goroutines under parallel plan execution.
+	var (
+		egressFilterEvents   []egressfilter.FilterEvent
+		egressFilterEventsMu sync.Mutex
+	)
+	ctx.SetContext(egressfilter.WithFilterEventReporter(ctx.GetContext(), func(e egressfilter.FilterEvent) {
+		egressFilterEventsMu.Lock()
+		egressFilterEvents = append(egressFilterEvents, e)
+		egressFilterEventsMu.Unlock()
+	}))
+
+	// Sibling accumulator for the EE PII scrubber (ee/scrubbing). Unlike the
+	// egressfilter reporter above, PII uses a per-turn DISTINCT-value
+	// accumulator (2026-07-31) so the chip count reflects unique values
+	// rather than sum-of-hit_counts across every wrapper call. A react loop
+	// of many calls that reference the same email would otherwise show
+	// e.g. "95 PII scrubbed" for what is really 1-few distinct values.
+	//
+	// Values live only in the accumulator's in-memory map for the duration
+	// of this turn — never serialized or persisted. Same risk profile as
+	// the per-call mapping the wrapper already holds for rehydration.
+	// At message-end we call Consolidated() to build ONE PIIScrubEvent
+	// with the true-distinct hit_count + union of categories + agent list.
+	piiAccumulator := egressfilter.NewPIIValueAccumulator()
+	ctx.SetContext(egressfilter.WithPIIValueAccumulator(ctx.GetContext(), piiAccumulator))
 
 	var agentResponse NBAgentResponse
 	var executeErr error
@@ -741,7 +931,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		if llmTierOverrides.Picks == nil {
 			llmTierOverrides.Picks = make(map[string]TierModelPick)
 		}
-		llmTierOverrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model}
+		llmTierOverrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
 	}
 	if llmTierOverrides.HasAny() {
 		ctx.GetLogger().Info("conversation: overriding per-tier models from request config", "tier_count", len(llmTierOverrides.Picks))
@@ -757,8 +947,6 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 
 		if conversation.ID != uuid.Nil {
-			applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides)
-
 			if conversation.AccountID.String() != request.AccountId {
 				return NBAgentResponse{}, errors.New("conversation: user does not have access to this conversation")
 			}
@@ -772,8 +960,42 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// entry-point handler. It serializes via conv-level lock, resolves the
 			// correct message_id from the agent record, and handles parent bubble-up.
 			// Applied for both WAITING and IN_PROGRESS conversations (#28141).
-			if config.Config.FollowupResumeV2Enabled && request.AgentId != "" && request.Query != "" &&
-				(conversation.Status == ConversationStatusWaiting || conversation.Status == ConversationStatusInProgress) {
+			isFollowupResume := config.Config.FollowupResumeV2Enabled && request.AgentId != "" && request.Query != "" &&
+				(conversation.Status == ConversationStatusWaiting || conversation.Status == ConversationStatusInProgress)
+
+			if !isFollowupResume {
+				// IN_PROGRESS guard: reject new turns submitted while another turn is
+				// already running. Resume requests (client-tool-result, dead-worker
+				// recovery) bypass this guard — they're the workers that just took
+				// over the active conversation, not a competing new submission.
+				// Without IsResume, HandleConversationMessageRequest's call to
+				// markConversationActive would flip the conversation to IN_PROGRESS
+				// and then this guard would immediately reject the very work that
+				// just authorized itself (regression introduced by #29973).
+				if conversation.Status == ConversationStatusInProgress && !request.IsResume {
+					return NBAgentResponse{}, ErrConversationInProgress
+				}
+
+				// A net-new generation (no MessageId) on a conversation whose latest
+				// turn is still WAITING on a followup is rejected. The followup-answer
+				// path above (FollowupResumeV2) already handles the legitimate case
+				// where AgentId is set; reaching here means the user is asking a fresh
+				// question while a prior turn still expects an answer — accepting
+				// would leave that prior turn permanently orphaned.
+				if request.MessageId == "" &&
+					(conversation.Status == ConversationStatusWaiting ||
+						conversation.Status == ConversationStatusWaitingForClientTool) {
+					return NBAgentResponse{}, ErrConversationPendingFollowup
+				}
+			}
+
+			// Only once the turn is going to run. The write is destructive —
+			// blanket and per-tier picks are mutually exclusive, so persisting a
+			// blanket pick clears the stored tier picks — and a rejected turn
+			// must not cost the user their model selection.
+			applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset)
+
+			if isFollowupResume {
 				request.ConversationId = conversation.ID.String()
 				resp, rErr := HandleFollowupAndResumeV2(ctx, request)
 				// Resume returns early here, skipping the SessionId/ConversationId
@@ -786,30 +1008,6 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 					return resp, rErr
 				}
 				return resp, nil
-			}
-
-			// IN_PROGRESS guard: reject new turns submitted while another turn is
-			// already running. Resume requests (client-tool-result, dead-worker
-			// recovery) bypass this guard — they're the workers that just took
-			// over the active conversation, not a competing new submission.
-			// Without IsResume, HandleConversationMessageRequest's call to
-			// markConversationActive would flip the conversation to IN_PROGRESS
-			// and then this guard would immediately reject the very work that
-			// just authorized itself (regression introduced by #29973).
-			if conversation.Status == ConversationStatusInProgress && !request.IsResume {
-				return NBAgentResponse{}, ErrConversationInProgress
-			}
-
-			// A net-new generation (no MessageId) on a conversation whose latest
-			// turn is still WAITING on a followup is rejected. The followup-answer
-			// path above (FollowupResumeV2) already handles the legitimate case
-			// where AgentId is set; reaching here means the user is asking a fresh
-			// question while a prior turn still expects an answer — accepting
-			// would leave that prior turn permanently orphaned.
-			if request.MessageId == "" &&
-				(conversation.Status == ConversationStatusWaiting ||
-					conversation.Status == ConversationStatusWaitingForClientTool) {
-				return NBAgentResponse{}, ErrConversationPendingFollowup
 			}
 		}
 	}
@@ -856,7 +1054,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 				llmProvider = ""
 				llmModel = ""
 			}
-			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides)
+			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides, request.QueryConfig.LlmConfigSource)
 			if err != nil {
 				ctx.GetLogger().Error("conversation: unable to save conversation to DB", "error", err)
 				return NBAgentResponse{}, err
@@ -919,6 +1117,19 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 	if llmTierOverrides.HasAny() {
 		parentContext = context.WithValue(parentContext, ContextKeyLlmTierModelOverrides, llmTierOverrides)
+	}
+	// The pin falls back to the conversation row when the request didn't carry
+	// one. MergeFrom normally inherits it from the previous message, but that
+	// merge is skipped whenever the request supplies its own ToolConfigs — the
+	// column is what keeps a pinned conversation pinned in that case.
+	// On a reset the row was just cleared, but `conversation` was read before
+	// that write — falling back to it would re-pin the turn we are unpinning.
+	effectiveConfigSource := request.QueryConfig.LlmConfigSource
+	if effectiveConfigSource == "" && !request.QueryConfig.LlmConfigReset && conversation.LlmConfigSource != nil {
+		effectiveConfigSource = *conversation.LlmConfigSource
+	}
+	if effectiveConfigSource != "" {
+		parentContext = context.WithValue(parentContext, ContextKeyLlmConfigSourceOverride, effectiveConfigSource)
 	}
 
 	ctx = security.NewRequestContext(
@@ -997,17 +1208,33 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			}
 		}
 
-		messageId, err := GetConversationDao().SaveConversationMessage("", conversation.ID.String(), request.AccountId, request.UserId, MessageRoleHuman, historyType, request.Query, "", agent.GetName(), parentAgentId, request.QueryConfig, request.ConversationContext, effectiveProvider, effectiveModel)
+		messageId, err := GetConversationDao().SaveConversationMessage("", conversation.ID.String(), request.AccountId, request.UserId, MessageRoleHuman, historyType, request.Query, "", agent.GetName(), parentAgentId, request.QueryConfig, request.ConversationContext, effectiveProvider, effectiveModel, ConversationStatusInProgress)
 		if err != nil {
 			ctx.GetLogger().Error("conversation: unable to save user query to DB", "error", err)
 			return NBAgentResponse{}, err
 		}
 		request.MessageId = messageId.String()
 
+		// Best-effort: the citation must never fail the turn. Attached to the
+		// turn's message row, where the channel context was injected.
+		if len(request.ChannelContextRefs) > 0 {
+			refId, _ := request.ChannelContextRefs["channel_id"].(string)
+			if refId == "" {
+				refId = string(AgentReferenceTypeChannelContext)
+			}
+			if err := GetConversationDao().SaveAgentReferences(request.AccountId, conversation.ID.String(), request.MessageId, uuid.Nil.String(), []AgentReference{{
+				Type:        AgentReferenceTypeChannelContext,
+				ReferenceID: refId,
+				Metadata:    request.ChannelContextRefs,
+			}}); err != nil {
+				ctx.GetLogger().Error("conversation: failed to save channel context reference", "error", err, "message_id", request.MessageId)
+			}
+		}
+
 		markConversationActive(ctx, conversation.ID.String(), conversation.Status, "new turn", true)
 
 		// Save image attachments (non-fatal: message is saved even if attachment storage fails)
-		if len(request.Images) > 0 && IsImageSupportEnabled() {
+		if len(request.Images) > 0 {
 			dao := GetAttachmentDAO()
 			if dao != nil {
 				_, attachErr := dao.SaveAttachments(request.MessageId, conversation.ID.String(), request.AccountId, request.Images)
@@ -1111,7 +1338,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// Single-shot internal classifiers have no user watching for an acknowledgment,
 	// so skip the acknowledgment_agent call for them.
 	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
-		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId)
+		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId, request.ConversationSource)
 	}
 
 	// Add context-aware query processing before executing the agent
@@ -1176,8 +1403,15 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	agentResponseContent := ""
 	if len(agentResponse.Response) > 0 {
 		agentResponseContent = agentResponse.Response[0]
-		if agentResponse.Status == ConversationStatusWaiting || agentResponse.Status == ConversationStatusWaitingForClientTool {
+		switch agentResponse.Status {
+		case ConversationStatusWaiting, ConversationStatusWaitingForClientTool:
 			status = agentResponse.Status
+		case ConversationStatusFailed:
+			// The agent itself reported failure (e.g. executeAgentPlanner packaged an
+			// error into Response) even when executeErr comes back nil. Without this,
+			// a failed turn's raw error text gets persisted as if it were a genuine
+			// COMPLETED answer.
+			status = ConversationStatusFailed
 		}
 	} else {
 		status = ConversationStatusFailed
@@ -1217,6 +1451,44 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		if err != nil {
 			ctx.GetLogger().Error("conversation: unable to save AI response to DB at router", "error", err)
 			return NBAgentResponse{}, err
+		}
+
+		// Snapshot the egressfilter events captured during this turn under a
+		// lock so we don't race with the reporter (the wrapper may still be
+		// invoked from in-flight planner goroutines until they unwind).
+		egressFilterEventsMu.Lock()
+		eventsSnapshot := append([]egressfilter.FilterEvent(nil), egressFilterEvents...)
+		egressFilterEventsMu.Unlock()
+
+		// Consolidate PII into ONE event per message from the accumulator
+		// (2026-07-31, see WithPIIValueAccumulator). Nil when nothing was
+		// scrubbed this turn (clean turn or PII disabled for tenant).
+		piiConsolidated := piiAccumulator.Consolidated()
+
+		// Secrets (egressfilter) and PII (scrubber) are sibling detectors in
+		// the "outbound payload inspection" family — they share the same JSONB
+		// slot under `metadata.egressfilter[]`, and consumers switch on each
+		// event's `detector` field ("secrets" vs "pii"). One array, N detector
+		// types — capped at one key even if we add more detectors later
+		// (prompt-injection, jailbreak, ...).
+		piiCount := 0
+		if piiConsolidated != nil {
+			piiCount = 1
+		}
+		if total := len(eventsSnapshot) + piiCount; total > 0 {
+			combined := make([]any, 0, total)
+			for _, e := range eventsSnapshot {
+				combined = append(combined, e)
+			}
+			if piiConsolidated != nil {
+				combined = append(combined, *piiConsolidated)
+			}
+			metadata := map[string]any{"egressfilter": combined}
+			if mdErr := GetConversationDao().UpdateConversationMessageMetadata(request.MessageId, metadata); mdErr != nil {
+				ctx.GetLogger().Warn("conversation: unable to persist message metadata",
+					"error", mdErr, "message_id", request.MessageId,
+					"secrets_events", len(eventsSnapshot), "pii_events", piiCount)
+			}
 		}
 
 		err = GetConversationDao().UpdateConversationStatus(request.ConversationId, status)

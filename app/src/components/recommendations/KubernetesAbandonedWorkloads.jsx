@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 
@@ -24,7 +24,7 @@ import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import apiHome from '@api1/home';
 import { Link as CustomLink } from '@ui/Link';
-import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
+import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import CustomTooltip from '@ui/Tooltip';
@@ -203,10 +203,8 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
   const [loading, setLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState(props?.kubernetes?.id);
-  const [nubiSidebarVisible, setNubiSidebarVisible] = useState(false);
-  const [nubiQuery, setNubiQuery] = useState('');
-  const [nubiAccountId, setNubiAccountId] = useState('');
-  const [nubiConversationId, setNubiConversationId] = useState('');
+  const { openWithContext: openNubiChat } = useNubiGlobalChat();
+  const rawAbandonedRef = useRef([]);
 
   useEffect(() => {
     setSelectedAccountId(props?.kubernetes?.id);
@@ -325,6 +323,156 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
     }
   }, [isOptimisePage, allCluster]);
 
+  const buildRow = (item) => {
+    let data = [];
+
+    const name = item?.cloud_resourse?.name;
+    const nameSpace = item?.cloud_resourse?.meta?.namespace;
+    const objectType = item?.cloud_resourse?.meta?.controllerKind;
+    const workloadName =
+      item?.resource_name || item?.cloud_resourse?.meta?.controller || item?.cloud_resourse?.meta?.config?.labels?.['app.kubernetes.io/name'];
+    item.accountId = item.account_id || selectedAccountId;
+    data.push({
+      component: (
+        <>
+          <Text value={workloadName} showAutoEllipsis />
+          <Text value={`Pod - ${name}`} secondaryText showAutoEllipsis />
+          {isOptimisePage && (
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
+              <Text value={'acc: '} secondaryText />
+              <CustomLink
+                href={{
+                  pathname: `/kubernetes/details/${item.account_id}`,
+                }}
+                target='_blank'
+                secondaryText
+              >
+                {getAccountName(item.account_id)}
+              </CustomLink>
+            </Box>
+          )}
+          {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
+        </>
+      ),
+      drilldownQuery: {
+        namespace: nameSpace,
+        workloadName: workloadName,
+        updatedAt: item.updated_at,
+        recommendation: item,
+      },
+    });
+    data.push({ component: <Text value={objectType || '-'} showAutoEllipsis /> });
+    data.push({ component: <Text value={nameSpace || '-'} showAutoEllipsis /> });
+    data.push({
+      component: (
+        <Box>
+          <Text value={'Current: '} display={'inline'} />
+          <NumberComponent
+            value={item?.recommendation?.traffic}
+            sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
+          />
+          <br />
+          <Text value={'Threshold: '} display={'inline'} />
+          <NumberComponent
+            value={item?.recommendation?.threshold}
+            sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
+          />
+        </Box>
+      ),
+      data: item?.recommendation?.traffic,
+    });
+    data.push({
+      component: <Text value={(item?.recommendation?.duration || '7') + ' D'} />,
+    });
+    data.push({
+      component: <Currency value={item?.estimated_savings} precison={1} />,
+      data: item?.estimated_savings,
+    });
+    data.push({ component: <Datetime value={item.updated_at} /> });
+    data.push({
+      component: (
+        <Box
+          onClick={(e) => e.stopPropagation()}
+          sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
+        >
+          {hasWriteAccess(item.account_id || selectedAccountId) && (
+            <DsButton
+              tone='secondary'
+              size='xs'
+              id={`aw-resolve-${item.id}`}
+              trailingAccent={<ArrowForwardIcon />}
+              onClick={() => {
+                resolveAbandonedWorkloads(item);
+              }}
+            >
+              Optimize
+            </DsButton>
+          )}
+          <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
+            <span>
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                aria-label={`Ask ${assistantName}`}
+                id={`abandoned-ask-nubi-${item.id}`}
+                icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
+                onClick={() => {
+                  const prompt = buildNubiOptimizePrompt({
+                    ruleName: 'Abandoned Resource',
+                    category: 'RightSizing',
+                    severity: item.severity || 'Info',
+                    resourceName: workloadName || name || '',
+                    resourceType: objectType || '',
+                    namespace: nameSpace || '',
+                    accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
+                    estimatedSavings: item.estimated_savings || undefined,
+                    brief: `Workload ${workloadName} has low network traffic (current: ${item?.recommendation?.traffic}, threshold: ${
+                      item?.recommendation?.threshold
+                    }). Observation duration: ${item?.recommendation?.duration || '7'} days.`,
+                  });
+                  openNubiChat({
+                    accountId: item.account_id || selectedAccountId,
+                    sessionId: `recom_${item.id}`,
+                    query: prompt,
+                    categorySource: 'Optimize',
+                  });
+                }}
+              />
+            </span>
+          </CustomTooltip>
+          <DsDropdownMenu
+            align='end'
+            size='sm'
+            items={[
+              {
+                id: `aw-action-ticket-${item.id}`,
+                label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
+                icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
+                disabled: !!item.ticket?.ticket_id,
+                onSelect: () => {
+                  onMenuClick({ id: 0 }, item);
+                },
+              },
+            ]}
+            trigger={
+              <DsButton
+                tone='ghost'
+                size='xs'
+                composition='icon-only'
+                icon={<MoreVertIcon />}
+                aria-label='More actions'
+                id={`aw-action-menu-${item.id}`}
+              />
+            }
+          />
+        </Box>
+      ),
+    });
+
+    return data;
+  };
+
   const listAbandonedWorkloads = () => {
     if (!selectedAccountId && !isOptimisePage) {
       return;
@@ -349,154 +497,9 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
       .then((res) => {
         setLoading(false);
         setLastRefreshed(latestUpdatedAt(res?.data?.recommendation || []));
-        let k8sRecommendationData = res?.data?.recommendation?.map((item) => {
-          let data = [];
-
-          const name = item?.cloud_resourse?.name;
-          const nameSpace = item?.cloud_resourse?.meta?.namespace;
-          const objectType = item?.cloud_resourse?.meta?.controllerKind;
-          const workloadName =
-            item?.resource_name || item.cloud_resourse.meta?.controller || item.cloud_resourse.meta?.config?.labels?.['app.kubernetes.io/name'];
-          item.accountId = item.account_id || selectedAccountId;
-          data.push({
-            component: (
-              <>
-                <Text value={workloadName} showAutoEllipsis />
-                <Text value={`Pod - ${name}`} secondaryText showAutoEllipsis />
-                {isOptimisePage && (
-                  <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
-                    <Text value={'acc: '} secondaryText />
-                    <CustomLink
-                      href={{
-                        pathname: `/kubernetes/details/${item.account_id}`,
-                      }}
-                      target='_blank'
-                      secondaryText
-                    >
-                      {getAccountName(item.account_id)}
-                    </CustomLink>
-                  </Box>
-                )}
-                {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
-              </>
-            ),
-            drilldownQuery: {
-              namespace: nameSpace,
-              workloadName: workloadName,
-              updatedAt: item.updated_at,
-              recommendation: item,
-            },
-          });
-          data.push({ component: <Text value={objectType || '-'} showAutoEllipsis /> });
-          data.push({ component: <Text value={nameSpace || '-'} showAutoEllipsis /> });
-          data.push({
-            component: (
-              <Box>
-                <Text value={'Current: '} display={'inline'} />
-                <NumberComponent
-                  value={item?.recommendation?.traffic}
-                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
-                />
-                <br />
-                <Text value={'Threshold: '} display={'inline'} />
-                <NumberComponent
-                  value={item?.recommendation?.threshold}
-                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.brand[500] }}
-                />
-              </Box>
-            ),
-            data: item?.recommendation?.traffic,
-          });
-          data.push({
-            component: <Text value={(item?.recommendation?.duration || '7') + ' D'} />,
-          });
-          data.push({
-            component: <Currency value={item?.estimated_savings} precison={1} />,
-            data: item?.estimated_savings,
-          });
-          data.push({ component: <Datetime value={item.updated_at} /> });
-          data.push({
-            component: (
-              <Box
-                onClick={(e) => e.stopPropagation()}
-                sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-1)' }}
-              >
-                {hasWriteAccess(item.account_id || selectedAccountId) && (
-                  <DsButton
-                    tone='secondary'
-                    size='xs'
-                    id={`aw-resolve-${item.id}`}
-                    trailingAccent={<ArrowForwardIcon />}
-                    onClick={() => {
-                      resolveAbandonedWorkloads(item);
-                    }}
-                  >
-                    Optimize
-                  </DsButton>
-                )}
-                <CustomTooltip title={`Ask ${assistantName}`} placement='top'>
-                  <span>
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      aria-label={`Ask ${assistantName}`}
-                      id={`abandoned-ask-nubi-${item.id}`}
-                      icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-                      onClick={() => {
-                        const prompt = buildNubiOptimizePrompt({
-                          ruleName: 'Abandoned Resource',
-                          category: 'RightSizing',
-                          severity: item.severity || 'Info',
-                          resourceName: workloadName || name || '',
-                          resourceType: objectType || '',
-                          namespace: nameSpace || '',
-                          accountName: isOptimisePage ? getAccountName(item.account_id) : undefined,
-                          estimatedSavings: item.estimated_savings || undefined,
-                          brief: `Workload ${workloadName} has low network traffic (current: ${item?.recommendation?.traffic}, threshold: ${
-                            item?.recommendation?.threshold
-                          }). Observation duration: ${item?.recommendation?.duration || '7'} days.`,
-                        });
-                        setNubiQuery(prompt);
-                        setNubiAccountId(item.account_id || selectedAccountId);
-                        setNubiConversationId(`recom_${item.id}`);
-                        setNubiSidebarVisible(true);
-                      }}
-                    />
-                  </span>
-                </CustomTooltip>
-                <DsDropdownMenu
-                  align='end'
-                  size='sm'
-                  items={[
-                    {
-                      id: `aw-action-ticket-${item.id}`,
-                      label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
-                      disabled: !!item.ticket?.ticket_id,
-                      onSelect: () => {
-                        onMenuClick({ id: 0 }, item);
-                      },
-                    },
-                  ]}
-                  trigger={
-                    <DsButton
-                      tone='ghost'
-                      size='xs'
-                      composition='icon-only'
-                      icon={<MoreVertIcon />}
-                      aria-label='More actions'
-                      id={`aw-action-menu-${item.id}`}
-                    />
-                  }
-                />
-              </Box>
-            ),
-          });
-
-          return data;
-        });
-        setKubernetesAbandonedWorkloads(k8sRecommendationData);
+        const rawItems = res?.data?.recommendation || [];
+        rawAbandonedRef.current = rawItems;
+        setKubernetesAbandonedWorkloads(rawItems.map(buildRow));
       })
       .catch(() => {
         setLoading(false);
@@ -545,8 +548,15 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
       });
   }, [selectedAccountId, recommendationStatus]);
 
-  const handleTicketSuccess = () => {
-    listAbandonedWorkloads();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const idx = rawAbandonedRef.current.findIndex((item) => item.id === ticketData.id);
+    if (idx === -1) return;
+    rawAbandonedRef.current[idx] = { ...rawAbandonedRef.current[idx], ticket: { ticket_id: ticketId, url } };
+    setKubernetesAbandonedWorkloads((prev) => {
+      const next = [...prev];
+      next[idx] = buildRow(rawAbandonedRef.current[idx]);
+      return next;
+    });
   };
 
   const handleTicketFailure = (res) => {
@@ -747,18 +757,6 @@ const KubernetesAbandonedWorkloads = ({ enabledSummary = true, enabledFilters = 
           />
         </ListingLayout.Body>
       </ListingLayout>
-
-      <NubiChatSidebar
-        isVisible={nubiSidebarVisible}
-        onClose={() => setNubiSidebarVisible(false)}
-        accountId={nubiAccountId}
-        queryPrefix={nubiQuery}
-        context={{ type: 'cluster', data: { conversationId: nubiConversationId } }}
-        apiMode='investigate'
-        categorySource='Optimize'
-        position='right'
-        mode='overlay'
-      />
     </>
   );
 };

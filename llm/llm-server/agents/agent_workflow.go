@@ -88,7 +88,7 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"Use `workflow_list`. You can filter by name or limit results.",
 		"",
 		"**Triggering:**",
-		"Use `workflow_trigger` with the ID. You might need to `workflow_list` first to find the ID by name.",
+		"Use `workflow_trigger` with the ID. When the user named the automation, `workflow_list` finds the ID by name; when they described a PROBLEM instead, use `workflow_search` — it is the only tool that reads published data and tells you which automations you may run.",
 		"",
 		"**Validating & Diagnosing with Dry-Run:**",
 		"`workflow_dry_run` executes an automation's tasks against the engine WITHOUT persisting external side effects, returning per-task status and errors. Use it to prove an automation works and to ground failure diagnosis in real task-level errors.",
@@ -159,8 +159,21 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 	)
 
 	toolUsage := map[string][]string{
+		tools.ToolWorkflowSearch: {
+			"Find an automation by what it DOES, from a description of the problem.",
+			"Reach for this first when the user describes a symptom rather than naming an automation —",
+			"the team may already have a runbook for it. Args: query (string), limit (int).",
+			"Only automations you are actually allowed to run are returned, so anything it gives back is safe to offer.",
+			"If it returns nothing, say so — do NOT fall back to workflow_list and offer whatever turns up.",
+		},
 		tools.ToolWorkflowList: {
-			"List automations. Args: limit (int), name (string).",
+			"List automations BY NAME, for management: what exists, its status, when it last ran.",
+			"Args: limit (int), name (string).",
+			"This is NOT how you pick an automation for a problem. It does not say what any automation is for,",
+			"and it lists ALL of them including ones you may not run. Use workflow_search for that — always,",
+			"even if a name in this list looks like a match.",
+			"Never offer to RUN something from this list: only an automation with ai_invocable=true AND status=ACTIVE",
+			"can be run by you, and the server will refuse the rest.",
 		},
 		tools.ToolWorkflowGet: {
 			"Get full details of an automation. Arg: id (string, required).",
@@ -248,6 +261,7 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 
 func (a WorkflowAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	supportedTools := []string{
+		tools.ToolWorkflowSearch,
 		tools.ToolWorkflowList,
 		tools.ToolWorkflowGet,
 		tools.ToolWorkflowTrigger,
@@ -287,6 +301,14 @@ func (a WorkflowAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 	if t, ok := toolcore.GetNBTool(a.accountId, WorkflowBuilderAgentName); ok {
 		toolsList = append(toolsList, t)
 	}
+
+	// The per-automation tools are deliberately NOT added here. This agent already
+	// holds workflow_search + workflow_trigger, which is the general path; the
+	// per-automation tools exist to make an automation reachable WITHOUT first
+	// delegating to this agent, and that is the orchestrators' job. Adding up to
+	// 20 more tools to the one agent that already carries the whole workflow_*
+	// family would inflate its prompt and invite name confusion between an
+	// automation and the tools that manage automations.
 
 	return toolsList
 }

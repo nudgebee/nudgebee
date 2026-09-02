@@ -9,6 +9,21 @@ import ClarificationQuestion from './ClarificationQuestion';
 
 type ModalStage = 'input' | 'generating' | 'plan_review' | 'text_followup' | 'success' | 'error';
 
+/**
+ * Identity of the question a WAITING poll result is showing, used to tell a genuinely new
+ * question from the one already on screen.
+ *
+ * Keyed on CONTENT rather than the followup row's `updated_at`. The backend records the user's
+ * answer onto the same followup row, bumping `updated_at` without changing the question — so an
+ * updated_at-keyed identity reads "answer recorded" as "new question", re-renders the question
+ * already displayed and stops polling, leaving the user staring at their unanswered click
+ * (#35393). Content keying still distinguishes config approval, which reuses one followup row
+ * with different content.
+ */
+export function followupIdentity(result: { messageId?: string; planText?: string; followupData?: unknown }): string {
+  return (result.messageId || '') + ':' + (result.planText || '') + ':' + JSON.stringify(result.followupData ?? null);
+}
+
 interface PlanData {
   planText: string;
   options: string[];
@@ -42,7 +57,6 @@ interface AiGenerateWorkflowModalProps {
     followupData?: any;
     conversationId?: string;
     messageId?: string;
-    messageUpdatedAt?: string;
     agentId?: string;
     errorMessage?: string;
   } | null>;
@@ -146,6 +160,14 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
 
   const startPolling = useCallback(
     (sessionId: string, conversationId: string) => {
+      // Answering a follow-up calls this again while the previous elapsed interval is still
+      // running: displaying a question clears the POLL interval only, never the elapsed one. The
+      // assignment below would then overwrite the ref and orphan that interval, which keeps
+      // ticking with its own startedAt captured in its closure. Two intervals writing
+      // elapsedSeconds from different baselines makes the counter flip between values every
+      // second, and one more is orphaned per follow-up answered.
+      clearIntervals();
+
       const startedAt = Date.now();
       setProgress({ sessionId, conversationId, startedAt, elapsedSeconds: 0 });
 
@@ -186,11 +208,11 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             if (processingWaitingRef.current) {
               return;
             }
-            // Skip stale WAITING results after approval/feedback —
-            // same messageId+updated_at means the backend hasn't processed our response yet.
-            // We include updated_at because the backend reuses the same followup message
-            // for config approval (different content, same ID, but updated_at changes).
-            const staleKey = (result.messageId || '') + ':' + (result.messageUpdatedAt || '');
+            // Skip a WAITING result that is still the question already on screen — the backend has
+            // not produced the next one yet. Displaying a question calls clearPolling(), so
+            // mistaking "answer recorded" for "new question" here strands the modal permanently.
+            // See followupIdentity above for why this is content-keyed.
+            const staleKey = followupIdentity(result);
             if (lastPlanMessageIdRef.current && lastPlanMessageIdRef.current === staleKey) {
               return;
             }

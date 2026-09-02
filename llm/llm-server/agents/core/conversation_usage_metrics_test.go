@@ -278,7 +278,7 @@ func TestModelUsageStatsCalculation(t *testing.T) {
 		},
 	}
 
-	stats := calculateModelUsageStats(records)
+	stats := calculateModelUsageStats(records, "")
 
 	// Should have 2 models
 	assert.Equal(t, 2, len(stats))
@@ -329,7 +329,7 @@ type fixedPricingDao struct {
 	pricing map[string]modelPricing
 }
 
-func (d *fixedPricingDao) GetConversationCosts(models []string) (map[string]modelPricing, error) {
+func (d *fixedPricingDao) GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error) {
 	return d.pricing, nil
 }
 
@@ -362,7 +362,7 @@ func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
 		{LLMProvider: "googleai", LLMModel: "gemini-3.1-pro-preview", InputTokens: 150_000, RequestStatus: "success"},
 	}
 
-	stats := calculateModelUsageStats(records)
+	stats := calculateModelUsageStats(records, "")
 	assert.Equal(t, 1, len(stats))
 
 	// Correct (per-call): both calls priced at the standard $2/M rate.
@@ -373,6 +373,45 @@ func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
 	// rate would double this. Guard against regressing back to that.
 	buggyCost := (300_000.0 / 1_000_000.0) * 4
 	assert.NotEqual(t, buggyCost, stats[0].CostUsd)
+}
+
+// TestModelUsageStatsCalculation_PrefersStoredCost pins the per-model table to
+// the cost persisted when the call was billed. The conversation total
+// (GetConversationTokenUsage) and the Cost Analyser (perCallCostExpr) both read
+// llm_conversation_token_usage.cost_usd; recomputing here from current pricing
+// made the analytics panel's per-model rows disagree with its own total — and
+// with Optimize → LLM Analyser — for any call billed before a pricing change.
+func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
+	original := GetConversationDao()
+	// Cleanup, not defer: the global DAO is restored even if this test panics or
+	// exits early, so a failure here can't leak the fake into the next test.
+	t.Cleanup(func() { SetConversationDao(original) })
+	// Live pricing is 10x what these calls were actually billed at.
+	SetConversationDao(&fixedPricingDao{
+		pricing: map[string]modelPricing{
+			"googleai:gemini-3-flash-preview": {CostPerMillionInput: 5, CostPerMillionOutput: 30},
+		},
+	})
+
+	records := []TokenUsageDetailedRecord{
+		// Billed at insert time — must be taken verbatim.
+		{
+			LLMProvider: "googleai", LLMModel: "gemini-3-flash-preview",
+			InputTokens: 100_000, OutputTokens: 1_000, RequestStatus: "success",
+			CostUsd: sql.NullFloat64{Float64: 0.0098, Valid: true},
+		},
+		// Legacy row with no stored cost — falls back to the live recompute.
+		{
+			LLMProvider: "googleai", LLMModel: "gemini-3-flash-preview",
+			InputTokens: 1_000_000, OutputTokens: 0, RequestStatus: "success",
+		},
+	}
+
+	stats := calculateModelUsageStats(records, "")
+	assert.Equal(t, 1, len(stats))
+	// 0.0098 stored + 1M input × $5/M recomputed. Pricing the first call live
+	// would have charged it $0.53 instead of the $0.0098 it was billed.
+	assert.InDelta(t, 0.0098+5.0, stats[0].CostUsd, 1e-9)
 }
 
 func TestCacheSavingsCalculation(t *testing.T) {

@@ -318,6 +318,13 @@ type CritiqueListRow struct {
 	CritiquedContent string    `json:"critiqued_content" db:"critiqued_content"`
 	Feedback         string    `json:"feedback" db:"feedback"`
 	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	// AccountID/ConversationID/MessageID were already stored on this table but
+	// not selected; SessionID is looked up from llm_conversations. Together
+	// they back the Browse view's "Go to conversation" deep-link (#35815).
+	AccountID      string `json:"account_id" db:"account_id"`
+	ConversationID string `json:"conversation_id" db:"conversation_id"`
+	MessageID      string `json:"message_id" db:"message_id"`
+	SessionID      string `json:"session_id" db:"session_id"`
 }
 
 // CritiqueList is a paginated page of rows plus the total match count.
@@ -364,7 +371,11 @@ func (chat *ConversationDao) GetCritiqueList(filter CritiqueFilter, limit, offse
 			input,
 			critiqued_content,
 			COALESCE(substring(feedback from '<feedback>(.*?)</feedback>'), feedback, '') AS feedback,
-			created_at
+			created_at,
+			account_id::text AS account_id,
+			conversation_id::text AS conversation_id,
+			message_id::text AS message_id,
+			COALESCE((SELECT session_id FROM llm_conversations WHERE id = llm_conversation_agent_critiques.conversation_id), '') AS session_id
 		FROM llm_conversation_agent_critiques
 		WHERE %s
 		ORDER BY created_at DESC

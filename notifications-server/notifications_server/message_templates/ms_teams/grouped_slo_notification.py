@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip
 from notifications_server.message_templates.slack.slo import SLOAlertParams
-from notifications_server.message_templates.base import Emojis
+from notifications_server.message_templates.base import Emojis, format_burn_rate
 
 
 class SLOAlertSummaryParams(BaseModel):
@@ -66,8 +66,8 @@ def get_grouped_slo_alerts_ms_teams_template(input_data: List[SLOAlertParams]) -
                 {
                     "type": "TextBlock",
                     "text": (
-                        f"• Burn Rate: `{alert.burn_rate or 'N/A'}` / Budget Left:"
-                        f" `{alert.error_budget_remaining or 'N/A'}`"
+                        f"• Burn Rate: `{format_burn_rate(alert.burn_rate, alert.burn_rate_window) or 'N/A'}` / Budget"
+                        f" Left: `{alert.error_budget_remaining or 'N/A'}`"
                     ),
                     "wrap": True,
                 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import { withAccountGuard } from '@shared/AccountGuard';
 import { Button as DsButton } from '@ui/Button';
@@ -16,6 +16,7 @@ import { useData } from '@context/DataContext';
 import Tabs from '@shared/navigation/Tabs';
 import SyncIcon from '@mui/icons-material/Sync';
 import { toast as snackbar } from '@ui/Toast';
+import VmAgents from '@components/vm/VmAgents';
 
 const HEADERS_K8S = ['Status', 'Agent Version', 'Latest Version', 'Last Connected', 'K8s(Provider/Version)'];
 const HEADERS_CLOUD = ['Status', 'Last Connected', 'Cloud', 'Account'];
@@ -25,8 +26,18 @@ const HEADERS_SCHEDULED_JOBS = ['Action Name', 'Job Status', 'Execution Count', 
 const HEADERS_CLOUD_FEATURES = ['Feature', 'Status', 'Last Sync', 'Next Sync', 'Error'];
 const LATEST_CF_TEMPLATE_VERSION = '2';
 
+const AGENT_TAB = { text: 'Agent', value: 0, fragment: 'agent', id: 'tab-agent' };
+const PROXY_AGENT_TAB = { text: 'Proxy Agent', value: 1, fragment: 'proxy-agent', id: 'tab-proxy-agent' };
+
+/** cloud_provider of a self-hosted VM fleet — reached only through a proxy agent. */
+const SELF_HOSTED = 'SelfHosted';
+
 const AgentHealth = () => {
   const { selectedCluster } = useData();
+  // A self-hosted VM fleet has no in-cluster/cloud agent — the proxy agent is the
+  // only thing there is to report on, so the Agent tab is dropped for it and the
+  // fleet-side agent view (moved off /vm) rides along under Proxy Agent.
+  const isVmAccount = selectedCluster?.cloud_provider === SELF_HOSTED;
   const [agentHealthData, setAgentHealthData] = useState([]);
   const [agentType, setAgentType] = useState('k8s');
   const [data, setData] = useState([]);
@@ -112,6 +123,8 @@ const AgentHealth = () => {
   useEffect(() => {
     if (!router.query.accountId) return;
     if (!selectedCluster?.cloud_provider && !selectedCluster?.type) return;
+    // No k8s/cloud agent behind a self-hosted account, and no Agent tab to fill.
+    if (selectedCluster?.cloud_provider === SELF_HOSTED) return;
     const accountType = selectedCluster?.cloud_provider || selectedCluster?.type;
     const query = {
       accountId: router.query.accountId,
@@ -463,20 +476,14 @@ const AgentHealth = () => {
 
   const paginatedScheduledJobsData = scheduledJobsData.slice(currentPage * recordsPerPage, (currentPage + 1) * recordsPerPage);
 
-  const optionsToDisplay = {
-    tabOptions: [
-      { text: 'Agent', value: 0, fragment: 'agent', id: 'tab-agent' },
-      { text: 'Proxy Agent', value: 1, fragment: 'proxy-agent', id: 'tab-proxy-agent' },
-    ],
-  };
+  const optionsToDisplay = useMemo(() => ({ tabOptions: isVmAccount ? [PROXY_AGENT_TAB] : [AGENT_TAB, PROXY_AGENT_TAB] }), [isVmAccount]);
 
   // Sync tab from hash — runs on mount and on back/forward navigation
   useEffect(() => {
     const hash = router.asPath.split('#')[1] ?? '';
     const tab = optionsToDisplay.tabOptions.find((t) => t.fragment === hash);
-    if (tab) setActiveTab(tab.value);
-    else setActiveTab(0);
-  }, [router.asPath]);
+    setActiveTab(tab ? tab.value : optionsToDisplay.tabOptions[0].value);
+  }, [router.asPath, optionsToDisplay]);
 
   return (
     <Box sx={{ position: 'relative' }}>
@@ -773,17 +780,40 @@ const AgentHealth = () => {
             </Box>
           ) : (
             <>
-              <ListingLayout id='proxy-agent-health' sx={{ mt: 3 }}>
-                <ListingLayout.Toolbar title='Proxy Agent Health' />
-                <ListingLayout.Body>
-                  {proxyData[0]?.status === 'NOT_CONNECTED' && (
-                    <Typography color='red' sx={{ p: 2 }}>
-                      The Proxy Agent is not connected
+              {isVmAccount ? (
+                // Moved off /vm#agents: the foragers configured for this fleet and
+                // the SSH connections each one can drive. Its Proxy Agents table
+                // replaces Proxy Agent Health rather than sitting under it —
+                // apiVm.listAgents decorates each vm_agent integration with this
+                // same agents_list_health row (status → Connection, last_connected_at,
+                // version), so the health card would only repeat it with less detail.
+                <VmAgents accountId={router.query.accountId} />
+              ) : (
+                <ListingLayout id='proxy-agent-health' sx={{ mt: 3 }}>
+                  <ListingLayout.Toolbar title='Proxy Agent Health' />
+                  <ListingLayout.Body>
+                    {proxyData[0]?.status === 'NOT_CONNECTED' && (
+                      <Typography color='red' sx={{ p: 2 }}>
+                        The Proxy Agent is not connected
+                      </Typography>
+                    )}
+                    <CustomTable headers={HEADERS_PROXY} tableData={proxyAgentHealthData} loading={proxyLoading} />
+
+                    {/* Same Features block the Agent tab carries. A proxy agent reaches
+                        the platform only through the relay, so its own connection is the
+                        relay's — it reports no separate relayConnection flag. */}
+                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mt: 2, mb: 1 }}>
+                      Features
                     </Typography>
-                  )}
-                  <CustomTable headers={HEADERS_PROXY} tableData={proxyAgentHealthData} loading={proxyLoading} />
-                </ListingLayout.Body>
-              </ListingLayout>
+                    <ul>
+                      <li>
+                        <b>Relay - </b>
+                        {proxyData[0]?.status === 'CONNECTED' ? 'Connected' : 'Disconnected'}
+                      </li>
+                    </ul>
+                  </ListingLayout.Body>
+                </ListingLayout>
+              )}
               {proxyDatasourcesData.length > 0 && (
                 <ListingLayout id='proxy-datasources' sx={{ mt: 3 }}>
                   <ListingLayout.Toolbar title='Datasources' />

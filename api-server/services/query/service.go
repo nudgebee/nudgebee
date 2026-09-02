@@ -67,8 +67,16 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 				},
 			})
 
-			if !context.GetSecurityContext().IsSuperAdmin() && !context.GetSecurityContext().IsTenantReadAdmin() && !context.GetSecurityContext().IsTenantAdmin() {
-				// add account read restrictions
+			hasModuleGrant := tableDef.PermissionModule != "" &&
+				(context.GetSecurityContext().HasPermission(tableDef.PermissionModule, "Read") || context.GetSecurityContext().HasPermission(tableDef.PermissionModule, "Write"))
+
+			if !context.GetSecurityContext().IsSuperAdmin() && !context.GetSecurityContext().IsTenantReadAdmin() && !context.GetSecurityContext().IsTenantAdmin() && !hasModuleGrant {
+				// Not a tenant-wide admin, and no tenant-scoped custom-role grant for
+				// this table's module (dynamic RBAC). A Read grant — or Write, which
+				// implies Read — authorizes a tenant-wide read (the tenant_id filter
+				// above is the only restriction), so it skips this account-restriction
+				// block entirely. Everyone else must hold an account/namespace role to
+				// read a subset.
 				accountIdColumnName := tableDef.AccountIdColumnName
 				if accountIdColumnName == "" {
 					return QueryResponse{
@@ -91,6 +99,22 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 						return queryResponse, err
 					}
 					query = queryWithNamespace
+				} else if scopedAccountIds := context.GetSecurityContext().ScopedAccountIdsForModule(tableDef.PermissionModule); len(scopedAccountIds) > 0 {
+					// Account-scoped custom-role grant (V778 scope-on-grant): the
+					// caller holds no built-in account/namespace role but has a
+					// scoped grant for this table's module. Restrict the read to
+					// exactly the granted accounts, mirroring the built-in
+					// account-role branch above. Only reachable for a table with a
+					// PermissionModule (empty module -> no scoped ids -> falls
+					// through to Access Denied), confining scoped grants to the
+					// per-account-gateable query-engine surface.
+					query.Where.And = append(query.Where.And, QueryWhereClause{
+						Binary: map[string]map[BinaryWhereClauseType]any{
+							accountIdColumnName: {
+								In: scopedAccountIds,
+							},
+						},
+					})
 				} else {
 					return QueryResponse{
 						Errors: []common.Error{

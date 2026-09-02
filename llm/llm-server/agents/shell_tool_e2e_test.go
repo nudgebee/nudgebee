@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"os"
 	"testing"
@@ -15,11 +14,6 @@ import (
 )
 
 func TestK8sAgent_ShellToolUsage(t *testing.T) {
-	// Ensure shell tool is enabled
-	originalVal := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = originalVal })
-
 	testCases := []struct {
 		SessionId string
 		Query     string

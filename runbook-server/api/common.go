@@ -86,6 +86,38 @@ func formatValidationError(err error) string {
 			messages = append(messages, fmt.Sprintf("%s must be 'v1'", field))
 		case "workflowtrigger":
 			messages = append(messages, fmt.Sprintf("%s has an invalid trigger type", field))
+		case "cron_missing":
+			messages = append(messages, "schedule trigger is missing a cron expression")
+		case "cron_invalid":
+			messages = append(messages, "schedule trigger cron expression must be a non-empty string")
+		case "cron_syntax_invalid":
+			messages = append(messages, "schedule trigger cron expression is not valid (expected 5 fields: minute hour day-of-month month day-of-week)")
+		case "overlap_policy_invalid_type", "overlap_policy_invalid_value":
+			messages = append(messages, "schedule trigger overlap policy must be one of: Skip, BufferOne, BufferAll, CancelOther, TerminateOther, AllowAll")
+		case "catchup_window_invalid_type", "catchup_window_invalid_duration":
+			messages = append(messages, "schedule trigger catchup window must be a Go duration (e.g. 60s, 5m, 1h)")
+		case "integration_name_missing":
+			messages = append(messages, "webhook trigger requires params.integration_name")
+		case "integration_name_invalid":
+			messages = append(messages, "webhook trigger params.integration_name must be a non-empty string")
+		case "unsupported_webhook_param", "filter_invalid_type", "filter_invalid_syntax",
+			"unsupported_event_param", "on_invalid_type", "on_invalid_phase",
+			"event_type_invalid_type", "event_type_invalid_item",
+			"event_trigger_needs_filter", "optimization_trigger_needs_params":
+			// These tags are reported by Trigger.Validate with a ready-written human
+			// message in ReportError's `param` argument. Surface it instead of letting
+			// the default branch print the raw tag. Deliberately not a blanket
+			// `default: fe.Param()` — built-in tags (min/max/len) put a bare number
+			// there, which would read worse than the tag name.
+			//
+			// Every tag listed above passes a non-empty message today. Fall back on the
+			// tag anyway so that adding one here without a message degrades to the old
+			// cryptic string rather than to an empty error the caller cannot read.
+			if param := fe.Param(); param != "" {
+				messages = append(messages, param)
+			} else {
+				messages = append(messages, fmt.Sprintf("%s failed validation: %s", field, fe.Tag()))
+			}
 		case "min":
 			// e.g. `tasks` / `triggers` are `min=1` slices — "min" alone reads as
 			// a truncated/cryptic tag, so spell out the constraint by field kind.
@@ -175,7 +207,28 @@ func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request
 	}
 
 	childLogger := logger.With("trace_id", span.SpanContext().TraceID().String())
-	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetAITriggered(isAITriggeredRequest(c))
+	return rc, nil
+}
+
+// HeaderTriggerSource identifies what originated a request. llm-server sets it
+// to TriggerSourceAI on every call it makes on the AI assistant's behalf.
+//
+// This is a trusted-network header, exactly like x-tenant-id / x-user-id: it
+// cannot be used to gain privileges, only to lose them. Claiming "ai" subjects
+// the request to the AI-invocation gate's extra restrictions; omitting it just
+// leaves the caller with the permissions its identity already carries.
+const (
+	HeaderTriggerSource = "X-Trigger-Source"
+	TriggerSourceAI     = "ai"
+)
+
+func isAITriggeredRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(c.Request.Header.Get(HeaderTriggerSource)), TriggerSourceAI)
 }
 
 type ActionRequestAction struct {
@@ -309,5 +362,7 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 
 	span := trace.SpanFromContext(ctx)
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
-	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetAITriggered(isAITriggeredRequest(c))
+	return rc, nil
 }

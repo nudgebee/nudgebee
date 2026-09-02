@@ -149,8 +149,15 @@ var moduleManifests = []struct {
 }{
 	{"go.mod", "go", "go build ./..."},
 	{"package.json", "node", "npm run build"},
-	{"pyproject.toml", "python", "python -m build"},
-	{"setup.py", "python", "python -m build"},
+	// Python: `python -m build` was a packaging command — it never imports the
+	// module, so it cannot catch even an undefined name, and on python3-only
+	// images the bare `python` binary made preflight skip the module entirely
+	// (fix-mode verification was systematically "unverified" for Python).
+	// pyflakes is a dependency-free static checker; the verifier scopes it to
+	// the changed .py files at run time.
+	{"pyproject.toml", "python", "python3 -m pyflakes"},
+	{"setup.py", "python", "python3 -m pyflakes"},
+	{"requirements.txt", "python", "python3 -m pyflakes"},
 	{"Cargo.toml", "rust", "cargo build"},
 	{"pom.xml", "java", "mvn -q compile"},
 }

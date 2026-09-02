@@ -6,8 +6,10 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { Modal } from '@ui/Modal';
+import { Banner } from '@ui/Banner';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
+import { Checkbox } from '@ui/Checkbox';
 import { Button } from '@ui/Button';
 import { Divider } from '@ui/Divider';
 import { toast as snackbar } from '@ui/Toast';
@@ -15,8 +17,12 @@ import { ds } from '@utils/colors';
 import apiUser from '@api1/user';
 import apiIntegrations from '@api1/integrations';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { computeTierDefaults } from '@utils/tierDefaults';
 
-const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'sagemaker', 'vertexai'];
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+const PROVIDERS = ['anthropic', 'azure', 'bedrock', 'googleai', 'huggingface', 'openai', 'sagemaker', 'vertexai', 'custom'];
 
 const TIER_KEYS = ['reasoning', 'retrieval', 'summary'];
 
@@ -116,23 +122,44 @@ const emptyConfig = () => ({
 // lives at the Select-binding boundary.
 const INHERIT_SENTINEL = '__inherit__';
 
-// Providers that serve operator-deployed (custom) models, where the context
-// window depends on the deployment rather than a fixed published value. Only
-// these expose the "Context window (tokens)" field — managed providers
+// Providers that serve operator-deployed models, where the context window
+// depends on the deployment rather than a fixed published value. Only these
+// expose the "Context window (tokens)" field — managed providers
 // (openai/anthropic/azure/googleai) have known windows from the model map.
-const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock'];
+// 'custom' is the most deployment-dependent of all: an arbitrary gateway
+// (OpenRouter, vLLM, Ollama, LiteLLM) serving model slugs the map can't know,
+// so without this it would silently fall back to the 32k default.
+const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock', 'custom'];
 const showsContextSize = (p) => CUSTOM_DEPLOY_PROVIDERS.includes(p);
+
+// Providers that can authenticate through an OAuth2 client-credentials
+// gateway — llm-server injects the bearer token only on the azure / openai /
+// custom client paths, so the selector is hidden for every other provider.
+const OAUTH_PROVIDERS = ['custom'];
+const AUTH_TYPE_OPTIONS = [
+  { value: 'api_key', label: 'API key' },
+  { value: 'oauth_client_credentials', label: 'OAuth2 client credentials' },
+];
+
+// URL shapes the custom provider can speak. Cleared (empty) = plain
+// OpenAI-style /chat/completions. azure / azure_ad switch to Azure's
+// /openai/deployments/{deployment}/chat/completions grammar — azure sends
+// the key as an api-key header, azure_ad as a Bearer token.
+const API_TYPE_OPTIONS = [
+  { value: 'azure', label: 'Azure (api-key header)' },
+  { value: 'azure_ad', label: 'Azure AD (Bearer token)' },
+];
 
 // providerFieldShape returns which credential inputs apply for a given provider.
 // Mirrors the global section's showsApiKey / showsApiEndpoint / ... booleans so
 // the tier and agent cards can render the same provider-conditional inputs.
 const providerFieldShape = (p) => ({
-  showsApiKey: ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'vertexai'].includes(p),
-  showsApiEndpoint: ['azure', 'openai', 'sagemaker', 'anthropic', 'huggingface'].includes(p),
+  showsApiKey: ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(p),
+  showsApiEndpoint: ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(p),
   showsApiVersion: p === 'azure',
   showsRegion: ['bedrock', 'sagemaker'].includes(p),
   showsBedrockKeys: p === 'bedrock',
-  showsApiType: ['openai', 'huggingface'].includes(p),
+  showsApiType: ['openai', 'custom', 'huggingface'].includes(p),
 });
 
 /**
@@ -211,6 +238,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [accounts, setAccounts] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [selectedAccountIds, setSelectedAccountIds] = useState([]);
+  // Whether this config serves requests that don't pin one. An account may
+  // have several enabled LLM configs; the one flagged here is what llm-server
+  // resolves to by default, and with none flagged it falls back to the
+  // system ENV credential.
+  const [isDefault, setIsDefault] = useState(false);
 
   // Agent list — fetched dynamically from llm-server's registered agents so
   // the dropdown stays in sync without enumerating agents in Go or
@@ -234,8 +266,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [accessKey, setAccessKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
   const [apiType, setApiType] = useState('');
+  const [deploymentName, setDeploymentName] = useState('');
   const [adapterId, setAdapterId] = useState('');
   const [requireAdapterId, setRequireAdapterId] = useState('');
+
+  // OAuth2 client-credentials auth (corporate AI gateways that reject static
+  // keys) + extra per-request headers. Only offered for OAUTH_PROVIDERS.
+  const [authType, setAuthType] = useState('api_key');
+  const [oauthTokenUrl, setOauthTokenUrl] = useState('');
+  const [oauthClientId, setOauthClientId] = useState('');
+  const [oauthClientSecret, setOauthClientSecret] = useState('');
+  const [oauthScope, setOauthScope] = useState('');
+  const [extraHeaders, setExtraHeaders] = useState('');
 
   // Track which secret fields are currently configured on the loaded
   // integration, keyed by field name. The backend redacts secret values in
@@ -297,6 +339,17 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [testStatus, setTestStatus] = useState('idle');
   const [testMessage, setTestMessage] = useState('');
 
+  // Pricing rows for computing tier auto-fills on provider change (#35174).
+  // Loaded once when the modal opens; empty array is a safe fallback (the
+  // computeTierDefaults helper falls back to PROVIDER_EXAMPLES per provider).
+  const [pricingRows, setPricingRows] = useState([]);
+
+  // Collapse for the "Advanced options" section (per-tenant pricing overrides
+  // + model context window). Both blocks are optional overrides most users
+  // leave blank — surfacing them by default clutters the primary form. Kept
+  // together under one toggle rather than two adjacent collapsibles.
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   // Load the cloud-account list once when the modal opens.
   useEffect(() => {
     if (!open) {
@@ -317,7 +370,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           snackbar.error('Failed to load cloud accounts');
           return;
         }
-        setAccounts(res.map((a) => ({ id: a.id, name: a.account_name })));
+        setAccounts(res.map((a) => ({ id: a.id, name: a.account_name, cloud_provider: a.cloud_provider })));
       } catch (err) {
         if (!cancelled) {
           // eslint-disable-next-line no-console
@@ -327,6 +380,40 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       } finally {
         if (!cancelled) {
           setAccountsLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // Load pricing rows once on modal open. Used by the tier auto-fill on
+  // provider change (#35174) — the sort determines which model becomes each
+  // tier's default. A failed fetch is non-fatal: computeTierDefaults falls
+  // back to the curated PROVIDER_EXAMPLES map for the selected provider.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiAskNudgebee.listModelPricing();
+        if (cancelled) {
+          return;
+        }
+        // Same resolve-with-errors contract as elsewhere in this file
+        // (see the tier/cache carry-forward at handleSave). Missing pricing
+        // is not fatal — the fallback map still populates sensible tiers.
+        if (res?.errors && res.errors.length > 0) {
+          setPricingRows([]);
+          return;
+        }
+        setPricingRows(Array.isArray(res?.data?.prices) ? res.data.prices : []);
+      } catch {
+        if (!cancelled) {
+          setPricingRows([]);
         }
       }
     })();
@@ -423,6 +510,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           ? editData.integrations_cloud_accounts.map((a) => a?.cloud_account_id).filter(Boolean)
           : []
       );
+      // The flag is per (config, account) link row, but the form offers one
+      // checkbox for all selected accounts — so a config that is default for
+      // any of its accounts shows as checked, and re-saving applies that
+      // answer to every selected account.
+      setIsDefault(
+        Array.isArray(editData.integrations_cloud_accounts)
+          ? editData.integrations_cloud_accounts.some((a) => a?.default_llm_provider === true)
+          : false
+      );
       setConfigName(editData.name || '');
       setProvider(cfg.llm_provider || '');
       setModel(cfg.llm_model_name || '');
@@ -435,11 +531,23 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setApiVersion(cfg.llm_provider_api_version || '');
       setRegion(cfg.llm_provider_region || '');
       setContextSize(cfg.llm_model_context_size || '');
+      // Auto-expand Advanced options if a custom context window or extra
+      // headers are already saved — hiding them inside a collapsed section on
+      // edit-mode load would make the values invisible until the user thinks
+      // to click Advanced.
+      setShowAdvanced(!!cfg.llm_model_context_size || !!cfg.llm_extra_headers);
       setAccessKey('');
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
+      setDeploymentName(cfg.llm_provider_deployment_name || '');
       setAdapterId(cfg.llm_provider_adapter_id || '');
       setRequireAdapterId(cfg.llm_provider_require_adapter_id || '');
+      setAuthType(cfg.llm_auth_type || 'api_key');
+      setOauthTokenUrl(cfg.llm_oauth_token_url || '');
+      setOauthClientId(cfg.llm_oauth_client_id || '');
+      setOauthClientSecret(''); // secret — blank in form; secretsConfigured tracks "✓"
+      setOauthScope(cfg.llm_oauth_scope || '');
+      setExtraHeaders(cfg.llm_extra_headers || '');
       // Capture every secret-shaped key (global, per-tier, per-agent) so the
       // tier and agent cards can render "✓ Configured" hints on their own
       // SecretInputs after edit-mode load. The set keys here mirror the names
@@ -448,6 +556,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         llm_provider_api_key: !!hasValueByName.llm_provider_api_key,
         llm_provider_access_key: !!hasValueByName.llm_provider_access_key,
         llm_provider_secret_key: !!hasValueByName.llm_provider_secret_key,
+        llm_oauth_client_secret: !!hasValueByName.llm_oauth_client_secret,
       };
       ['reasoning', 'retrieval', 'summary'].forEach((t) => {
         secretsCfg[`llm_tier_api_key_${t}`] = !!hasValueByName[`llm_tier_api_key_${t}`];
@@ -547,7 +656,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         key.startsWith('llm_provider_api_key') ||
         key.startsWith('llm_provider_access_key') ||
         key.startsWith('llm_provider_secret_key') ||
-        key.startsWith('llm_provider_session_token');
+        key.startsWith('llm_provider_session_token') ||
+        key.startsWith('llm_oauth_client_secret');
       const seedKeys = new Set();
       Object.keys(cfg).forEach((key) => {
         if (isLLMSecretKey(key)) {
@@ -562,7 +672,13 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           // llm_model_context_size — so switching a model to a managed provider
           // (field hidden, save gated off) clears the now-stale window.
           key.startsWith('llm_model_context_size_') ||
-          key === 'llm_model_context_size'
+          key === 'llm_model_context_size' ||
+          // Auth-mode keys: clearing them on save (e.g. switching back to
+          // API-key auth, or to a provider with no OAuth support) empties
+          // the stored rows so llm-server falls back to api_key.
+          key === 'llm_auth_type' ||
+          key.startsWith('llm_oauth_') ||
+          key === 'llm_extra_headers'
         ) {
           seedKeys.add(key);
         }
@@ -586,6 +702,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setTestMessage('');
     } else {
       setSelectedAccountIds([]);
+      setIsDefault(false);
       setConfigName('');
       setProvider('');
       setModel('');
@@ -598,8 +715,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setAccessKey('');
       setSecretKey('');
       setApiType('');
+      setDeploymentName('');
       setAdapterId('');
       setRequireAdapterId('');
+      setAuthType('api_key');
+      setOauthTokenUrl('');
+      setOauthClientId('');
+      setOauthClientSecret('');
+      setOauthScope('');
+      setExtraHeaders('');
       setSecretsConfigured({});
       setInitialOverrideKeys(new Set());
       setTiers({
@@ -608,6 +732,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         summary: emptyConfig(),
       });
       setAgentRows([]);
+      setShowAdvanced(false);
       setTestStatus('idle');
       setTestMessage('');
     }
@@ -654,7 +779,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // provider is virtually never valid for another.
   const handleProviderChange = (value) => {
     setProvider(value);
-    setModel('');
+    // Primary + tier auto-fill (#35174): compute per-family defaults from
+    // llm_model_pricing (fallback: curated PROVIDER_EXAMPLES). Primary is
+    // the mid-cost retrieval-tier model — most call sites are untagged
+    // and running the flagship on every one of them was the cost-inflation
+    // pattern this ticket is fixing. Reasoning tier is set explicitly to
+    // the flagship (opt-in for heavy investigation), summary to the
+    // cheapest (opt-in for cheap tasks). Retrieval tier is left blank so
+    // it inherits from primary — no need to name the same model twice.
+    const tierDefaults = computeTierDefaults(value, pricingRows, PROVIDER_EXAMPLES);
+    setModel(tierDefaults.retrieval);
     setFallbacks('');
     setApiKey('');
     setApiEndpoint('');
@@ -664,8 +798,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     setAccessKey('');
     setSecretKey('');
     setApiType('');
+    setDeploymentName('');
     setAdapterId('');
     setRequireAdapterId('');
+    setAuthType('api_key');
+    setOauthTokenUrl('');
+    setOauthClientId('');
+    setOauthClientSecret('');
+    setOauthScope('');
+    setExtraHeaders('');
     // Reset the "✓ Configured" indicators too. Without this, an edit-flow
     // provider switch (e.g. openai → azure) would leave secretsConfigured
     // populated for the OLD provider's secret fields and the save-gate
@@ -680,10 +821,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     // intact — the save-diff against it will then emit empty values for
     // every loaded override key, which the backend interprets as DELETE,
     // cleaning up the stale rows from the old provider.
+    //
+    // reasoning gets the flagship explicitly (opt-in tier for heavy
+    // investigation); summary gets the cheapest. retrieval is left blank
+    // because primary is already the retrieval model — inheriting keeps
+    // the saved config lean.
     setTiers({
-      reasoning: emptyConfig(),
+      reasoning: { ...emptyConfig(), model: tierDefaults.reasoning },
       retrieval: emptyConfig(),
-      summary: emptyConfig(),
+      summary: { ...emptyConfig(), model: tierDefaults.summary },
     });
     setAgentRows([]);
     setTestStatus('idle');
@@ -822,13 +968,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   };
 
   // Conditional credential visibility — mirrors integrations/llm.go ShowWhen rules.
-  const showsApiKey = ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'vertexai'].includes(provider);
-  const showsApiEndpoint = ['azure', 'openai', 'sagemaker', 'anthropic', 'huggingface'].includes(provider);
-  const showsApiVersion = provider === 'azure';
+  const showsApiKey = ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(provider);
+  const showsApiEndpoint = ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(provider);
+  const azureShapedCustom = provider === 'custom' && ['azure', 'azure_ad'].includes((apiType || '').toLowerCase());
+  const showsApiVersion = provider === 'azure' || azureShapedCustom;
   const showsRegion = ['bedrock', 'sagemaker'].includes(provider);
   const showsBedrockKeys = provider === 'bedrock';
-  const showsApiType = ['openai', 'huggingface'].includes(provider);
+  const showsApiType = ['openai', 'custom', 'huggingface'].includes(provider);
   const showsAdapter = ['azure', 'huggingface'].includes(provider);
+  const showsOAuthOption = OAUTH_PROVIDERS.includes(provider);
+  const oauthSelected = showsOAuthOption && authType === 'oauth_client_credentials';
 
   // A secret field counts as "present" if either the user typed a non-empty
   // value OR an existing stored secret was reported by the backend
@@ -837,7 +986,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // preserve the stored value when the field isn't included in the payload.
   const hasSecret = (current, configuredKey) => current.trim() !== '' || !!secretsConfigured[configuredKey];
   const credsReady =
-    (!showsApiKey || hasSecret(apiKey, 'llm_provider_api_key')) &&
+    (!showsApiKey || oauthSelected || hasSecret(apiKey, 'llm_provider_api_key')) &&
+    (!oauthSelected || (oauthTokenUrl.trim() !== '' && oauthClientId.trim() !== '' && hasSecret(oauthClientSecret, 'llm_oauth_client_secret'))) &&
     (!showsBedrockKeys || (hasSecret(accessKey, 'llm_provider_access_key') && hasSecret(secretKey, 'llm_provider_secret_key')));
 
   // credKeyFor builds the scope-qualified secret name (e.g.
@@ -908,6 +1058,44 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     return null;
   };
 
+  // validateOAuthTokenUrl: must be an http(s) URL when set (the required-empty
+  // case is credsReady's job).
+  const validateOAuthTokenUrl = (value) => {
+    const trimmed = (value || '').trim();
+    if (trimmed === '') {
+      return null;
+    }
+    return /^https?:\/\/.+/.test(trimmed) ? null : 'Token URL must be a valid http(s) URL';
+  };
+
+  // validateExtraHeaders: optional, but when set it must be a JSON object of
+  // string values, and must not try to smuggle in an auth header — the
+  // backend rejects those too (llm-server manages Authorization / api-key).
+  const validateExtraHeaders = (value) => {
+    const trimmed = (value || '').trim();
+    if (trimmed === '') {
+      return null;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return 'Must be a JSON object, e.g. {"projectId": "abc-123"}';
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return 'Must be a JSON object, e.g. {"projectId": "abc-123"}';
+    }
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v !== 'string') {
+        return `Header "${k}" must have a string value`;
+      }
+      if (k.toLowerCase() === 'authorization' || k.toLowerCase() === 'api-key') {
+        return `"${k}" cannot be set here — authentication headers are managed by the auth settings`;
+      }
+    }
+    return null;
+  };
+
   // Per-field validation messages. Computed once per render so the helperText
   // / Save-gate can read them without recomputing.
   //
@@ -925,6 +1113,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     accounts: selectedAccountIds.length === 0 ? 'At least one account must be selected' : null,
     model: validateModelName(model),
     fallbacks: validateFallbacks(fallbacks, model),
+    oauthTokenUrl: oauthSelected ? validateOAuthTokenUrl(oauthTokenUrl) : null,
+    extraHeaders: validateExtraHeaders(extraHeaders),
     tierModels: {
       reasoning: validateModelName(tiers.reasoning.model),
       retrieval: validateModelName(tiers.retrieval.model),
@@ -960,6 +1150,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     !!errors.accounts ||
     !!errors.model ||
     !!errors.fallbacks ||
+    !!errors.oauthTokenUrl ||
+    !!errors.extraHeaders ||
     Object.values(errors.tierModels).some(Boolean) ||
     Object.values(errors.tierFallbacks).some(Boolean) ||
     Object.values(errors.tierProviderModel).some(Boolean) ||
@@ -979,6 +1171,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     const out = [
       { name: 'llm_provider', value: provider },
       { name: 'llm_model_name', value: model.trim() },
+      // Always sent, both ways: 'false' is what clears the flag when the user
+      // unchecks it, which is how an account is handed back to the ENV
+      // credential. Stored on the account link row, not as a config value —
+      // see DefaultLLMProvider in api-server integration_config.go.
+      { name: 'default_llm_provider', value: isDefault ? 'true' : 'false' },
     ];
     if (fallbacks.trim()) {
       out.push({ name: 'llm_model_fallbacks', value: fallbacks.trim() });
@@ -1017,7 +1214,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       }
       out.push({ name, value: value.trim(), is_encrypted: false });
     };
-    pushSecret(showsApiKey, 'llm_provider_api_key', apiKey);
+    pushSecret(showsApiKey && !oauthSelected, 'llm_provider_api_key', apiKey);
+    // Auth mode: written whenever the provider offers the selector, so
+    // switching back to API key persists 'api_key' rather than leaving a
+    // stale oauth_client_credentials row behind.
+    if (showsOAuthOption) {
+      out.push({ name: 'llm_auth_type', value: authType, is_encrypted: false });
+    }
+    pushPlain(oauthSelected, 'llm_oauth_token_url', oauthTokenUrl);
+    pushPlain(oauthSelected, 'llm_oauth_client_id', oauthClientId);
+    pushSecret(oauthSelected, 'llm_oauth_client_secret', oauthClientSecret);
+    pushPlain(oauthSelected, 'llm_oauth_scope', oauthScope);
+    pushPlain(showsOAuthOption, 'llm_extra_headers', extraHeaders);
     pushPlain(showsApiEndpoint, 'llm_provider_api_endpoint', apiEndpoint);
     pushPlain(showsApiVersion, 'llm_provider_api_version', apiVersion);
     pushPlain(showsRegion, 'llm_provider_region', region);
@@ -1025,6 +1233,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushSecret(showsBedrockKeys, 'llm_provider_access_key', accessKey);
     pushSecret(showsBedrockKeys, 'llm_provider_secret_key', secretKey);
     pushPlain(showsApiType, 'llm_provider_api_type', apiType);
+    pushPlain(azureShapedCustom, 'llm_provider_deployment_name', deploymentName);
     pushPlain(showsAdapter, 'llm_provider_adapter_id', adapterId);
     pushPlain(showsAdapter, 'llm_provider_require_adapter_id', requireAdapterId);
     // Per-tier — write provider + model + fallbacks, plus credentials when the
@@ -1140,6 +1349,149 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     }
   };
 
+  // Optional price for the model being configured. Offered here because a
+  // custom endpoint has no built-in rate, so without it the very first thing
+  // the config does is report $0 spend. Written through the same RPC the
+  // Model Pricing tab uses — two entry points, one write path, so they cannot
+  // drift.
+  const [priceInput, setPriceInput] = useState('');
+  const [priceOutput, setPriceOutput] = useState('');
+  // Long-context tier. Providers like Gemini charge more once a prompt crosses
+  // a threshold; leaving these blank means flat pricing.
+  const [priceCachedInput, setPriceCachedInput] = useState('');
+  const [priceCacheCreation, setPriceCacheCreation] = useState('');
+  const [priceThreshold, setPriceThreshold] = useState('');
+  const [priceInputLong, setPriceInputLong] = useState('');
+  const [priceOutputLong, setPriceOutputLong] = useState('');
+  // The modal is mounted permanently and only toggled via `open`, so pricing
+  // state survives a dismiss. Without this reset, a rate typed for one model is
+  // still populated when the modal is reopened for a different one — and would
+  // be saved against it.
+  useEffect(() => {
+    if (open) return;
+    setPriceInput('');
+    setPriceOutput('');
+    setPriceCachedInput('');
+    setPriceCacheCreation('');
+    setPriceThreshold('');
+    setPriceInputLong('');
+    setPriceOutputLong('');
+  }, [open]);
+
+  // Only meaningful once there is a (provider, model) to attach a rate to.
+  const canPrice = Boolean(provider && model && model.trim());
+
+  // Saved after the config, and never allowed to fail the config save: the
+  // credentials are the point of this modal, and a rejected price should not
+  // roll back a provider the user just set up correctly.
+  const savePriceIfProvided = async () => {
+    if (!canPrice) return;
+    const input = Number(priceInput);
+    const output = Number(priceOutput);
+    // Pricing is optional, so both blank means "not pricing this model". One
+    // blank is a half-filled form: returning silently would discard what the
+    // user did type with no feedback.
+    if (priceInput === '' && priceOutput === '') {
+      // Every other rate hangs off input/output, so filling only a cache or
+      // tier field and leaving these blank would discard that input silently.
+      if ([priceCachedInput, priceCacheCreation, priceThreshold, priceInputLong, priceOutputLong].some((v) => v !== '')) {
+        snackbar.error('Pricing not saved — an input and an output rate are required before the other pricing fields apply.');
+      }
+      return;
+    }
+    if (priceInput === '' || priceOutput === '') {
+      snackbar.error('Pricing not saved — enter both an input and an output rate. Set it from Settings → Model Pricing.');
+      return;
+    }
+    if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) {
+      snackbar.error('Pricing not saved — rates must be zero or a positive number. Set it from Settings → Model Pricing.');
+      return;
+    }
+    // Cache rates are independently optional; an omitted one falls back to the input rate.
+    if ([priceCachedInput, priceCacheCreation].some((v) => v !== '' && !(Number(v) >= 0))) {
+      snackbar.error('Pricing not saved — cache rates must be zero or a positive number. Set it from Settings → Model Pricing.');
+      return;
+    }
+
+    // All three tier fields or none. A threshold without rates (or rates
+    // without a threshold) stores a tier that never fires — it reads as
+    // configured but bills every long prompt at the short rate.
+    const tierFilled = [priceThreshold, priceInputLong, priceOutputLong].filter((v) => v !== '').length;
+    if (tierFilled !== 0 && tierFilled !== 3) {
+      snackbar.error('Pricing not saved — long-context pricing needs a threshold and both long-context rates, or leave all three blank.');
+      return;
+    }
+    const threshold = Number(priceThreshold);
+    const inputLong = Number(priceInputLong);
+    const outputLong = Number(priceOutputLong);
+    if (tierFilled === 3 && (!Number.isFinite(threshold) || threshold <= 0 || !(inputLong >= 0) || !(outputLong >= 0))) {
+      snackbar.error('Pricing not saved — the threshold must be a positive token count and long-context rates zero or above.');
+      return;
+    }
+    const price = {
+      model_name: model.trim(),
+      provider_name: provider,
+      cost_per_million_input_tokens: input,
+      cost_per_million_output_tokens: output,
+    };
+
+    if (tierFilled === 3) {
+      price.context_threshold_tokens = threshold;
+      price.cost_per_million_input_tokens_long_ctx = inputLong;
+      price.cost_per_million_output_tokens_long_ctx = outputLong;
+    }
+    if (priceCachedInput !== '') price.cost_per_million_cached_input_tokens = Number(priceCachedInput);
+    if (priceCacheCreation !== '') price.cost_per_million_cache_creation_tokens = Number(priceCacheCreation);
+
+    // Anything left blank is carried over from the model's existing price. The
+    // upsert replaces the whole row, so a flat price over a tiered model (every
+    // Gemini Pro) would null its threshold and bill long prompts at the short
+    // rate — and the same replacement would drop a cache discount, billing every
+    // cached token at full input rate.
+    const carryTier = tierFilled !== 3;
+    const carryCache = priceCachedInput === '' || priceCacheCreation === '';
+    if (carryTier || carryCache) {
+      try {
+        const existing = await apiAskNudgebee.listModelPricing();
+        // listModelPricing resolves with { data, errors } rather than rejecting,
+        // so a failed fetch has to be turned into one. Left as-is, prices would
+        // read as empty, the carry-forward would quietly no-op, and the upsert
+        // would null the tier it exists to preserve — the exact silent data loss
+        // this block guards against.
+        if (existing.errors && existing.errors.length > 0) {
+          throw new Error(existing.errors[0].message || 'could not read existing pricing');
+        }
+        const match = (existing.data.prices || [])
+          .filter((p) => p.provider_name === provider && p.model_name === model.trim())
+          // A tenant's own row wins over the built-in, as the server resolves.
+          .sort((a, b) => Number(a.is_built_in) - Number(b.is_built_in))[0];
+        if (match) {
+          if (carryTier && match.context_threshold_tokens) {
+            price.context_threshold_tokens = match.context_threshold_tokens;
+            price.cost_per_million_input_tokens_long_ctx = match.cost_per_million_input_tokens_long_ctx;
+            price.cost_per_million_output_tokens_long_ctx = match.cost_per_million_output_tokens_long_ctx;
+          }
+          if (priceCachedInput === '' && match.cost_per_million_cached_input_tokens != null) {
+            price.cost_per_million_cached_input_tokens = match.cost_per_million_cached_input_tokens;
+          }
+          if (priceCacheCreation === '' && match.cost_per_million_cache_creation_tokens != null) {
+            price.cost_per_million_cache_creation_tokens = match.cost_per_million_cache_creation_tokens;
+          }
+        }
+      } catch (err) {
+        // Losing an existing tier or cache rate silently is worse than not pricing at all.
+        console.error('could not read existing pricing', err);
+        snackbar.error('Provider saved, but pricing was skipped — set it from Settings → Model Pricing.');
+        return;
+      }
+    }
+
+    const res = await apiAskNudgebee.upsertModelPricing([price]);
+    if (res?.errors?.length) {
+      snackbar.error(`Provider saved, but pricing was not: ${res.errors[0]?.message || 'unknown error'}`);
+    }
+  };
+
   const handleSave = async () => {
     if (!canSubmit) {
       return;
@@ -1177,6 +1529,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         return;
       }
       snackbar.success(isEdit ? 'LLM Provider updated' : 'LLM Provider added');
+      await savePriceIfProvided();
       if (onSaved) {
         onSaved();
       }
@@ -1199,13 +1552,24 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             multiple
             size='sm'
             loading={accountsLoading}
-            options={accounts.map((a) => ({ value: a.id, label: a.name || a.id }))}
+            options={accounts.map((a) => ({ value: a.id, label: a.name || a.id, group: a.cloud_provider || 'Other' }))}
+            grouped
+            groupIcon={renderAccountGroupIcon}
             value={selectedAccountIds}
             onChange={setSelectedAccountIds}
             label='Accounts'
             required
             error={errors.accounts}
             help='At least one account must be selected. Auto-populated from listAccounts. The configuration applies to all selected accounts.'
+          />
+
+          <Checkbox
+            id='llm-config-default-provider'
+            size='sm'
+            checked={isDefault}
+            onChange={setIsDefault}
+            label='Default LLM provider for the selected accounts'
+            description='Used for requests that do not pick a specific provider. Marking this one clears the flag from any other provider on the same account. With none marked, the system falls back to the environment credential.'
           />
 
           <Input
@@ -1223,7 +1587,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             value={provider}
             onChange={handleProviderChange}
             options={PROVIDERS}
-            help='Name of the LLM provider (openai, bedrock, sagemaker, huggingface, azure, googleai, vertexai, anthropic). Changing the provider clears model and credential fields.'
+            help='Name of the LLM provider. Changing it clears the model and credential fields.'
             required
           />
 
@@ -1249,7 +1613,30 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           />
 
           {/* Provider-specific credentials — visibility driven by selected provider */}
-          {showsApiKey && (
+          {provider === 'custom' && (
+            <Banner
+              tone='info'
+              title='Custom uses the OpenAI Chat Completions API'
+              message={
+                <>
+                  Point this at any service that exposes OpenAI&apos;s <code>/chat/completions</code> — OpenRouter, vLLM, Ollama, Groq, Together,
+                  DeepSeek, LiteLLM and most gateways do. Give the base URL <strong>including the version segment</strong> (e.g.{' '}
+                  <code>https://openrouter.ai/api/v1</code>); <code>/chat/completions</code> is appended to it.
+                </>
+              }
+            />
+          )}
+          {showsOAuthOption && (
+            <Select
+              label='Authentication'
+              size='sm'
+              value={authType}
+              onChange={setConnField(setAuthType)}
+              options={AUTH_TYPE_OPTIONS}
+              help="API key sends a static key with each request. OAuth2 client credentials fetches a bearer token from your gateway's token endpoint and refreshes it automatically — for corporate AI gateways that reject static keys."
+            />
+          )}
+          {showsApiKey && !oauthSelected && (
             <SecretInput
               label='API Key'
               value={apiKey}
@@ -1260,6 +1647,46 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               required
             />
           )}
+          {oauthSelected && (
+            <>
+              <Input
+                label='OAuth2 Token URL'
+                size='sm'
+                value={oauthTokenUrl}
+                onChange={setConnField(setOauthTokenUrl)}
+                onBlur={trimOnBlur(oauthTokenUrl, setOauthTokenUrl)}
+                error={errors.oauthTokenUrl}
+                help='Token endpoint the client-credentials grant is POSTed to (e.g. https://api.example.com/oauth2/token).'
+                required
+              />
+              <Input
+                label='OAuth2 Client ID'
+                size='sm'
+                value={oauthClientId}
+                onChange={setConnField(setOauthClientId)}
+                onBlur={trimOnBlur(oauthClientId, setOauthClientId)}
+                help='Client ID for the client-credentials grant.'
+                required
+              />
+              <SecretInput
+                label='OAuth2 Client Secret'
+                value={oauthClientSecret}
+                onChange={setConnField(setOauthClientSecret)}
+                onBlur={trimOnBlur(oauthClientSecret, setOauthClientSecret)}
+                isConfigured={secretsConfigured.llm_oauth_client_secret}
+                helperText='Client secret for the client-credentials grant. Stored encrypted; never shown again.'
+                required
+              />
+              <Input
+                label='OAuth2 Scope'
+                size='sm'
+                value={oauthScope}
+                onChange={setConnField(setOauthScope)}
+                onBlur={trimOnBlur(oauthScope, setOauthScope)}
+                help='Scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.'
+              />
+            </>
+          )}
           {showsApiEndpoint && (
             <Input
               label='API Endpoint'
@@ -1267,18 +1694,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={apiEndpoint}
               onChange={setConnField(setApiEndpoint)}
               onBlur={trimOnBlur(apiEndpoint, setApiEndpoint)}
-              help='Custom API endpoint for the LLM provider.'
-              required={['azure', 'sagemaker', 'huggingface', 'anthropic'].includes(provider)}
-            />
-          )}
-          {showsApiVersion && (
-            <Input
-              label='API Version'
-              size='sm'
-              value={apiVersion}
-              onChange={setConnField(setApiVersion)}
-              help='API version of the LLM provider (Azure).'
-              required
+              help={
+                provider === 'custom'
+                  ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1. "/chat/completions" is appended to it, so omitting /v1 will 404.'
+                  : 'Custom API endpoint for the LLM provider.'
+              }
+              required={['azure', 'sagemaker', 'huggingface', 'anthropic', 'custom'].includes(provider)}
             />
           )}
           {showsRegion && (
@@ -1290,18 +1711,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               onBlur={trimOnBlur(region, setRegion)}
               help='Geographic region (e.g., us-east-1).'
               required
-            />
-          )}
-          {showsContextSize(provider) && (
-            <Input
-              label='Model context window (tokens)'
-              size='sm'
-              type='number'
-              inputMode='numeric'
-              value={contextSize}
-              onChange={setContextSize}
-              onBlur={trimOnBlur(contextSize, setContextSize)}
-              help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
             />
           )}
           {showsBedrockKeys && (
@@ -1326,7 +1735,63 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               />
             </>
           )}
-          {showsApiType && <Input label='API Type' size='sm' value={apiType} onChange={setConnField(setApiType)} help='Type of the API. Optional.' />}
+          {showsApiType && provider === 'custom' && (
+            <Select
+              label='API Type'
+              size='sm'
+              value={apiType}
+              onChange={setConnField(setApiType)}
+              options={API_TYPE_OPTIONS}
+              placeholder='Default (OpenAI-style)'
+              help='URL shape of the gateway. Leave unset for plain /chat/completions; pick azure or azure_ad for gateways that use /openai/deployments/{deployment}/chat/completions.'
+            />
+          )}
+          {showsApiType && provider !== 'custom' && (
+            <Input
+              label='API Type'
+              size='sm'
+              value={apiType}
+              onChange={setConnField(setApiType)}
+              help='Type of the API. Optional. Use "azure" or "azure_ad" for Azure-shaped gateways.'
+            />
+          )}
+          {showsApiVersion && (
+            <Input
+              label='API Version'
+              size='sm'
+              value={apiVersion}
+              onChange={setConnField(setApiVersion)}
+              help={
+                provider === 'azure'
+                  ? 'API version of the LLM provider (Azure).'
+                  : 'api-version query parameter sent with every request (e.g. 2025-01-01-preview). Most Azure-shaped gateways require it.'
+              }
+              required={provider === 'azure'}
+            />
+          )}
+          {azureShapedCustom && (
+            <Input
+              label='Deployment Name'
+              size='sm'
+              value={deploymentName}
+              onChange={setConnField(setDeploymentName)}
+              help='URL deployment segment when it differs from the model name (e.g. gpt-5.6-terra_2026-07-09). The request body still carries the model name. Optional.'
+            />
+          )}
+          {showsOAuthOption && (
+            <Input
+              label='Extra request headers (JSON)'
+              size='sm'
+              type='textarea'
+              rows={3}
+              value={extraHeaders}
+              onChange={setConnField(setExtraHeaders)}
+              onBlur={trimOnBlur(extraHeaders, setExtraHeaders)}
+              error={errors.extraHeaders}
+              placeholder='{"projectId": "abc-123"}'
+              help='Sent with every LLM request — some gateways require identification headers alongside auth. Authorization and api-key cannot be set here. Optional.'
+            />
+          )}
           {showsAdapter && (
             <>
               <Input label='Adapter ID' size='sm' value={adapterId} onChange={setAdapterId} help='Adapter ID for a fine-tuned model. Optional.' />
@@ -1338,6 +1803,143 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 help='Whether an adapter ID is required.'
               />
             </>
+          )}
+          {(canPrice || showsContextSize(provider)) && (
+            <Box>
+              <Box
+                onClick={() => setShowAdvanced((v) => !v)}
+                onKeyDown={(e) => {
+                  if (e.key === ' ' || e.key === 'Enter') {
+                    e.preventDefault();
+                    setShowAdvanced((v) => !v);
+                  }
+                }}
+                tabIndex={0}
+                role='button'
+                aria-expanded={showAdvanced}
+                aria-controls='llm-advanced-options'
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                  py: 'var(--ds-space-2)',
+                  color: 'var(--ds-text-secondary)',
+                  fontWeight: 'var(--ds-font-weight-semibold)',
+                  fontSize: 'var(--ds-text-small)',
+                  userSelect: 'none',
+                  '&:focus-visible': {
+                    outline: '2px solid var(--ds-text-secondary)',
+                    outlineOffset: '2px',
+                  },
+                }}
+              >
+                {showAdvanced ? <ExpandLessIcon fontSize='small' /> : <ExpandMoreIcon fontSize='small' />}
+                <Box component='span' sx={{ ml: 'var(--ds-space-1)' }}>
+                  Advanced options
+                </Box>
+                <Box
+                  component='span'
+                  sx={{
+                    ml: 'var(--ds-space-2)',
+                    color: 'var(--ds-text-tertiary)',
+                    fontWeight: 'var(--ds-font-weight-regular)',
+                    fontSize: 'var(--ds-text-caption)',
+                  }}
+                >
+                  {canPrice && showsContextSize(provider)
+                    ? 'Override the built-in pricing and set a custom model context window for this tenant.'
+                    : canPrice
+                    ? 'Override the built-in pricing rates for this tenant.'
+                    : showsContextSize(provider)
+                    ? "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."
+                    : 'Other optional settings.'}
+                </Box>
+              </Box>
+              {showAdvanced && (
+                <Stack id='llm-advanced-options' spacing='var(--ds-space-2)' sx={{ mt: 'var(--ds-space-2)' }}>
+                  {canPrice && (
+                    <>
+                      <Input
+                        label='Input rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceInput}
+                        onChange={setPriceInput}
+                        placeholder='e.g. 0.40'
+                        help={
+                          provider === 'custom'
+                            ? 'Optional. We ship no rate for custom endpoints, so without this the model reports $0 spend.'
+                            : 'Optional. Overrides the built-in rate for this tenant. Any long-context tier or cache rate you leave blank is preserved — edit it from Settings → Model Pricing.'
+                        }
+                      />
+                      <Input
+                        label='Output rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceOutput}
+                        onChange={setPriceOutput}
+                        placeholder='e.g. 0.60'
+                      />
+                      <Input
+                        label='Cached input rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceCachedInput}
+                        onChange={setPriceCachedInput}
+                        placeholder='e.g. 0.10'
+                        help='Optional. Most providers discount prompt tokens served from cache. Leave blank to bill them at the input rate.'
+                      />
+                      <Input
+                        label='Cache creation rate (USD per 1M tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceCacheCreation}
+                        onChange={setPriceCacheCreation}
+                        placeholder='e.g. 0.50'
+                        help='Optional. Charged when tokens are first written to cache — Anthropic bills 1.25x input; OpenAI-compatible providers do not charge it.'
+                      />
+                      <Input
+                        label='Input rate above threshold (USD per 1M)'
+                        size='sm'
+                        type='number'
+                        value={priceInputLong}
+                        onChange={setPriceInputLong}
+                        placeholder='e.g. 0.80'
+                      />
+                      <Input
+                        label='Output rate above threshold (USD per 1M)'
+                        size='sm'
+                        type='number'
+                        value={priceOutputLong}
+                        onChange={setPriceOutputLong}
+                        placeholder='e.g. 1.20'
+                      />
+                      <Input
+                        label='Long-context threshold (prompt tokens)'
+                        size='sm'
+                        type='number'
+                        value={priceThreshold}
+                        onChange={setPriceThreshold}
+                        placeholder='e.g. 200000'
+                        help='Optional. Some providers charge more above a prompt size — Gemini Pro doubles above 200k. Leave blank for flat pricing; fill all three to set a tier.'
+                      />
+                    </>
+                  )}
+                  {showsContextSize(provider) && (
+                    <Input
+                      label='Model context window (tokens)'
+                      size='sm'
+                      type='number'
+                      inputMode='numeric'
+                      value={contextSize}
+                      onChange={setContextSize}
+                      onBlur={trimOnBlur(contextSize, setContextSize)}
+                      help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
+                    />
+                  )}
+                </Stack>
+              )}
+            </Box>
           )}
         </Stack>
 

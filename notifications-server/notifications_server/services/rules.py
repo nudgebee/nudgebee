@@ -29,6 +29,15 @@ def is_valid_string(s):
     return bool(re.match(pattern, s))
 
 
+# Tenant-wide categories: their notifications are aggregated across every
+# account, so there is no single account_id to scope the rule to and an
+# account-scoped rule could never match (#28130).
+#   daily_recap        — one nightly digest per tenant
+#   optimize           — FinOps recommendations ranked tenant-wide
+#   weekly_digest — the weekly event-analysis digest, one per tenant-week
+TENANT_WIDE_SOURCES = ("daily_recap", "optimize", "weekly_digest")
+
+
 def validate_fields(fields, is_update=False):
     source = fields.get("source", None)
     name = fields.get("name", None)
@@ -36,10 +45,7 @@ def validate_fields(fields, is_update=False):
         raise InvalidRuleError(Err.OS0011.value[0] % "name")
     if source is None:
         raise InvalidRuleError(Err.OS0010.value[0] % "source")
-    # "daily_recap" and "optimize" are tenant-wide categories: their notifications
-    # are aggregated across all accounts (no single account_id), so the rule must
-    # not be account-scoped or it can never match (#28130).
-    if not is_update and source not in ("daily_recap", "optimize") and fields.get("account_id") is None:
+    if not is_update and source not in TENANT_WIDE_SOURCES and fields.get("account_id") is None:
         raise InvalidRuleError(Err.OS0010.value[0] % "account_id")
     return None
 

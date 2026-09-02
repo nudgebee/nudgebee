@@ -12,12 +12,13 @@ import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import CustomTable from '@shared/tables/CustomTable2';
 import { action } from 'src/utils/actionStyles';
-import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
+import { hasWriteAccess, isTenantAdmin, canManage } from '@lib/auth';
 import { Typography, Stack, Box } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { colors, ds } from 'src/utils/colors';
 import { safeJSONParse, toKebabCase } from 'src/utils/common';
 import ChannelAccountMapping from '@components/notifications/ChannelAccountMapping';
+import WatchedChannels from '@components/notifications/WatchedChannels';
 
 const MessagingIntegrationTile = ({
   provider, // "slack" | "google_chat"
@@ -634,7 +635,7 @@ const MessagingIntegrationTile = ({
       <ListingLayout id={`${provider}-integrations`}>
         <ListingLayout.Toolbar
           actions={
-            hasWriteAccess() ? (
+            canManage('messagingplatforms', 'Write') ? (
               <Stack direction='row' spacing={1}>
                 <DsButton
                   id={`test-${toKebabCase(displayName)}-btn`}
@@ -679,6 +680,8 @@ const MessagingIntegrationTile = ({
       {(provider === 'slack' || provider === 'ms_teams') && (
         <ChannelAccountMapping provider={provider} displayName={displayName} isConfigured={installationData?.length > 0} />
       )}
+
+      {provider === 'slack' && <WatchedChannels provider={provider} isConfigured={installationData?.length > 0} />}
     </>
   );
 };

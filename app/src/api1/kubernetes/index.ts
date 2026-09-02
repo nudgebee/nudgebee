@@ -385,6 +385,8 @@ query ResolveEventRecord($id:String!) {
       computed_score
       score_factors
       score_confidence
+      incident_leader_id
+      incident_member_count
     }
   }
 }
@@ -664,6 +666,30 @@ query GenerateAIRecommendation($eventId: String!, $accountId: String!, $recommen
 }
 `;
 
+export const AI_REMEDIATION_GENERATE = `
+query AiRemediationGenerate($accountId: String!, $eventId: String, $context: String!, $availableArtifacts: [String!]) {
+  ai_remediation_generate(account_id: $accountId, event_id: $eventId, context: $context, available_artifacts: $availableArtifacts) {
+    data
+  }
+}
+`;
+
+export const AI_REMEDIATION_GET = `
+query AiRemediationGet($accountId: String!, $eventId: String) {
+  ai_remediation_get(account_id: $accountId, event_id: $eventId) {
+    data
+  }
+}
+`;
+
+export const AI_REMEDIATION_EXECUTE = `
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot) {
+    data
+  }
+}
+`;
+
 export const NB_LATEST_VERSIONS = `
 query NBVersions{
   nudgebee_list_versions{
@@ -800,6 +826,9 @@ function buildEventFilterParams(query: any) {
       filterParams['aggregation_key'] = { _eq: query['aggregation_key'] };
     }
   }
+  if (query?.incident_leader_id) {
+    filterParams['incident_leader_id'] = { _eq: query['incident_leader_id'] };
+  }
   if (Array.isArray(query?.aggregation_key_nin) && query['aggregation_key_nin'].length) {
     filterParams['aggregation_key'] = { ...(filterParams['aggregation_key'] || {}), _not_in: query['aggregation_key_nin'] };
   }
@@ -813,6 +842,15 @@ function buildEventFilterParams(query: any) {
       filterParams['priority'] = { _in: query['priority'] };
     } else {
       filterParams['priority'] = { _eq: query['priority'] };
+    }
+  }
+  // Nubi's rank, filtered independently of the source severity above so the
+  // briefing's "HIGH → P3" style drill-downs can constrain both at once.
+  if (query?.computed_priority) {
+    if (Array.isArray(query['computed_priority'])) {
+      filterParams['computed_priority'] = { _in: query['computed_priority'] };
+    } else {
+      filterParams['computed_priority'] = { _eq: query['computed_priority'] };
     }
   }
   if (query?.status) {
@@ -1345,42 +1383,54 @@ const apiKubernetes = {
         }),
       ]);
 
-      const hasErrors = clusterRes?.data?.errors || recommendationRes?.data?.errors || spendRes?.data?.errors || eventRes?.data?.errors;
-      if (!hasErrors) {
-        const cluster = clusterRes?.data?.data?.k8s_cluster_groupings?.rows?.[0];
-        const recommendation = recommendationRes?.data?.data?.recommendation_aggregate?.rows?.[0];
-        const spendData = spendRes?.data?.data;
-        const currentMonthSpend = spendData?.spends_aggregate?.rows?.[0]?.spend_amount || 0;
-        const lastMonthSpend = spendData?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0;
-        const yearlySpend = spendData?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0;
-        const recommendedSaving = recommendation?.sum_estimated_savings || 0;
-        const nodeCount = cluster?.node_count ?? 0;
-        const spotCount = cluster?.node_spot_count ?? 0;
+      // Each of the four queries is independently permission-gated (e.g. the
+      // recommendation aggregate needs recommendation:Read). Rather than blanking
+      // the whole dashboard when one is denied, build the summary from whatever
+      // succeeded and report the failed sections so the page can render partial
+      // data and name exactly which permission/section failed.
+      const sections = [
+        { section: 'Recommendations', res: recommendationRes },
+        { section: 'Cost', res: spendRes },
+        { section: 'Events', res: eventRes },
+        { section: 'Cluster', res: clusterRes },
+      ];
+      const errors = sections
+        .filter((s) => s.res?.data?.errors?.length)
+        .map((s) => ({ section: s.section, message: s.res.data.errors[0]?.message || `Failed to load ${s.section}` }));
 
-        return {
-          data: {
-            cluster_data: {
-              node_count: nodeCount,
-              spot_node_count: spotCount,
-              ondemand_node_count: nodeCount - spotCount,
-              pod_status_counts: cluster?.pod_status_counts ? JSON.parse(cluster.pod_status_counts) : {},
-              workload_type_counts: cluster?.workload_type_counts ? JSON.parse(cluster.workload_type_counts) : {},
-              event: eventRes?.data?.data?.events?.rows,
-            },
-            last_month_spend: lastMonthSpend,
-            current_month_spend: currentMonthSpend,
-            current_month_projected_spend: getBudgetExpectedMonthlyExpense(currentMonthSpend),
-            recommended_saving: recommendedSaving,
-            yearly_recommendation_saving: recommendedSaving * 12,
-            total_recommendations: recommendation?.count || 0,
-            current_month_avg_daily_cost: currentMonthSpend / currentDate.getDate(),
-            last_month_avg_daily_cost: lastMonthSpend / getEndOfMonth(lastMonthStart).getDate(),
-            current_year_spend: yearlySpend,
-            current_year_projected_spend: getExpectedYearlyExpense(getBudgetExpectedMonthlyExpense(currentMonthSpend), yearlySpend),
+      const cluster = clusterRes?.data?.data?.k8s_cluster_groupings?.rows?.[0];
+      const recommendation = recommendationRes?.data?.data?.recommendation_aggregate?.rows?.[0];
+      const spendData = spendRes?.data?.data;
+      const currentMonthSpend = spendData?.spends_aggregate?.rows?.[0]?.spend_amount || 0;
+      const lastMonthSpend = spendData?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0;
+      const yearlySpend = spendData?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0;
+      const recommendedSaving = recommendation?.sum_estimated_savings || 0;
+      const nodeCount = cluster?.node_count ?? 0;
+      const spotCount = cluster?.node_spot_count ?? 0;
+
+      return {
+        data: {
+          cluster_data: {
+            node_count: nodeCount,
+            spot_node_count: spotCount,
+            ondemand_node_count: nodeCount - spotCount,
+            pod_status_counts: cluster?.pod_status_counts ? JSON.parse(cluster.pod_status_counts) : {},
+            workload_type_counts: cluster?.workload_type_counts ? JSON.parse(cluster.workload_type_counts) : {},
+            event: eventRes?.data?.data?.events?.rows,
           },
-        };
-      }
-      return { errors: hasErrors };
+          last_month_spend: lastMonthSpend,
+          current_month_spend: currentMonthSpend,
+          current_month_projected_spend: getBudgetExpectedMonthlyExpense(currentMonthSpend),
+          recommended_saving: recommendedSaving,
+          yearly_recommendation_saving: recommendedSaving * 12,
+          total_recommendations: recommendation?.count || 0,
+          current_month_avg_daily_cost: currentMonthSpend / currentDate.getDate(),
+          last_month_avg_daily_cost: lastMonthSpend / getEndOfMonth(lastMonthStart).getDate(),
+          current_year_spend: yearlySpend,
+          current_year_projected_spend: getExpectedYearlyExpense(getBudgetExpectedMonthlyExpense(currentMonthSpend), yearlySpend),
+        },
+        ...(errors.length ? { errors } : {}),
+      };
     } catch (error) {
       console.log('Your Error is', error);
       return error;
@@ -1434,6 +1484,25 @@ const apiKubernetes = {
       return error;
     }
   },
+  // Members of a same-subject incident group (#34655): the events whose
+  // same_incident link points at this leader.
+  async getIncidentGroupMembers(leaderId: string, accountId: string) {
+    const INCIDENT_GROUP_MEMBERS = `
+ query incident_group_members {
+  events: events_list(where: {incident_leader_id: {_eq: "${leaderId}"}, account_id: {_eq: "${accountId}"}}, order_by: [{column: "starts_at", order: asc}], limit: 50) {
+    rows {
+      id
+      title
+      aggregation_key
+      source
+      starts_at
+    }
+  }
+}`;
+    const response = await queryGraphQL(INCIDENT_GROUP_MEMBERS, 'incident_group_members', {});
+    return response?.data?.data?.events?.rows || [];
+  },
+
   async getK8sEvents(
     limit = 10,
     offset = 0,
@@ -1593,7 +1662,9 @@ const apiKubernetes = {
       computed_score
       computed_priority
       score_factors
-      score_confidence${issueTypeFields}
+      score_confidence
+      incident_leader_id
+      incident_member_count${issueTypeFields}
     }
   }
 }`;
@@ -3719,6 +3790,35 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     });
     return response?.data?.data?.generate_ai_recommendation?.data || parseHttpResponseBodyMessage(response?.data);
   },
+  async generateRemediation(accountId: string, eventId: string, context: string, availableArtifacts: string[] = []) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_REMEDIATION_GENERATE, 'AiRemediationGenerate', {
+      accountId,
+      eventId,
+      context,
+      availableArtifacts,
+    });
+    return response?.data?.data?.ai_remediation_generate?.data;
+  },
+  async getRemediation(accountId: string, eventId: string) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_REMEDIATION_GET, 'AiRemediationGet', {
+      accountId,
+      eventId,
+    });
+    return response?.data?.data?.ai_remediation_get?.data;
+  },
+  async executeRemediationCommand(accountId: string, command: string, eventId?: string, configName?: string, slot?: string) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
+      accountId,
+      eventId: eventId || null,
+      command,
+      configName: configName || null,
+      slot: slot || null,
+    });
+    return response?.data?.data?.ai_remediation_execute?.data;
+  },
   async scanImage({ accountId, namespace, workloadName }: { accountId: string; namespace: string; workloadName: string }) {
     if (accountId === 'demo') return null;
     const SCAN_IMAGE = `
@@ -3950,12 +4050,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       error: response?.data?.errors,
     };
   },
-  async generateRCA(eventId: string, accountId: string, generate = false) {
+  async generateRCA(eventId: string, accountId: string, generate = false, regenerate = false) {
     try {
       if (accountId === 'demo') return null;
       const query = `
-        query getRcaForEvent($account_id:String!, $event_id:String!, $generate: Boolean!) {
-          ai_get_rca(account_id: $account_id, event_id: $event_id, generate: $generate) {
+        query getRcaForEvent($account_id:String!, $event_id:String!, $generate: Boolean!, $regenerate: Boolean!) {
+          ai_get_rca(account_id: $account_id, event_id: $event_id, generate: $generate, regenerate: $regenerate) {
             data
           }
         }
@@ -3964,6 +4064,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         account_id: accountId,
         event_id: eventId,
         generate: generate,
+        regenerate: regenerate,
       });
       return response?.data?.data?.ai_get_rca?.data || null; // Return null if no data
     } catch (error) {

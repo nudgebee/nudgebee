@@ -1,14 +1,11 @@
 package agents
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
 	"nudgebee/llm/agents/core"
@@ -20,22 +17,24 @@ import (
 	"nudgebee/llm/utils"
 	"nudgebee/llm/workspace"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tmc/langchaingo/llms"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kube_labels "k8s.io/apimachinery/pkg/labels"
-	kube_watch "k8s.io/apimachinery/pkg/watch"
-	kubernetes "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
-const AgentCode2 = "agent_code_2"
+// AgentCodeAnalyzer is the canonical registered name for the code-analysis
+// agent (deep code analysis, debugging, RCA, and optional PR creation). It
+// follows the repo's bare-noun agent-naming convention.
+const AgentCodeAnalyzer = "code_analyzer"
+
+// agentCodeAnalyzerLegacyName is the pre-rename registered name. It is kept as
+// a back-compat agent alias so stored conversation history, explicit
+// @agent_code_2 invocations, and api-server's hardcoded prompt prefix keep
+// resolving across deploys. Do not use in new code.
+const agentCodeAnalyzerLegacyName = "agent_code_2"
 
 // sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
 // ([A-Za-z0-9_-]; everything else becomes '_') — the SAME mapping the workspace
@@ -53,7 +52,7 @@ func sanitizeWorkspacePathID(id string) string {
 
 // Mode constants mirror llm/code-analysis. Kept inline (not imported) because
 // llm-server doesn't take a Go-module dependency on llm/code-analysis.
-// agent_code_2 only translates the upstream RaisePr flag into the mode field
+// code_analyzer only translates the upstream RaisePr flag into the mode field
 // it sends to /analyze — it does NOT classify or override the user's intent.
 const (
 	codeAgentModeExplore = "explore"
@@ -72,18 +71,12 @@ const defaultForwardedSkillTopK = 5
 // still bloating every downstream code-analysis agent and PR sub-prompt.
 const maxForwardedSkillBytes = 24000
 
-// Environment variable names for passing large payloads to code-analysis-agent
-const (
-	envCodeAgentLogs   = "CODE_AGENT_LOGS"
-	envCodeAgentPrompt = "CODE_AGENT_PROMPT"
-)
-
 // irrelevantAnalysisMarker is the phrase emitted by the code-analysis service when
 // the analysis is not relevant to the user's query. Must match the output in llm/code-analysis.
 const irrelevantAnalysisMarker = "may not be directly addressing your specific issue"
 
 // codeAgentConversationFailures is a cache namespace for tracking conversations
-// where agent_code_2 already failed or returned an irrelevant analysis.
+// where code_analyzer already failed or returned an irrelevant analysis.
 // Entries expire after 24 hours to prevent unbounded memory growth.
 const codeAgentFailuresCacheNS = "code_agent_conv_failures"
 
@@ -113,462 +106,82 @@ JSON format (all fields except 'query' are optional):
   "target_branch": "prod",
   "namespace": "default",
   "workload": "my-deployment",
-  "raise_pr": false
+  "mode": "explore",
+  "raise_pr": false,
+  "base_diff": ""
 }
 
 Plain text format:
 "Analyze why the service is crashing and create a PR to fix it"
 
-The 'query' field (or plain text) is REQUIRED and describes the analytical task. Use this when simple shell commands are insufficient for diagnosing an issue. Set 'target_branch' to the branch the PR should be opened against (e.g. 'prod', 'main', 'release/1.x'); when omitted, the repository default branch is used.`
+The 'query' field (or plain text) is REQUIRED and describes the analytical task. Use this when simple shell commands are insufficient for diagnosing an issue. Set 'target_branch' to the branch the PR should be opened against (e.g. 'prod', 'main', 'release/1.x'); when omitted, the repository default branch is used.
+
+Each call runs a full (expensive) analysis — decide the intended outcome first and make ONE call: question → 'mode': 'explore' (default); code change without a PR → 'mode': 'fix' with 'raise_pr': false (implements the fix and returns its 'git_diff', no PR); code change with a PR → 'raise_pr': true. When a previous call in this conversation already returned a 'git_diff' for the same fix and a PR is now wanted, pass that diff in 'base_diff' with 'raise_pr': true — the pipeline verifies and re-applies it instead of re-deriving the fix.`
 	toolOutput := "Structured JSON containing: 'root_cause' (summary), 'affected_files' (array with paths/line numbers), 'suggested_fixes' (remediation steps), 'analysis_details' (comprehensive explanation), 'source_details' (repo and commit), and optional 'pr_url' if raise_pr was enabled."
 
-	core.RegisterNBAgentFactoryAndTool(AgentCode2, func(accountId string) (core.NBAgent, error) {
+	codeAnalyzerFactory := func(accountId string) (core.NBAgent, error) {
 		return newCodeAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
+	}
+	core.RegisterNBAgentFactoryAndTool(AgentCodeAnalyzer, codeAnalyzerFactory, toolDescription, toolInput, toolOutput)
+	// Back-compat: keep the pre-rename "agent_code_2" name resolving as an agent.
+	// getSystemAgent does a direct registry lookup and does not honor
+	// GetNameAliases, so the legacy name must be a real factory key. Registered
+	// agent-only (not as a tool) so it is never re-offered to the model as a
+	// second tool — new tool callers use AgentCodeAnalyzer.
+	core.RegisterNBAgentFactory(agentCodeAnalyzerLegacyName, codeAnalyzerFactory)
 }
 
-func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
-	logger := ctx.GetLogger()
-
-	// Validate that the local execution path is configured
-	if config.Config.LlmServerCodeAgentLocalExecPath == "" {
-		return "", errors.New("LlmServerCodeAgentLocalExecPath is not configured. Set LLM_SERVER_AGENT_CODEAGENT_LOCAL_EXEC_PATH environment variable or switch to pod mode by setting LLM_SERVER_AGENT_CODEAGENT_MODE=remote-cli")
+func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
+	m := map[string]any{"provider": c.Provider}
+	if c.Model != "" {
+		m["model"] = c.Model
 	}
-
-	args := []string{config.Config.LlmServerCodeAgentLocalExecPath, "--analyze"}
-
-	if request.GitRepo != "" {
-		args = append(args, "--repo", request.GitRepo)
+	if c.ApiKey != "" {
+		m["api_key"] = c.ApiKey
 	}
-
-	if request.EventId != "" {
-		args = append(args, "--eventid", request.EventId)
+	if c.ApiEndpoint != "" {
+		m["endpoint"] = c.ApiEndpoint
 	}
-
-	if request.RecommendationId != "" {
-		args = append(args, "--recommendationid", request.RecommendationId)
+	if c.ApiVersion != "" {
+		m["api_version"] = c.ApiVersion
 	}
-
-	if request.AccountId != "" {
-		args = append(args, "--accountid", request.AccountId)
+	if c.ApiType != "" {
+		m["api_type"] = c.ApiType
 	}
-
-	if request.WorkflowId != "" {
-		args = append(args, "--workflowid", request.WorkflowId)
+	if c.Region != "" {
+		m["region"] = c.Region
 	}
-
-	if request.RaisePr {
-		args = append(args, "--raisepr", "true")
-	}
-
-	// Explicit mode enables propose mode (mode=fix, raisepr=false). When unset the
-	// CLI derives the mode from raisepr, so only forward it when the caller set it.
-	if request.Mode != "" {
-		args = append(args, "--mode", request.Mode)
-	}
-
-	env := os.Environ()
-
-	// Pass large payloads via environment variables to avoid ARG_MAX limits
-	if len(request.Errors) > 0 {
-		env = append(env, envCodeAgentLogs+"="+strings.Join(request.Errors, "\n"))
-	}
-	if request.Query != "" {
-		env = append(env, envCodeAgentPrompt+"="+request.Query)
-	}
-	// Get Git token based on auth type and provider
-	if len(creds) > 0 {
-		gitToken := ""
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			// For GitHub App, get installation token (only applicable for GitHub)
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					// Use the URL from credentials for GitHub Enterprise support
-					apiUrl := creds[0].Url
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				// For GitLab, use password directly as token
-				gitToken = creds[0].Password
-			}
-		}
-		if gitToken != "" {
-			// Set appropriate environment variable based on provider
-			if provider == "gitlab" {
-				env = append(env, "GITLAB_TOKEN="+gitToken)
-			} else {
-				env = append(env, "GITHUB_TOKEN="+gitToken)
-			}
+	// Bedrock's credential triple. Sent as a unit — ResolveLLMConfigForForwarding
+	// already blanks all three unless the access/secret pair is complete, and a
+	// half-set static provider is a hard error in the AWS SDK rather than a
+	// fall-through to the pod's own credential chain.
+	if c.AccessKey != "" && c.SecretKey != "" {
+		m["access_key"] = c.AccessKey
+		m["secret_key"] = c.SecretKey
+		if c.SessionToken != "" {
+			m["session_token"] = c.SessionToken
 		}
 	}
-
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = env
-
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return "", errors.New(err.Error() + ": " + stderr.String())
-	}
-	// --- START: Modified section ---
-
-	// This struct is used to unmarshal *only* the fields we care about
-	type logEntry struct {
-		LogType string `json:"log_type"`
-		Event   string `json:"event"`
-	}
-
-	fullOutput := out.String()
-	// Save logs to file
-	// os.WriteFile("agent_logs.out", []byte(fullOutput), 0644)
-	// Scan the output line by line
-	scanner := bufio.NewScanner(strings.NewReader(fullOutput))
-	var finalAnswerLine string
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	// Per-role tier models. Omitting these was why per-role tiering never took
+	// effect on the workspace path: ResolveLLMConfigForForwarding populates
+	// Tiers and the code-analysis handler consumes it, but this hop dropped it,
+	// so every role — router, fixer, reviewer, reflection — fell back to the
+	// single run model. Tests existed on both sides of the seam and both passed.
+	if len(c.Tiers) > 0 {
+		tiers := make(map[string]any, len(c.Tiers))
+		for tier, model := range c.Tiers {
+			tiers[tier] = model
 		}
-
-		var entry logEntry
-		// Try to unmarshal the line into our struct
-		if json.Unmarshal(line, &entry) == nil {
-			// Log all valid JSON entries continuously
-			logger.Debug("code analysis log", "output", string(line))
-
-			// Check if this is our final answer
-			if entry.LogType == "RESULT" && entry.Event == "final_answer" {
-				finalAnswerLine = string(line)
-			}
-		} else {
-			// Log non-JSON lines as well
-			logger.Debug("code analysis output", "output", string(line))
-		}
+		m["tiers"] = tiers
 	}
-
-	// If we found a final answer, return it
-	if finalAnswerLine != "" {
-		return finalAnswerLine, nil
-	}
-
-	// If we finished scanning and found no matching line,
-	// return the *entire* original stdout output as requested.
-	return fullOutput, nil
+	return m
 }
 
-func getKubeClient(qps float32, burst int) (*kubernetes.Clientset, error) {
-	// Try to get in-cluster config
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// Fallback to kubeconfig file
-		kubeconfig := os.Getenv("KUBECONFIG")
-		if kubeconfig == "" {
-			kubeconfig = clientcmd.RecommendedHomeFile
-		}
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create kubernetes config: %w", err)
-		}
-	}
-
-	config.QPS = qps
-	config.Burst = burst
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
-	}
-	return clientset, nil
-}
-
-func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (string, error) {
-	logger := ctx.GetLogger()
-	// Default values for pod execution
-	namespace := config.Config.LlmServerCodeAgentNamespace
-	image := config.Config.LlmServerCodeAgentImage
-	qps := float32(100)
-	burst := 200
-
-	clientset, err := getKubeClient(qps, burst)
-	if err != nil {
-		return "", err
-	}
-
-	podName := fmt.Sprintf("nb-code-agent-%d", time.Now().UnixNano())
-
-	args := []string{"/app/code-analysis-agent", "--analyze"}
-
-	if request.GitRepo != "" {
-		args = append(args, "--repo", request.GitRepo)
-	}
-
-	if request.EventId != "" {
-		args = append(args, "--eventid", request.EventId)
-	}
-
-	if request.RecommendationId != "" {
-		args = append(args, "--recommendationid", request.RecommendationId)
-	}
-
-	if request.AccountId != "" {
-		args = append(args, "--accountid", request.AccountId)
-	}
-
-	if request.WorkflowId != "" {
-		args = append(args, "--workflowid", request.WorkflowId)
-	}
-
-	if request.GitRepo == "" && request.Agent == "" {
-		args = append(args, "--agent", "code_agent")
-	} else if request.Agent != "" {
-		args = append(args, "--agent", request.Agent)
-	}
-
-	if request.RaisePr {
-		args = append(args, "--raisepr", "true")
-	}
-
-	// Explicit mode enables propose mode (mode=fix, raisepr=false). When unset the
-	// CLI derives the mode from raisepr, so only forward it when the caller set it.
-	if request.Mode != "" {
-		args = append(args, "--mode", request.Mode)
-	}
-
-	args = append(args, "--conversationid", agentRequest.SessionId)
-	envVars := []corev1.EnvVar{}
-
-	// Pass large payloads via environment variables to avoid ARG_MAX limits
-	if len(request.Errors) > 0 {
-		logs := strings.Join(request.Errors, "\n")
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  envCodeAgentLogs,
-			Value: logs,
-		})
-	}
-	if request.Query != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  envCodeAgentPrompt,
-			Value: request.Query,
-		})
-	}
-
-	// Get Git token based on auth type and provider
-	if len(creds) > 0 {
-		gitToken := ""
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			// For GitHub App, get installation token (only applicable for GitHub)
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					// Use the URL from credentials for GitHub Enterprise support
-					apiUrl := creds[0].Url
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				// For GitLab, use password directly as token
-				gitToken = creds[0].Password
-			}
-		}
-		if gitToken != "" {
-			// Set appropriate environment variable based on provider
-			tokenEnvName := "GITHUB_TOKEN"
-			if provider == "gitlab" {
-				tokenEnvName = "GITLAB_TOKEN"
-			}
-			envVars = append(envVars, corev1.EnvVar{
-				Name:  tokenEnvName,
-				Value: gitToken,
-			})
-		}
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: namespace,
-			Labels: kube_labels.Set{
-				"app":             "code-analysis-agent",
-				"account_id":      agentRequest.AccountId,
-				"conversation_id": agentRequest.ConversationId,
-				"message_id":      agentRequest.MessageId,
-				"job":             podName,
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:            "cli-container",
-					Image:           image,
-					ImagePullPolicy: "Always",
-					Command:         args,
-					Env:             envVars,
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "nudgebee-secret-volume",
-							MountPath: "/etc/secrets/nudgebee",
-							ReadOnly:  true,
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "nudgebee-secret-volume",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: config.Config.LlmServerCodeAgentSecret,
-						},
-					},
-				},
-			},
-			RestartPolicy: corev1.RestartPolicyNever,
-		},
-	}
-
-	if config.Config.LlmServerCodeAgentImagePullSecret != "" {
-		pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
-			{Name: config.Config.LlmServerCodeAgentImagePullSecret},
-		}
-	}
-
-	// Create the pod
-	_, err = clientset.CoreV1().Pods(namespace).Create(ctx.GetContext(), pod, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to create pod: %w", err)
-	}
-
-	// Watch for pod completion
-	watcher, err := clientset.CoreV1().Pods(namespace).Watch(ctx.GetContext(), metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", podName),
-		Watch:         true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to set up pod watcher: %w", err)
-	}
-	defer watcher.Stop()
-
-	for event := range watcher.ResultChan() {
-		if event.Type == kube_watch.Modified || event.Type == kube_watch.Added {
-			p, ok := event.Object.(*corev1.Pod)
-			if !ok {
-				continue
-			}
-			if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-				break
-			}
-		}
-	}
-
-	// Get logs
-	podLogs, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{}).Stream(ctx.GetContext())
-	if err != nil {
-		return "", fmt.Errorf("failed to get pod logs: %w", err)
-	}
-	defer func() {
-		if err := podLogs.Close(); err != nil {
-			// Log the error, but don't return it as the main result
-			logger.Error("error closing pod logs stream", "error", err, "pod", podName)
-		}
-	}()
-
-	buf := new(bytes.Buffer)
-	if _, err := io.Copy(buf, podLogs); err != nil {
-		return "", fmt.Errorf("failed to copy pod logs to buffer: %w", err)
-	}
-
-	// Determine if the pod should be deleted
-	var finalPod *corev1.Pod
-	// Re-fetch the pod to get its final status after logs are collected
-	finalPod, err = clientset.CoreV1().Pods(namespace).Get(ctx.GetContext(), podName, metav1.GetOptions{})
-	if err != nil {
-		logger.Error("error getting final pod status", "pod", podName, "error", err)
-	} else {
-		switch finalPod.Status.Phase {
-		case corev1.PodSucceeded:
-			// Delete the pod if it succeeded
-			deletePolicy := metav1.DeletePropagationBackground
-			if err := clientset.CoreV1().Pods(namespace).Delete(ctx.GetContext(), podName, metav1.DeleteOptions{
-				PropagationPolicy: &deletePolicy,
-			}); err != nil {
-				logger.Error("error deleting successful pod", "pod", podName, "error", err)
-			}
-		case corev1.PodFailed:
-			logger.Warn("pod failed and is being kept for debugging", "pod", podName)
-		}
-	}
-
-	return buf.String(), nil
-}
-
-// evaluateCodeUsingWorkspace calls the workspace pod's native /analyze endpoint
 // instead of launching a new pod per request.
 func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
 	logger := ctx.GetLogger()
 
-	// Resolve git token from credentials
-	gitToken := ""
-	if len(creds) > 0 {
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					// A GitHub App integration stores the installation ID in the
-					// password field; if it is not a plain integer we cannot mint a
-					// token. Swallowing this silently produced an invisible failure:
-					// the workspace clone then ran unauthenticated and the analysis
-					// abstained with "repository inaccessible".
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					apiUrl := creds[0].Url
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), apiUrl, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				gitToken = creds[0].Password
-			}
-		}
-	}
-	// Fallback to env var when no credentials are provided (e.g. local testing)
-	if gitToken == "" {
-		if provider == "gitlab" {
-			gitToken = os.Getenv("GITLAB_TOKEN")
-		} else {
-			gitToken = os.Getenv("GITHUB_TOKEN")
-		}
-	}
+	gitToken := resolveGitToken(ctx, creds, request.GitRepo, provider)
 
 	// Build the request body matching the code-analysis server's AgenticAnalyzeRequest
 	tenantId := ""
@@ -640,7 +253,10 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// analysis must never be blocked on skills.
 	skillsBlock := ""
 	{
-		skillAgentNames := append([]string{AgentCode2}, agentRequest.InheritSkillsFromAgents...)
+		// Include the legacy name so knowledge bases mapped to "agent_code_2" in
+		// llm_kb_agent_mappings before the rename are still inherited (the lookup
+		// UNIONs both names and dedupes by kb id).
+		skillAgentNames := append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...)
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query
@@ -702,6 +318,12 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		analyzeRequest["agent_id"] = request.Agent
 	}
 
+	// Cap mirrors the observation limit — the parent can never legitimately
+	// hold a bigger diff than it was shown.
+	if baseDiff := strings.TrimSpace(request.BaseDiff); baseDiff != "" {
+		analyzeRequest["base_diff"] = core.TruncateMiddle(baseDiff, 48*1024, 16*1024)
+	}
+
 	if skillsBlock != "" {
 		analyzeRequest["skills"] = skillsBlock
 	}
@@ -712,6 +334,19 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 			"type":  "token",
 			"token": gitToken,
 		}
+	}
+
+	// Forward the resolved, decrypted LLM config so the stateless code-analysis
+	// service runs on the tenant's own LLM integration — or, absent one, on the
+	// same default llm-server itself resolved — instead of whatever its startup
+	// env happens to name. Degrade gracefully: on any failure, or when no
+	// provider resolves at all, omit the block and let the pod use its
+	// fallback. The API key is plaintext — never log it.
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
+		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
+	} else if llmCfg != nil {
+		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+		logger.Info("code: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 	}
 
 	// Pre-flight: verify workspace pod is reachable before dispatching analysis
@@ -879,6 +514,33 @@ type codeAnalysisTokenUsage struct {
 	ThinkingTokens      int // Gemini ThoughtsTokenCount — billed at output rate, otherwise silently $0
 	Model               string
 	Provider            string
+	// Calls, when present, carries one record per LLM API call of the run so
+	// each row is priced at its own long-context tier — pricing the run
+	// aggregate (1M+ prompt tokens summed over ~50 calls) tiers nearly every
+	// run into Gemini's >200K surcharge and ~doubles reported cost.
+	Calls        []codeAnalysisTokenUsageCall
+	CallsDropped int
+}
+
+// codeAnalysisTokenUsageCall is one LLM API call's usage within a run.
+type codeAnalysisTokenUsageCall struct {
+	PromptTokens        int
+	CompletionTokens    int
+	TotalTokens         int
+	CachedContentTokens int
+	CacheCreationTokens int
+	ThinkingTokens      int
+	LatencySeconds      float64
+	Model               string
+	Provider            string
+	// ModelTier is the tier this individual call ran on. Per-call rather than
+	// per-run because a run's roles are tiered independently (router/fixer on
+	// retrieval, review on summary, specialists on reasoning).
+	ModelTier string
+	// TaskType labels non-main-loop calls by phase (reflection, compaction,
+	// final_answer). Empty for main-loop calls, which inherit the turn-level
+	// query/investigation classification.
+	TaskType string
 }
 
 // codeAnalysisResult bundles the agent response with optional token usage data.
@@ -922,7 +584,61 @@ func parseTokenUsageMap(tuRaw map[string]any) *codeAnalysisTokenUsage {
 	if v, ok := tuRaw["provider"].(string); ok {
 		tu.Provider = v
 	}
+	if rawCalls, ok := tuRaw["calls"].([]any); ok {
+		for _, rc := range rawCalls {
+			cm, ok := rc.(map[string]any)
+			if !ok {
+				continue
+			}
+			tu.Calls = append(tu.Calls, parseTokenUsageCallMap(cm))
+		}
+	}
+	if v, ok := tuRaw["calls_dropped"].(float64); ok {
+		tu.CallsDropped = int(v)
+	}
 	return tu
+}
+
+// parseTokenUsageCallMap extracts one per-call usage record. Same key set as
+// the aggregate plus latency_seconds; missing/mistyped fields default to zero.
+func parseTokenUsageCallMap(cm map[string]any) codeAnalysisTokenUsageCall {
+	call := codeAnalysisTokenUsageCall{}
+	if v, ok := cm["prompt_tokens"].(float64); ok {
+		call.PromptTokens = int(v)
+	}
+	if v, ok := cm["completion_tokens"].(float64); ok {
+		call.CompletionTokens = int(v)
+	}
+	if v, ok := cm["total_tokens"].(float64); ok {
+		call.TotalTokens = int(v)
+	}
+	if v, ok := cm["cached_content_tokens"].(float64); ok {
+		call.CachedContentTokens = int(v)
+	}
+	if v, ok := cm["cache_creation_tokens"].(float64); ok {
+		call.CacheCreationTokens = int(v)
+	}
+	if v, ok := cm["thinking_tokens"].(float64); ok {
+		call.ThinkingTokens = int(v)
+	} else if v, ok := cm["thoughts_token_count"].(float64); ok {
+		call.ThinkingTokens = int(v)
+	}
+	if v, ok := cm["latency_seconds"].(float64); ok {
+		call.LatencySeconds = v
+	}
+	if v, ok := cm["model"].(string); ok {
+		call.Model = v
+	}
+	if v, ok := cm["provider"].(string); ok {
+		call.Provider = v
+	}
+	if v, ok := cm["model_tier"].(string); ok {
+		call.ModelTier = v
+	}
+	if v, ok := cm["task_type"].(string); ok {
+		call.TaskType = v
+	}
+	return call
 }
 
 // codeAnalysisThinkingModelPattern matches Gemini families that produce
@@ -1036,7 +752,7 @@ func mapCodeStepStatus(status string) toolcore.NBToolResponseStatus {
 }
 
 // persistCodeAnalysisSteps upserts the code-analysis service's tool invocations
-// as llm_conversation_tool_calls rows under agent_code_2's agent row, so the UI
+// as llm_conversation_tool_calls rows under code_analyzer's agent row, so the UI
 // can render the steps the coding agent took live (like other agents). It is
 // called on every /status poll; the `persisted` map (toolId → last status)
 // de-dupes so a step is only written when it first appears or transitions to a
@@ -1164,9 +880,22 @@ func asJSONString(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-// recordCodeAnalysisTokenUsage inserts a token usage record for code-analysis work.
-func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTokenUsage, latency float64) {
-	if tu == nil || tu.TotalTokens == 0 {
+// recordCodeAnalysisTokenUsage inserts token usage record(s) for code-analysis
+// work. When the service reported per-call records, one row is inserted per
+// LLM call so each is priced at its own long-context tier — pricing the run
+// aggregate (1M+ prompt tokens summed across ~50 calls) trips Gemini's >200K
+// surcharge on every component and ~doubles reported cost (the per-row
+// mandate is documented on GetConversationTokenUsage). Without per-call
+// records (older pod image), the previous single-aggregate-row behavior is
+// kept unchanged.
+// modelTier and taskType are the tier attribution for this turn, resolved by the
+// CALLER via core.TierAttributionForRecord while the request context is still
+// live — this function runs in a goroutine that outlives the request, so it must
+// not read the context itself. Both nil on uninstrumented paths, which writes
+// NULL and keeps "legacy row" distinguishable from a real tier.
+func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTokenUsage, latency float64,
+	modelTier, taskType *string) {
+	if tu == nil || (tu.TotalTokens == 0 && len(tu.Calls) == 0) {
 		return
 	}
 
@@ -1184,8 +913,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		agentUUID = &query.AgentId
 	}
 
-	latencyPtr := &latency
-	// Defensive: if the model is in the thinking class but the Python service
+	// Defensive: if the model is in the thinking class but the service
 	// didn't emit `thinking_tokens`, cost will silently undercount by
 	// output_rate × thinking_tokens. Warn so the gap is visible while the
 	// cross-service emission catches up (#30262 sub-item).
@@ -1204,55 +932,149 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 		return
 	}
 
-	// Cost at insert time — see trackTokenUsage rationale. Nil when the
-	// (provider, model) has no llm_model_pricing entry.
-	nonCachedPromptTokens := tu.PromptTokens - tu.CachedContentTokens
+	if len(tu.Calls) == 0 {
+		latencyPtr := &latency
+		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, provider, model,
+			tu.PromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens, latencyPtr,
+			modelTier, taskType)
+		if err := dao.InsertTokenUsage(record); err != nil {
+			slog.Error("code: failed to insert token usage",
+				"error", err,
+				"conversation_id", query.ConversationId,
+				"message_id", query.MessageId,
+				"account_id", query.AccountId,
+			)
+		}
+		return
+	}
+
+	if tu.CallsDropped > 0 {
+		slog.Warn("code: code-analysis dropped per-call usage records at its cap; a residual row reconciles the difference",
+			"calls_dropped", tu.CallsDropped, "conversation_id", query.ConversationId)
+	}
+
+	// Component sums over inserted calls, to reconcile against the aggregate.
+	var sumPrompt, sumCached, sumCreation, sumCompletion, sumThinking int
+	for i, call := range tu.Calls {
+		if call.PromptTokens == 0 && call.CompletionTokens == 0 && call.ThinkingTokens == 0 {
+			continue
+		}
+		callProvider := call.Provider
+		if callProvider == "" {
+			callProvider = provider
+		}
+		callModel := call.Model
+		if callModel == "" {
+			callModel = model
+		}
+		var latencyPtr *float64
+		if call.LatencySeconds > 0 {
+			l := call.LatencySeconds
+			latencyPtr = &l
+		}
+		// A call's own attribution wins over the turn-level default: roles are
+		// tiered independently, and reflection/compaction calls carry a phase the
+		// turn classification cannot express. An unstamped call (older image)
+		// falls back, so version skew degrades to turn-level rather than NULL.
+		// Copy before taking an address: pointing at the loop variable's fields
+		// would force the whole call struct onto the heap each iteration.
+		callTier, callTask := modelTier, taskType
+		if call.ModelTier != "" {
+			tier := call.ModelTier
+			callTier = &tier
+		}
+		if call.TaskType != "" {
+			task := call.TaskType
+			callTask = &task
+		}
+		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, callProvider, callModel,
+			call.PromptTokens, call.CachedContentTokens, call.CacheCreationTokens, call.CompletionTokens, call.ThinkingTokens, latencyPtr,
+			callTier, callTask)
+		err := dao.InsertTokenUsage(record)
+		// The FK retry inside InsertTokenUsage nils record.AgentID when the
+		// agent row is missing — propagate BEFORE the error check (the record
+		// is mutated even when the retry itself fails) so subsequent rows skip
+		// the doomed exec instead of repeating it per call.
+		agentUUID = record.AgentID
+		if err != nil {
+			slog.Error("code: failed to insert per-call token usage",
+				"error", err, "call_index", i,
+				"conversation_id", query.ConversationId,
+				"message_id", query.MessageId,
+			)
+			continue
+		}
+		sumPrompt += call.PromptTokens
+		sumCached += call.CachedContentTokens
+		sumCreation += call.CacheCreationTokens
+		sumCompletion += call.CompletionTokens
+		sumThinking += call.ThinkingTokens
+	}
+
+	// Residual row: only when the aggregate exceeds the recorded calls (cap
+	// drop or version skew) — keeps SUM(rows) == aggregate for billing.
+	resPrompt := max(0, tu.PromptTokens-sumPrompt)
+	resCached := max(0, tu.CachedContentTokens-sumCached)
+	resCreation := max(0, tu.CacheCreationTokens-sumCreation)
+	resCompletion := max(0, tu.CompletionTokens-sumCompletion)
+	resThinking := max(0, tu.ThinkingTokens-sumThinking)
+	if resPrompt > 0 || resCached > 0 || resCreation > 0 || resCompletion > 0 || resThinking > 0 {
+		record := buildCodeAnalysisUsageRecord(query, agentUUID, dao, provider, model,
+			resPrompt, resCached, resCreation, resCompletion, resThinking, nil,
+			modelTier, taskType)
+		if err := dao.InsertTokenUsage(record); err != nil {
+			slog.Error("code: failed to insert residual token usage row",
+				"error", err, "conversation_id", query.ConversationId)
+		}
+	}
+}
+
+// buildCodeAnalysisUsageRecord assembles one llm_conversation_token_usage row
+// with cost computed at insert time from THIS row's own token counts — the
+// long-context tier switch inside GetConversationCost then applies per call,
+// as billed by the provider. cache_ttl_minutes is no longer written — see
+// trackTokenUsage rationale; storage cost lives in llm_cache_lifecycle.
+func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao core.IConversationDao,
+	provider, model string, promptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens int,
+	latencySeconds *float64, modelTier, taskType *string) *core.TokenUsageRecord {
+	nonCachedPromptTokens := promptTokens - cachedTokens
 	if nonCachedPromptTokens < 0 {
 		nonCachedPromptTokens = 0
 	}
 	var costUsd *float64
-	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, tu.CachedContentTokens, tu.CacheCreationTokens, tu.CompletionTokens, tu.ThinkingTokens); err == nil {
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens, core.TenantForPricing(query.AccountId)); err == nil {
 		costUsd = &cost
 	} else {
 		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
 	}
 
-	// cache_ttl_minutes is no longer written — see trackTokenUsage rationale.
-	// Storage cost lives in llm_cache_lifecycle; per-call rows hold per-token
-	// costs only.
 	record := &core.TokenUsageRecord{
 		ConversationID:      query.ConversationId,
 		MessageID:           query.MessageId,
 		AgentID:             agentUUID,
-		AgentName:           AgentCode2,
+		AgentName:           AgentCodeAnalyzer,
 		AccountID:           query.AccountId,
 		UserID:              query.UserId,
 		LLMProvider:         provider,
 		LLMModel:            model,
-		InputTokens:         tu.PromptTokens,
-		OutputTokens:        tu.CompletionTokens,
-		CachedInputTokens:   tu.CachedContentTokens,
-		CacheCreationTokens: tu.CacheCreationTokens,
+		InputTokens:         promptTokens,
+		OutputTokens:        completionTokens,
+		CachedInputTokens:   cachedTokens,
+		CacheCreationTokens: creationTokens,
 		CostUsd:             costUsd,
-		IsCacheHit:          tu.CachedContentTokens > 0,
-		LatencySeconds:      latencyPtr,
+		IsCacheHit:          cachedTokens > 0,
+		LatencySeconds:      latencySeconds,
 		RequestStatus:       "success",
+		ModelTier:           modelTier,
+		TaskType:            taskType,
 	}
 	// Thinking tokens stored only when non-zero — distinguishes "model didn't
 	// think" from "service didn't emit it". Mirrors trackTokenUsage:2159-2162.
-	if tu.ThinkingTokens > 0 {
-		tt := tu.ThinkingTokens
+	if thinkingTokens > 0 {
+		tt := thinkingTokens
 		record.ThinkingTokens = &tt
 	}
-
-	if err := dao.InsertTokenUsage(record); err != nil {
-		slog.Error("code: failed to insert token usage",
-			"error", err,
-			"conversation_id", query.ConversationId,
-			"message_id", query.MessageId,
-			"account_id", query.AccountId,
-		)
-	}
+	return record
 }
 
 func newCodeAgent(accountId string) CodeAgent2 {
@@ -1269,11 +1091,11 @@ type CodeAgent2 struct {
 }
 
 func (l CodeAgent2) GetName() string {
-	return AgentCode2
+	return AgentCodeAnalyzer
 }
 
 func (l CodeAgent2) GetNameAliases() []string {
-	return []string{"code_analyzer", "code_debugger", "code_error_analyzer", "code_rca_agent"}
+	return []string{agentCodeAnalyzerLegacyName, "code_debugger", "code_error_analyzer", "code_rca_agent"}
 }
 
 func (l CodeAgent2) GetDescription() string {
@@ -1283,11 +1105,9 @@ func (l CodeAgent2) GetDescription() string {
 		"* Analyze service failures by correlating logs with source code.\n" +
 		"* Identify bugs and propose code fixes or create Pull Requests (PRs)."
 
-	if config.Config.LlmServerShellToolEnabled {
-		desc += "\n\n**Do NOT use for:**\n" +
-			"* Simple file lookups or running basic shell commands (use 'shell_execute').\n" +
-			"* Checking network connectivity or infrastructure state (use 'shell_execute')."
-	}
+	desc += "\n\n**Do NOT use for:**\n" +
+		"* Simple file lookups or running basic shell commands (use 'shell_execute').\n" +
+		"* Checking network connectivity or infrastructure state (use 'shell_execute')."
 
 	return desc
 }
@@ -1305,6 +1125,7 @@ func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		"If 'raise_pr' is enabled, the system will automatically create a pull request (GitHub) or merge request (GitLab) with the proposed fixes after review.",
 		"You have access to Git repositories (GitHub and GitLab) and can analyze code across multiple languages and frameworks.",
 		"Provide structured analysis results including: root cause summary, affected files/lines, suggested fixes, and reproduction steps if available.",
+		"If an earlier code_analyzer call in this conversation already returned a 'git_diff' for the same fix and a PR is now wanted, call again with 'raise_pr': true and pass that diff in 'base_diff' — the fix pipeline verifies and re-applies it against current code instead of re-deriving the whole fix (a full re-analysis costs hundreds of thousands of tokens).",
 	}
 	constraints := []string{
 		"Requires Git repository access via configured credentials (token or GitHub/GitLab App).",
@@ -1320,7 +1141,7 @@ func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		Constraints:  constraints,
 		Examples:     examples,
 		OutputFormat: "Structured JSON with analysis results, root causes, affected code locations, and optional PR details",
-		Variables:    []string{"query", "errors", "git_repo", "git_commit", "target_branch", "event_id"},
+		Variables:    []string{"query", "errors", "git_repo", "git_commit", "target_branch", "base_diff", "event_id"},
 	}
 }
 
@@ -1336,7 +1157,13 @@ type CodeAgent2Request struct {
 	// Mode explicitly selects "explore" (read-only) or "fix". When set it wins
 	// over RaisePr, enabling "propose" mode (mode=fix, raise_pr=false): generate
 	// and return a diff without opening a PR. Empty → derived from RaisePr.
-	Mode             string `json:"mode"`
+	Mode string `json:"mode"`
+	// BaseDiff is an optional unified diff previously produced for the SAME
+	// fix (e.g. a propose-mode run's git_diff earlier in this conversation).
+	// The fix pipeline verifies it against current code and adapts it instead
+	// of re-deriving the fix from scratch — a "fix then raise PR" sequence
+	// costs a verification pass, not a full second analysis.
+	BaseDiff         string `json:"base_diff"`
 	EventId          string `json:"event_id"`
 	RecommendationId string `json:"recommendation_id"`
 	WorkflowId       string `json:"workflow_id"` // Originating workflow definition id; forwarded so a raised PR links back to the workflow.
@@ -1422,7 +1249,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 	// RaisePr is intentionally NOT hardcoded here. The entrypoint that built
 	// the request (recommendation-apply, event resolution, PR followup, frontend
-	// chat) is the source of truth — agent_code_2 must pass it through unchanged.
+	// chat) is the source of truth — code_analyzer must pass it through unchanged.
 	// Hardcoding `RaisePr = true` here was the cause of PR #29338, where a
 	// pure exploration question ("what is the default Postgres connection
 	// limit?") got promoted to fix-mode and produced a spurious PR.
@@ -1467,7 +1294,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 			})
 		} else if codeAgentRequest.Namespace != "" && codeAgentRequest.Workload != "" {
 			// Fallback: use namespace/workload from tool input JSON when QueryConfig is empty
-			// (QueryConfig comes from the original user request and is empty when agent_code_2 is invoked as a tool)
+			// (QueryConfig comes from the original user request and is empty when code_analyzer is invoked as a tool)
 			namespace = codeAgentRequest.Namespace
 			workloadName = codeAgentRequest.Workload
 			k8sInfoList = append(k8sInfoList, map[string]string{
@@ -1703,112 +1530,56 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	}
 
 	ctx.GetLogger().Info("code: using git provider", "provider", provider, "repo", repoUrl)
-	finalOutput := ""
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		// execute via workspace /analyze endpoint
-		startTime := time.Now()
-		wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, creds, provider)
-		latency := time.Since(startTime).Seconds()
-		if err != nil {
-			ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
-			// Write the message-scoped guard on failure too. A poll timeout here
-			// usually means the analysis is STILL RUNNING server-side (the workspace
-			// pod does not cancel it when polling stops) — without the guard, the
-			// planner's natural "tool errored, retry" reaction dispatches a second
-			// /analyze and two full analyses run for one message.
-			if guardKey, ok := codeAgentGuardKey(query.ConversationId, query.MessageId); ok {
-				_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
-					[]byte(fmt.Sprintf("previous attempt failed and may still be running server-side: %v", err)))
-			}
-			return core.NBAgentResponse{}, err
+	// A second fix request in the same conversation is a retry, not a new bug.
+	// Amend the PR we already opened instead of cutting another branch and
+	// opening a duplicate. Routed through the followup path, which checks out
+	// the PR's head branch and commits there; request.Query — the caller's
+	// "the previous fix was rejected because …" instruction — is forwarded to
+	// the workspace as the prompt, so the retry's intent is not lost.
+	if codeAgentRequest.RaisePr && !codeAgentRequest.Followup {
+		if prURL, prBranch := findOpenPRForRequest(ctx, query, codeAgentRequest.GitRepo); prURL != "" {
+			ctx.GetLogger().Info("code: reusing the open PR this conversation already raised",
+				"pr_url", prURL, "pr_branch", prBranch, "repo", codeAgentRequest.GitRepo)
+			codeAgentRequest.Followup = true
+			codeAgentRequest.PRURL = prURL
+			codeAgentRequest.PRBranch = prBranch
+			return l.executeFollowup(ctx, query, codeAgentRequest)
 		}
-		ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))
-
-		// Record token usage from code-analysis service (fire-and-forget)
-		go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency)
-
-		// workspace path returns agent_response directly — parse and enrich
-		var actualResponse map[string]any
-		if err := json.Unmarshal([]byte(wsResult.AgentResponse), &actualResponse); err != nil {
-			return core.NBAgentResponse{
-				Response: []string{wsResult.AgentResponse},
-			}, nil
-		}
-		actualResponse["source_details"] = map[string]any{
-			"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
-			"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
-		}
-		jsonResponse, err := json.Marshal(actualResponse)
-		if err != nil {
-			return core.NBAgentResponse{}, err
-		}
-		responseStr := string(jsonResponse)
-		finalResponse := handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
-		go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
-		return core.NBAgentResponse{
-			Response: []string{finalResponse},
-		}, nil
-	} else if config.Config.LlmServerCodeAgentMode == "local" {
-		// execute command for local testing
-		cliOutput, err := evaluateCodeUsingCli(ctx, codeAgentRequest, creds, provider)
-		if err != nil {
-			ctx.GetLogger().Error("code: failed to analyze request", "error", err)
-			return core.NBAgentResponse{}, err
-		}
-		ctx.GetLogger().Info("CLI Command Output", "output", cliOutput)
-		finalOutput = cliOutput
-	} else {
-		// execute command using pod
-		podOutput, err := evaluateCodeUsingPod(ctx, query, codeAgentRequest, creds, provider)
-		if err != nil {
-			ctx.GetLogger().Error("code: failed to execute CLI command in pod", "error", err.Error())
-			return core.NBAgentResponse{}, err
-		}
-		for output := range strings.SplitSeq(podOutput, "\n") {
-			if !strings.Contains(output, `"event":"final_answer"`) {
-				continue
-			}
-			podOutput = output
-			break
-		}
-
-		ctx.GetLogger().Info("CLI Command Output from Pod", "output", podOutput)
-		finalOutput = podOutput
 	}
 
-	var actualResponse map[string]any
-	var cliTokenUsage *codeAnalysisTokenUsage
-	logAnalysisResponse := map[string]any{}
-	err = json.Unmarshal([]byte(finalOutput), &logAnalysisResponse)
+	// execute via workspace /analyze endpoint
+	startTime := time.Now()
+	wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, creds, provider)
+	latency := time.Since(startTime).Seconds()
 	if err != nil {
-		// If unmarshaling fails, return the raw output as a message
-		return core.NBAgentResponse{
-			Response: []string{finalOutput},
-		}, nil
-	}
-	if data, ok := logAnalysisResponse["data"].(map[string]any); ok {
-		if result, ok := data["result"].(map[string]any); ok {
-			if agentResponse, ok := result["agent_response"].(map[string]any); ok {
-				actualResponse = agentResponse
-			} else if analysisResult, ok := result["analysis_result"].(map[string]any); ok {
-				actualResponse = analysisResult
-			}
-			// Extract token usage from CLI/pod response
-			if tuRaw, ok := result["token_usage"].(map[string]any); ok {
-				cliTokenUsage = parseTokenUsageMap(tuRaw)
-			}
+		ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
+		// Write the message-scoped guard on failure too. A poll timeout here
+		// usually means the analysis is STILL RUNNING server-side (the workspace
+		// pod does not cancel it when polling stops) — without the guard, the
+		// planner's natural "tool errored, retry" reaction dispatches a second
+		// /analyze and two full analyses run for one message.
+		if guardKey, ok := codeAgentGuardKey(query.ConversationId, query.MessageId); ok {
+			_ = common.CacheSet(codeAgentFailuresCacheNS, guardKey,
+				[]byte(fmt.Sprintf("previous attempt failed and may still be running server-side: %v", err)))
 		}
+		return core.NBAgentResponse{}, err
 	}
-	// Record token usage from CLI/pod path (fire-and-forget)
-	go recordCodeAnalysisTokenUsage(query, cliTokenUsage, 0)
-	if actualResponse == nil {
-		// If we couldn't find the expected structure, return the whole parsed response
+	ctx.GetLogger().Info("Workspace /analyze Output", "output_length", len(wsResult.AgentResponse))
+
+	// Record token usage from code-analysis service (fire-and-forget). Tier
+	// attribution is resolved here, on the request goroutine, because the
+	// recorder outlives the request context.
+	modelTier, taskType := core.TierAttributionForRecord(ctx)
+	go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency, modelTier, taskType)
+
+	// workspace path returns agent_response directly — parse and enrich
+	var actualResponse map[string]any
+	if err := json.Unmarshal([]byte(wsResult.AgentResponse), &actualResponse); err != nil {
 		return core.NBAgentResponse{
-			Response: []string{finalOutput},
+			Response: []string{wsResult.AgentResponse},
 		}, nil
 	}
-
 	actualResponse["source_details"] = map[string]any{
 		"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
 		"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
@@ -1928,7 +1699,7 @@ func firstNonEmptyField(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// trackPRInResolution inserts an event_resolution row when agent_code_2 creates a PR.
+// trackPRInResolution inserts an event_resolution row when code_analyzer creates a PR.
 // This enables the pr-lifecycle-check cron to detect the PR and trigger automated
 // follow-up for CI failures and review comments. Runs as fire-and-forget.
 func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest, responseStr string, gitRepo string, provider string) {
@@ -2047,6 +1818,80 @@ func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest
 
 	ctx.GetLogger().Info("code: PR resolution row created for lifecycle tracking",
 		"pr_url", prURL, "event_id", eventId, "conversation_id", query.ConversationId)
+}
+
+// findOpenPRForRequest returns the url and head branch of a PR that this same
+// conversation (or event) already opened against gitRepo and that is still
+// open. Returns two empty strings when there is none.
+//
+// code_analyzer keeps no state between calls: nothing stopped an orchestrator
+// that reviewed its own fix and asked again from getting a fresh clone, a fresh
+// fix/<slug>-<unix-ts> branch, and a second PR for the same bug. That is how
+// PRs #35092 and #35094 came to fix one missing integrationId sixteen minutes
+// apart — while #35092's own followup agent was fixing it on the other branch.
+// The resolution rows trackPRInResolution writes are the memory we were
+// missing, so read them back before opening anything new.
+//
+// Fails open: any lookup error returns no PR, so a retry still produces a fix
+// rather than nothing.
+func findOpenPRForRequest(ctx *security.RequestContext, query core.NBAgentRequest, gitRepo string) (string, string) {
+	if gitRepo == "" {
+		return "", ""
+	}
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("code: cannot check for an existing open PR", "error", err)
+		return "", ""
+	}
+
+	// Same anchor the writer uses, so we read back exactly what it wrote. An
+	// event-anchored request that failed to resolve must NOT fall back to the
+	// conversation id — see resolvePRTrackingEventId.
+	anchorId, hadEventAnchor := resolvePRTrackingEventId(ctx, dbms.Db, query)
+	if anchorId == "" {
+		if hadEventAnchor {
+			return "", ""
+		}
+		anchorId = query.ConversationId
+	}
+	if anchorId == "" {
+		return "", ""
+	}
+
+	var row struct {
+		PRURL    string `db:"pr_url"`
+		PRBranch string `db:"pr_branch"`
+	}
+	// The lifecycle states below mirror the cron's own selection in
+	// api-server/services/account/adapter/pr_lifecycle.go. 'addressing' is
+	// included because a followup already in flight is still an open PR to
+	// amend, not a reason to open a second one.
+	err = dbms.Db.Get(&row,
+		`SELECT COALESCE(data->>'pr_url', '')    AS pr_url,
+		        COALESCE(data->>'pr_branch', '') AS pr_branch
+		   FROM event_resolution
+		  WHERE event_id = $1
+		    AND type = 'PullRequest'
+		    AND status = 'InProgress'
+		    AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')
+		    AND data->>'repo_url' = $2
+		  ORDER BY created_at DESC
+		  LIMIT 1`,
+		anchorId, gitRepo,
+	)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Warn("code: existing-PR lookup failed", "error", err, "anchor_id", anchorId)
+		}
+		return "", ""
+	}
+	// A row with no branch recorded is useless for amending — we would not know
+	// what to check out. Treat it as no PR and let a new one be opened.
+	if row.PRURL == "" || row.PRBranch == "" {
+		return "", ""
+	}
+	return row.PRURL, row.PRBranch
 }
 
 // prTrackingEventLookup is the narrow DB interface resolvePRTrackingEventId
@@ -2213,6 +2058,115 @@ func fuzzyMatchRepo(workloadName string, projectURLs []string) string {
 
 	// No confident match — return empty to trigger user selection
 	return ""
+}
+
+// resolveGitToken produces the token the workspace clone authenticates with.
+// Both entrypoints that call the code-analysis workspace — the analysis run and
+// the PR followup — need the identical resolution, and they previously carried
+// two copies of it that had already drifted apart in their logging.
+func resolveGitToken(ctx *security.RequestContext, creds []GitCredentials, repoURL string, provider string) string {
+	logger := ctx.GetLogger()
+
+	gitToken := ""
+	if len(creds) > 0 {
+		cred := selectGitCredential(logger, creds, repoURL, provider)
+		switch cred.AuthType {
+		case "token":
+			gitToken = cred.Password
+		case "application":
+			if provider == "github" {
+				installationID := int64(0)
+				if _, err := fmt.Sscanf(cred.Password, "%d", &installationID); err != nil {
+					// A GitHub App integration stores the installation ID in the
+					// password field; if it is not a plain integer we cannot mint a
+					// token. Swallowing this silently produced an invisible failure:
+					// the workspace clone then ran unauthenticated and the analysis
+					// abstained with "repository inaccessible".
+					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
+				} else {
+					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), cred.Url, installationID)
+					if err != nil {
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err)
+					} else {
+						gitToken = token
+					}
+				}
+			} else {
+				gitToken = cred.Password
+			}
+		}
+	}
+
+	// Fallback to env var when no credentials are provided (e.g. local testing)
+	if gitToken == "" {
+		if provider == "gitlab" {
+			gitToken = os.Getenv("GITLAB_TOKEN")
+		} else {
+			gitToken = os.Getenv("GITHUB_TOKEN")
+		}
+	}
+	return gitToken
+}
+
+// selectGitCredential picks the credential to authenticate the clone of repoURL.
+//
+// getGitCredentials returns every enabled git integration on the tenant, ordered
+// only by provider, so creds[0] is arbitrary whenever a tenant has more than one.
+// Cloning a private repo with the wrong org's token fails as "Repository not
+// found" — indistinguishable from a typo, and the analysis then abstains with a
+// misleading "nothing to change". Match on the repo list the integration
+// enumerated at connect time; fall back to provider, then to the first
+// credential, so a tenant whose project list is empty or stale behaves exactly
+// as before.
+func selectGitCredential(logger *slog.Logger, creds []GitCredentials, repoURL string, provider string) GitCredentials {
+	if len(creds) == 1 {
+		return creds[0]
+	}
+
+	if org, repo := parseOrgRepo(repoURL); org != "" && repo != "" {
+		want := strings.ToLower(org + "/" + repo)
+		for _, cred := range creds {
+			if !credentialCoversRepo(cred, want) {
+				continue
+			}
+			if logger != nil {
+				logger.Info("code: selected git credential covering the target repository",
+					"repo", want, "integration_user", cred.Username, "provider", cred.Provider)
+			}
+			return cred
+		}
+		if logger != nil {
+			// Worth a warning: the clone is about to run with a credential that
+			// does not list this repo, which is the failure mode above.
+			logger.Warn("code: no git credential lists the target repository; falling back",
+				"repo", want, "credential_count", len(creds), "provider", provider)
+		}
+	}
+
+	for _, cred := range creds {
+		if cred.Provider == provider {
+			return cred
+		}
+	}
+	return creds[0]
+}
+
+// credentialCoversRepo reports whether cred's enumerated projects include the
+// "org/repo" identity in want (lowercased). Projects carry either a full URL or
+// a bare "org/repo" key, so both are normalized through parseOrgRepo.
+func credentialCoversRepo(cred GitCredentials, want string) bool {
+	for _, project := range cred.Projects {
+		candidate := resolveProjectRepoURL(project, cred)
+		if candidate == "" {
+			continue
+		}
+		if org, repo := parseOrgRepo(candidate); org != "" && repo != "" {
+			if strings.ToLower(org+"/"+repo) == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveProjectRepoURL extracts and constructs a full repository URL from a project map entry.
@@ -2493,25 +2447,161 @@ Log data: %v`
 	return k8sInfoList, nil
 }
 
+// bareRepoPattern matches a response that is exactly "owner/repo" and nothing else.
+// Anchored on purpose: a chain-of-thought reply mentioning a file path such as
+// "deploy/kubernetes/values.yaml" must not be read as a repository reference.
+var bareRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+// gitURLHostPath splits an https:// or scp-like git@host:path repository URL into its
+// host and path. Returns empty strings when raw is shaped like neither, so callers can
+// treat "unparseable" and "not a repository URL" identically.
+func gitURLHostPath(raw string) (host, path string) {
+	if rest, ok := strings.CutPrefix(raw, "git@"); ok {
+		h, p, found := strings.Cut(rest, ":")
+		if !found {
+			return "", ""
+		}
+		return h, p
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", ""
+	}
+	return u.Hostname(), u.Path
+}
+
+// isKnownGitHost reports whether host is a repository host we recognise. Self-hosted
+// GitLab is matched on hostname because the extraction prompt explicitly invites it.
+// A leading "www." is ignored so the hosted providers match either way.
+func isKnownGitHost(host string) bool {
+	host = strings.TrimPrefix(strings.ToLower(host), "www.")
+	switch host {
+	case "github.com", "gitlab.com", "bitbucket.org":
+		return true
+	}
+	return strings.Contains(host, "gitlab")
+}
+
 // extractGitURLFromText extracts a git repository URL from plain text input using regex.
 // Handles URLs like https://github.com/owner/repo, git@github.com:owner/repo, etc.
+// The host is matched on the parsed hostname rather than as a substring of the whole
+// match, so "https://github.com.example.net/x" is not mistaken for GitHub.
 func extractGitURLFromText(text string) string {
 	pattern := regexp.MustCompile(`(?:https?://|git@)[^\s,;'"]+`)
 	matches := pattern.FindAllString(text, -1)
 	for _, match := range matches {
 		// Strip trailing punctuation that's likely not part of the URL
 		match = strings.TrimRight(match, `.,;:!?)\"`)
-		lower := strings.ToLower(match)
-		if strings.Contains(lower, "github.com") || strings.Contains(lower, "gitlab.com") || strings.Contains(lower, "bitbucket.org") {
+		if host, _ := gitURLHostPath(match); isKnownGitHost(host) {
 			return match
 		}
 	}
 	return ""
 }
 
-// isValidGitURL checks if a string looks like a valid git repository URL.
+// isValidGitURL checks if a string is a well-formed git repository URL. It parses
+// rather than prefix-matches: the previous HasPrefix check accepted anything that
+// merely STARTED with a scheme, which included the "https://" that the repo extractor
+// itself had just prepended to a chain-of-thought blob (#35703).
 func isValidGitURL(s string) bool {
-	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "git@")
+	if s == "" || s != strings.TrimSpace(s) {
+		return false
+	}
+	if strings.IndexFunc(s, unicode.IsSpace) >= 0 || strings.IndexFunc(s, unicode.IsControl) >= 0 {
+		return false
+	}
+	host, path := gitURLHostPath(s)
+	if host == "" {
+		return false
+	}
+	segments := 0
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		if segment != "" {
+			segments++
+		}
+	}
+	return segments >= 2
+}
+
+// normalizeExtractedRepo turns an LLM repo-extraction reply into a repository URL and
+// provider, or ("", "") when the reply does not confidently name one. Pure function —
+// kept separate from the LLM call so it can be unit tested without mocks, the same
+// split as validateRepoSelection.
+//
+// Reasoning models answer this prompt with a numbered chain-of-thought that often ends
+// in the correct answer ("6. Final output: Empty string."). Substring checks read that
+// as a repository, so the entire blob became the URL and reached `git push` (#35703).
+// Every branch below either yields an anchored match or yields nothing; there is
+// deliberately no fallback that treats the raw reply as a URL.
+func normalizeExtractedRepo(llmResponse string) (repo, provider string) {
+	resp := strings.TrimSpace(llmResponse)
+	resp = strings.Trim(resp, "`\"'")
+	resp = strings.TrimSpace(resp)
+	if resp == "" {
+		return "", ""
+	}
+	// A reasoning reply restates the prompt while it thinks, and the prompt contains
+	// example URLs. Searching the whole reply would happily return one of those
+	// placeholders. Consider only the final non-empty line — the model's answer —
+	// which for a single-line reply is the reply itself.
+	resp = lastNonEmptyLine(resp)
+	if resp == "" {
+		return "", ""
+	}
+	switch strings.ToLower(resp) {
+	case "none", "empty", "null", "nil", "uncertain":
+		return "", ""
+	}
+
+	// A URL on the answer line, tolerating a "Final output: <url>" style prefix.
+	// extractGitURLFromText is anchored and host-checked, and returns "" on no match.
+	if repoURL := extractGitURLFromText(resp); repoURL != "" {
+		if isPlaceholderRepoURL(repoURL) {
+			return "", ""
+		}
+		return repoURL, detectGitProvider(repoURL)
+	}
+
+	// Bare "owner/repo", accepted only when it is the whole answer line.
+	if bareRepoPattern.MatchString(resp) && !isPlaceholderRepoURL("https://github.com/"+resp) {
+		return "https://github.com/" + resp, "github"
+	}
+
+	return "", ""
+}
+
+// lastNonEmptyLine returns the final line of s that carries content once surrounding
+// whitespace and quoting are removed. Returns "" when s has no such line.
+//
+// Quotes are stripped before the second trim because a quoted answer keeps its own
+// padding — `" owner/repo "` unquotes to " owner/repo ", which the anchored
+// bareRepoPattern would then reject. A line that is nothing but quotes collapses to
+// empty and the scan continues to the line above.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if trimmed := strings.TrimSpace(strings.Trim(line, "`\"'")); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// isPlaceholderRepoURL reports whether repoURL is one of the illustrative repositories
+// named in PROMPT_EXTRACT_GIT_REPO. A model that echoes the instructions back would
+// otherwise have us clone and push to a repository that does not exist. Keep this in
+// step with the examples in that prompt.
+func isPlaceholderRepoURL(repoURL string) bool {
+	_, path := gitURLHostPath(repoURL)
+	switch strings.ToLower(strings.Trim(path, "/")) {
+	case "owner/repo", "group/project":
+		return true
+	}
+	return false
 }
 
 // validateRepoSelection normalizes an LLM repo-selection response and returns
@@ -2708,29 +2798,13 @@ Text: %v`
 	llmResponse := strings.TrimSpace(completion.Choices[0].Content)
 	logger.Debug("Received LLM response for Git repo extraction", "response", llmResponse)
 
-	// Clean up the response and validate it
-	if llmResponse == "" || strings.ToLower(llmResponse) == "none" || strings.ToLower(llmResponse) == "empty" {
+	repoURL, provider := normalizeExtractedRepo(llmResponse)
+	if repoURL == "" {
+		logger.Debug("No repository confidently identified in LLM extraction response")
 		return "", "", nil
 	}
 
-	// Detect provider from the response
-	provider := detectGitProvider(llmResponse)
-
-	// Basic validation and normalization
-	if strings.Contains(llmResponse, "github.com") {
-		return llmResponse, "github", nil
-	}
-	if strings.Contains(llmResponse, "gitlab") {
-		return llmResponse, "gitlab", nil
-	}
-
-	// If it's in owner/repo format without explicit provider, default to github
-	if strings.Count(llmResponse, "/") >= 1 && !strings.Contains(llmResponse, "://") {
-		llmResponse = "https://github.com/" + llmResponse
-		return llmResponse, "github", nil
-	}
-
-	return llmResponse, provider, nil
+	return repoURL, provider, nil
 }
 
 // extractJSONFromText attempts to extract a JSON array from text using multiple methods
@@ -2843,37 +2917,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		return core.NBAgentResponse{}, errors.New("git credentials are required for PR followup")
 	}
 
-	// Resolve git token from credentials (same pattern as evaluateCodeUsingWorkspace)
-	gitToken := ""
-	if len(creds) > 0 {
-		switch creds[0].AuthType {
-		case "token":
-			gitToken = creds[0].Password
-		case "application":
-			if provider == "github" {
-				installationID := int64(0)
-				if _, err := fmt.Sscanf(creds[0].Password, "%d", &installationID); err != nil {
-					logger.Warn("code: github app credential password is not a numeric installation id; cannot mint token", "error", err)
-				} else {
-					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), creds[0].Url, installationID)
-					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
-					} else {
-						gitToken = token
-					}
-				}
-			} else {
-				gitToken = creds[0].Password
-			}
-		}
-	}
-	if gitToken == "" {
-		if provider == "gitlab" {
-			gitToken = os.Getenv("GITLAB_TOKEN")
-		} else {
-			gitToken = os.Getenv("GITHUB_TOKEN")
-		}
-	}
+	gitToken := resolveGitToken(ctx, creds, request.GitRepo, provider)
 
 	tenantId := ""
 	if ctx.GetSecurityContext() != nil {
@@ -2917,6 +2961,19 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		}
 	}
 
+	// Forward the resolved LLM config, exactly as the main analysis path does.
+	// Without this the workspace pod falls back to its global LLM_* secret env,
+	// which is not guaranteed to name a provider code-analysis supports — every
+	// followup then fails at client construction before doing any work. Degrade
+	// gracefully: on any failure, or when no provider resolves at all, omit the
+	// block. The API key is plaintext — never log it.
+	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
+		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
+	} else if llmCfg != nil {
+		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+		logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
+	}
+
 	// Pre-flight: verify workspace pod is reachable
 	healthWm := workspace.NewWorkspaceManagerWithTimeout(10 * time.Second)
 	if _, healthErr := healthWm.CallAPI(ctx, query.AccountId, "GET", "/health", nil, nil); healthErr != nil {
@@ -2932,6 +2989,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	logger.Info("code followup: executing via workspace", "account_id", query.AccountId, "pr_url", request.PRURL)
 
 	// POST /analyze — code-analysis returns 202 with analysis_id
+	followupStart := time.Now()
 	respBytes, err := wm.CallAPIOrLazyCreate(ctx, query.AccountId, "POST", "/analyze", nil, analyzeRequest)
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("workspace /analyze followup call failed: %w", err)
@@ -2940,12 +2998,16 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	var asyncResp map[string]any
 	if err := json.Unmarshal(respBytes, &asyncResp); err != nil {
 		result := extractAgentResponseWithTokenUsage(respBytes)
+		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
 
 	// Sync response (backward compat)
 	if _, hasResult := asyncResp["agent_response"]; hasResult {
 		result := extractAgentResponseWithTokenUsage(respBytes)
+		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
 
@@ -3028,6 +3090,8 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 			}
 			logger.Info("code followup: analysis completed", "analysis_id", analysisID)
 			caResult := extractAgentResponseWithTokenUsage(resultBytes)
+			modelTier, taskType := core.TierAttributionForRecord(ctx)
+			go recordCodeAnalysisTokenUsage(query, caResult.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 			return core.NBAgentResponse{Response: []string{caResult.AgentResponse}}, nil
 		case "failed":
 			errMsg, _ := statusResp["error"].(string)

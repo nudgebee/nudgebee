@@ -1,6 +1,10 @@
 package k8s
 
-import "nudgebee/services/knowledge_graph/core"
+import (
+	"fmt"
+
+	"nudgebee/services/knowledge_graph/core"
+)
 
 // Concrete-property schemas for the two infra scaffolding nodes minted
 // here. createClusterNode stamps only name/subtype (base keys) plus the cloud
@@ -104,6 +108,57 @@ func clusterNameForNamespace(namespace string, workloads []K8sWorkloadRow) strin
 		}
 	}
 	return ""
+}
+
+// ensureNamespaceNode returns the Namespace node for (clusterName, namespace),
+// minting it — plus the owning Cluster node and the Namespace → Cluster edge —
+// when no earlier converter has already registered it in namespaceNodes.
+//
+// Converters that only ever *attach* to a pre-existing namespace silently drop
+// their BELONGS_TO edge for any namespace holding no workloads, Services or
+// PVCs; since the KG never lists Namespace objects, such a namespace is absent
+// from the graph entirely. Minting here closes that gap.
+//
+// Re-minting the same namespace from two converters is safe: core.NewNode
+// derives the node ID from the unique key, and `cluster` is not a unique-key
+// component for a Namespace, so the duplicate carries the identical ID and
+// collapses in DeduplicateNodes/DeduplicateEdges without orphaning any edge
+// that references it.
+func (s *K8sSource) ensureNamespaceNode(
+	namespace, clusterName string,
+	namespaceNodes, clusterNodes map[string]*core.DbNode,
+	req *core.SourceBuildRequest,
+) (nsNode *core.DbNode, newNodes []*core.DbNode, newEdges []*core.DbEdge) {
+	namespaceKey := fmt.Sprintf("%s/%s", clusterName, namespace)
+	if existing, ok := namespaceNodes[namespaceKey]; ok {
+		return existing, nil, nil
+	}
+
+	nsNode = s.createNamespaceNode(namespace, clusterName, req)
+	namespaceNodes[namespaceKey] = nsNode
+	newNodes = append(newNodes, nsNode)
+
+	// No resolvable cluster — the account carries no workload with a cluster
+	// name at all. Mint the namespace, but skip the cluster hop rather than
+	// point an edge at an empty-named Cluster node.
+	if clusterName == "" {
+		return nsNode, newNodes, nil
+	}
+
+	clusterNode, ok := clusterNodes[clusterName]
+	if !ok {
+		clusterNode = s.createClusterNode(clusterName, req)
+		clusterNodes[clusterName] = clusterNode
+		newNodes = append(newNodes, clusterNode)
+	}
+	newEdges = append(newEdges, core.NewEdge(
+		nsNode.ID, clusterNode.ID,
+		core.RelationshipBelongsTo,
+		map[string]interface{}{"connection_type": "cluster"},
+		req.TenantID, req.CloudAccountID, "k8s",
+	))
+
+	return nsNode, newNodes, newEdges
 }
 
 // createClusterNode creates a Cluster node

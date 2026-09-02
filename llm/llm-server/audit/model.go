@@ -18,6 +18,8 @@ const (
 	EventCategoryK8sAgent       EventCategory = "K8S_AGENT"
 	EventCategoryK8sRelay       EventCategory = "K8S_RELAY"
 	EventAlertManagerRelay      EventCategory = "ALERT_MANAGER"
+	// EventCategoryChatActions buckets in-app ("Nubi") web chat interactions; web-only — messaging-platform chat is intentionally excluded.
+	EventCategoryChatActions EventCategory = "CHAT_ACTIONS"
 )
 
 type EventType string
@@ -104,6 +106,11 @@ const (
 	EventTypeAlertManagerCreate  EventType = "ALERT_MANAGER_CREATE"
 	EventTypeAlertManagerUpdate  EventType = "ALERT_MANAGER_UPDATE"
 	EventTypeAlertManagerDisable EventType = "ALERT_MANAGER_DISABLE"
+
+	// Chat Actions (EventCategoryChatActions) — llm-server emits only follow-up answers; conversation delete lives in api-server's audit package.
+	EventTypeChatClarificationRespond EventType = "CHAT_CLARIFICATION_RESPOND"
+	// EventTypeChatToolConfirmationRespond is the follow-up answer authorizing/declining a write action, recorded distinctly (tool + decision) so approvals are filterable in one place.
+	EventTypeChatToolConfirmationRespond EventType = "CHAT_TOOL_CONFIRMATION_RESPOND"
 )
 
 type EventActor string

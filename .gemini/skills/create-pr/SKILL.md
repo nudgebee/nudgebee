@@ -67,7 +67,7 @@ Read the diff in full and evaluate against these dimensions:
 - **Correctness:** logic errors, off-by-one, nil/null risks, missing error handling, race conditions, incorrect API contracts.
 - **Security:** injection (SQL, command, XSS), hardcoded secrets, missing input validation at system boundaries, insecure deserialization, OWASP Top 10.
 - **Over-engineering:** premature abstractions, unused hooks, speculative flexibility, helper functions with a single caller, scenarios that can't happen being "handled".
-- **Scope creep:** changes outside the stated goal of the PR (per `CLAUDE.md → Doing tasks`: "Don't add features, refactor code, or make 'improvements' beyond what was asked").
+- **Scope creep:** changes outside the stated goal of the PR (per `CLAUDE.md → AI Coding Principles`, surgical changes: every changed line traces directly to the request).
 - **Test coverage:** are new code paths covered? Are edge cases tested?
 - **Cross-service impact:** shared types, API contracts, DB schema, Hasura metadata — anything that affects other services.
 - **Convention compliance:** Go idioms + `slog` + `testify`, Python `black` 120 + flake8 + mypy, TypeScript oxlint + prettier, commit scope correctness.

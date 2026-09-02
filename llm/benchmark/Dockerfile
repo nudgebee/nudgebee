@@ -48,16 +48,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 COPY uv.lock pyproject.toml ./
 
-# Install dependencies from the pinned lock (uv.lock is a `uv pip compile`
-# output), then the project itself without re-resolving. Installing the exact
-# locked versions — instead of re-resolving pyproject's loose constraints via
-# `uv pip install -e .` — keeps the image reproducible and matches the tested
-# dependency set (e.g. langchain-community==0.4.1 for ragas 0.4.3; a looser
-# resolve pulled a langchain-community without `chat_models.vertexai`, breaking
-# the ragas controller import).
+# Install the exact versions from uv.lock (native `uv lock` format), then the
+# project itself without re-resolving. `uv export --frozen` fails if the lock
+# is out of date with pyproject.toml, and installing locked versions — instead
+# of re-resolving pyproject's constraints — keeps the image reproducible and
+# matches the tested dependency set (e.g. langchain-community==0.4.1 for ragas
+# 0.4.3; a looser resolve pulled a langchain-community without
+# `chat_models.vertexai`, breaking the ragas controller import).
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
-    uv pip install -r uv.lock --system && \
+    uv export --frozen --no-emit-project -o /tmp/requirements.txt && \
+    uv pip install --system -r /tmp/requirements.txt && \
     uv pip install -e . --no-deps --system
 
 
@@ -78,13 +79,7 @@ COPY app.py /app/
 # Set environment variables
 ENV LOGGING_CONFIG_FILE=/app/benchmark_server/config/logging.json
 ENV BENCHMARK_PORT=9999
-# UVICORN_WORKERS=1 is intentional — the in-process magic-link token store
-# in benchmark_server/controllers/auth_controller.py (_magic_tokens dict) is
-# per-process. With >1 worker, the POST /auth/email-login that issues a
-# token and the GET /api/auth/callback/email that consumes it can land on
-# different workers, making ~50% of magic-link clicks fail with no useful
-# diagnostic. Raise to >1 only AFTER moving tokens to the DB (mirroring
-# NextAuth's user_auths magic-link rows).
+# Default uvicorn worker count. Override in the deployment env if needed.
 ENV UVICORN_WORKERS=1
 # --proxy-headers + --forwarded-allow-ips so request.client.host reflects
 # the real client (used by future per-IP rate-limiting / audit logging),

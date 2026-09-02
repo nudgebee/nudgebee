@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
-import { Box, Typography, ButtonBase, Accordion, AccordionSummary, AccordionDetails, Tooltip } from '@mui/material';
+import { Box, Typography, ButtonBase, Accordion, AccordionSummary, AccordionDetails } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import CloseIcon from '@mui/icons-material/Close';

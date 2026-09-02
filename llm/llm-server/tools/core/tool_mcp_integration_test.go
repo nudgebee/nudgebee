@@ -2,6 +2,7 @@ package core
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -122,4 +123,94 @@ func TestInvalidateAccountIntegrationCache_OnlyAffectsTargetAccount(t *testing.T
 	assert.True(t, ok, "other account's cache must remain populated")
 
 	mcpIntegrationToolCacheInstance.delete(otherAccount)
+}
+
+func TestMCPToolsAvailableSnapshot_GroupsByIntegration(t *testing.T) {
+	// Wipe the cache so cross-test pollution doesn't leak in.
+	mcpIntegrationToolCacheInstance.mutex.Lock()
+	mcpIntegrationToolCacheInstance.data = make(map[string]struct {
+		tools  []NBTool
+		expiry time.Time
+	})
+	mcpIntegrationToolCacheInstance.mutex.Unlock()
+	t.Cleanup(func() {
+		mcpIntegrationToolCacheInstance.mutex.Lock()
+		mcpIntegrationToolCacheInstance.data = make(map[string]struct {
+			tools  []NBTool
+			expiry time.Time
+		})
+		mcpIntegrationToolCacheInstance.mutex.Unlock()
+	})
+
+	// Two MCP integrations under one account, plus another account with one
+	// integration. Snapshot must report three (account, integration) rows
+	// with the right counts.
+	mcpIntegrationToolCacheInstance.set("acc-A", []NBTool{
+		mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-1"}, mcpToolName: "t1"},
+		mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-1"}, mcpToolName: "t2"},
+		mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-2"}, mcpToolName: "t3"},
+	})
+	mcpIntegrationToolCacheInstance.set("acc-B", []NBTool{
+		mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-1"}, mcpToolName: "t1"},
+	})
+
+	snap := mcpToolsAvailableSnapshot()
+
+	type key struct{ acc, intg string }
+	got := make(map[key]int, len(snap))
+	for _, e := range snap {
+		got[key{e.AccountId, e.IntegrationId}] = e.ToolCount
+	}
+
+	assert.Equal(t, 2, got[key{"acc-A", "int-1"}])
+	assert.Equal(t, 1, got[key{"acc-A", "int-2"}])
+	assert.Equal(t, 1, got[key{"acc-B", "int-1"}])
+	assert.Len(t, got, 3, "snapshot must contain exactly the three (account, integration) groups")
+}
+
+func TestMCPToolsAvailableSnapshot_SkipsExpiredEntries(t *testing.T) {
+	mcpIntegrationToolCacheInstance.mutex.Lock()
+	mcpIntegrationToolCacheInstance.data = map[string]struct {
+		tools  []NBTool
+		expiry time.Time
+	}{
+		"acc-fresh": {
+			tools: []NBTool{
+				mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-fresh"}, mcpToolName: "t"},
+			},
+			expiry: time.Now().Add(time.Hour),
+		},
+		"acc-stale": {
+			tools: []NBTool{
+				mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-stale"}, mcpToolName: "t"},
+			},
+			expiry: time.Now().Add(-time.Hour),
+		},
+	}
+	mcpIntegrationToolCacheInstance.mutex.Unlock()
+	t.Cleanup(func() {
+		mcpIntegrationToolCacheInstance.mutex.Lock()
+		mcpIntegrationToolCacheInstance.data = make(map[string]struct {
+			tools  []NBTool
+			expiry time.Time
+		})
+		mcpIntegrationToolCacheInstance.mutex.Unlock()
+	})
+
+	snap := mcpToolsAvailableSnapshot()
+	for _, e := range snap {
+		assert.NotEqual(t, "acc-stale", e.AccountId, "expired entries must not be reported")
+	}
+}
+
+func TestMCPToolsAvailableSnapshot_EmptyCacheReturnsEmpty(t *testing.T) {
+	mcpIntegrationToolCacheInstance.mutex.Lock()
+	mcpIntegrationToolCacheInstance.data = make(map[string]struct {
+		tools  []NBTool
+		expiry time.Time
+	})
+	mcpIntegrationToolCacheInstance.mutex.Unlock()
+
+	snap := mcpToolsAvailableSnapshot()
+	assert.Empty(t, snap)
 }

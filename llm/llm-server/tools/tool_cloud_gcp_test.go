@@ -63,6 +63,40 @@ func TestGcloudErrorHint_Patterns(t *testing.T) {
 			rawError: `SH: SYNTAX ERROR: UNEXPECTED "("`,
 			want:     "single quotes",
 		},
+		{
+			// Dominant hallucination class from 2026-07 sweep: model invents
+			// subcommand names (`gcloud sql insights`, `gcloud monitoring
+			// timeseries`). gcloud's own output lists valid alternatives
+			// under "Maybe you meant:" — the hint tells the model to read
+			// it rather than guess a second time.
+			name: "invalid choice with maybe-you-meant list — steer to gcloud's own suggestions",
+			rawError: `ERROR: (gcloud.sql) Invalid choice: 'insights'.
+Maybe you meant:
+  gcloud sql instances`,
+			want: "Maybe you meant",
+		},
+		{
+			// Same class without the maybe-you-meant list — fallback hint
+			// tells the model to extract the parent path and run --help.
+			name:     "invalid choice without maybe-you-meant — steer to --help on parent",
+			rawError: `ERROR: (gcloud.monitoring) Invalid choice: 'timeseries'.`,
+			want:     "gcloud <parent> --help",
+		},
+		{
+			// Follow-up to #34915: bare `--format=table` (no column spec)
+			// hits a gcloud-layer error distinct from the parens-shell class.
+			// Regression fixture for issue #34369.
+			name:     "bare --format=table missing projection — column-list hint",
+			rawError: `ERROR: (gcloud.billing.accounts.list) Format [table] requires a non-empty projection. Use key parameters to specify a projection like 'table(foo, bar.baz)'`,
+			want:     "explicit column list",
+		},
+		{
+			// The same projection error fires for csv/value formats too — hint
+			// must be format-agnostic, not specific to `table`.
+			name:     "bare --format=csv missing projection — same hint fires",
+			rawError: `ERROR: (gcloud.compute.instances.list) Format [csv] requires a non-empty projection.`,
+			want:     "explicit column list",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -95,4 +129,77 @@ func TestGcloudErrorHint_EnvelopeShape(t *testing.T) {
 		wrapped := wrapCliError(raw, gcloudErrorHint(raw))
 		assert.Equal(t, raw, wrapped)
 	})
+}
+
+// TestRejectNonGcloudShapes covers the route-hint guard that catches
+// tool-mismatched inputs before the auto-prefix silently rewrites them
+// into invalid gcloud commands. gsutil is explicitly kept legitimate
+// (Cloud Storage ACLs) per the agent prompt.
+func TestRejectNonGcloudShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    string // substring expected in hint; "" = accepted (no guard fire)
+	}{
+		// --- passes through (empty hint = accepted) ---
+		{"gcloud command accepted", "gcloud compute instances list --project=X", ""},
+		{"gcloud with pipe accepted (first token is gcloud)", "gcloud storage ls gs://foo | jq '.[]'", ""},
+		{"gsutil accepted — legitimate for Cloud Storage ACLs", "gsutil acl get gs://my-bucket", ""},
+		{"unknown short-token accepted — auto-prefix will make it `gcloud X`", "compute instances list", ""},
+		{"empty input accepted (existing paths handle it)", "", ""},
+
+		// --- rejected with routing hints ---
+		{
+			name:    "curl → shell_execute hint",
+			command: `curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" https://monitoring.googleapis.com/v3/...`,
+			want:    "shell_execute",
+		},
+		{
+			name:    "wget → same routing hint as curl",
+			command: "wget https://storage.googleapis.com/foo",
+			want:    "shell_execute",
+		},
+		{
+			name:    "kubectl → wrong tool",
+			command: "kubectl get pods -n default",
+			want:    "kubectl` tool for Kubernetes",
+		},
+		{
+			name:    "bq → shell_execute for BigQuery",
+			command: `bq query --nouse_legacy_sql "SELECT 1"`,
+			want:    "BigQuery",
+		},
+		{
+			// Synthetic values only — real production names get flagged by the
+			// internal-leaks gitleaks scanner. Shape is what matters.
+			name:    "natural language sentence → routing hint",
+			command: "Check Cloud SQL Query Insights and database schema for instance example-db in project demo-project.",
+			want:    "natural-language string",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := rejectNonGcloudShapes(c.command)
+			if c.want == "" {
+				assert.Empty(t, got, "expected accept (no hint), got: %s", got)
+				return
+			}
+			assert.Contains(t, got, c.want)
+		})
+	}
+}
+
+// TestIsExecutableLikeToken pins the shape check used to distinguish shell
+// commands from natural-language strings. Kept strict on purpose — an NL
+// misroute is much more expensive to recover from than a rare false-reject
+// on an unusual command name (which the model can retry with a rephrase).
+func TestIsExecutableLikeToken(t *testing.T) {
+	accept := []string{"gcloud", "kubectl", "aws", "bq", "some-tool", "tool_v2", "tool.sh", "a"}
+	reject := []string{"", "Check", "1foo", " gcloud", "hello!", "tool/path", "with spaces"}
+	for _, s := range accept {
+		assert.True(t, isExecutableLikeToken(s), "expected accept: %q", s)
+	}
+	for _, s := range reject {
+		assert.False(t, isExecutableLikeToken(s), "expected reject: %q", s)
+	}
 }

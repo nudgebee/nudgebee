@@ -40,19 +40,29 @@ export const KubernetesTraceServiceOperation = ({ accountId, query, traceData, e
     if (!query.trace_id || !accountId) {
       return;
     }
+    let cancelled = false;
     setData([]);
     setLoading(true);
     apiTrace
       .traceServiceAndOperationV2(accountId, query.trace_id, esIndex)
       .then((res) => {
+        if (cancelled) {
+          return;
+        }
         if (res) {
           const traceDataRows = res?.traces_get_heatmap ?? [];
           setData(traceDataRows);
         }
       })
       .finally(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [JSON.stringify(query), accountId, JSON.stringify(traceData), esIndex]);
 
   const getHttpStatus = (item) => {

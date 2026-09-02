@@ -57,6 +57,30 @@ func TestChatMessage_MarshalUnmarshal(t *testing.T) {
 	require.Equal(t, msg, msg2)
 }
 
+func TestChatRequest_TemperatureMarshaling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("omits temperature when nil", func(t *testing.T) {
+		req := &ChatRequest{
+			Model: "o3-mini",
+		}
+		data, err := json.Marshal(req)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "temperature")
+	})
+
+	t.Run("includes temperature when set", func(t *testing.T) {
+		zero := float64(0)
+		req := &ChatRequest{
+			Model:       "gpt-4o",
+			Temperature: &zero,
+		}
+		data, err := json.Marshal(req)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"temperature":0`)
+	})
+}
+
 func TestParseStreamingChatResponse_NoGoroutineLeakOnStreamingFuncError(t *testing.T) {
 	// Emit many chunks so the producer goroutine is still trying to send when
 	// the consumer aborts on the first one. Before the fix the producer blocks

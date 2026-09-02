@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -143,6 +144,20 @@ func main() {
 	common.InitMetrics()
 	core.InitMetrics()
 	prompts.InitializeGlobalLoader()
+	// Every registered prompt must resolve against the embedded FS. Prompts ship
+	// inside the binary, so a miss is a build defect, not a runtime condition —
+	// failing here is what lets callers use the prompt loader with no fallback to
+	// an older copy. The previous versioning attempt kept such a fallback and
+	// silently served stale prompts for months.
+	//
+	// Exits non-zero rather than returning: a bare return from main is exit status 0,
+	// which Kubernetes reads as a successful completion, so a broken catalog would go
+	// green through the deployment gates instead of triggering a restart or rollback.
+	// A gate that fails silently is the thing this package exists to remove.
+	if err := prompts.MustResolveAll(); err != nil {
+		slog.Error("main: prompt catalog is incomplete", "error", err)
+		os.Exit(1)
+	}
 	if err := core.InitTokenizers(); err != nil {
 		slog.Error("main: failed to init tokenizers", "error", err)
 		return
@@ -216,11 +231,31 @@ func main() {
 	go toolscore.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
 
-	// Clean up stale workspace pods on startup
+	// Clean up stale workspace pods on startup, and keep sweeping periodically:
+	// the lazy-create path never re-checks a healthy pod's image, so without
+	// this a long-lived workspace pod serves a stale code-agent image
+	// indefinitely (no failure ever routes it through CreateWorkspace).
 	go workspace.CleanupStaleWorkspaces(syncCtx)
+	if err := common.NewLeaderIntervalJob("workspace_stale_sweep", func() error {
+		workspace.CleanupStaleWorkspaces(syncCtx)
+		return nil
+	}, 5*time.Minute); err != nil {
+		slog.Warn("main: failed to register workspace stale sweep job", "error", err)
+	}
+
+	// Weekly event-analysis digest. Convergent + leader-elected: the job fills
+	// whichever (account, week) slots have no row, so a missed tick self-heals.
+	if err := api.RegisterEventAnalysisDigestJob(); err != nil {
+		slog.Warn("main: failed to register event analysis digest job", "error", err)
+	}
 
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
+
+	// Optional memory-v2 maintenance and projection implementations register
+	// through hooks. In OSS builds these remain safe no-ops.
+	core.RegisterMemoryMaintenanceJobsFn()
+	core.StartMemoryRagProjectorsFn(syncCtx)
 
 	// Wire the watch package against the LLM + security stack and register
 	// the leader-elected dispatcher. No-op when LLM_SERVER_WATCH_ENABLED=false.

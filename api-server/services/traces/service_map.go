@@ -13,6 +13,29 @@ import (
 	"time"
 )
 
+// workloadNamespaceSentinelNode is the literal workload_namespace value the
+// trace pipeline uses when a span's source/destination is the K8s Node itself
+// (host-network / kubelet-level traffic, e.g. a Prometheus node-metrics
+// scrape) rather than a namespaced application — Node objects are
+// cluster-scoped and have no real namespace. Mirrors the "node" kind
+// ebpf_flow_source.go's inferNodeType already recognizes; traces' raw span
+// rows carry no equivalent Kind column, so this Namespace-based sentinel is
+// the only signal available here.
+const workloadNamespaceSentinelNode = "node"
+
+// applicationKindFor returns the ServiceApplicationId.Kind for a workload
+// identified only by name+namespace, honoring the sentinel above. Without
+// this, every such workload defaulted to the literal "Service" kind — so a
+// GKE node observed this way was misclassified as an application-level
+// Service node instead of matching (or falling back to) the real,
+// k8s_source-authoritative Node.
+func applicationKindFor(namespace string) string {
+	if namespace == workloadNamespaceSentinelNode {
+		return "Node"
+	}
+	return "Service"
+}
+
 type TraceServiceMapBuilder struct {
 	spans          []TraceSpan
 	config         *ServiceMapConfig
@@ -209,6 +232,15 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 			TotalDuration:    0,
 			TelemetryLabels:  telemetryLabels,
 			ApplicationTypes: make(map[string]bool),
+			TypeEvidence:     make(map[string]TypeEvidence),
+			CreationEvidence: &TypeEvidence{
+				TraceID:      span.TraceID,
+				SpanID:       span.SpanID,
+				SpanName:     span.SpanName,
+				Timestamp:    span.Timestamp,
+				MatchedKey:   "service_name",
+				MatchedValue: serviceName,
+			},
 		}
 		serviceStats[serviceName] = s
 		return s
@@ -274,9 +306,13 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		isServiceSource := (attrs.ServiceName != "" && attrs.ServiceName == serviceName) ||
 			(attrs.ServiceName == "" && span.WorkloadName == serviceName)
 		if isServiceSource {
-			appType := t.detectApplicationType(span, attrs, rawAttrs, stats.TelemetryLabels)
+			appType, appTypeEvidence := t.detectApplicationType(span, attrs, rawAttrs, stats.TelemetryLabels)
 			if appType != "" {
 				stats.ApplicationTypes[appType] = true
+				// First span to produce this type wins, so evidence stays stable across rebuilds.
+				if _, exists := stats.TypeEvidence[appType]; !exists && appTypeEvidence != nil {
+					stats.TypeEvidence[appType] = *appTypeEvidence
+				}
 			}
 		}
 
@@ -399,7 +435,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 	for _, stats := range serviceStats {
 		appId := ServiceApplicationId{
 			Name:      stats.ServiceName,
-			Kind:      "Service",
+			Kind:      applicationKindFor(stats.Namespace),
 			Namespace: stats.Namespace,
 		}
 
@@ -437,6 +473,8 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 			Downstreams:      downstreamsLinks,
 			Instances:        instances,
 			Type:             appTypes,
+			TypeEvidence:     stats.TypeEvidence,
+			CreationEvidence: stats.CreationEvidence,
 			DesiredInstances: 1,
 			FailedInstances:  0,
 			IsHealthy:        stats.ErrorCount == 0,
@@ -481,6 +519,11 @@ type serviceMetrics struct {
 	TelemetryLabels map[string]string
 	// Track all application types detected for this service (multi-container support)
 	ApplicationTypes map[string]bool
+	// The span that caused each ApplicationTypes entry, keyed by type
+	TypeEvidence map[string]TypeEvidence
+	// The first span observed for this service — evidence that it exists at all,
+	// independent of any type classification.
+	CreationEvidence *TypeEvidence
 }
 
 // ParsedSpanAttributes contains both structured and raw attribute data
@@ -761,6 +804,10 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 
 			if _, exists := serviceStats[dep.Target]; !exists { // Not an actual service
 				if _, exists := externalServices[dep.Target]; !exists {
+					sampleTraceID := ""
+					if len(dep.TraceIds) > 0 {
+						sampleTraceID = dep.TraceIds[0]
+					}
 					externalServices[dep.Target] = &ExternalServiceInfo{
 						Name:           dep.Target,
 						Protocol:       dep.Protocol,
@@ -769,6 +816,8 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 						CallCount:      0,
 						ErrorCount:     0,
 						Applications:   make(map[string]bool),
+						SampleTraceID:  sampleTraceID,
+						SampleSpanID:   dep.SampleSpanID,
 					}
 				}
 
@@ -877,7 +926,7 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 				downstream := DownstreamLink{
 					Id: ServiceApplicationId{
 						Name:      dependentService,
-						Kind:      "Service",
+						Kind:      applicationKindFor(stats.Namespace),
 						Namespace: stats.Namespace,
 					},
 					Status:       t.getLinkStatusCode(errorRate),
@@ -906,6 +955,17 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 			FailedInstances:  0,
 			IsHealthy:        info.ErrorCount == 0,
 			HealthReason:     t.getHealthReason(info.ErrorCount),
+		}
+
+		// Evidence that this external service was genuinely observed as a
+		// dependency target, not synthesized — pins the first dependency's span.
+		if info.SampleTraceID != "" || info.SampleSpanID != "" {
+			app.CreationEvidence = &TypeEvidence{
+				TraceID:      info.SampleTraceID,
+				SpanID:       info.SampleSpanID,
+				MatchedKey:   "dependency_type",
+				MatchedValue: info.DependencyType,
+			}
 		}
 
 		if info.ErrorCount > 0 {
@@ -1018,6 +1078,10 @@ type ExternalServiceInfo struct {
 	CallCount      int64
 	ErrorCount     int64
 	Applications   map[string]bool // Services that depend on this external service
+	// SampleTraceID/SampleSpanID pin the evidence of the first dependency that
+	// established this external service, for node-level troubleshooting.
+	SampleTraceID string
+	SampleSpanID  string
 }
 
 // dependencyMetrics holds metrics for a specific dependency relationship

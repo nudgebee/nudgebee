@@ -29,7 +29,7 @@ const SEVERITY_TO_DS_LEVEL = {
   info: 'info',
 };
 const toDsSeverityLevel = (s) => SEVERITY_TO_DS_LEVEL[String(s || '').toLowerCase()] || 'info';
-import CustomPRLink from '@shared/CustomPRLink';
+import PRLink, { resolutionsDeepLink } from '@shared/links/PRLink';
 import LinearLoader from '@components/k8s/common/LinearLoader';
 import apiTickets from '@api1/tickets';
 import k8sApi from '@api1/kubernetes';
@@ -284,7 +284,9 @@ const KubernetesSecurityDetails = (props) => {
         icon: PrOpenIcon,
         label: 'Create Pull Request',
         id: 'create-pull-request',
-        disabled: !hasFixAvailable || !hasWriteAccess() || data?.resolution,
+        // Only a failed resolution is retryable. Anything else — a run still in
+        // flight, or a terminal one that needs no further action — blocks a new PR.
+        disabled: !hasFixAvailable || !hasWriteAccess() || Boolean(data?.resolution && data.resolution.status !== 'Failed'),
       },
     ];
   };
@@ -297,79 +299,90 @@ const KubernetesSecurityDetails = (props) => {
     prevQueryRef.current = props.query;
   }, [JSON.stringify(props.query)]);
 
-  const setTableData = (data) => {
-    setLoading(false);
-    let k8sRecommendationData = data?.recommendation?.map((item) => {
-      let data = [];
-      if (typeof item?.recommendation === 'string') {
-        item.recommendation = safeJSONParse(item.recommendation);
-      }
+  const buildRow = (item) => {
+    let data = [];
+    data.push({
+      component: (
+        <Stack direction='column' spacing={1}>
+          <Link href={'https://nvd.nist.gov/vuln/detail/' + item.recommendation?.VulnerabilityID} openInNew>
+            {item.recommendation?.VulnerabilityID}
+          </Link>
+          {item.ticket ? (
+            <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>
+              Ticket -
+              <Link href={item.ticket?.url} style={{ fontSize: 'var(--ds-text-small)' }} openInNew>
+                {item.ticket?.ticket_id}
+              </Link>
+            </Typography>
+          ) : (
+            <></>
+          )}
+          {item.resolution && (
+            <PRLink
+              prURL={item.resolution.type_reference_id}
+              statusMessage={item.resolution.status_message}
+              status={item.resolution.status}
+              resolutionHref={resolutionsDeepLink(item.id)}
+            />
+          )}
+        </Stack>
+      ),
+      drilldownQuery: item,
+      data: item.recommendation?.VulnerabilityID,
+    });
+    data.push({
+      component: <Text value={item?.image?.split('/').pop()} showAutoEllipsis />,
+      data: item?.image?.split('/')[1],
+    });
+    data.push({
+      component: <Text value={`${item.namespace} / ${item.workload_name}`} showAutoEllipsis />,
+      data: item?.image?.split('/')[1],
+    });
+    data.push({
+      component: <Text value={item?.recommendation?.Title} showAutoEllipsis />,
+      data: item?.recommendation?.Title,
+    });
+    data.push({
+      component: (
+        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+          <SeverityIcon level={toDsSeverityLevel(item?.severity)} aria-label={item?.severity || '-'} />
+        </Box>
+      ),
+      data: item?.severity,
+    });
+    data.push({
+      component: <Text showAutoEllipsis value={item?.recommendation?.PkgID} />,
+      data: item?.recommendation?.PkgID,
+    });
+    data.push({
+      component: <Text value={item?.recommendation?.CweIDs?.join(',')} />,
+      data: item?.recommendation?.CweIDs?.join(','),
+    });
+    if (!props?.llmTableData?.length) {
+      data.push({ component: <Datetime value={item.created_at} /> });
       data.push({
         component: (
-          <Stack direction='column' spacing={1}>
-            <Link href={'https://nvd.nist.gov/vuln/detail/' + item.recommendation?.VulnerabilityID} openInNew>
-              {item.recommendation?.VulnerabilityID}
-            </Link>
-            {item.ticket ? (
-              <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>
-                Ticket -
-                <Link href={item.ticket?.url} style={{ fontSize: 'var(--ds-text-small)' }} openInNew>
-                  {item.ticket?.ticket_id}
-                </Link>
-              </Typography>
-            ) : (
-              <></>
-            )}
-            {item.resolution && <CustomPRLink prURL={item.resolution.type_reference_id} statusMessage={item.resolution.status_message} />}
-          </Stack>
-        ),
-        drilldownQuery: item,
-        data: item.recommendation?.VulnerabilityID,
-      });
-      data.push({
-        component: <Text value={item?.image?.split('/').pop()} showAutoEllipsis />,
-        data: item?.image?.split('/')[1],
-      });
-      data.push({
-        component: <Text value={`${item.namespace} / ${item.workload_name}`} showAutoEllipsis />,
-        data: item?.image?.split('/')[1],
-      });
-      data.push({
-        component: <Text value={item?.recommendation?.Title} showAutoEllipsis />,
-        data: item?.recommendation?.Title,
-      });
-      data.push({
-        component: (
-          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-            <SeverityIcon level={toDsSeverityLevel(item?.severity)} aria-label={item?.severity || '-'} />
+          <Box display={'flex'} flexDirection={'row'} alignItems={'space-between'} justifyContent={'flex-end'}>
+            <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} />
           </Box>
         ),
-        data: item?.severity,
       });
-      data.push({
-        component: <Text showAutoEllipsis value={item?.recommendation?.PkgID} />,
-        data: item?.recommendation?.PkgID,
-      });
-      data.push({
-        component: <Text value={item?.recommendation?.CweIDs?.join(',')} />,
-        data: item?.recommendation?.CweIDs?.join(','),
-      });
-      if (!props?.llmTableData?.length) {
-        data.push({ component: <Datetime value={item.created_at} /> });
+    }
+    return data;
+  };
 
-        data.push({
-          component: (
-            <Box display={'flex'} flexDirection={'row'} alignItems={'space-between'} justifyContent={'flex-end'}>
-              <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} />
-            </Box>
-          ),
-        });
+  const setTableData = (data) => {
+    setLoading(false);
+    const rawItems = (data?.recommendation || []).flatMap((item) => {
+      if (typeof item?.recommendation === 'string') {
+        const parsed = safeJSONParse(item.recommendation);
+        return parsed ? [{ ...item, recommendation: parsed }] : [];
       }
-
-      return data;
+      return [item];
     });
-    setKubernetesSecurity(k8sRecommendationData);
-    setKubernetesSecurityCount(data?.recommendation_aggregate?.count ?? k8sRecommendationData?.length);
+    const rows = rawItems.map(buildRow);
+    setKubernetesSecurity(rows);
+    setKubernetesSecurityCount(data?.recommendation_aggregate?.count ?? rows.length);
   };
 
   const getSecurityDetails = () => {

@@ -3,9 +3,11 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -49,8 +51,11 @@ type NBAgentRequest struct {
 	EnableQueryRefinement bool           `json:"enable_query_refinement"`
 	Mode                  string         `json:"mode,omitempty"`
 	RaisePR               bool           `json:"raise_pr,omitempty"`
-	EventId               string         `json:"event_id,omitempty"`
-	RecommendationId      string         `json:"recommendation_id,omitempty"`
+	// BaseDiff is an optional unified diff previously produced for this same
+	// fix; the fix pipeline verifies and adapts it instead of re-deriving.
+	BaseDiff         string `json:"base_diff,omitempty"`
+	EventId          string `json:"event_id,omitempty"`
+	RecommendationId string `json:"recommendation_id,omitempty"`
 	// Skills carries operator-authored skills mapped to the code agent, already
 	// rendered as a <skills> block by llm-server. code-analysis has no DB of its
 	// own, so skills are resolved upstream and forwarded here for prompt injection.
@@ -109,19 +114,59 @@ type OrchestratorAgent struct {
 
 	// fixVerifier runs deterministic harness-owned build verification (agent.harness_verify)
 	fixVerifier *FixVerifier
+
+	// fixerClient is the (possibly tiered) client the CodeFixer must use — kept on
+	// the struct because EnableToolTracking recreates the fixer after construction
+	// and would otherwise silently clobber the tier back to the run client.
+	fixerClient *llm.Client
+}
+
+// tierClient returns a client pinned to the configured per-role model, or the
+// run's client when no tier is configured. Tiering must never break an
+// analysis: on any failure to build the derived client it falls back to the
+// run client. Derived clients share usage with the run client so the analysis
+// totals (final response, billing) still cover every call.
+func tierClient(cfg *config.Config, runClient *llm.Client, model, role, tier string, logger *common.Logger) *llm.Client {
+	if model == "" || model == cfg.LLM.Model {
+		// The role resolves to the run model, so its calls really do run on the
+		// run client's tier — leave them stamped as such rather than claiming a
+		// tier that was never billed.
+		return runClient
+	}
+	derived, err := llm.NewClient(cfg.CloneWithLLMOverride(config.LLMOverride{Model: model}))
+	if err != nil {
+		logger.Log(common.EventStepFailure, "Agent model tier unavailable — falling back to run model", map[string]any{
+			"role": role, "model": model, "error": err.Error(),
+		})
+		return runClient
+	}
+	derived.ShareUsageWith(runClient)
+	derived.SetModelTier(tier)
+	logger.Log(common.EventAnalysisStart, "Agent model tier active", map[string]any{
+		"role": role, "model": model, "run_model": cfg.LLM.Model, "tier": tier,
+	})
+	return derived
 }
 
 func NewOrchestratorAgent(cfg *config.Config, llmClient *llm.Client, gitClient *git.GitClient, logger *common.Logger) *OrchestratorAgent {
 	workspaceDir := cfg.Analysis.WorkspaceDir
 
+	// Per-role model tiers: the specialist keeps the run's resolved model for
+	// reasoning; router/fixer/review are mechanical roles (exact instructions,
+	// no exploration) that don't need reasoning-tier pricing.
+	llmClient.SetModelTier(llm.ModelTierReasoning)
+	routerClient := tierClient(cfg, llmClient, cfg.Agent.ModelRouter, "router", llm.ModelTierRetrieval, logger)
+	fixerClient := tierClient(cfg, llmClient, cfg.Agent.ModelFixer, "fixer", llm.ModelTierRetrieval, logger)
+	reviewClient := tierClient(cfg, llmClient, cfg.Agent.ModelReview, "review", llm.ModelTierSummary, logger)
+
 	// Initialize specialist agents - all should work in the same workspace
 	// Note: Security queries are routed to ErrorRCAAgent which has all necessary tools
-	routerAgent := NewRouterAgent(llmClient, logger)
+	routerAgent := NewRouterAgent(routerClient, logger)
 	codeAgent := NewCodeAgent(cfg, llmClient, gitClient, logger, workspaceDir)
 	errorRCAAgent := NewErrorRCAAgent(cfg, llmClient, gitClient, logger, workspaceDir)
 	performanceDebuggerAgent := NewPerformanceDebuggerAgent(cfg, llmClient, gitClient, logger, workspaceDir)
-	codeFixerAgent := NewCodeFixerAgent(llmClient, logger, workspaceDir, cfg)
-	codeReviewAgent := NewCodeReviewAgent(cfg, llmClient, logger, workspaceDir)
+	codeFixerAgent := NewCodeFixerAgent(fixerClient, logger, workspaceDir, cfg)
+	codeReviewAgent := NewCodeReviewAgent(cfg, reviewClient, logger, workspaceDir)
 
 	return &OrchestratorAgent{
 		name:                     "orchestrator_agent",
@@ -138,6 +183,7 @@ func NewOrchestratorAgent(cfg *config.Config, llmClient *llm.Client, gitClient *
 		performanceDebuggerAgent: performanceDebuggerAgent,
 		codeFixerAgent:           codeFixerAgent,
 		codeReviewAgent:          codeReviewAgent,
+		fixerClient:              fixerClient,
 	}
 }
 
@@ -183,7 +229,17 @@ func (a *OrchestratorAgent) SetWorkspaceDir(workspaceDir string) {
 	a.codeAgent = NewCodeAgent(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir)
 	a.errorRCAAgent = NewErrorRCAAgent(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir)
 	a.performanceDebuggerAgent = NewPerformanceDebuggerAgent(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir)
-	a.codeFixerAgent = NewCodeFixerAgent(a.llmClient, a.logger, a.workspaceDir, a.config)
+	a.codeFixerAgent = NewCodeFixerAgent(a.currentFixerClient(), a.logger, a.workspaceDir, a.config)
+}
+
+// currentFixerClient returns the fixer's (possibly tiered) client for the agent
+// recreation sites — every recreation must use this, or the tier silently
+// reverts to the run client.
+func (a *OrchestratorAgent) currentFixerClient() *llm.Client {
+	if a.fixerClient != nil {
+		return a.fixerClient
+	}
+	return a.llmClient
 }
 
 func (a *OrchestratorAgent) GetNameAliases() []string {
@@ -210,6 +266,13 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 	// level. The ReAct planner naturally retries on tool errors, giving the
 	// LLM a chance to correct a malformed submission.
 	ctx = tools.WithMode(ctx, request.EffectiveMode())
+
+	// Thread the run's evidence trail alongside the mode so explore-mode
+	// submission can back an answer whose citations the model omitted with the
+	// files the tools actually read.
+	if a.toolTracker != nil {
+		ctx = tools.WithEvidence(ctx, a.toolTracker)
+	}
 
 	// 2. Call RouterAgent
 	routeName, err := a.routerAgent.Execute(ctx, sessionCtx)
@@ -354,6 +417,41 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 		return sanitizeExploreResponse(specialistResult), nil
 	}
 
+	// A fix-mode run that never got the repository on disk cannot have determined
+	// anything about its contents. The specialist abstains in that situation
+	// (requires_fix=false, caveats naming the access failure), and the branch
+	// below would stamp that abstention as a no_op — which llm-server renders as
+	// "the requested change is already present in the repository". That is the
+	// exact opposite of the truth, it marks the resolution Success in the UI, and
+	// it hides real credential/permission breakage indefinitely. Report the clone
+	// failure as the failure it is, with the git error attached, so the caller
+	// shows an actionable cause.
+	if reason, failed := a.repoCloneFailure(); failed {
+		a.reportProgress("Analysis failed — the repository could not be cloned.")
+		a.logger.Log(common.EventStepFailure, "Repository never cloned - reporting failure instead of no-op", map[string]any{
+			"reason":                  reason,
+			"specialist_requires_fix": requiresFix,
+			"raise_pr_requested":      request.RaisePR,
+		})
+		summary := "Repository could not be cloned, so no analysis of its contents was possible: " + reason
+		// `null` unmarshals without error into a nil map, and writing to a nil
+		// map panics — the specialist result is LLM output, so treat both the
+		// parse error and the nil result as "start from an empty envelope".
+		var resultData map[string]any
+		if err := json.Unmarshal([]byte(specialistResult), &resultData); err != nil || resultData == nil {
+			resultData = map[string]any{}
+		}
+		resultData["execution_status"] = ExecutionStatusFailed
+		resultData["execution_summary"] = summary
+		resultData["pr_creation_status"] = "skipped"
+		resultData["pr_creation_reason"] = summary
+		resultData["mode"] = mode
+		if modifiedJSON, err := json.Marshal(resultData); err == nil {
+			return string(modifiedJSON), nil
+		}
+		return "", fmt.Errorf("%s", summary)
+	}
+
 	if !requiresFix {
 		a.reportProgress("Analysis complete — no code fix required.")
 		a.logger.Log(common.EventStepComplete, "Skipping fixer agent and PR creation - requires_fix is false", map[string]any{
@@ -445,6 +543,13 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 		}
 	}
 
+	// A prior diff for this same fix (propose-mode rerun) goes to the fixer as
+	// an apply-and-adapt base — the specialist prompt carries it too, but the
+	// fixer needs the hunks verbatim to edit against.
+	if sessionCtx.BaseDiff != "" {
+		factsData["_base_diff"] = sessionCtx.BaseDiff
+	}
+
 	if filePath, ok := factsData["file_path"].(string); ok && filePath != "" {
 		a.reportProgress(fmt.Sprintf("Applying fix to %s...", filePath))
 	} else {
@@ -480,7 +585,16 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 		if shouldCreate {
 			a.reportProgress("Creating pull request...")
 			prInfo, err := a.createPullRequest(ctx, sessionCtx, mergedData)
-			if err != nil {
+			if errors.Is(err, errNoCommitsToPublish) {
+				// Nothing was actually committed, so there is no PR to open. That
+				// is the same terminal "already resolved" outcome as an empty
+				// diff, not a failure — report it as such so the caller does not
+				// re-dispatch.
+				a.reportProgress("Analysis complete — no code change to publish.")
+				mergedData["pr_creation_status"] = "skipped"
+				mergedData["pr_creation_reason"] = "No commits were produced on the fix branch — the change appears to be already present."
+				mergedData["execution_status"] = ExecutionStatusNoOp
+			} else if err != nil {
 				a.logger.Log(common.EventStepFailure, "Failed to create pull request", map[string]any{"error": err.Error()})
 				mergedData["pr_creation_status"] = "failed"
 				mergedData["pr_creation_reason"] = err.Error()
@@ -524,6 +638,11 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 
 	return string(mergedJSON), nil
 }
+
+// errNoCommitsToPublish signals that the fix branch carries no commits, so there
+// is nothing to open a PR for. A terminal no-op (the change is already present),
+// not a failure — the caller maps it to execution_status no_op.
+var errNoCommitsToPublish = errors.New("no commits on the fix branch")
 
 // fixOnlyResponseFields lists keys that only make sense when the orchestrator
 // has actually run the fixer / opened a PR. They are stripped from explore-mode
@@ -909,6 +1028,7 @@ func (a *OrchestratorAgent) createSessionContext(request NBAgentRequest) (*sessi
 		AccountID:        accountID,
 		BuildConfig:      buildConfig,
 		Mode:             request.EffectiveMode(),
+		BaseDiff:         request.BaseDiff,
 		SkillsContext:    request.Skills,
 		RunMemory:        planners.NewRunMemory(), // shared across all phases of this run; not persisted
 	}, nil
@@ -1040,6 +1160,25 @@ func (a *OrchestratorAgent) extractBuildVerificationResults(sinceStep int) map[s
 		"steps_run":      len(buildSteps),
 		"steps":          buildSteps,
 	}
+}
+
+// runGit executes a git command as an argv, never as a shell string, and returns its
+// combined output.
+//
+// The CLI tool hands its command to `sh -c` whenever it spots a shell metacharacter,
+// so any untrusted value interpolated into a command string is shell syntax waiting to
+// happen. A repository URL built from an LLM's chain-of-thought reached
+// `git push %s %s` that way and was word-split into stray refspecs and commands
+// (#35703). Passing repository URLs and branch names as arguments removes the shell
+// from the path entirely, and keeps the token-bearing push target out of the tool
+// tracker and the model's observation stream.
+func (a *OrchestratorAgent) runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	// Never block on an interactive credential prompt — fail instead.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 // extractCLIOutput extracts the stdout string from a CLITool or GHTool response,
@@ -1581,6 +1720,12 @@ func (a *OrchestratorAgent) executeFixAndReviewLoop(ctx context.Context, session
 // followup mode already emits this value; the standard fix flow now does too.
 const ExecutionStatusNoOp = "no_op"
 
+// ExecutionStatusFailed marks a run that could not do its job. Callers
+// (llm-server, then api-server's resolution bookkeeping) treat anything that is
+// neither "success" nor "no_op" as a failure and surface execution_summary as
+// the cause, so the summary must name what actually broke.
+const ExecutionStatusFailed = "failed"
+
 // shouldCreatePR determines if a PR should be created based on review results and changes.
 // Returns (shouldCreate, noChanges, reason): noChanges is true only for the empty-diff
 // case (the change is already present — a terminal no-op), false for review rejection.
@@ -1758,13 +1903,22 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		baseBranch = "main"
 	}
 
-	// Create and checkout new branch BEFORE committing
-	branchResult := cliTool.Execute(ctx, map[string]any{
-		"command":           fmt.Sprintf("git checkout -b %s", branchName),
-		"working_directory": actualRepoDir,
-	})
-	if branchResult.Status != "success" {
-		return nil, fmt.Errorf("failed to create branch: %s", branchResult.Error)
+	// Create and checkout new branch BEFORE committing. sanitizeBranchRef should already
+	// have made the name ref-safe; this is the backstop that keeps a name git would read
+	// as an option off the argv regardless of how it was generated.
+	if err := git.ValidateBranchName(branchName); err != nil {
+		return nil, fmt.Errorf("refusing to create a branch with an invalid name: %w", err)
+	}
+	// Remember exactly what the branch is cut from. Comparing against this is
+	// what makes the emptiness check below decisive — it needs no fetched base
+	// ref, so it works on the single-branch clones these runs use.
+	branchPointSHA := ""
+	if out, err := a.runGit(ctx, actualRepoDir, "rev-parse", "HEAD"); err == nil {
+		branchPointSHA = strings.TrimSpace(out)
+	}
+
+	if out, err := a.runGit(ctx, actualRepoDir, "checkout", "-b", branchName); err != nil {
+		return nil, fmt.Errorf("failed to create branch: %s: %w", strings.TrimSpace(out), err)
 	}
 
 	// Now commit the changes to the new branch with formatted title
@@ -1781,6 +1935,29 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"branch_name": branchName,
 		"commits":     logResult.Result,
 	})
+
+	// Gate on that check instead of only logging it. A branch with nothing on it
+	// used to be pushed anyway, and the provider rejected the PR with
+	// "Head sha can't be blank, Base sha can't be blank, No commits" — an opaque
+	// API error for what is really a terminal no-op. Recurring since at least
+	// April. The reported git_diff is not sufficient evidence on its own: it
+	// comes from the fixer's own report, which can disagree with the tree that
+	// was actually committed.
+	//
+	// Fails open: if the count cannot be established, behave exactly as before
+	// and let the push proceed, so this can only turn a guaranteed failure into
+	// an honest no-op, never block a valid PR.
+	if branchPointSHA != "" {
+		if out, err := a.runGit(ctx, actualRepoDir, "rev-list", "--count", branchPointSHA+"..HEAD"); err == nil {
+			if strings.TrimSpace(out) == "0" {
+				a.logger.Log(common.EventStepComplete, "No commits on the fix branch — skipping PR creation", map[string]any{
+					"branch_name":  branchName,
+					"branch_point": branchPointSHA,
+				})
+				return nil, errNoCommitsToPublish
+			}
+		}
+	}
 
 	// Determine the push target. The CLI tool only injects a token for `gh` commands,
 	// never for plain `git push`, and the clone-time origin URL is not guaranteed to
@@ -1799,16 +1976,22 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 			repoURL = sessionCtx.RepoContext.URL
 		}
 		if repoURL == "" {
-			originResult := cliTool.Execute(ctx, map[string]any{
-				"command":           "git remote get-url origin",
-				"working_directory": actualRepoDir,
-			})
-			if originResult.Status == "success" {
-				repoURL = git.StripURLUserinfo(strings.TrimSpace(a.extractCLIOutput(originResult)))
+			if out, err := a.runGit(ctx, actualRepoDir, "remote", "get-url", "origin"); err == nil {
+				repoURL = git.StripURLUserinfo(strings.TrimSpace(out))
 			}
 		}
 		if repoURL != "" {
-			pushTarget = git.InjectTokenIntoURL(repoURL, sessionCtx.Credentials.Token)
+			// Fails closed on a malformed URL. The repo URL can originate in LLM
+			// output, and an unvalidated one used to reach this command line (#35703).
+			authenticated, err := git.InjectTokenIntoURL(repoURL, sessionCtx.Credentials.Token)
+			if err != nil {
+				a.logger.Log(common.EventStepFailure, "Refusing to push to an invalid repository URL", map[string]any{
+					"branch_name": branchName,
+					"error":       err.Error(),
+				})
+				return nil, fmt.Errorf("refusing to push to an invalid repository URL: %w", err)
+			}
+			pushTarget = authenticated
 		}
 	}
 
@@ -1820,25 +2003,22 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"workspace_dir": a.workspaceDir,
 	})
 
-	pushResult := cliTool.Execute(ctx, map[string]any{
-		"command":           fmt.Sprintf("git push %s %s", pushTarget, branchName),
-		"working_directory": actualRepoDir,
-	})
+	pushOutput, pushErr := a.runGit(ctx, actualRepoDir, "push", pushTarget, branchName)
+	// The output can quote the push target, which carries the token — redact before
+	// it reaches a log line or an error returned to the caller.
+	safePushOutput := git.RedactURLCredentials(strings.TrimSpace(pushOutput))
 
 	a.logger.Log(common.EventStepComplete, "Push operation completed", map[string]any{
-		"status":      pushResult.Status,
-		"error":       pushResult.Error,
-		"observation": pushResult.Observation,
-		"result_type": fmt.Sprintf("%T", pushResult.Result),
-		"result_data": pushResult.Result,
+		"succeeded": pushErr == nil,
+		"output":    safePushOutput,
 	})
 
-	if pushResult.Status != "success" {
+	if pushErr != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to push branch", map[string]any{
 			"branch_name": branchName,
-			"error":       pushResult.Error,
+			"error":       safePushOutput,
 		})
-		return nil, fmt.Errorf("failed to push branch: %s", pushResult.Error)
+		return nil, fmt.Errorf("failed to push branch: %s: %w", safePushOutput, pushErr)
 	}
 
 	a.logger.Log(common.EventStepComplete, "Branch pushed successfully", map[string]any{
@@ -2933,6 +3113,37 @@ func (a *OrchestratorAgent) commitChanges(ctx context.Context, title, descriptio
 	return nil
 }
 
+// repoCloneFailure reports whether this run attempted to clone the repository and
+// never succeeded, along with the last error git returned. A run that never
+// called repo_clone at all (a local-path analysis, or a pre-seeded workspace) is
+// not a failure — only an attempted-and-failed clone is.
+func (a *OrchestratorAgent) repoCloneFailure() (string, bool) {
+	if a.toolTracker == nil {
+		return "", false
+	}
+	attempted := false
+	reason := ""
+	for _, inv := range a.toolTracker.GetInvocations() {
+		if inv.ToolName != "repo_clone" {
+			continue
+		}
+		if inv.Status == "success" {
+			return "", false
+		}
+		attempted = true
+		if inv.Error != "" {
+			reason = inv.Error
+		}
+	}
+	if !attempted {
+		return "", false
+	}
+	if reason == "" {
+		reason = "no successful repo_clone invocation"
+	}
+	return reason, true
+}
+
 // updateWorkingDirectoryFromToolInvocations checks tool tracker for repo_clone invocations
 // and updates the working directory to the cloned repository path
 func (a *OrchestratorAgent) updateWorkingDirectoryFromToolInvocations() {
@@ -3077,7 +3288,8 @@ func (a *OrchestratorAgent) EnableToolTracking(tracker *common.ToolInvocationTra
 	a.codeAgent = NewCodeAgentWithTracker(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir, tracker)
 	a.errorRCAAgent = NewErrorRCAAgentWithTracker(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir, tracker)
 	a.performanceDebuggerAgent = NewPerformanceDebuggerAgentWithTracker(a.config, a.llmClient, a.gitClient, a.logger, a.workspaceDir, tracker)
-	a.codeFixerAgent = NewCodeFixerAgentWithTracker(a.llmClient, a.logger, a.workspaceDir, a.config, tracker)
+	// The fixer keeps its tiered client across recreation.
+	a.codeFixerAgent = NewCodeFixerAgentWithTracker(a.currentFixerClient(), a.logger, a.workspaceDir, a.config, tracker)
 
 	// Set tool tracker on CodeAgent
 	if a.codeAgent != nil {

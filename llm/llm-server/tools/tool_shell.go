@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"regexp"
 	"strings"
 
 	"github.com/google/shlex"
@@ -59,7 +59,9 @@ func (m ShellTool) Description() string {
 
 	**Stateless shell:** Each call is a fresh ` + "`sh -c`" + `, so ` + "`cd`" + ` and unexported variables do NOT persist. Files do (they live on disk). For env vars that must survive across calls, append to ` + "`.nb_profile`" + ` (` + "`echo 'export FOO=bar' >> .nb_profile`" + `).
 
-	**Credentials auto-injected:** AWS / GCP / Azure credentials and ` + "`GITHUB_TOKEN`" + ` are injected automatically when the command invokes the corresponding CLI. You do NOT need to plan an ` + "`aws configure`, `gcloud auth`, or `gh auth login`" + ` step.
+	**Credentials auto-injected:** AWS / GCP / Azure credentials, ` + "`GITHUB_TOKEN`" + ` and ` + "`GITLAB_TOKEN`" + ` are injected automatically when the command invokes the corresponding CLI. You do NOT need to plan an ` + "`aws configure`, `gcloud auth`, `gh auth login`, or `glab auth login`" + ` step.
+
+	**Large Data Redirection:** Identify large output by command intent (log dumps, metric time-series, multi-resource JSON, or queries expecting >50 records). Redirect stdout to a relative workspace file (` + "`command > data.json`" + `). Then inspect using ` + "`jq`, `grep`, `awk`, or `head` (`jq .key data.json | head -n 50`)" + ` to keep context usage bounded.
 
 	**Empty-match is success.** When grep-family searchers (` + "`grep` / `egrep` / `fgrep` / `rg` / `ack` / `ag`" + `) find no matches, the observation comes back as ` + "`{\"stdout\":\"\",\"no_matches\":true}`" + ` with a Success status — the command ran fine and there is nothing to find. Do NOT retry the same command — either widen the pattern or conclude that no match exists. This semantic also applies when the searcher is the last segment of a pipeline (` + "`kubectl get pods | grep ready`" + `). It does NOT apply to ` + "`find`" + ` (whose exit 1 is a real path / permission error) or plain ` + "`jq`" + ` (which exits 0 and returns ` + "`null`" + ` on missing keys).
 
@@ -141,13 +143,6 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		)
 	}
 
-	if !config.Config.LlmServerShellToolEnabled {
-		return core.NBToolResponse{
-			Data:   "Shell tool is only available when shell tool is enabled.",
-			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("shell tool is disabled")
-	}
-
 	// Handle optional work_dir (sanitized and escaped to prevent command injection)
 	if wd, ok := input.Arguments["work_dir"].(string); ok && wd != "" {
 		sanitizedWd := common.SanitizePath(wd)
@@ -165,28 +160,36 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	// This allows the shell tool to run cloud CLI commands (aws, gcloud, az) without requiring
 	// the planner to route through specialized cloud tools.
 	env := map[string]string{}
-	if config.Config.LlmServerWorkspaceEnabled {
-		cloudAuth, err := m.buildCloudAuthEnv(nbRequestContext, command)
-		if err != nil {
-			// Non-fatal: log the warning and proceed without cloud auth.
-			// The account may not be a cloud account (e.g. K8s-only), or creds may be missing.
-			slog.Warn("shell: cloud auth injection skipped", "account_id", m.AccountId, "error", err)
-		} else if cloudAuth != nil {
-			for k, v := range cloudAuth.Env {
-				env[k] = v
-			}
-			command = WrapCommandWithBestEffortAuth(command, cloudAuth)
+	cloudAuth, err := m.buildCloudAuthEnv(nbRequestContext, command)
+	if err != nil {
+		// Non-fatal: log the warning and proceed without cloud auth.
+		// The account may not be a cloud account (e.g. K8s-only), or creds may be missing.
+		slog.Warn("shell: cloud auth injection skipped", "account_id", m.AccountId, "error", err)
+	} else if cloudAuth != nil {
+		for k, v := range cloudAuth.Env {
+			env[k] = v
 		}
+		command = WrapCommandWithBestEffortAuth(command, cloudAuth)
+	}
 
-		// Inject GITHUB_TOKEN when the command invokes `gh`. Same shape as the
-		// cloud cross-account path: hint via QueryConfig.ToolConfigs first, then
-		// fall back to the sole active github integration in the tenant.
-		if ghAuth, err := m.buildGithubAuthEnv(nbRequestContext, command); err != nil {
-			slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
-		} else if ghAuth != nil {
-			for k, v := range ghAuth.Env {
-				env[k] = v
-			}
+	// Inject GITHUB_TOKEN when the command invokes `gh`. Same shape as the
+	// cloud cross-account path: hint via QueryConfig.ToolConfigs first, then
+	// fall back to the sole active github integration in the tenant.
+	if ghAuth, err := m.buildGithubAuthEnv(nbRequestContext, command); err != nil {
+		slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
+	} else if ghAuth != nil {
+		for k, v := range ghAuth.Env {
+			env[k] = v
+		}
+	}
+
+	// Same shape for `glab`: GITLAB_TOKEN, plus GITLAB_HOST when the tenant
+	// runs a self-hosted GitLab.
+	if glAuth, err := m.buildGitlabAuthEnv(nbRequestContext, command); err != nil {
+		slog.Warn("shell: gitlab auth injection skipped", "account_id", m.AccountId, "error", err)
+	} else if glAuth != nil {
+		for k, v := range glAuth.Env {
+			env[k] = v
 		}
 	}
 
@@ -202,7 +205,16 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		// grep/find/jq/etc exit with status 1 when they ran successfully but found
 		// no matches. That is normal Unix semantics, not a tool failure — surface
 		// it as success-with-no-matches so the LLM doesn't retry the same command.
-		if isNoMatchExit(err, originalCommand) {
+		//
+		// Exception: a piped command whose FIRST segment fails on a missing
+		// dynamic-workspace file (e.g. `grep A logs_kubectl_<nano>.txt | grep B`)
+		// also exits 1 here — the tail segment "succeeds" with zero matches
+		// because it never received real input, silently masking the file-not-
+		// found error as a benign no-match. Route that case to the error path
+		// below instead, so the dynamic-file hint in shellErrorHint actually
+		// fires (this is the dominant real-world shape of the fetch_logs
+		// file_ref race — Call A/Call B are piped by design, see agent_log.go).
+		if isNoMatchExit(err, originalCommand) && !looksLikeMissingDynamicFile(response) {
 			nbRequestContext.Ctx.GetLogger().Info("shell: reclassifying exit 1 as no-matches",
 				"command_preview", cmdLog, "first_token", firstShellToken(strings.ToLower(originalCommand)))
 			return successResponseNoMatches(nbRequestContext, response)
@@ -387,6 +399,34 @@ func wrapShellError(rawError, originalCommand string) string {
 	return wrapCliError(rawError, shellErrorHint(rawError, originalCommand))
 }
 
+// dynamicWorkspaceFilePattern matches the names tools and the system write into
+// the per-conversation workspace: fetch_logs / metrics / traces tool output
+// (logs_/metrics_/traces_…) and offloaded investigation artifacts written by the
+// event-analyzer and planner guardrails (evidence_logs_/event_labels_/
+// event_investigation_context_/investigation_query_…). Their exact names are
+// assigned at write time — a unix timestamp for tool output, an event/message
+// UUID for offloaded artifacts — so a missing file of this shape is almost always
+// a guessed or reconstructed name, not a stale cross-conversation file. The model
+// should `ls` the workspace rather than invent filenames.
+//
+// The label/suffix segment is intentionally permissive ([a-zA-Z0-9._-]+, any
+// length, no fixed timestamp width): in production the model invents names with
+// short unix-second timestamps, hyphens, and pod-name segments that a strict
+// <unix-nano> pattern missed entirely, which let a piped `grep <guess> | head`
+// be reclassified as a benign no-match instead of surfacing the file-not-found
+// hint (see looksLikeMissingDynamicFile / shellErrorHint).
+var dynamicWorkspaceFilePattern = regexp.MustCompile(`\b(?:logs|metrics|traces|evidence_logs|event_labels|event_investigation_context|investigation_query)_[a-zA-Z0-9._-]+\.(?:txt|json)\b`)
+
+// looksLikeMissingDynamicFile reports whether response carries a "no such
+// file or directory" signal for a dynamic-workspace-shaped filename. In a
+// piped command, an upstream segment failing this way still lets the tail
+// segment "succeed" with zero matches (empty input, no match), so the
+// overall exit code alone can't distinguish "genuinely no matches" from
+// "the file never existed" — this checks the captured output text instead.
+func looksLikeMissingDynamicFile(response string) bool {
+	return strings.Contains(strings.ToLower(response), "no such file or directory") && dynamicWorkspaceFilePattern.MatchString(response)
+}
+
 func shellErrorHint(rawError, originalCommand string) string {
 	lower := strings.ToLower(rawError)
 	switch {
@@ -394,10 +434,17 @@ func shellErrorHint(rawError, originalCommand string) string {
 		strings.Contains(lower, "syntax error: unterminated"):
 		return "Your command has unbalanced quotes. Common cause: nested escaping (\\\" inside a JSON-in-shell value). Try simpler quoting, write the payload to a /tmp/ file with cat <<'EOF', or split the command into two steps."
 	case strings.Contains(lower, "no such file or directory") && firstTokenIsFileReader(originalCommand):
-		return "File not found. The workspace pod is per-account and persists across turns in the same conversation, but files created in a different conversation will NOT exist here. Recreate the file with the upstream command (e.g. `kubectl get ... > /tmp/...`) before grepping/catting it."
+		// One generic hint for every missing file-read: the advice is always
+		// "list the directory, do not guess". We deliberately do NOT branch on the
+		// filename shape here — the fix for a missing file is the same whether it
+		// was a reconstructed name, a system-offloaded artifact, a tool-output
+		// race, or a cross-conversation file. (dynamicWorkspaceFilePattern is only
+		// used for the harder classification job in looksLikeMissingDynamicFile,
+		// where combined stdout+stderr is genuinely ambiguous.)
+		return "File not found. Run `ls -la` first to see what is actually in the workspace before grepping/catting — do NOT guess or reconstruct filenames. Files written by tools or the system (fetch_logs/metrics/traces output, or offloaded evidence/query/label files) are named at write time; if you requested a producing tool in this SAME batch, wait for it to finish and use its file_ref in a later iteration. The workspace is per-account and persists across turns in this conversation, but files created in a different conversation will NOT exist here."
 	case strings.Contains(lower, "command not found"),
 		looksLikeShellNotFound(rawError):
-		return "Command not found in the workspace pod. Available CLIs include kubectl, aws, gcloud, az, gh, helm, jq, curl, python3. If a specialized *_execute tool exists for this CLI (kubectl_execute, aws_execute, gcloud_execute, azure_execute, github_execute), prefer that tool."
+		return "Command not found in the workspace pod. Available CLIs include kubectl, aws, gcloud, az, gh, glab, helm, jq, curl, python3. If a specialized *_execute tool exists for this CLI (kubectl_execute, aws_execute, gcloud_execute, azure_execute, github_execute, gitlab_execute), prefer that tool."
 	}
 	return ""
 }
@@ -681,11 +728,11 @@ func resolveSoleAccount(sc *security.SecurityContext, provider string) (string, 
 	return ids[0], nil
 }
 
-// detectGithubCLI returns true if the command invokes the `gh` CLI as a
-// distinct token (i.e. not a substring of an unrelated word like `ghost`).
-func detectGithubCLI(command string) bool {
+// detectCLIToken returns true if the command invokes `kw` as a distinct token
+// (i.e. not a substring of an unrelated word like `ghost` for `gh`).
+func detectCLIToken(command, kw string) bool {
 	lowerCmd := strings.ToLower(command)
-	if !strings.Contains(lowerCmd, "gh") {
+	if !strings.Contains(lowerCmd, kw) {
 		return false
 	}
 	tokens, err := shlex.Split(command)
@@ -694,7 +741,6 @@ func detectGithubCLI(command string) bool {
 	}
 	for _, token := range tokens {
 		lowerToken := strings.ToLower(token)
-		const kw = "gh"
 		if strings.HasPrefix(lowerToken, kw) {
 			if len(lowerToken) == len(kw) || !isAlphaNum(lowerToken[len(kw)]) {
 				return true
@@ -702,6 +748,55 @@ func detectGithubCLI(command string) bool {
 		}
 	}
 	return false
+}
+
+// detectGithubCLI returns true if the command invokes the `gh` CLI as a
+// distinct token (i.e. not a substring of an unrelated word like `ghost`).
+func detectGithubCLI(command string) bool { return detectCLIToken(command, "gh") }
+
+// detectGitlabCLI returns true if the command invokes the `glab` CLI as a
+// distinct token. No overlap with detectGithubCLI: `glab` does not start with
+// `gh`, so a glab command never trips the github matcher and vice versa.
+func detectGitlabCLI(command string) bool { return detectCLIToken(command, "glab") }
+
+// resolveScmToolConfig picks the tool config to use for credential injection:
+// the planner-supplied hint when it names one, otherwise the tenant's sole
+// config. Returns (nil, nil) when nothing usable exists or the choice would be
+// ambiguous — injection is skipped rather than guessed at.
+func (m ShellTool) resolveScmToolConfig(nbRequestContext core.NbToolContext, toolName string) (*core.ToolConfig, error) {
+	if m.AccountId == "" {
+		return nil, nil
+	}
+
+	scmTool, ok := core.GetNBTool(m.AccountId, toolName)
+	if !ok {
+		return nil, nil
+	}
+
+	configs, err := core.ListToolConfigs(nbRequestContext.Ctx, m.AccountId, scmTool)
+	if err != nil {
+		return nil, fmt.Errorf("shell: %s tool config lookup failed: %w", toolName, err)
+	}
+	if len(configs) == 0 {
+		return nil, nil
+	}
+
+	// Strategy 1: planner-supplied hint.
+	if hint := nbRequestContext.QueryConfig.ToolConfigs[toolName]; hint != "" {
+		for i := range configs {
+			if configs[i].Name == hint {
+				return &configs[i], nil
+			}
+		}
+	}
+
+	// Strategy 2: sole config in the tenant.
+	if len(configs) != 1 {
+		slog.Info("shell: multiple scm configs, skipping injection (no hint)",
+			"account_id", m.AccountId, "tool", toolName, "count", len(configs))
+		return nil, nil
+	}
+	return &configs[0], nil
 }
 
 // buildGithubAuthEnv resolves the github tool config available to this tenant
@@ -712,45 +807,31 @@ func (m ShellTool) buildGithubAuthEnv(nbRequestContext core.NbToolContext, comma
 	if !detectGithubCLI(command) {
 		return nil, nil
 	}
-	if m.AccountId == "" {
-		return nil, nil
-	}
 
-	githubTool, ok := core.GetNBTool(m.AccountId, ToolExecuteGithubCliCommand)
-	if !ok {
-		return nil, nil
-	}
-
-	configs, err := core.ListToolConfigs(nbRequestContext.Ctx, m.AccountId, githubTool)
-	if err != nil {
-		return nil, fmt.Errorf("shell: github tool config lookup failed: %w", err)
-	}
-	if len(configs) == 0 {
-		return nil, nil
-	}
-
-	// Strategy 1: planner-supplied hint.
-	var chosen *core.ToolConfig
-	if hint := nbRequestContext.QueryConfig.ToolConfigs[ToolExecuteGithubCliCommand]; hint != "" {
-		for i := range configs {
-			if configs[i].Name == hint {
-				chosen = &configs[i]
-				break
-			}
-		}
-	}
-
-	// Strategy 2: sole config in the tenant.
-	if chosen == nil {
-		if len(configs) != 1 {
-			slog.Info("shell: multiple github configs, skipping injection (no hint)",
-				"account_id", m.AccountId, "count", len(configs))
-			return nil, nil
-		}
-		chosen = &configs[0]
+	chosen, err := m.resolveScmToolConfig(nbRequestContext, ToolExecuteGithubCliCommand)
+	if err != nil || chosen == nil {
+		return nil, err
 	}
 
 	return BuildGithubAuth(nbRequestContext.Ctx.GetContext(), *chosen)
+}
+
+// buildGitlabAuthEnv resolves the gitlab tool config available to this tenant
+// and returns the env (GITLAB_TOKEN, plus GITLAB_HOST for self-hosted) needed to
+// run `glab` commands. Returns (nil, nil) when the command isn't a `glab`
+// invocation or no usable config exists. Non-`glab` shell commands incur only
+// the lightweight detect step.
+func (m ShellTool) buildGitlabAuthEnv(nbRequestContext core.NbToolContext, command string) (*CloudAuthResult, error) {
+	if !detectGitlabCLI(command) {
+		return nil, nil
+	}
+
+	chosen, err := m.resolveScmToolConfig(nbRequestContext, ToolExecuteGitlabCliCommand)
+	if err != nil || chosen == nil {
+		return nil, err
+	}
+
+	return BuildGitlabAuth(*chosen)
 }
 
 // buildAuthForAccount builds cloud auth for a specific account ID.

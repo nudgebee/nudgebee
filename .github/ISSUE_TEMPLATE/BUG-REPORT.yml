@@ -1,155 +1,80 @@
 name: "🐛 Bug Report"
-description: Report a bug or unexpected behavior.
+description: Create a new ticket for a bug.
 title: "🐛 [BUG] - <title>"
-labels: ["type:bug", "status:needs-triage"]
+labels: [
+  "bug"
+]
 body:
-  - type: checkboxes
-    id: preflight
-    attributes:
-      label: Pre-flight checklist
-      options:
-        - label: I've searched existing issues and didn't find a duplicate.
-        - label: I've tried reproducing on the latest `main` (where possible).
-
   - type: dropdown
-    id: components
+    id: environment
     attributes:
-      label: Affected component(s)
-      description: Which part of the system is this about? Pick all that apply.
-      multiple: true
+      label: "Environment"
+      description: Where was this seen? Pick the highest environment it reproduces in.
       options:
-        - app (UI)
-        - api-server
-        - llm-server
-        - ml-k8s-server
-        - notifications-server
-        - ticket-server
-        - runbook-server
-        - collector-server
-        - code-analysis
-        - rag-server
-        - relay-server
-        - services-server
-        - workflow-server
-        - infra / deploy
-        - docs
-        - other / unsure
+        - Production
+        - QA / Test
+        - Dev
+        - Local only
+        - Not sure
     validations:
-      required: false
-
-  - type: input
-    id: version
-    attributes:
-      label: Version / commit
-      description: Release tag, branch name, or commit SHA you're running. Helps a lot — please fill in if you can.
-      placeholder: e.g. v0.1.2, main@a1b2c3d
-    validations:
-      required: false
-
+      required: true
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: A clear description of what's wrong.
-      placeholder: Brief description of the bug.
+      label: "Description"
+      description: Please enter an explicit description of your issue
+      placeholder: Short and explicit description of your incident...
     validations:
       required: true
-
   - type: textarea
-    id: expected
+    id: impact
     attributes:
-      label: Expected behavior
-      description: What did you expect to happen?
+      label: "Impact"
+      description: Who is affected, how badly, and since when? This is the main input to triage priority.
+      placeholder: ex. All users on tenant X since the 12 Aug deploy; blocks cost reporting, no workaround.
     validations:
       required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual behavior
-      description: What actually happened?
-    validations:
-      required: true
-
-  - type: textarea
-    id: reprod
-    attributes:
-      label: Reproduction steps
-      description: Steps to reproduce the issue.
-      value: |
-        1. Go to '...'
-        2. Click on '...'
-        3. Scroll down to '...'
-        4. See error
-    validations:
-      required: true
-
-  - type: dropdown
-    id: frequency
-    attributes:
-      label: Frequency
-      description: How often does this happen?
-      options:
-        - Always
-        - Sometimes
-        - Once
-        - Unknown
-    validations:
-      required: false
-
   - type: input
     id: reprod-url
     attributes:
-      label: Reproduction URL
-      description: If you have a minimal repo or gist that reproduces the issue, link it here.
-      placeholder: ex. https://github.com/USERNAME/REPO-NAME
+      label: "Link"
+      description: Link to the affected page, resource, conversation or dashboard — whatever gets a reader to the problem fastest.
+      placeholder: ex. https://app.nudgebee.com/kubernetes/details/...
     validations:
       required: false
-
+  - type: textarea
+    id: reprod
+    attributes:
+      label: "Reproduction steps"
+      description: Please enter an explicit description of your issue
+      value: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+      render: bash
+    validations:
+      required: true
   - type: textarea
     id: screenshot
     attributes:
-      label: Screenshots
-      description: If applicable, add screenshots to help explain.
+      label: "Screenshots"
+      description: If applicable, paste or drag in screenshots to help explain your problem.
     validations:
       required: false
-
   - type: textarea
     id: logs
     attributes:
-      label: Logs
-      description: Relevant log output. Auto-formatted as code, no need for backticks.
+      label: "Logs"
+      description: Please copy and paste any relevant log output. This will be automatically formatted into code, so no need for backticks.
       render: bash
     validations:
       required: false
-
-  - type: dropdown
-    id: browsers
+  - type: input
+    id: client
     attributes:
-      label: Browsers (UI only)
-      description: Which browsers did you see this on? Skip for backend bugs.
-      multiple: true
-      options:
-        - Firefox
-        - Chrome
-        - Safari
-        - Microsoft Edge
-        - Opera
-        - Other
-        - Not applicable
-    validations:
-      required: false
-
-  - type: dropdown
-    id: os
-    attributes:
-      label: OS
-      description: What operating system are you running on?
-      multiple: true
-      options:
-        - Linux
-        - macOS
-        - Windows
-        - Other
+      label: "Client details"
+      description: Only for UI bugs where the browser or OS is actually relevant. Leave blank otherwise.
+      placeholder: ex. Chrome 128 / macOS
     validations:
       required: false

@@ -16,8 +16,11 @@ import (
 
 func TestResolvePath(t *testing.T) {
 	// Setup configuration with a mock workspace directory
-	workspaceDir := "/tmp/code-analysis"
-	execDir := "/tmp/code-analysis/exec_workspaces"
+	workspaceDir := t.TempDir()
+	execDir := filepath.Join(workspaceDir, "exec_workspaces")
+	if err := os.MkdirAll(filepath.Join(execDir, "conv123"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &config.Config{
 		Analysis: config.AnalysisConfig{
@@ -39,20 +42,20 @@ func TestResolvePath(t *testing.T) {
 		{
 			name:         "Simple relative path",
 			inputPath:    "src/main.go",
-			expectedPath: "/tmp/code-analysis/src/main.go",
+			expectedPath: filepath.Join(workspaceDir, "src/main.go"),
 			expectError:  false,
 		},
 		{
 			name:         "Root relative path",
 			inputPath:    "./src/main.go",
-			expectedPath: "/tmp/code-analysis/src/main.go",
+			expectedPath: filepath.Join(workspaceDir, "src/main.go"),
 			expectError:  false,
 		},
 		{
 			name:           "Conversation scoped path",
 			inputPath:      "out.txt",
 			conversationID: "conv123",
-			expectedPath:   "/tmp/code-analysis/exec_workspaces/conv123/out.txt",
+			expectedPath:   filepath.Join(execDir, "conv123/out.txt"),
 			expectError:    false,
 		},
 		{
@@ -85,7 +88,7 @@ func TestResolvePath(t *testing.T) {
 		{
 			name:         "Workspace root",
 			inputPath:    ".",
-			expectedPath: "/tmp/code-analysis",
+			expectedPath: workspaceDir,
 			expectError:  false,
 		},
 	}

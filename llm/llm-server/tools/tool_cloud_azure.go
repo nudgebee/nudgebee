@@ -2,9 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"nudgebee/llm/cloud"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -19,6 +16,25 @@ func init() {
 	core.RegisterNBToolFactory(ToolExecuteAzureCliCommand, func(accountId string) (core.NBTool, error) {
 		return AzureCliTool{}, nil
 	})
+	// Phase 3d (#32503): the retired AzureAgent used the short handle "azure".
+	// Preserve resolvability for stored delegate_agent(tools=["azure"]) calls.
+	core.RegisterNBToolAlias("azure", ToolExecuteAzureCliCommand)
+}
+
+// ToolPrompt implements core.NBToolPromptProvider. Delegate-context-only —
+// fires when a sub-agent reaches this tool via delegate_agent(tools=[...]),
+// where the azure_orchestrator's `azure_lean.yaml` prompt is NOT loaded.
+// Deliberately slim: safety-critical + easy-to-confuse `az` subcommand
+// gotchas only. Orchestrator prompt owns investigation methodology.
+func (t AzureCliTool) ToolPrompt() []string {
+	return []string{
+		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs, IPs, or names — empty CLI results mean 'not found'.",
+		"**RBAC safety:** NEVER attempt to modify your own role assignments or permissions. `az role assignment create`, `az ad app permission grant` for self are OFF LIMITS. Report AuthorizationFailed / 403 as a finding: state which command failed and which role is required on which scope.",
+		"**Monitoring disambiguation:** `az monitor metrics list` = numeric time-series (CPU, DTU, latency). `az monitor activity-log list` = control-plane audit events (who did what). `az monitor metrics alert list` = configured alert rules. Not interchangeable. Never install extensions to list alerts — the built-in works.",
+		"**Subcommand discipline:** When unsure of a subcommand, run `az <service> --help` ONCE. Do NOT fall back to `az resource list` or `az account list` as a substitute for a specific service command.",
+		"**Cost/billing:** Use `az consumption usage list` (built-in, in preview but reliable) with `--query` JMESPath. Do NOT use `az costmanagement` (requires extension). Do NOT attempt `az extension add` — if a command needs an unavailable extension, report and suggest an alternative.",
+		"**OS-aware VM run-command:** Before `az vm run-command invoke`: (1) check power state — do not attempt on a deallocated VM. (2) verify VM agent is Ready. (3) detect OS via `az vm show --query storageProfile.osDisk.osType -o tsv`. Linux → RunShellScript. Windows → RunPowerShellScript. Never add `--query` / `-o` flags to `run-command invoke` — you need the full [stdout] and [stderr] visible.",
+	}
 }
 
 type AzureCliTool struct{}
@@ -79,10 +95,6 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	command = strings.ReplaceAll(command, "\\\r\n", " ")
 	command = strings.ReplaceAll(command, "\\\n", " ")
 
-	if !strings.HasPrefix(command, "az") {
-		command = "az " + command // Ensure "az" prefix
-	}
-
 	// Denylist auth and account state-changing commands
 	args, err := shlex.Split(command)
 	if err != nil {
@@ -119,91 +131,41 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		return core.NBToolResponse{}, fmt.Errorf("unable to identify accountId - %s, please configure", t.Name())
 	}
 
-	if config.Config.LlmServerWorkspaceEnabled {
-		creds, err := GetCloudAccountCredentials(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		auth, err := BuildAzureAuth(creds)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-
-		// Auto-install costmanagement extension if needed
-		if strings.Contains(command, "costmanagement") {
-			auth.CommandPrefix += " && az extension add --name costmanagement > /dev/null "
-		}
-
-		auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
-		fullCommand := WrapCommandWithAuth(command, auth)
-
-		wm := workspace.NewWorkspaceManager()
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, fullCommand, auth.Env)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("azure: unable to execute shell script", "error", err.Error(), "command", fullCommand)
-			if response == "" {
-				response = err.Error()
-			}
-			return core.NBToolResponse{
-				Data:   cliRecoveryEnvelope(response, "", "az", "az <command> --help"),
-				Status: core.NBToolResponseStatusError,
-			}, err
-		}
-
-		return core.NBToolResponse{
-			Data:   response,
-			Type:   core.NBToolResponseTypeText,
-			Status: core.NBToolResponseStatusSuccess,
-		}, nil
-	}
-
-	tenant := nbRequestContext.Ctx.GetSecurityContext().GetTenantId()
-	if tenant == "" {
-		tenant1, err := security.GetTenantIdFromAccountId(accountId)
-		if err != nil {
-			return core.NBToolResponse{}, err
-		}
-		tenant = tenant1
-	}
-
-	response, err := cloud.Execute(cloud.CloudExecuteCliCommandRequest{
-		AccountID: accountId,
-		TenantID:  tenant,
-		UserID:    nbRequestContext.Ctx.GetSecurityContext().GetUserId(),
-		Command:   command,
-	})
+	creds, err := GetCloudAccountCredentials(accountId)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("azure-cli: command execution failed", "error", err.Error(), "command", command)
 		return core.NBToolResponse{}, err
 	}
 
-	data := ""
-	if dataRaw := response["data"]; dataRaw != nil {
-		if dataStr, ok := dataRaw.(string); ok {
-			data = dataStr
-		}
-	} else if errorsRaw := response["errors"]; errorsRaw != nil {
-		if errorsArr, ok := errorsRaw.([]any); ok && len(errorsArr) > 0 {
-			if errorMap, ok := errorsArr[0].(map[string]any); ok {
-				if msg, ok := errorMap["message"].(string); ok {
-					data = msg
-				}
-			}
-		}
+	auth, err := BuildAzureAuth(creds)
+	if err != nil {
+		return core.NBToolResponse{}, err
 	}
 
-	if data == "" {
-		dataArr, err := common.MarshalJson(response)
-		if err != nil {
-			return core.NBToolResponse{}, err
+	// Auto-install costmanagement extension if needed
+	if strings.Contains(command, "costmanagement") {
+		auth.CommandPrefix += " && az extension add --name costmanagement > /dev/null "
+	}
+
+	auth.Env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
+	fullCommand := WrapCommandWithAuth(command, auth)
+
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, fullCommand, auth.Env)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("azure: unable to execute shell script", "error", err.Error(), "command", fullCommand)
+		if response == "" {
+			response = err.Error()
 		}
-		data = string(dataArr)
+		return core.NBToolResponse{
+			Data:   cliRecoveryEnvelope(response, "", "az", "az <command> --help"),
+			Status: core.NBToolResponseStatusError,
+		}, err
 	}
 
 	return core.NBToolResponse{
-		Data: data,
-		Type: core.NBToolResponseTypeText,
+		Data:   response,
+		Type:   core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess,
 	}, nil
 }
 

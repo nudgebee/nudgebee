@@ -24,6 +24,25 @@ func TestWAFGetResources(t *testing.T) {
 	assert.NotNil(t, resources)
 }
 
+// A cancelled/expired sync budget must surface as an error, never as a
+// successful partial result — StoreResources archives resources missing from
+// a "successful" fetch, so a nil error here would let an aborted fetch
+// mass-archive live WAF resources.
+func TestWAFGetResourcesCancelledContextReturnsError(t *testing.T) {
+	waf := &awsWAF{}
+	account := providers.Account{
+		AccountNumber: "123456789012",
+		Region:        stringPtr("us-east-1"),
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx := providers.NewCloudProviderContext(cancelled)
+
+	_, err := waf.GetResources(ctx, account, "us-east-1")
+	assert.Error(t, err)
+}
+
 func TestWAFGetRecommendations(t *testing.T) {
 	waf := &awsWAF{}
 

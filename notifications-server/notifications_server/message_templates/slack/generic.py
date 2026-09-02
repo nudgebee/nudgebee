@@ -3,6 +3,7 @@ from typing import Optional, List
 
 from pydantic import BaseModel
 from notifications_server.configs.settings import URLRoutes, settings
+from notifications_server.utils.rich_text_blocks import render_rich_segments
 from notifications_server.utils.transformer import Transformer
 
 MAX_SLACK_BLOCK_LENGTH = 3000
@@ -124,18 +125,36 @@ def _build_meta_fields_block(
 
 
 def _build_body_blocks(message: str, is_approval: bool, max_blocks: int = MAX_BLOCKS) -> List[dict]:
-    slack_message = Transformer.markdown_to_slack_markdown(message)
+    if is_approval:
+        slack_message = Transformer.markdown_to_slack_markdown(message)
+        if slack_message.strip():
+            slack_message = "\n".join(f"> {line}" for line in slack_message.splitlines())
+        return _chunk_into_sections(slack_message)[:max_blocks]
 
-    if is_approval and slack_message.strip():
-        slack_message = "\n".join(f"> {line}" for line in slack_message.splitlines())
+    # Shared with events.py's LLM-investigation-reply pipeline (see
+    # utils/rich_text_blocks.py): splits the message into Mermaid / nb-chart /
+    # GFM-table / plain-markdown segments so a workflow-triggered generic
+    # message (e.g. runbook-server's notifications.im task) gets real Slack
+    # table/diagram blocks instead of degrading to plain joined text. A
+    # message with none of that content reduces to a single plain segment,
+    # producing output identical to the old plain-markdown path.
+    groups = render_rich_segments(message, _plain_markdown_leaf)
+    blocks = [block for group in groups for block in group]
+    return blocks[:max_blocks]
 
+
+def _plain_markdown_leaf(text: str) -> List[dict]:
+    return _chunk_into_sections(Transformer.markdown_to_slack_markdown(text))
+
+
+def _chunk_into_sections(slack_message: str) -> List[dict]:
+    slack_message = slack_message.strip()
     if not slack_message:
         return []
-
     chunks = [
         slack_message[i : i + MAX_SLACK_BLOCK_LENGTH] for i in range(0, len(slack_message), MAX_SLACK_BLOCK_LENGTH)
     ]
-    return [{"type": "section", "text": {"type": "mrkdwn", "text": chunk}} for chunk in chunks[:max_blocks]]
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": chunk}} for chunk in chunks]
 
 
 def _build_context_block(text: str) -> dict:

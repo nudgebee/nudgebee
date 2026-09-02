@@ -8,16 +8,18 @@ import { Banner } from '@ui/Banner';
 import { Skeleton } from '@ui/Skeleton';
 import { EmptyState } from '@ui/EmptyState';
 import SafeIcon from '@shared/icons/SafeIcon';
-import BoxLayout2 from '@shared/BoxLayout2';
+import ListingLayout from '@ui/ListingLayout';
+import { Select } from '@ui/Select';
 import apiWorkflow from '@api1/workflow';
+import apiHome from '@api1/home';
+import { hasWriteAccess } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { generateNodeCategories } from './constants/nodeCategories';
 import ActionDetailsSidebar from './ActionDetailsSidebar';
 import type { TaskDefinition } from '@components/workflow/types';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 
-interface TaskRunnerProps {
-  accountId: string;
-}
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const renderCategoryOrTaskIcon = (icon: any, label: string, size: number) => {
   if (typeof icon === 'string' && !icon.includes('/') && !icon.includes('.')) {
@@ -32,13 +34,33 @@ const matchesAnyAlias = (aliases: string[] | undefined, query: string): boolean 
   return aliases.some((alias) => alias.toLowerCase().includes(query));
 };
 
-const TaskRunner: React.FC<TaskRunnerProps> = ({ accountId }) => {
+const TaskRunner: React.FC = () => {
+  // Task definitions are tenant-wide, but running one targets a single account.
+  // The Automations page no longer carries an account in the route, so the
+  // account is picked here — restricted to the ones the user can write to.
+  const [accountId, setAccountId] = useState<string>('');
+  const [accountOptions, setAccountOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [taskDefinitions, setTaskDefinitions] = useState<TaskDefinition[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [selectedTaskType, setSelectedTaskType] = useState<string | null>(null);
   const [taskData, setTaskData] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    apiHome
+      .getCloudAccounts()
+      .then((res: any) => {
+        if (!Array.isArray(res)) return;
+        const writable = res
+          .filter((a: any) => hasWriteAccess(a.id))
+          .map((a: any) => ({ value: a.id, label: a.account_name || a.id, group: a.cloud_provider || 'Other' }));
+        setAccountOptions(writable);
+        // One writable account ⇒ no reason to make the user choose it.
+        if (writable.length === 1) setAccountId(writable[0].value);
+      })
+      .catch(() => setAccountOptions([]));
+  }, []);
 
   useEffect(() => {
     const fetchTasks = async () => {
@@ -102,6 +124,9 @@ const TaskRunner: React.FC<TaskRunnerProps> = ({ accountId }) => {
 
   const handleRunTask = useCallback(
     async (taskType: string, params: any): Promise<any> => {
+      if (!accountId) {
+        return { error: 'Select an account to run this task against' };
+      }
       try {
         const response: any = await apiWorkflow.triggerTask(accountId, taskType, params);
         const errorMessage = parseHttpResponseBodyMessage(response);
@@ -200,90 +225,101 @@ const TaskRunner: React.FC<TaskRunnerProps> = ({ accountId }) => {
   );
 
   return (
-    <BoxLayout2
-      id='task-runner-box'
-      heading='Task Runner'
-      sharingOptions={{ sharing: { enabled: false, onClick: null }, download: { enabled: false, onClick: () => ({ tableId: '' }) } }}
-    >
-      <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', height: 'calc(100vh - 260px)', minHeight: '520px' }}>
-        {/* LEFT — Task listing (20%) */}
-        <Box className='custom-scrollbar' sx={{ width: '20%', minWidth: '320px', flexShrink: 0, overflowY: 'auto', pr: 'var(--ds-space-2)' }}>
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mb: 'var(--ds-space-4)' }}>
-            Configure and run an individual automation action against this account.
-          </Typography>
+    <ListingLayout id='task-runner-box'>
+      <ListingLayout.Toolbar title='Task Runner' />
+      <ListingLayout.Body>
+        <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', height: 'calc(100vh - 260px)', minHeight: '520px' }}>
+          {/* LEFT — Task listing (20%) */}
+          <Box className='custom-scrollbar' sx={{ width: '20%', minWidth: '320px', flexShrink: 0, overflowY: 'auto', pr: 'var(--ds-space-2)' }}>
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mb: 'var(--ds-space-4)' }}>
+              Configure and run an individual automation action against the selected account.
+            </Typography>
 
-          <Box sx={{ mb: 'var(--ds-space-4)' }}>
-            <Input
-              id='task-runner-search-input'
-              size='md'
-              placeholder='Search actions...'
-              value={search}
-              onChange={setSearch}
-              leadingIcon={<SearchIcon sx={{ fontSize: 'var(--ds-text-heading)' }} />}
-            />
+            <Box sx={{ mb: 'var(--ds-space-4)' }}>
+              <Select
+                id='task-runner-account-select'
+                label='Account'
+                placeholder='Select an account'
+                options={accountOptions}
+                grouped
+                groupIcon={renderAccountGroupIcon}
+                value={accountId || null}
+                onChange={(next) => setAccountId(next || '')}
+                required
+                searchable
+              />
+            </Box>
+
+            <Box sx={{ mb: 'var(--ds-space-4)' }}>
+              <Input
+                id='task-runner-search-input'
+                size='md'
+                placeholder='Search actions...'
+                value={search}
+                onChange={setSearch}
+                leadingIcon={<SearchIcon sx={{ fontSize: 'var(--ds-text-heading)' }} />}
+              />
+            </Box>
+
+            {loadError && (
+              <Box sx={{ mb: 'var(--ds-space-3)' }}>
+                <Banner tone='critical' title='Failed to load tasks' message={loadError} />
+              </Box>
+            )}
+
+            {loadingTasks ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                <Skeleton height={64} />
+                <Skeleton height={64} />
+                <Skeleton height={64} />
+                <Skeleton height={64} />
+              </Box>
+            ) : accordionItems.length === 0 && !loadError ? (
+              <EmptyState title='No matching tasks' description='Try a different search term.' />
+            ) : (
+              <Accordion items={accordionItems} selection='single' density='md' />
+            )}
           </Box>
 
-          {loadError && (
-            <Box sx={{ mb: 'var(--ds-space-3)' }}>
-              <Banner tone='critical' title='Failed to load tasks' message={loadError} />
-            </Box>
-          )}
-
-          {loadingTasks ? (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-              <Skeleton height={64} />
-              <Skeleton height={64} />
-              <Skeleton height={64} />
-              <Skeleton height={64} />
-            </Box>
-          ) : accordionItems.length === 0 && !loadError ? (
-            <EmptyState title='No matching tasks' description='Try a different search term.' />
-          ) : (
-            <Accordion items={accordionItems} selection='single' density='md' />
-          )}
-        </Box>
-
-        {/* RIGHT — Action configuration + test (80%). Same configure-and-test
+          {/* RIGHT — Action configuration + test (80%). Same configure-and-test
           panel as the workflow builder, embedded inline instead of a dialog:
           dynamic parameter form (API-backed dropdowns included) + Run. */}
-        <Box sx={{ flex: 1, minWidth: 0, height: '100%' }}>
-          {selectedTaskType ? (
-            <ActionDetailsSidebar
-              // Remount per selected task so the ephemeral test form + results start
-              // empty on every task switch (the sidebar's internal localData buffer is
-              // otherwise preserved across switches by its dirty-guard). See issue #34678.
-              key={selectedTaskType}
-              variant='inline'
-              open
-              onClose={() => setSelectedTaskType(null)}
-              selectedActionType={selectedTaskType}
-              nodes={[]}
-              edges={[]}
-              onTaskDataChange={(data: any) => setTaskData(data)}
-              taskDefinitions={taskDefinitions}
-              taskData={taskData}
-              viewOnlyMode={false}
-              accountId={accountId}
-              onRunTask={handleRunTask}
-            />
-          ) : (
-            <Box
-              sx={{
-                height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: '1px dashed var(--ds-gray-300)',
-                borderRadius: 'var(--ds-radius-lg)',
-                backgroundColor: 'var(--ds-background-100)',
-              }}
-            >
-              <EmptyState title='No task selected' description='Pick a task from the list to configure and run it.' />
-            </Box>
-          )}
+          <Box sx={{ flex: 1, minWidth: 0, height: '100%' }}>
+            {selectedTaskType ? (
+              <ActionDetailsSidebar
+                key={selectedTaskType}
+                variant='inline'
+                open
+                onClose={() => setSelectedTaskType(null)}
+                selectedActionType={selectedTaskType}
+                nodes={[]}
+                edges={[]}
+                onTaskDataChange={(data: any) => setTaskData(data)}
+                taskDefinitions={taskDefinitions}
+                taskData={taskData}
+                viewOnlyMode={false}
+                accountId={accountId}
+                onRunTask={handleRunTask}
+              />
+            ) : (
+              <Box
+                sx={{
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '1px dashed var(--ds-gray-300)',
+                  borderRadius: 'var(--ds-radius-lg)',
+                  backgroundColor: 'var(--ds-background-100)',
+                }}
+              >
+                <EmptyState title='No task selected' description='Pick a task from the list to configure and run it.' />
+              </Box>
+            )}
+          </Box>
         </Box>
-      </Box>
-    </BoxLayout2>
+      </ListingLayout.Body>
+    </ListingLayout>
   );
 };
 

@@ -25,6 +25,11 @@ type BodyLog struct {
 	StatusCode   int       `db:"status_code"`
 	RequestBody  string    `db:"request_body"`
 	ResponseBody string    `db:"response_body"`
+	// FirstUserMessage is a short RAW preview of the request's opening user message
+	// (whitespace-collapsed, capped) — precomputed at capture so the Sessions tab reads
+	// a cheap column instead of parsing the body per query. Wrapper tokens (e.g.
+	// <session>) are intentionally kept as-is.
+	FirstUserMessage string `db:"first_user_message"`
 }
 
 // BodyLogSink stores captured bodies. Record must never block the request path.

@@ -210,7 +210,7 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 			ParentAgentId:  request.AgentId,
 		}
 
-		resp, err := tool.Call(toolCtx, callReq)
+		resp, err := core.CallTool(toolCtx, tool, callReq)
 		if err != nil {
 			ctx.GetLogger().Warn("visualizer: validation tool error", "error", err)
 			break // If tool fails, assume valid or give up on validation

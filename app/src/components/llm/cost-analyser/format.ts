@@ -10,13 +10,22 @@ import type { Anomaly, CostFilters, Granularity, ModelSummary, RankedSlice, Run,
 
 // ─── Scalar formatting ───────────────────────────────────────────────────────
 
-/** Currency, always rounded to the nearest 2nd decimal: $9.80 / $0.01 / $1.23K / $3.40M. */
+/**
+ * Currency: $3.40M / $1.23K / $9.80 / $0.0162.
+ *
+ * Sub-dollar amounts keep 4 decimals, matching the conversation-analytics panel
+ * in the chat (`llm/common/TokenUsageDisplay.jsx` formatCost). At 2 decimals a
+ * whole conversation reads "$0.02" against the analytics panel's "$0.0162" —
+ * the same number, apparently disagreeing — and anything under half a cent
+ * collapses to "$0.00".
+ */
 export function fmtCost(amount: number | null | undefined): string {
   if (amount == null) return '—';
   const v = Math.abs(amount);
   if (v >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(amount / 1_000).toFixed(2)}K`;
-  return `$${amount.toFixed(2)}`;
+  if (v >= 1 || v === 0) return `$${amount.toFixed(2)}`;
+  return `$${amount.toFixed(4)}`;
 }
 
 /** Compact token count: 940 / 12.4K / 3.1M. */
@@ -348,6 +357,11 @@ export function runCallCount(run: Run): number {
   return run.steps.reduce((a, s) => a + s.calls.length, 0);
 }
 
+export function avgLatencyMs(run: Run): number {
+  const n = runCallCount(run);
+  return n > 0 ? run.totalModelLatencyMs / n : 0;
+}
+
 /** Tenant-wide totals per model: cost, call count, tokens. */
 export function modelTotals(runs: Run[]): { model: string; cost: number; calls: number; tokens: number }[] {
   const map = new Map<string, { model: string; cost: number; calls: number; tokens: number }>();
@@ -446,6 +460,10 @@ export interface KpiTotals {
   inputTokens: number;
   outputTokens: number;
   openAnomalies: number;
+  /** Share of input tokens served from cache, 0–100 (spec: Cache Hit Rate). */
+  cacheHitRatePct: number;
+  /** Cached tokens valued at the full input rate (spec: Cache Savings). */
+  cacheSavingsUsd: number;
 }
 
 export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
@@ -460,50 +478,64 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
     inputTokens,
     outputTokens,
     openAnomalies: anomalies.filter((a) => !a.runId || runIds.has(a.runId)).length,
+    // Mock fixtures carry no cache economics — neutral default, per the API-can't-back note above.
+    cacheHitRatePct: 0,
+    cacheSavingsUsd: 0,
   };
 }
 
 // ─── CSV export (client-side) ─────────────────────────────────────────────────
 
-export function runsToCsv(runs: Run[]): string {
+/** Local wall-clock datetime `YYYY-MM-DD HH:MM` — matches the table's Start time
+ *  column (which also renders local time), unlike the raw UTC ISO string. */
+export function fmtLocalDateTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+export function runsToCsv(runs: Run[], accountNameById: Record<string, string> = {}): string {
   const head = [
     'run_id',
     'title',
-    'template',
     'trigger',
-    'assistant',
-    'user',
-    'started_at',
-    'wall_clock_ms',
-    'wait_time_ms',
+    'account',
+    'started_at_local',
+    'duration_ms',
+    'avg_latency_ms',
+    'calls',
     'total_cost',
     'input_tokens',
     'output_tokens',
     'models',
     'status',
-    'anomaly',
   ];
-  const rows = runs.map((r) =>
-    [
+  const rows = runs.map((r) => {
+    const trigger = r.source ?? triggerLabel[r.triggerType] ?? r.triggerType;
+    const account = (r.accountId && accountNameById[r.accountId]) || '';
+    const models = runModelBreakdown(r)
+      .map((m) => (m.calls > 0 || m.cost > 0 ? `${m.model} (${m.calls} calls, $${m.cost.toFixed(4)})` : m.model))
+      .join(' | ');
+    return [
       r.runId,
       r.title,
-      r.templateId,
-      r.triggerType,
-      r.assistant,
-      r.userId,
-      r.startedAt,
-      r.wallClockMs,
-      r.totalWaitTimeMs,
+      trigger,
+      account,
+      fmtLocalDateTime(r.startedAt),
+      Math.round(r.wallClockMs),
+      Math.round(avgLatencyMs(r)),
+      runCallCount(r),
       r.totalCost.toFixed(6),
       r.totalInputTokens,
       r.totalOutputTokens,
-      r.modelsUsed.join('|'),
+      models,
       r.status,
-      r.anomalyFlag ? 'yes' : 'no',
     ]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
-      .join(',')
-  );
+      .join(',');
+  });
   return [head.join(','), ...rows].join('\n');
 }
 

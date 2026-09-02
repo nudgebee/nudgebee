@@ -1,7 +1,6 @@
 package core
 
 import (
-	"nudgebee/llm/config"
 	toolcore "nudgebee/llm/tools/core"
 	"testing"
 
@@ -120,10 +119,6 @@ func TestFilterTools_DisabledWinsOverAllowed(t *testing.T) {
 func TestFilterAndInjectDefaultTools_AllowedListBlocksShellInjection(t *testing.T) {
 	// Even when shell_execute is enabled globally, an explicit allow-list that
 	// omits it must prevent the post-filter injection from re-adding it.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 	}
@@ -141,10 +136,6 @@ func TestFilterAndInjectDefaultTools_AllowedListBlocksShellInjection(t *testing.
 }
 
 func TestFilterAndInjectDefaultTools_AllowedListIncludingShellKeepsInjection(t *testing.T) {
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 	}
@@ -162,10 +153,6 @@ func TestFilterAndInjectDefaultTools_AllowedListIncludingShellKeepsInjection(t *
 func TestFilterAndInjectDefaultTools_NoAllowedListPreservesExistingBehaviour(t *testing.T) {
 	// Sanity check: no allowed_tools, no disabled_tools, shell enabled globally.
 	// We must not regress the existing default-injection behaviour.
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 	}
@@ -178,10 +165,6 @@ func TestFilterAndInjectDefaultTools_AllowedListWithNoMatchesYieldsEmpty(t *test
 	// User pinned tools that don't intersect with the agent's tool set — the
 	// final list must be empty (and the runtime emits a slog warning, exercised
 	// here just by the no-panic path; the log itself is verified by structure).
-	original := config.Config.LlmServerShellToolEnabled
-	config.Config.LlmServerShellToolEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = original })
-
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 	}

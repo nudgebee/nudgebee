@@ -54,6 +54,15 @@ func (t *TicketsAssignTask) Execute(taskCtx types.TaskContext, params map[string
 		return nil, err
 	}
 
+	if taskCtx.IsDryRun() {
+		taskCtx.GetLogger().Info("Dry Run: skipping ticket assignment")
+		return map[string]any{
+			"ticket_id": ticketId,
+			"assignee":  assignees,
+			"message":   "Dry run: ticket assignment skipped",
+		}, nil
+	}
+
 	request := ticket.AssignTicketRequest{
 		TicketId:      ticketId,
 		IntegrationId: integrationId,

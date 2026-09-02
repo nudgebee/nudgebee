@@ -120,6 +120,12 @@ const getTruncateSx = (truncate) => {
       WebkitBoxOrient: 'vertical',
       overflow: 'hidden',
       wordBreak: 'break-word',
+      // `-webkit-box` children are laid out by the legacy flexbox model and size to
+      // their max-content width unless they're pinned, so a long unbroken token (an
+      // alert title like `nudgebee_ngrok_test (stream:k8s_events)`) would widen the
+      // clamp box past the column and paint over the neighbouring cell.
+      maxWidth: '100%',
+      overflowWrap: 'anywhere',
     };
   }
   return null;
@@ -412,7 +418,10 @@ const ExpandableTableRowBase = ({
                 fontWeight: showUpdatedTable ? 500 : 400,
                 fontSize: showUpdatedTable ? ds.text.small : 'inherit',
                 color: showUpdatedTable && 'var(--ds-gray-700)',
-                ...(truncateSx ? { maxWidth: 0 } : {}),
+                // `maxWidth: 0` lets the fixed table layout own the column width; `overflow:
+                // hidden` is what actually keeps a truncated cell's content inside its own
+                // column instead of bleeding across the one next to it.
+                ...(truncateSx ? { maxWidth: 0, overflow: 'hidden' } : {}),
               }}
               data-export-enabled={cell?.exportEnabled ?? true}
               data-export-data={cell?.data || cell?.text?.props?.value || cell?.text}
@@ -1209,7 +1218,7 @@ const CustomTable = ({
                             handleRequestSort(head, idx);
                           }
                         }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none', mr: 'var(--ds-space-1)' }}
+                        sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
                       >
                         {head.component ? head.component : capitalize(typeof head === 'string' ? head : head.name)}{' '}
                         <span style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>

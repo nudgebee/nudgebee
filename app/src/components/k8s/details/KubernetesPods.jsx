@@ -633,28 +633,28 @@ const KubernetesPodsTable = ({ accountId, defaultQuery = {}, enableFilters = tru
             <>
               <FilterDropdown
                 label='Namespace'
-                options={namespaceFilter.map((o) => ({ value: o, label: o }))}
+                options={namespaceFilter?.map((o) => ({ value: o, label: o })) || []}
                 value={selectedNamespace}
                 onSelect={onNamespaceFilterChange}
                 disabled={disableOptions}
               />
               <FilterDropdown
                 label='Workload Type'
-                options={workloadTypeFilter.map((o) => ({ value: o, label: o }))}
+                options={workloadTypeFilter?.map((o) => ({ value: o, label: o })) || []}
                 value={selectedWorkloadType}
                 onSelect={onWorkloadTypeFilterChange}
                 disabled={disableOptions}
               />
               <FilterDropdown
                 label='State'
-                options={stateOptions.map((o) => ({ value: o, label: o }))}
+                options={stateOptions?.map((o) => ({ value: o, label: o })) || []}
                 value={selectedIsActive}
                 onSelect={onIsActiveFilterChange}
                 disabled={disableOptions}
               />
               <FilterDropdown
                 label='Status'
-                options={statusFilter.map((o) => ({ value: o, label: o }))}
+                options={statusFilter?.map((o) => ({ value: o, label: o })) || []}
                 value={selectedStatus}
                 onSelect={onStatusFilterChange}
                 disabled={disableOptions}

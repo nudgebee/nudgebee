@@ -15,7 +15,7 @@ interface NBStatusBadgeProps {
   eventId: string;
   currentStatus: string;
   snoozedUntil?: string;
-  onStatusChange?: (newStatus: string) => void;
+  onStatusChange?: (newStatus: string, snoozedUntil?: string) => void;
   onCreateTicket?: () => void;
   disabled?: boolean;
   /** When true, suppresses the internal "Until <date>" tooltip shown on SNOOZED status. */

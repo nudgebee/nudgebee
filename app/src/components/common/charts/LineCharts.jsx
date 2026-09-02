@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { withErrorBoundary } from '@shared/ErrorBoundary';
 import MetricQueryInfo from '@shared/MetricQueryInfo';
 import { ds, resolveColor } from 'src/utils/colors';
+import { axisTimeFormatter, fullTimeLabel, parseAxisTimestamps } from './timeAxis';
+import { chipsLegendPlugin } from './legendChips';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Colors);
 
@@ -50,27 +52,11 @@ const escapeHtml = (str) => {
 };
 
 /**
- * @param {{
- *   data?: any[],
- *   labels?: (string | number)[],
- *   timestamps?: number[],
- *   colors?: string[],
- *   chartLabel?: string | any[],
- *   dataset?: any[],
- *   id?: string,
- *   chartTitle?: string,
- *   loading?: boolean,
- *   minHeight?: number,
- *   legendOptions?: object,
- *   interactionOptions?: object,
- *   scaleOptions?: object,
- *   onDataPointClick?: (e: any) => void,
- *   onAskNubi?: (e: any) => void,
- *   useFixedHeight?: boolean,
- *   fixedHeight?: number,
- *   dynamicHeight?: boolean,
- *   integerYlabel?: boolean,
- * }} props
+ * @param {{ data?: any[], labels?: (string | number)[], timestamps?: number[], colors?: string[],
+ * chartLabel?: string | any[], dataset?: any[], id?: string, chartTitle?: string, loading?: boolean,
+ * minHeight?: number, legendOptions?: object, interactionOptions?: object, scaleOptions?: object,
+ * onDataPointClick?: (e: any) => void, onAskNubi?: (e: any) => void, useFixedHeight?: boolean,
+ * fixedHeight?: number, dynamicHeight?: boolean, integerYlabel?: boolean, timeAxis?: boolean, }} props
  */
 const Charts = ({
   data = [],
@@ -96,6 +82,7 @@ const Charts = ({
   customPlugins = [],
   integerYlabel = false,
   fixedWidth = undefined,
+  timeAxis = true,
 }) => {
   const uniqueId = id || uuidv4();
   const legendContainerId = `legend-container-${uniqueId}`;
@@ -103,6 +90,9 @@ const Charts = ({
   const chartRef = useRef(null);
   const [chartHeight, setChartHeight] = useState(minHeight);
   const estimatedLegendHeight = Array.isArray(chartLabel) ? (Math.floor(chartLabel.length / 5) + 1) * 24 : 24;
+  // The DOM legend draws into the container below the canvas rather than into the
+  // plot area, so it needs no room reserved inside the chart's own box.
+  const externalLegend = legendOptions?.renderer === 'html';
 
   // Pinned point state for "What happened here?" button
   const [pinnedPoint, setPinnedPoint] = useState(null);
@@ -301,9 +291,7 @@ const Charts = ({
   const noDataPlugin = {
     id: 'noDataPlugin',
     afterDraw: function (chart) {
-      // Show the empty-state only when NO series has any points. Checking datasets[0]
-      // alone drew "No data" on top of other populated lines when the first series was
-      // empty (e.g. CPU Usage absent while Total/Request/Limit still render).
+      // Show the empty-state only when NO series has any points.
       const hasAnyPoints = chart.data.datasets.some((d) => d?.data?.length > 0);
       if (!hasAnyPoints) {
         let ctx = chart.ctx;
@@ -318,138 +306,20 @@ const Charts = ({
     },
   };
 
-  const getOrCreateLegendList = (chart, id) => {
-    const legendContainer = document.getElementById(id);
-    if (!legendContainer) {
-      return null;
-    }
-
-    let listContainer = legendContainer.querySelector('ul');
-
-    if (!listContainer) {
-      listContainer = document.createElement('ul');
-      listContainer.style.display = 'grid';
-      listContainer.style.gridTemplateColumns = '1fr 1fr';
-      listContainer.style.gap = `${ds.space[3]} ${ds.space[4]}`;
-      listContainer.style.margin = 0;
-      listContainer.style.padding = 0;
-      listContainer.style.maxHeight = ds.space.mul(0, 150);
-      listContainer.style.overflowY = 'auto';
-
-      legendContainer.appendChild(listContainer);
-    }
-
-    return listContainer;
+  /**
+   * The DOM legend (`legendOptions={{ renderer: 'html' }}`). Drawn by `legendChips` — chips for the
+   * names, one detail strip for the numbers.
+   */
+  const domLegendPlugin = (containerId) => {
+    const legend = chipsLegendPlugin(containerId, { unit: legendOptions?.unit });
+    return {
+      ...legend,
+      afterUpdate(chart, args, options) {
+        legend.afterUpdate(chart, args, options);
+        calculateChartHeight();
+      },
+    };
   };
-
-  const htmlLegendPlugin = (containerId) => ({
-    id: 'htmlLegend',
-    afterUpdate(chart, _args, _options) {
-      const ul = getOrCreateLegendList(chart, containerId);
-      if (!ul) {
-        return;
-      }
-
-      while (ul.firstChild) {
-        ul.firstChild.remove();
-      }
-
-      const items = chart.options.plugins.legend.labels.generateLabels(chart);
-      items.forEach((item, _i) => {
-        const li = document.createElement('li');
-        li.style.alignItems = 'center';
-        li.style.cursor = 'pointer';
-        li.style.display = 'flex';
-        li.style.flexDirection = 'row';
-        li.style.marginLeft = ds.space.mul(0, 5);
-        li.style.marginRight = ds.space.mul(0, 5);
-        li.style.marginBottom = ds.space[1];
-
-        li.onclick = () => {
-          const { type } = chart.config;
-          if (type === 'pie' || type === 'doughnut') {
-            chart.toggleDataVisibility(item.index);
-          } else {
-            chart.setDatasetVisibility(item.datasetIndex, !chart.isDatasetVisible(item.datasetIndex));
-          }
-          item.hidden = !item?.hidden;
-          labelSpan.style.textDecoration = item.hidden ? 'line-through' : '';
-          chart.update();
-        };
-
-        const boxSpan = document.createElement('span');
-        boxSpan.style.background = item.fillStyle;
-        boxSpan.style.borderColor = item.strokeStyle;
-        boxSpan.style.borderWidth = item.lineWidth + 'px';
-        boxSpan.style.display = 'inline-block';
-        boxSpan.style.flexShrink = 0;
-        boxSpan.style.height = ds.space.mul(0, 10);
-        boxSpan.style.marginLeft = ds.space.mul(0, 5);
-        boxSpan.style.marginRight = ds.space.mul(0, 5);
-        boxSpan.style.width = ds.space.mul(0, 10);
-
-        const textContainer = document.createElement('p');
-        textContainer.style.color = item.fontColor;
-        textContainer.style.margin = 0;
-        textContainer.style.padding = 0;
-        textContainer.style.textDecoration = item?.hidden ? 'line-through' : '';
-
-        const labelSpan = document.createElement('span');
-        labelSpan.appendChild(document.createTextNode(item.text));
-        textContainer.appendChild(labelSpan);
-
-        let series = chart.data.datasets[item.datasetIndex];
-        let sortedSeries = series.data.filter((item) => item !== '').sort((a, b) => a - b);
-
-        let min = sortedSeries[0];
-        let max = sortedSeries[sortedSeries.length - 1];
-        let p99 = sortedSeries[Math.floor(sortedSeries.length * 0.99)];
-        let avg = sortedSeries.reduce((a, b) => a + b, 0) / sortedSeries.length;
-
-        const metrices = document.createElement('p');
-        metrices.style.margin = 0;
-        metrices.style.padding = 0;
-        if (!isNaN(max)) {
-          const maxElement = document.createElement('b');
-          maxElement.appendChild(document.createTextNode('Max: '));
-          metrices.appendChild(maxElement);
-          metrices.appendChild(document.createTextNode(max?.toFixed(2) ?? '-'));
-        }
-
-        if (!isNaN(min)) {
-          const minElement = document.createElement('b');
-          minElement.appendChild(document.createTextNode('Min: '));
-          metrices.appendChild(document.createTextNode(', '));
-          metrices.appendChild(minElement);
-          metrices.appendChild(document.createTextNode(min?.toFixed(2) ?? '-'));
-        }
-
-        if (!isNaN(p99)) {
-          const p99Element = document.createElement('b');
-          p99Element.appendChild(document.createTextNode('P99: '));
-          metrices.appendChild(document.createTextNode(', '));
-          metrices.appendChild(p99Element);
-          metrices.appendChild(document.createTextNode(p99?.toFixed(2) ?? '-'));
-        }
-
-        if (!isNaN(avg)) {
-          const avgElement = document.createElement('b');
-          avgElement.appendChild(document.createTextNode('Avg: '));
-          metrices.appendChild(document.createTextNode(', '));
-          metrices.appendChild(avgElement);
-          metrices.appendChild(document.createTextNode(avg?.toFixed(2) ?? '-'));
-        }
-
-        textContainer.appendChild(metrices);
-
-        li.appendChild(boxSpan);
-        li.appendChild(textContainer);
-        ul.appendChild(li);
-      });
-
-      calculateChartHeight();
-    },
-  });
 
   const calculateChartHeight = () => {
     if (useFixedHeight) {
@@ -471,17 +341,15 @@ const Charts = ({
     let calculatedHeight = minHeight;
 
     if (datasetCount > 3) {
-      calculatedHeight += (datasetCount - 3) * 20;
+      // Capped: a few extra pixels per series helps separate overlapping lines,
+      calculatedHeight += Math.min(datasetCount - 3, 10) * 20;
     }
 
     if (labelCount > 10) {
       calculatedHeight += 30;
     }
 
-    const legendContainer = document.getElementById(legendContainerId);
-    if (legendContainer) {
-      calculatedHeight = Math.max(calculatedHeight, datasetCount * 50 + 100);
-    }
+    // The DOM legend used to be a card per series, so the chart was grown 50px
     calculatedHeight = Math.max(calculatedHeight, minHeight);
 
     const viewportHeight = window.innerHeight;
@@ -500,6 +368,8 @@ const Charts = ({
 
   const TOOLTIP_MAX_WIDTH = 500;
   const TOOLTIP_MAX_HEIGHT = '60vh';
+  /** Series printed in one tooltip before the rest are summarised as a count. */
+  const TOOLTIP_MAX_ROWS = 8;
   const TOOLTIP_OFFSET_X = 15;
   const TOOLTIP_OFFSET_Y = 10;
 
@@ -601,9 +471,15 @@ const Charts = ({
       tooltipState.hideTimeout = null;
     }
 
+    // `mode: 'index'` reports EVERY series at the hovered x. On a chart drawing a
+    const allPoints = tooltip?.dataPoints ?? [];
+    const hiddenCount = Math.max(0, allPoints.length - TOOLTIP_MAX_ROWS);
+    const shownPoints =
+      hiddenCount > 0 ? [...allPoints].sort((a, b) => (Number(b.parsed?.y) || 0) - (Number(a.parsed?.y) || 0)).slice(0, TOOLTIP_MAX_ROWS) : allPoints;
+
     // Generate tooltip content
     const content =
-      tooltip?.dataPoints
+      shownPoints
         .map((dataPoint) => {
           const datasetLabel = dataPoint.dataset.label || '';
           const rawValue = dataPoint.raw || dataPoint.parsed?.y || 0;
@@ -655,6 +531,7 @@ const Charts = ({
     tooltipEl.innerHTML = `
       <div style="max-width: ${TOOLTIP_MAX_WIDTH}px; max-height: ${TOOLTIP_MAX_HEIGHT};">
         ${content}
+        ${hiddenCount > 0 ? `<div style="opacity: 0.7;">+${hiddenCount} more series</div>` : ''}
       </div>
     `;
 
@@ -740,11 +617,11 @@ const Charts = ({
 
   localOptions.animation = false;
   if (hasValidData && legendOptions && Object.keys(legendOptions).length > 0) {
-    if (legendOptions.renderer === 'html') {
+    if (externalLegend) {
       localOptions.plugins.legend = {
         display: false,
       };
-      plugins.push(htmlLegendPlugin(legendContainerId));
+      plugins.push(domLegendPlugin(legendContainerId));
     } else {
       localOptions.plugins.legend = legendOptions;
     }
@@ -806,6 +683,33 @@ const Charts = ({
     localOptions.interaction.mode = 'index';
   }
 
+  /** The time axis, on by default (pass `timeAxis={false}` to opt out). */
+  const callerFormatsXTicks = Boolean(fixedWidth) || typeof scaleOptions?.x?.ticks?.callback === 'function';
+  const explicitTimestamps = isSingleDataPoint ? [null, ...timestamps, null] : timestamps;
+  const axisTimestamps =
+    explicitTimestamps.length === chartData.labels.length && explicitTimestamps.length > 0
+      ? explicitTimestamps
+      : parseAxisTimestamps(chartData.labels);
+
+  if (timeAxis && !callerFormatsXTicks && axisTimestamps) {
+    const formatTick = axisTimeFormatter(axisTimestamps);
+    localOptions.scales.x = {
+      ...(localOptions.scales.x || {}),
+      ticks: {
+        ...(localOptions.scales.x?.ticks || {}),
+        autoSkip: true,
+        maxRotation: 0,
+        // Chart.js measures the rendered labels and skips down from here, so this
+        // is a ceiling rather than a count — short ticks simply fit more of them.
+        maxTicksLimit: 8,
+        callback: (value, index) => formatTick(axisTimestamps[value], index === 0) || String(chartData.labels[value] ?? ''),
+      },
+    };
+    localOptions.plugins.tooltip.callbacks = {
+      title: (items) => fullTimeLabel(axisTimestamps[items?.[0]?.dataIndex]),
+    };
+  }
+
   useEffect(() => {
     calculateChartHeight();
     const handleResize = () => {
@@ -820,9 +724,6 @@ const Charts = ({
   }, [data, dataset, labels.length, chartDatasets.length]);
 
   // Force the canvas to re-measure when its container's width changes (e.g. grid reflow,
-  // sidebar toggle). Chart.js's built-in responsive mode listens for window resize, not
-  // container resize, so cells that grow without a window event leave the canvas pinned
-  // to its first-measured width.
   useEffect(() => {
     const container = chartContainerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') {
@@ -938,7 +839,7 @@ const Charts = ({
           )}
           <div
             style={{
-              height: chartHeight + (legendOptions?.renderer === 'html' ? 0 : estimatedLegendHeight),
+              height: chartHeight + (externalLegend ? 0 : estimatedLegendHeight),
               width: '100%',
               minHeight: minHeight,
               overflow: 'visible',
@@ -977,16 +878,13 @@ const Charts = ({
               </div>
             )}
           </div>
-          {legendOptions.renderer === 'html' && hasValidData && (
+          {externalLegend && hasValidData && (
             <div
               id={legendContainerId}
               className='chart-legend-container'
-              style={{
-                overflow: 'auto',
-                marginTop: 'var(--ds-space-4)',
-                fontSize: 'var(--ds-text-small)',
-                maxHeight: ds.space.mul(0, 150),
-              }}
+              // The legend scrolls its chips ROW and keeps the detail strip pinned
+              // under it, so the container itself must not be the scroller.
+              style={{ marginTop: 'var(--ds-space-2)', fontSize: 'var(--ds-text-caption)' }}
             />
           )}
         </>
@@ -1019,6 +917,7 @@ Charts.propTypes = {
   dynamicHeight: PropTypes.bool,
   integerYlabel: PropTypes.bool,
   fixedWidth: PropTypes.number,
+  timeAxis: PropTypes.bool,
 };
 
 export default withErrorBoundary(Charts);

@@ -123,7 +123,7 @@ func NewTemporalTaskContextFromActivity(ctx context.Context, tenantID, accountID
 	return &tc
 }
 
-func NewTemporalTaskContext(ctx context.Context, tenantID, accountID, workflowID, userID, workflowName, userDisplayName string, temporalClient client.Client, temporalDataConverter converter.DataConverter, store model.WorkflowStore, workflowRunId string, workflowActivityId string, logger temporalLog.Logger, isDryRun bool) TaskContext {
+func NewTemporalTaskContext(ctx context.Context, tenantID, accountID, workflowID, eventID, userID, workflowName, userDisplayName string, temporalClient client.Client, temporalDataConverter converter.DataConverter, store model.WorkflowStore, workflowRunId string, workflowActivityId string, logger temporalLog.Logger, isDryRun bool) TaskContext {
 	tc := TemporalTaskContext{
 		context:         ctx,
 		dataConverter:   temporalDataConverter,
@@ -134,6 +134,7 @@ func NewTemporalTaskContext(ctx context.Context, tenantID, accountID, workflowID
 		accountID:       accountID,
 		workflowID:      workflowID,
 		workflowRunID:   workflowRunId,
+		eventID:         eventID,
 		taskID:          workflowActivityId,
 		userID:          userID,
 		workflowName:    workflowName,

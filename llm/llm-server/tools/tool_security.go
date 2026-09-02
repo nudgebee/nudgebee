@@ -40,24 +40,50 @@ const SecurityView = `
 					r.severity,
 					r.status,
 					r.recommendation->>'image_name'::text as image,
-					r.recommendation ->>'VulnerabilityID'::text as vulnerability_id,
-					r.recommendation ->>'PkgID'::text as package_id,
+					COALESCE(v.vuln_id, r.recommendation ->>'VulnerabilityID')::text as vulnerability_id,
+					COALESCE(v.details->>'pkg_id', r.recommendation ->>'PkgID')::text as package_id,
 					r.created_at as created_at,
 					r.updated_at as updated_at,
 					cr.workload_name,
 					cr.workload_type,
 					cr.namespace,
-					r.recommendation::varchar as recommendation,
+					-- image_scan rows had VulnerabilityID/PkgName/Severity/CVSS/etc. trimmed
+					-- out of recommendation.recommendation once the vulnerabilities table
+					-- was introduced (see V867 migration) — those fields now live on the
+					-- linked vulnerabilities row. Reconstruct the legacy shape so this SQL
+					-- tool's callers (and the LLM) still see full CVE identity; rows the
+					-- migration's backfill couldn't link (v.id IS NULL) fall back to the
+					-- raw, un-reconstructed payload unchanged.
+					-- TODO(vulnerabilities-cleanup): this v.id IS NULL branch must outlive
+					-- V867. That migration is DDL only — it backfills nothing (a bulk
+					-- backfill would hold ACCESS EXCLUSIVE on recommendation for hours at
+					-- production scale), so every pre-existing finding starts unlinked.
+					-- Rescans converge live ones within ~a week; findings whose image or host
+					-- is gone never do, and V867 leaves recommendation.recommendation
+					-- untrimmed precisely so the raw payload stays their source. Do not remove.
+					(CASE WHEN v.id IS NULL THEN r.recommendation
+						ELSE r.recommendation || jsonb_build_object(
+							'VulnerabilityID', v.vuln_id, 'PkgID', v.details->'pkg_id', 'PkgName', v.package_name,
+							'Severity', v.severity, 'CVSS', v.details->'cvss', 'Title', v.details->'title',
+							'Description', v.description, 'CweIDs', v.details->'cwe_ids', 'VendorIDs', v.details->'vendor_ids',
+							'References', v.details->'references', 'PrimaryURL', v.details->'primary_url',
+							'DataSource', v.details->'data_source', 'PublishedDate', v.details->'published_date',
+							'LastModifiedDate', v.details->'last_modified_date', 'Status', v.details->'status',
+							'SeveritySource', v.details->'severity_source', 'VendorSeverity', v.details->'vendor_severity',
+							'PkgIdentifier', v.details->'pkg_identifier', 'Layer', v.details->'layer')
+					END)::varchar as recommendation,
 					r.rule_name as category
 			from
 					pod_container cr
-			right outer join recommendation r on  
+			right outer join recommendation r on
 					r.category = 'Security'
 					and r.account_object_id is not null
 					and r.cloud_account_id = cr.cloud_account_id
 					and r.tenant_id = cr.tenant_id
 					and r.recommendation->>'image_name'::text = cr.image
-			where cr.image is not null 
+			left outer join vulnerabilities v on
+					v.id = r.vulnerability_id
+			where cr.image is not null
 
 		`
 const cisScanView = `

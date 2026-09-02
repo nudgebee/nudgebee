@@ -3,53 +3,149 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 
 	recommender "cloud.google.com/go/recommender/apiv1"
 	recommenderpb "cloud.google.com/go/recommender/apiv1/recommenderpb"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
 const ServiceNameRecommender = "Recommender"
 
+// recommenderConcurrency bounds parallel (recommender, location) fetches, the
+// same way the AWS resource crawl bounds its per-region fan-out (providers/aws
+// main.go). Each fetch is an independent blocking round-trip; iterating them
+// sequentially serialized into tens of seconds once every recommender was
+// queried across the account's real locations.
+const recommenderConcurrency = 8
+
+// locationScope is a bitmask describing which location classes a recommender's
+// recommendations live under. GCP scopes each recommender to the location of
+// the resource it describes: VM/disk recommenders live under zones
+// (us-central1-a), Cloud SQL under regions, IAM/image under "global". Querying
+// the wrong class returns nothing, so each recommenderTypes entry declares its
+// verified scope (per that recommender's page under
+// https://cloud.google.com/recommender/docs/recommenders).
+type locationScope uint8
+
+const (
+	scopeGlobal locationScope = 1 << iota
+	scopeRegional
+	scopeZonal
+)
+
 // recommenderTypes lists the GCP recommender IDs to query.
 // See https://cloud.google.com/recommender/docs/recommenders
 var recommenderTypes = []struct {
 	id       string
 	category providers.RecommendationCategory
+	scope    locationScope
 }{
 	// Cost
-	{"google.compute.instance.IdleResourceRecommender", providers.RecommendationCategoryRightSizing},
-	{"google.compute.instance.MachineTypeRecommender", providers.RecommendationCategoryRightSizing},
-	{"google.compute.disk.IdleResourceRecommender", providers.RecommendationCategoryRightSizing},
-	{"google.compute.address.IdleResourceRecommender", providers.RecommendationCategoryRightSizing},
-	{"google.compute.image.IdleResourceRecommender", providers.RecommendationCategoryRightSizing},
-	{"google.cloudsql.instance.IdleRecommender", providers.RecommendationCategoryRightSizing},
-	{"google.cloudsql.instance.OverprovisionedRecommender", providers.RecommendationCategoryRightSizing},
+	{"google.compute.instance.IdleResourceRecommender", providers.RecommendationCategoryRightSizing, scopeZonal},
+	{"google.compute.instance.MachineTypeRecommender", providers.RecommendationCategoryRightSizing, scopeZonal},
+	{"google.compute.disk.IdleResourceRecommender", providers.RecommendationCategoryRightSizing, scopeZonal},
+	// Regional external IPs live under regions, global IPs under "global".
+	{"google.compute.address.IdleResourceRecommender", providers.RecommendationCategoryRightSizing, scopeRegional | scopeGlobal},
+	{"google.compute.image.IdleResourceRecommender", providers.RecommendationCategoryRightSizing, scopeGlobal},
+	{"google.cloudsql.instance.IdleRecommender", providers.RecommendationCategoryRightSizing, scopeRegional},
+	{"google.cloudsql.instance.OverprovisionedRecommender", providers.RecommendationCategoryRightSizing, scopeRegional},
 
 	// Security
-	{"google.iam.policy.Recommender", providers.RecommendationCategorySecurity},
-	{"google.cloudsql.instance.SecurityRecommender", providers.RecommendationCategorySecurity},
+	{"google.iam.policy.Recommender", providers.RecommendationCategorySecurity, scopeGlobal},
+	{"google.cloudsql.instance.SecurityRecommender", providers.RecommendationCategorySecurity, scopeRegional},
 
 	// Performance / Reliability
-	{"google.container.DiagnosisRecommender", providers.RecommendationCategoryConfiguration},
-	{"google.cloudsql.instance.UnderprovisionedRecommender", providers.RecommendationCategoryConfiguration},
+	// GKE recommendations live under the cluster's location: a region for
+	// regional clusters, a zone for zonal ones — so both classes are queried.
+	{"google.container.DiagnosisRecommender", providers.RecommendationCategoryConfiguration, scopeRegional | scopeZonal},
+	{"google.cloudsql.instance.UnderprovisionedRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
 
-	// BigQuery
-	{"google.bigquery.table.PartitionClusterRecommender", providers.RecommendationCategoryRightSizing},
+	// BigQuery — recommendations live under the dataset location, which the
+	// collected BigQuery resources carry in Region (including multi-regions
+	// like "us"), so the derived region set covers them.
+	{"google.bigquery.table.PartitionClusterRecommender", providers.RecommendationCategoryRightSizing, scopeRegional},
 }
 
-// recommenderLocations lists the locations to query.
-// GCP recommendations are region-scoped; we query key regions plus "global".
-var recommenderLocations = []string{
-	"global",
+// fallbackRecommenderRegions is used only when the account has no collected
+// resources yet (e.g. the first sync ordering) so region-scoped recommenders
+// still get queried somewhere. It mirrors the historical hardcoded list.
+var fallbackRecommenderRegions = []string{
 	"us-central1",
 	"us-east1",
 	"us-west1",
 	"europe-west1",
 	"asia-east1",
 	"asia-southeast1",
+}
+
+// zoneFromLink extracts the zone segment from resource selfLinks/ARNs, which
+// carry it in both URL ("https://.../zones/us-central1-a/instances/x") and
+// path ("projects/p/zones/us-central1-a/instances/x") forms.
+var zoneFromLink = regexp.MustCompile(`/zones/([a-z0-9-]+)`)
+
+// resolveRecommenderLocations derives the regions and zones the account
+// actually uses from its already-collected resources. Regions come from the
+// Region field; zones only survive collection inside selfLink/ARN (collectors
+// normalize Region to the enclosing region), so they are parsed back out.
+// Recommendations always attach to a resource, so a location with no
+// collected resources cannot yield one — skipping it loses nothing.
+func resolveRecommenderLocations(resources []providers.Resource) (regions, zones []string) {
+	regionSet := map[string]struct{}{}
+	zoneSet := map[string]struct{}{}
+
+	for _, r := range resources {
+		// Global resources (IAM, images, …) store "global" in Region; that
+		// location class is owned by scopeGlobal, not the derived region set.
+		if region := strings.ToLower(strings.TrimSpace(r.Region)); region != "" && region != "global" {
+			regionSet[region] = struct{}{}
+		}
+		if m := zoneFromLink.FindStringSubmatch(r.Arn); m != nil {
+			zoneSet[m[1]] = struct{}{}
+		}
+		if m := zoneFromLink.FindStringSubmatch(stringMeta(r.Meta, "selfLink")); m != nil {
+			zoneSet[m[1]] = struct{}{}
+		}
+	}
+
+	for region := range regionSet {
+		regions = append(regions, region)
+	}
+	for zone := range zoneSet {
+		zones = append(zones, zone)
+	}
+	sort.Strings(regions)
+	sort.Strings(zones)
+	return regions, zones
+}
+
+func stringMeta(meta map[string]interface{}, key string) string {
+	if meta == nil {
+		return ""
+	}
+	s, _ := meta[key].(string)
+	return s
+}
+
+// locationsForScope expands a recommender's scope bitmask into the concrete
+// locations to query.
+func locationsForScope(scope locationScope, regions, zones []string) []string {
+	var locations []string
+	if scope&scopeGlobal != 0 {
+		locations = append(locations, "global")
+	}
+	if scope&scopeRegional != 0 {
+		locations = append(locations, regions...)
+	}
+	if scope&scopeZonal != 0 {
+		locations = append(locations, zones...)
+	}
+	return locations
 }
 
 type gcloudRecommenderService struct{}
@@ -89,25 +185,64 @@ func (s *gcloudRecommenderService) GetRecommendations(ctx providers.CloudProvide
 		}
 	}()
 
-	var recommendations []providers.Recommendation
+	regions, zones := resolveRecommenderLocations(existingResources)
+	if len(regions) == 0 {
+		regions = fallbackRecommenderRegions
+	}
+	ctx.GetLogger().Info("resolved recommender locations", "regions", regions, "zones", zones)
 
+	// Flatten each recommender into its scoped (recommender, location) fetches,
+	// then run them in parallel. The recommender client is safe for concurrent
+	// use, and a bounded semaphore keeps the fan-out from opening an unbounded
+	// number of connections on accounts spread across many regions.
+	type recWork struct {
+		id       string
+		category providers.RecommendationCategory
+		location string
+	}
+	var work []recWork
 	for _, rt := range recommenderTypes {
-		for _, location := range recommenderLocations {
-			parent := fmt.Sprintf("projects/%s/locations/%s/recommenders/%s", projectId, location, rt.id)
+		for _, location := range locationsForScope(rt.scope, regions, zones) {
+			work = append(work, recWork{id: rt.id, category: rt.category, location: location})
+		}
+	}
 
-			recs, err := fetchRecommendations(ctx, client, parent, rt.id, rt.category, location)
+	var (
+		recommendations []providers.Recommendation
+		mu              sync.Mutex
+		wg              sync.WaitGroup
+	)
+	sem := semaphore.NewWeighted(recommenderConcurrency)
+
+	for _, w := range work {
+		if err := sem.Acquire(ctx.GetContext(), 1); err != nil {
+			// Context cancelled/timed out — stop scheduling and let in-flight
+			// fetches drain via wg.Wait below.
+			ctx.GetLogger().Warn("failed to acquire recommender semaphore", "error", err)
+			break
+		}
+		wg.Add(1)
+		go func(w recWork) {
+			defer wg.Done()
+			defer sem.Release(1)
+
+			parent := fmt.Sprintf("projects/%s/locations/%s/recommenders/%s", projectId, w.location, w.id)
+			recs, err := fetchRecommendations(ctx, client, parent, w.id, w.category, w.location)
 			if err != nil {
 				// Permission denied or recommender not available in this location — skip
 				if isGCPPermissionOrNotFoundError(err) {
 					RecordGCPPermissionError(ctx, err)
-					continue
+					return
 				}
-				ctx.GetLogger().Warn("failed to list recommendations", "recommender", rt.id, "location", location, "error", err)
-				continue
+				ctx.GetLogger().Warn("failed to list recommendations", "recommender", w.id, "location", w.location, "error", err)
+				return
 			}
+			mu.Lock()
 			recommendations = append(recommendations, recs...)
-		}
+			mu.Unlock()
+		}(w)
 	}
+	wg.Wait()
 
 	ctx.GetLogger().Info("fetched GCP recommender recommendations", "count", len(recommendations))
 	return recommendations, nil

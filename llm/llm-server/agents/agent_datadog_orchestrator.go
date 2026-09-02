@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -66,6 +67,11 @@ func (a *DatadogOrchestratorAgent) GetCacheScope() core.CacheScope {
 
 func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	toolUsage := map[string][]string{
+		tools.ToolDatadogResourceSearchExecute: {
+			"Discovery fast-path: resolve a Datadog resource by name (a service, container, or APM entity) before investigating it.",
+			`Input: JSON {"resource_type":"services|containers|apm_entities","query":"<name or search text>"} — both fields required.`,
+			"Output: matching Datadog resources. Use for a quick lookup; delegate to the specialist datadog sub-agents for deep investigation.",
+		},
 		DatadogLogAgentName: {
 			"Use this tool to search Datadog logs based on a natural language query.",
 			"Input: A natural language question about logs you want to retrieve from Datadog.",
@@ -197,6 +203,11 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 	// DatadogAgentName ("datadog") is for logs, DatadogMetricsAgentName ("datadog_metrics") is for metrics.
 	// These are the names of other agents that this planner can use as tools.
 	supportedToolNames := []string{
+		// Discovery fast-path: resolve a Datadog resource by name across
+		// services/containers/apm_entities in one direct call (no sub-agent hop).
+		// Re-homed here when the resource_search agent was removed (#32503 Phase 2) —
+		// Datadog data is live (not in the DB inventory), so it stays platform-owned.
+		tools.ToolDatadogResourceSearchExecute,
 		DatadogLogAgentName,             // For logs
 		DatadogMetricsAgentName,         // For metrics
 		DatadogEventsAgentName,          // For Events
@@ -211,13 +222,15 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		WebSearchAgentName,              // For Web Search
 		RecommendationsAgentName,        // For Recommendations
 		EventsAgentName,
-		PostgresAgentName,     // For PostgreSQL
-		MySQLAgentName,        // For MySQL
-		MSSQLAgentName,        // For MSSQL
-		OracleAgentName,       // For Oracle
-		RedisAgentName,        // For Redis
-		RabbitMQAgentName,     // For RabbitMQ
-		DelegateAgentToolName, // For dynamic specialist sub-agents
+		PostgresAgentName, // For PostgreSQL
+		MySQLAgentName,    // For MySQL
+		MSSQLAgentName,    // For MSSQL
+		OracleAgentName,   // For Oracle
+		// Redis/RabbitMQ agents removed in Phase 3c (#32503); their capabilities are
+		// reached on-demand via search_tools + delegate_agent, which surfaces
+		// redis_command_executer / rabbit_execute (both carry their own ToolPrompt()).
+		DelegateAgentToolName,      // For dynamic specialist sub-agents
+		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)
@@ -239,8 +252,13 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		}
 	}
 
-	// Include MCP integration tools (dynamic names, not in static supportedToolNames list)
-	tools = append(tools, toolcore.ListMCPIntegrationTools(accountId)...)
+	// Per-account tools whose names are dynamic and so cannot appear in the static
+	// supportedToolNames list: MCP integrations, plus the account's AI-invocable
+	// automations. The automations are here because, held only by the automation
+	// sub-agent, one is reachable only after the orchestrator decides to delegate —
+	// the hop that registering automations as tools exists to remove. Free on
+	// accounts without the feature flag: the source returns nothing at all.
+	tools = append(tools, toolcore.ListAccountSourcedTools(accountId)...)
 
 	// Conditionally add think tool for complex investigations
 	if config.Config.LlmServerThinkToolEnabled {

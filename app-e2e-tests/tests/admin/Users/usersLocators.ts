@@ -13,12 +13,8 @@ export class UserLocators extends CommonLocators {
   readonly duplicateMsg: Locator;
   readonly editUserModal: Locator;
   readonly successUpdateMsg: Locator;
-  readonly firstNameHelperText: Locator;
-  readonly lastNameHelperText: Locator;
-  readonly statusCombobox: Locator;
-  readonly statusFilterBtn: Locator;
-  readonly userSearchToggleBtn: Locator;
-  readonly userSearchInput: Locator;
+  readonly statusButton: Locator;
+  readonly nameSearchInput: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -34,17 +30,25 @@ export class UserLocators extends CommonLocators {
     this.duplicateMsg = page.getByText("This email is already in use").first();
     this.editUserModal = page.locator('#edit-user-modal');
     this.successUpdateMsg = page.getByText("User updated");
-    this.firstNameHelperText = page.locator('#user-modal-firstname-helper-text');
-    this.lastNameHelperText = page.locator('#user-modal-lastname-helper-text');
-    this.statusCombobox = page.locator('#user-modal-status');
-    this.statusFilterBtn = page.locator('button').filter({ hasText: 'By Status' });
-    this.userSearchToggleBtn = page.locator('#box-all-users-search-toggle-button');
-    this.userSearchInput = page.locator('#box-all-users-search-input-text');
+    this.statusButton = page.locator('#auto-complete-all-users-status-filter');
+    this.nameSearchInput = page.locator('#all-users-name-search');
   }
 
   async selectRole(role: string): Promise<void> {
     await this.tenantRoleCombobox.click();
-    await this.getRoleOption(role).click();
+    const option = this.getRoleOption(role);
+    await option.waitFor({ state: "visible", timeout: 5000 });
+    // The role dropdown is a MUI Menu (disablePortal) rendered inside the modal.
+    // Dispatch the click straight to the option so its handler runs regardless of the
+    // invisible backdrop that overlays the items in headless (a normal click gets
+    // swallowed by that backdrop). This sets the value but, headless, does not always
+    // close the menu — so press Escape to dismiss it. Escape targets the topmost
+    // overlay (the menu), not the dialog beneath, then confirm the menu closed.
+    await option.dispatchEvent("click");
+    if (await option.isVisible().catch(() => false)) {
+      await this.page.keyboard.press("Escape");
+    }
+    await option.waitFor({ state: "detached", timeout: 5000 });
   }
 
   getRoleOption(role: string): Locator {
@@ -55,7 +59,32 @@ export class UserLocators extends CommonLocators {
     return this.page.locator('tr').filter({ hasText: email }).locator('#edit-user-button');
   }
 
-  getStatusOption(status: string): Locator {
-    return this.page.getByTestId(`user-modal-status-${status.toLowerCase()}`);
+  // Set the user's status inside the edit/add modal.
+  // Radio group with no id/testid — match by exact text ("Active" is a substring of "Inactive").
+  async setUserStatus(status: "Active" | "Inactive" | "Suspended"): Promise<void> {
+    await this.page.getByRole("radio", { name: status, exact: true }).click();
+  }
+
+  // The table row for a given user, matched by email — used to verify presence after filter/search.
+  getUserRow(email: string): Locator {
+    return this.page.locator("tr").filter({ hasText: email });
+  }
+
+  // Open the list Status filter dropdown and pick Active / Inactive / Suspended.
+  // Options render only after the button is clicked and carry no id/testid — match by exact text.
+  async selectStatusFilter(status: string): Promise<void> {
+    await this.statusButton.click();
+    await this.page
+      .locator('[role="option"]')
+      .filter({ hasText: new RegExp(`^${status}$`) })
+      .click();
+  }
+
+  // Type a name into the users search box and submit.
+  // Enter is required — fill() alone does not trigger the filter.
+  async searchByName(name: string): Promise<void> {
+    await this.nameSearchInput.click(); // ensure focus so Enter reliably lands
+    await this.nameSearchInput.fill(name);
+    await this.nameSearchInput.press("Enter");
   }
 }

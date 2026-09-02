@@ -26,6 +26,9 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { toast as snackbar } from '@ui/Toast';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import { ds } from 'src/utils/colors';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
+
+const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedLabel, cloudAccounts, onAccountChange, onNodeTypeChange, onPick }) => {
   const [nodeTypes, setNodeTypes] = useState([]);
@@ -46,6 +49,7 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
       cloudAccounts.map((acc) => ({
         value: acc.id,
         label: [acc.account_name || acc.account_number || acc.id, acc.cloud_provider, acc.account_number].filter(Boolean).join(' · '),
+        group: acc.cloud_provider || 'Other',
       })),
     [cloudAccounts]
   );
@@ -76,7 +80,8 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
     apiKnowledgeGraph
       .getFilterOptions({ accountIds: [pickedAccountId] })
       .then((res) => {
-        const types = res?.data?.data?.kg_get_filter_options?.data?.node_types ?? [];
+        // node_types is the merged node_type -> specific_types map; its keys are the type list.
+        const types = Object.keys(res?.data?.data?.kg_get_filter_options?.data?.node_types ?? {});
         setNodeTypes(types);
         setLoadedTypesAccount(pickedAccountId);
       })
@@ -98,7 +103,12 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
     apiKnowledgeGraph
       .getFilterOptions({ accountIds: [pickedAccountId], nodeTypes: [pickedNodeType] })
       .then((res) => {
-        const map = res?.data?.data?.kg_get_filter_options?.data?.node_id_map ?? {};
+        // Columnar payload: zip node_keys + node_ids back into { unique_key: id }.
+        const d = res?.data?.data?.kg_get_filter_options?.data ?? {};
+        const keys = d.node_keys ?? [];
+        const ids = d.node_ids ?? [];
+        const map = {};
+        for (let i = 0; i < keys.length; i++) map[keys[i]] = ids[i];
         setNodeIdMap(map);
         setLoadedNodesKey(nodesKey);
       })
@@ -184,6 +194,8 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
         label='Account *'
         placeholder='Pick an account'
         options={accountOptions}
+        grouped
+        groupIcon={renderAccountGroupIcon}
         value={pickedAccountId || null}
         onSelect={(e, v) => onAccountChange(typeof v === 'string' ? v : v?.value || '')}
         size='sm'

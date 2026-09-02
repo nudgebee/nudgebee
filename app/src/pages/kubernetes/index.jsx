@@ -1,107 +1,75 @@
-import React, { useEffect, useMemo } from 'react';
-import AnchorComponent from '@shared/navigation/AnchorComponent';
-import ErrorBoundary from '@shared/ErrorBoundary';
-import { Box } from '@mui/material';
-import KubernetesClusterOverview from '@components/k8s/landing/KubernetesClusterOverview';
-import KubernetesMonitoring from '@components/k8s/landing/KubernetesMonitoringView';
-import KubernetesApplicationGrouping from '@components/k8s/landing/k8sGrouping/KubernetesApplicationGrouping';
+import { useEffect } from 'react';
+import { Box, CircularProgress } from '@mui/material';
 import { useData } from '@context/DataContext';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
-import { KubernetesClusterIcon, ApplicationsIcon } from '@assets';
+
+const isK8sProvider = (provider) => provider?.toUpperCase() === 'K8S';
 
 const Kubernetes = () => {
   const router = useRouter();
-  const { setSelectedCluster, allCluster, setAllCluster } = useData();
+  const { selectedCluster, setSelectedCluster } = useData();
 
+  // `/kubernetes` is purely a redirector now, mirroring `/cloud-account`: with
+  // no hash it opens the in-scope cluster's detail page, and every other case
+  // lands on a page that owns the content it used to render inline.
   useEffect(() => {
-    if (!allCluster || allCluster.length === 0) {
-      homeApi.getCloudAccounts().then((res) => {
-        const clusters = transformClusters(res);
-        setAllCluster(clusters);
-      });
+    let cancelled = false;
+
+    // window.location.hash, not router.asPath: on an auto-statically-optimized
+    // page asPath can still be the server-rendered value on mount, and a dropped
+    // hash here redirects an `#overview` deep link into a cluster instead.
+    const hash = window.location.hash.replace('#', '');
+    // Application Grouping moved to /dashboards; keep older links working.
+    if (hash === 'groups') {
+      router.replace('/dashboards#groups');
+      return undefined;
     }
-  }, []);
-
-  const hasClusters = allCluster?.some((c) => c.value !== 'demo' && c.cloud_provider?.toUpperCase() === 'K8S');
-
-  const filterOptions = useMemo(
-    () => [
-      {
-        name: 'Cluster Overview',
-        id: 'cluster-overview',
-        fragment: 'overview',
-        value: 0,
-        disabled: false,
-        icon: KubernetesClusterIcon,
-        ...(hasClusters && {
-          options: [
-            { id: 'clusters', name: 'Clusters' },
-            { id: 'issues', name: 'Issues' },
-            { id: 'pod-exception', name: 'Pod Exception' },
-            { id: 'node-exception', name: 'Node Exception' },
-          ],
-        }),
-      },
-      {
-        name: 'Application Grouping',
-        id: 'cluster-application-grouping',
-        fragment: 'groups',
-        value: 2,
-        disabled: false,
-        betaIcon: true,
-        icon: ApplicationsIcon,
-      },
-    ],
-    [hasClusters]
-  );
-
-  const [selectedFilter, setSelectedFilter] = React.useState(null);
-
-  useEffect(() => {
-    setSelectedCluster({});
-  }, []);
-
-  useEffect(() => {
-    const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) {
-      setSelectedFilter(0);
-      return;
+    // The fleet summary is no longer K8s-only — it lists every provider's
+    // accounts and lives at /overview. Keep the old deep link working.
+    if (hash) {
+      router.replace('/overview#overview');
+      return undefined;
     }
-    const filter = filterOptions.find((option) => option.fragment === hash);
-    setSelectedFilter(filter ? filter.value : 0);
+
+    const redirectToCluster = async () => {
+      if (selectedCluster?.value && isK8sProvider(selectedCluster.cloud_provider)) {
+        router.push(`/kubernetes/details/${selectedCluster.value}#summary`);
+        return;
+      }
+      try {
+        const accounts = await homeApi.getCloudAccounts();
+        if (cancelled) {
+          return;
+        }
+        const clusters = transformClusters(accounts.filter((account) => isK8sProvider(account.cloud_provider)));
+        if (clusters.length > 0) {
+          setSelectedCluster(clusters[0]);
+          await router.push(`/kubernetes/details/${clusters[0].value}#summary`);
+          return;
+        }
+      } catch (error) {
+        console.error(error);
+      }
+      // No cluster to open (or the lookup failed) — the fleet-wide Account
+      // Overview owns both the multi-account list and the connect-an-account
+      // empty state, so send them there.
+      if (!cancelled) {
+        router.replace('/overview#overview');
+      }
+    };
+
+    redirectToCluster();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
-    <>
-      <AnchorComponent
-        manageRoute={true}
-        filterOptions={filterOptions}
-        onChangeFilter={(val) => {
-          if (val === 0 || val === 1 || val === 2) {
-            setSelectedFilter(val);
-          }
-        }}
-      />
-      <ErrorBoundary key={selectedFilter}>
-        {selectedFilter === 0 && (
-          <Box>
-            <KubernetesClusterOverview />
-          </Box>
-        )}
-        {selectedFilter === 1 && (
-          <Box>
-            <KubernetesMonitoring />
-          </Box>
-        )}
-        {selectedFilter === 2 && (
-          <Box mt='80px'>
-            <KubernetesApplicationGrouping />
-          </Box>
-        )}
-      </ErrorBoundary>
-    </>
+    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '70vh' }}>
+      <CircularProgress />
+    </Box>
   );
 };
 

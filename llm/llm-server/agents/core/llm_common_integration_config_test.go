@@ -40,9 +40,11 @@ func TestExecLLMIntegrationConfigQuery_NullableColumns(t *testing.T) {
 		},
 		{
 			name: "row with NULL name is skipped",
+			// Both rows share an integration id — a result set spanning two is
+			// refused outright, see ErrAmbiguousLLMConfig.
 			rows: sqlmock.NewRows(cols).
 				AddRow("44444444-4444-4444-4444-444444444444", nil, plain, false).
-				AddRow("55555555-5555-5555-5555-555555555555", "api_key", plain, nil),
+				AddRow("44444444-4444-4444-4444-444444444444", "api_key", plain, nil),
 			want: map[string]string{"api_key": plain},
 		},
 	}

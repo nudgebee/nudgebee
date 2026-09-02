@@ -37,7 +37,7 @@ func (s *metricAlertsService) GetResources(
 		if strings.TrimSpace(subID) == "" {
 			continue
 		}
-		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureAuditOpts(ctx))
+		client, err := armmonitor.NewMetricAlertsClient(subID, cred, getAzureMetricAlertsOpts(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create metric alerts client: %w", err)
 		}
@@ -233,7 +233,7 @@ func (s *metricAlertsService) ApplyRecommendation(ctx providers.CloudProviderCon
 		subscriptionID = session.SubscriptionID
 	}
 
-	client, err := armmonitor.NewMetricAlertsClient(subscriptionID, cred, getAzureAuditOpts(ctx))
+	client, err := armmonitor.NewMetricAlertsClient(subscriptionID, cred, getAzureMetricAlertsOpts(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to create metric alerts client: %w", err)
 	}
@@ -338,7 +338,7 @@ func (s *metricAlertsService) ApplyCommand(ctx providers.CloudProviderContext, a
 		subscriptionID = session.SubscriptionID
 	}
 
-	client, err := armmonitor.NewMetricAlertsClient(subscriptionID, cred, getAzureAuditOpts(ctx))
+	client, err := armmonitor.NewMetricAlertsClient(subscriptionID, cred, getAzureMetricAlertsOpts(ctx))
 	if err != nil {
 		return providers.ApplyCommandResponse{
 			Success: false,

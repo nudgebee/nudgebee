@@ -13,8 +13,10 @@ import markdown2
 
 from notifications_server.message_templates.blocks import (
     BaseBlock,
+    ChartBlock,
     DividerBlock,
     FileBlock,
+    GridTableBlock,
     HeaderBlock,
     JsonBlock,
     ListBlock,
@@ -708,6 +710,13 @@ class Transformer:
             return Transformer.__get_action_block_for_choices(block.choices)
         elif isinstance(block, ActionListBlock):
             return Transformer.__to_slack_action_list(block)
+        elif isinstance(block, ChartBlock):
+            return [{"type": "data_visualization", "title": block.title, "chart": block.chart}]
+        elif isinstance(block, GridTableBlock):
+            payload: SlackBlock = {"type": "table", "rows": block.rows}
+            if block.column_settings:
+                payload["column_settings"] = block.column_settings
+            return [payload]
         else:
             LOG.debug(f"cannot convert block of type {type(block)} to slack format block: {block}")
             return []  # no reason to crash the entire report

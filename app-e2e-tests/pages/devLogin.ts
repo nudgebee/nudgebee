@@ -1,11 +1,10 @@
 import { Page } from "@playwright/test";
 
-export async function doDevLogin(page: Page, options: { selectCluster?: boolean } = {}): Promise<void> {
-  const { selectCluster: shouldSelectCluster = true } = options;
+// LDAP sign-in only; tenant + cluster are owned by LoginPage.doFullLogin() for every env.
+export async function doDevLogin(page: Page): Promise<void> {
   const baseUrl     = process.env.BASE_URL;
   const username    = process.env.LDAP_USERNAME || "";
   const password    = process.env.LDAP_PASSWORD || "";
-  const clusterName = process.env.CLUSTER_NAME  || process.env.CLUSTER || "";
 
   if (!baseUrl)               throw new Error("BASE_URL is not set in environment");
   if (!username || !password) throw new Error("LDAP_USERNAME or LDAP_PASSWORD is not set");
@@ -46,11 +45,6 @@ export async function doDevLogin(page: Page, options: { selectCluster?: boolean 
 
   await page.waitForURL(/\/(home|workflow)/, { timeout: 50000 });
   await waitForLoaderToDisappear(page);
-
-  if (shouldSelectCluster && clusterName) {
-    await selectCluster(page, clusterName);
-    await waitForLoaderToDisappear(page);
-  }
 }
 
 async function ldapLogin(page: Page, username: string, password: string): Promise<void> {
@@ -88,33 +82,6 @@ async function ldapLogin(page: Page, username: string, password: string): Promis
   await page
     .waitForURL(url => !url.href.includes("/signin"), { timeout: 15000 })
     .catch(() => page.waitForTimeout(3000));
-}
-
-async function selectCluster(page: Page, clusterName: string): Promise<void> {
-  const clusterInput = page.locator("#auto-complete-global-cluster");
-  await clusterInput.waitFor({ state: "visible", timeout: 30000 });
-
-  const clearAndType = async () => {
-    await clusterInput.fill("");
-    await page.waitForTimeout(400);
-    await clusterInput.pressSequentially(clusterName, { delay: 50 });
-  };
-
-  const option = page.locator("[role='option']").filter({ hasText: clusterName }).first();
-
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    if (attempt > 1) await page.waitForTimeout(3000);
-    await clearAndType();
-    await page.waitForTimeout(1000);
-    const isVisible = await option.isVisible().catch(() => false);
-    if (isVisible) break;
-    console.log(`Cluster option '${clusterName}' not found (attempt ${attempt}/5), retrying...`);
-  }
-
-  await option.waitFor({ state: "visible", timeout: 30000 });
-  await option.click();
-  await page.mouse.move(0, 0);
-  console.log(`Selected cluster: ${clusterName}`);
 }
 
 async function waitForLoaderToDisappear(page: Page): Promise<void> {

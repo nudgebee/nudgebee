@@ -39,14 +39,6 @@ var datadogMonitorPathRegex = regexp.MustCompile(`/monitors/(\d+)`)
 
 const IntegrationDatadogWebhook = "datadog_webhook"
 
-// HistoricalIncident represents a past Datadog incident title mapped to a service
-type HistoricalIncident struct {
-	Title   string  `json:"title"`
-	Service *string `json:"service"`
-}
-
-// Deprecated: use GetSubjectMappingsForPrompt instead.
-
 const TenantAttrHistoricalIncidentsKey = "DATADOG_INCIDENT_TITLE_SERVICE_MAPPING"
 
 func (m DatadogWebhook) Name() string {
@@ -1291,7 +1283,6 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		eventURL = p.Event.EventURL
 	}
 	apiKey, appKey, site, err := GetDatadogConfigs(sc, accountId)
-	sc.GetLogger().Info("logging keys", "apiKey", apiKey, "appKey", appKey, "site", site, "ID", p.ID)
 	if err != nil {
 		sc.GetLogger().Error("datadogwebhook: failed to get datadog configs", "error", err)
 	}
@@ -2130,6 +2121,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		}
 	}
 
+	resolvedByLLM := false
 	if subjectName == "" && tenant.IsFeatureEnabled(sc, sc.GetSecurityContext().GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 		databaseManager, err := database.GetDatabaseManager(database.Metastore)
 		if err != nil {
@@ -2176,6 +2168,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 					cloudResourceId = workload.CloudResourceId
 					labels["kind"] = workload.Kind
 					labels["cloud_resource_id"] = workload.CloudResourceId
+					resolvedByLLM = true
 					// Re-anchor accountId on the matched workload's cloud account so
 					// downstream enrichment (event_incoming_webhooks insert, routing,
 					// EventIncomingWebhook.AccountId) targets the correct account.
@@ -2194,8 +2187,12 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		labels["nb_llm_match"] = "disabled"
 	}
 
-	// Auto-learn: save confirmed title → service mapping for future LLM prompts
-	if subjectName != "" && cleanTitle != "" {
+	// Auto-learn: save confirmed title → service mapping for future LLM prompts.
+	// Only LLM-resolved subjects are learned — a deterministic match (service
+	// tag, query scope, etc.) already came from structured alert metadata, not
+	// from the title's wording, so it isn't a genuine title→service pattern and
+	// would misleadingly bias future historicalPatterns() prompts.
+	if resolvedByLLM && subjectName != "" && cleanTitle != "" {
 		LearnSubjectMapping(sc, sc.GetSecurityContext().GetTenantId(), TenantAttrHistoricalIncidentsKey, cleanTitle, subjectName)
 	}
 

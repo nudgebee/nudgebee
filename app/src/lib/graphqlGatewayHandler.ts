@@ -117,6 +117,7 @@ export async function handleGatewayRequest(req: NextApiRequest, res: NextApiResp
         if (!res.writableEnded) res.end();
         return;
       }
+      console.error('GraphQL gateway error:', error);
       res.status(500).setHeader('traceparent', traceParent).setHeader('X-Request-ID', requestId).json({
         code: error.code,
         error: error.message,

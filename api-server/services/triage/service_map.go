@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"nudgebee/services/internal/database/models"
 )
@@ -198,7 +199,81 @@ func (g *DependencyGraph) resolveKey(key string) string {
 	if canonical, ok := g.nodeAliases[key]; ok {
 		return canonical
 	}
+	// Cloud events key on an ARN, and the ARN the event carries is not the one
+	// the graph node carries: a CloudWatch alarm on an ALB arrives as
+	// "arn:aws:elb:<region>:<acct>:loadbalancer:app/<name>/<id>" while the node
+	// is "arn:aws:elasticloadbalancing:<region>:<acct>:loadbalancer/app/<name>/<id>"
+	// — different service segment, different separator. Both reduce to the same
+	// resource id, which is what registerCloudResourceAliases indexed.
+	if resourceID := cloudResourceIDFromARN(key); resourceID != "" {
+		if canonical, ok := g.nodeAliases[resourceID]; ok {
+			return canonical
+		}
+	}
 	return key
+}
+
+// cloudResourceIDFromARN returns the resource-id portion of an ARN — the part
+// after the resource-type token — or "" when the input is not an ARN.
+//
+//	arn:aws:elasticloadbalancing:us-east-1:1234:loadbalancer/app/lb/9f → app/lb/9f
+//	arn:aws:elb:us-east-1:1234:loadbalancer:app/lb/9f                 → app/lb/9f
+//	arn:aws:ec2:us-east-1:1234:instance/i-0abc                        → i-0abc
+//	arn:aws:s3:::my-bucket                                            → my-bucket
+func cloudResourceIDFromARN(arn string) string {
+	if !strings.HasPrefix(arn, "arn:") {
+		return ""
+	}
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 || parts[5] == "" {
+		return ""
+	}
+	resource := parts[5]
+	if i := strings.IndexAny(resource, ":/"); i >= 0 {
+		return resource[i+1:]
+	}
+	return resource
+}
+
+// k8sAliasKinds are the kinds registerNodeAliases already fans out over. Nodes
+// of any other kind are cloud resources, whose identity is the resource id
+// rather than a namespace/kind/name triple.
+var k8sAliasKinds = map[string]bool{
+	"Deployment": true, "StatefulSet": true, "DaemonSet": true, "Rollout": true,
+	"Pod": true, "Service": true, "Workload": true, "K8sService": true,
+}
+
+// registerCloudResourceAliases indexes a cloud node under its bare resource
+// identifier so events that reference it by ARN or by id resolve to it.
+// K8s-kinded nodes are left to registerNodeAliases: their names ("flagd") are
+// only unique within a namespace, so registering them unqualified would let a
+// workload in one namespace answer for a same-named workload in another.
+func (g *DependencyGraph) registerCloudResourceAliases(canonical, kind, name string) {
+	if name == "" || k8sAliasKinds[kind] {
+		return
+	}
+	g.addAlias(name, canonical)
+	if resourceID := cloudResourceIDFromARN(name); resourceID != "" {
+		g.addAlias(resourceID, canonical)
+	}
+}
+
+// addAlias records alias→canonical, first-wins, without letting an alias shadow
+// a real node.
+func (g *DependencyGraph) addAlias(alias, canonical string) {
+	if alias == "" || alias == canonical {
+		return
+	}
+	if g.nodeAliases == nil {
+		g.nodeAliases = make(map[string]string)
+	}
+	if _, isCanonical := g.Nodes[alias]; isCanonical {
+		return
+	}
+	if _, already := g.nodeAliases[alias]; already {
+		return
+	}
+	g.nodeAliases[alias] = canonical
 }
 
 // registerNodeAliases records non-canonical key forms that should resolve to
@@ -331,6 +406,7 @@ func buildDependencyGraph(nodes []ServiceNode) *DependencyGraph {
 	sortAliasesByPriority(pending)
 	for _, p := range pending {
 		graph.registerNodeAliases(p.key, p.namespace, p.kind, p.name)
+		graph.registerCloudResourceAliases(p.key, p.kind, p.name)
 	}
 
 	// Second pass: Build edges
@@ -478,21 +554,24 @@ func extractNodeKeyFromLink(linkID interface{}) string {
 // KG evidence has nodes (with properties.name, properties.namespace, node_type) and
 // edges (with source_node_id, dest_node_id, relationship_type).
 func parseKnowledgeGraphEvidence(evidence map[string]interface{}) *DependencyGraph {
-	dataRaw := evidence["data"]
-	if dataRaw == nil {
-		return nil
+	// Two payload shapes exist. The current KG evidence writer puts nodes/edges
+	// at the evidence TOP LEVEL; an older shape nested them under "data" (as a
+	// map or a JSON string). This parser only knowing the old shape meant every
+	// current event failed to parse, which silently killed the correlation
+	// engine's cross-service (ServiceMap) scoring — events scored at time-only
+	// (0.30) and fell below the 0.50 threshold, the "cross-service path is
+	// dead" symptom noted in actions_triage_impact.go.
+	var dataMap map[string]interface{}
+	switch dataRaw := evidence["data"].(type) {
+	case map[string]interface{}:
+		dataMap = dataRaw
+	case string:
+		if err := json.Unmarshal([]byte(dataRaw), &dataMap); err != nil {
+			return nil
+		}
 	}
-
-	dataMap, ok := dataRaw.(map[string]interface{})
-	if !ok {
-		// Try as JSON string
-		dataStr, ok := dataRaw.(string)
-		if !ok {
-			return nil
-		}
-		if err := json.Unmarshal([]byte(dataStr), &dataMap); err != nil {
-			return nil
-		}
+	if dataMap == nil {
+		dataMap = evidence // current shape: nodes/edges at the top level
 	}
 
 	nodesRaw, _ := dataMap["nodes"].([]interface{})
@@ -571,6 +650,7 @@ func parseKnowledgeGraphEvidence(evidence map[string]interface{}) *DependencyGra
 	sortAliasesByPriority(pending)
 	for _, p := range pending {
 		graph.registerNodeAliases(p.key, p.namespace, p.kind, p.name)
+		graph.registerCloudResourceAliases(p.key, p.kind, p.name)
 	}
 
 	// Build edges from KG edges (only CALLS relationships)

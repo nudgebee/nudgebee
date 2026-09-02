@@ -29,13 +29,17 @@ func (t *SlackJoinChannelTask) Execute(taskCtx types.TaskContext, params map[str
 	}
 
 	text, _ := params["text"].(string)
+	bindAccount, _ := params["bind_account"].(bool)
+	bindSessionID, _ := params["bind_session_id"].(string)
 
 	req := notification.JoinChannelRequest{
-		Platform:  "slack",
-		ChannelID: channelID,
-		AccountID: taskCtx.GetAccountID(),
-		TeamID:    "",
-		Text:      text,
+		Platform:      "slack",
+		ChannelID:     channelID,
+		AccountID:     taskCtx.GetAccountID(),
+		TeamID:        "",
+		Text:          text,
+		BindAccount:   bindAccount,
+		BindSessionID: bindSessionID,
 	}
 
 	requestContext := taskCtx.GetNewRequestContext()
@@ -58,6 +62,16 @@ func (t *SlackJoinChannelTask) InputSchema() *types.Schema {
 			"text": {
 				Type:        "string",
 				Description: "Optional message to send upon joining.",
+				Required:    false,
+			},
+			"bind_account": {
+				Type:        "boolean",
+				Description: "Permanently bind this channel to the account so future @mentions skip the account picker. Use for dedicated incident/account channels only — not generic channels the bot is added to for other reasons. Pair with bind_session_id to also route future @mentions into the same investigation conversation; without it, future @mentions still skip the picker but start a fresh conversation.",
+				Required:    false,
+			},
+			"bind_session_id": {
+				Type:        "string",
+				Description: "Set to {{ event.fingerprint }} together with bind_account to make future @mentions in this channel continue the same conversation llm.event_investigate produced for this event, instead of starting a fresh chat session. Leave unset if you only want bind_account's account-skip behavior.",
 				Required:    false,
 			},
 		},

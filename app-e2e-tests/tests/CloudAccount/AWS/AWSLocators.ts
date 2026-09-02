@@ -229,31 +229,13 @@ export class AWSLocators extends CommonLocators {
       return;
     }
 
-    const cloudSidenavBtn = this.page.locator("#cloud-sidenavbutton");
-    await cloudSidenavBtn.click();
-    await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
-    await this.page.waitForLoadState("networkidle");
-    await this.page.mouse.move(0, 0);
+    await this.openCloudAccountsFromSidenav();
     console.log("Navigated to cloud account via sidenav");
 
     const awsSearchTerm = process.env.AWS_CLUSTER_NAME || "iteration-aws";
     await this.page.waitForTimeout(500);
-    const clusterInput = this.page.locator("#auto-complete-global-cluster");
-    await clusterInput.click({ clickCount: 3 });
-    await clusterInput.pressSequentially(awsSearchTerm, { delay: 50 });
-    console.log(`Typed '${awsSearchTerm}' in global cluster autocomplete`);
+    await this.selectCloudAccount(awsSearchTerm);
 
-    await this.page
-      .locator("[role='option']")
-      .filter({ hasText: awsSearchTerm })
-      .first()
-      .waitFor({ state: "visible", timeout: 10000 });
-
-    await this.page.keyboard.press("ArrowDown");
-    await this.page.keyboard.press("Enter");
-    console.log("Selected AWS cloud account option via keyboard");
-
-    await this.page.mouse.move(0, 0);
     await this.page.waitForURL(/cloud-account/, { timeout: 15000 });
     await this.page.waitForLoadState("networkidle");
     console.log("AWS cloud account detail page loaded");
