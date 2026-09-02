@@ -373,6 +373,65 @@ func TestIncidentIOWebhook_CustomFieldsWinOverFiringText(t *testing.T) {
 	assert.Equal(t, "authoritative", events[0].Investigation.Labels["namespace"])
 }
 
+// Custom field names are operator-controlled, so one named to collide with the
+// reserved nb_incidentio_* namespace must not be able to rewrite the incident's
+// own audit-trail metadata.
+func TestIncidentIOWebhook_CustomFieldsCannotClobberReservedMetadata(t *testing.T) {
+	body := fmt.Sprintf(`{"event_type": %q, %q: {
+    "id": "01FDAG4SAP5TYPT98WGR2N7W91",
+    "reference": "INC-123",
+    "name": "Database down",
+    "created_at": "2026-08-17T13:28:57Z",
+    "incident_status": {"name": "Investigating", "category": "live"},
+    "severity": {"name": "Major", "rank": 2},
+    "incident_role_assignments": [
+      {"role": {"name": "Incident Lead", "short_form": "lead"}, "assignee": {"name": "Lisa Karlin Curtis"}}
+    ],
+    "custom_field_entries": [
+      {"custom_field": {"name": "Nb Incidentio Reference"}, "values": [{"value_text": "SPOOFED"}]},
+      {"custom_field": {"name": "Nb Incidentio Status"}, "values": [{"value_text": "SPOOFED"}]},
+      {"custom_field": {"name": "Nb Incidentio Severity"}, "values": [{"value_text": "SPOOFED"}]},
+      {"custom_field": {"name": "Nb Incidentio Role Lead"}, "values": [{"value_text": "SPOOFED"}]},
+      {"custom_field": {"name": "Affected Team"}, "values": [{"value_text": "Payments"}]}
+    ]
+  }}`, incidentIOEventIncidentCreated, incidentIOEventIncidentCreated)
+
+	events, err := processIncidentIO(t, body)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	labels := events[0].Investigation.Labels
+	assert.Equal(t, "INC-123", labels["nb_incidentio_reference"])
+	assert.Equal(t, "Investigating", labels["nb_incidentio_status"])
+	assert.Equal(t, "Major", labels["nb_incidentio_severity"])
+	assert.Equal(t, "Lisa Karlin Curtis", labels["nb_incidentio_role_lead"])
+
+	// A non-colliding custom field is still recorded.
+	assert.Equal(t, "Payments", labels["affected_team"])
+}
+
+// Two custom fields normalising to the same label key resolve deterministically
+// (first wins) rather than depending on iteration order.
+func TestIncidentIOWebhook_CollidingCustomFieldsAreDeterministic(t *testing.T) {
+	body := fmt.Sprintf(`{"event_type": %q, %q: {
+    "id": "01FDAG4SAP5TYPT98WGR2N7W91",
+    "name": "Database down",
+    "created_at": "2026-08-17T13:28:57Z",
+    "incident_status": {"name": "Investigating", "category": "live"},
+    "custom_field_entries": [
+      {"custom_field": {"name": "Affected Team"}, "values": [{"value_text": "first"}]},
+      {"custom_field": {"name": "affected-team"}, "values": [{"value_text": "second"}]}
+    ]
+  }}`, incidentIOEventIncidentCreated, incidentIOEventIncidentCreated)
+
+	for i := 0; i < 10; i++ {
+		events, err := processIncidentIO(t, body)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "first", events[0].Investigation.Labels["affected_team"])
+	}
+}
+
 func TestIncidentIOWebhook_FallsBackWhenOptionalFieldsAbsent(t *testing.T) {
 	body := fmt.Sprintf(`{"event_type": %q, %q: {
     "id": "01FDAG4SAP5TYPT98WGR2N7W91",

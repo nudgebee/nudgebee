@@ -489,9 +489,18 @@ func incidentIOLabels(incident IncidentIOIncident, status *IncidentIOStatus) map
 		labels["nb_incidentio_role_"+incidentIOLabelKey(key)] = assignment.Assignee.Name
 	}
 
+	// Custom fields are written last but must not clobber anything already in the
+	// map. Field names are operator-controlled, so a field literally named "Nb
+	// Incidentio Reference" normalises onto a key written above and would silently
+	// replace the audit-trail metadata this function promises to preserve. First
+	// writer wins, which also makes two custom fields normalising to the same key
+	// deterministic rather than map-order dependent.
 	for _, entry := range incident.CustomFieldEntries {
 		key := incidentIOLabelKey(entry.CustomField.Name)
 		if key == "" {
+			continue
+		}
+		if _, exists := labels[key]; exists {
 			continue
 		}
 		if value := incidentIOCustomFieldValue(entry.Values); value != "" {
