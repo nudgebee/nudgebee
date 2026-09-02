@@ -1,4 +1,5 @@
-import { Grid, Typography, Box, Collapse, Alert, Tab, Tabs } from '@mui/material';
+import { Grid, Typography, Box, Collapse, Alert } from '@mui/material';
+import Tabs from '@shared/navigation/Tabs';
 import { Chip } from '@ui/Chip';
 import { Stepper } from '@ui/Stepper';
 import { Checkbox } from '@ui/Checkbox';
@@ -49,6 +50,13 @@ const WEBHOOK_MANUAL_INSTRUCTIONS = `### Manual Webhook Setup
 5. Alerts will be delivered to Nudgebee in real-time`;
 
 const STEPS = ['Service Account', 'Projects', 'Billing'];
+
+const PROJECT_TAB_OPTIONS = {
+  tabOptions: [
+    { value: 0, text: 'Auto-Discover' },
+    { value: 1, text: 'Manual Entry' },
+  ],
+};
 
 const AddGcpAccountModal = ({ open, onClose }) => {
   // Step 1: Service Account
@@ -535,12 +543,12 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           <Tabs
             value={projectTab}
-            onChange={(_, v) => setProjectTab(v)}
-            sx={{ mb: ds.space[4], minHeight: ds.space.mul(1, 9), '& .MuiTab-root': { minHeight: ds.space.mul(1, 9), py: ds.space[1] } }}
-          >
-            <Tab label='Auto-Discover' />
-            <Tab label='Manual Entry' />
-          </Tabs>
+            onChange={setProjectTab}
+            behavior='filter'
+            variant='secondary'
+            ariaLabel='Project selection method'
+            options={PROJECT_TAB_OPTIONS}
+          />
 
           {projectTab === 0 && (
             <>
