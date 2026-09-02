@@ -21,11 +21,28 @@ tags:
   - holmesgpt-parity
 
 before_test: |
+  set -e
   kubectl create namespace app-96 || true
   kubectl label namespace app-96 benchmark=true --overwrite || true
   kubectl apply -f manifest.yaml
-  sleep 30  # Let the operator start and CRD be created
+  # manifest.yaml defines the CRD; applying an instance of it before the API
+  # server has established the CRD fails with "no matches for kind
+  # WhaleWatcher" (reproducible even with full permissions, since kubectl
+  # applies the file's docs before the CRD is discoverable). Wait for
+  # Established, then apply the WhaleWatcher instances from manifest-cr.yaml.
+  kubectl wait --for=condition=Established crd/whalewatchers.ocean.io --timeout=30s
+  kubectl apply -f manifest-cr.yaml
+  # The operator prints its RBAC-forbidden log line on its first reconcile
+  # loop iteration, immediately on startup (before its own 30s interval
+  # sleep) — so waiting for the deployment to roll out is enough to
+  # guarantee that line exists, without a blind fixed sleep.
+  kubectl rollout status deployment/whale-operator -n app-96 --timeout=60s
 
 after_test: |
+  # || true on the CR delete: if before_test failed before the CRD
+  # established, "WhaleWatcher" isn't a registered kind yet and
+  # --ignore-not-found doesn't cover that (it only skips missing instances
+  # of a known kind, not an unknown kind) — kubectl delete would error.
+  kubectl delete -f manifest-cr.yaml --ignore-not-found || true
   kubectl delete -f manifest.yaml --ignore-not-found
   kubectl delete namespace app-96 --force --grace-period=0 --ignore-not-found
