@@ -1,4 +1,4 @@
-import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
+import { Box, Typography, Divider, CircularProgress } from '@mui/material';
 import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
@@ -17,6 +17,7 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
 import { Card } from '@ui/Card';
 import { CollapsableCard } from '@ui/CollapsableCard';
+import CustomTable from '@shared/tables/CustomTable';
 import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
@@ -865,53 +866,33 @@ const K8sRightSizingSummary = ({ recData }: { recData: any }) => {
         </Box>
       }
     >
-      <TableContainer
-        sx={{
-          borderRadius: ds.radius.lg,
-          border: `1px solid ${ds.gray[200]}`,
-          backgroundColor: ds.background[100],
-          '& .MuiTableCell-root': { px: ds.space[3], py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[200] },
-        }}
-      >
-        <Table size='small'>
-          <TableHead>
-            <TableRow sx={{ backgroundColor: ds.gray[100] }}>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>Container</TableCell>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                CPU Request
-              </TableCell>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                Memory Request
-              </TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {containers.map(({ containerName, cpu, memory }) => (
-              <TableRow key={containerName} sx={{ '&:last-child td': { borderBottom: 'none' } }}>
-                <TableCell>
-                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}>
-                    {containerName}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  {cpu ? (
-                    <ResourceChangeCell current={cpu.allocated?.request} recommended={cpu.recommended?.request} isMem={false} />
-                  ) : (
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {memory ? (
-                    <ResourceChangeCell current={memory.allocated?.request} recommended={memory.recommended?.request} isMem />
-                  ) : (
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <CustomTable
+        headers={['Container', 'CPU Request', 'Memory Request']}
+        tableData={containers.map(({ containerName, cpu, memory }) => [
+          {
+            component: (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}>
+                {containerName}
+              </Typography>
+            ),
+            data: containerName,
+          },
+          {
+            component: cpu ? (
+              <ResourceChangeCell current={cpu.allocated?.request} recommended={cpu.recommended?.request} isMem={false} />
+            ) : (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
+            ),
+          },
+          {
+            component: memory ? (
+              <ResourceChangeCell current={memory.allocated?.request} recommended={memory.recommended?.request} isMem />
+            ) : (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
+            ),
+          },
+        ])}
+      />
     </Card>
   );
 };
