@@ -20,11 +20,11 @@ func TestElbPriceFiltersUseRegionCode(t *testing.T) {
 	assert.False(t, hasLocation,
 		"location is what needed the lookup table that silently priced unmapped regions at $0")
 
-	// Present-but-empty is meaningful: getAvailableInstancesFromPricing skips
-	// empty values AND uses the key's presence to suppress its default Linux
-	// filter. Load balancers have no OS, so both behaviours are required.
+	// Present-but-empty documents intent: load balancers have no OS, and an
+	// empty value is dropped by getAvailableInstancesFromPricing, so no OS
+	// filter is sent. (The helper no longer adds one by default either.)
 	osFilter, ok := f["operatingSystem"]
-	assert.True(t, ok, "the key must exist to suppress the default Linux filter")
+	assert.True(t, ok, "the key is kept as an explicit statement that no OS filter applies")
 	assert.Empty(t, osFilter)
 }
 

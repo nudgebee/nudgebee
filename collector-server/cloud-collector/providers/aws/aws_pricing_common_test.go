@@ -3,6 +3,9 @@ package aws
 import (
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/pricing/types"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -93,4 +96,41 @@ func TestUsablyPricedInstancesKeepsRealAlternatives(t *testing.T) {
 func TestUsablyPricedInstancesEmptyWhenNothingPriced(t *testing.T) {
 	assert.Empty(t, usablyPricedInstances([]map[string]interface{}{pricedInstance("0.0000000000")}))
 	assert.Empty(t, usablyPricedInstances(nil))
+}
+
+func filterMap(filters []types.Filter) map[string]string {
+	out := map[string]string{}
+	for _, f := range filters {
+		out[aws.ToString(f.Field)] = aws.ToString(f.Value)
+	}
+	return out
+}
+
+// The helper once injected operatingSystem=Linux whenever a caller left it out.
+// Only EC2 instance products carry that attribute; on the live Pricing API the
+// same filter turns an RDS, Redshift, load-balancer or IP-address query from
+// one product into zero, which is how those recommendations shipped at $0.
+func TestPricingFiltersAddNothingImplicit(t *testing.T) {
+	got := filterMap(pricingFilters(map[string]string{"instanceType": "db.t3.medium", "databaseEngine": "PostgreSQL"}))
+	_, hasOS := got["operatingSystem"]
+	assert.False(t, hasOS, "no filter may be added that the caller did not name")
+	assert.Len(t, got, 2)
+}
+
+func TestPricingFiltersDropEmptyValues(t *testing.T) {
+	got := filterMap(pricingFilters(map[string]string{"usagetype": "USE1-PublicIPv4:IdleAddress", "productFamily": "", "operatingSystem": ""}))
+	assert.Equal(t, map[string]string{"usagetype": "USE1-PublicIPv4:IdleAddress"}, got)
+}
+
+func TestPricingFiltersKeepExplicitValues(t *testing.T) {
+	filters := pricingFilters(map[string]string{"operatingSystem": "Linux", "instanceType": "t3.medium"})
+	assert.Equal(t, map[string]string{"operatingSystem": "Linux", "instanceType": "t3.medium"}, filterMap(filters))
+	for _, f := range filters {
+		assert.Equal(t, types.FilterTypeTermMatch, f.Type)
+	}
+}
+
+func TestPricingFiltersAreOrderedByKey(t *testing.T) {
+	filters := pricingFilters(map[string]string{"vcpu": "2", "instanceType": "t3.medium", "memory": "4 GiB"})
+	assert.Equal(t, []string{"instanceType", "memory", "vcpu"}, []string{aws.ToString(filters[0].Field), aws.ToString(filters[1].Field), aws.ToString(filters[2].Field)})
 }
