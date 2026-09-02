@@ -552,7 +552,7 @@ func readAgentLogFetchSource(t *testing.T) string {
 // requires a DB-backed ExecuteAgentToolCall and live LLM calls).
 type fakeLogAgentForCall struct{}
 
-func (fakeLogAgentForCall) GetName() string          { return LogsAgentName }
+func (fakeLogAgentForCall) GetName() string          { return LegacyLogsAgentName }
 func (fakeLogAgentForCall) GetNameAliases() []string { return nil }
 func (fakeLogAgentForCall) GetDescription() string   { return "" }
 func (fakeLogAgentForCall) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
@@ -662,5 +662,5 @@ func TestGetLogAgent(t *testing.T) {
 	agent, err := getLogAgent(sc, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
 	assert.NotNil(t, agent)
-	assert.Equal(t, LogsAgentName, agent.GetName())
+	assert.Equal(t, LegacyLogsAgentName, agent.GetName())
 }

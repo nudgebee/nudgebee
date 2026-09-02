@@ -607,18 +607,17 @@ type appConfig struct {
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
-	// LogsV3CanonicalFastPathEnabled gates logs_v3's ROUTINE-mode canonical-JSON
-	// fast path (canonicalQueryAuthoringForRoutine / preBuiltCanonicalQuery /
-	// FetchLogsAgentV2.ExecuteV3, all in agent_log_v3.go): when the ReAct loop
-	// already knows namespace + app/pod, it builds the canonical `{"where": ...}`
-	// query itself and calls fetch_logs_v3 with it directly, skipping the
-	// tool's internal NL-translation LLM call. Global per-deploy toggle,
-	// default true — logs_v3 itself is already the safety gate (a distinct,
-	// opt-in agent name not wired into production routing), so this exists for
-	// a clean on/off A/B and instant rollback of just this sub-feature without
-	// reverting the whole agent. When false: the prompt never advertises the
-	// canonical-JSON option (fastPathAppAnchor and the tool description fall
-	// back to their NL-only phrasing) and fetchLogsV3Tool.Call never inspects
+	// LogsV3CanonicalFastPathEnabled gates the `logs` agent's ROUTINE-mode
+	// canonical-JSON fast path (canonicalQueryAuthoringForRoutine /
+	// preBuiltCanonicalQuery / FetchLogsAgentV2.ExecuteV3, all in
+	// agent_log_v3.go): when the ReAct loop already knows namespace + app/pod,
+	// it builds the canonical `{"where": ...}` query itself and calls
+	// fetch_logs_v3 with it directly, skipping the tool's internal
+	// NL-translation LLM call. Global per-deploy toggle, default true — kept
+	// as its own flag for a clean on/off A/B and instant rollback of just this
+	// sub-feature without reverting the whole agent. When false: the prompt
+	// never advertises the canonical-JSON option (fastPathAppAnchor and the
+	// tool description fall back to their NL-only phrasing) and fetchLogsV3Tool.Call never inspects
 	// tool_input shape — every fetch goes through the original NL →
 	// generateCanonicalLogQuery path unchanged.
 	LogsV3CanonicalFastPathEnabled bool `mapstructure:"llm_server_logs_v3_canonical_fast_path_enabled"`
@@ -914,10 +913,6 @@ type appConfig struct {
 	// looks up the agent's correct message_id from DB instead of trusting
 	// the request's message_id. Falls back to legacy path when disabled.
 	FollowupResumeV2Enabled bool `mapstructure:"llm_server_followup_resume_v2_enabled"`
-	// LogsV3Enabled redirects "logs" (implicit routing + lean-orchestrator
-	// default) to logs_v3 — same redirect pattern as TicketV2Enabled. See
-	// docs/logs-v3-agent-investigation.md. Default false until validated further.
-	LogsV3Enabled bool `mapstructure:"llm_server_logs_v3_enabled"`
 
 	// FollowupCancelEnabled gates the "dismiss" resolution on a pending AI
 	// follow-up (#27582) — lets a user skip a WAITING conversation instead
@@ -1516,7 +1511,6 @@ func init() {
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
 	viper.SetDefault("llm_server_events_v2_enabled", false)
-	viper.SetDefault("llm_server_logs_v3_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
 	viper.SetDefault("llm_server_followup_cancel_enabled", false)

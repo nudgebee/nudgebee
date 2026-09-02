@@ -77,17 +77,17 @@ func TestFetchLogsV3Tool_Registered(t *testing.T) {
 // top-level agent.
 func TestLogAgentV3_Registered(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
-	agent, ok := core.GetNBAgent(ctx, LogsAgentV3Name, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "")
-	assert.True(t, ok, "logs_v3 must be registered as a system agent")
+	agent, ok := core.GetNBAgent(ctx, LogsAgentName, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "")
+	assert.True(t, ok, "logs must be registered as a system agent")
 	assert.NotNil(t, agent)
-	assert.Equal(t, LogsAgentV3Name, agent.GetName())
+	assert.Equal(t, LogsAgentName, agent.GetName())
 }
 
 func TestLogAgentV3_RegisteredAsTool(t *testing.T) {
-	tool, ok := toolcore.GetNBTool("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", LogsAgentV3Name)
-	require.True(t, ok, "logs_v3 must be registered as a system tool so other agents can delegate to it")
+	tool, ok := toolcore.GetNBTool("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", LogsAgentName)
+	require.True(t, ok, "logs must be registered as a system tool so other agents can delegate to it")
 	require.NotNil(t, tool)
-	assert.Equal(t, LogsAgentV3Name, tool.Name())
+	assert.Equal(t, LogsAgentName, tool.Name())
 }
 
 func TestGetLogAgentV3(t *testing.T) {
@@ -95,7 +95,7 @@ func TestGetLogAgentV3(t *testing.T) {
 	agent, err := getLogAgentV3(sc, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
 	assert.NotNil(t, agent)
-	assert.Equal(t, LogsAgentV3Name, agent.GetName())
+	assert.Equal(t, LogsAgentName, agent.GetName())
 }
 
 // TestLogAgentV3_SystemPrompt_MatchesModeClassification confirms v3 reuses

@@ -6,19 +6,16 @@ import (
 	"strings"
 )
 
-// This file is logs_v3's OWN copy of the mode-classification and
-// shared-instruction-block logic that agent_log.go (the `logs` v1 agent)
-// owns. It started as a verbatim reuse of agent_log.go's helpers (see the old
-// GetSystemPrompt doc comment in agent_log_v3.go) but that coupling meant any
-// v3-specific curation had to fight text v1 still depends on — the exact
+// This file is the `logs` agent's (agent_log_v3.go) OWN copy of the
+// mode-classification and shared-instruction-block logic that agent_log.go
+// (the now-legacy LegacyLogsAgentName implementation) owns. It started as a
+// verbatim reuse of agent_log.go's helpers, but that coupling meant curation
+// here had to fight text the legacy agent still depended on — the exact
 // failure mode that let sharedHeaderAndWorkflow's/routineInstructions'
 // NL-phrasing framing silently outlast fastPathAppAnchor's fix (both told the
 // model to "phrase the NL question", so patching one bullet wasn't enough).
-//
-// Everything here is v3-owned and safe to edit freely: agent_log.go (and
-// `logs` v1's behavior) is never touched by changes in this file. Names are
-// suffixed V3 to avoid colliding with agent_log.go's identical-purpose
-// unexported symbols in the same package.
+// Names are suffixed V3, a leftover of this agent's original "logs_v3" name,
+// kept so they don't collide with agent_log.go's identical-purpose symbols.
 //
 // Divergences from the agent_log.go originals, deliberate:
 //   - sharedHeaderAndWorkflowV3 names the real tool names directly

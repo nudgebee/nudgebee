@@ -15,27 +15,22 @@ import (
 	"time"
 )
 
-// LogsAgentV3Name is a side-by-side variant of LogsAgentName for A/B testing.
-// Unlike v1/v2, fetch_logs is not a separately-invoked sub-agent — it's a plain
-// NBTool that calls FetchLogsAgentV2.Execute() directly, so its internal LLM
-// call (generateCanonicalLogQuery) attributes to THIS agent's own agent_id
-// instead of creating a second llm_conversation_agent row. That removes the
+// LogsAgentName is the production `logs` log investigator (the superseded
+// implementation is agent_log.go's unregistered LegacyLogsAgentName). Unlike
+// that legacy agent, fetch_logs is not a separately-invoked sub-agent here —
+// it's a plain NBTool that calls FetchLogsAgentV2.Execute() directly, so its
+// internal LLM call attributes to THIS agent's own agent_id instead of
+// creating a second llm_conversation_agent row. That removes the
 // child_agent_id nesting class of bug by construction (see log_analysis_bugs
 // notes: A1-A5 were all consequences of a bespoke agent-as-tool wrapper
 // drifting from the generic path — there is no wrapper here to drift).
 //
-// Mode classification and prompt content started as a verbatim reuse of
-// agent_log.go's helpers and are now v3's own copies (agent_log_v3_prompts.go
-// — classifyLogModeV3, sharedHeaderAndWorkflowV3, routineInstructionsV3,
-// investigationInstructionsV3, enumerationInstructionsV3,
-// outputFormatInstructionsV3, sharedConstraintsV3) so v3-specific curation
-// (the canonical-JSON fast path, fastPathAppAnchor) can edit this agent's own
-// prompt text without fighting or drifting v1's identical-looking blocks.
-// See that file's doc comment for what has actually diverged so far.
-//
-// Registered under a distinct name so it never receives production traffic
-// until explicitly invoked (@logs_v3) or wired into an orchestrator's tool list.
-const LogsAgentV3Name = "logs_v3"
+// Mode classification and prompt content are this agent's own copies, kept
+// in agent_log_v3_prompts.go (V3-suffixed to avoid colliding with
+// agent_log.go's identical-purpose helpers) so curation here never fights or
+// drifts the legacy agent's identical-looking blocks. See that file's doc
+// comment for what has actually diverged.
+const LogsAgentName = "logs"
 
 // FetchLogsV3ToolName is the merged fetch tool's registered name — distinct
 // from FetchLogsAgentName ("fetch_logs") since that name is already bound to
@@ -48,7 +43,7 @@ func init() {
 	toolInput := "Provide a log question in natural language, preserving the user's wording verbatim: investigation wording (why/root cause/diagnose/troubleshoot), enumeration wording (list/summarize errors), or routine wording (recent/tail logs) — the agent's mode classifier routes off this wording."
 	toolOutput := "Markdown answer with cited log evidence (timestamps, error signatures). Investigations include a 5-Why causality chain and a time-window callout when errors cluster."
 
-	core.RegisterNBAgentFactoryAndTool(LogsAgentV3Name, func(accountId string) (core.NBAgent, error) {
+	core.RegisterNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
 		return getLogAgentV3(security.NewRequestContextForSuperAdmin(), accountId)
 	}, toolDescription, toolInput, toolOutput)
 	toolcore.RegisterNBToolFactory(FetchLogsV3ToolName, func(accountId string) (toolcore.NBTool, error) {
@@ -93,9 +88,9 @@ func newLogAgentV3(accountId string, provider services_server.ObservabilityProvi
 	return &LogAgentV3{accountId: accountId, provider: provider}
 }
 
-func (l *LogAgentV3) GetName() string { return LogsAgentV3Name }
+func (l *LogAgentV3) GetName() string { return LogsAgentName }
 
-func (l *LogAgentV3) GetNameAliases() []string { return nil }
+func (l *LogAgentV3) GetNameAliases() []string { return []string{"Logs"} }
 
 func (l *LogAgentV3) GetDescription() string {
 	return `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes. Use this for: fetching application or container logs, searching log entries by keyword or time range, troubleshooting pod/container errors via log output, correlating logs across services. Do NOT use for: querying performance metrics (use ` + "`metrics`" + ` agent), running kubectl commands (use ` + "`kubectl`" + ` or ` + "`kubectl_execute`" + `), or querying Kubernetes events (use ` + "`events`" + ` agent).
