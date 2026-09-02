@@ -112,16 +112,20 @@ function BreakdownTable({ keyHeader, rows, id }: BreakdownTableProps) {
     { name: 'Avg latency', width: '13%' },
     { name: 'Cost', width: '13%' },
   ];
-  const tableData = [...rows]
-    .sort((a, b) => b.cost_usd - a.cost_usd)
-    .map((r) => [
-      { component: <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)' }}>{r.key || '—'}</Box> },
-      { component: <Box sx={numCell}>{fmtCount(r.requests)}</Box> },
-      { component: <Box sx={numCell}>{fmtTokens(r.input_tokens)}</Box> },
-      { component: <Box sx={numCell}>{fmtTokens(r.output_tokens)}</Box> },
-      { component: <Box sx={numCell}>{fmtDuration((r.avg_latency_seconds ?? 0) * 1000)}</Box> },
-      { component: <Box sx={{ ...numCell, fontWeight: 'var(--ds-font-weight-semibold)' }}>{fmtCost(r.cost_usd)}</Box> },
-    ]);
+  const tableData = React.useMemo(
+    () =>
+      [...rows]
+        .sort((a, b) => b.cost_usd - a.cost_usd)
+        .map((r) => [
+          { component: <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)' }}>{r.key || '—'}</Box> },
+          { component: <Box sx={numCell}>{fmtCount(r.requests)}</Box> },
+          { component: <Box sx={numCell}>{fmtTokens(r.input_tokens)}</Box> },
+          { component: <Box sx={numCell}>{fmtTokens(r.output_tokens)}</Box> },
+          { component: <Box sx={numCell}>{fmtDuration((r.avg_latency_seconds ?? 0) * 1000)}</Box> },
+          { component: <Box sx={{ ...numCell, fontWeight: 'var(--ds-font-weight-semibold)' }}>{fmtCost(r.cost_usd)}</Box> },
+        ]),
+    [rows]
+  );
   return <CustomTable2 id={id} headers={headers} tableData={tableData} />;
 }
 

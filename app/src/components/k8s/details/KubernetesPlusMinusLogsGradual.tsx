@@ -161,6 +161,12 @@ const KubernetesPlusMinusLogsGradual: React.FC<KubernetesPlusMinusLogsGradualPro
   useEffect(() => {
     if (!query?.data?.timestamp) return;
 
+    // `loadInitialLogs` is async, so a teardown during the fetch runs the cleanup
+    // while scrollTimer is still undefined. The flag is what stops the continuation
+    // from scheduling a timer (and setting state) after the effect is gone.
+    let active = true;
+    let scrollTimer: ReturnType<typeof setTimeout> | undefined;
+
     const loadInitialLogs = async () => {
       // Reset state when query changes
       setLogs([]);
@@ -177,6 +183,7 @@ const KubernetesPlusMinusLogsGradual: React.FC<KubernetesPlusMinusLogsGradualPro
       setEndTime(newEndTime);
 
       const fetchedLogs = await fetchLogs(newStartTime, newEndTime);
+      if (!active) return;
 
       // Ensure the original log entry is included
 
@@ -196,12 +203,17 @@ const KubernetesPlusMinusLogsGradual: React.FC<KubernetesPlusMinusLogsGradualPro
       setInitialLoading(false);
 
       // Scroll to event marker after initial load
-      setTimeout(() => {
+      scrollTimer = setTimeout(() => {
         eventMarkerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
     };
 
     loadInitialLogs();
+
+    return () => {
+      active = false;
+      if (scrollTimer) clearTimeout(scrollTimer);
+    };
   }, [query?.data?.timestamp, query?.data?.message, query?.sample, query?.logQuery]);
 
   // Safety check for query data - after all hooks
