@@ -900,6 +900,115 @@ func (a *amazonRds) GetResources(ctx providers.CloudProviderContext, account pro
 }
 
 // https://www.trendmicro.com/cloudoneconformity/knowledge-base/aws/RDS/
+
+const (
+	// rdsServerlessInstanceClass is Aurora Serverless: capacity-based, so none of
+	// the instance-hour reasoning in this file applies to it.
+	rdsServerlessInstanceClass = "db.serverless"
+
+	// rdsReservedLeaseHours is one year of an RDS reserved-instance term, used to
+	// amortise an upfront fee into an effective hourly rate.
+	rdsReservedLeaseHours = 365 * 24
+)
+
+// rdsReservedOffer is one reserved-instance offering for an instance type, with
+// any upfront fee amortised across the term so offerings can be compared on a
+// single number.
+type rdsReservedOffer struct {
+	LeaseContractLength string
+	OfferingClass       string
+	PurchaseOption      string
+	EffectiveHourlyUSD  float64
+}
+
+// parseRdsReservedOffers reads terms.Reserved off a Pricing API product. AWS
+// splits an offering across price dimensions: an "Hrs" rate and, for the upfront
+// options, a one-off "Quantity". All Upfront quotes $0/hr, so an offering cannot
+// be judged on its hourly dimension alone.
+func parseRdsReservedOffers(product map[string]interface{}) []rdsReservedOffer {
+	terms, _ := product["terms"].(map[string]any)
+	reserved, _ := terms["Reserved"].(map[string]any)
+	offers := make([]rdsReservedOffer, 0, len(reserved))
+	for _, raw := range reserved {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		attrs, _ := entry["termAttributes"].(map[string]any)
+		lease, _ := attrs["LeaseContractLength"].(string)
+		class, _ := attrs["OfferingClass"].(string)
+		option, _ := attrs["PurchaseOption"].(string)
+		dims, _ := entry["priceDimensions"].(map[string]any)
+
+		hourly, upfront := 0.0, 0.0
+		for _, d := range dims {
+			dim, ok := d.(map[string]any)
+			if !ok {
+				continue
+			}
+			per, _ := dim["pricePerUnit"].(map[string]any)
+			usd, _ := per["USD"].(string)
+			value, err := strconv.ParseFloat(usd, 64)
+			if err != nil {
+				continue
+			}
+			if unit, _ := dim["unit"].(string); strings.EqualFold(unit, "Quantity") {
+				upfront += value
+			} else {
+				hourly += value
+			}
+		}
+		lifetime := rdsReservedLeaseHours
+		if strings.HasPrefix(lease, "3") {
+			lifetime *= 3
+		}
+		effective := hourly + upfront/float64(lifetime)
+		if effective <= 0 {
+			continue
+		}
+		offers = append(offers, rdsReservedOffer{LeaseContractLength: lease, OfferingClass: class, PurchaseOption: option, EffectiveHourlyUSD: effective})
+	}
+	// terms.Reserved is a map, so the parse order is random. Sort cheapest first,
+	// breaking ties on the term's identity: the caller takes the first match, and
+	// the list is written into the recommendation payload — an unstable order
+	// would rewrite that JSONB on every scan for no reason.
+	sort.SliceStable(offers, func(i, j int) bool {
+		if offers[i].EffectiveHourlyUSD != offers[j].EffectiveHourlyUSD {
+			return offers[i].EffectiveHourlyUSD < offers[j].EffectiveHourlyUSD
+		}
+		if offers[i].LeaseContractLength != offers[j].LeaseContractLength {
+			return offers[i].LeaseContractLength < offers[j].LeaseContractLength
+		}
+		return offers[i].PurchaseOption < offers[j].PurchaseOption
+	})
+	return offers
+}
+
+// pickRdsReservedOffer chooses the offering to quote: a one-year standard term
+// with no upfront payment. It is the least the customer can save and the easiest
+// to act on, so the figure understates rather than overstates and needs no
+// capital-outlay caveat. Longer or prepaid terms save more and are listed on the
+// recommendation for whoever wants them.
+func pickRdsReservedOffer(offers []rdsReservedOffer) (rdsReservedOffer, bool) {
+	for _, o := range offers {
+		if strings.HasPrefix(o.LeaseContractLength, "1") &&
+			strings.EqualFold(o.OfferingClass, "standard") &&
+			strings.EqualFold(o.PurchaseOption, "No Upfront") {
+			return o, true
+		}
+	}
+	return rdsReservedOffer{}, false
+}
+
+// rdsReservedMonthlySaving is the monthly difference between paying on demand
+// and holding a reservation. A reservation dearer than on demand saves nothing.
+func rdsReservedMonthlySaving(onDemandHourly, reservedHourly float64) float64 {
+	if onDemandHourly <= 0 || reservedHourly <= 0 || reservedHourly >= onDemandHourly {
+		return 0
+	}
+	return (onDemandHourly - reservedHourly) * hoursPerMonth
+}
+
 func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 	startDate := time.Now().Add(-time.Hour * 24 * 7)
@@ -921,6 +1030,10 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 	// get reserved instances
 	regionReservedInstances := map[string][]string{}
+	reservedQuotes := map[string]struct {
+		onDemandHourly float64
+		offers         []rdsReservedOffer
+	}{}
 	for _, region := range regions {
 		regionalCfg := cfg.Copy()
 		regionalCfg.Region = region
@@ -1006,13 +1119,66 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 		if !ok {
 			continue
 		}
-		if !lo.Contains(regionReservedInstances[resource.Region], dbInstanceClass) {
+		// Aurora Serverless bills per ACU-hour and has no reserved offering at all
+		// — the Pricing API returns no product for db.serverless — so "reserve this
+		// instance" is advice that cannot be taken, not merely one we cannot price.
+		if dbInstanceClass != rdsServerlessInstanceClass && !lo.Contains(regionReservedInstances[resource.Region], dbInstanceClass) {
+			engine, _ := meta["Engine"].(string)
+			multiAZ, _ := meta["MultiAZ"].(bool)
+			deploymentOption := "Single-AZ"
+			if multiAZ {
+				deploymentOption = "Multi-AZ"
+			}
+			licenseModel, _ := meta["LicenseModel"].(string)
+
+			// The instance-type details cached in cloud_resource_details are
+			// synthesised with an OnDemand term only, so reserved pricing has to
+			// come from a fresh lookup. Memoised per type for the run.
+			reservedKey := strings.Join([]string{resource.Region, dbInstanceClass, engine, deploymentOption}, ":")
+			quote, cached := reservedQuotes[reservedKey]
+			if !cached {
+				products, lookupErr := getAvailableRdsInstances(ctx, cfg, resource.Region, engine, "", "", dbInstanceClass, deploymentOption,
+					rdsPricingPins{LicenseModel: rdsLicenseModelForPricing(licenseModel)})
+				if lookupErr != nil {
+					ctx.GetLogger().Warn("rds reserved pricing lookup failed", "error", lookupErr, "instanceClass", dbInstanceClass, "region", resource.Region)
+				} else if len(products) > 0 {
+					quote.onDemandHourly, _ = getPricingValue(products[0])
+					quote.offers = parseRdsReservedOffers(products[0])
+				}
+				reservedQuotes[reservedKey] = quote
+			}
+
+			savings := 0.0
+			data := map[string]any{"db_instance_class": dbInstanceClass, "engine": engine, "deployment_option": deploymentOption}
+			if offer, ok := pickRdsReservedOffer(quote.offers); ok {
+				savings = rdsReservedMonthlySaving(quote.onDemandHourly, offer.EffectiveHourlyUSD)
+				data["on_demand_usd_per_hour"] = quote.onDemandHourly
+				data["reserved_usd_per_hour"] = offer.EffectiveHourlyUSD
+				data["lease_contract_length"] = offer.LeaseContractLength
+				data["offering_class"] = offer.OfferingClass
+				data["purchase_option"] = offer.PurchaseOption
+				data["savings_basis"] = "one-year standard term, no upfront payment; longer or prepaid terms save more"
+				alternatives := make([]map[string]any, 0, len(quote.offers))
+				for _, o := range quote.offers {
+					alternatives = append(alternatives, map[string]any{
+						"lease_contract_length":  o.LeaseContractLength,
+						"offering_class":         o.OfferingClass,
+						"purchase_option":        o.PurchaseOption,
+						"effective_usd_per_hour": o.EffectiveHourlyUSD,
+						"monthly_saving":         rdsReservedMonthlySaving(quote.onDemandHourly, o.EffectiveHourlyUSD),
+					})
+				}
+				data["alternative_offerings"] = alternatives
+			} else {
+				ctx.GetLogger().Warn("no reserved offering found for rds instance type", "instanceClass", dbInstanceClass, "engine", engine, "region", resource.Region)
+			}
+
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryRightSizing,
 				RuleName:            "aws_rds_instance_reserved",
 				Severity:            providers.RecommendationSeverityHigh,
-				Savings:             0,
-				Data:                map[string]any{},
+				Savings:             savings,
+				Data:                data,
 				Action:              providers.RecommendationActionModify,
 				ResourceServiceName: resource.ServiceName,
 				ResourceId:          resource.Id,
