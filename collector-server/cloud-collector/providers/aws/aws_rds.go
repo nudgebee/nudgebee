@@ -154,11 +154,59 @@ func getRDSExtendedSupportInfo(engine, version string) *ExtendedSupportInfo {
 // - gp2 (General Purpose SSD): ~$0.115/GB-month (us-east-1 baseline)
 // - gp3 (General Purpose SSD v3): ~$0.08/GB-month (us-east-1 baseline)
 // Source: https://aws.amazon.com/rds/pricing/ (as of 2025)
-func getRDSStoragePricing(cfg aws.Config, region string, storageType string) (float64, error) {
+// rdsStorageDeploymentMatches reports whether a storage SKU's deploymentOption
+// applies to an instance of the given topology. Single-AZ is one exact value;
+// Multi-AZ has several ("Multi-AZ", "Multi-AZ (SQL Server Mirror)", "Multi-AZ
+// (readable standbys)"), so it is matched by prefix.
+func rdsStorageDeploymentMatches(deploymentOption string, multiAZ bool) bool {
+	if multiAZ {
+		return strings.HasPrefix(deploymentOption, "Multi-AZ")
+	}
+	return deploymentOption == "Single-AZ"
+}
+
+// selectRdsStoragePrice picks the per-GB-month price for the instance's topology
+// from a storage price list, choosing the cheapest when several SKUs apply. RDS
+// storage is priced by topology, not engine: Single-AZ, Multi-AZ and Multi-AZ
+// cluster storage differ by up to 3x, so an unpinned [0] could price a gp2->gp3
+// move off the wrong tier. Cheapest is conservative for a Multi-AZ DBInstance:
+// the dearer readable-standby tier belongs to Multi-AZ DB clusters. Returns the
+// price and how many distinct prices matched, so the caller can log ambiguity.
+func selectRdsStoragePrice(products []map[string]interface{}, multiAZ bool) (float64, int, error) {
+	best := math.Inf(1)
+	distinct := map[float64]struct{}{}
+	for _, product := range products {
+		p, _ := product["product"].(map[string]any)
+		attrs, _ := p["attributes"].(map[string]any)
+		deployment, _ := attrs["deploymentOption"].(string)
+		if !rdsStorageDeploymentMatches(deployment, multiAZ) {
+			continue
+		}
+		price, err := getPricingValue(product)
+		if err != nil || price <= 0 {
+			continue
+		}
+		distinct[price] = struct{}{}
+		if price < best {
+			best = price
+		}
+	}
+	if len(distinct) == 0 {
+		return 0, 0, fmt.Errorf("no priced storage SKU for multiAZ=%t", multiAZ)
+	}
+	return best, len(distinct), nil
+}
+
+func getRDSStoragePricing(ctx providers.CloudProviderContext, cfg aws.Config, region string, storageType string, multiAZ bool) (float64, error) {
 	filtersMap := map[string]string{
 		"regionCode":    region,
 		"productFamily": "Database Storage",
 		"volumeType":    storageType,
+	}
+	// Single-AZ is one exact value and pins the lookup to a single price; the
+	// Multi-AZ variants are selected client-side by prefix instead.
+	if !multiAZ {
+		filtersMap["deploymentOption"] = "Single-AZ"
 	}
 
 	priceList, err := getAvailableInstancesFromPricing(cfg, "AmazonRDS", filtersMap)
@@ -170,12 +218,19 @@ func getRDSStoragePricing(cfg aws.Config, region string, storageType string) (fl
 		return 0, fmt.Errorf("no pricing found for storage type %s in region %s", storageType, region)
 	}
 
-	// Get price per GB-month
-	price, err := getPricingValue(priceList[0])
+	price, distinct, err := selectRdsStoragePrice(priceList, multiAZ)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("storage type %s in region %s: %w", storageType, region, err)
 	}
-
+	if distinct > 1 {
+		msg := "rds storage pricing: several prices match the topology; using the cheapest"
+		args := []any{"storageType", storageType, "region", region, "multiAZ", multiAZ, "distinctPrices", distinct}
+		if ctx != nil {
+			ctx.GetLogger().Warn(msg, args...)
+		} else {
+			slog.Warn(msg, args...)
+		}
+	}
 	return price, nil
 }
 
@@ -1021,8 +1076,10 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 				allocatedStorage = allocatedStorageFloat
 			}
 
-			// Get actual pricing from AWS Pricing API
-			gp2Price, err := getRDSStoragePricing(cfg, resource.Region, "General Purpose")
+			// Storage is priced by topology (Single-AZ vs Multi-AZ), so price both
+			// tiers for the instance's own deployment.
+			multiAZ, _ := meta["MultiAZ"].(bool)
+			gp2Price, err := getRDSStoragePricing(ctx, cfg, resource.Region, "General Purpose", multiAZ)
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get gp2 storage pricing, using default", "error", err, "region", resource.Region)
 				// Fallback: us-east-1 baseline pricing from https://aws.amazon.com/rds/pricing/
@@ -1030,7 +1087,7 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 				gp2Price = 0.115 // $0.115 per GB-month (gp2 storage)
 			}
 
-			gp3Price, err := getRDSStoragePricing(cfg, resource.Region, "General Purpose-GP3")
+			gp3Price, err := getRDSStoragePricing(ctx, cfg, resource.Region, "General Purpose-GP3", multiAZ)
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get gp3 storage pricing, using default", "error", err, "region", resource.Region)
 				// Fallback: us-east-1 baseline pricing from https://aws.amazon.com/rds/pricing/

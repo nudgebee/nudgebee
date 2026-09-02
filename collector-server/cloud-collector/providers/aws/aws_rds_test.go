@@ -178,3 +178,53 @@ func TestSelectRdsPricingCandidatesPutsUnpriceableLast(t *testing.T) {
 func TestSelectRdsPricingCandidatesIsEmptyForEmptyInput(t *testing.T) {
 	assert.Empty(t, selectRdsPricingCandidates(nil, "oracle-ee"))
 }
+
+func rdsStorageSku(price float64, deployment string) map[string]interface{} {
+	return synthesizeRdsInstanceTypeDetails(price, map[string]any{"deploymentOption": deployment})
+}
+
+// Live us-east-1 gp3 prices per GB-month: Single-AZ 0.115, Multi-AZ and SQL
+// Server Mirror 0.230, readable-standby cluster 0.345 — for every engine.
+func rdsStorageCatalogue() []map[string]interface{} {
+	return []map[string]interface{}{
+		rdsStorageSku(0.345, "Multi-AZ (readable standbys)"),
+		rdsStorageSku(0.230, "Multi-AZ"),
+		rdsStorageSku(0.115, "Single-AZ"),
+		rdsStorageSku(0.230, "Multi-AZ (SQL Server Mirror)"),
+	}
+}
+
+func TestSelectRdsStoragePriceSingleAZ(t *testing.T) {
+	price, distinct, err := selectRdsStoragePrice(rdsStorageCatalogue(), false)
+	assert.NoError(t, err)
+	assert.InDelta(t, 0.115, price, 1e-9)
+	assert.Equal(t, 1, distinct)
+}
+
+func TestSelectRdsStoragePriceMultiAZTakesTheCheapestVariant(t *testing.T) {
+	price, distinct, err := selectRdsStoragePrice(rdsStorageCatalogue(), true)
+	assert.NoError(t, err)
+	assert.InDelta(t, 0.230, price, 1e-9, "Multi-AZ / Mirror, not the readable-standby cluster tier")
+	assert.Equal(t, 2, distinct, "0.230 and 0.345 both matched the prefix; the caller logs that")
+}
+
+func TestSelectRdsStoragePriceIgnoresOtherTopologies(t *testing.T) {
+	_, _, err := selectRdsStoragePrice([]map[string]interface{}{rdsStorageSku(0.230, "Multi-AZ")}, false)
+	assert.Error(t, err, "a Single-AZ instance must not be priced off Multi-AZ storage")
+}
+
+func TestSelectRdsStoragePriceSkipsUnpriceable(t *testing.T) {
+	noTerms := map[string]interface{}{"product": map[string]any{"attributes": map[string]any{"deploymentOption": "Single-AZ"}}}
+	price, _, err := selectRdsStoragePrice([]map[string]interface{}{noTerms, rdsStorageSku(0.115, "Single-AZ")}, false)
+	assert.NoError(t, err)
+	assert.InDelta(t, 0.115, price, 1e-9)
+}
+
+func TestRdsStorageDeploymentMatches(t *testing.T) {
+	assert.True(t, rdsStorageDeploymentMatches("Single-AZ", false))
+	assert.False(t, rdsStorageDeploymentMatches("Multi-AZ", false))
+	assert.True(t, rdsStorageDeploymentMatches("Multi-AZ", true))
+	assert.True(t, rdsStorageDeploymentMatches("Multi-AZ (SQL Server Mirror)", true))
+	assert.True(t, rdsStorageDeploymentMatches("Multi-AZ (readable standbys)", true))
+	assert.False(t, rdsStorageDeploymentMatches("Single-AZ", true))
+}
