@@ -510,27 +510,16 @@ func (a *amazonVpc) GetRecommendations(ctx providers.CloudProviderContext, accou
 		}
 		for _, address := range addresses.Addresses {
 			if address.AssociationId == nil {
-				cost := 0.0
 				usageType, err := getUsageType(cfg.Region)
-				if err != nil {
-					ctx.GetLogger().Error("Error getting elastic ip pricing", "error", err)
-					continue
+				var prices []map[string]interface{}
+				if err == nil {
+					prices, err = getAvailableInstancesFromPricing(cfg, "AmazonVPC", idleElasticIPPricingFilters(usageType))
 				}
-				prices, err := getAvailableInstancesFromPricing(cfg, "AmazonVPC", map[string]string{
-					"productFamily": "IP Address",
-					"usagetype":     usageType,
-				})
-				if err != nil {
-					ctx.GetLogger().Error("Error getting elastic ip pricing", "error", err)
-				} else {
-					if len(prices) > 0 {
-						price, err := getPricingValue(prices[0])
-						if err != nil {
-							ctx.GetLogger().Error("Error getting elastic ip pricing", "error", err)
-						} else {
-							cost = price * 24 * 30
-						}
-					}
+				// An unmapped region or an empty price list still describes an idle
+				// address that is being billed; price it rather than drop or zero it.
+				cost, pricingSource := idleElasticIPMonthlyCost(prices, err)
+				if pricingSource != eipPricingSourceAPI {
+					ctx.GetLogger().Warn("idle elastic ip priced at the AWS flat rate; pricing lookup returned nothing usable", "region", cfg.Region, "error", err)
 				}
 				recommendation := providers.Recommendation{
 					CategoryName: providers.RecommendationCategoryRightSizing,
@@ -538,7 +527,8 @@ func (a *amazonVpc) GetRecommendations(ctx providers.CloudProviderContext, accou
 					Severity:     providers.RecommendationSeverityMedium,
 					Savings:      cost,
 					Data: map[string]any{
-						"elastic_ip": *address.PublicIp,
+						"elastic_ip":     aws.ToString(address.PublicIp),
+						"pricing_source": pricingSource,
 					},
 					Action:              providers.RecommendationActionModify,
 					ResourceServiceName: resource.ServiceName,
@@ -645,7 +635,7 @@ func getUsageType(region string) (string, error) {
 		"us-west-2":      "USW2",
 		"af-south-1":     "AFS1",
 		"ap-east-1":      "APE1",
-		"ap-south-1":     "APS1",
+		"ap-south-1":     "APS3",
 		"ap-northeast-1": "APN1",
 		"ap-northeast-2": "APN2",
 		"ap-northeast-3": "APN3",
@@ -662,7 +652,47 @@ func getUsageType(region string) (string, error) {
 		"sa-east-1":      "SAE1",
 	}
 	if val, ok := regionMap[region]; ok {
-		return fmt.Sprintf("%s-ElasticIP:IdleAddress", val), nil
+		return fmt.Sprintf("%s-PublicIPv4:IdleAddress", val), nil
 	}
 	return "", fmt.Errorf("region not found")
+}
+
+const (
+	// awsPublicIPv4HourlyUSD is the flat rate AWS bills for every public IPv4
+	// address, attached or idle, in all commercial regions since 1 February 2024.
+	// AWS only: Azure and GCP price idle addresses on their own schedules and must
+	// never read this value.
+	awsPublicIPv4HourlyUSD = 0.005
+
+	eipPricingSourceAPI      = "pricing_api"
+	eipPricingSourceFlatRate = "aws_flat_rate"
+)
+
+// idleElasticIPPricingFilters is the exact filter set that matches the public
+// IPv4 idle-address product under AmazonVPC. The product carries neither a
+// productFamily nor an operatingSystem attribute, so both are passed empty:
+// the helper drops empty-valued filters, and an empty operatingSystem also
+// switches off the Linux default it would otherwise add. With either attribute
+// filtered, or with the retired ElasticIP:IdleAddress usage type, the API
+// returns nothing — which is how every idle address came to be reported as $0.
+func idleElasticIPPricingFilters(usageType string) map[string]string {
+	return map[string]string{
+		"usagetype":       usageType,
+		"productFamily":   "",
+		"operatingSystem": "",
+	}
+}
+
+// idleElasticIPMonthlyCost turns a Pricing API result into the monthly cost of
+// one idle Elastic IP, falling back to the published flat rate when the lookup
+// failed, returned no product, or returned a zero price (which getPricingValue
+// reports without an error). It returns the cost and which source produced it,
+// so the recommendation can say whether the figure is quoted or estimated.
+func idleElasticIPMonthlyCost(prices []map[string]interface{}, lookupErr error) (float64, string) {
+	if lookupErr == nil && len(prices) > 0 {
+		if price, err := getPricingValue(prices[0]); err == nil && price > 0 {
+			return price * 24 * 30, eipPricingSourceAPI
+		}
+	}
+	return awsPublicIPv4HourlyUSD * 24 * 30, eipPricingSourceFlatRate
 }
