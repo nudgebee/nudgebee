@@ -139,7 +139,7 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 			accountConfigSummaryCacheInstance.set(accountId, summary)
 			return summary, nil
 		}
-		slog.Warn("tools: failed to unmarshal cached account summary", "error", "unmarshal error")
+		ctx.GetLogger().Warn("tools: failed to unmarshal cached account summary", "error", "unmarshal error")
 	}
 
 	if ctx == nil {
@@ -153,7 +153,7 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 	// Verify that the account belongs to the tenant
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if !security.IsAccountInTenant(accountId, tenantId) {
-		slog.Error("tools: account does not belong to tenant", "account_id", accountId, "tenant_id", tenantId)
+		ctx.GetLogger().Error("tools: account does not belong to tenant", "account_id", accountId, "tenant_id", tenantId)
 		return summary, errors.New("auth: unauthorized account access")
 	}
 
@@ -173,12 +173,12 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 		JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
 		WHERE ia.cloud_account_id = $1 AND i.status = 'enabled'`, accountId)
 		if err != nil {
-			slog.Error("tools: failed to query integrations", "error", err, "account_id", accountId)
+			ctx.GetLogger().Error("tools: failed to query integrations", "error", err, "account_id", accountId)
 			return err
 		}
 		defer func() {
 			if err := integrationRows.Close(); err != nil {
-				slog.Error("tools: failed to close integration rows", "error", err)
+				ctx.GetLogger().Error("tools: failed to close integration rows", "error", err)
 			}
 		}()
 		for integrationRows.Next() {
@@ -207,12 +207,12 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 		FROM integrations i
 		WHERE i.tenant_id = $1 AND i.status = 'enabled'`, tenantId)
 		if err != nil {
-			slog.Error("tools: failed to query tenant integrations", "error", err, "tenant_id", tenantId)
+			ctx.GetLogger().Error("tools: failed to query tenant integrations", "error", err, "tenant_id", tenantId)
 			return err
 		}
 		defer func() {
 			if err := tenantIntegrationRows.Close(); err != nil {
-				slog.Error("tools: failed to close tenant integration rows", "error", err)
+				ctx.GetLogger().Error("tools: failed to close tenant integration rows", "error", err)
 			}
 		}()
 		for tenantIntegrationRows.Next() {
@@ -232,12 +232,12 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 	g.Go(func() error {
 		cloudProviderRows, err := dbms.Query("SELECT lower(cloud_provider) FROM cloud_accounts WHERE id = $1 AND status = 'active'", accountId)
 		if err != nil {
-			slog.Error("tools: failed to query cloud account", "error", err, "account_id", accountId)
+			ctx.GetLogger().Error("tools: failed to query cloud account", "error", err, "account_id", accountId)
 			return err
 		}
 		defer func() {
 			if err := cloudProviderRows.Close(); err != nil {
-				slog.Error("tools: failed to close cloud provider rows", "error", err)
+				ctx.GetLogger().Error("tools: failed to close cloud provider rows", "error", err)
 			}
 		}()
 		for cloudProviderRows.Next() {
