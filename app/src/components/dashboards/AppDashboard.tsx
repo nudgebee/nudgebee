@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import Chart from '@ui/Chart';
 import { Grid, Typography } from '@mui/material';
 import ListingLayout from '@ui/ListingLayout';
+import { Link } from '@ui/Link';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { useEffect, useState } from 'react';
 import CustomTable from '@shared/tables/CustomTable';
@@ -661,10 +662,18 @@ function AppDashboard({
         <ListingLayout.Body>
           <EmptyData img={DataNotAvailable} heading='No Dashboard Available' id={'app-dashboard'}>
             <Typography>
-              For Python, Java, NodeJs, Golang configure <a href='https://opentelemetry.io/docs/languages/'>OpenTelemetry exporter</a>.
+              For Python, Java, NodeJs, Golang configure{' '}
+              <Link href='https://opentelemetry.io/docs/languages/' openInNew>
+                OpenTelemetry exporter
+              </Link>
+              .
             </Typography>
             <Typography>
-              For Postgres, Mysql, MongoDB etc configure <a href='https://prometheus.io/docs/instrumenting/exporters/'>Prometheus exporter</a>.
+              For Postgres, Mysql, MongoDB etc configure{' '}
+              <Link href='https://prometheus.io/docs/instrumenting/exporters/' openInNew>
+                Prometheus exporter
+              </Link>
+              .
             </Typography>
           </EmptyData>
         </ListingLayout.Body>
