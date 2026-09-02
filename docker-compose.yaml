@@ -52,7 +52,7 @@ x-app-common: &app-common
 
 # Full Postgres DSN for the compose Postgres. Each service reads it under a
 # DIFFERENT variable name (see per-service env blocks).
-x-db-url: &db-url postgres://postgres:postgrespassword@postgres:5432/nudgebee?sslmode=disable
+x-db-url: &db-url postgresql://postgres:postgrespassword@postgres:5432/nudgebee?sslmode=disable
 
 networks:
   nudgebee:
@@ -121,7 +121,8 @@ services:
     ports:
       - "7233:7233"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       DB: postgres12
       DB_PORT: "5432"
@@ -130,6 +131,14 @@ services:
       POSTGRES_PWD: postgrespassword
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: "0.0.0.0"
+      TEMPORAL_CLI_ADDRESS: "temporal:7233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
 
   temporal-ui:
     image: temporalio/ui:2.44.0
@@ -138,7 +147,8 @@ services:
     ports:
       - "8233:8080"
     depends_on:
-      - temporal
+      temporal:
+        condition: service_healthy
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
@@ -178,6 +188,7 @@ services:
     image: ghcr.io/nudgebee/services-server:edge
     build:
       context: ./api-server/services
+    restart: unless-stopped
     # Every service defaults its backend calls to http://services-server:8000
     # (the SaaS service name). This alias makes that default resolve to this
     # container, so event ingestion and RPC work without per-service overrides.
@@ -194,15 +205,19 @@ services:
       - path: ./api-server/services/.env
         required: false
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   ticket-server:
     profiles: [full]
     image: ghcr.io/nudgebee/ticket-server:edge
     build:
       context: ./ticket-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "8001:8000"
@@ -211,15 +226,19 @@ services:
       APP_DATABASE_URL: *db-url
       PORT: '8000'
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   cloud-collector:
     profiles: [full]
     image: ghcr.io/nudgebee/cloud-collector-server:edge
     build:
       context: ./collector-server/cloud-collector
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "8002:8000"
@@ -227,15 +246,19 @@ services:
       <<: *app-common
       CLOUD_COLLECTOR_SERVER_DB_URL: *db-url
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   relay-server:
     profiles: [full]
     image: ghcr.io/nudgebee/relay-server:edge
     build:
       context: ./collector-server/k8s-collector/relay-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "8004:8080"
@@ -244,15 +267,19 @@ services:
       COLLECTOR_DB_URL: *db-url
       RELAY_HTTP_PORT: '8080'
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   llm-server:
     profiles: [full]
     image: ghcr.io/nudgebee/llm-server:edge
     build:
       context: ./llm/llm-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "8005:8000"
@@ -262,26 +289,21 @@ services:
       # Vector search is proxied through the rag-server, not Qdrant directly.
       RAG_SERVER_URL: http://rag-server:9999
     depends_on:
-      - postgres
-      - rabbitmq
-      - qdrant
-      - redis
-
-  # TODO: code-analysis is intentionally NOT a long-running compose service.
-  # System tracks per-account code-analysis instances and the design is for
-  # llm-server to launch one dynamically per account on demand. This block
-  # only exists as a placeholder for the time when that wiring lands.
-  # code-analysis:
-  #   image: code-analysis   # build locally — no published image
-  #   networks: [nudgebee]
-  #   ports:
-  #     - "8006:8080"
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
 
   workflow-server:
     profiles: [full]
     image: ghcr.io/nudgebee/workflow-server:edge
     build:
       context: ./runbook-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "8007:8000"
@@ -292,10 +314,14 @@ services:
       TEMPORAL_GRPC_ENDPOINT: temporal:7233
       API_PORT: '8000'
     depends_on:
-      - postgres
-      - rabbitmq
-      - temporal
-      - redis
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   # ---------- Python services ----------
   k8s-collector-app:
@@ -303,6 +329,7 @@ services:
     image: ghcr.io/nudgebee/k8s-collector:edge
     build:
       context: ./collector-server/k8s-collector/app
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       # Container port is 5000, but publishing on host :5000 collides with macOS
@@ -320,15 +347,19 @@ services:
       CLICKHOUSE_USER: ''
       CLICKHOUSE_PASSWORD: ''
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   rag-server:
     profiles: [full]
     image: ghcr.io/nudgebee/rag-server:edge
     build:
       context: ./llm/rag-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "9998:9999"
@@ -338,14 +369,17 @@ services:
       # Use the standalone Qdrant server instead of embedded on-disk mode
       QDRANT_URL: http://qdrant:6333
     depends_on:
-      - qdrant
-      - postgres
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
 
   ml-k8s-server:
     profiles: [full]
     image: ghcr.io/nudgebee/ml-k8s-server:edge
     build:
       context: ./ml-k8s-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "9999:9999"
@@ -354,13 +388,15 @@ services:
       <<: *app-common
       ML_INFERENCE_DATABASE_URL: *db-url
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   notifications-server:
     profiles: [full]
     image: ghcr.io/nudgebee/notifications:edge
     build:
       context: ./notifications-server
+    restart: unless-stopped
     networks: [nudgebee]
     ports:
       - "8090:8080"
@@ -368,9 +404,12 @@ services:
       <<: *app-common
       NOTIFICATION_DB_URL: *db-url
     depends_on:
-      - postgres
-      - rabbitmq
-      - redis
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_started
 
   # ---------- Frontend ----------
   app:
@@ -378,17 +417,39 @@ services:
     image: ghcr.io/nudgebee/app:edge
     build:
       context: ./app
+    restart: unless-stopped
     networks: [nudgebee]
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     depends_on:
       - api-server-services
     env_file:
       - path: ./app/.env
         required: false
     environment:
+      <<: *app-common
       SERVICE_API_SERVER_URL: http://api-server-services:8000
-      LLM_SERVER_URL: http://llm-server:8000
-      # Server-side API routes decrypt integration creds — must match the key
-      # used by every backend service (see x-app-common above).
-      NUDGEBEE_ENCRYPTION_KEY: ${NUDGEBEE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      BASE_URL: http://127.0.0.1:3000
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-nextauth-secret-changeme-32-characters}
+      NEXTAUTH_DUMMY_CREDS_ENABLED: ${NEXTAUTH_DUMMY_CREDS_ENABLED:-true}
+      NEXTAUTH_DUMMY_CREDS_PASSWORD: ${NEXTAUTH_DUMMY_CREDS_PASSWORD:-Test!24#5}
+
+  # ---------- Edge / Ingress (Nginx Reverse Proxy) ----------
+  # Mirrors the enterprise Kubernetes Nginx sidecar/ingress routing:
+  # - /api/webhooks/* -> services-server:8000
+  # - /webhooks/slack/* -> notifications-server:8080
+  # - / -> app:3000 (UI / RPC / GraphQL)
+  ingress:
+    profiles: [full]
+    image: nginx:alpine
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "${APP_HOST_PORT:-3000}:80"
+    volumes:
+      - ./deploy/compose/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
+      - api-server-services
+      - notifications-server
