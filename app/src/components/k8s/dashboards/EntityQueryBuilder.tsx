@@ -64,24 +64,28 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
   // hidden: the panel would only fail at render, and naming the grant is what
   // lets the author ask for the right one. Nothing is gated for a tenant admin
   // or any account user — see panelAccess.ts.
-  const tableOptions = tables.map((t) => {
-    const missing = missingTableGrant(t);
-    if (!missing) return { label: t.label, value: t.value };
-    return {
-      value: t.value,
-      disabled: true,
-      label: (
-        <Tooltip title={grantTooltip(missing)}>
-          {/* A disabled MUI menu item sets `pointer-events: none`, which would
-              swallow the hover the tooltip needs — this span opts back in. */}
-          <Box component='span' sx={{ pointerEvents: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <LockOutlinedIcon sx={{ fontSize: 13, flexShrink: 0 }} />
-            {t.label}
-          </Box>
-        </Tooltip>
-      ),
-    };
-  });
+  const tableOptions = React.useMemo(
+    () =>
+      tables.map((t) => {
+        const missing = missingTableGrant(t);
+        if (!missing) return { label: t.label, value: t.value };
+        return {
+          value: t.value,
+          disabled: true,
+          label: (
+            <Tooltip title={grantTooltip(missing)}>
+              {/* A disabled MUI menu item sets `pointer-events: none`, which would
+                  swallow the hover the tooltip needs — this span opts back in. */}
+              <Box component='span' sx={{ pointerEvents: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <LockOutlinedIcon sx={{ fontSize: 13, flexShrink: 0 }} />
+                {t.label}
+              </Box>
+            </Tooltip>
+          ),
+        };
+      }),
+    [tables]
+  );
 
   // Filter-only columns are left out: a trace grouping can be NARROWED by a
   // column its fixed response never returns, but selecting or sorting by one
