@@ -13,6 +13,12 @@ export class KnowledgeBaseLocators {
   readonly descriptionInput: Locator;
   readonly contentTextarea: Locator;
 
+  readonly agentSectionLabel: Locator;
+  readonly allAgentsChip: Locator;
+  readonly specificAgentsChip: Locator;
+  readonly agentSearchInput: Locator;
+  readonly firstAgentCheckbox: Locator;
+
   readonly createBtn: Locator;
   readonly updateBtn: Locator;
   readonly formCancelBtn: Locator;
@@ -55,6 +61,16 @@ export class KnowledgeBaseLocators {
     this.contentTextarea = page
       .getByPlaceholder("Paste or type your knowledge base content here...")
       .or(page.locator('textarea[placeholder*="knowledge base content"]'));
+
+    // Agent mapping block of the create/edit form. ds/Chip renders an interactive
+    // chip as a ButtonBase, so the selected state is readable from aria-pressed.
+    this.agentSectionLabel = page.getByText("Which agents should use this?", { exact: false });
+    this.allAgentsChip = page.getByRole("button", { name: "All agents", exact: true });
+    this.specificAgentsChip = page.getByRole("button", { name: "Specific agents", exact: true });
+    this.agentSearchInput = page.getByPlaceholder("Search agents");
+    // The agent list is tenant data, so no fixed name exists to target — the
+    // aria-label prefix is the only stable handle on "whichever agent is first".
+    this.firstAgentCheckbox = page.locator('input[type="checkbox"][aria-label^="Select agent "]').first();
 
     this.createBtn = page.getByRole("button", { name: "Create" }).last();
     this.updateBtn = page.getByRole("button", { name: "Update" }).last();
@@ -143,6 +159,15 @@ export class KnowledgeBaseLocators {
 
     await this.userSubTab.first().click();
     await this.addKBBtn.first().waitFor({ state: "visible", timeout: 5000 });
+  }
+
+  agentCheckbox(agentName: string): Locator {
+    return this.page.getByLabel(`Select agent ${agentName}`);
+  }
+
+  async firstAgentName(): Promise<string> {
+    const label = await this.firstAgentCheckbox.getAttribute("aria-label");
+    return (label ?? "").replace("Select agent ", "");
   }
 
   async openCreateModal(): Promise<void> {
