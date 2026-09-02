@@ -1515,13 +1515,18 @@ const KubernetesEventsTable = ({
       countPromise = k8sApi.getK8sEventsCount(query);
     }
 
-    // Data + tickets chain: once data arrives, fetch ticket summaries, then render
+    // Render rows as soon as events arrive; ticket badges are a non-blocking second pass.
     const dataAndTicketsPromise = dataPromise.then((res) => {
       if (requestId !== eventsRequestIdRef.current) return;
       const events = res.data?.events || [];
+      rawEventsRef.current = events;
+      ticketReferenceMapRef.current = new Map();
+      setData(buildRowData(events, ticketReferenceMapRef.current));
+      setLoading(false);
+
       const uniqueReferenceIds = new Set();
       events.forEach((item) => {
-        uniqueReferenceIds.add(item.fingerprint);
+        if (item.fingerprint) uniqueReferenceIds.add(item.fingerprint);
       });
       const references = Array.from(uniqueReferenceIds);
 
@@ -1531,11 +1536,8 @@ const KubernetesEventsTable = ({
         ticketRes?.data?.tickets?.forEach((element) => {
           ticketReferenceMap.set(element.reference_id, element);
         });
-        rawEventsRef.current = events;
         ticketReferenceMapRef.current = ticketReferenceMap;
-        const data = buildRowData(events, ticketReferenceMap);
-        setData(data);
-        setLoading(false);
+        setData(buildRowData(events, ticketReferenceMap));
       });
     });
 

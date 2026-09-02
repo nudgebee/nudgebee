@@ -22,8 +22,10 @@ jest.mock('@lib/router', () => ({
 }));
 
 const mockHasWriteAccess = jest.fn();
+const mockHasReadAccess = jest.fn();
 jest.mock('@lib/auth', () => ({
   hasWriteAccess: (...args: any[]) => mockHasWriteAccess(...args),
+  hasReadAccess: (...args: any[]) => mockHasReadAccess(...args),
 }));
 
 jest.mock('@api1/cloud-account', () => ({
@@ -420,6 +422,7 @@ beforeEach(() => {
   pageSizeVal = 10;
   mockRouterQuery = {};
   mockHasWriteAccess.mockReturnValue(true);
+  mockHasReadAccess.mockReturnValue(true);
   mockUseEventCloudFilter.mockReturnValue(cloudFilters);
   apiCloudAccount.listEvents.mockResolvedValue(mockEventsResponse());
   ticketsApi.listTicketsSummary.mockResolvedValue({ data: { tickets: [] } });
@@ -615,11 +618,24 @@ describe('CloudAccountEvents (integration)', () => {
     expect(url).toMatch(/eventPriority=critical/);
   });
 
-  it('hides menu items when user has no write access', async () => {
+  it('hides write-gated menu items for a read-only user but keeps Create Ticket', async () => {
+    // Create Ticket is read-gated (readonly roles can create tickets); Classify/Automation are write-gated.
     mockHasWriteAccess.mockReturnValue(false);
+    mockHasReadAccess.mockReturnValue(true);
     render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
 
-    await waitFor(() => expect(apiCloudAccount.listEvents).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('row-0')).toBeInTheDocument());
+    expect(screen.getByTestId('menu-Create Ticket-evt-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('menu-Classify-evt-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('menu-Create Automation-evt-1')).not.toBeInTheDocument();
+  });
+
+  it('hides the whole action menu when the user has neither read nor write access', async () => {
+    mockHasWriteAccess.mockReturnValue(false);
+    mockHasReadAccess.mockReturnValue(false);
+    render(<CloudAccountEvents accountId='acc-1' serviceName='ec2' subjectName='' />);
+
+    await waitFor(() => expect(screen.getByTestId('row-0')).toBeInTheDocument());
     expect(screen.queryByTestId('menu-Create Ticket-evt-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('menu-Classify-evt-1')).not.toBeInTheDocument();
   });

@@ -8,6 +8,7 @@ import { useData } from '@context/DataContext';
 import apiHome from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 import recommendationApi from '@api1/recommendation';
+import ticketsApi from '@api1/tickets';
 import { toast as snackbar } from '@ui/Toast';
 import { SeverityIcon, type SeverityLevel as DsSeverityLevel } from '@ui/SeverityIcon';
 import { Skeleton } from '@ui/Skeleton';
@@ -361,6 +362,9 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [tableLoading, setTableLoading] = useState(true);
+  // Ticket + PR-resolution badges — fetched separately so rows can paint first.
+  const [ticketMap, setTicketMap] = useState<Map<string, any>>(new Map());
+  const [resolutionMap, setResolutionMap] = useState<Map<string, any>>(new Map());
 
   // Sort state — single source of truth shared by the "Sort by" dropdown and the
   // column-header sort. Defaults to "Most severe" (severity asc), matching the
@@ -783,7 +787,6 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
       orderAsc: sortDirection === 'asc',
       limit: rowsPerPage,
       offset: page * rowsPerPage,
-      fetchTicket: true,
     };
   }, [buildFilterQuery, ruleFilter, filters.category.length, sortField, sortDirection, rowsPerPage, page]);
 
@@ -792,6 +795,9 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
     const count = result?.data?.recommendation_aggregate?.aggregate?.count || 0;
     setRecommendations(recs);
     setTableTotal(count);
+    // Clear stale badges before the enrichment pass repopulates them.
+    setTicketMap(new Map());
+    setResolutionMap(new Map());
   }, []);
 
   // Auto-fetch with cancellation guard on dependency change. Skipped while the
@@ -823,6 +829,36 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
     };
   }, [buildTableQuery, applyTableResult, showConfigRollup]);
 
+  // Second pass — ticket + PR-resolution badges, in parallel, after rows render.
+  useEffect(() => {
+    if (showConfigRollup || recommendations.length === 0) {
+      return;
+    }
+    const ids = recommendations.map((r: any) => r.id);
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const [ticketsRes, resolutions]: [any, any] = await Promise.all([
+          ticketsApi.listTicketsSummary({ reference_id: ids }),
+          recommendationApi.listActiveResolutionsByRecommendationIds(ids),
+        ]);
+        if (cancelled) return;
+        const tMap = new Map<string, any>();
+        (ticketsRes?.data?.tickets || []).forEach((t: any) => tMap.set(t.reference_id, t));
+        setTicketMap(tMap);
+        setResolutionMap(resolutions instanceof Map ? resolutions : new Map());
+      } catch (err) {
+        // Badges are non-critical; the table is already rendered.
+        console.error('Failed to fetch ticket/resolution badges', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [recommendations, showConfigRollup]);
+
   // Manual re-fetch (e.g. after ticket creation) — no cancellation needed since it's user-initiated
   const fetchTableData = useCallback(async () => {
     setTableLoading(true);
@@ -836,8 +872,18 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
     }
   }, [buildTableQuery, applyTableResult]);
 
+  // Rows + badges merged. Same ref back when there's nothing to merge (no extra render).
+  const enrichedRecommendations = useMemo(() => {
+    if (ticketMap.size === 0 && resolutionMap.size === 0) return recommendations;
+    return recommendations.map((r: any) => ({
+      ...r,
+      ticket: ticketMap.get(r.id) ?? r.ticket,
+      resolution: resolutionMap.get(r.id) ?? r.resolution ?? null,
+    }));
+  }, [recommendations, ticketMap, resolutionMap]);
+
   // O(1) lookup for keeping the detail panel in sync after table refreshes.
-  const recById = useMemo(() => new Map(recommendations.map((r: any) => [r.id, r])), [recommendations]);
+  const recById = useMemo(() => new Map(enrichedRecommendations.map((r: any) => [r.id, r])), [enrichedRecommendations]);
 
   // Keep the detail drawer in sync when table data refreshes
   useEffect(() => {
@@ -1000,7 +1046,7 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
 
   const tableRows = useMemo(
     () =>
-      recommendations.map((rec: any) => {
+      enrichedRecommendations.map((rec: any) => {
         const accountInfo = accounts[rec.account_id];
         return {
           id: rec.id,
@@ -1024,7 +1070,7 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
           ticketUrl: rec.ticket?.url || '',
         };
       }),
-    [recommendations, accounts]
+    [enrichedRecommendations, accounts]
   );
 
   // ─── Handlers ───

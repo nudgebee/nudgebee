@@ -970,6 +970,9 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       const groupings = res?.data?.event_groupings ?? [];
       setRawEventGroupings(groupings);
       setTotalRows(res.data.event_groupings_aggregate.aggregate.count);
+      // Table can render now; ticket badges repopulate as a non-blocking second pass.
+      setTicketReferenceMap(new Map());
+      setLoading(false);
 
       // Only the fingerprint variant has a Create Ticket action keyed off fingerprint
       if (groupEventType === 'fingerprint') {
@@ -984,17 +987,11 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             setTicketReferenceMap(map);
           } catch (err) {
             console.error('Failed to fetch ticket summaries', err);
-            setTicketReferenceMap(new Map());
           }
-        } else {
-          setTicketReferenceMap(new Map());
         }
-      } else {
-        setTicketReferenceMap(new Map());
       }
     } catch (e) {
       console.error(e);
-    } finally {
       setLoading(false);
     }
   }, [

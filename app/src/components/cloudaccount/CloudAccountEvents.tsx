@@ -544,7 +544,14 @@ const CloudAccountEvents = (props: {
           return;
         }
 
-        // 1. Extract all unique fingerprints (Reference IDs)
+        // Render rows now; ticket badges are a non-blocking second pass below.
+        rawEventsRef.current = events;
+        ticketReferenceMapRef.current = new Map();
+        buildRowDataRef.current = (evts: any[], map: Map<string, any>) => evts.map((item: any) => mapEventToRow(item, map));
+        setEvents(events.map((item: any) => mapEventToRow(item, ticketReferenceMapRef.current)));
+        setEventsCount(totalCount);
+        setLoading(false);
+
         const uniqueReferenceIds = new Set();
         events.forEach((item: any) => {
           if (item.fingerprint) {
@@ -552,32 +559,20 @@ const CloudAccountEvents = (props: {
           }
         });
         const references: any = Array.from(uniqueReferenceIds);
+        if (references.length === 0) return;
 
         try {
-          // 2. Fetch Tickets for all events in one go
           const ticketRes: any = await ticketsApi.listTicketsSummary({ reference_id: references });
           if (isCancelled()) return;
 
-          // 3. Create a Map for quick lookup
           const ticketReferenceMap = new Map();
           ticketRes?.data?.tickets?.forEach((element: any) => {
             ticketReferenceMap.set(element.reference_id, element);
           });
-
-          // 4. Map events to table rows
-          const ec2ResourceData = events.map((item: any) => mapEventToRow(item, ticketReferenceMap));
-
-          // 5. Update State
-          rawEventsRef.current = events;
           ticketReferenceMapRef.current = ticketReferenceMap;
-          buildRowDataRef.current = (evts: any[], map: Map<string, any>) => evts.map((item: any) => mapEventToRow(item, map));
-          setEvents(ec2ResourceData);
-          setEventsCount(totalCount);
+          setEvents(events.map((item: any) => mapEventToRow(item, ticketReferenceMap)));
         } catch (err) {
           console.error('Error fetching ticket summaries', err);
-          // Optional: handle partial failure (show events without tickets)
-        } finally {
-          if (!isCancelled()) setLoading(false);
         }
       })
       .catch(() => {
