@@ -68,3 +68,51 @@ func TestCastIsoTimestampLiterals(t *testing.T) {
 		})
 	}
 }
+
+func TestInjectIdPredicate(t *testing.T) {
+	const view = `select * from (SELECT id::text FROM events WHERE cloud_account_id = 'acct-1'::uuid) as e`
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "single id equality, spaced, gets pushed down typed",
+			command: "select * from events where id = '812b3bb6-67ef-45de-a310-783c538cdb7e'",
+			want:    `select * from (SELECT id::text FROM events WHERE id = '812b3bb6-67ef-45de-a310-783c538cdb7e'::uuid AND cloud_account_id = 'acct-1'::uuid) as e`,
+		},
+		{
+			name:    "single id equality, no spaces, still matches",
+			command: "select * from events where id='812b3bb6-67ef-45de-a310-783c538cdb7e'",
+			want:    `select * from (SELECT id::text FROM events WHERE id = '812b3bb6-67ef-45de-a310-783c538cdb7e'::uuid AND cloud_account_id = 'acct-1'::uuid) as e`,
+		},
+		{
+			name:    "case-insensitive ID keyword",
+			command: "select * from events where ID = '812b3bb6-67ef-45de-a310-783c538cdb7e'",
+			want:    `select * from (SELECT id::text FROM events WHERE id = '812b3bb6-67ef-45de-a310-783c538cdb7e'::uuid AND cloud_account_id = 'acct-1'::uuid) as e`,
+		},
+		{
+			name:    "event_id column is not mistaken for id",
+			command: "select * from events where event_id = '812b3bb6-67ef-45de-a310-783c538cdb7e'",
+			want:    view,
+		},
+		{
+			name:    "multiple ids (IN-list shaped) falls back unchanged, no unsafe single-id guess",
+			command: "select * from events where id = '812b3bb6-67ef-45de-a310-783c538cdb7e' or id = '923c4cc7-78f0-56ef-b421-894649dee8f8'",
+			want:    view,
+		},
+		{
+			name:    "no id predicate at all is a no-op",
+			command: "select * from events where priority = 'high' limit 5",
+			want:    view,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := injectIdPredicate(view, tc.command); got != tc.want {
+				t.Errorf("injectIdPredicate()\n  command: %s\n  got:     %s\n  want:    %s", tc.command, got, tc.want)
+			}
+		})
+	}
+}
