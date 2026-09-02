@@ -252,6 +252,11 @@ function DashboardPanel({
       return;
     }
 
+    // Panels refetch on every date-range change; without this guard a slower
+    // earlier response can land after a newer one and leave the panel showing
+    // a range the reader has already moved off.
+    let cancelled = false;
+
     async function pullData() {
       const datasource = evaluateTemplate(config.datasource ?? 'prometheus', templateConfig);
       const targets =
@@ -262,10 +267,16 @@ function DashboardPanel({
           };
         }) ?? [];
       const targetsData: any[] = await fetchAndBuildData(targets, datasource);
-      setData(targetsData);
+      if (!cancelled) {
+        setData(targetsData);
+      }
     }
 
     pullData();
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, namespaceName, workloadName, podName, dateRange.startDate, dateRange.endDate]);
 
   return (
@@ -458,25 +469,38 @@ function AppDashboard({
     if (workloadAppType && workloadDashboardName) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     getDashboardStats({ accountId, namespaceName, workloadName, podName })
       .then((availabelData) => {
+        if (cancelled) return;
         if (availabelData.available) {
           setWorkloadAppType(availabelData.lang);
           setWorkloadDashboardName(availabelData?.dashboardName ?? '');
         }
       })
       .finally(() => {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [workloadAppType, accountId, namespaceName, workloadName]);
 
   useEffect(() => {
     if (!workloadAppType) {
       return;
     }
+    let cancelled = false;
+
     async function loadDashboard() {
       const data = await getDashboardData(workloadAppType!, workloadDashboardName);
+      if (cancelled) {
+        return;
+      }
       if (data != null) {
         data.__inputs = data.__inputs || [];
         if (podName) {
@@ -581,6 +605,10 @@ function AppDashboard({
       setTemplateData(newTemplateData);
     }
     loadDashboard();
+
+    return () => {
+      cancelled = true;
+    };
   }, [workloadAppType]);
 
   const renderingContent = () => {
