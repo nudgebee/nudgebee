@@ -494,6 +494,12 @@ const PageLayout = ({ children }) => {
         subItems: [
           { text: 'All Events', path: '/troubleshoot#all-events', id: 'sidenav-troubleshoot-all-events', icon: AllEventsIcon },
           { text: 'Investigations', path: '/troubleshoot#investigations', id: 'sidenav-troubleshoot-investigations', icon: SearchBlueIcon },
+          {
+            text: 'Event Resolutions',
+            path: '/troubleshoot#event-resolutions',
+            id: 'sidenav-troubleshoot-event-resolutions',
+            icon: RecommendationResolutionIcon,
+          },
           { text: 'Knowledge Graph', path: '/troubleshoot#kg', id: 'sidenav-troubleshoot-kg', icon: ServiceMapsIcon },
           { text: 'Analytics', path: '/troubleshoot#analytics', id: 'sidenav-troubleshoot-analytics', icon: GroupedEventsIcon },
         ],

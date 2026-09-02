@@ -68,7 +68,6 @@ const filterOptions = [
       { value: 3, text: 'Events group by app', fragment: 'event-app', icon: GroupedEventsIcon, id: 'tab-event-app' },
       { value: 4, text: 'Triage Rules', fragment: 'triage-rules', icon: AlertManagerIcon, id: 'tab-triage-rules' },
       { value: 5, text: 'Alert Tuning', fragment: 'threshold-suggestions', icon: AlertManagerIcon, id: 'tab-threshold-suggestions' },
-      { value: 6, text: 'Event Resolutions', fragment: 'event-resolutions', icon: RecommendationResolutionIcon, id: 'tab-event-resolutions' },
     ],
   },
   {
@@ -81,10 +80,20 @@ const filterOptions = [
       { value: 1, text: 'Manual Investigated', fragment: 'manual-investigated', icon: ManualTriggerIconBlue, id: 'tab-manual-investigated' },
     ],
   },
+  // Event Resolutions was an All Events sub-tab; promoted to its own top-level
+  // destination beside Investigations. No tabOptions — it owns its whole pane,
+  // like Knowledge Graph and Analytics.
+  {
+    name: 'Event Resolutions',
+    fragment: 'event-resolutions',
+    value: 2,
+    icon: RecommendationResolutionIcon,
+    iconSize: 16,
+  },
   {
     name: 'Knowledge Graph',
     fragment: 'kg',
-    value: 2,
+    value: 3,
     icon: ServiceMapsIcon,
     iconSize: 16,
   },
@@ -94,7 +103,7 @@ const filterOptions = [
   {
     name: 'Analytics',
     fragment: 'analytics',
-    value: 3,
+    value: 4,
     icon: GroupedEventsIcon,
     iconSize: 16,
   },
@@ -110,9 +119,10 @@ const filterOptions = [
 
 const TroubleshootPage = () => {
   // selectedTab is the parent-tab selection (0 = All Events, 1 = Investigations,
-  // 2 = Knowledge Graph); selectedSubTab indexes into that parent's own
-  // tabOptions above. Investigations was promoted from a NewToggleButtons
-  // sub-tab inside "All Events" to its own top-level AnchorComponent tab.
+  // 2 = Event Resolutions, 3 = Knowledge Graph, 4 = Analytics); selectedSubTab
+  // indexes into that parent's own tabOptions above (only All Events and
+  // Investigations carry sub-tabs). Investigations and Event Resolutions were
+  // both promoted from sub-tabs inside "All Events" to their own top-level tabs.
   const [selectedTab, setSelectedTab] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(null);
   // Bumped on each summary-widget click so the Events tab remounts and re-reads
@@ -150,7 +160,7 @@ const TroubleshootPage = () => {
   const anchorFilterOptions = useMemo(
     () =>
       filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => {
-        const disabled = (rest.value === 1 && !canAccessInvestigations) || (rest.value === 2 && !canAccessKg);
+        const disabled = (rest.value === 1 && !canAccessInvestigations) || (rest.value === 3 && !canAccessKg);
         const requiredPermission = rest.value === 1 ? 'ai_conversations:Read' : 'kg:Read';
         return { ...rest, disabled, disabledTooltip: disabled ? missingPermissionMessage(requiredPermission) : undefined };
       }),
@@ -231,7 +241,7 @@ const TroubleshootPage = () => {
     // fall back to All Events and canonicalize the URL, so a disabled tab can't
     // be reached by URL and 403 on its API.
     const parent = filterOptions.find((option) => option.fragment === fragment);
-    const gated = parent && ((parent.value === 1 && !canAccessInvestigations) || (parent.value === 2 && !canAccessKg));
+    const gated = parent && ((parent.value === 1 && !canAccessInvestigations) || (parent.value === 3 && !canAccessKg));
     if (!parent || gated) {
       setSelectedTab(0);
       setSelectedSubTab(0);
@@ -290,7 +300,6 @@ const TroubleshootPage = () => {
             {selectedSubTab === 3 && <KubernetesGroupedEventsTable isTroubleshootPage={true} hideScopeFilters groupEventType='app' />}
             {selectedSubTab === 4 && <TriageRulesManager />}
             {selectedSubTab === 5 && <ThresholdSuggestionsManager />}
-            {selectedSubTab === 6 && <EventResolutions />}
           </ErrorBoundary>
         </div>
       )}
@@ -310,7 +319,19 @@ const TroubleshootPage = () => {
         </div>
       )}
 
+      {/* Event Resolutions owns its whole pane (a ListingLayout of its own), so
+          it renders like Analytics — top+horizontal margin, no briefing/sub-tab
+          strip above it. It reads the account scope from router.query itself, so
+          a plain ErrorBoundary (no scope remount key) is enough. */}
       {selectedTab === 2 && (
+        <div style={{ margin: 'var(--ds-space-4) var(--ds-space-6) 0' }}>
+          <ErrorBoundary>
+            <EventResolutions />
+          </ErrorBoundary>
+        </div>
+      )}
+
+      {selectedTab === 3 && (
         <div style={{ margin: 'var(--ds-space-4)' }}>
           <ErrorBoundary>
             <KnowledgeGraphServiceMapWrapper />
@@ -321,7 +342,7 @@ const TroubleshootPage = () => {
       {/* Analytics drills back into All Events via applyWidgetFilter, which
           switches selectedTab itself — so a click here leaves this pane for the
           events list, exactly as the briefing's tiles do. */}
-      {selectedTab === 3 && (
+      {selectedTab === 4 && (
         <div style={{ margin: 'var(--ds-space-4) var(--ds-space-6) 0' }}>
           {/* The whole Analytics pane sits in one white panel (ds/Card — the same
               white surface ListingLayout gives the other tabs) so it reads as a

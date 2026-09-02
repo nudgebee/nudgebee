@@ -102,9 +102,9 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Troubleshoot', label: 'Troubleshoot Events group by app', path: '/troubleshoot#all-events/event-app' },
   { group: 'Troubleshoot', label: 'Troubleshoot Triage Rules', path: '/troubleshoot#all-events/triage-rules' },
   { group: 'Troubleshoot', label: 'Alert Tuning', path: '/troubleshoot#all-events/threshold-suggestions' },
-  { group: 'Troubleshoot', label: 'Event Resolutions', path: '/troubleshoot#all-events/event-resolutions' },
   { group: 'Troubleshoot', label: 'Auto Investigated', path: '/troubleshoot#investigations/auto-investigated' },
   { group: 'Troubleshoot', label: 'Manual Investigated', path: '/troubleshoot#investigations/manual-investigated' },
+  { group: 'Troubleshoot', label: 'Event Resolutions', path: '/troubleshoot#event-resolutions' },
   { group: 'Troubleshoot', label: 'Knowledge Graph', path: '/troubleshoot#kg' },
   { group: 'Troubleshoot', label: 'Analytics', path: '/troubleshoot#analytics' },
 

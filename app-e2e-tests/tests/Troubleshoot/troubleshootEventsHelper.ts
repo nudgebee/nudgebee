@@ -81,6 +81,13 @@ export async function openEventSubTab(locators: TroubleshootEventsLocators, tab:
   await expectSelectedSubTab(target);
 }
 
+// Opens the Event Resolutions top-level tab. It owns its whole pane (no
+// sub-tabs), so this is just the parent-tab click — unlike the All Events
+// sub-tab it used to be, which openEventSubTab drove through the sub-tab strip.
+export async function openEventResolutions(locators: TroubleshootEventsLocators): Promise<void> {
+  await locators.gotoTab(TroubleshootTabs.eventResolutions);
+}
+
 // Opens the Investigations parent tab, then one of its two sub-tabs.
 export async function openInvestigationSubTab(
   locators: TroubleshootEventsLocators,

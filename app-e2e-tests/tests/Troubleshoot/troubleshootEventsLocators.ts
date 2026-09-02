@@ -2,9 +2,11 @@
 import { Page, Locator } from "@playwright/test";
 import { TroubleshootLocators } from "./TroubleshootLocators";
 
-// The seven All Events sub-tabs, in the order filterOptions declares them in
+// The six All Events sub-tabs, in the order filterOptions declares them in
 // app/src/pages/troubleshoot/index.jsx. `fragment` is the child half of the
 // `#<parent>/<child>` hash; `id` is the dom id that page hands to Tabs.jsx.
+// (Event Resolutions used to be the seventh sub-tab here; it is now a top-level
+// tab — see TroubleshootTabs.eventResolutions in TroubleshootLocators.ts.)
 export const EventSubTabs = {
   triageInbox: { id: "tab-fingerprint", fragment: "fingerprint", label: "Triage Inbox" },
   events: { id: "tab-all-events", fragment: "all", label: "Events" },
@@ -12,7 +14,6 @@ export const EventSubTabs = {
   groupByApp: { id: "tab-event-app", fragment: "event-app", label: "Events group by app" },
   triageRules: { id: "tab-triage-rules", fragment: "triage-rules", label: "Triage Rules" },
   alertTuning: { id: "tab-threshold-suggestions", fragment: "threshold-suggestions", label: "Alert Tuning" },
-  eventResolutions: { id: "tab-event-resolutions", fragment: "event-resolutions", label: "Event Resolutions" },
 } as const;
 
 export type EventSubTab = (typeof EventSubTabs)[keyof typeof EventSubTabs];
@@ -25,7 +26,6 @@ export const ALL_EVENT_SUB_TABS: EventSubTab[] = [
   EventSubTabs.groupByApp,
   EventSubTabs.triageRules,
   EventSubTabs.alertTuning,
-  EventSubTabs.eventResolutions,
 ];
 
 // The Investigations tab's own two sub-tabs (filterOptions[1] in the same page).
