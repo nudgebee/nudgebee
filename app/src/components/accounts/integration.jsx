@@ -99,16 +99,7 @@ const SECTIONS_CONFIG = [
     id: 'ticket',
     label: 'Ticketing',
     icon: TicketBlueIcon,
-    providers: [
-      'JIRA',
-      'SERVICENOW',
-      'PAGERDUTY',
-      'ZENDUTY',
-      'FRESHDESK',
-      'GITHUB',
-      'GITLAB',
-      'INCIDENTIO',
-    ],
+    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK', 'GITHUB', 'GITLAB', 'INCIDENTIO'],
     tab: 3,
   },
   {

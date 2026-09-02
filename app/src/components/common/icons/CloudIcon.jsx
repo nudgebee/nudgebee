@@ -106,10 +106,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ServiceNowIcon;
   } else if (cloud_provider.toUpperCase() === 'FRESHDESK') {
     Icon = FreshdeskIcon;
-  } else if (
-    cloud_provider.toUpperCase() === 'INCIDENTIO' ||
-    cloud_provider.toUpperCase() === 'INCIDENTIO_WEBHOOK'
-  ) {
+  } else if (cloud_provider.toUpperCase() === 'INCIDENTIO' || cloud_provider.toUpperCase() === 'INCIDENTIO_WEBHOOK') {
     Icon = IncidentIOIcon;
   } else if (cloud_provider.toUpperCase() === 'PAGERDUTY' || cloud_provider.toUpperCase() === 'PAGERDUTY_WEBHOOK') {
     Icon = PagerDutyIcon;
