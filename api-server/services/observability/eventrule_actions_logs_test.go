@@ -270,7 +270,7 @@ func TestExtractKubectlOutput(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, stderr := extractKubectlOutput(tc.response)
+			stdout, stderr, _, _ := extractKubectlOutput(tc.response)
 			assert.Equal(t, tc.expectedStdout, stdout, "stdout")
 			assert.Equal(t, tc.expectedStderr, stderr, "stderr")
 		})
@@ -526,4 +526,76 @@ func TestLogSourceSupportsTraceIDFilter(t *testing.T) {
 	t.Run("nil mapping keeps the canonical name and the ignore applies", func(t *testing.T) {
 		assert.False(t, traceIDFilterSurvivesStrip(nil, traceIgnoringKeyFilter{}))
 	})
+}
+
+// A multi-pod selector makes kubectl print "Found N pods, using pod/x" on stderr
+// and exit 0. Treating that as failure sent every multi-replica workload down the
+// unbounded logs_enricher fallback whenever the pod kubectl picked was quiet.
+func TestExtractKubectlOutputReportsExitCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       string
+		wantExit   int
+		wantHave   bool
+		wantStderr string
+	}{
+		{
+			name:       "benign multi-pod notice with exit 0",
+			data:       `{"exit_code":0,"stderr":"Found 21 pods, using pod/victoria-prometheus-node-exporter-z5fq5\n","stdout":""}`,
+			wantExit:   0,
+			wantHave:   true,
+			wantStderr: "Found 21 pods, using pod/victoria-prometheus-node-exporter-z5fq5\n",
+		},
+		{
+			name:     "real failure",
+			data:     `{"exit_code":1,"stderr":"Error from server (NotFound): deployments.apps \"nope\" not found","stdout":""}`,
+			wantExit: 1,
+			wantHave: true,
+		},
+		{
+			name:     "no exit code reported at all",
+			data:     `{"stderr":"something","stdout":""}`,
+			wantExit: 0,
+			wantHave: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr, exit, have := extractKubectlOutput(map[string]any{"data": tc.data})
+			assert.Equal(t, tc.wantExit, exit)
+			assert.Equal(t, tc.wantHave, have)
+			if tc.wantStderr != "" {
+				assert.Equal(t, tc.wantStderr, stderr)
+			}
+		})
+	}
+}
+
+func TestKubectlLogsFailed(t *testing.T) {
+	tests := []struct {
+		name                 string
+		stdout, stderr       string
+		exitCode             int
+		haveExitCode, failed bool
+	}{
+		{name: "multi-pod notice, exit 0, quiet window",
+			stderr:   "Found 21 pods, using pod/victoria-prometheus-node-exporter-z5fq5\n",
+			exitCode: 0, haveExitCode: true, failed: false},
+		{name: "multi-pod notice with output",
+			stdout: "line", stderr: "Found 21 pods, using pod/x\n",
+			exitCode: 0, haveExitCode: true, failed: false},
+		{name: "real failure",
+			stderr:   `Error from server (NotFound): deployments.apps "nope" not found`,
+			exitCode: 1, haveExitCode: true, failed: true},
+		{name: "genuinely quiet, no stderr", exitCode: 0, haveExitCode: true, failed: false},
+		{name: "no exit code, stderr present -> old heuristic",
+			stderr: "boom", haveExitCode: false, failed: true},
+		{name: "no exit code, output present", stdout: "line", stderr: "boom", haveExitCode: false, failed: false},
+		{name: "no exit code, nothing at all", haveExitCode: false, failed: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.failed, kubectlLogsFailed(tc.stdout, tc.stderr, tc.exitCode, tc.haveExitCode))
+		})
+	}
 }

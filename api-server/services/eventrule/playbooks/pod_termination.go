@@ -89,9 +89,33 @@ func PodTerminationTime(accountId, podName, namespace string, logger *slog.Logge
 	}
 	pod := resourceDictNamed(data, podName, namespace)
 	if pod == nil {
+		// Usually the pod has already been replaced by the time a re-reported
+		// occurrence is enriched — which is exactly the population with the
+		// largest skew, so it is worth saying out loud rather than silently
+		// falling back to the detection time.
+		if logger != nil {
+			logger.Info("event: no incident anchor — pod not found",
+				"pod", podName, "namespace", namespace, "objects_returned", relayObjectCount(data))
+		}
 		return time.Time{}, false
 	}
-	return mostRecentContainerTermination(pod)
+	terminatedAt, ok := mostRecentContainerTermination(pod)
+	if !ok && logger != nil {
+		logger.Info("event: no incident anchor — pod has no readable container termination",
+			"pod", podName, "namespace", namespace,
+			"container_statuses", len(getArrayField(getMapField(pod, "status"), "container_statuses", "containerStatuses")))
+	}
+	return terminatedAt, ok
+}
+
+// relayObjectCount reports how many objects the relay actually returned, so the
+// "pod not found" line distinguishes an empty answer from a large one that
+// simply did not contain the pod.
+func relayObjectCount(data any) int {
+	if list, ok := data.([]any); ok {
+		return len(list)
+	}
+	return -1
 }
 
 // mostRecentContainerTermination returns the latest finishedAt across the pod's
@@ -137,6 +161,7 @@ func mostRecentContainerTermination(pod map[string]any) (time.Time, bool) {
 			}
 		}
 	}
+	// A kill older than the bound is not an anchor worth moving the window to.
 	if latest.IsZero() || time.Since(latest) > maxTerminationBacktrack {
 		return time.Time{}, false
 	}

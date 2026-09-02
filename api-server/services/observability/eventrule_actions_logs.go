@@ -2014,16 +2014,27 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 	// kubectl_command_executor on the agent (robusta/playbooks/nudgebee_playbooks/kubectl_actions.py)
 	// returns its output wrapped in a JsonBlock, so stdout/stderr live one level deep inside
 	// relayResponse["data"] (a JSON-encoded string), not at the top level.
-	stdout, stderr := extractKubectlOutput(relayResponse)
+	stdout, stderr, exitCode, haveExitCode := extractKubectlOutput(relayResponse)
+	if kubectlLogsFailed(stdout, stderr, exitCode, haveExitCode) {
+		ctx.GetLogger().Error("relay: kubectl logs failed",
+			"exit_code", exitCode, "have_exit_code", haveExitCode, "stderr", stderr, "response", slog.AnyValue(relayResponse))
+		return nil, fmt.Errorf("relay: kubectl logs failed (exit %d): %s", exitCode, stderr)
+	}
 	if stdout == "" {
 		// With --since-time, "nothing" is an ordinary answer: the workload was simply
-		// quiet during the event window. Only a non-empty stderr means the command
-		// actually failed. Reporting the quiet case as an error is what used to push
-		// callers into treating the twelve-day-old tail as the better answer.
-		if strings.TrimSpace(stderr) != "" {
-			ctx.GetLogger().Error("relay: kubectl logs failed", "stderr", stderr, "response", slog.AnyValue(relayResponse))
-			return nil, fmt.Errorf("relay: kubectl logs failed: %s", stderr)
-		}
+		// quiet during the event window. Reporting the quiet case as an error is what
+		// used to push callers into treating the twelve-day-old tail as the better
+		// answer.
+		//
+		// Non-empty stderr is NOT that signal. `kubectl logs deployment/x` writes an
+		// informational "Found 21 pods, using pod/x-z5fq5" to stderr whenever the
+		// selector matches more than one pod, and exits 0. Every multi-replica
+		// workload therefore looked like a failure whenever the pod kubectl happened
+		// to pick was quiet in the window — observed on dev for
+		// victoria-prometheus-node-exporter, arc-nudgebee-vx286-runner and
+		// services-server, four times in twenty minutes. Trust the exit code, which
+		// the agent reports, and keep the stderr heuristic only for responses that
+		// carry no exit code at all.
 		ctx.GetLogger().Info("observability: kubectl logs returned nothing in the event window",
 			"workload", workloadName, "namespace", namespace, "since", sinceTime)
 		return nil, nil
@@ -2053,6 +2064,26 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 		map[string]any{"data": logs}, additionalInfo, insight, metadata), nil
 }
 
+// kubectlLogsFailed reports whether a kubectl_command_executor result is an
+// actual failure rather than a quiet window.
+//
+// The exit code is authoritative when the agent sends one. Non-empty stderr is
+// not: `kubectl logs deployment/x` writes "Found 21 pods, using pod/x-z5fq5" to
+// stderr whenever the selector matches more than one pod, and still exits 0. So
+// every multi-replica workload read as a failure whenever the pod kubectl picked
+// happened to be quiet in the window, which pushed the caller onto the unbounded
+// logs_enricher fallback — observed on dev for victoria-prometheus-node-exporter,
+// arc-nudgebee-vx286-runner and services-server, four times in twenty minutes.
+//
+// Responses that carry no exit code keep the old stderr heuristic, which is the
+// best signal available for them.
+func kubectlLogsFailed(stdout, stderr string, exitCode int, haveExitCode bool) bool {
+	if haveExitCode {
+		return exitCode != 0
+	}
+	return stdout == "" && strings.TrimSpace(stderr) != ""
+}
+
 // extractKubectlOutput unwraps the kubectl_command_executor response to recover stdout/stderr.
 //
 // kubectl_command_executor in robusta publishes its output via add_enrichment([JsonBlock(json.dumps({...}))]),
@@ -2060,7 +2091,7 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 // After relay.ExecuteAndExtractResponse unwraps the outer envelope, the agent action response
 // retains this JsonBlock shape, so stdout/stderr live inside the stringified "data" field rather
 // than at the top level. This helper handles that indirection.
-func extractKubectlOutput(relayResponse map[string]any) (stdout, stderr string) {
+func extractKubectlOutput(relayResponse map[string]any) (stdout, stderr string, exitCode int, haveExitCode bool) {
 	// First try the fast-path: some agent actions (future or alternate shapes) may put
 	// stdout/stderr at the top level already.
 	if s, ok := relayResponse["stdout"].(string); ok && s != "" {
@@ -2070,29 +2101,33 @@ func extractKubectlOutput(relayResponse map[string]any) (stdout, stderr string) 
 		stderr = s
 	}
 	if stdout != "" {
-		return stdout, stderr
+		return stdout, stderr, 0, false
 	}
 
 	// Fallback: unwrap JsonBlock payload — relayResponse["data"] is a JSON-encoded string
 	// containing {"command":..., "stdout":..., "stderr":...}.
 	dataStr, ok := relayResponse["data"].(string)
 	if !ok || dataStr == "" {
-		return stdout, stderr
+		return stdout, stderr, 0, false
 	}
 	var inner kubectlJsonBlockPayload
 	if err := json.Unmarshal([]byte(dataStr), &inner); err != nil {
-		return stdout, stderr
+		return stdout, stderr, 0, false
 	}
-	return inner.Stdout, inner.Stderr
+	if inner.ExitCode != nil {
+		return inner.Stdout, inner.Stderr, *inner.ExitCode, true
+	}
+	return inner.Stdout, inner.Stderr, 0, false
 }
 
 // kubectlJsonBlockPayload is the payload robusta's kubectl_command_executor writes
 // inside the JsonBlock data field — see robusta-ai/playbooks sdk: add_enrichment(
 // [JsonBlock(json.dumps({"command": ..., "stdout": ..., "stderr": ...}))]).
 type kubectlJsonBlockPayload struct {
-	Command string `json:"command"`
-	Stdout  string `json:"stdout"`
-	Stderr  string `json:"stderr"`
+	Command  string `json:"command"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode *int   `json:"exit_code"`
 }
 
 // buildLogResponse creates a standard log action response from OutputLog results
