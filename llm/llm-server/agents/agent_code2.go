@@ -296,7 +296,10 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		// Include the legacy name so knowledge bases mapped to "agent_code_2" in
 		// llm_kb_agent_mappings before the rename are still inherited (the lookup
 		// UNIONs both names and dedupes by kb id).
-		skillAgentNames := append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...)
+		// The wildcard sentinel carries KBs mapped to "All agents" (see
+		// toolcore.KBAgentWildcard); without it, code-analysis would be the one
+		// agent an all-agents skill never reached.
+		skillAgentNames := toolcore.WithKBAgentWildcard(append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...))
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query

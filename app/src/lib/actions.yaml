@@ -1314,6 +1314,19 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
     comment: List all agents with their KB mapping counts
+  - name: ai_list_kb_agents
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: List the agents a knowledge base is mapped to
   - name: ai_list_gc
     definition:
       kind: "synchronous"

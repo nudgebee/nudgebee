@@ -241,3 +241,28 @@ func TestFallbackDescriptionFromContent(t *testing.T) {
 		})
 	}
 }
+
+func TestWithKBAgentWildcard(t *testing.T) {
+	t.Run("appends the sentinel", func(t *testing.T) {
+		assert.Equal(t, []string{"k8s_orchestrator", KBAgentWildcard}, WithKBAgentWildcard([]string{"k8s_orchestrator"}))
+	})
+
+	t.Run("accepts an empty list", func(t *testing.T) {
+		assert.Equal(t, []string{KBAgentWildcard}, WithKBAgentWildcard(nil))
+	})
+
+	t.Run("never writes into the caller's backing array", func(t *testing.T) {
+		// The executor builds ownSkillNames with spare capacity and later
+		// re-slices it into skillAgentNames. An in-place append here would
+		// overwrite the neighbouring element and drop an inherited agent name,
+		// silently hiding the KBs mapped to it.
+		backing := make([]string, 1, 2)
+		backing[0] = "k8s_orchestrator"
+		full := append(backing, "inherited_parent") //nolint:gocritic // deliberately shares the array
+
+		got := WithKBAgentWildcard(backing)
+
+		assert.Equal(t, []string{"k8s_orchestrator", KBAgentWildcard}, got)
+		assert.Equal(t, "inherited_parent", full[1], "caller's slice must be untouched")
+	})
+}

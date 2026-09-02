@@ -4,13 +4,15 @@ import { Box, Typography } from '@mui/material';
 import { Banner } from '@ui/Banner';
 import { Label } from '@ui/Label';
 import { Chip } from '@ui/Chip';
+import { Checkbox } from '@ui/Checkbox';
 import CustomTable from '@shared/tables/CustomTable';
 import { Input } from '@ui/Input';
 import Tooltip from '@ui/Tooltip';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import HistoryIcon from '@mui/icons-material/History';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import apiKnowledgeBase from '@api1/knowledge-base';
+import apiKnowledgeBase, { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
+import apiAskNudgebee from '@api1/ask-nudgebee';
 import Loader from '@shared/Loader';
 import { toast as snackbar } from '@ui/Toast';
 import Text from '@shared/format/Text';
@@ -171,13 +173,29 @@ KnowledgeBaseActions.propTypes = {
   hasAccess: PropTypes.bool,
 };
 
-const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, loading }) => {
+const KnowledgeBaseFormModal = ({
+  open,
+  onClose,
+  onSubmit,
+  editKnowledgeBase,
+  loading,
+  agents = [],
+  agentsLoading = false,
+  initialAgentIds = [],
+}) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [content, setContent] = useState('');
   const [fileContent, setFileContent] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  // 'all' persists a single wildcard mapping row that every agent resolves;
+  // 'specific' persists one row per picked agent. A knowledge base with no row
+  // at all is invisible to every agent — it never reaches the <skill-lists>
+  // menu and load_skills cannot fetch it — which is why creates default to 'all'.
+  const [agentMode, setAgentMode] = useState('all');
+  const [selectedAgentIds, setSelectedAgentIds] = useState([]);
+  const [agentSearch, setAgentSearch] = useState('');
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
 
@@ -194,6 +212,26 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
     setSelectedFile(null);
     setFileContent('');
   }, [editKnowledgeBase, open]);
+
+  // Seed the agent picker from the KB's existing mappings. An edit of a KB that
+  // nobody mapped opens in 'specific' with nothing ticked (and shows the warning
+  // below) rather than silently defaulting to all agents — quietly widening a KB's
+  // reach because someone fixed a typo in it would be a surprise.
+  useEffect(() => {
+    setAgentSearch('');
+    if (initialAgentIds.includes(KB_AGENT_WILDCARD)) {
+      setAgentMode('all');
+      setSelectedAgentIds([]);
+      return;
+    }
+    if (initialAgentIds.length > 0 || editKnowledgeBase) {
+      setAgentMode('specific');
+      setSelectedAgentIds(initialAgentIds);
+      return;
+    }
+    setAgentMode('all');
+    setSelectedAgentIds([]);
+  }, [editKnowledgeBase, open, initialAgentIds]);
 
   const validateFile = (file) => {
     const validTypes = ['text/plain'];
@@ -309,7 +347,18 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
       name: trimmedName,
       description: description.trim(),
       content: selectedFile ? fileContent.trim() : content.trim(),
+      agentIds: agentMode === 'all' ? [KB_AGENT_WILDCARD] : selectedAgentIds,
     });
+  };
+
+  const filteredAgents = (() => {
+    const term = agentSearch.trim().toLowerCase();
+    if (!term) return agents;
+    return agents.filter((a) => a.name?.toLowerCase().includes(term) || a.description?.toLowerCase().includes(term));
+  })();
+
+  const toggleAgent = (agentName) => {
+    setSelectedAgentIds((prev) => (prev.includes(agentName) ? prev.filter((n) => n !== agentName) : [...prev, agentName]));
   };
 
   const contentOverBy = content.length - MAX_CONTENT_LENGTH;
@@ -648,6 +697,133 @@ const KnowledgeBaseFormModal = ({ open, onClose, onSubmit, editKnowledgeBase, lo
           </Box>
         </Box>
 
+        {/* Agent Mapping */}
+        <Box sx={{ marginBottom: ds.space[5] }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: ds.space.mul(0, 3), gap: ds.space[1] }}>
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-body)',
+                fontWeight: 'var(--ds-font-weight-medium)',
+                color: 'var(--ds-blue-500)',
+              }}
+            >
+              Which agents should use this? *
+            </Typography>
+            <Tooltip
+              title="An agent can only see a knowledge base that is mapped to it — an unmapped knowledge base never appears in the agent's skill list and cannot be loaded by name."
+              placement='right'
+            >
+              <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-700)', cursor: 'pointer' }} />
+            </Tooltip>
+          </Box>
+
+          <Box sx={{ display: 'flex', gap: ds.space[2], marginBottom: ds.space[3] }}>
+            <Chip size='sm' selected={agentMode === 'all'} onClick={() => setAgentMode('all')}>
+              All agents
+            </Chip>
+            <Chip size='sm' selected={agentMode === 'specific'} onClick={() => setAgentMode('specific')}>
+              Specific agents
+            </Chip>
+          </Box>
+
+          {agentMode === 'all' ? (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+              Every agent — including agents added later — can use this knowledge base.
+            </Typography>
+          ) : (
+            <Box>
+              <Input size='sm' placeholder='Search agents' value={agentSearch} onChange={(next) => setAgentSearch(next)} />
+              <Box
+                sx={{
+                  marginTop: ds.space[2],
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  border: `1px solid var(--ds-gray-300)`,
+                  borderRadius: ds.radius.md,
+                }}
+              >
+                {agentsLoading && (
+                  <Typography sx={{ padding: ds.space[3], fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+                    Loading agents...
+                  </Typography>
+                )}
+                {!agentsLoading && filteredAgents.length === 0 && (
+                  <Typography sx={{ padding: ds.space[3], fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+                    No agents match your search.
+                  </Typography>
+                )}
+                {!agentsLoading &&
+                  filteredAgents.map((agent) => (
+                    <Box
+                      key={agent.name}
+                      onClick={() => toggleAgent(agent.name)}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: ds.space[2],
+                        padding: ds.space[2],
+                        cursor: 'pointer',
+                        '&:hover': { backgroundColor: 'var(--ds-background-200)' },
+                      }}
+                    >
+                      {/* The row itself toggles, so the checkbox must not bubble a
+                          second toggle into it — the two would cancel out. */}
+                      <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex' }}>
+                        <Checkbox
+                          size='sm'
+                          checked={selectedAgentIds.includes(agent.name)}
+                          onChange={() => toggleAgent(agent.name)}
+                          aria-label={`Select agent ${agent.name}`}
+                        />
+                      </Box>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>{agent.name}</Typography>
+                        {agent.description && (
+                          <Typography
+                            sx={{
+                              fontSize: 'var(--ds-text-caption)',
+                              color: 'var(--ds-gray-500)',
+                              display: '-webkit-box',
+                              WebkitLineClamp: 1,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            {agent.description}
+                          </Typography>
+                        )}
+                      </Box>
+                    </Box>
+                  ))}
+              </Box>
+              {selectedAgentIds.length === 0 ? (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: ds.space.mul(0, 3),
+                    marginTop: ds.space[2],
+                    py: ds.space[2],
+                    px: ds.space[3],
+                    backgroundColor: 'var(--ds-amber-100)',
+                    border: `1px solid var(--ds-amber-500)`,
+                    borderRadius: ds.radius.md,
+                  }}
+                >
+                  <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-amber-700)', flexShrink: 0 }} />
+                  <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>
+                    No agent is selected — no agent will be able to use this knowledge base.
+                  </Typography>
+                </Box>
+              ) : (
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', marginTop: ds.space[1] }}>
+                  {selectedAgentIds.length} agent{selectedAgentIds.length === 1 ? '' : 's'} selected
+                </Typography>
+              )}
+            </Box>
+          )}
+        </Box>
+
         {/* Action Buttons */}
         <Box
           sx={{
@@ -674,6 +850,9 @@ KnowledgeBaseFormModal.propTypes = {
   onSubmit: PropTypes.func.isRequired,
   editKnowledgeBase: PropTypes.object,
   loading: PropTypes.bool,
+  agents: PropTypes.array,
+  agentsLoading: PropTypes.bool,
+  initialAgentIds: PropTypes.array,
 };
 
 const statusTone = (status) => {
@@ -770,6 +949,12 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyKB, setHistoryKB] = useState(null);
   const [activeTab, setActiveTab] = useState('integration');
+  const [agents, setAgents] = useState([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  // agent ids the KB being edited is already mapped to; [KB_AGENT_WILDCARD] means
+  // all agents. Fetched before the modal opens so the picker never flips under
+  // the user mid-edit.
+  const [formAgentIds, setFormAgentIds] = useState([]);
 
   // In tenant-wide mode every write affordance is hidden — writes always
   // require the per-account context, so we never paint Create / Edit /
@@ -818,6 +1003,32 @@ const KnowledgeBaseTab = ({ accountId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
+  // Agent list for the create/edit picker. Skipped in tenant-wide mode, which
+  // paints no write affordances and so never opens the form.
+  useEffect(() => {
+    if (isTenantWide) return undefined;
+    let cancelled = false;
+    setAgentsLoading(true);
+    apiAskNudgebee
+      .listAgents({ accountId })
+      .then((response) => {
+        if (cancelled) return;
+        const list = response?.data?.data?.ai_list_agents?.data || [];
+        setAgents([...list].sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Error fetching agents:', err);
+        setAgents([]);
+      })
+      .finally(() => {
+        if (!cancelled) setAgentsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, isTenantWide]);
+
   // Poll every 60s so async KB status changes (processing -> active) appear
   // without a manual reload. Skipped in tenant-wide mode — that surface is
   // read-only, so the per-row status doesn't transition under the user.
@@ -834,6 +1045,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
 
   const handleCreate = () => {
     setSelectedKnowledgeBase(null);
+    setFormAgentIds([]);
     setFormModalOpen(true);
   };
 
@@ -847,6 +1059,15 @@ const KnowledgeBaseTab = ({ accountId }) => {
         return;
       }
       if (response.data) {
+        // Mapped agents are fetched before the modal opens so the picker renders
+        // its real state on first paint. A failure here is not fatal: the KB is
+        // still editable, the picker just opens with nothing ticked, so warn
+        // rather than silently implying it is mapped to nobody.
+        const agentsResponse = await apiKnowledgeBase.getKBAgents(accountId, knowledgeBase.id);
+        if (agentsResponse.errors && agentsResponse.errors.length > 0) {
+          snackbar.error('Failed to fetch the agents this knowledge base is mapped to');
+        }
+        setFormAgentIds(agentsResponse.data || []);
         setSelectedKnowledgeBase(response.data);
         setFormModalOpen(true);
       } else {
@@ -1031,31 +1252,63 @@ const KnowledgeBaseTab = ({ accountId }) => {
     [hasAccess, accountId, isTenantWide]
   );
 
+  // Applies the picker's selection to llm_kb_agent_mappings. The KB itself is
+  // already saved by the time this runs, so a mapping failure is reported but
+  // never rolls the save back — it is a separate RPC per mapping, and the
+  // wildcard ("all agents") is just another agent id to the backend.
+  const syncAgentMappings = async (kbId, nextAgentIds, previousAgentIds) => {
+    const toMap = nextAgentIds.filter((id) => !previousAgentIds.includes(id));
+    const toUnmap = previousAgentIds.filter((id) => !nextAgentIds.includes(id));
+    if (toMap.length === 0 && toUnmap.length === 0) {
+      return true;
+    }
+
+    const results = await Promise.all([
+      ...toMap.map((agentId) => apiKnowledgeBase.mapKnowledgeBaseToAgent(accountId, kbId, agentId)),
+      ...toUnmap.map((agentId) => apiKnowledgeBase.unmapKnowledgeBaseFromAgent(accountId, kbId, agentId)),
+    ]);
+    const failed = results.filter((r) => r?.errors?.length > 0).length;
+    if (failed > 0) {
+      snackbar.error(`Failed to update agent mapping for ${failed} agent(s)`);
+      return false;
+    }
+    return true;
+  };
+
   const handleFormSubmit = async (data) => {
+    const { agentIds = [], ...kbPayload } = data;
     try {
       setSubmitting(true);
       let response;
+      let kbId;
 
       if (selectedKnowledgeBase) {
-        response = await apiKnowledgeBase.updateKnowledgeBase(accountId, selectedKnowledgeBase.id, data);
+        response = await apiKnowledgeBase.updateKnowledgeBase(accountId, selectedKnowledgeBase.id, kbPayload);
         if (response.errors && response.errors.length > 0) {
           const errorMessage = response.errors[0]?.message || 'Failed to update knowledge base';
           snackbar.error(errorMessage);
           return;
         }
+        kbId = selectedKnowledgeBase.id;
         snackbar.success('Knowledge base updated successfully');
       } else {
-        response = await apiKnowledgeBase.createKnowledgeBase(accountId, data);
+        response = await apiKnowledgeBase.createKnowledgeBase(accountId, kbPayload);
         if (response.errors && response.errors.length > 0) {
           const errorMessage = response.errors[0]?.message || 'Failed to create knowledge base';
           snackbar.error(errorMessage);
           return;
         }
+        kbId = response.data?.id;
         snackbar.success('Knowledge base created successfully');
+      }
+
+      if (kbId) {
+        await syncAgentMappings(kbId, agentIds, formAgentIds);
       }
 
       setFormModalOpen(false);
       setSelectedKnowledgeBase(null);
+      setFormAgentIds([]);
       fetchKnowledgeBases();
     } catch (err) {
       console.error('Error submitting knowledge base:', err);
@@ -1242,10 +1495,14 @@ const KnowledgeBaseTab = ({ accountId }) => {
         onClose={() => {
           setFormModalOpen(false);
           setSelectedKnowledgeBase(null);
+          setFormAgentIds([]);
         }}
         onSubmit={handleFormSubmit}
         editKnowledgeBase={selectedKnowledgeBase}
         loading={submitting}
+        agents={agents}
+        agentsLoading={agentsLoading}
+        initialAgentIds={formAgentIds}
       />
 
       {/* Delete Confirmation Modal */}

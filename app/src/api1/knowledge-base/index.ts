@@ -24,6 +24,13 @@ interface KnowledgeBaseOutput {
   error_message?: string;
 }
 
+/**
+ * Sentinel agent_id for a knowledge base mapped to every agent. Mirrors
+ * toolcore.KBAgentWildcard in llm-server: it is stored as an ordinary row in
+ * llm_kb_agent_mappings, and every agent resolves it alongside its own name.
+ */
+export const KB_AGENT_WILDCARD = '*';
+
 interface CreateKnowledgeBasePayload {
   name: string;
   description?: string;
@@ -440,6 +447,52 @@ const apiKnowledgeBase = {
     } catch (error) {
       console.error('Error fetching agent knowledge bases:', error);
       return { data: [], errors: [{ message: 'An error occurred while fetching agent knowledge bases' }] };
+    }
+  },
+
+  /**
+   * Get the agent ids a knowledge base is mapped to. Returns [KB_AGENT_WILDCARD]
+   * when the KB is mapped to all agents.
+   */
+  getKBAgents: async (accountId: string, kbId: string) => {
+    if (accountId === 'demo') {
+      return { data: [], errors: [] };
+    }
+    const LIST_KB_AGENTS = `
+      query ListKBAgents($request: ListKBAgentsRequest!) {
+        ai_list_kb_agents(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await queryGraphQL(LIST_KB_AGENTS, 'ListKBAgents', {
+        request: {
+          account_id: accountId,
+          kb_id: kbId,
+        },
+      });
+
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        const errorMessage = extractErrorMessage(response, 'Failed to fetch knowledge base agents');
+        return { data: [], errors: [{ message: errorMessage }] };
+      }
+
+      if (response?.data?.data?.ai_list_kb_agents) {
+        const result = response.data.data.ai_list_kb_agents;
+        if (result.errors && result.errors.length > 0) {
+          return { data: [], errors: result.errors };
+        }
+        return { data: result.data || [], errors: [] };
+      }
+      return { data: [], errors: [{ message: 'Failed to fetch knowledge base agents' }] };
+    } catch (error) {
+      console.error('Error fetching knowledge base agents:', error);
+      return { data: [], errors: [{ message: 'An error occurred while fetching knowledge base agents' }] };
     }
   },
 

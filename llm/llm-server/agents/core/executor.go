@@ -598,6 +598,12 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if base := orchestratorSkillScopeName(agentName); base != "" {
 		ownSkillNames = append(ownSkillNames, base)
 	}
+	// KBs the user mapped to "All agents" are carried by a wildcard mapping row, so
+	// every agent resolves them by looking the sentinel up alongside its own names.
+	// Appended last: ownSkillNames[0] stays the canonical name for logging, and the
+	// sentinel counts as an OWN name so question-aware narrowing (which only filters
+	// INHERITED KBs) never drops an all-agents skill.
+	ownSkillNames = toolcore.WithKBAgentWildcard(ownSkillNames)
 	skillAgentNames := make([]string, 0, len(ownSkillNames)+len(request.InheritSkillsFromAgents))
 	skillAgentNames = append(skillAgentNames, ownSkillNames...)
 	skillAgentNames = append(skillAgentNames, request.InheritSkillsFromAgents...)
