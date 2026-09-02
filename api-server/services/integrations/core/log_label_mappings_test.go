@@ -38,6 +38,37 @@ func TestInjectSharedLogConfigProperties_OtherCategoriesUntouched(t *testing.T) 
 
 	assert.NotContains(t, schema.Properties, LogLabelMappingsConfigName)
 	assert.NotContains(t, schema.Properties, "default_filters")
+	assert.NotContains(t, schema.Properties, DefaultTraceFiltersConfigName)
+}
+
+// TestInjectSharedLogConfigProperties_AllowsDefaultTraceFilters is the trace twin of
+// the log-label-mappings test above, and exists for the same reason: without the
+// injection CreateIntegrationConfig rejects `default_trace_filters` with "not found
+// in schema", so saving a Default Trace Filters card 400s and reads as a frontend
+// bug. Both categories are covered because getTraceSource serves trace providers
+// from each — otel_clickhouse and ES are IntegrationCategoryLog, while datadog,
+// dynatrace, jaeger and the rest are IntegrationCategoryObservabilityPlatform.
+func TestInjectSharedLogConfigProperties_AllowsDefaultTraceFilters(t *testing.T) {
+	for _, category := range []IntegrationCategory{IntegrationCategoryLog, IntegrationCategoryObservabilityPlatform} {
+		t.Run(string(category), func(t *testing.T) {
+			schema := injectSharedLogConfigProperties(IntegrationSchema{
+				Type:       ToolSchemaTypeObject,
+				Properties: map[string]IntegrationSchemaProperty{"url": {Type: ToolSchemaTypeString}},
+			}, category)
+
+			require.Contains(t, schema.Properties, DefaultTraceFiltersConfigName)
+			assert.True(t, schema.Properties[DefaultTraceFiltersConfigName].Hidden,
+				"the blob is rendered by a dedicated card, never by the generic dynamic form")
+		})
+	}
+}
+
+// The trace filters must be their OWN key: one integration record commonly serves
+// both logs and traces (datadog, dynatrace, chronosphere, ES), so sharing
+// `default_filters` would apply an operator's log filters to trace queries.
+func TestDefaultTraceFiltersConfigNameIsDistinctFromLogs(t *testing.T) {
+	assert.NotEqual(t, "default_filters", DefaultTraceFiltersConfigName)
+	assert.Equal(t, "default_trace_filters", DefaultTraceFiltersConfigName)
 }
 
 // TestInjectSharedLogConfigProperties_DoesNotMutateInput pins the clone. ConfigSchema()

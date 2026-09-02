@@ -1904,6 +1904,19 @@ func (a *datadogTracesAction) Execute(ctx playbooks.PlaybookActionContext, rawPa
 		return nil, errors.New("trace_query or traces_url is required")
 	}
 
+	// This action calls the Datadog API directly with a hand-written query string and
+	// never goes through GetTraces, so the account's standing trace filter has no
+	// where clause to be AND-ed into. Refuse rather than return spans from outside the
+	// scope the operator set. Accounts with no standing filter are unaffected.
+	if err := ApplyDefaultTraceFilters(sc, &TracesV3Request{
+		AccountId:      ctx.GetAccountId(),
+		ProviderType:   "datadog",
+		ProviderSource: "user",
+		Query:          params.TraceQuery,
+	}); err != nil {
+		return nil, err
+	}
+
 	// Create query params structure
 	queryParams := integrations.DatadogQueryParams{
 		TraceQuery:  params.TraceQuery,

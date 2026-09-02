@@ -2320,6 +2320,9 @@ func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Reque
 	if err != nil {
 		return []TraceGroupingValues{}, err
 	}
+	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
+		return []TraceGroupingValues{}, err
+	}
 	filteringMap := source.GetLabelMapping()
 	TraceQuery.QueryRequest.Where = convertWhereClauseWithMApping(TraceQuery.QueryRequest.Where, filteringMap)
 
@@ -2341,6 +2344,9 @@ func GetGroupedTracesCount(context *security.RequestContext, TraceQuery TracesV3
 	}
 	source, err := resolveTraceSource(context, TraceQuery.AccountId, traceProvider, integrationSource, traceIndexOverride(TraceQuery.Request))
 	if err != nil {
+		return common.OpenTelemetryTraceGroupCount{}, err
+	}
+	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
 	filteringMap := source.GetLabelMapping()
@@ -2388,6 +2394,9 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
+	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
@@ -2409,6 +2418,14 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	}
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
+		return TracesResult{}, err
+	}
+	// Scope the request to the account's standing trace filters BEFORE the label
+	// mapping below: the filters are canonical field names, so they must be
+	// translated by the same mapping every other clause goes through. This also
+	// puts them inside the ValidateRequest snapshot and the executed-query
+	// recording, so an empty result names the filter that caused it.
+	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return TracesResult{}, err
 	}
 	filteringMap := source.GetLabelMapping()
@@ -2526,6 +2543,9 @@ func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest Tr
 	if err != nil {
 		return nil, err
 	}
+	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+		return nil, err
+	}
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
@@ -2550,6 +2570,9 @@ func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest Tra
 
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
 	filteringMap := source.GetLabelMapping()
@@ -2588,6 +2611,12 @@ func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest
 		return TracesQueryResult{}, nil
 	}
 
+	// This path only ever runs with a raw ClickHouse SQL string (the handler sets
+	// IncludeRawResult only then), so a standing filter cannot be AND-ed in and the
+	// call is refused rather than run unscoped. Accounts with no filter are unaffected.
+	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+		return TracesQueryResult{}, err
+	}
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 

@@ -28,6 +28,8 @@ import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
+import DefaultFiltersCard, { emptyFilterCard, hasCardMissingAccount, parseDefaultFilters, serializeDefaultFilters } from './DefaultFiltersCard';
+import { TRACE_LABEL_ADVANCED_FIELDS, TRACE_LABEL_FIELDS } from '@components/common/settings/labelMapperFields';
 
 // Array-typed config fields travel as one comma-joined string in
 // integration_config_values; chips may be plain values or {label, value}.
@@ -37,6 +39,18 @@ const joinConfigArray = (values) => values.map((v) => (v && typeof v === 'object
 // cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
 // Account filter on the Troubleshoot/Events page.
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />;
+
+// Drop the on-demand validation results the edit just invalidated. Cards are matched
+// by index, so any change in card count clears everything; otherwise only the cards
+// whose contents actually differ lose their result.
+const dropStaleValidation = (validation, prevCards, nextCards) => {
+  if (prevCards.length !== nextCards.length) return {};
+  const next = { ...validation };
+  nextCards.forEach((card, idx) => {
+    if (JSON.stringify(card) !== JSON.stringify(prevCards[idx])) next[idx] = undefined;
+  });
+  return next;
+};
 
 // Log/observability integrations that support per-account "Default Log Filters"
 // (always-apply where-clause filters injected into every log query for the account).
@@ -52,6 +66,37 @@ const LOG_FILTER_INTEGRATIONS = new Set([
   'chronosphere',
   'splunk_enterprise',
 ]);
+
+// Trace integrations that support per-account "Default Trace Filters". Members are the
+// providers getTraceSource actually serves AND that have an integration form, so the
+// card never appears where a saved value could not be read back. Note the differences
+// from the log set above: 'otel_clickhouse' (the agent trace provider) rather than
+// 'clickhouse' (an unrelated database integration), and no 'signoz' — signoz has no
+// trace source today. 'gcp' is resolver-synthesized and has no form at all.
+const TRACE_FILTER_INTEGRATIONS = new Set([
+  'otel_clickhouse',
+  'jaeger',
+  'chronosphere',
+  'datadog',
+  'dynatrace',
+  'ES',
+  'elasticsearch',
+  'openobserve',
+  'newrelic',
+  'splunk_observability_platform',
+  'solarwinds',
+  'azure_app_insights',
+  'splunk_enterprise',
+  'cubeapm',
+]);
+
+// Canonical trace field names, reused from the Settings trace label mapper so the two
+// screens cannot drift: the server stores and applies trace filters in exactly this
+// vocabulary (canonicalTraceFields in observability/service.go).
+const CANONICAL_TRACE_FIELD_OPTIONS = [...TRACE_LABEL_FIELDS, ...TRACE_LABEL_ADVANCED_FIELDS].map(({ field }) => ({
+  label: field,
+  value: field,
+}));
 
 // Display labels for enum values whose stored form doesn't title-case into
 // something readable. Values not listed here fall back to snakeToTitleCase.
@@ -129,6 +174,11 @@ const IntegrationDynamicFormModal = ({
   // Per-account "Default Log Filters" (log integrations only): each card is an
   // account + a list of key=value filters always AND-ed into that account's log queries.
   const [defaultFilterRules, setDefaultFilterRules] = useState([{ accountId: '', filters: [{ key: '', value: '' }] }]);
+  // Per-account "Default Trace Filters" (trace integrations only). Same editor and the
+  // same stored shape as the log filters above, but a SEPARATE config value: one
+  // integration record commonly serves both logs and traces, so a shared list would
+  // apply log filters to trace queries.
+  const [defaultTraceFilterRules, setDefaultTraceFilterRules] = useState([emptyFilterCard()]);
   // Per-account ES index override (Advanced Settings): each card maps an account to
   // its own log/metrics/trace index; unmapped accounts fall back to the top-level index.
   const [indexRules, setIndexRules] = useState([{ accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
@@ -509,15 +559,18 @@ const IntegrationDynamicFormModal = ({
     if (!raw) return;
     const parsed = safeJSONParse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) return;
-    const normalizeAcc = (a) => (typeof a === 'object' && a !== null ? a.value || '' : a || '');
-    const next = parsed.map((e) => ({
-      accountId: normalizeAcc(e.accountId),
-      filters:
-        Array.isArray(e.filters) && e.filters.length > 0
-          ? e.filters.map((f) => ({ key: f.key || '', value: String(f.value ?? '') }))
-          : [{ key: '', value: '' }],
-    }));
-    setDefaultFilterRules(next);
+    setDefaultFilterRules(parseDefaultFilters(parsed));
+  }, [editData]);
+
+  // Same, for Default Trace Filters. Kept as its own effect rather than folded into
+  // the one above because the two configs are independent: an integration can carry
+  // one, the other, or both.
+  useEffect(() => {
+    const raw = editData?.integration_config_values?.default_trace_filters;
+    if (!raw) return;
+    const parsed = safeJSONParse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    setDefaultTraceFilterRules(parseDefaultFilters(parsed));
   }, [editData]);
 
   // Hydrate the ES per-account index override from the saved index_account_mapping
@@ -901,42 +954,16 @@ const IntegrationDynamicFormModal = ({
     );
   };
 
-  // --- Default Log Filters (per-account) handlers ---
-  // Clear a card's stale validation result whenever it is edited.
-  const clearCardValidation = (cardIdx) => setColumnValidation((prev) => ({ ...prev, [cardIdx]: undefined }));
-  const handleAddDefaultFilterCard = () => {
-    setDefaultFilterRules([...defaultFilterRules, { accountId: '', filters: [{ key: '', value: '' }] }]);
+  // --- Default Log / Trace Filters (per-account) handlers ---
+  // DefaultFiltersCard owns the row and card mutations; the modal only stores the
+  // result and drops validation results the edit invalidated. Only the cards that
+  // actually changed lose their result — clearing all of them would throw away a
+  // neighbouring card's answer on every keystroke.
+  const handleDefaultFilterRulesChange = (next) => {
+    setDefaultFilterRules(next);
+    setColumnValidation((prev) => dropStaleValidation(prev, defaultFilterRules, next));
   };
-  const handleRemoveDefaultFilterCard = (cardIdx) => {
-    setDefaultFilterRules(defaultFilterRules.filter((_, i) => i !== cardIdx));
-    setColumnValidation({}); // indices shift on removal — clear all
-  };
-  const handleDefaultFilterAccountChange = (cardIdx, accountId) => {
-    setDefaultFilterRules(defaultFilterRules.map((c, i) => (i === cardIdx ? { ...c, accountId } : c)));
-    clearCardValidation(cardIdx);
-  };
-  const handleAddDefaultFilterRow = (cardIdx) => {
-    setDefaultFilterRules(defaultFilterRules.map((c, i) => (i === cardIdx ? { ...c, filters: [...c.filters, { key: '', value: '' }] } : c)));
-    clearCardValidation(cardIdx);
-  };
-  const handleRemoveDefaultFilterRow = (cardIdx, rowIdx) => {
-    setDefaultFilterRules(
-      defaultFilterRules.map((c, i) => {
-        if (i !== cardIdx) return c;
-        const next = c.filters.filter((_, j) => j !== rowIdx);
-        return { ...c, filters: next.length > 0 ? next : [{ key: '', value: '' }] };
-      })
-    );
-    clearCardValidation(cardIdx);
-  };
-  const handleDefaultFilterRowChange = (cardIdx, rowIdx, field, value) => {
-    setDefaultFilterRules(
-      defaultFilterRules.map((c, i) =>
-        i === cardIdx ? { ...c, filters: c.filters.map((f, j) => (j === rowIdx ? { ...f, [field]: value } : f)) } : c
-      )
-    );
-    clearCardValidation(cardIdx);
-  };
+
   // On-demand: fetch the card's account log labels and flag any column that isn't a known label.
   const handleValidateCard = async (cardIdx) => {
     const card = defaultFilterRules[cardIdx];
@@ -973,7 +1000,9 @@ const IntegrationDynamicFormModal = ({
     setErrors({});
     setShowModal(false);
     setRules([{ match: [{ key: '', value: '' }], accountId: '' }]);
-    setDefaultFilterRules([{ accountId: '', filters: [{ key: '', value: '' }] }]);
+    setDefaultFilterRules([emptyFilterCard()]);
+    setDefaultTraceFilterRules([emptyFilterCard()]);
+    setColumnValidation({});
     setIndexRules([{ accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
     setAdvancedOpen(false);
     setLabelMapping({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
@@ -1139,15 +1168,14 @@ const IntegrationDynamicFormModal = ({
     if (!validateForm()) {
       return;
     }
-    if (LOG_FILTER_INTEGRATIONS.has(integrationName)) {
+    if (LOG_FILTER_INTEGRATIONS.has(integrationName) && hasCardMissingAccount(defaultFilterRules)) {
       // Any card that has a filter entered must have an account selected.
-      const cardMissingAccount = defaultFilterRules.some(
-        (c) => !c.accountId && (c.filters || []).some((f) => (f.key || '').trim() || (f.value || '').trim())
-      );
-      if (cardMissingAccount) {
-        snackbar.error('Default Log Filters: please select an account for each filter card.');
-        return;
-      }
+      snackbar.error('Default Log Filters: please select an account for each filter card.');
+      return;
+    }
+    if (TRACE_FILTER_INTEGRATIONS.has(integrationName) && hasCardMissingAccount(defaultTraceFilterRules)) {
+      snackbar.error('Default Trace Filters: please select an account for each filter card.');
+      return;
     }
     if (integrationName === 'ES' || integrationName === 'elasticsearch') {
       // Any index card with an index entered must have an account selected.
@@ -1329,19 +1357,28 @@ const IntegrationDynamicFormModal = ({
     // { key, op:'_eq', value } (equality only for now). Emit an empty array when a
     // previously-saved config is cleared so filters can be removed.
     if (LOG_FILTER_INTEGRATIONS.has(integrationName)) {
-      const cleanedFilters = defaultFilterRules
-        .map((c) => ({
-          accountId: c.accountId || '',
-          filters: (c.filters || [])
-            .map((f) => ({ key: (f.key || '').trim(), op: '_eq', value: (f.value || '').trim() }))
-            .filter((f) => f.key && f.value),
-        }))
-        .filter((c) => c.accountId && c.filters.length > 0);
+      const cleanedFilters = serializeDefaultFilters(defaultFilterRules);
       const previouslySet = !!editData?.integration_config_values?.default_filters;
       if (cleanedFilters.length > 0 || previouslySet) {
         transformedValues.push({
           name: 'default_filters',
           value: JSON.stringify(cleanedFilters),
+          is_encrypted: false,
+        });
+      }
+    }
+
+    // Per-account Default Trace Filters → default_trace_filters. Same shape and the
+    // same clear-to-empty-array rule as the log filters above, under a separate config
+    // name: one integration record often serves both logs and traces, so sharing
+    // `default_filters` would apply log filters to trace queries.
+    if (TRACE_FILTER_INTEGRATIONS.has(integrationName)) {
+      const cleanedTraceFilters = serializeDefaultFilters(defaultTraceFilterRules);
+      const previouslySet = !!editData?.integration_config_values?.default_trace_filters;
+      if (cleanedTraceFilters.length > 0 || previouslySet) {
+        transformedValues.push({
+          name: 'default_trace_filters',
+          value: JSON.stringify(cleanedTraceFilters),
           is_encrypted: false,
         });
       }
@@ -1702,6 +1739,7 @@ const IntegrationDynamicFormModal = ({
   // LOG_FILTER_INTEGRATIONS it's now shown in both add and edit flows too.
   const isESIntegration = integrationName === 'ES' || integrationName === 'elasticsearch';
   const showLogFilters = LOG_FILTER_INTEGRATIONS.has(integrationName) && !isESIntegration;
+  const showTraceFilters = TRACE_FILTER_INTEGRATIONS.has(integrationName);
 
   // A fresh tenant with no onboarded cluster / cloud account has nothing to link
   // an account-scoped integration to. The `account_id` schema field is present
@@ -2498,156 +2536,61 @@ const IntegrationDynamicFormModal = ({
                 </Box>
               </>
             )}
-            {(showLogFilters || isESIntegration) && (
+            {(showLogFilters || showTraceFilters || isESIntegration) && (
               <Box sx={{ mt: ds.space[6] }}>
                 {renderAdvancedToggle()}
                 <Collapse in={advancedOpen}>
                   {showLogFilters && (
-                    <>
-                      <Typography
-                        sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}
-                      >
-                        Default Log Filters (Optional)
-                      </Typography>
-                      <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', mb: ds.space[4], pl: ds.space[1] }}>
-                        Filters always applied to every log query for the selected account (e.g. a central provider scoped to one cluster:{' '}
-                        <em>cluster_id = nudgebee</em>). Enter the provider-native column name. Conditions in a card are combined with AND.
-                      </Typography>
-                      {defaultFilterRules.map((card, cardIdx) => {
-                        const cardNeedsAccount = !card.accountId && (card.filters || []).some((f) => (f.key || '').trim() || (f.value || '').trim());
-                        const cardVal = columnValidation[cardIdx];
-                        return (
-                          <Box
-                            key={cardIdx}
-                            sx={{
-                              border: `1px solid ${ds.blue[400]}`,
-                              borderRadius: 'var(--ds-radius-lg)',
-                              p: 2,
-                              mb: ds.space[4],
-                              backgroundColor: ds.blue[100],
-                            }}
-                            data-testid={`default-filter-card-${cardIdx}`}
-                          >
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: ds.space[3] }}>
-                              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
-                                Account {cardIdx + 1}
-                              </Typography>
-                              {defaultFilterRules.length > 1 && (
-                                <Button
-                                  tone='secondary'
-                                  size='xs'
-                                  composition='icon-only'
-                                  icon={
-                                    <SafeIcon
-                                      src={NewDelete}
-                                      alt='Remove account'
-                                      style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }}
-                                    />
-                                  }
-                                  aria-label='Remove account'
-                                  onClick={() => handleRemoveDefaultFilterCard(cardIdx)}
-                                />
-                              )}
-                            </Box>
-                            <FilterDropdown
-                              label='Account'
-                              grouped
-                              groupIcon={renderAccountGroupIcon}
-                              options={accountOptions}
-                              value={card.accountId}
-                              onSelect={(_event, value) => handleDefaultFilterAccountChange(cardIdx, value?.value ?? value)}
-                              isOptionsLoading={loadingOptions.account_id}
-                              disabled={!accountOptions.length}
-                              sx={{
-                                height: ds.space.mul(0, 22),
-                                mb: cardNeedsAccount ? ds.space[1] : ds.space[3],
-                                ...(cardNeedsAccount ? { borderColor: 'var(--ds-red-500)', boxShadow: '0 0 0 3px var(--ds-red-100)' } : {}),
-                              }}
-                            />
-                            {cardNeedsAccount && (
-                              <Typography sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)', mb: ds.space[3], pl: ds.space[1] }}>
-                                Select an account to apply these filters.
-                              </Typography>
-                            )}
-                            <Typography
-                              sx={{
-                                fontSize: 'var(--ds-text-small)',
-                                fontWeight: 'var(--ds-font-weight-semibold)',
-                                color: ds.brand[500],
-                                mb: ds.space[2],
-                              }}
-                            >
-                              ALWAYS APPLY
-                            </Typography>
-                            {card.filters.map((f, rowIdx) => (
-                              <Box key={rowIdx} sx={{ display: 'flex', gap: ds.space[3], alignItems: 'flex-end', mb: ds.space[2] }}>
-                                <Box sx={{ flex: 1 }}>
-                                  <Input
-                                    label={rowIdx === 0 ? 'Column' : ''}
-                                    placeholder='e.g. cluster_id'
-                                    value={f.key}
-                                    onChange={(value) => handleDefaultFilterRowChange(cardIdx, rowIdx, 'key', value)}
-                                    size='sm'
-                                    error={
-                                      cardVal?.done && (f.key || '').trim() && cardVal.invalid.includes((f.key || '').trim())
-                                        ? 'Not a known log column for this account.'
-                                        : undefined
-                                    }
-                                  />
-                                </Box>
-                                <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.brand[500], pb: ds.space[1] }}>=</Typography>
-                                <Box sx={{ flex: 1 }}>
-                                  <Input
-                                    label={rowIdx === 0 ? 'Value' : ''}
-                                    placeholder='e.g. nudgebee'
-                                    value={f.value}
-                                    onChange={(value) => handleDefaultFilterRowChange(cardIdx, rowIdx, 'value', value)}
-                                    size='sm'
-                                  />
-                                </Box>
-                                <Box sx={{ paddingBottom: ds.space[1] }}>
-                                  <Button
-                                    tone='secondary'
-                                    size='xs'
-                                    composition='icon-only'
-                                    icon={<SafeIcon src={NewDelete} alt='Remove' style={{ width: ds.space.mul(0, 7), height: ds.space.mul(0, 7) }} />}
-                                    aria-label='Remove filter'
-                                    disabled={card.filters.length === 1}
-                                    onClick={() => handleRemoveDefaultFilterRow(cardIdx, rowIdx)}
-                                  />
-                                </Box>
-                              </Box>
-                            ))}
-                            <Box sx={{ mt: ds.space[2], display: 'flex', alignItems: 'center', gap: ds.space[3], flexWrap: 'wrap' }}>
-                              <Button tone='secondary' size='sm' onClick={() => handleAddDefaultFilterRow(cardIdx)}>
-                                + Add filter
-                              </Button>
-                              <Button
-                                tone='secondary'
-                                size='sm'
-                                onClick={() => handleValidateCard(cardIdx)}
-                                disabled={!card.accountId || cardVal?.loading}
-                              >
-                                {cardVal?.loading ? 'Validating…' : 'Validate columns'}
-                              </Button>
-                              {cardVal?.done &&
-                                (cardVal.invalid.length === 0 ? (
-                                  <Typography sx={{ color: 'var(--ds-green-600)', fontSize: 'var(--ds-text-caption)' }}>
-                                    All columns valid ✓
-                                  </Typography>
-                                ) : (
-                                  <Typography sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)' }}>
-                                    {cardVal.invalid.length} unknown column{cardVal.invalid.length > 1 ? 's' : ''}
-                                  </Typography>
-                                ))}
-                            </Box>
-                          </Box>
-                        );
-                      })}
-                      <Button tone='secondary' size='md' onClick={handleAddDefaultFilterCard}>
-                        + Add account
-                      </Button>
-                    </>
+                    <DefaultFiltersCard
+                      title='Default Log Filters (Optional)'
+                      helpText={
+                        <>
+                          Filters always applied to every log query for the selected account (e.g. a central provider scoped to one cluster:{' '}
+                          <em>cluster_id = nudgebee</em>). Enter the provider-native column name. Conditions in a card are combined with AND.
+                        </>
+                      }
+                      lockedText="Run Test Connection to load the backend's columns and configure default filters."
+                      unlocked
+                      cards={defaultFilterRules}
+                      onCardsChange={handleDefaultFilterRulesChange}
+                      accountOptions={accountOptions}
+                      accountOptionsLoading={loadingOptions.account_id}
+                      renderAccountGroupIcon={renderAccountGroupIcon}
+                      fieldLabel='Column'
+                      fieldPlaceholder='e.g. cluster_id'
+                      valuePlaceholder='e.g. nudgebee'
+                      validation={columnValidation}
+                      onValidateCard={handleValidateCard}
+                      validateLabel='Validate columns'
+                      invalidFieldError='Not a known log column for this account.'
+                      testIdPrefix='default-filter'
+                    />
+                  )}
+                  {showTraceFilters && (
+                    <DefaultFiltersCard
+                      title='Default Trace Filters (Optional)'
+                      helpText={
+                        <>
+                          Filters always applied to every trace query for the selected account — the traces screen, investigation evidence and
+                          nubi&apos;s answers (e.g. a shared backend scoped to one environment: <em>workload_namespace = production</em>). Use the
+                          canonical field name, not the backend&apos;s: it is translated per provider, so it survives a provider change. Conditions in
+                          a card are combined with AND.
+                        </>
+                      }
+                      lockedText='Run Test Connection to configure default trace filters.'
+                      unlocked
+                      cards={defaultTraceFilterRules}
+                      onCardsChange={setDefaultTraceFilterRules}
+                      accountOptions={accountOptions}
+                      accountOptionsLoading={loadingOptions.account_id}
+                      renderAccountGroupIcon={renderAccountGroupIcon}
+                      fieldLabel='Field'
+                      fieldPlaceholder='e.g. workload_namespace'
+                      valuePlaceholder='e.g. production'
+                      fieldOptionsForCard={() => ({ loading: false, options: CANONICAL_TRACE_FIELD_OPTIONS })}
+                      testIdPrefix='default-trace-filter'
+                      sx={{ mt: showLogFilters ? ds.space[6] : 0 }}
+                    />
                   )}
                   {isESIntegration && (
                     <>
@@ -2656,7 +2599,7 @@ const IntegrationDynamicFormModal = ({
                           color: ds.brand[500],
                           fontSize: 'var(--ds-text-body)',
                           fontWeight: 'var(--ds-font-weight-medium)',
-                          mt: showLogFilters ? ds.space[6] : 0,
+                          mt: showLogFilters || showTraceFilters ? ds.space[6] : 0,
                           mb: ds.space[1],
                         }}
                       >

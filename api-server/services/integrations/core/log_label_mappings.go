@@ -15,6 +15,13 @@ import (
 // provider gets the capability without touching its integration definition.
 const LogLabelMappingsConfigName = "log_label_mappings"
 
+// DefaultTraceFiltersConfigName is the per-account always-apply TRACE filter blob.
+// Deliberately separate from the logs-side "default_filters": one integration record
+// commonly serves both logs and traces (datadog, dynatrace, chronosphere, ES), so a
+// shared key would apply log filters to trace queries. Read by the observability
+// package (trace_default_filters.go).
+const DefaultTraceFiltersConfigName = "default_trace_filters"
+
 // AccountLogLabelMappings is one per-account entry in LogLabelMappingsConfigName.
 // Stored as a JSON array so one integration serving several cloud accounts can map
 // each of them separately — the same shape default_filters uses.
@@ -57,12 +64,18 @@ func validateLogLabelMappings(values []IntegrationConfigValue) error {
 	return nil
 }
 
-// injectSharedLogConfigProperties auto-allows the two per-account JSON blobs every
+// injectSharedLogConfigProperties auto-allows the per-account JSON blobs every
 // log / observability-platform integration accepts, without each ConfigSchema having
-// to declare them: default_filters (always-apply log filters) and
-// log_label_mappings (canonical -> provider field overrides). Both are consumed
-// centrally in the observability package, so the provider definition has nothing to
-// say about them.
+// to declare them: default_filters (always-apply log filters), default_trace_filters
+// (the trace counterpart) and log_label_mappings (canonical -> provider field
+// overrides). All are consumed centrally in the observability package, so the
+// provider definition has nothing to say about them.
+//
+// The two categories cover every trace provider too — getTraceSource serves only
+// integrations that are IntegrationCategoryLog (otel_clickhouse, ES) or
+// IntegrationCategoryObservabilityPlatform (datadog, dynatrace, jaeger,
+// chronosphere, newrelic, splunk, solarwinds, openobserve, azure_app_insights) —
+// so default_trace_filters needs no third category here.
 //
 // This is load-bearing rather than a convenience. CreateIntegrationConfig rejects any
 // config value whose name is absent from Properties, so a save carrying one of these
@@ -81,6 +94,12 @@ func injectSharedLogConfigProperties(schema IntegrationSchema, category Integrat
 		"default_filters": {
 			Type:        ToolSchemaTypeString,
 			Description: "JSON array of per-account always-apply log filters",
+			Default:     "",
+			Hidden:      true,
+		},
+		DefaultTraceFiltersConfigName: {
+			Type:        ToolSchemaTypeString,
+			Description: "JSON array of per-account always-apply trace filters",
 			Default:     "",
 			Hidden:      true,
 		},

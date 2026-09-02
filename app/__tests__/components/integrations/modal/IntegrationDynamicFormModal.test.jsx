@@ -522,4 +522,118 @@ describe('schema-driven advanced fields', () => {
     expect(payload.integration_id).toBe('conf-1');
     expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '100,200', is_encrypted: false });
   });
+
+  // --- Default Trace Filters (#37403) ---
+  // The trace card is a SEPARATE config value from the log one on purpose: datadog,
+  // dynatrace, chronosphere and ES are each one integration record serving both logs
+  // and traces, so a shared list would apply log filters to trace queries.
+  test('shows Default Trace Filters for a trace integration, alongside the log card', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', title: 'Add Datadog Integration' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.getByText('Default Trace Filters (Optional)')).toBeInTheDocument();
+  });
+
+  // signoz has no trace source in getTraceSource, so offering a trace filter there
+  // would save a config nothing ever reads.
+  test('hides Default Trace Filters for a log-only integration (signoz)', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'signoz', title: 'Add Signoz Integration' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Default Trace Filters (Optional)')).not.toBeInTheDocument();
+  });
+
+  // otel_clickhouse is trace-only — and is the agent trace provider, NOT the
+  // unrelated 'clickhouse' database integration.
+  test('shows only Default Trace Filters for otel_clickhouse', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'otel_clickhouse', title: 'Add ClickHouse Traces' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByText('Default Trace Filters (Optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Default Log Filters (Optional)')).not.toBeInTheDocument();
+  });
+
+  test('hydrates a saved default_trace_filters config into the trace editor', async () => {
+    const editData = {
+      id: 'dd-1',
+      name: 'dd-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'dd-config',
+        default_trace_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'workload_namespace', op: '_eq', value: 'production' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', editData });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByDisplayValue('workload_namespace')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('production')).toBeInTheDocument();
+  });
+
+  // The two configs are independent: a record carrying only log filters must not
+  // spill them into the trace card, which is what a shared config name would do.
+  test('a saved default_filters value does not populate the trace card', async () => {
+    const editData = {
+      id: 'dd-2',
+      name: 'dd-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'dd-config',
+        default_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'cluster_id', op: '_eq', value: 'nudgebee' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', editData });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    // The log card holds it...
+    expect(screen.getByDisplayValue('cluster_id')).toBeInTheDocument();
+    // ...and the trace card is untouched: exactly one blank card, no rows carried over.
+    expect(screen.getByTestId('default-trace-filter-card-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('default-trace-filter-card-1')).not.toBeInTheDocument();
+    expect(screen.queryAllByDisplayValue('cluster_id')).toHaveLength(1);
+  });
 });

@@ -27,6 +27,7 @@ func invalidateIntegrationCaches(ctx *security.RequestContext, accountIds []stri
 	llm.InvalidateLLMServerCacheForAccounts(ctx, accountIds)
 	for _, accId := range accountIds {
 		observability.InvalidateDefaultLogFiltersCache(accId)
+		observability.InvalidateDefaultTraceFiltersCache(accId)
 		observability.InvalidateLogLabelMappingsCache(accId)
 	}
 }
