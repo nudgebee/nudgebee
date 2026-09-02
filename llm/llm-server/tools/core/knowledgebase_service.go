@@ -925,6 +925,11 @@ func kbCollectionName(kbType string, integrationID *string, kbId string) string 
 	return "kb_" + kbId
 }
 
+// KnowledgebaseCollectionName returns the RAG collection backing a KB.
+func KnowledgebaseCollectionName(kb Knowledgebase) string {
+	return kbCollectionName(kb.KBType, kb.IntegrationId, kb.Id)
+}
+
 // GetKBLoadHistory returns the load history for a knowledge base by querying rag_embedding_token_usage.
 func GetKBLoadHistory(sc *security.RequestContext, accountId, kbId string) ([]KBLoadHistoryEntry, error) {
 	if accountId == "" || kbId == "" {
@@ -1521,8 +1526,7 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 // traces, logs, logs_default) so a delegated sub-agent can see KBs the user
 // mapped to an upstream custom-planner parent.
 //
-// restrictToIds carries the top-level question-aware selection, mirroring
-// injectKBContext:
+// restrictToIds carries a caller-provided mapped-skill selection:
 //
 //   - nil            → selection disabled (legacy "every active mapped skill")
 //   - non-nil (any)  → selection ran at top-level. Own-name KBs are ALWAYS
@@ -1530,11 +1534,10 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 //     never be hidden by an upstream parent's filter. Only
 //     *inherited* KBs are filtered to the restriction.
 //
-// This is intended for agents whose planner type is AgentPlannerTypeCustom — those
-// agents implement their own Execute() and bypass the executor's systemMessage path,
-// so the lazy load_skills tool flow used by ReAct planners never reaches them.
-// For such agents we eagerly inline the skill content (instead of just names and
-// descriptions). Returns "" / nil when no active skills match.
+// This is retained for specialized callers such as code analysis. The main
+// executor no longer uses it; custom agents should opt into bounded account-wide
+// discovery through AgentKnowledgeAutoChunks. Returns "" / nil when no active
+// mapped skills match.
 // escapeCDATA makes a string safe to inline inside a `<![CDATA[...]]>` section
 // by splitting any literal `]]>` across two CDATA sections. The sequence
 // `]]>` is the only reserved marker inside CDATA — it's replaced with
@@ -1659,7 +1662,7 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 	// Own name (first entry) is ALWAYS loaded regardless of the top-level
 	// selection — a sub-agent's scoped expertise must not be hidden by an upstream
 	// parent's filter. Inherited ancestor names are only honoured when they pass
-	// the selection. This mirrors the own/inherited split inside injectKBContext.
+	// the caller-provided selection.
 	ownName := agentNames[0]
 	inheritedNames := agentNames[1:]
 

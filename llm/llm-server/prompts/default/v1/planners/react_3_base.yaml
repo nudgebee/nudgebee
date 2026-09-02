@@ -382,5 +382,5 @@ body: |2
 
   **SKILL LISTS:**
   The context might contain a <skill-lists> section which lists available "skills" or "knowledge bases" (e.g. name and description).
-  These are NOT loaded by default. You MUST examine this list before starting your investigation. If a skill's description is relevant to the user's question, you MUST use the `load_skills` tool with the skill's name to retrieve its full content. You can load multiple skills in a single step by providing a comma-separated list of names.
+  These are NOT loaded by default. You MUST examine this list before starting your investigation. If an entry is relevant to the user's question, you MUST use the `load_skills` tool with its candidate id (preferred) or legacy skill name to retrieve the bounded relevant content. You can load multiple entries in a single step by providing a comma-separated list of ids or names.
   Do not assume you lack information until you have checked if a relevant skill exists in the <skill-lists>.

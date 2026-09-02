@@ -3914,31 +3914,13 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// clusters in long streams.
 	toolContext.OriginalQuery = agentRequest.OriginalQuery
 
-	// Skill propagation across delegation (flag-gated). Skills are agent-scoped, so a
-	// runbook mapped to an orchestrator never reaches the sub-agent that actually
-	// executes — the orchestrator delegates to logs/prometheus/etc. and they never
-	// inherit its KBs. When enabled, carry the delegating agent's skill scope (its own
-	// name, appended to any names it itself inherited) plus SelectedSkillIds. The
-	// sub-agent's fetchAgentKBs then surfaces those runbooks in its OWN <skill-lists>
-	// menu and its planner decides whether to load_skills (no eager injection).
-	//
-	// Blast-radius note: fetchAgentKBs narrows inherited KBs by SelectedSkillIds only
-	// when a selection exists. Conversation-scoped agents populate it (question-aware),
-	// so their sub-agents see only investigation-relevant runbooks. Account-scoped
-	// orchestrators (k8s/aws/…) skip per-question selection to stay cache-stable, so
-	// SelectedSkillIds is nil and the sub-agent inherits the parent's full active
-	// mapped set — but that is menu-level only (name + description; bodies load lazily
-	// via load_skills at the sub-agent's discretion), so the cost is a few extra menu
-	// lines, not injected content. Custom-planner delegators (agent_metrics.go etc.)
-	// thread InheritSkillsFromAgents explicitly and bypass this path — no double-prop.
-	// toolContext skill fields are only read for agent-type tools (ExecuteAgentToolCall).
-	if config.Config.LlmServerSkillDelegationPropagationEnabled {
-		toolContext.InheritSkillsFromAgents = delegationSkillScope(agentRequest.InheritSkillsFromAgents, parentAgentName)
-		toolContext.SelectedSkillIds = agentRequest.SelectedSkillIds
-	}
+	// Every delegated agent performs its own account-wide search using the original
+	// question plus its delegated task. Agent mappings therefore do not need to be
+	// propagated to control knowledge visibility.
 	toolContext.KBPrestepContent = agentRequest.KBPrestepContent
-	toolContext.KBPrestepExecuted = agentRequest.KBPrestepExecuted
 	toolContext.KBReferences = agentRequest.KBReferences
+	toolContext.KnowledgePolicy = string(agentRequest.KnowledgePolicy)
+	toolContext.KnowledgePolicyResolved = agentRequest.KnowledgePolicyResolved
 
 	// Check if this tool requires configuration
 	if _, ok := tool.(toolcore.NBToolConfig); ok {

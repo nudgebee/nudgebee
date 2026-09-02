@@ -137,6 +137,10 @@ func (a UnifiedSearchAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
 
+func (a UnifiedSearchAgent) GetKnowledgeMode() core.AgentKnowledgeMode {
+	return core.AgentKnowledgeAutoChunks
+}
+
 func (a UnifiedSearchAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierRetrieval
 }
@@ -216,7 +220,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 		}()
 	}
 
-	if analysis.UseSkills {
+	if analysis.UseSkills && core.AutomaticKnowledgeAllowed(request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -508,6 +512,9 @@ Output JSON format:
 }
 
 func (a UnifiedSearchAgent) searchSkills(ctx *security.RequestContext, request core.NBAgentRequest, query string) (string, error) {
+	if !core.AutomaticKnowledgeAllowed(request) {
+		return "", nil
+	}
 	// Query RAG with module="skills" (assuming this module exists or will be populated)
 	// If "skills" module is empty, this might return nothing, which is fine.
 	// We use QueryRAGCollection to target specific module/collection if needed.
@@ -546,15 +553,15 @@ func (a UnifiedSearchAgent) synthesizeAnswer(ctx *security.RequestContext, reque
 		llms.TextParts(llms.ChatMessageTypeSystem, fmt.Sprintf("Context:\n%s", context)),
 	}
 
-	// websearch is AgentPlannerTypeCustom and bypasses the executor's basePrompt →
-	// systemMessage path, so the lazy <skill-lists> + load_skills flow that
-	// ReAct planners use cannot reach this synthesis call. The executor
-	// eagerly loads the active mapped skills (own ∪ inherited, narrowed to the
-	// question-aware selection when LlmServerSkillSelectionTopK is enabled) into
-	// request.SkillsContext — surface it as a system message so any expert
-	// guidance the user mapped to "websearch" actually shapes the final answer.
-	if strings.TrimSpace(request.SkillsContext) != "" {
-		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, request.SkillsContext))
+	// This custom planner has no load_skills loop, so it opts into bounded,
+	// question-relevant knowledge chunks supplied by the executor.
+	knowledgeContext := strings.TrimSpace(request.KBPrestepContent)
+	if knowledgeContext == "" {
+		// Compatibility for callers that still populate the legacy field directly.
+		knowledgeContext = strings.TrimSpace(request.SkillsContext)
+	}
+	if knowledgeContext != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, knowledgeContext))
 	}
 
 	if request.ConversationContext != "" {

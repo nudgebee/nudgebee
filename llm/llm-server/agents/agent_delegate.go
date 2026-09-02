@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -665,14 +664,9 @@ func (a *dynamicReActAgent) GetSystemPrompt(ctx *security.RequestContext, _ core
 		)
 	}
 
-	instructions := []string{a.prompt}
-	if menu := a.accountSkillListsMenu(ctx); menu != "" {
-		instructions = append(instructions, menu)
-	}
-
 	return core.NBAgentPrompt{
 		Role:         "a specialist investigator dynamically composed by a parent agent",
-		Instructions: instructions,
+		Instructions: []string{a.prompt},
 		Constraints: []string{
 			"Focus exclusively on the task described in your instructions. Do not expand scope.",
 			"Use only the tools provided to you. Do not attempt to call tools not in your tool list.",
@@ -680,31 +674,6 @@ func (a *dynamicReActAgent) GetSystemPrompt(ctx *security.RequestContext, _ core
 			"Report your findings with specific evidence: timestamps, metric values, log lines, or query results. Never make claims without supporting data.",
 		},
 	}
-}
-
-// accountSkillListsMenu renders a `<skill-lists>` discovery block from all active
-// KBs mapped in the delegate's account. Returns "" when the feature flag is off,
-// the account has no accessible KBs, or the KB list call fails (fail-open — the
-// menu is discovery-only and the delegate stays functional without it).
-//
-// This is the delegate's only path to skills: the parent agent opts the whole
-// sub-agent out of default-tool injection to keep the curated toolset honest,
-// so unlike other agents the delegate can't rely on the executor's kb_prestep
-// path to attach a menu. Load_skills itself re-injects via
-// DefaultSkillsInjectOverride once this menu marker is present.
-func (a *dynamicReActAgent) accountSkillListsMenu(ctx *security.RequestContext) string {
-	if !config.Config.LlmServerDelegateAccountKBsEnabled {
-		return ""
-	}
-	if a.accountId == "" {
-		return ""
-	}
-	kbs, err := toolcore.ListKnowledgebases(ctx, a.accountId)
-	if err != nil {
-		ctx.GetLogger().Warn("delegate: unable to list account KBs for skill menu", "error", err, "account_id", a.accountId)
-		return ""
-	}
-	return core.BuildSkillListsMenu(kbs, false)
 }
 
 func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {
@@ -752,9 +721,8 @@ func (a *dynamicReActAgent) OptOutDefaultTools() bool {
 
 // InjectDefaultSkills implements core.DefaultSkillsInjectOverride: even though
 // the delegate opts out of default-tool injection wholesale, load_skills must
-// still land when the delegate's synthesized system prompt advertises a
-// `<skill-lists>` menu (see accountSkillListsMenu). Without this override the
-// menu is visible but unreachable — the LLM sees named runbooks it cannot open.
+// still land when account-wide discovery can advertise candidates. Without
+// this override those candidates would be visible but unreachable.
 func (a *dynamicReActAgent) InjectDefaultSkills() bool {
 	return true
 }

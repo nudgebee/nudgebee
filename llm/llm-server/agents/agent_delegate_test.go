@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -729,26 +728,4 @@ func TestDynamicReActAgent_InjectDefaultSkills(t *testing.T) {
 	agent := &dynamicReActAgent{name: "test_delegate", accountId: "acct-1"}
 	assert.True(t, agent.OptOutDefaultTools(), "delegate must still opt out of default tools (parent-curated scope)")
 	assert.True(t, agent.InjectDefaultSkills(), "delegate must re-enable load_skills via the skills carve-out")
-}
-
-// TestDynamicReActAgent_AccountSkillMenu_FlagOff verifies the delegate emits no
-// skill menu when the feature flag is off (default) — protects against
-// accidental prompt expansion before the flag is deliberately flipped.
-func TestDynamicReActAgent_AccountSkillMenu_FlagOff(t *testing.T) {
-	prev := config.Config.LlmServerDelegateAccountKBsEnabled
-	config.Config.LlmServerDelegateAccountKBsEnabled = false
-	t.Cleanup(func() { config.Config.LlmServerDelegateAccountKBsEnabled = prev })
-
-	agent := &dynamicReActAgent{
-		name:          "test_delegate",
-		accountId:     "acct-1",
-		prompt:        "Investigate slow queries",
-		maxIterations: 5,
-	}
-
-	systemPrompt := agent.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
-
-	for _, ins := range systemPrompt.Instructions {
-		assert.NotContains(t, ins, "<skill-lists>", "no skill-lists menu should appear when flag is off")
-	}
 }

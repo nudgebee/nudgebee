@@ -3,13 +3,16 @@
 package tools
 
 import (
+	"html"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"os"
+	"regexp"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -64,7 +67,9 @@ func TestSearchSkillsTool_Integration_EmptyQuery(t *testing.T) {
 	assert.Contains(t, resp.Data, "query is required")
 }
 
-func TestSearchSkillsTool_Integration_NoResults(t *testing.T) {
+func TestSearchSkillsTool_Integration_UnmatchedQuerySmoke(t *testing.T) {
+	// Nearest-neighbour search may return weak matches. This is a connectivity
+	// smoke test, not an assertion that the retrieval service rejects them.
 	skipIfNoTestAccount(t)
 	tool := SearchSkillsTool{}
 	ctx := newSkillToolContext(t, tool, "xyznonexistentquery98765")
@@ -74,7 +79,6 @@ func TestSearchSkillsTool_Integration_NoResults(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-	// Either no results or some results — both are valid; should not error.
 }
 
 func TestSearchSkillsTool_Integration_BasicQuery(t *testing.T) {
@@ -123,46 +127,47 @@ func TestSearchSkillsTool_Integration_RAGResults(t *testing.T) {
 	}
 }
 
-func TestLoadSkillsTool_Integration_RAGFallback(t *testing.T) {
+func TestSearchSkillsTool_Integration_SearchThenLoad(t *testing.T) {
 	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	// Use a name that doesn't exist in DB but might match RAG content.
-	// The RAG fallback should search using the name as a query.
-	skillName := "AWS Infrastructure Setup"
-	ctx := newSkillToolContext(t, tool, skillName)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": skillName},
+	ctx := newSkillToolContext(t, SearchSkillsTool{}, "AWS infrastructure setup")
+	resp, err := (SearchSkillsTool{}).Call(ctx, core.NBToolCallRequest{
+		Arguments: map[string]any{"query": "AWS infrastructure setup"},
 	})
-	assert.NoError(t, err)
-	// If RAG has matching content, status is success and data contains it.
-	// If RAG has no content, status is error with "not found".
-	// Both are valid — we just verify no panic or unexpected error.
-	if resp.Status == core.NBToolResponseStatusSuccess {
-		assert.NotEmpty(t, resp.Data)
-		assert.Contains(t, resp.Data, "<skill>")
-	} else {
-		assert.Contains(t, resp.Data, "not found")
+	require.NoError(t, err)
+	require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	ids := regexp.MustCompile(`id="(knowledge:[a-f0-9]+)"`).FindStringSubmatch(resp.Data)
+	if len(ids) < 2 {
+		t.Skip("no RAG candidates returned; configure indexed knowledge for this account")
 	}
+	candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, ids[1])
+	require.True(t, ok)
+	loaded, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{
+		Arguments: map[string]any{"skill_name": ids[1]},
+	})
+	require.NoError(t, err)
+	require.Equal(t, core.NBToolResponseStatusSuccess, loaded.Status)
+	assert.Contains(t, loaded.Data, html.EscapeString(candidate.Content))
+	require.Len(t, loaded.References, 1)
 }
 
-func TestLoadSkillsTool_Integration_RAGFallbackMultiple(t *testing.T) {
+func TestLoadSkillsTool_Integration_CandidateAndMissingName(t *testing.T) {
 	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	// Multiple names: one likely in RAG, one definitely not.
-	skillName := "AWS Infrastructure Setup, xyznonexistent12345"
-	ctx := newSkillToolContext(t, tool, skillName)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": skillName},
+	ctx := newSkillToolContext(t, LoadSkillsTool{}, "")
+	const id = "knowledge:0123456789abcdef"
+	const missing = "nonexistent_skill_"
+	missingName := missing + uuid.NewString()
+	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, core.KnowledgeCandidate{
+		ID: id, Title: "Test candidate", Source: "test", Content: "CANARY-7392",
+	}))
+	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{
+		Arguments: map[string]any{"skill_name": id + ", " + missingName},
 	})
-	assert.NoError(t, err)
-	// Should handle gracefully — load what it can, report what's missing.
-	if resp.Status == core.NBToolResponseStatusSuccess {
-		assert.NotEmpty(t, resp.Data)
-		// The missing one should be noted
-		assert.Contains(t, resp.Data, "xyznonexistent12345")
-	}
+	require.NoError(t, err)
+	require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.Contains(t, resp.Data, "CANARY-7392")
+	assert.Contains(t, resp.Data, "The following requested skills were not found: "+missingName)
+	assert.NotContains(t, resp.Data, "<name>"+missingName+"</name>")
+	require.Len(t, resp.References, 1)
 }
 
 func TestSearchSkillsTool_Integration_RAGContentTruncation(t *testing.T) {
@@ -195,7 +200,7 @@ func newSkillToolContext(t *testing.T, tool core.NBTool, query string) core.NbTo
 	sc := security.NewRequestContextForSuperAdmin()
 	return core.NewNbToolContext(
 		sc, tool,
-		os.Getenv("TEST_AWS_ACCOUNT"),
+		os.Getenv("TEST_ACCOUNT"),
 		os.Getenv("TEST_USER"),
 		uuid.NewString(), uuid.NewString(), uuid.NewString(),
 		query, []llms.MessageContent{}, "",

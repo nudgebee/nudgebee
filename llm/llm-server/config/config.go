@@ -388,39 +388,13 @@ type appConfig struct {
 	// fragment attached to custom-planner agent LLM calls (log/trace/kubectl
 	// intent generators, resource search). Distinct from
 	// llm_server_max_gc_bytes, which limits the stored GC size at upload.
-	LlmServerAgentAccountPromptMaxBytes int  `mapstructure:"llm_server_agent_account_prompt_max_bytes"`
-	LlmServerMaxSkillContentLength      int  `mapstructure:"llm_server_max_skill_content_length"`
-	LlmServerIntegrationKBEnabled       bool `mapstructure:"llm_server_integration_kb_enabled"`
-	// LlmServerKBPrestepEnabled gates the KB pre-step: when on, the executor
-	// retrieves relevant KB content before planning and places it (plus the
-	// skill-lists menu) in the human message instead of the cacheable system
-	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
-	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	LlmServerAgentAccountPromptMaxBytes int `mapstructure:"llm_server_agent_account_prompt_max_bytes"`
+	LlmServerMaxSkillContentLength      int `mapstructure:"llm_server_max_skill_content_length"`
 	// LlmServerKBPrestepTimeoutSeconds bounds the pre-step's RAG call. The
-	// default is sized for the reranked search (embed + query + one LLM rerank
-	// call); the pre-step fails open on timeout, so setting this too low turns
-	// reranking into silent knowledge loss. Values <= 0 fall back to the default.
+	// automatic discovery budget is deliberately short; completed results survive
+	// timeout and ReAct agents retain search/load tools. Custom planners have no
+	// dynamic fallback. Values <= 0 fall back to the default.
 	LlmServerKBPrestepTimeoutSeconds int `mapstructure:"llm_server_kb_prestep_timeout_seconds"`
-	// LlmServerSkillDelegationPropagationEnabled, when on, propagates a delegating
-	// agent's skill scope (its own name + the question-aware SelectedSkillIds) to the
-	// sub-agents it delegates to. Skills are agent-scoped, so a runbook mapped to an
-	// orchestrator otherwise never reaches the sub-agent that executes; with this on,
-	// the sub-agent's own <skill-lists> menu surfaces the parent's selected runbooks
-	// and its planner chooses whether to load_skills (no eager injection). Off keeps
-	// today's behavior (only custom-planner agents thread skills explicitly).
-	LlmServerSkillDelegationPropagationEnabled bool `mapstructure:"llm_server_skill_delegation_propagation_enabled"`
-	// LlmServerDelegateAccountKBsEnabled, when on, lets the dynamic delegate sub-agent
-	// discover skills from the ENTIRE account-mapped KB pool instead of nothing. Parent
-	// orchestrators today opt out of default injection (shell/watch/skills) because the
-	// parent curated the toolset — but that silently kills load_skills too, so a delegate
-	// investigating a helm task never sees the helm runbooks the operator mapped. When
-	// enabled, the delegate's synthesized system prompt gains a `<skill-lists>` menu
-	// rendered from all active account KBs, and the load_skills tool is re-injected via
-	// the DefaultSkillsInjectOverride carve-out. Shell/watch remain suppressed.
-	//
-	// Off by default — flip per-tenant to canary before wider rollout. Cost: one KB list
-	// DB call per delegate invocation, plus ~50 chars of prompt per active KB.
-	LlmServerDelegateAccountKBsEnabled bool `mapstructure:"llm_server_delegate_account_kbs_enabled"`
 	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
 	// names for which the framework treats the InputSchema as authoritative.
 	// A tool on this list has BOTH of the following applied by the framework:
@@ -1240,11 +1214,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
-	viper.SetDefault("llm_server_integration_kb_enabled", true)
-	viper.SetDefault("llm_server_kb_prestep_enabled", false)
-	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 12)
-	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
-	viper.SetDefault("llm_server_delegate_account_kbs_enabled", false)
+	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 3)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
 	// is reconciled with their Call() acceptance shape. See

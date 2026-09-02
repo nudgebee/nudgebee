@@ -308,14 +308,18 @@ func (h *plannerExecutorCallbackHandler) AfterToolCallResponse(tcr NBAgentPlanne
 	if (strings.EqualFold(tcr.Tool, "load_skills") || strings.EqualFold(tcr.Tool, "search_skills")) && status == toolcore.NBToolResponseStatusSuccess {
 		var kbRefs []AgentReference
 		for _, ref := range response.References {
-			if ref.Type == "skill" && ref.Url != "" {
+			if (ref.Type == "skill" || ref.Type == "knowledge_base") && ref.Url != "" {
+				kind := AgentReferenceKindSkill
+				if ref.Type == "knowledge_base" {
+					kind = AgentReferenceKindKBDocument
+				}
 				kbRefs = append(kbRefs, AgentReference{
 					Type:        AgentReferenceTypeKB,
 					ReferenceID: ref.Url,
 					Metadata: map[string]any{
 						// Skills share reference_type "knowledge_base" with
 						// pre-step documents; kind is what tells them apart.
-						"kind":        AgentReferenceKindSkill,
+						"kind":        kind,
 						"via":         tcr.Tool,
 						"name":        ref.Text,
 						"description": ref.Description,

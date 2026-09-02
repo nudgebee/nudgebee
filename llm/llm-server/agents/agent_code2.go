@@ -292,7 +292,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// the default K when an operator has tuned it. Failures degrade gracefully —
 	// analysis must never be blocked on skills.
 	skillsBlock := ""
-	{
+	if core.AutomaticKnowledgeAllowed(agentRequest) {
 		// Include the legacy name so knowledge bases mapped to "agent_code_2" in
 		// llm_kb_agent_mappings before the rename are still inherited (the lookup
 		// UNIONs both names and dedupes by kb id).
@@ -1263,6 +1263,8 @@ type CodeAgent2Request struct {
 func (l CodeAgent2) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
+
+func (l CodeAgent2) UsesAutomaticKnowledge() bool { return true }
 
 func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequest) (core.NBAgentResponse, error) {
 	// Message-scoped retry guard: if a previous call in this message already failed

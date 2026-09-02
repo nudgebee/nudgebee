@@ -512,7 +512,7 @@ func GetPromptTemplate(p NBAgentPrompt, query NBAgentRequest, plannerType AgentP
 	}
 
 	// if RAG is defined then populate that
-	if p.Rag.Module != "" {
+	if p.Rag.Module != "" && AutomaticKnowledgeAllowed(query) {
 		numberOfResults := p.Rag.Records
 		if numberOfResults <= 1 {
 			// Single-result path (existing behavior)
