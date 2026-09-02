@@ -67,8 +67,16 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
 
   useEffect(() => {
     if (!props?.accountId) {
+      // Settles the spinner for a request the cancellation latch below is about to abandon:
+      // `accountId` can go truthy -> undefined while mounted (the parent recomputes it from
+      // router.query, which empties during a route transition), and this bail would otherwise
+      // leave `loading` true with nothing left in flight to clear it.
+      setLoading(false);
       return;
     }
+    // The effect re-fires on every page and filter change, so a slower earlier request can
+    // resolve after a newer one and repaint the table with the previous page's rows.
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .listEvents(
@@ -80,6 +88,9 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
         page * ROWS_PER_PAGE
       )
       .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
         const eventsData = res.data?.events?.map((item: any) => {
           const data: ICustomTableRow[] = [];
@@ -152,8 +163,14 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
         setEventsCount(res.data?.events_aggregate?.aggregate?.count ?? 0);
       })
       .catch(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [props?.accountId, page, selectedEventName, selectedServiceName, selectedSeverity]);
 
   return (
