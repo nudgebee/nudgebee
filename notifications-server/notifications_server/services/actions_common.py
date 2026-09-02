@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from types import SimpleNamespace
 from typing import Optional
 
 import requests
@@ -138,7 +139,12 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             return
         elif action_id.startswith("select_followup_option"):
             self.event_service.update_followup_for_event(
-                action_data, channel_id, team_id, slack_user_id, data["message"]["thread_ts"]
+                action_data,
+                channel_id,
+                team_id,
+                slack_user_id,
+                data["message"]["thread_ts"],
+                data["message"].get("ts"),
             )
             return
 
@@ -322,7 +328,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             self.handle_suppress_finding(channel_id, team_id, user_email, action, data)
         elif action_id == "select_followup_option_dropdown":
             self.event_service.update_followup_for_event(
-                action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"]
+                action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"], data["message"].get("ts")
             )
         elif action_id == "select_account_dropdown":
             selected_option = action.get("selected_option", {})
@@ -661,6 +667,135 @@ def _finalize_card_after_analysis(service, context, outcome):
         )
 
 
+_CLARIFICATION_WAITING_STATUSES = {"WAITING", "WAITING_FOR_CLIENT", "WAITING_FOR_CLIENT_TOOL"}
+
+
+def _fetch_event_conversation(context, user_id, session_id):
+    """Flat ai_get_conversation_v3 delta for an `event-<fingerprint>` session, or
+    None. Same RPC the Thinking-Steps poller uses."""
+    resp = requests.post(
+        settings.services.api_server + "/rpc/ai",
+        json={
+            "action": {"name": "ai_get_conversation_v3"},
+            "input": {"request": {"account_id": context.account_id, "session_id": session_id}},
+            "session_variables": {"tenant_id": context.tenant_id, "user_id": user_id},
+        },
+        headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _surface_event_clarification(service, context, user_id, fingerprint):
+    """The event-analysis conversation asks its clarifications as `followup`
+    message rows on the `event-<fingerprint>` session — llm-server's webhook for
+    them can't be routed back to this thread. Poll that conversation each tick:
+    post a newly-WAITING followup through the normal handle_followup_response,
+    and retire the Slack message once the one we posted stops being WAITING
+    (answered on the web — a Slack-button answer clears these keys itself)."""
+    if not fingerprint:
+        return
+    try:
+        cache = service.event_service.cache
+        entry = cache.get_event_entry(context.thread_ts)
+        if not entry:
+            return
+        conv = _fetch_event_conversation(context, user_id, "event-" + fingerprint)
+        if not isinstance(conv, dict):
+            return
+        messages = conv.get("messages") or []
+        surfaced_id = entry.get("event_followup_src_msg_id")
+
+        pending = None
+        for m in sorted(messages, key=lambda r: r.get("updated_at") or "", reverse=True):
+            if (m.get("message_type") or "").lower() == "followup" and (
+                m.get("status") or ""
+            ).upper() in _CLARIFICATION_WAITING_STATUSES:
+                pending = m
+                break
+
+        if pending and pending.get("id") != surfaced_id:
+            cfg = {}
+            if pending.get("message_config"):
+                try:
+                    cfg = json.loads(pending["message_config"])
+                except (TypeError, ValueError):
+                    cfg = {}
+            agent_id = pending.get("parent_agent_id") or ""
+            message_id = next(
+                (a.get("message_id") for a in conv.get("agents") or [] if a.get("id") == agent_id),
+                "",
+            )
+            session_id = "event-" + fingerprint
+            payload = SimpleNamespace(
+                response=json.dumps(
+                    {
+                        "question": cfg.get("question") or pending.get("message") or "Follow-up question",
+                        "followupOptions": cfg.get("followupOptions") or [],
+                        "agent_id": agent_id,
+                        "message_id": message_id,
+                    }
+                ),
+                conversation_id=session_id,
+                session_id=session_id,
+            )
+            service.event_service.handle_followup_response(
+                payload, entry, context.channel_id, context.thread_ts, context.team_id
+            )
+            cache.update_event_entry(context.thread_ts, event_followup_src_msg_id=pending.get("id"))
+            LOG.info("event analysis: surfaced pending clarification for event %s", context.event_id)
+            return
+
+        # We have a clarification posted in Slack (keys still set, so it wasn't a
+        # Slack-button answer) and the message we posted is no longer WAITING —
+        # it was answered on the web. Retire the stale buttons.
+        if surfaced_id and entry.get("event_analysis_followup") and entry.get("followup_msg_ts"):
+            answered = any(
+                m.get("id") == surfaced_id and (m.get("status") or "").upper() not in _CLARIFICATION_WAITING_STATUSES
+                for m in messages
+            )
+            if answered:
+                _retire_event_followup_message(service, context, note="_Answered in the web app._")
+                LOG.info("event analysis: clarification answered elsewhere for event %s", context.event_id)
+    except Exception as e:
+        LOG.warning("event analysis: failed to sync clarification for %s: %s", context.event_id, e)
+
+
+def _retire_event_followup_message(service, context, note="_This investigation has finished._"):
+    """Strip a stale clarification's buttons, replace with `note`, and clear the
+    follow-up keys. Called when the poller stops with an unanswered followup, or
+    when one was answered on the web. Best-effort."""
+    try:
+        cache = service.event_service.cache
+        entry = cache.get_event_entry(context.thread_ts) or {}
+        followup_msg_ts = entry.get("followup_msg_ts")
+        if not (entry.get("event_analysis_followup") and followup_msg_ts):
+            return
+        question = entry.get("followup_question") or "Follow-up question"
+        blocks = service.event_service.build_blocks(f"{question}\n\n{note}")
+        service.common_service.update_slack_message_with_blocks(
+            context.channel_id, context.team_id, followup_msg_ts, blocks
+        )
+        # event_followup_src_msg_id is deliberately NOT cleared — it's the
+        # "already surfaced this followup" marker, and the message row can
+        # linger WAITING for a tick after the answer lands; clearing it would
+        # re-surface the same question.
+        cache.remove_event_keys(
+            context.thread_ts,
+            [
+                "followup_msg_ts",
+                "followup_question",
+                "agent_id",
+                "message_id",
+                "followup_session_id",
+                "event_analysis_followup",
+            ],
+        )
+    except Exception as e:
+        LOG.debug("event analysis: failed to retire followup message for %s: %s", context.event_id, e)
+
+
 # Keyed by the EventAnalysisResponse/TaskStatuses field names
 # (events.AnalysisType* on the Go side). "detailed_response" is handled
 # separately below since it also ends the poll and flips the card.
@@ -911,6 +1046,11 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                     continue
                 failures = 0
 
+                # Surface any pending clarification on the underlying
+                # `event-<fingerprint>` conversation (mid-run, or one raised by
+                # resuming a prior clarification's answer).
+                _surface_event_clarification(service, context, user_id, result.get("event_fingerprint"))
+
                 task_statuses = result.get("task_statuses") or {}
                 for field, preamble in _EVENT_ANALYSIS_PROGRESS_SECTIONS:
                     if field not in sent and task_statuses.get(field) == "COMPLETED":
@@ -962,6 +1102,7 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
             _close_event_analysis_stream(service, token, context, stream_ts, outcome="failed")
             raise
         finally:
+            _retire_event_followup_message(service, context)
             service.close()
     finally:
         # Via the module-level singleton, not service.event_service.cache, so
@@ -1036,6 +1177,12 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
             # against a malformed (non-dict) `data` payload before any .get().
             if not isinstance(result, dict):
                 result = {}
+
+            # If a sub-agent asked a clarification during the (blocking) call
+            # above, it's sitting as a WAITING followup on the event-<fp>
+            # conversation — surface it now (the poller re-checks every tick).
+            _surface_event_clarification(service, context, user_id, result.get("event_fingerprint"))
+
             status = (result.get("status") or "").upper()
             if status == "COMPLETED":
                 # A repeat click after an earlier one already finished --

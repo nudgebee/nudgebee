@@ -814,7 +814,9 @@ class Events:
                 channel_id, team_id, thread_ts, "Hmm, couldn't connect to the account. Try again in a bit?"
             )
 
-    def update_followup_for_event(self, action_data, channel_id, team_id, slack_user_id, thread_ts):
+    def update_followup_for_event(
+        self, action_data, channel_id, team_id, slack_user_id, thread_ts, clicked_msg_ts=None
+    ):
         try:
             action_id = action_data.get("action_id", "")
             if "selected_option" in action_data:
@@ -822,6 +824,16 @@ class Events:
             else:
                 response_option = action_id.split("--")[1]
             cached_entry = self.cache.get_event_entry(thread_ts)
+            pending_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
+            # A missing entry still falls through so _submit_followup can tell the
+            # user the session expired. Otherwise ignore the click unless it came
+            # from the message the cache currently considers the live follow-up:
+            # no pending follow-up (already answered / retired), or a leftover
+            # button on an earlier, superseded clarification whose in-place edit
+            # didn't land — either way it must not answer the current turn.
+            if cached_entry and (not pending_msg_ts or (clicked_msg_ts and clicked_msg_ts != pending_msg_ts)):
+                LOG.info("followup click with no matching pending follow-up for %s; ignoring", thread_ts)
+                return
             self._submit_followup(cached_entry, channel_id, team_id, thread_ts, slack_user_id, response_option)
         except Exception as e:
             LOG.error("Failed to update followup: %s", e)
@@ -832,6 +844,7 @@ class Events:
             self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
             return
 
+        is_event_followup = bool(cached_entry.get("event_analysis_followup"))
         payload = self.build_llm_payload(cached_entry, thread_ts, query_override=response_option)
         payload.update(
             {
@@ -839,6 +852,14 @@ class Events:
                 "message_id": cached_entry.get("message_id"),
             }
         )
+        if is_event_followup:
+            # Resume the analysis's own `event-<fingerprint>` conversation, not
+            # this thread's chat session. No reply_ref / chat panel: the
+            # event-analysis poller still watching /v1/analyze/event is the sole
+            # output path, and a reply_ref would make the resume's completion
+            # webhook post the write-up a second time.
+            payload["session_id"] = cached_entry.get("followup_session_id") or payload["session_id"]
+            payload.pop("reply_ref", None)
         headers = {"x-tenant-id": cached_entry["tenant_id"], "x-user-id": cached_entry["user_id"]}
 
         followup_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
@@ -864,17 +885,28 @@ class Events:
                 channel_id, team_id, thread_ts, replacement_message, f"<@{slack_user_id}>"
             )
 
-        # Once the follow-up is consumed, clear all four pending-followup keys so
-        # the next @mention in this thread is treated as a fresh turn rather than
-        # being re-routed to the same agent_id/message_id.
+        # Once the follow-up is consumed, clear the pending-followup keys so the
+        # next @mention in this thread is treated as a fresh turn rather than
+        # being re-routed to the same agent_id/message_id. event_followup_src_msg_id
+        # is left in place — it's the "already surfaced" marker and the followup
+        # row can stay WAITING for a tick after the answer, so clearing it would
+        # let the poller re-post the same question.
         self.cache.remove_event_keys(
             thread_ts,
-            ["followup_msg_ts", "followup_question", "agent_id", "message_id"],
+            [
+                "followup_msg_ts",
+                "followup_question",
+                "agent_id",
+                "message_id",
+                "followup_session_id",
+                "event_analysis_followup",
+            ],
         )
 
         self._attach_images(payload, thread_ts)
 
-        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
+        if not is_event_followup:
+            slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         # Errors are replied to here rather than re-raised: the @mention caller
         # (execute_event) only logs exceptions, which would leave the thread
         # silent after the panel vanished.
@@ -1489,6 +1521,16 @@ class Events:
 
             if cached_entry:
                 event_cache.update_event_entry(thread_ts, agent_id=agent_id, message_id=message_id)
+                # An "Ask Nubi to Analyse!" run resumes a distinct
+                # `event-<fingerprint>` conversation, not this thread's chat
+                # session — record which one so _submit_followup answers the
+                # right conversation and takes the event-analysis code path.
+                if (payload.conversation_id or "").startswith("event-"):
+                    event_cache.update_event_entry(
+                        thread_ts,
+                        followup_session_id=payload.session_id or payload.conversation_id,
+                        event_analysis_followup=True,
+                    )
                 if cached_entry.get("slack_user_id"):
                     blocks += Transformer.to_slack(ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>"))
 
