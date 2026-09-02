@@ -217,6 +217,36 @@ func FollowupRequestForMultipleToolConfigs(ctx *security.RequestContext, query N
 		}
 	}
 
+	// matchedTool: what the loop below matches on. Kept separate from action.Tool
+	// so the original as-called casing is never overwritten.
+	matchedTool := action.Tool
+	if _, alreadyKnown := toolsInCompleteFlow[action.Tool]; !alreadyKnown {
+		// doAction dispatches case-insensitively (nameToTool[ToUpper]); this map
+		// lookup doesn't. Check fold-case first so casing alone isn't "unknown".
+		found := false
+		for name := range toolsInCompleteFlow {
+			if strings.EqualFold(name, action.Tool) {
+				matchedTool = name
+				found = true
+				break
+			}
+		}
+		if !found {
+			// action.Tool may be a search_tools discovery (auth_agent.go's
+			// DiscoveredToolCanonicalName) not in GetSupportedTools — else it never gets asked.
+			if canonical, discovered := DiscoveredToolCanonicalName(query.ConversationId, action.Tool); discovered {
+				if t, ok := toolcore.GetNBTool(query.AccountId, canonical); ok && t != nil {
+					if _, hasConfig := t.(toolcore.NBToolConfig); hasConfig {
+						toolsInCompleteFlow[t.Name()] = t
+						// Use t.Name() (the map key just inserted), not canonical: they should
+						// agree, but this guarantees the match loop below actually finds it.
+						matchedTool = t.Name()
+					}
+				}
+			}
+		}
+	}
+
 	existingToolConfigs := map[string]string{}
 	if query.QueryConfig.ToolConfigs != nil {
 		for k, v := range query.QueryConfig.ToolConfigs {
@@ -225,7 +255,7 @@ func FollowupRequestForMultipleToolConfigs(ctx *security.RequestContext, query N
 	}
 
 	for _, tool := range toolsInCompleteFlow {
-		if tool.Name() != action.Tool {
+		if tool.Name() != matchedTool {
 			continue
 		}
 		// there is config already available
