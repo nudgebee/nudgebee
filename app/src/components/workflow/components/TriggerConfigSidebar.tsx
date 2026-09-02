@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
+import { Link } from '@ui/Link';
 import CheckIcon from '@mui/icons-material/Check';
 import { FormCard, FormField } from '@shared/forms/FormComponents';
 import type { Node } from 'reactflow';
@@ -1327,14 +1328,9 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             >
               <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5 }}>
                 Need a new webhook? Create one in the{' '}
-                <a
-                  href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  style={{ color: ds.blue[500], fontWeight: 'var(--ds-font-weight-medium)', textDecoration: 'none' }}
-                >
-                  Integrations tab → Workflow Webhook ↗
-                </a>
+                <Link href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL} openInNew>
+                  Integrations tab → Workflow Webhook
+                </Link>
               </Typography>
             </Box>
           </FormCard>

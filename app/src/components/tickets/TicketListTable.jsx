@@ -14,6 +14,7 @@ import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import ticketsApi from '@api1/tickets';
 import { Label } from '@ui/Label';
+import { Link } from '@ui/Link';
 import { SeverityIcon } from '@ui/SeverityIcon';
 import PropTypes from 'prop-types';
 import apiAccount from '@api1/account';
@@ -510,14 +511,9 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
             <Box sx={{ textAlign: 'center', py: 'var(--ds-space-4)' }}>
               <Typography variant='body2' sx={{ color: 'var(--ds-gray-600)' }}>
                 Comments are managed in {toolDisplayName}.{' '}
-                <a
-                  href={ticketData.url}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  style={{ color: 'var(--ds-blue-500)', fontWeight: 'var(--ds-font-weight-medium)' }}
-                >
+                <Link href={ticketData.url} openInNew>
                   View ticket
-                </a>
+                </Link>
               </Typography>
             </Box>
           </Grid>

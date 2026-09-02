@@ -12,6 +12,7 @@ import Tooltip from '@ui/Tooltip';
 import apiUser from '@api1/user';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
+import { Link } from '@ui/Link';
 import apiIntegrations from '@api1/integrations';
 import observability from '@api1/observability';
 import { ENCRYPTED_MASK } from '@api1/integrations/helpers';
@@ -1715,9 +1716,9 @@ const IntegrationDynamicFormModal = ({
         {config.learnMore && (
           <Typography sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
             Learn more about{' '}
-            <a style={{ textDecoration: 'none', color: ds.blue[500] }} href={config.learnMore.url} target='_blank' rel='noopener noreferrer'>
+            <Link href={config.learnMore.url} openInNew>
               {config.learnMore.text}
-            </a>
+            </Link>
           </Typography>
         )}
       </Grid>
@@ -1893,14 +1894,9 @@ const IntegrationDynamicFormModal = ({
                   {webhookConfig[integrationName]?.learnMore && (
                     <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
                       Learn more about{' '}
-                      <a
-                        style={{ textDecoration: 'none', color: ds.blue[500] }}
-                        href={webhookConfig[integrationName].learnMore.url}
-                        target='_blank'
-                        rel='noopener noreferrer'
-                      >
+                      <Link href={webhookConfig[integrationName].learnMore.url} openInNew>
                         {webhookConfig[integrationName].learnMore.text}
-                      </a>
+                      </Link>
                     </Typography>
                   )}
                   {config?.description && (
