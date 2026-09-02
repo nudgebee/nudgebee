@@ -7,6 +7,7 @@ import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
+import { CodeBlock } from '@ui/CodeBlock';
 import { SeverityIcon as DsSeverityIcon } from '@ui/SeverityIcon';
 import CloudAccountTable from './CloudAccountTable';
 import HelpBeeModal from '@components/helpbee';
@@ -208,11 +209,7 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
                       const inner = safeJSONParse(evidencesData[0].data);
                       if (inner) evidencesData = inner;
                     }
-                    return (
-                      <div>
-                        <pre>{JSON.stringify(evidencesData, null, 2)}</pre>
-                      </div>
-                    );
+                    return <CodeBlock code={JSON.stringify(evidencesData, null, 2)} language='json' />;
                   },
                   text: 'EventDetails',
                 },
