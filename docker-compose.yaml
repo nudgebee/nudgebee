@@ -250,10 +250,6 @@ services:
 
   llm-server:
     profiles: [full]
-    # TODO: drop this pin once :edge carries arm64 for this image.
-    # release.yaml/edge.yaml now build it for arm64; the pin comes off in a
-    # follow-up once the first dual-arch :edge tag is published.
-    platform: linux/amd64
     image: ghcr.io/nudgebee/llm-server:edge
     build:
       context: ./llm/llm-server
@@ -330,10 +326,6 @@ services:
 
   rag-server:
     profiles: [full]
-    # TODO: drop this pin once :edge carries arm64 for this image.
-    # release.yaml/edge.yaml now build it for arm64; the pin comes off in a
-    # follow-up once the first dual-arch :edge tag is published.
-    platform: linux/amd64
     image: ghcr.io/nudgebee/rag-server:edge
     build:
       context: ./llm/rag-server
@@ -351,10 +343,6 @@ services:
 
   ml-k8s-server:
     profiles: [full]
-    # TODO: drop this pin once :edge carries arm64 for this image.
-    # release.yaml/edge.yaml now build it for arm64; the pin comes off in a
-    # follow-up once the first dual-arch :edge tag is published.
-    platform: linux/amd64
     image: ghcr.io/nudgebee/ml-k8s-server:edge
     build:
       context: ./ml-k8s-server
