@@ -62,7 +62,6 @@ const NoisyNeighbour = ({ row }) => {
               </Typography>
               <Typography
                 sx={{
-                  fontFamily: 'Roboto',
                   fontSize: 'var(--ds-text-small)',
                   fontStyle: 'normal',
                   fontWeight: 'var(--ds-font-weight-medium)',
@@ -77,7 +76,6 @@ const NoisyNeighbour = ({ row }) => {
                 <li key={item}>
                   <Typography
                     sx={{
-                      fontFamily: 'Roboto',
                       fontSize: 'var(--ds-text-small)',
                       fontStyle: 'normal',
                       fontWeight: 'var(--ds-font-weight-medium)',

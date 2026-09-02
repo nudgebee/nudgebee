@@ -10,7 +10,6 @@ const VolumeDetails = ({ volumeItem }) => {
           <Typography
             width={ds.space.mul(0, 125)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -21,7 +20,6 @@ const VolumeDetails = ({ volumeItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -36,7 +34,6 @@ const VolumeDetails = ({ volumeItem }) => {
           <Typography
             width={ds.space.mul(0, 125)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -47,7 +44,6 @@ const VolumeDetails = ({ volumeItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
