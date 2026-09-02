@@ -39,7 +39,25 @@ func init() {
 		podOwnerCacheNamespace,
 		common.CacheNamespaceWithExpiration(podOwnerCacheTTL),
 	)
+	common.CacheCreateNamespace(
+		disabledAccountCacheNamespace,
+		common.CacheNamespaceWithExpiration(disabledAccountCacheTTL),
+	)
 }
+
+// InvestigateEvent is the single funnel every event producer reaches: the
+// trigger_investigation RPC (k8s-collector and cloud-collector) and every
+// incoming webhook, via integrationcore.InvestigateEventFn above. Turning a
+// cloud account off has to be honoured here or it is not honoured at all —
+// nothing tells a customer's agent or a third-party alert source to stop
+// sending, so a disabled account keeps producing and we keep running the full
+// enrichment path for it, including relay calls back to that account's own
+// (often unresponsive) agent. Cached because this is the per-event hot path.
+const (
+	disabledAccountCacheNamespace = "cloud_account_disabled"
+	disabledAccountCacheTTL       = time.Minute
+	cloudAccountStatusDisabled    = "disabled"
+)
 
 // Pod → owning workload (Deployment/StatefulSet/DaemonSet) lookups happen on
 // the per-event hot path when ingestion left SubjectOwner empty. The k8s state
@@ -191,6 +209,41 @@ func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager,
 
 	_ = common.CacheSet(podOwnerCacheNamespace, cacheKey, []byte(ownerName+podOwnerCacheSep+ownerKind))
 	return ownerName, ownerKind
+}
+
+// isCloudAccountDisabled reports whether the account has been turned off.
+//
+// Fail-open by design: an unknown account, an unexpected status value, a
+// malformed id, or a query error all report false, i.e. "keep processing".
+// Only an explicit 'disabled' stops an event, so a lookup problem can never
+// silently halt ingestion for a live tenant. Unknown accounts are deliberately
+// not cached — a row that does not exist yet is a race, not a decision.
+func isCloudAccountDisabled(sc *security.RequestContext, dbms *database.DatabaseManager, accountId string) bool {
+	if accountId == "" {
+		return false
+	}
+	// Guard the ::uuid cast below: account ids reaching here come from webhook
+	// payloads too, and a malformed one would otherwise error on every event.
+	if _, err := uuid.Parse(accountId); err != nil {
+		return false
+	}
+
+	if cached, hit := common.CacheGet(disabledAccountCacheNamespace, accountId); hit {
+		return string(cached) == cloudAccountStatusDisabled
+	}
+
+	var status string
+	err := dbms.Db.Get(&status, `SELECT COALESCE(status, '') FROM cloud_accounts WHERE id = $1::uuid`, accountId)
+	switch {
+	case err == sql.ErrNoRows:
+		return false
+	case err != nil:
+		sc.GetLogger().Warn("cloud_account_status: lookup failed, processing event", "error", err, "account_id", accountId)
+		return false
+	}
+
+	_ = common.CacheSet(disabledAccountCacheNamespace, accountId, []byte(status))
+	return status == cloudAccountStatusDisabled
 }
 
 func GetEvent(context *security.RequestContext, id string) (models.Event, error) {
@@ -2094,6 +2147,21 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	if err != nil {
 		sc.GetLogger().Error("event: unable to get database manager", "error", err)
 		return "", err
+	}
+
+	// Drop the event before any enrichment runs if its account is switched off.
+	// Returning a nil error rather than an error is deliberate: the event was
+	// handled, just not stored. An error here would make the RPC caller retry
+	// and the webhook delivery record as failed, both of which would recreate
+	// the load this check exists to shed.
+	if isCloudAccountDisabled(sc, dbms, accountId) {
+		sc.GetLogger().Info("InvestigateEvent: skipping event, cloud account is disabled",
+			"account_id", accountId,
+			"tenant", tenantId,
+			"source", eventSource,
+			"finding_id", webhookEvent.FindingId)
+		common.MetricsEventProcessingFailed(sc.GetContext(), eventSource, tenantId, accountId, common.MetricReasonAccountDisabled)
+		return "", nil
 	}
 
 	// Populate SubjectOwner from labels or k8s state when ingestion left it

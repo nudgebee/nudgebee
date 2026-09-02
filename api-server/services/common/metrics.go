@@ -45,6 +45,10 @@ const (
 	MetricReasonLLMServerNotConfigured         = "llm_server_not_configured"
 	MetricReasonAIAnalysisPayloadMarshalFailed = "ai_analysis_payload_marshal_failed"
 	MetricReasonAIAnalysisQueuePublishFailed   = "ai_analysis_queue_publish_failed"
+	// Not a failure as such — the event was deliberately dropped because its
+	// cloud account is switched off. Shares the counter so the drop is visible
+	// next to the reasons events otherwise go unprocessed.
+	MetricReasonAccountDisabled = "account_disabled"
 
 	// Playbook action failure reasons
 	MetricReasonActionExecutionError  = "action_execution_error"
