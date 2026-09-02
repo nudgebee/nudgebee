@@ -203,8 +203,8 @@ func TestEventAgentFailures(t *testing.T) {
 		"Get the details of Event with id - "+eventData.Id+
 			". Also explain how Nudgebee auto-triaged this event: its triage status (nb_status), "+
 			"computed priority and the score_factors that produced it, and the deduplication chain and "+
-			"firing history behind the decision. Use get_triage_explanation for the dedup chain and "+
-			"firing history, and get_incident_assembly for what else is involved in the same incident.",
+			"firing history behind the decision. Use get_event_triage_explanation for the dedup chain and "+
+			"firing history, and get_event_incident_assembly for what else is involved in the same incident.",
 		core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation),
 		core.ConversationSessionRequestWithEnableCritique(false),
 		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{

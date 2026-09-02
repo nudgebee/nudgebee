@@ -241,7 +241,7 @@ func (t GetEventByIdTool) GetType() core.NBToolType { return core.NBToolTypeTool
 func (t GetEventByIdTool) Description() string {
 	return "Fetch full details (all columns, full evidence — logs, metrics, traces, deployment diffs) " +
 		"for a single event by its UUID. Use for deep investigation of one specific event, including " +
-		"'why was this event triaged this way' questions (combine with get_triage_explanation). " +
+		"'why was this event triaged this way' questions (combine with get_event_triage_explanation). " +
 		"Input: event_id."
 }
 

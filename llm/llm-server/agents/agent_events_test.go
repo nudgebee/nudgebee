@@ -22,6 +22,10 @@ func TestAgentEventsExposesStructuredEventTools(t *testing.T) {
 	assert.True(t, names[tools.ToolGetEventById])
 	assert.True(t, names[tools.ToolListEvents])
 	assert.True(t, names[tools.ToolAggregateEvents])
+	assert.True(t, names[tools.ToolEventTriageExplanation])
+	assert.True(t, names[tools.ToolEventIncidentAssembly])
+	assert.False(t, names["get_triage_explanation"])
+	assert.False(t, names["get_incident_assembly"])
 	assert.True(t, names[tools.ToolEventExecuteSql], "raw SQL must remain available as a fallback")
 }
 
@@ -32,6 +36,10 @@ func TestAgentEventsPromptPrefersStructuredTools(t *testing.T) {
 	assert.Contains(t, joined, "use get_event_by_id for an exact event UUID")
 	assert.Contains(t, joined, "list_events for recent or filtered event lists")
 	assert.Contains(t, joined, "aggregate_events for counts or grouping")
+	assert.Contains(t, joined, "get_event_triage_explanation")
+	assert.Contains(t, joined, "get_event_incident_assembly")
+	assert.NotContains(t, joined, "get_triage_explanation")
+	assert.NotContains(t, joined, "get_incident_assembly")
 	assert.NotContains(t, joined, "Always use the 'events_execute' tool")
 	assert.NotContains(t, joined, "You must generate the SQL query")
 }

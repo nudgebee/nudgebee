@@ -118,7 +118,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"    - fingerprint groups recurring occurrences; the duplicate chain tracks occurrence_number and time-since-first/previous. The 1st occurrence has no penalty; later ones are penalised and often auto-classified DUPLICATE.",
 		"    - Correlations classify related events as likely_root_cause (boosts score) vs downstream_impact/upstream_dependency (lowers score) — use them to separate the root cause from its symptoms in an alert storm.",
 		"    Use the triage tools to go beyond raw event rows:",
-		"    - To EXPLAIN one event's triage decision: call get_event_by_id, then call get_triage_explanation(event_id) for the dedup chain and firing history. For what else is involved in the same incident, call get_incident_assembly(event_id).",
+		"    - To EXPLAIN one event's triage decision: call get_event_by_id, then call get_event_triage_explanation(event_id) for the dedup chain and firing history. For what else is involved in the same incident, call get_event_incident_assembly(event_id).",
 		"    - For an ALERT-NOISE / HYGIENE report: prefer aggregate_events for supported groupings and counts, then call get_triage_rules to surface coverage gaps. Use events_execute only for an unsupported aggregation such as a custom nb_status distribution.",
 		"    - For THRESHOLD tuning: call list_threshold_suggestions; highlight high estimated_reduction + tune_threshold/disable rows, flag low-confidence MAD=0 rows as weak.",
 		"    - To PROPOSE a new triage rule: call dryrun_triage_rule with the candidate criteria to get the projected volume reduction, present the number, then direct the user to create the rule in the UI.",
@@ -187,18 +187,18 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Output: the requested evidence data for the event.",
 			"Strategy: Start with 'logs' (most diagnostic), then 'deployment' or 'pod_metrics' for context.",
 		},
-		tools.ToolIncidentAssembly: {
+		tools.ToolEventIncidentAssembly: {
 			"Use this tool to see what else is going on around ONE alert: its repeat firings and cross-source copies (same_incident), config changes and upstream-dependency alerts shortly before it (cause candidates), downstream-dependent alerts after it (impact candidates), and background noise for that subject (chronic).",
 			"Input: event_id (required).",
 			"Output: the four candidate groups plus the analysis window; entries carry occurrence_count, sources, relation to the subject and expected-vs-observed firing rates.",
 			"Strategy: call it EARLY when analyzing a single alert, before concluding a root cause. Treat cause entries as hypotheses to verify against evidence; mention impact entries as potentially affected; NEVER present a chronic entry as the cause.",
 			"The grouping is by timing + topology only — candidates, not confirmed relationships.",
 		},
-		tools.ToolTriageExplanation: {
+		tools.ToolEventTriageExplanation: {
 			"Use this tool to explain HOW a single event was triaged (why it is DUPLICATE/SUPPRESSED or has a given computed_priority).",
 			"Input: event_id (required).",
 			"Output: duplicate chain (occurrence_number, total_occurrences, time since first/previous), historical firing stats and hourly trend.",
-			"Strategy: combine this with the event's `score_factors` column (from events_execute) to give a complete, evidence-backed explanation of the triage decision. It does NOT list related events — use get_incident_assembly for cause/impact candidates.",
+			"Strategy: combine this with the event's `score_factors` column (from events_execute) to give a complete, evidence-backed explanation of the triage decision. It does NOT list related events — use get_event_incident_assembly for cause/impact candidates.",
 		},
 		tools.ToolTriageRules: {
 			"Use this tool to list the configured triage rules (suppression / scoring / classification) for the current account/tenant.",
@@ -228,7 +228,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Use this tool to get the classification VERDICT for an event (true_positive/false_positive/benign_positive/duplicate) and its reason_code, linked_event_id and rule.",
 			"Input: event_id.",
 			"Output: the classification record, or a clear note that none was recorded.",
-			"Use it to answer how an event was classified and why — complements get_triage_explanation (dedup chain/firing history).",
+			"Use it to answer how an event was classified and why — complements get_event_triage_explanation (dedup chain/firing history).",
 		},
 		tools.ToolTriageRuleEvents: {
 			"Use this tool to list the events a specific triage rule matched (rule effectiveness).",
@@ -506,7 +506,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 					Input: `{"event_id":"your-event-id"}`,
 				},
 				{
-					Tool:  tools.ToolTriageExplanation,
+					Tool:  tools.ToolEventTriageExplanation,
 					Input: "{\"event_id\": \"your-event-id\"}",
 				},
 			},

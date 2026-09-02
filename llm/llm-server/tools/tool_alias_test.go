@@ -52,6 +52,30 @@ func TestToolAlias_NotEnumerated(t *testing.T) {
 	}
 }
 
+func TestToolAlias_ResolvesLegacyEventToolNames(t *testing.T) {
+	cases := []struct {
+		legacy, canonical string
+	}{
+		{"get_triage_explanation", ToolEventTriageExplanation},
+		{"get_incident_assembly", ToolEventIncidentAssembly},
+	}
+	for _, c := range cases {
+		t.Run(c.legacy, func(t *testing.T) {
+			tool, ok := core.GetNBTool("fake-account", c.legacy)
+			require.True(t, ok)
+			assert.Equal(t, c.canonical, tool.Name())
+		})
+	}
+}
+
+func TestToolAlias_LegacyEventNamesAreNotEnumerated(t *testing.T) {
+	names := core.ListRegisteredSystemToolNames()
+	assert.Contains(t, names, ToolEventTriageExplanation)
+	assert.Contains(t, names, ToolEventIncidentAssembly)
+	assert.NotContains(t, names, "get_triage_explanation")
+	assert.NotContains(t, names, "get_incident_assembly")
+}
+
 func TestToolAlias_ResolveAndGetNBToolAliases(t *testing.T) {
 	assert.Equal(t, ToolExecuteAwsCliCommand, core.ResolveNBToolAlias("aws"))
 	assert.Equal(t, ToolExecuteGcpCliCommand, core.ResolveNBToolAlias("gcp"))

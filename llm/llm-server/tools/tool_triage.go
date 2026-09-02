@@ -21,13 +21,24 @@ import (
 // an event was triaged the way it was — not just report the resulting
 // nb_status.
 const (
-	ToolTriageExplanation    = "get_triage_explanation"
-	ToolTriageRules          = "get_triage_rules"
-	ToolThresholdSuggestions = "list_threshold_suggestions"
-	ToolTriageDryRun         = "dryrun_triage_rule"
-	ToolEventClassification  = "get_event_classification"
-	ToolTriageRuleEvents     = "get_triage_rule_events"
-	ToolIncidentAssembly     = "get_incident_assembly"
+	ToolEventTriageExplanation = "get_event_triage_explanation"
+	// ToolTriageExplanation is retained as a Go-level compatibility name. Its
+	// value is canonical; the deprecated runtime name is registered only as an
+	// unenumerated alias below.
+	ToolTriageExplanation     = ToolEventTriageExplanation
+	ToolTriageRules           = "get_triage_rules"
+	ToolThresholdSuggestions  = "list_threshold_suggestions"
+	ToolTriageDryRun          = "dryrun_triage_rule"
+	ToolEventClassification   = "get_event_classification"
+	ToolTriageRuleEvents      = "get_triage_rule_events"
+	ToolEventIncidentAssembly = "get_event_incident_assembly"
+	// ToolIncidentAssembly is retained for source compatibility with callers.
+	ToolIncidentAssembly = ToolEventIncidentAssembly
+)
+
+const (
+	legacyToolTriageExplanation = "get_triage_explanation"
+	legacyToolIncidentAssembly  = "get_incident_assembly"
 )
 
 // Bound on the triage explanation payload. A noisy event can have a very long
@@ -39,7 +50,7 @@ const (
 const maxDuplicateChainEntries = 5
 
 func init() {
-	core.RegisterNBToolFactory(ToolTriageExplanation, func(accountId string) (core.NBTool, error) {
+	core.RegisterNBToolFactory(ToolEventTriageExplanation, func(accountId string) (core.NBTool, error) {
 		return TriageExplanationTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolTriageRules, func(accountId string) (core.NBTool, error) {
@@ -57,9 +68,11 @@ func init() {
 	core.RegisterNBToolFactory(ToolTriageRuleEvents, func(accountId string) (core.NBTool, error) {
 		return TriageRuleEventsTool{}, nil
 	})
-	core.RegisterNBToolFactory(ToolIncidentAssembly, func(accountId string) (core.NBTool, error) {
+	core.RegisterNBToolFactory(ToolEventIncidentAssembly, func(accountId string) (core.NBTool, error) {
 		return IncidentAssemblyTool{}, nil
 	})
+	core.RegisterNBToolAlias(legacyToolTriageExplanation, ToolEventTriageExplanation)
+	core.RegisterNBToolAlias(legacyToolIncidentAssembly, ToolEventIncidentAssembly)
 }
 
 // doTriageActionRequest calls an api-server /rpc/triage action and returns the
@@ -173,7 +186,7 @@ func stringArg(input core.NBToolCallRequest, key string) string {
 }
 
 // ---------------------------------------------------------------------------
-// get_triage_explanation — why was this event triaged the way it was?
+// get_event_triage_explanation — why was this event triaged the way it was?
 // ---------------------------------------------------------------------------
 
 // TriageExplanationTool returns the recurrence picture for a single event:
@@ -182,11 +195,11 @@ func stringArg(input core.NBToolCallRequest, key string) string {
 // column, this answers "why is this event SUPPRESSED / DUPLICATE / P3?".
 //
 // It carries no "related events" lane: #34658 made the incident assembly
-// (ToolIncidentAssembly) the single source of what else is involved, so
+// (ToolEventIncidentAssembly) the single source of what else is involved, so
 // relatedness questions belong there.
 type TriageExplanationTool struct{}
 
-func (t TriageExplanationTool) Name() string             { return ToolTriageExplanation }
+func (t TriageExplanationTool) Name() string             { return ToolEventTriageExplanation }
 func (t TriageExplanationTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t TriageExplanationTool) Description() string {
@@ -194,7 +207,7 @@ func (t TriageExplanationTool) Description() string {
 		"(occurrence number, total occurrences, time since first/previous), historical firing stats " +
 		"and the hourly trend. Use this together with the event's score_factors column to explain why " +
 		"an event is DUPLICATE/SUPPRESSED or has a given computed_priority. For what else is involved " +
-		"in the same incident (root cause vs downstream impact), use " + ToolIncidentAssembly + " instead."
+		"in the same incident (root cause vs downstream impact), use " + ToolEventIncidentAssembly + " instead."
 }
 
 func (t TriageExplanationTool) InputSchema() core.ToolSchema {
@@ -221,7 +234,7 @@ func (t TriageExplanationTool) Call(nbCtx core.NbToolContext, input core.NBToolC
 	}
 	data, err := doTriageActionRequest(nbCtx, "event_get_triage", map[string]any{"event_id": eventID})
 	if err != nil {
-		nbCtx.Ctx.GetLogger().Error("triage: get_triage_explanation failed", "error", err, "event_id", eventID)
+		nbCtx.Ctx.GetLogger().Error("triage: get_event_triage_explanation failed", "error", err, "event_id", eventID)
 		return triageErrorResponse(err), nil
 	}
 	return triageResponse(boundTriageExplanation(data)), nil
@@ -497,7 +510,7 @@ func (t TriageDryRunTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 // EventClassificationTool returns the explicit classification verdict for an
 // event (true_positive / false_positive / benign_positive / duplicate) with its
 // reason_code, linked_event_id and the rule that produced it. This is distinct
-// from get_triage_explanation (which gives the dedup chain / historical firing
+// from get_event_triage_explanation (which gives the dedup chain / historical firing
 // stats) — it answers "what did we decide this event IS, and why".
 type EventClassificationTool struct{}
 
@@ -610,7 +623,7 @@ func (t TriageRuleEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 }
 
 // ---------------------------------------------------------------------------
-// get_incident_assembly — what else is going on around this alert?
+// get_event_incident_assembly — what else is going on around this alert?
 // ---------------------------------------------------------------------------
 
 // maxAssemblyTierItems caps each tier of the assembly payload. The chronic tier
@@ -643,7 +656,7 @@ const assemblyEmptyCaveat = "No other alerts were recorded around this event in 
 // (#34659), not in any stored verdict.
 type IncidentAssemblyTool struct{}
 
-func (t IncidentAssemblyTool) Name() string             { return ToolIncidentAssembly }
+func (t IncidentAssemblyTool) Name() string             { return ToolEventIncidentAssembly }
 func (t IncidentAssemblyTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t IncidentAssemblyTool) Description() string {
@@ -680,7 +693,7 @@ func (t IncidentAssemblyTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 	}
 	data, err := doTriageActionRequest(nbCtx, "event_get_impact", map[string]any{"event_id": eventID})
 	if err != nil {
-		nbCtx.Ctx.GetLogger().Error("triage: get_incident_assembly failed", "error", err, "event_id", eventID)
+		nbCtx.Ctx.GetLogger().Error("triage: get_event_incident_assembly failed", "error", err, "event_id", eventID)
 		return triageErrorResponse(err), nil
 	}
 	return triageResponse(boundIncidentAssembly(data)), nil
