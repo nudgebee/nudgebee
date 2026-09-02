@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography, LinearProgress } from '@mui/material';
 import SummarySkeletonLoader from '@shared/SummarySkeletonLoader';
 import { formatMemory } from '@lib/formatter';
@@ -44,24 +44,27 @@ const getSpaceName = (r: any) => {
 // colors and don't carry the saturation/contrast needed for a thin 8px bar.
 // If the DS later ships a Distribution / SegmentedBar primitive, swap then.
 
-const AppHealthBreakdown = ({ apps }: { apps: any[] }) => {
+const AppHealthBreakdown = React.memo(({ apps }: { apps: any[] }) => {
   const total = apps.length;
+
+  const segments = useMemo(() => {
+    const running = apps.filter((a) => a.status?.toLowerCase() === 'active').length;
+    const stopped = apps.length - running;
+
+    let crashedApps = 0;
+    apps.forEach((a) => {
+      const stats = a.meta?.instance_stats;
+      if (Array.isArray(stats) && stats.some((s: any) => s.state === 'CRASHED')) crashedApps++;
+    });
+
+    return [
+      { label: 'Running', count: running - crashedApps, color: ds.green[500] },
+      { label: 'Degraded', count: crashedApps, color: ds.amber[500] },
+      { label: 'Stopped', count: stopped, color: ds.gray[300] },
+    ].filter((s) => s.count > 0);
+  }, [apps]);
+
   if (total === 0) return null;
-
-  const running = apps.filter((a) => a.status?.toLowerCase() === 'active').length;
-  const stopped = total - running;
-
-  let crashedApps = 0;
-  apps.forEach((a) => {
-    const stats = a.meta?.instance_stats;
-    if (Array.isArray(stats) && stats.some((s: any) => s.state === 'CRASHED')) crashedApps++;
-  });
-
-  const segments = [
-    { label: 'Running', count: running - crashedApps, color: ds.green[500] },
-    { label: 'Degraded', count: crashedApps, color: ds.amber[500] },
-    { label: 'Stopped', count: stopped, color: ds.gray[300] },
-  ].filter((s) => s.count > 0);
 
   return (
     <DSCard size='md' elevation='flat' header={<SectionLabel>App Health</SectionLabel>}>
@@ -83,24 +86,29 @@ const AppHealthBreakdown = ({ apps }: { apps: any[] }) => {
       </Box>
     </DSCard>
   );
-};
+});
+AppHealthBreakdown.displayName = 'AppHealthBreakdown';
 
 // ─── Top Consumers ────────────────────────────────────────────────────────────
 // Top 5 apps by memory allocation (memory_in_mb × instance count).
 
-const TopConsumers = ({ apps }: { apps: any[] }) => {
-  const appsWithMem = apps
-    .map((a) => ({
-      name: a.name || '-',
-      org: getOrgName(a),
-      space: getSpaceName(a),
-      memMB: (a.meta?.memory_in_mb || 0) * (a.meta?.instances || 0),
-      instances: a.meta?.instances || 0,
-      isActive: a.status?.toLowerCase() === 'active',
-    }))
-    .filter((a) => a.memMB > 0)
-    .sort((a, b) => b.memMB - a.memMB)
-    .slice(0, 5);
+const TopConsumers = React.memo(({ apps }: { apps: any[] }) => {
+  const appsWithMem = useMemo(
+    () =>
+      apps
+        .map((a) => ({
+          name: a.name || '-',
+          org: getOrgName(a),
+          space: getSpaceName(a),
+          memMB: (a.meta?.memory_in_mb || 0) * (a.meta?.instances || 0),
+          instances: a.meta?.instances || 0,
+          isActive: a.status?.toLowerCase() === 'active',
+        }))
+        .filter((a) => a.memMB > 0)
+        .sort((a, b) => b.memMB - a.memMB)
+        .slice(0, 5),
+    [apps]
+  );
 
   const maxMem = appsWithMem[0]?.memMB || 1;
 
@@ -152,23 +160,27 @@ const TopConsumers = ({ apps }: { apps: any[] }) => {
       ))}
     </DSCard>
   );
-};
+});
+TopConsumers.displayName = 'TopConsumers';
 
 // ─── Spaces Overview ──────────────────────────────────────────────────────────
 
-const SpacesOverview = ({ apps }: { apps: any[] }) => {
-  const spaceMap: Record<string, { org: string; appCount: number; memMB: number; running: number }> = {};
-  apps.forEach((a) => {
-    const space = getSpaceName(a);
-    const org = getOrgName(a);
-    if (space === '-') return;
-    if (!spaceMap[space]) spaceMap[space] = { org, appCount: 0, memMB: 0, running: 0 };
-    spaceMap[space].appCount++;
-    spaceMap[space].memMB += (a.meta?.memory_in_mb || 0) * (a.meta?.instances || 0);
-    if (a.status?.toLowerCase() === 'active') spaceMap[space].running++;
-  });
+const SpacesOverview = React.memo(({ apps }: { apps: any[] }) => {
+  const entries = useMemo(() => {
+    const spaceMap: Record<string, { org: string; appCount: number; memMB: number; running: number }> = {};
+    apps.forEach((a) => {
+      const space = getSpaceName(a);
+      const org = getOrgName(a);
+      if (space === '-') return;
+      if (!spaceMap[space]) spaceMap[space] = { org, appCount: 0, memMB: 0, running: 0 };
+      spaceMap[space].appCount++;
+      spaceMap[space].memMB += (a.meta?.memory_in_mb || 0) * (a.meta?.instances || 0);
+      if (a.status?.toLowerCase() === 'active') spaceMap[space].running++;
+    });
 
-  const entries = Object.entries(spaceMap).sort((a, b) => b[1].appCount - a[1].appCount);
+    return Object.entries(spaceMap).sort((a, b) => b[1].appCount - a[1].appCount);
+  }, [apps]);
+
   if (entries.length === 0) return null;
 
   return (
@@ -198,7 +210,8 @@ const SpacesOverview = ({ apps }: { apps: any[] }) => {
       ))}
     </DSCard>
   );
-};
+});
+SpacesOverview.displayName = 'SpacesOverview';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CFSummaryDetails — CF-specific sections shown below the generic CloudAccount
@@ -212,6 +225,7 @@ export const CFSummaryDetails = ({ accountId = '' }: { accountId: string }) => {
 
   useEffect(() => {
     if (!accountId) return;
+    let cancelled = false;
     setLoading(true);
 
     const fetchActive = apiCloudAccount.getCloudResource({ account_id: accountId, serviceName: 'apps', type: [], status: 'Active' }, 500, 0);
@@ -219,24 +233,33 @@ export const CFSummaryDetails = ({ accountId = '' }: { accountId: string }) => {
 
     Promise.all([fetchActive, fetchInactive])
       .then(([activeRes, inactiveRes]: any[]) => {
+        if (cancelled) return;
         const activeApps = (activeRes?.data?.data?.cloud_resourses || []).map(parseResource);
         const inactiveApps = (inactiveRes?.data?.data?.cloud_resourses || []).map(parseResource);
         setApps([...activeApps, ...inactiveApps]);
         setLoading(false);
       })
       .catch((err: any) => {
+        if (cancelled) return;
         console.error('CFSummaryDetails fetch error:', err);
         setLoading(false);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
-  if (loading) return <SummarySkeletonLoader />;
+  const buildpackCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    apps.forEach((a) => {
+      const bp = a.meta?.lifecycle_type || a.meta?.stack || 'unknown';
+      counts[bp] = (counts[bp] || 0) + 1;
+    });
+    return counts;
+  }, [apps]);
 
-  const buildpackCounts: Record<string, number> = {};
-  apps.forEach((a) => {
-    const bp = a.meta?.lifecycle_type || a.meta?.stack || 'unknown';
-    buildpackCounts[bp] = (buildpackCounts[bp] || 0) + 1;
-  });
+  if (loading) return <SummarySkeletonLoader />;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3], mt: ds.space[3], mb: ds.space[5] }}>
@@ -285,6 +308,9 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
 
   useEffect(() => {
     if (!accountId) return;
+    // The date picker can retarget this panel faster than a metrics query
+    // returns; without the guard a stale range's rows can replace the new one's.
+    let cancelled = false;
     setLoadingTrend(true);
     apiCloudAccount
       .getCloudResourceMetrics({
@@ -295,6 +321,7 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         endDate: new Date(selectedDateRange.endDate),
       })
       .then((res: any) => {
+        if (cancelled) return;
         setLoadingTrend(false);
         const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows || [];
         if (metricsData?.length > 0) {
@@ -307,9 +334,14 @@ export const OptimizeSummary = ({ accountId = '', serviceName = '', resourceId =
         }
       })
       .catch((error: any) => {
+        if (cancelled) return;
         setLoadingTrend(false);
         console.error(error);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedDateRange, serviceName, resourceId]);
 
   const handleDateRangeChange = (dt: any) => {
