@@ -1,0 +1,64 @@
+# NOTE: requires metrics-server in the cluster. Without it the HPA reports
+# <unknown> for CPU and never scales, and this fixture tests nothing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-api
+  namespace: namespace-233
+  labels: {app: checkout-api}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: checkout-api}}
+  template:
+    metadata:
+      labels: {app: checkout-api}
+    spec:
+      containers:
+      - name: checkout-api
+        image: python:3.11-slim
+        # Steady CPU burn, comfortably above the 50% target so the HPA runs to
+        # max and stays there. Deliberately healthy: no errors, no restarts.
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import time
+          print("checkout-api ready", flush=True)
+          last = time.time()
+          while True:
+              x = 0
+              for i in range(400000):
+                  x += i * i
+              if time.time() - last > 30:
+                  print("checkout-api serving normally", flush=True)
+                  last = time.time()
+              time.sleep(0.01)
+        resources:
+          # requests must be set or the HPA cannot compute utilisation at all —
+          # that failure mode is fixture 85, not this one.
+          requests: {memory: "64Mi", cpu: "50m"}
+          limits: {memory: "192Mi", cpu: "150m"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-api
+  namespace: namespace-233
+spec:
+  selector: {app: checkout-api}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: checkout-api
+  namespace: namespace-233
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: checkout-api}
+  minReplicas: 1
+  # The whole point: low enough that steady load pins it here with nothing left.
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target: {type: Utilization, averageUtilization: 50}

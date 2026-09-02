@@ -1,0 +1,26 @@
+user_prompt: "The report-worker pod in namespace-232 is being OOMKilled. Why?"
+tags:
+  - kubernetes
+  - signal-gap
+  - hard
+# "OOMKilled" is accurate and tells you nothing. The container is not leaking and
+# its limit was never lowered — a configmap value was raised, and the worker
+# faithfully allocates whatever the config says. The pod spec alone cannot
+# explain it; the configmap has to be read and compared against the limit.
+expected_output: |
+  The report-worker is OOMKilled because the BUFFER_SIZE_MB value in the
+  report-worker-config ConfigMap was raised to 220, which exceeds the container's
+  192Mi memory limit. The worker allocates the buffer the configmap tells it to,
+  so the container is behaving correctly and the memory limit was never changed —
+  the configmap change is the cause, not a leak in the application.
+before_test: |
+  kubectl create namespace namespace-232 || true
+  kubectl label namespace namespace-232 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml
+  # Enough for the worker to allocate past the limit and be killed at least twice.
+  sleep 90
+after_test: |
+  kubectl delete -f ./manifest.yaml --ignore-not-found
+  kubectl delete namespace namespace-232 --ignore-not-found
+evaluation:
+  correctness: 1

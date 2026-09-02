@@ -1,0 +1,29 @@
+user_prompt: "Review the scaling posture of namespace-233. Is anything at risk?"
+tags:
+  - kubernetes
+  - signal-gap
+  - hard
+# The only fixture here with no failure at all. Every pod is Running and Ready,
+# there are no restarts, no warning events and nothing to alert on. The HPA is
+# pinned at maxReplicas with CPU well above target, so there is no headroom left
+# and the next traffic increase has nowhere to go. Passing requires noticing an
+# absence rather than reading an error. The prompt is scoped but does not name
+# the HPA or suggest a fault exists.
+expected_output: |
+  The checkout-api HorizontalPodAutoscaler is saturated: it is running at its
+  maxReplicas limit of 3 with CPU utilisation above its target, so it has no
+  remaining headroom and cannot scale further for a traffic increase. Nothing is
+  failing and no alert fires — every pod is Running and Ready — but the autoscaler
+  is exhausted and maxReplicas needs raising.
+before_test: |
+  kubectl create namespace namespace-233 || true
+  kubectl label namespace namespace-233 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml
+  # HPA needs several 15s control-loop passes plus metrics-server scrapes to
+  # scale from 1 up to max. Shorter than this and it is still mid-scale.
+  sleep 210
+after_test: |
+  kubectl delete -f ./manifest.yaml --ignore-not-found
+  kubectl delete namespace namespace-233 --ignore-not-found
+evaluation:
+  correctness: 1

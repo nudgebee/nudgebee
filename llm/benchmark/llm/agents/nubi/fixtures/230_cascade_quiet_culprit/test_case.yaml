@@ -1,0 +1,29 @@
+user_prompt: "Six alerts are firing across four services in namespace-230. What is actually causing this?"
+tags:
+  - kubernetes
+  - signal-gap
+  - hard
+# The four noisy deployments report their own timeouts and 5xx, so every obvious
+# signal points at them. The cache they all depend on stays 2/2 Running with no
+# restarts, no warnings and no events — it is degraded, not down, which is
+# exactly why nothing surfaces it. Passing requires ignoring the loud evidence.
+expected_output: |
+  The redis-cache pod is the root cause. It has reached its maxmemory limit and is
+  evicting keys, so every dependent service sees timeouts and cache misses.
+  The four failing services (api-gateway, order-service, payment-service,
+  search-service) are downstream symptoms, not causes — the cache pod itself
+  reports 2/2 Running with no restarts, warnings or events.
+before_test: |
+  kubectl create namespace namespace-230 || true
+  kubectl label namespace namespace-230 benchmark=true --overwrite || true
+  kubectl create secret generic cascade-logs-script-230 \
+    --from-file=generate_logs.py=./generate_logs.py \
+    -n namespace-230 --dry-run=client -o yaml | kubectl apply -f -
+  kubectl apply -f ./manifest.yaml
+  sleep 45
+after_test: |
+  kubectl delete -f ./manifest.yaml --ignore-not-found
+  kubectl delete secret cascade-logs-script-230 -n namespace-230 --ignore-not-found
+  kubectl delete namespace namespace-230 --ignore-not-found
+evaluation:
+  correctness: 1

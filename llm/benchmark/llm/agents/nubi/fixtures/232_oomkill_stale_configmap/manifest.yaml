@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: report-worker-config
+  namespace: namespace-232
+  annotations:
+    # The only trace of when this changed. The pod carries no memory of it.
+    last-modified-by: "batch-platform"
+    last-modified-reason: "increase buffer for quarterly report volume"
+  labels: {app: report-worker}
+data:
+  # Raised from 96. The container limit is 192Mi, so this no longer fits.
+  BUFFER_SIZE_MB: "220"
+  REPORT_FORMAT: "parquet"
+  WORKER_THREADS: "4"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: report-worker
+  namespace: namespace-232
+  labels: {app: report-worker}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: report-worker}}
+  template:
+    metadata:
+      labels: {app: report-worker}
+    spec:
+      containers:
+      - name: report-worker
+        image: python:3.11-slim
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, time
+          size = int(os.environ.get("BUFFER_SIZE_MB", "96"))
+          print(f"report-worker starting, allocating {size}MB buffer", flush=True)
+          time.sleep(5)
+          # Touch every page so the allocation is resident and the cgroup kills us.
+          buf = bytearray(size * 1024 * 1024)
+          for i in range(0, len(buf), 4096):
+              buf[i] = 1
+          print("buffer allocated", flush=True)
+          while True:
+              time.sleep(10)
+        env:
+        - name: BUFFER_SIZE_MB
+          valueFrom:
+            configMapKeyRef: {name: report-worker-config, key: BUFFER_SIZE_MB}
+        resources:
+          requests: {memory: "128Mi", cpu: "50m"}
+          # Unchanged for months. The config outgrew it.
+          limits: {memory: "192Mi", cpu: "300m"}

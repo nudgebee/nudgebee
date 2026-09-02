@@ -1,0 +1,105 @@
+# The contended resource, and the batch workload that starves it. Both live in
+# namespace-231-batch — outside the namespace the question asks about.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shared-api
+  namespace: namespace-231-batch
+  labels: {app: shared-api}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: shared-api}}
+  template:
+    metadata:
+      labels: {app: shared-api}
+    spec:
+      containers:
+      - name: shared-api
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/server.py"]
+        ports: [{containerPort: 8080}]
+        volumeMounts: [{name: scripts, mountPath: /scripts}]
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "200m"}
+      volumes:
+      - name: scripts
+        secret: {secretName: shared-api-script-231, defaultMode: 0755}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shared-api
+  namespace: namespace-231-batch
+spec:
+  selector: {app: shared-api}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-reindex
+  namespace: namespace-231-batch
+  labels: {app: batch-reindex}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: batch-reindex}}
+  template:
+    metadata:
+      labels: {app: batch-reindex}
+    spec:
+      containers:
+      - name: batch-reindex
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/flood.py"]
+        volumeMounts: [{name: scripts, mountPath: /scripts}]
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "200m"}
+      volumes:
+      - name: scripts
+        secret: {secretName: shared-api-script-231, defaultMode: 0755}
+---
+# The victim. Its probe config is entirely reasonable — 2s timeout against a
+# dependency that should answer in milliseconds. Nothing here is misconfigured.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: namespace-231
+  labels: {app: web-app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web-app}}
+  template:
+    metadata:
+      labels: {app: web-app}
+    spec:
+      containers:
+      - name: web-app
+        image: python:3.11-slim
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "web-app started, dependency=shared-api.namespace-231-batch:8080"
+          while true; do echo "serving requests"; sleep 15; done
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - |
+              import urllib.request, sys
+              try:
+                  urllib.request.urlopen("http://shared-api.namespace-231-batch:8080/health", timeout=2)
+              except Exception as exc:
+                  print("dependency check failed: %s" % exc); sys.exit(1)
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 2
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "100m"}
