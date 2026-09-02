@@ -25,7 +25,7 @@ import (
 // a separate reviewer with a single job, so a weak self-report cannot inflate
 // it, and it can be re-run, re-prompted, or re-modelled against stored history
 // without touching the answer pipeline at all. The cost is one extra LLM call
-// per investigation turn (hence the AnswerConfidenceEnabled flag) and a score
+// per investigation turn (hence the per-tenant AI_ANSWER_CONFIDENCE flag) and a score
 // that lands a few seconds after the answer.
 //
 // Persisted to llm_conversation_messages.metadata under the "confidence" key,
@@ -298,19 +298,52 @@ func truncateConfidenceText(s string) string {
 	return TruncateHead(s, maxConfidenceTextLength)
 }
 
+// Per-tenant opt-in feature (public.feature catalog + a public.feature_flag row
+// per tenant), because grading costs one extra LLM call per investigation turn.
+const FeatureAnswerConfidence = "AI_ANSWER_CONFIDENCE"
+
+// Test seam for the tenant-flag read. Package-level var like llm_common.go's
+// newLLMModel; safe only while the tests that swap it stay non-t.Parallel().
+var answerConfidenceFeatureCheck = common.IsFeatureEnabled
+
+// AnswerConfidenceEnabledForTenant reports whether the grader is active for tenantId.
+// Fail-closed — uncertainty must not spend an LLM call. ctx is logger-only and may be
+// nil (GetLogger tolerates a nil receiver).
+func AnswerConfidenceEnabledForTenant(ctx *security.RequestContext, tenantId string) bool {
+	if tenantId == "" {
+		return false
+	}
+	enabled, err := answerConfidenceFeatureCheck(FeatureAnswerConfidence, tenantId)
+	if err != nil {
+		ctx.GetLogger().Warn("confidence: unable to read tenant feature flag, treating as disabled",
+			"feature", FeatureAnswerConfidence, "tenant_id", tenantId, "error", err)
+		return false
+	}
+	return enabled
+}
+
 // ScoreAnswerConfidenceAsync submits the grader to the shared async task pool.
 // It is fire-and-forget by design: the answer has already been persisted and
 // returned to the client by the time this runs, so a grading failure must never
 // surface to the user or affect the turn's status. The chip simply does not
 // appear.
 //
-// Gated on AnswerConfidenceEnabled (off by default) and on the turn being an
+// Gated on the tenant's AI_ANSWER_CONFIDENCE flag and the turn being an
 // investigation — a plain retrieval has nothing to grade.
 func ScoreAnswerConfidenceAsync(ctx *security.RequestContext, request NBAgentRequest, answer string) {
-	if !config.Config.AnswerConfidenceEnabled {
+	if !shouldScoreAnswerConfidence(request, answer) {
 		return
 	}
-	if !shouldScoreAnswerConfidence(request, answer) {
+
+	// Background flows can carry no security context; extractSessionWorkingMemoryV2
+	// guards the same way. A blind deref would panic a goroutine nobody awaits.
+	secCtx := ctx.GetSecurityContext()
+	if secCtx == nil {
+		return
+	}
+	// One indexed lookup, here rather than inside the task so a disabled tenant
+	// never takes a worker slot. The cheap gates above already excluded non-candidates.
+	if !AnswerConfidenceEnabledForTenant(ctx, secCtx.GetTenantId()) {
 		return
 	}
 
@@ -319,9 +352,8 @@ func ScoreAnswerConfidenceAsync(ctx *security.RequestContext, request NBAgentReq
 		question = request.Query
 	}
 
-	// Read every request-scoped value on the CALLING goroutine, before the task
-	// is queued — the parent RequestContext must not be touched from the worker.
-	secCtx := ctx.GetSecurityContext()
+	// Read every remaining request-scoped value on the CALLING goroutine — the
+	// parent RequestContext must not be touched from the worker.
 	logger := ctx.GetLogger()
 	tracer := ctx.GetTracer()
 	meter := ctx.GetMeter()

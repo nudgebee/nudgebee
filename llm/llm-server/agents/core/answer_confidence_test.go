@@ -220,3 +220,51 @@ func TestShouldScoreAnswerConfidence(t *testing.T) {
 		assert.False(t, shouldScoreAnswerConfidence(r, "answer"))
 	})
 }
+
+// The tenant gate decides whether a completed investigation turn spends an LLM
+// call at all, so each precedence rule is pinned. Fail-closed is the through
+// line: every uncertain path must resolve to false rather than silently billing
+// a tenant that never opted in.
+func TestAnswerConfidenceEnabledForTenant(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+
+	restore := func(orig func(string, string) (bool, error)) func() {
+		return func() { answerConfidenceFeatureCheck = orig }
+	}
+	origCheck := answerConfidenceFeatureCheck
+
+	t.Run("enabled when the tenant has the flag", func(t *testing.T) {
+		defer restore(origCheck)()
+		answerConfidenceFeatureCheck = func(feature, tenantId string) (bool, error) {
+			assert.Equal(t, FeatureAnswerConfidence, feature)
+			assert.Equal(t, tenant, tenantId)
+			return true, nil
+		}
+		assert.True(t, AnswerConfidenceEnabledForTenant(nil, tenant))
+	})
+
+	t.Run("disabled when the tenant has no flag row", func(t *testing.T) {
+		defer restore(origCheck)()
+		answerConfidenceFeatureCheck = func(string, string) (bool, error) { return false, nil }
+		assert.False(t, AnswerConfidenceEnabledForTenant(nil, tenant))
+	})
+
+	t.Run("fails closed when the metastore is unreachable", func(t *testing.T) {
+		// A DB error must not be read as "enabled" — that would bill every
+		// tenant for a feature none of them opted into.
+		defer restore(origCheck)()
+		answerConfidenceFeatureCheck = func(string, string) (bool, error) {
+			return false, assert.AnError
+		}
+		assert.False(t, AnswerConfidenceEnabledForTenant(nil, tenant))
+	})
+
+	t.Run("empty tenant is disabled without touching the database", func(t *testing.T) {
+		defer restore(origCheck)()
+		answerConfidenceFeatureCheck = func(string, string) (bool, error) {
+			t.Fatal("an empty tenant must short-circuit before the flag is read")
+			return true, nil
+		}
+		assert.False(t, AnswerConfidenceEnabledForTenant(nil, ""))
+	})
+}

@@ -894,14 +894,7 @@ type appConfig struct {
 	MaxDailyCountLimit            int     `mapstructure:"llm_max_daily_count_limit"`
 	MaxMemoryFactsPerConversation int     `mapstructure:"max_memory_facts_per_conversation"`
 	ProductivityMetricsEnabled    bool    `mapstructure:"llm_server_productivity_metrics_enabled"`
-	// AnswerConfidenceEnabled gates the post-hoc answer-confidence scorer: one
-	// extra LLM call per completed investigation turn, run asynchronously after
-	// the answer is already persisted and delivered. Off by default — it is a
-	// per-turn cost, and the answer path is fully functional without it.
-	// Sibling of ProductivityMetricsEnabled (same shape: async, post-hoc,
-	// LLM-backed, writes back to the message row).
-	AnswerConfidenceEnabled bool `mapstructure:"llm_server_answer_confidence_enabled"`
-	TicketV2Enabled         bool `mapstructure:"llm_server_ticket_v2_enabled"`
+	TicketV2Enabled               bool    `mapstructure:"llm_server_ticket_v2_enabled"`
 	// EventsV2Enabled gates the events_v2 agent (deterministic structured
 	// tools fronting raw SQL — see docs/architecture-decisions.md). Unlike
 	// TicketV2Enabled, this does not redirect any existing alias to v2 —
@@ -1506,8 +1499,6 @@ func init() {
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
 
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
-
-	viper.SetDefault("llm_server_answer_confidence_enabled", false)
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
 	viper.SetDefault("llm_server_events_v2_enabled", false)

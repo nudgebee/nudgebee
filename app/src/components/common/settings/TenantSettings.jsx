@@ -195,6 +195,12 @@ const FEATURE_RECOMMENDED_CONTENT = {
     whenToTurnOn: 'An upgrade is on the roadmap and you want the blockers enumerated before starting.',
     why: 'Upgrade planning is periodic rather than continuous, and the plan is only as good as the collected inventory.',
   },
+  AI_ANSWER_CONFIDENCE: {
+    description:
+      'Rates how well each investigation answer is backed by the tools that actually ran, and shows the result as a high/medium/low badge on the answer.',
+    whenToTurnOn: 'Responders act on investigation answers directly and you want the weakly-supported ones to say so before someone does.',
+    why: 'A separate grading pass, so a model that wrote a thin answer cannot also mark it confident. It costs one extra AI call per investigation, which is why it is per-tenant rather than always on.',
+  },
   CUSTOM_ROLES: {
     description: 'Tenant-defined roles carrying module-level Read, Write and Execute grants, additive to the built-in roles.',
     whenToTurnOn:
@@ -253,6 +259,10 @@ const FEATURE_NAVIGATION = {
   MEMORY_MODULE: {
     path: 'Ask Nubi › Memory',
     reason: 'Lives inside the chat assistant panel — there is no dedicated screen to link to.',
+  },
+  AI_ANSWER_CONFIDENCE: {
+    path: 'Ask Nubi › a completed investigation answer',
+    reason: 'The badge sits on the answer itself, so it only appears once an investigation has run.',
   },
   WEBHOOK_LLM_RESOLUTION: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
   TRIAGE_LLM_SCORING: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
