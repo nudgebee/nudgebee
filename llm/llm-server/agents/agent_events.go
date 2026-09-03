@@ -48,7 +48,7 @@ func (l AgentEvents) GetName() string {
 }
 
 func (a AgentEvents) GetNameAliases() []string {
-	return []string{
+	return []string{"Event & Alert Investigator",
 		"Events", "events", "events_agent",
 	}
 }

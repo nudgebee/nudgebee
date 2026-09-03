@@ -74,7 +74,7 @@ func (a *AwsObservabilityAgent) GetName() string {
 }
 
 func (a *AwsObservabilityAgent) GetNameAliases() []string {
-	return []string{"aws_obs", "cloudwatch_agent", "observability_troubleshoot"}
+	return []string{"AWS Observability Investigator", "aws_obs", "cloudwatch_agent", "observability_troubleshoot"}
 }
 
 func (a *AwsObservabilityAgent) GetDescription() string {
@@ -201,7 +201,9 @@ type AwsMetricsAgent struct {
 
 func (a AwsMetricsAgent) GetName() string { return AwsMetricsAgentName }
 
-func (a AwsMetricsAgent) GetNameAliases() []string { return []string{"AWSMetrics"} }
+func (a AwsMetricsAgent) GetNameAliases() []string {
+	return []string{"AWS CloudWatch Metrics Reader", "AWSMetrics"}
+}
 
 func (a AwsMetricsAgent) GetDescription() string {
 	return `Retrieves and analyzes AWS CloudWatch metrics (CPU, memory, disk, network, request latency/error rate, managed-service metrics, alarms) via the aws CLI. Used as the metrics backend for AWS accounts without a Prometheus/Datadog/Elasticsearch provider. Handles its own metric-name and resource discovery.`
@@ -321,7 +323,9 @@ type AwsLogsAgent struct {
 
 func (a AwsLogsAgent) GetName() string { return AwsLogsAgentName }
 
-func (a AwsLogsAgent) GetNameAliases() []string { return []string{"AWSLogs"} }
+func (a AwsLogsAgent) GetNameAliases() []string {
+	return []string{"AWS CloudWatch Logs Reader", "AWSLogs"}
+}
 
 func (a AwsLogsAgent) GetDescription() string {
 	return `Retrieves and analyzes AWS CloudWatch logs (application logs, Lambda logs, ECS/EKS logs, CloudTrail audit logs) via the aws CLI. Used as the logs backend for AWS accounts without a Loki/Elasticsearch/Datadog provider. Discovers log groups and streams before querying, and cites concrete log lines.`
@@ -442,7 +446,9 @@ type AwsTracesAgent struct {
 
 func (a AwsTracesAgent) GetName() string { return AwsTracesAgentName }
 
-func (a AwsTracesAgent) GetNameAliases() []string { return []string{"AWSTraces"} }
+func (a AwsTracesAgent) GetNameAliases() []string {
+	return []string{"AWS X-Ray Trace Reader", "AWSTraces"}
+}
 
 func (a AwsTracesAgent) GetDescription() string {
 	return `Retrieves and analyzes AWS X-Ray distributed traces (latency, slow traces, service maps, segment details) via the aws CLI, and correlates trace-tagged logs via CloudWatch Logs. Used as the traces backend for AWS accounts without a ClickHouse/Jaeger/Datadog provider.`

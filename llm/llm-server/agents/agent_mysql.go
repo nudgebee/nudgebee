@@ -31,7 +31,7 @@ func (l MySQLDebugAgent) GetName() string {
 }
 
 func (l MySQLDebugAgent) GetNameAliases() []string {
-	return []string{"MySql"}
+	return []string{"MySQL Diagnostics", "MySql"}
 }
 
 func (l MySQLDebugAgent) GetDescription() string {

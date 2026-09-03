@@ -40,7 +40,9 @@ func NewDatadogEventsAgent(accountId string) core.NBAgent {
 func (d DatadogEventsAgent) GetName() string { return DatadogEventsAgentName }
 
 // GetNameAliases returns aliases for the agent name.
-func (d DatadogEventsAgent) GetNameAliases() []string { return []string{"Datadog Events"} }
+func (d DatadogEventsAgent) GetNameAliases() []string {
+	return []string{"Datadog Events Reader", "Datadog Events"}
+}
 
 // GetDescription returns a description of the agent.
 func (d DatadogEventsAgent) GetDescription() string {

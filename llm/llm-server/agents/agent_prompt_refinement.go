@@ -33,7 +33,7 @@ func (l PromptRefinementAgent) GetName() string {
 }
 
 func (l PromptRefinementAgent) GetNameAliases() []string {
-	return []string{"PromptRefiner", "PromptOptimizer"}
+	return []string{"Prompt Improver", "PromptRefiner", "PromptOptimizer"}
 }
 
 func (l PromptRefinementAgent) GetDescription() string {

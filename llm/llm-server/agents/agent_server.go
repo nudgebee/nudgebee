@@ -32,7 +32,7 @@ func (l ServerAgent) GetName() string {
 }
 
 func (l ServerAgent) GetNameAliases() []string {
-	return []string{"Server"}
+	return []string{"Linux Server Operator", "Server"}
 }
 
 func (l ServerAgent) GetDescription() string {

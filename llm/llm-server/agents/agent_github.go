@@ -40,7 +40,7 @@ func (a GithubAgent) GetName() string {
 }
 
 func (a GithubAgent) GetNameAliases() []string {
-	return []string{"Github", "gh"}
+	return []string{"GitHub Operations", "Github", "gh"}
 }
 
 func (a GithubAgent) GetDescription() string {

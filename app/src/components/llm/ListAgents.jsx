@@ -65,27 +65,35 @@ const AgentUsageCell = ({ agentName }) => {
       tooltipStyle={{ maxWidth: '420px' }}
       title={
         <Box sx={{ textAlign: 'left' }}>
-          {section('When to use', guidance.whenToUse)}
-          {section('Example', <Box sx={{ fontStyle: 'italic' }}>{guidance.example}</Box>)}
-          {section('Why', guidance.why)}
-          <Box>
-            <Typography
-              sx={{
-                fontSize: ds.text.caption,
-                fontWeight: ds.weight.semibold,
-                color: ds.gray[500],
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}
-            >
-              Advantages
+          {guidance.brief && (
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, mb: ds.space[2], lineHeight: 1.5 }}>
+              {guidance.brief}
             </Typography>
-            <Box component='ul' sx={{ m: 0, pl: ds.space[4], fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.5 }}>
-              {guidance.advantages.map((advantage) => (
-                <li key={advantage}>{advantage}</li>
-              ))}
+          )}
+          {guidance.whenToUse && section('When to use', guidance.whenToUse)}
+          {guidance.why && section('Why', guidance.why)}
+          {guidance.notFor && section('Not for', guidance.notFor)}
+          {guidance.example && section('Example', <Box sx={{ fontStyle: 'italic' }}>{guidance.example}</Box>)}
+          {guidance.advantages && (
+            <Box>
+              <Typography
+                sx={{
+                  fontSize: ds.text.caption,
+                  fontWeight: ds.weight.semibold,
+                  color: ds.gray[500],
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                }}
+              >
+                Advantages
+              </Typography>
+              <Box component='ul' sx={{ m: 0, pl: ds.space[4], fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.5 }}>
+                {guidance.advantages.map((advantage) => (
+                  <li key={advantage}>{advantage}</li>
+                ))}
+              </Box>
             </Box>
-          </Box>
+          )}
         </Box>
       }
     >
@@ -98,6 +106,90 @@ const AgentUsageCell = ({ agentName }) => {
 
 AgentUsageCell.propTypes = {
   agentName: PropTypes.string,
+};
+
+// Description cell — clamps to two lines and reveals the rest behind a
+// "Show more" / "Show less" toggle. The toggle only renders when the text
+// actually overflows two lines, so short descriptions have no dangling
+// control. Each row owns its own expand state.
+const AgentDescriptionCell = ({ text }) => {
+  const [expanded, setExpanded] = React.useState(false);
+  const [needsToggle, setNeedsToggle] = React.useState(false);
+  const textRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const el = textRef.current;
+    if (!el || expanded) {
+      return;
+    }
+    // While clamped, scrollHeight exceeds clientHeight only when the text
+    // spills past the two visible lines. Re-check on resize too, since a
+    // column-width change can start/stop the overflow with no text change.
+    const checkOverflow = () => setNeedsToggle(el.scrollHeight - el.clientHeight > 1);
+    checkOverflow();
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver(checkOverflow);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, expanded]);
+
+  if (!text) {
+    return <Text value='-' />;
+  }
+
+  return (
+    <Box sx={{ minWidth: 0 }}>
+      <Box
+        ref={textRef}
+        sx={{
+          fontSize: ds.text.small,
+          color: ds.gray[700],
+          lineHeight: 1.5,
+          overflow: 'hidden',
+          ...(expanded
+            ? {}
+            : {
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+              }),
+        }}
+      >
+        {text}
+      </Box>
+      {(needsToggle || expanded) && (
+        <Box
+          component='button'
+          type='button'
+          data-testid='agent-description-toggle'
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((prev) => !prev);
+          }}
+          sx={{
+            mt: ds.space[1],
+            p: 0,
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            fontSize: ds.text.caption,
+            fontWeight: ds.weight.semibold,
+            color: ds.blue[600],
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+AgentDescriptionCell.propTypes = {
+  text: PropTypes.string,
 };
 
 const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, stickyTable = false }) => {
@@ -145,6 +237,9 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   const [wildcardKbCount, setWildcardKbCount] = React.useState(0);
 
   const [triggerSubmit, setTriggerSubmit] = React.useState(false);
+  // Drives the loading state on the modal's Create/Update button while the
+  // child form (CreateAgentNew / CreateAgentExtension) runs its async submit.
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   const fetchKBCounts = async () => {
     try {
@@ -527,32 +622,60 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         const currentAgentName = agent.name;
         const kbCount = (kbCountsMap[currentAgentName] || 0) + wildcardKbCount;
         const hasExtensions = extensionsMap[currentAgentName]?.length > 0;
+        // Letter fallback shown when no icon resolves to something drawable.
+        const avatarFallback = (
+          <Avatar
+            style={{
+              width: '16px',
+              height: '16px',
+              flexShrink: 0,
+              border: `1px solid ${ds.blue[400]}`,
+              color: ds.blue[400],
+              backgroundColor: ds.background[100],
+              fontSize: ds.text.small,
+              fontWeight: ds.weight.medium,
+              borderRadius: ds.radius.sm,
+              padding: '1px 0px 0px',
+            }}
+          >
+            {agent.name ? agent.name[0].toUpperCase() : '?'}
+          </Avatar>
+        );
+        // Icons come in two shapes: `require('*.svg')` modules expose the URL
+        // at `.default`, while `*.icon.svg` assets are compiled to React
+        // components by @svgr/webpack (no `.default`). Render each accordingly
+        // and fall back to the letter avatar when neither is drawable —
+        // otherwise a truthy-but-URL-less icon renders blank with no fallback.
+        let agentIconEl = avatarFallback;
+        if (icon) {
+          // SVGR (*.icon.svg) icons can be a plain function component OR a
+          // forwardRef/memo object (typeof 'object' with a $$typeof marker) —
+          // both render as a component. require('*.svg') modules expose the URL
+          // at .default and getNubiIconUrl() returns a string — those go via SafeIcon.
+          const isComponent = typeof icon === 'function' || (typeof icon === 'object' && icon !== null && '$$typeof' in icon);
+          if (isComponent) {
+            const AgentSvg = icon;
+            agentIconEl = <Box component={AgentSvg} aria-label='agent icon' sx={{ width: 18, height: 18, flexShrink: 0 }} />;
+          } else {
+            const iconSrc = icon.default ?? (typeof icon === 'string' ? icon : null);
+            agentIconEl = iconSrc ? (
+              <Box sx={{ display: 'inline-flex', flexShrink: 0, mt: '1px' }}>
+                <SafeIcon src={iconSrc} alt='agent icon' width={18} height={18} />
+              </Box>
+            ) : (
+              avatarFallback
+            );
+          }
+        }
         return [
           {
             component: (
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: ds.space[2], minWidth: 0, maxWidth: '100%' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
-                  {icon ? (
-                    <SafeIcon src={icon?.default} alt='agent icon' width={18} height={18} />
-                  ) : (
-                    <Avatar
-                      style={{
-                        width: '16px',
-                        height: '16px',
-                        border: `1px solid ${ds.blue[400]}`,
-                        color: ds.blue[400],
-                        backgroundColor: ds.background[100],
-                        fontSize: ds.text.small,
-                        fontWeight: ds.weight.medium,
-                        borderRadius: ds.radius.sm,
-                        padding: '1px 0px 0px',
-                      }}
-                    >
-                      {/* Ensure agent.name exists before trying to access agent.name[0] */}
-                      {agent.name ? agent.name[0].toUpperCase() : '?'}
-                    </Avatar>
-                  )}
-                  <Box sx={{ fontWeight: ds.weight.medium }}>{agent.aliases?.[0] ?? agent.name}</Box>
+                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2], width: '100%' }}>
+                  {agentIconEl}
+                  <Box sx={{ fontWeight: ds.weight.medium, minWidth: 0, wordBreak: 'break-word', lineHeight: 1.4 }}>
+                    {agent.aliases?.[0] ?? agent.name}
+                  </Box>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
                   <OwnerTypeBadge type={agent.type} systemSuffix='System Agent' userLabel='User Created Agent' />
@@ -604,7 +727,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             },
           },
           {
-            component: <Text value={agent.description} />,
+            component: <AgentDescriptionCell text={agent.description} />,
           },
           {
             component: <Label text={agent.status} />,
@@ -824,6 +947,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             <Button
               tone='secondary'
               size='md'
+              disabled={isSubmitting}
               onClick={() => {
                 setCreateAgentModal(false);
                 setEditMode(false);
@@ -836,6 +960,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             <Button
               tone='primary'
               size='md'
+              loading={isSubmitting}
+              disabled={isSubmitting}
               onClick={() => {
                 setTriggerSubmit(true);
               }}
@@ -862,11 +988,12 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
           agentData={selectedAgent}
           triggerSubmit={triggerSubmit}
           onSubmitStart={() => {
-            // Called when submit starts
+            setIsSubmitting(true);
           }}
           onSubmitEnd={() => {
             // Called when submit ends (success or error)
             setTriggerSubmit(false);
+            setIsSubmitting(false);
           }}
         />
       </Modal>
@@ -891,6 +1018,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             <Button
               tone='secondary'
               size='md'
+              disabled={isSubmitting}
               onClick={() => {
                 setCreateAgentModal(false);
                 setExtensionMode(false);
@@ -902,6 +1030,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             <Button
               tone='primary'
               size='md'
+              loading={isSubmitting}
+              disabled={isSubmitting}
               onClick={() => {
                 setTriggerSubmit(true);
               }}
@@ -927,11 +1057,12 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
           editMode={selectedAgent ? extensionsMap[selectedAgent.name]?.length > 0 : false}
           triggerSubmit={triggerSubmit}
           onSubmitStart={() => {
-            // Called when submit starts
+            setIsSubmitting(true);
           }}
           onSubmitEnd={() => {
             // Called when submit ends (success or error)
             setTriggerSubmit(false);
+            setIsSubmitting(false);
           }}
         />
       </Modal>

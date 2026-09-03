@@ -25,8 +25,10 @@ type AgentCostOptimizer struct{}
 func (a AgentCostOptimizer) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
-func (a AgentCostOptimizer) GetName() string          { return AgentCostOptimizerName }
-func (a AgentCostOptimizer) GetNameAliases() []string { return []string{"Cost Optimizer"} }
+func (a AgentCostOptimizer) GetName() string { return AgentCostOptimizerName }
+func (a AgentCostOptimizer) GetNameAliases() []string {
+	return []string{"AI Session Cost Reviewer", "Cost Optimizer"}
+}
 
 func (a AgentCostOptimizer) GetDescription() string {
 	return "Analyzes a finished conversation's cost and execution flow and recommends how to run it cheaper — which model calls could use a lighter model, which agents were redundant, and where retries/failures wasted spend. Provide the conversation's session id as the query."

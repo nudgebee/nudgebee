@@ -40,7 +40,7 @@ func (p SearchAgent) GetName() string {
 }
 
 func (l SearchAgent) GetNameAliases() []string {
-	return []string{"Web Search", "Google Search", "Crawl"}
+	return []string{"Web Researcher", "Web Search", "Google Search", "Crawl"}
 }
 
 func (p SearchAgent) GetDescription() string {

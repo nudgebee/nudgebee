@@ -50,7 +50,9 @@ func NewDatadogIncidentAgent(accountId string) core.NBAgent {
 func (d DatadogIncidentAgent) GetName() string { return DatadogIncidentAgentName }
 
 // GetNameAliases returns aliases for the agent name.
-func (d DatadogIncidentAgent) GetNameAliases() []string { return []string{"Datadog Incidents"} }
+func (d DatadogIncidentAgent) GetNameAliases() []string {
+	return []string{"Datadog Incident Reader", "Datadog Incidents"}
+}
 
 // GetDescription returns a description of the agent.
 func (d DatadogIncidentAgent) GetDescription() string {

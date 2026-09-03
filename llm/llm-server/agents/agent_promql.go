@@ -51,7 +51,7 @@ func (p *PromqlAgent) GetName() string {
 }
 
 func (l *PromqlAgent) GetNameAliases() []string {
-	return []string{"PromQL Query"}
+	return []string{"PromQL Query Writer", "PromQL Query"}
 }
 
 func (p *PromqlAgent) GetDescription() string {

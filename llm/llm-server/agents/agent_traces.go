@@ -145,7 +145,7 @@ func (f *fallbackTracesAgent) GetName() string {
 }
 
 func (f *fallbackTracesAgent) GetNameAliases() []string {
-	return []string{"Traces"}
+	return []string{"Trace Investigator", "Traces"}
 }
 
 func (f *fallbackTracesAgent) GetDescription() string {

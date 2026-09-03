@@ -76,7 +76,7 @@ func (a *FinOpsAgent) GetName() string {
 }
 
 func (a *FinOpsAgent) GetNameAliases() []string {
-	return []string{"finops", "cost", "spend", "FinOps"}
+	return []string{"FinOps Cost Advisor", "finops", "cost", "spend", "FinOps"}
 }
 
 func (a *FinOpsAgent) GetDescription() string {

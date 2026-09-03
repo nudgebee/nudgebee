@@ -30,7 +30,7 @@ func (a TicketMasterV2Agent) GetName() string {
 }
 
 func (a TicketMasterV2Agent) GetNameAliases() []string {
-	return []string{"TicketsV2"}
+	return []string{"Ticket Manager", "TicketsV2"}
 }
 
 func (a TicketMasterV2Agent) GetDescription() string {

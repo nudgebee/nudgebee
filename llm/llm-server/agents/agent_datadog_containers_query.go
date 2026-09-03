@@ -23,7 +23,7 @@ type DatadogContainersQueryAgent struct{}
 func (d DatadogContainersQueryAgent) GetName() string { return DatadogContainersQueryAgentName }
 
 func (d DatadogContainersQueryAgent) GetNameAliases() []string {
-	return []string{"Datadog Container Query"}
+	return []string{"Datadog Container Query Writer", "Datadog Container Query"}
 }
 
 func (d DatadogContainersQueryAgent) GetDescription() string {

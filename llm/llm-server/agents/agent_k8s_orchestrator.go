@@ -84,7 +84,7 @@ func newK8sLeanAgentNamed(accountId, name string) *K8sLeanAgent {
 func (l *K8sLeanAgent) GetName() string { return l.name }
 
 func (l *K8sLeanAgent) GetNameAliases() []string {
-	return []string{"Debugger", "k8s_debug"}
+	return []string{"Kubernetes Troubleshooter", "Debugger", "k8s_debug"}
 }
 
 func (l *K8sLeanAgent) GetDescription() string {

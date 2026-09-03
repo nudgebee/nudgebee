@@ -37,7 +37,7 @@ func (l RecommendationsAgent) GetName() string {
 }
 
 func (l RecommendationsAgent) GetNameAliases() []string {
-	return []string{"Recommendations"}
+	return []string{"Recommendation Explorer", "Recommendations"}
 }
 
 func (l RecommendationsAgent) GetDescription() string {

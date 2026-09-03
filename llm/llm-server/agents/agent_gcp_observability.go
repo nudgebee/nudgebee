@@ -31,7 +31,9 @@ type GcpMetricsAgent struct {
 
 func (a GcpMetricsAgent) GetName() string { return GcpMetricsAgentName }
 
-func (a GcpMetricsAgent) GetNameAliases() []string { return []string{"GCPMetrics"} }
+func (a GcpMetricsAgent) GetNameAliases() []string {
+	return []string{"GCP Cloud Monitoring Metrics Reader", "GCPMetrics"}
+}
 
 func (a GcpMetricsAgent) GetDescription() string {
 	return `Retrieves and analyzes GCP Cloud Monitoring metrics (CPU, memory, disk, network, request latency/error rate, managed-service metrics) via the gcloud CLI. Used as the metrics backend for GCP accounts without a Prometheus/Datadog/Elasticsearch provider. Handles its own metric-type and resource discovery.`
@@ -154,7 +156,9 @@ type GcpLogsAgent struct {
 
 func (a GcpLogsAgent) GetName() string { return GcpLogsAgentName }
 
-func (a GcpLogsAgent) GetNameAliases() []string { return []string{"GCPLogs"} }
+func (a GcpLogsAgent) GetNameAliases() []string {
+	return []string{"GCP Cloud Logging Reader", "GCPLogs"}
+}
 
 func (a GcpLogsAgent) GetDescription() string {
 	return `Retrieves and analyzes GCP Cloud Logging entries (GKE container logs, Compute/serverless logs, Cloud SQL, load balancer, audit logs) via the gcloud CLI. Used as the logs backend for GCP accounts without a Loki/Elasticsearch/Datadog provider. Discovers the log resource type and labels before querying, and cites concrete log lines.`
@@ -277,7 +281,9 @@ type GcpTracesAgent struct {
 
 func (a GcpTracesAgent) GetName() string { return GcpTracesAgentName }
 
-func (a GcpTracesAgent) GetNameAliases() []string { return []string{"GCPTraces"} }
+func (a GcpTracesAgent) GetNameAliases() []string {
+	return []string{"GCP Cloud Trace Reader", "GCPTraces"}
+}
 
 func (a GcpTracesAgent) GetDescription() string {
 	return `Retrieves and analyzes GCP Cloud Trace distributed traces (latency, slow spans, service dependencies) via the Cloud Trace v1 REST API, and correlates trace-tagged logs via Cloud Logging. Used as the traces backend for GCP accounts without a ClickHouse/Jaeger/Datadog provider.`

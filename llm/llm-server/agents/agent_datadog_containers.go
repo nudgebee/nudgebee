@@ -33,7 +33,7 @@ func NewDatadogContainersAgent(accountId string) DatadogContainersAgent {
 func (d DatadogContainersAgent) GetName() string { return DatadogContainersAgentName }
 
 func (d DatadogContainersAgent) GetNameAliases() []string {
-	return []string{"Datadog Containers", "Datadog Workloads"}
+	return []string{"Datadog Container Inventory", "Datadog Containers", "Datadog Workloads"}
 }
 
 func (d DatadogContainersAgent) GetDescription() string {

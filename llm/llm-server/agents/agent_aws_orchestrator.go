@@ -66,7 +66,7 @@ func newAwsOrchestratorAgent(accountId string) core.NBAgent {
 func (a *AwsOrchestratorAgent) GetName() string { return AgentAwsOrchestratorName }
 
 func (a *AwsOrchestratorAgent) GetNameAliases() []string {
-	return []string{"aws debug", "amazon_aws_debug", "aws_debug"}
+	return []string{"AWS Troubleshooter", "aws debug", "amazon_aws_debug", "aws_debug"}
 }
 
 func (a *AwsOrchestratorAgent) GetDescription() string {

@@ -34,7 +34,7 @@ func (l DatadogSoftwareCatalogAgent) GetName() string {
 }
 
 func (l DatadogSoftwareCatalogAgent) GetNameAliases() []string {
-	return []string{"Datadog Software Catalog"}
+	return []string{"Datadog Software Catalog Reader", "Datadog Software Catalog"}
 }
 
 func (l DatadogSoftwareCatalogAgent) GetDescription() string {

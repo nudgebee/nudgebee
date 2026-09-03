@@ -35,7 +35,7 @@ func (l PostgresDebugAgent) GetName() string {
 }
 
 func (l PostgresDebugAgent) GetNameAliases() []string {
-	return []string{"PostgresSql", "Postgres"}
+	return []string{"PostgreSQL Diagnostics", "PostgresSql", "Postgres"}
 }
 
 func (l PostgresDebugAgent) GetDescription() string {

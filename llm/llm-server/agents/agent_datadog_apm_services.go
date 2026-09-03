@@ -34,7 +34,7 @@ func (l DatadogServiceAgent) GetName() string {
 }
 
 func (l DatadogServiceAgent) GetNameAliases() []string {
-	return []string{"Datadog Services", "APM Services", "Services"}
+	return []string{"Datadog Service Inventory", "Datadog Services", "APM Services", "Services"}
 }
 
 func (l DatadogServiceAgent) GetDescription() string {

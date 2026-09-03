@@ -43,7 +43,7 @@ func (p PrometheusAgent) GetName() string {
 }
 
 func (l PrometheusAgent) GetNameAliases() []string {
-	return []string{"Prometheus"}
+	return []string{"Prometheus Metrics Expert", "Prometheus"}
 }
 
 func (p PrometheusAgent) GetDescription() string {

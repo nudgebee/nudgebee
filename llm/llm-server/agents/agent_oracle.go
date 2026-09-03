@@ -34,7 +34,7 @@ func (l OracleDebugAgent) GetName() string {
 }
 
 func (l OracleDebugAgent) GetNameAliases() []string {
-	return []string{"Oracle", "OracleDb", "OracleDatabase"}
+	return []string{"Oracle Database Diagnostics", "Oracle", "OracleDb", "OracleDatabase"}
 }
 
 func (l OracleDebugAgent) GetDescription() string {

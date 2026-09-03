@@ -142,7 +142,7 @@ func newLogAgent(accountId string, provider services_server.ObservabilityProvide
 
 func (l *LogAgent) GetName() string { return LegacyLogsAgentName }
 
-func (l *LogAgent) GetNameAliases() []string { return []string{"Logs"} }
+func (l *LogAgent) GetNameAliases() []string { return []string{"Log Investigator", "Logs"} }
 
 func (l *LogAgent) GetDescription() string {
 	return `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes. Use this for: fetching application or container logs, searching log entries by keyword or time range, troubleshooting pod/container errors via log output, correlating logs across services. Do NOT use for: querying performance metrics (use ` + "`metrics`" + ` agent), running kubectl commands (use ` + "`kubectl`" + ` or ` + "`kubectl_execute`" + `), or querying Kubernetes events (use ` + "`events`" + ` agent).

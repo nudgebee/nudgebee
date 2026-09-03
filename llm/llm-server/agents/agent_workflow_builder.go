@@ -342,7 +342,7 @@ func (a *WorkflowBuilderAgent) PropagateTerminalResponseToParent() bool {
 }
 
 func (a *WorkflowBuilderAgent) GetNameAliases() []string {
-	return []string{"AutomationBuilder", "WorkflowBuilder", "workflow_builder"}
+	return []string{"Automation Builder", "AutomationBuilder", "WorkflowBuilder", "workflow_builder"}
 }
 
 func (a *WorkflowBuilderAgent) GetDescription() string {

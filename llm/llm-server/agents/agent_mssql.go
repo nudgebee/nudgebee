@@ -30,7 +30,7 @@ func (l MSSQLDebugAgent) GetName() string {
 }
 
 func (l MSSQLDebugAgent) GetNameAliases() []string {
-	return []string{"MsSql", "SqlServer"}
+	return []string{"SQL Server Diagnostics", "MsSql", "SqlServer"}
 }
 
 func (l MSSQLDebugAgent) GetDescription() string {

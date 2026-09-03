@@ -38,7 +38,7 @@ func (a *DatadogOrchestratorAgent) GetName() string {
 }
 
 func (a *DatadogOrchestratorAgent) GetNameAliases() []string {
-	return []string{"datadog debug", "dd_debug", "datadog_debug"}
+	return []string{"Datadog Troubleshooter", "datadog debug", "dd_debug", "datadog_debug"}
 }
 
 func (a *DatadogOrchestratorAgent) GetDescription() string {

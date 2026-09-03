@@ -57,7 +57,7 @@ func newGcpOrchestratorAgent(accountId string) core.NBAgent {
 func (a *GcpOrchestratorAgent) GetName() string { return AgentGcpOrchestratorName }
 
 func (a *GcpOrchestratorAgent) GetNameAliases() []string {
-	return []string{"gcp debug", "google_cloud_debug", "gcp_debug"}
+	return []string{"GCP Troubleshooter", "gcp debug", "google_cloud_debug", "gcp_debug"}
 }
 
 func (a *GcpOrchestratorAgent) GetDescription() string {

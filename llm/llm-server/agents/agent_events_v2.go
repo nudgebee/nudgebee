@@ -59,7 +59,7 @@ func (a AgentEventsV2) GetName() string {
 }
 
 func (a AgentEventsV2) GetNameAliases() []string {
-	return []string{"events_v2", "events2"}
+	return []string{"Event & Alert Investigator (v2)", "events_v2", "events2"}
 }
 
 func (a AgentEventsV2) GetDescription() string {

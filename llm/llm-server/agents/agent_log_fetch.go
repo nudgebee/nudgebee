@@ -79,7 +79,7 @@ func (a *FetchLogsAgent) effectiveProvider(request core.NBAgentRequest) services
 
 func (a *FetchLogsAgent) GetName() string { return FetchLogsAgentName }
 
-func (a *FetchLogsAgent) GetNameAliases() []string { return []string{"Fetch Logs"} }
+func (a *FetchLogsAgent) GetNameAliases() []string { return []string{"Log Query Runner", "Fetch Logs"} }
 
 func (a *FetchLogsAgent) GetDescription() string {
 	return `Translates a natural-language log question into the right backend query and runs it.`

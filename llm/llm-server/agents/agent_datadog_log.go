@@ -31,7 +31,9 @@ func NewDatadogLogAgent(accountId string) DatadogLogAgent {
 
 func (d DatadogLogAgent) GetName() string { return DatadogLogAgentName }
 
-func (d DatadogLogAgent) GetNameAliases() []string { return []string{"Datadog Logs"} }
+func (d DatadogLogAgent) GetNameAliases() []string {
+	return []string{"Datadog Logs Reader", "Datadog Logs"}
+}
 
 func (d DatadogLogAgent) GetDescription() string {
 	return `Uses Datadog to provide logs based on the given question.`

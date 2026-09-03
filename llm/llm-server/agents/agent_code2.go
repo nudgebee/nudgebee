@@ -1191,7 +1191,7 @@ func (l CodeAgent2) GetName() string {
 }
 
 func (l CodeAgent2) GetNameAliases() []string {
-	return []string{agentCodeAnalyzerLegacyName, "code_debugger", "code_error_analyzer", "code_rca_agent"}
+	return []string{"Code Analyzer & Fixer", agentCodeAnalyzerLegacyName, "code_debugger", "code_error_analyzer", "code_rca_agent"}
 }
 
 func (l CodeAgent2) GetDescription() string {

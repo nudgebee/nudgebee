@@ -40,7 +40,7 @@ func (p LLMAgent) GetName() string {
 }
 
 func (a LLMAgent) GetNameAliases() []string {
-	return []string{"LLM"}
+	return []string{"Answer Composer", "LLM"}
 }
 
 func (p LLMAgent) GetDescription() string {
@@ -138,7 +138,7 @@ func (p ClarificationAgent) GetName() string {
 }
 
 func (a ClarificationAgent) GetNameAliases() []string {
-	return []string{"Followup", "Clarification"}
+	return []string{"Clarifying Question Asker", "Followup", "Clarification"}
 }
 
 func (p ClarificationAgent) GetDescription() string {

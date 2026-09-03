@@ -104,7 +104,7 @@ func (a UnifiedSearchAgent) GetName() string {
 }
 
 func (a UnifiedSearchAgent) GetNameAliases() []string {
-	return []string{"Unified Search", "Search Agent"}
+	return []string{"Knowledge Search", "Unified Search", "Search Agent"}
 }
 
 func (a UnifiedSearchAgent) GetDescription() string {
