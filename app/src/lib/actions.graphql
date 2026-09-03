@@ -7856,6 +7856,10 @@ type AiConversationMessage {
   # dispatches on whichever top-level keys it understands.
   metadata: String
   attachments: [AiMessageAttachment!]
+  # Seconds this turn spent parked on a followup waiting for a human answer —
+  # already inside [created_at, updated_at], not a separate span. 0 for a
+  # 'followup' row itself or a 'generation' row nobody was asked about.
+  followup_wait_seconds: Float!
 }
 
 type AiMessageAttachment {

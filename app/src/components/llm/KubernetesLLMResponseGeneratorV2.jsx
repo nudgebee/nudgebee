@@ -318,6 +318,13 @@ const KubernetesLLMResponseGenerator = ({
     [messages]
   );
 
+  // Conversation-wide total for the header's hover metrics — sums each
+  // response's already-loaded followup_wait_seconds, no extra fetch needed.
+  const followupWaitSeconds = useMemo(
+    () => messages.filter((m) => (m.tool ?? m.type) === 'response').reduce((sum, m) => sum + (m.followup_wait_seconds || 0), 0),
+    [messages]
+  );
+
   // Backend holds the parent conversationMessage in WAITING between a followup answer
   // POST and the next agent tick — `isConversationInProgress` (IN_PROGRESS-only) goes
   // false in that window, so anything that means "is the system working right now?"
@@ -1404,7 +1411,11 @@ const KubernetesLLMResponseGenerator = ({
                     </Tooltip>
                   )}
                   <Box onMouseEnter={handleTokenUsageHover}>
-                    <ConversationTokenUsage tokenUsageData={tokenUsageData} isLoading={isFetchingTokenData} />
+                    <ConversationTokenUsage
+                      tokenUsageData={tokenUsageData}
+                      isLoading={isFetchingTokenData}
+                      followupWaitSeconds={followupWaitSeconds}
+                    />
                   </Box>
                 </Box>
                 <Divider orientation='vertical' variant='middle' flexItem sx={{ height: ds.space.mul(1, 7), mx: ds.space.mul(0, 5) }} />

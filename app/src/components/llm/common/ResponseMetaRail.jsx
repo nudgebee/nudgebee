@@ -9,17 +9,27 @@ import Tooltip from '@ui/Tooltip';
 import { MessageTokenUsage } from './TokenUsageDisplay';
 import EgressFilterDetailModal from './EgressFilterDetailModal';
 
-const formatDuration = (createdAt, updatedAt) => {
+// The chip shows the model's own time — followup wait (inside [createdAt,
+// updatedAt] since the row isn't COMPLETED until it resumes) is subtracted
+// out and broken back out in the tooltip when present.
+const formatDuration = (createdAt, updatedAt, followupWaitSeconds) => {
   if (!createdAt || !updatedAt) {
     return null;
   }
   const start = new Date(createdAt).getTime();
   const end = new Date(updatedAt).getTime();
-  const diffMs = end - start;
-  if (Number.isNaN(diffMs) || diffMs < 0) {
+  const totalMs = end - start;
+  if (Number.isNaN(totalMs) || totalMs < 0) {
     return null;
   }
-  return formatDurationInTrace(diffMs * 1000000, false);
+  const waitMs = Math.max(0, Number(followupWaitSeconds) || 0) * 1000;
+  const answerMs = Math.max(0, totalMs - waitMs);
+  return {
+    // formatDurationInTrace returns '0ns' at exactly 0 — guard against that
+    // unit leaking through if a wait is ever clamped to the full span.
+    text: answerMs === 0 ? '0s' : formatDurationInTrace(answerMs * 1000000, false),
+    waitText: waitMs > 0 ? formatDurationInTrace(waitMs * 1000000, false) : null,
+  };
 };
 
 // `DD-MMM HH:mm` in the browser's local timezone, e.g. "28-Apr 17:02".
@@ -491,14 +501,40 @@ const buildItems = (props) => {
     items.push(countItem('watches', 'success', props.watchCount, props.onOpenWatches));
   }
   if (props.duration) {
+    const chip = (
+      <Chip variant='tag' size='xs' tone='neutral'>
+        {props.duration.text}
+      </Chip>
+    );
     // `boundary: true` swaps the trailing separator from `·` to `|` — visually distinguishes
     // "how long it took" from "when it happened".
     items.push({
       key: 'duration',
-      node: (
-        <Chip variant='tag' size='xs' tone='neutral'>
-          {props.duration}
-        </Chip>
+      node: props.duration.waitText ? (
+        <Tooltip
+          title={
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+              <Box component='span' sx={{ display: 'flex', justifyContent: 'space-between', gap: ds.space[3] }}>
+                <Box component='span'>Answer</Box>
+                <Box component='span'>{props.duration.text}</Box>
+              </Box>
+              <Box component='span' sx={{ display: 'flex', justifyContent: 'space-between', gap: ds.space[3] }}>
+                <Box component='span'>Waited for approval</Box>
+                <Box component='span'>{props.duration.waitText}</Box>
+              </Box>
+            </Box>
+          }
+          placement='top'
+        >
+          {/* MUI clones the Tooltip child with a ref; Chip.tsx is a plain function
+              component (no forwardRef), so it can't hold one directly — same
+              pattern the other three Tooltip+Chip pairs in this file already use. */}
+          <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+            {chip}
+          </Box>
+        </Tooltip>
+      ) : (
+        chip
       ),
       boundary: true,
     });
@@ -519,6 +555,7 @@ const buildItems = (props) => {
 const ResponseMetaRail = ({
   createdAt,
   updatedAt,
+  followupWaitSeconds,
   taskCount = 0,
   contextCount = 0,
   memoryCount = 0,
@@ -535,7 +572,7 @@ const ResponseMetaRail = ({
   egressfilterEvents,
   confidence,
 }) => {
-  const duration = formatDuration(createdAt, updatedAt);
+  const duration = formatDuration(createdAt, updatedAt, followupWaitSeconds);
   const absoluteTime = formatAbsoluteTime(updatedAt || createdAt);
 
   // Modal state lives here (not in the chip factories) so the chips can
@@ -605,6 +642,7 @@ const ResponseMetaRail = ({
 ResponseMetaRail.propTypes = {
   createdAt: PropTypes.string,
   updatedAt: PropTypes.string,
+  followupWaitSeconds: PropTypes.number,
   taskCount: PropTypes.number,
   contextCount: PropTypes.number,
   memoryCount: PropTypes.number,
@@ -641,4 +679,9 @@ ResponseMetaRail.propTypes = {
 export default ResponseMetaRail;
 
 // Exported for unit tests only. Not part of the public component API.
-export { egressfilterItem as __egressfilterItemForTest, piiScrubItem as __piiScrubItemForTest, confidenceItem as __confidenceItemForTest };
+export {
+  egressfilterItem as __egressfilterItemForTest,
+  piiScrubItem as __piiScrubItemForTest,
+  confidenceItem as __confidenceItemForTest,
+  formatDuration as __formatDurationForTest,
+};

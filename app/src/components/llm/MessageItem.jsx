@@ -226,8 +226,11 @@ const MessageItem = ({
     headerActionsNode = (
       <ResponseMetaRail
         createdAt={message.created_at}
-        // answer-completion time, not row last-modified (background jobs bump updated_at); falls back for old msgs
+        // responded_at isn't selected today, so this resolves to updated_at —
+        // the safe branch, since followup_wait_seconds is guaranteed to sit
+        // inside that span (an open followup's wait wouldn't fit responded_at).
         updatedAt={message.responded_at || message.updated_at}
+        followupWaitSeconds={message.followup_wait_seconds}
         taskCount={responseMeta.taskCount}
         contextCount={responseMeta.contextCount}
         memoryCount={responseMeta.memoryCount}

@@ -12,12 +12,14 @@
 //
 // Precedence for tone / verb: enforce > redact > detect.
 
-import { render } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
-import {
+import ResponseMetaRail, {
   __egressfilterItemForTest as egressfilterItem,
   __piiScrubItemForTest as piiScrubItem,
   __confidenceItemForTest as confidenceItem,
+  __formatDurationForTest as formatDuration,
 } from '@components/llm/common/ResponseMetaRail';
 
 // Reach into the returned React element to pull the Chip's count prop.
@@ -339,5 +341,68 @@ describe('confidenceItem', () => {
     expect(label).toContain('No specific root cause');
     expect(label).toContain('Only pod events were available.');
     expect(label).toContain('Could not verify: Node metrics outside retention.');
+  });
+});
+
+// Regression coverage for the followup-wait duration chip (NB-37570).
+// formatDuration() alone can't catch the ref bug below — the tooltip
+// never mounts, so only a real component render exposes it.
+describe('formatDuration', () => {
+  const START = '2026-01-01T00:00:00.000Z';
+  const END = '2026-01-01T00:03:51.800Z'; // 231.8s later
+
+  it('subtracts the followup wait from the raw span', () => {
+    // 231.8s total, 89.17s wait -> 142.63s answer, rounds to 2m 23s.
+    expect(formatDuration(START, END, 89.17)).toEqual({ text: '2m 23s', waitText: '1m 29s' });
+  });
+
+  it('returns no waitText when there was no wait', () => {
+    expect(formatDuration(START, END, 0)).toEqual({ text: '3m 52s', waitText: null });
+    expect(formatDuration(START, END, undefined)).toEqual({ text: '3m 52s', waitText: null });
+  });
+
+  it('clamps a wait exceeding the span to "0s", not formatDurationInTrace(0)', () => {
+    // Not reachable with real data, but formatDurationInTrace returns '0ns'
+    // at exactly 0 — guard against that unit leaking through.
+    expect(formatDuration(START, END, 999)).toEqual({ text: '0s', waitText: expect.any(String) });
+  });
+
+  it('returns null when either timestamp is missing', () => {
+    expect(formatDuration(null, END, 10)).toBeNull();
+    expect(formatDuration(START, null, 10)).toBeNull();
+  });
+});
+
+describe('ResponseMetaRail duration tooltip', () => {
+  const START = '2026-01-01T00:00:00.000Z';
+  const END = '2026-01-01T00:03:51.800Z';
+
+  it('opens on hover and shows the Answer/Waited-for-approval breakdown', async () => {
+    const user = userEvent.setup();
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(<ResponseMetaRail createdAt={START} updatedAt={END} followupWaitSeconds={89.17} />);
+
+    const chip = screen.getByText('2m 23s');
+    await user.hover(chip);
+
+    // Regression: Chip.tsx has no forwardRef, so a bare Chip can't hold
+    // Tooltip's cloned ref — broken, this never mounts and React logs the
+    // ref warning below instead.
+    await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+    expect(screen.getByText('Answer')).toBeInTheDocument();
+    expect(screen.getByText('Waited for approval')).toBeInTheDocument();
+    expect(screen.getByText('1m 29s')).toBeInTheDocument();
+
+    const refWarning = consoleError.mock.calls.some((args) => String(args[0]).includes('Function components cannot be given refs'));
+    expect(refWarning).toBe(false);
+
+    consoleError.mockRestore();
+  });
+
+  it('renders the chip with no tooltip when there was no wait', () => {
+    render(<ResponseMetaRail createdAt={START} updatedAt={END} followupWaitSeconds={0} />);
+    expect(screen.getByText('3m 52s')).toBeInTheDocument();
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 });

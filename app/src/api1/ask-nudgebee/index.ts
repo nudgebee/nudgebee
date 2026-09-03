@@ -81,6 +81,7 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
         message_config
         ack_message
         metadata
+        followup_wait_seconds
         attachments {
           id
           mime_type

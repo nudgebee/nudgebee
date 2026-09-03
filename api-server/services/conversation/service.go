@@ -189,7 +189,44 @@ func fetchShell(ctx context.Context, db *sqlx.DB, tenantId string, req GetConver
 // the explicit filter in SQL is the defense-in-depth review feedback asked for.
 // llm_conversations is keyed by primary-key on id, so the extra join is one
 // row lookup per query — negligible.
+//
+// followup_wait CTE: per-turn wait, merged as intervals not summed — parallel sub-agents can
+// post overlapping followups (#28141). A CTE avoids an O(n²) correlated subquery; the cast is
+// CASE-guarded since message_context is empty text, not NULL, on non-followup rows.
 const messagesQuery = `
+WITH followup_wait AS (
+    SELECT gen_message_id, SUM(EXTRACT(EPOCH FROM (span_end - span_start))) AS seconds
+    FROM (
+        SELECT gen_message_id, island,
+               MIN(created_at) AS span_start, MAX(responded_at) AS span_end
+        FROM (
+            SELECT gen_message_id, created_at, responded_at,
+                SUM(is_new_span) OVER (
+                    PARTITION BY gen_message_id ORDER BY created_at, responded_at
+                ) AS island
+            FROM (
+                SELECT gen_message_id, created_at, responded_at,
+                    CASE WHEN created_at > MAX(responded_at) OVER (
+                            PARTITION BY gen_message_id
+                            ORDER BY created_at, responded_at
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+                        THEN 1 ELSE 0 END AS is_new_span
+                FROM (
+                    SELECT f.created_at, f.responded_at,
+                        (CASE WHEN f.message_context IS NULL OR f.message_context = '' THEN NULL
+                              ELSE f.message_context::jsonb ->> 'message_id' END) AS gen_message_id
+                    FROM llm_conversation_messages f
+                    WHERE f.conversation_id = $2::uuid
+                      AND f.message_type = 'followup'
+                      AND f.responded_at IS NOT NULL
+                ) keyed
+                WHERE gen_message_id IS NOT NULL
+            ) spans
+        ) islands
+        GROUP BY gen_message_id, island
+    ) merged
+    GROUP BY gen_message_id
+)
 SELECT
     m.id::text                  AS id,
     m.user_id::text             AS user_id,
@@ -227,10 +264,15 @@ SELECT
         JOIN llm_conversation_attachments a ON a.id = r.attachment_id
         WHERE r.message_id = m.id
           AND r.conversation_id = m.conversation_id
-    ), '[]') AS attachments
+    ), '[]') AS attachments,
+    -- NULL when this row has no matching followup_wait entry: a 'followup'
+    -- row itself (nothing ever correlates to a followup's own id) or a
+    -- 'generation' row nobody was asked about. COALESCE'd to 0.
+    COALESCE(fw.seconds, 0) AS followup_wait_seconds
 FROM llm_conversation_messages m
 JOIN llm_conversations c ON c.id = m.conversation_id
 LEFT JOIN users mu ON mu.id = m.user_id
+LEFT JOIN followup_wait fw ON fw.gen_message_id = m.id::text
 WHERE c.tenant_id = $1::uuid
   AND m.conversation_id = $2::uuid
   AND m.message_type IN ('generation', 'followup')
