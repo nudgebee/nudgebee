@@ -151,7 +151,6 @@ query k8s_recommendation_summary {
       sum_estimated_savings
       rule_name
       category
-      resource_cloud_service
       severity
     }
   }

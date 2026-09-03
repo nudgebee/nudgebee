@@ -5301,14 +5301,24 @@ var table_metadata = map[string]TableDefinition{
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			pushdownFilters := extractFilterSQL(&request, "account_id", "r.cloud_account_id")
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
+			// needsWindow: is_primary_recommendation is a ROW_NUMBER() OVER (...) window,
+			// which Postgres cannot compute until it has materialized every row in the
+			// partition — that defeats the ORDER BY .. LIMIT top-N pushdown every paginated
+			// caller relies on. The two real production callers (the main recommendations
+			// table, the vulnerabilities list) never reference this column; only the
+			// dashboard-panel "Is primary" filter/column does. Gated the same way as the
+			// sibling recommendation_groupings_v2 generator above (windowRequiringCols).
+			needsWindow := requestReferencesColumns(request, map[string]bool{"is_primary_recommendation": true})
 			// id is not part of PARTITION BY, so pushing it pre-window would narrow
 			// the sibling set is_primary_recommendation is ranked against — a caller
 			// that filters by id AND reads that column would see rank computed only
 			// among the requested ids, not the full history. Only take the shortcut
 			// when the request provably doesn't touch that column (mirrors the
 			// joinRequiringCols guard in recommendation_groupings_v2 above); otherwise
-			// fall back to the correct-but-slower outer-filter path.
-			if !requestReferencesColumns(request, map[string]bool{"is_primary_recommendation": true}) {
+			// fall back to the correct-but-slower outer-filter path. When the window
+			// isn't computed at all (needsWindow false), there is no partition to
+			// narrow, so pushing early is always safe.
+			if !needsWindow {
 				pushdownFilters += extractFilterSQL(&request, "id", "r.id")
 				pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
 				pushdownFilters += extractFilterSQL(&request, "account_object_id", "r.account_object_id")
@@ -5352,10 +5362,9 @@ var table_metadata = map[string]TableDefinition{
 							v.cvss_score AS v_cvss_score, v.cvss_vector AS v_cvss_vector, v.description AS v_description,
 							v.data_source AS v_data_source, v.details AS v_details`
 			}
-			def := `(
-					WITH all_recommendations AS (
-						SELECT
-							r.*,
+			// resourceCols is shared verbatim by both shapes below — the join and its
+			// display projection are unaffected by needsWindow, only the ranking is.
+			resourceCols := `
 							COALESCE(
 								cr.meta ->> 'namespace',
 								cr.meta -> 'config' ->> 'namespace',
@@ -5377,7 +5386,30 @@ var table_metadata = map[string]TableDefinition{
 							cr.cloud_provider as resource_cloud_provider,
 							cr.arn as resource_arn,
 							cr.region as resource_region,
-							cr.status as resource_status,
+							cr.status as resource_status`
+
+			if !needsWindow {
+				// Lean path: no CTE, no ROW_NUMBER(). Same join and display columns (the
+				// main recommendations table and the vulnerabilities list both need
+				// resource_name/resource_type), but skipping the window lets Postgres push
+				// ORDER BY .. LIMIT through as a top-N heapsort straight off the join
+				// instead of first materializing and ranking every matching row.
+				def := `(
+					SELECT
+						r.*,` + resourceCols + vulnCols + `
+					FROM recommendation r
+					LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
+					LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+					` + vulnJoin + `
+					WHERE ca.status = 'active'` + pushdownFilters + `
+				) as r1`
+				return def, request, nil
+			}
+
+			def := `(
+					WITH all_recommendations AS (
+						SELECT
+							r.*,` + resourceCols + `,
 							ROW_NUMBER() OVER (
 								PARTITION BY
 									CASE
