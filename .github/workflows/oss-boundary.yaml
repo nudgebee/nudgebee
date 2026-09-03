@@ -42,10 +42,10 @@ jobs:
           node-version: '25'
       # Snapshot stripping removes EE-only migrations, so the patch step
       # regenerates atlas.sum before compiling the OSS tree.
-      - name: Install atlas (community v0.36.0)
+      - name: Install atlas (community v1.3.0)
         env:
-          ATLAS_VERSION: v0.36.0
-          ATLAS_SHA256: 31df223059700191b80032906590bb6030f864ba202dfbc57ba90e593292301a
+          ATLAS_VERSION: v1.3.0
+          ATLAS_SHA256: 10d7913e3dce43ab99b8d71534a4cbadaf11a16dc293adf3b91d10e83a0ac70b
         run: |
           curl -fsSL --connect-timeout 30 --max-time 300 --retry 5 \
             "https://release.ariga.io/atlas/atlas-community-linux-amd64-${ATLAS_VERSION}" \
