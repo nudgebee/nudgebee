@@ -51,7 +51,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/anthropic"
-	"github.com/tmc/langchaingo/llms/openai"
+
+	"nudgebee/llm/llms/openai"
 )
 
 const llmProviderFormat = "llm_provider_%s"

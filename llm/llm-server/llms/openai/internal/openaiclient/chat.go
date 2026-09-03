@@ -1,4 +1,4 @@
-package azureclient
+package openaiclient
 
 import (
 	"bufio"
@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"nudgebee/llm/common"
+	"regexp"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+)
+
+const (
+	defaultChatModel = "gpt-3.5-turbo"
 )
 
 var ErrContentExclusive = errors.New("only one of Content / MultiContent allowed in message")
@@ -26,18 +30,20 @@ type StreamOptions struct {
 
 // ChatRequest is a request to complete a chat completion..
 type ChatRequest struct {
-	Model            string         `json:"model"`
-	Messages         []*ChatMessage `json:"messages"`
-	Adapter          string         `json:"adapter_id,omitempty"`
-	Temperature      *float64       `json:"temperature,omitempty"`
-	TopP             float64        `json:"top_p,omitempty"`
-	MaxTokens        int            `json:"max_tokens,omitempty"`
-	N                int            `json:"n,omitempty"`
-	StopWords        []string       `json:"stop,omitempty"`
-	Stream           bool           `json:"stream,omitempty"`
-	FrequencyPenalty float64        `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float64        `json:"presence_penalty,omitempty"`
-	Seed             int            `json:"seed,omitempty"`
+	Model       string         `json:"model"`
+	Messages    []*ChatMessage `json:"messages"`
+	Temperature float64        `json:"temperature"`
+	TopP        float64        `json:"top_p,omitempty"`
+	// Deprecated: Use MaxCompletionTokens
+	// Note: Some OpenAI-compatible servers still require this field
+	MaxTokens           int      `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
+	N                   int      `json:"n,omitempty"`
+	StopWords           []string `json:"stop,omitempty"`
+	Stream              bool     `json:"stream,omitempty"`
+	FrequencyPenalty    float64  `json:"frequency_penalty,omitempty"`
+	PresencePenalty     float64  `json:"presence_penalty,omitempty"`
+	Seed                int      `json:"seed,omitempty"`
 
 	// ResponseFormat is the format of the response.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
@@ -59,9 +65,17 @@ type ChatRequest struct {
 	// Options for streaming response. Only set this when you set stream: true.
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 
+	// ReasoningEffort controls thinking effort for reasoning models (o1, o3, GPT-5).
+	// Valid values: "minimal" (GPT-5 only), "low", "medium", "high"
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
 	// StreamingFunc is a function to be called for each chunk of a streaming response.
 	// Return an error to stop streaming early.
 	StreamingFunc func(ctx context.Context, chunk []byte) error `json:"-"`
+
+	// StreamingReasoningFunc is a function to be called for each reasoning and content chunk of a streaming response.
+	// Return an error to stop streaming early.
+	StreamingReasoningFunc func(ctx context.Context, reasoningChunk, chunk []byte) error `json:"-"`
 
 	// Deprecated: use Tools instead.
 	Functions []FunctionDefinition `json:"functions,omitempty"`
@@ -71,6 +85,74 @@ type ChatRequest struct {
 	// Metadata allows you to specify additional information that will be passed to the model.
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
+
+// MarshalJSON ensures that only one of MaxTokens or MaxCompletionTokens is sent.
+// OpenAI's API returns an error if both fields are present.
+// Also omits temperature for reasoning models (GPT-5, o1, o3) that only accept default temperature.
+func (r ChatRequest) MarshalJSON() ([]byte, error) {
+	type Alias ChatRequest
+	aux := struct {
+		*Alias
+		MaxTokens           *int     `json:"max_tokens,omitempty"`
+		MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
+		Temperature         *float64 `json:"temperature,omitempty"`
+	}{
+		Alias: (*Alias)(&r),
+	}
+
+	// Handle temperature for reasoning models
+	if isReasoningModel(r.Model) {
+		// Reasoning models (GPT-5, o1, o3) only accept temperature=1 (default)
+		// Omit temperature field to let API use its default value
+		aux.Temperature = nil
+	} else {
+		// For regular models, always send temperature
+		aux.Temperature = &r.Temperature
+	}
+
+	// Ensure only one token field is sent
+	if r.MaxCompletionTokens > 0 && r.MaxTokens > 0 {
+		// Both are set - this shouldn't happen with our logic,
+		// but if it does, prefer MaxCompletionTokens (modern field)
+		aux.MaxCompletionTokens = &r.MaxCompletionTokens
+		aux.MaxTokens = nil
+	} else if r.MaxCompletionTokens > 0 {
+		aux.MaxCompletionTokens = &r.MaxCompletionTokens
+		aux.MaxTokens = nil
+	} else if r.MaxTokens > 0 {
+		aux.MaxTokens = &r.MaxTokens
+		aux.MaxCompletionTokens = nil
+	}
+
+	return json.Marshal(&aux)
+}
+
+// isReasoningModel returns true if the model is a reasoning model that has temperature constraints.
+// Reasoning models (GPT-5, o1, o3) only accept temperature=1 and reject other values.
+func isReasoningModel(model string) bool {
+	// o1/o3 series. NUDGEBEE: upstream used HasPrefix("o1-"), which missed the
+	// bare "o1" (while bare "o3" was handled — an outright asymmetry) and every
+	// dated checkpoint reached through a namespaced id. Gateways serve models as
+	// "openai/o1", so anchoring to the start of the string alone is wrong here.
+	if oSeriesReasoningRx.MatchString(model) {
+		return true
+	}
+	// GPT-5 and future o4/o5 series, likewise reachable as "openai/gpt-5.6-terra".
+	if reasoningFamilyRx.MatchString(model) {
+		return true
+	}
+	return false
+}
+
+// Matches o1/o3 at the start of the id or just after a namespace separator,
+// followed by end-of-string or a hyphen: o1, o3, o1-mini, o1-2024-12-17,
+// openai/o3-mini. Deliberately not \b, which would also fire on "gpt-o1".
+// reasoningFamilyRx is kept identical to the one in the parent openai package.
+// The two matchers disagreeing is the defect class this fork exists to fix.
+var (
+	oSeriesReasoningRx = regexp.MustCompile(`(?i)(^|/)o[13](-|$)`)
+	reasoningFamilyRx  = regexp.MustCompile(`(?i)(^|[/:._-])(gpt-5|o[45])($|[/:._-])`)
+)
 
 // ToolType is the type of a tool.
 type ToolType string
@@ -102,17 +184,35 @@ type ToolCall struct {
 	ID   string   `json:"id,omitempty"`
 	Type ToolType `json:"type"`
 	// NUDGEBEE: streaming deltas carry an "index" that correlates argument
-	// fragments with the call they belong to. Upstream dropped it, leaving the
-	// merge to guess "the last one", which breaks on parallel tool calls and on
-	// gateways that echo a type on every fragment. Pointer + omitempty so
-	// outbound request payloads are unchanged.
+	// fragments with the call they belong to. Upstream dropped it, leaving
+	// updateToolCalls to guess "the last one", which breaks on parallel tool
+	// calls and on gateways that echo a type on every fragment. Pointer +
+	// omitempty so outbound request payloads are unchanged.
 	Index    *int         `json:"index,omitempty"`
 	Function ToolFunction `json:"function,omitempty"`
 }
 
+type ResponseFormatJSONSchemaProperty struct {
+	Type                 string                                       `json:"type"`
+	Description          string                                       `json:"description,omitempty"`
+	Enum                 []interface{}                                `json:"enum,omitempty"`
+	Items                *ResponseFormatJSONSchemaProperty            `json:"items,omitempty"`
+	Properties           map[string]*ResponseFormatJSONSchemaProperty `json:"properties,omitempty"`
+	AdditionalProperties bool                                         `json:"additionalProperties"`
+	Required             []string                                     `json:"required,omitempty"`
+	Ref                  string                                       `json:"$ref,omitempty"`
+}
+
+type ResponseFormatJSONSchema struct {
+	Name   string                            `json:"name"`
+	Strict bool                              `json:"strict"`
+	Schema *ResponseFormatJSONSchemaProperty `json:"schema"`
+}
+
 // ResponseFormat is the format of the response.
 type ResponseFormat struct {
-	Type string `json:"type"`
+	Type       string                    `json:"type"`
+	JSONSchema *ResponseFormatJSONSchema `json:"json_schema,omitempty"`
 }
 
 // ChatMessage is a message in a chat request.
@@ -141,10 +241,13 @@ type ChatMessage struct { //nolint:musttag
 	// ToolCallID is the ID of the tool call this message is for.
 	// Only present in tool messages.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
-	if m.Content != "" && m.MultiContent != nil {
+	if m.Content != "" && len(m.MultiContent) > 0 {
 		return nil, ErrContentExclusive
 	}
 	if text, ok := isSingleTextContent(m.MultiContent); ok {
@@ -165,8 +268,11 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 			// ToolCallID is the ID of the tool call this message is for.
 			// Only present in tool messages.
 			ToolCallID string `json:"tool_call_id,omitempty"`
+
+			// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
+			ReasoningContent string `json:"reasoning_content,omitempty"`
 		}(m)
-		return common.MarshalJson(msg)
+		return json.Marshal(msg)
 	}
 	msg := struct {
 		Role         string             `json:"role"`
@@ -180,8 +286,11 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 		// ToolCallID is the ID of the tool call this message is for.
 		// Only present in tool messages.
 		ToolCallID string `json:"tool_call_id,omitempty"`
+
+		// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
+		ReasoningContent string `json:"reasoning_content,omitempty"`
 	}(m)
-	return common.MarshalJson(msg)
+	return json.Marshal(msg)
 }
 
 func isSingleTextContent(parts []llms.ContentPart) (string, bool) {
@@ -205,8 +314,11 @@ func (m *ChatMessage) UnmarshalJSON(data []byte) error {
 		// ToolCallID is the ID of the tool call this message is for.
 		// Only present in tool messages.
 		ToolCallID string `json:"tool_call_id,omitempty"`
+
+		// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
+		ReasoningContent string `json:"reasoning_content,omitempty"`
 	}{}
-	err := common.UnmarshalJson(data, &msg)
+	err := json.Unmarshal(data, &msg)
 	if err != nil {
 		return err
 	}
@@ -264,9 +376,19 @@ type ChatCompletionChoice struct {
 
 // ChatUsage is the usage of a chat completion request.
 type ChatUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+		AudioTokens  int `json:"audio_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens          int `json:"reasoning_tokens"`
+		AudioTokens              int `json:"audio_tokens"`
+		AcceptedPredictionTokens int `json:"accepted_prediction_tokens"`
+		RejectedPredictionTokens int `json:"rejected_prediction_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 // ChatCompletionResponse is a response to a chat request.
@@ -281,9 +403,19 @@ type ChatCompletionResponse struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+		AudioTokens  int `json:"audio_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens          int `json:"reasoning_tokens"`
+		AudioTokens              int `json:"audio_tokens"`
+		AcceptedPredictionTokens int `json:"accepted_prediction_tokens"`
+		RejectedPredictionTokens int `json:"rejected_prediction_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 // StreamedChatResponsePayload is a chunk from the stream.
@@ -300,6 +432,8 @@ type StreamedChatResponsePayload struct {
 			FunctionCall *FunctionCall `json:"function_call,omitempty"`
 			// ToolCalls is a list of tools that were called in the message.
 			ToolCalls []*ToolCall `json:"tool_calls,omitempty"`
+			// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
+			ReasoningContent string `json:"reasoning_content,omitempty"`
 		} `json:"delta,omitempty"`
 		FinishReason FinishReason `json:"finish_reason,omitempty"`
 	} `json:"choices,omitempty"`
@@ -319,6 +453,8 @@ type FunctionDefinition struct {
 	Description string `json:"description,omitempty"`
 	// Parameters is a list of parameters for the function.
 	Parameters any `json:"parameters"`
+	// Strict is a flag to enable structured output mode.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // FunctionCallBehavior is the behavior to use when calling functions.
@@ -342,7 +478,7 @@ type FunctionCall struct {
 }
 
 func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCompletionResponse, error) {
-	if payload.StreamingFunc != nil {
+	if payload.StreamingFunc != nil || payload.StreamingReasoningFunc != nil {
 		payload.Stream = true
 		if payload.StreamOptions == nil {
 			payload.StreamOptions = &StreamOptions{IncludeUsage: true}
@@ -350,17 +486,34 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 	}
 	// Build request payload
 
-	payloadBytes, err := common.MarshalJson(payload)
+	// Filter out internal metadata that shouldn't be sent to the API
+	originalMetadata := payload.Metadata
+	if payload.Metadata != nil {
+		filteredMetadata := make(map[string]any)
+		for k, v := range payload.Metadata {
+			// Skip internal openai: prefixed metadata fields
+			if !strings.HasPrefix(k, "openai:") {
+				filteredMetadata[k] = v
+			}
+		}
+		if len(filteredMetadata) > 0 {
+			payload.Metadata = filteredMetadata
+		} else {
+			payload.Metadata = nil
+		}
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+
+	// Restore original metadata
+	payload.Metadata = originalMetadata
 	if err != nil {
 		return nil, err
 	}
 
 	// Build request
 	body := bytes.NewReader(payloadBytes)
-	if c.baseURL == "" {
-		return nil, errors.New("baseURL is not set")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.buildURL("/chat/completions"), body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.buildURL("/chat/completions", payload.Model), body)
 	if err != nil {
 		return nil, err
 	}
@@ -370,14 +523,9 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 	// Send request
 	r, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeHTTPError(err)
 	}
-	defer func() {
-		if err := r.Body.Close(); err != nil {
-			// Log the error, but don't return it as it's a defer call
-			fmt.Printf("Error closing response body: %v\n", err)
-		}
-	}()
+	defer func() { _ = r.Body.Close() }()
 
 	if r.StatusCode != http.StatusOK {
 		msg := fmt.Sprintf("API returned unexpected status code: %d", r.StatusCode)
@@ -386,12 +534,12 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 		// status code.
 		var errResp errorMessage
 		if err := json.NewDecoder(r.Body).Decode(&errResp); err != nil {
-			return nil, errors.New(msg) // nolint:goerr113
+			return nil, errors.New(msg)
 		}
 
-		return nil, fmt.Errorf("%s: %s", msg, errResp.Error.Message) // nolint:goerr113
+		return nil, fmt.Errorf("%s: %s", msg, errResp.Error.Message)
 	}
-	if payload.StreamingFunc != nil {
+	if payload.StreamingFunc != nil || payload.StreamingReasoningFunc != nil {
 		return parseStreamingChatResponse(ctx, r, payload)
 	}
 	// Parse response
@@ -402,29 +550,42 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *ChatRequest) (*ChatCompletionResponse,
 	error,
 ) { //nolint:cyclop,lll
-	// Cancel the producer goroutine when this function returns (e.g. the
-	// consumer below stops reading after a stream error), so it can't block
-	// forever on the unbuffered channel and leak.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	scanner := bufio.NewScanner(r.Body)
+	// NUDGEBEE: a bufio.Scanner tops out at 64KB per token by default and fails
+	// the whole stream with ErrTooLong beyond that. One SSE line carrying a long
+	// reasoning block or a large tool-call payload clears 64KB easily.
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	responseChan := make(chan StreamedChatResponsePayload)
+
+	// Create a context that can be cancelled to stop the goroutine
+	readerCtx, cancelReader := context.WithCancel(ctx)
+	defer cancelReader()
+
 	go func() {
 		defer close(responseChan)
-		// send guards every channel write against context cancellation so the
-		// producer exits instead of blocking when the consumer has stopped.
-		send := func(p StreamedChatResponsePayload) bool {
-			select {
-			case responseChan <- p:
-				return true
-			case <-ctx.Done():
-				return false
-			}
-		}
 		for scanner.Scan() {
+			// Check if context is cancelled
+			select {
+			case <-readerCtx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Text()
 			if line == "" {
+				continue
+			}
+
+			// Skip SSE comment lines (any line starting with ':')
+			// According to SSE spec: https://www.w3.org/TR/eventsource/
+			// "Lines that start with a U+003A COLON character (:) are comments"
+			if strings.HasPrefix(line, ":") {
+				continue
+			}
+
+			// Only process lines that start with "data:"
+			if !strings.HasPrefix(line, "data:") {
+				// Skip any other non-data lines (like event:, id:, retry:, etc.)
 				continue
 			}
 
@@ -434,23 +595,31 @@ func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *
 				return
 			}
 			var streamPayload StreamedChatResponsePayload
-			err := json.NewDecoder(bytes.NewReader([]byte(data))).Decode(&streamPayload)
+			err := json.NewDecoder(strings.NewReader(data)).Decode(&streamPayload)
 			if err != nil {
-				streamPayload.Error = fmt.Errorf("error decoding streaming response: %w", err)
-				send(streamPayload)
-				return
+				// Skip non-JSON data values that some providers might send
+				// This could happen if the data field contains non-JSON content
+				continue
 			}
-			if !send(streamPayload) {
+
+			// Non-blocking send with context check
+			select {
+			case <-readerCtx.Done():
 				return
+			case responseChan <- streamPayload:
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			send(StreamedChatResponsePayload{Error: fmt.Errorf("error reading streaming response: %w", err)})
+			select {
+			case <-readerCtx.Done():
+				return
+			case responseChan <- StreamedChatResponsePayload{Error: fmt.Errorf("error reading streaming response: %w", err)}:
+			}
 			return
 		}
 	}()
 	// Combine response
-	return combineStreamingChatResponse(ctx, payload, responseChan)
+	return combineStreamingChatResponse(readerCtx, payload, responseChan)
 }
 
 func combineStreamingChatResponse(
@@ -473,6 +642,12 @@ func combineStreamingChatResponse(
 			response.Usage.CompletionTokens = streamResponse.Usage.CompletionTokens
 			response.Usage.PromptTokens = streamResponse.Usage.PromptTokens
 			response.Usage.TotalTokens = streamResponse.Usage.TotalTokens
+			response.Usage.PromptTokensDetails.AudioTokens = streamResponse.Usage.PromptTokensDetails.AudioTokens
+			response.Usage.PromptTokensDetails.CachedTokens = streamResponse.Usage.PromptTokensDetails.CachedTokens
+			response.Usage.CompletionTokensDetails.AudioTokens = streamResponse.Usage.CompletionTokensDetails.AudioTokens
+			response.Usage.CompletionTokensDetails.AcceptedPredictionTokens = streamResponse.Usage.CompletionTokensDetails.AcceptedPredictionTokens
+			response.Usage.CompletionTokensDetails.RejectedPredictionTokens = streamResponse.Usage.CompletionTokensDetails.RejectedPredictionTokens
+			response.Usage.CompletionTokensDetails.ReasoningTokens = streamResponse.Usage.CompletionTokensDetails.ReasoningTokens
 		}
 
 		if len(streamResponse.Choices) == 0 {
@@ -480,11 +655,13 @@ func combineStreamingChatResponse(
 		}
 		choice := streamResponse.Choices[0]
 		chunk := []byte(choice.Delta.Content)
+		reasoningChunk := []byte(choice.Delta.ReasoningContent) // TODO: not sure if there will be any reasoning related to function call later, so just pass it here
 		response.Choices[0].Message.Content += choice.Delta.Content
 		response.Choices[0].FinishReason = choice.FinishReason
+		response.Choices[0].Message.ReasoningContent += choice.Delta.ReasoningContent
 
 		if choice.Delta.FunctionCall != nil {
-			chunk = updateFunctionCall(response.Choices[0].Message, choice.Delta.FunctionCall)
+			chunk = updateFunctionCall(&response.Choices[0].Message, choice.Delta.FunctionCall)
 		}
 
 		if len(choice.Delta.ToolCalls) > 0 {
@@ -498,17 +675,28 @@ func combineStreamingChatResponse(
 				return nil, fmt.Errorf("streaming func returned an error: %w", err)
 			}
 		}
+		if payload.StreamingReasoningFunc != nil {
+			err := payload.StreamingReasoningFunc(ctx, reasoningChunk, chunk)
+			if err != nil {
+				return nil, fmt.Errorf("streaming reasoning func returned an error: %w", err)
+			}
+		}
 	}
 	return &response, nil
 }
 
-func updateFunctionCall(message ChatMessage, functionCall *FunctionCall) []byte {
+// NUDGEBEE: takes a POINTER. Upstream passed ChatMessage by value, so the
+// `message.FunctionCall = functionCall` assignment on the nil branch wrote to a
+// copy and was discarded — and since FunctionCall starts nil, every streamed
+// legacy function_call was lost. (The += branch appeared to work only because
+// it mutates through an already-set pointer.)
+func updateFunctionCall(message *ChatMessage, functionCall *FunctionCall) []byte {
 	if message.FunctionCall == nil {
 		message.FunctionCall = functionCall
 	} else {
 		message.FunctionCall.Arguments += functionCall.Arguments
 	}
-	chunk, _ := common.MarshalJson(message.FunctionCall) // nolint:errchkjson
+	chunk, _ := json.Marshal(message.FunctionCall) // nolint:errchkjson
 	return chunk
 }
 
@@ -535,21 +723,31 @@ func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 		return []byte{}, tools
 	}
 	for _, t := range delta {
-		// NUDGEBEE: a continuation fragment is one carrying arguments but no
-		// function NAME. Upstream keyed on Type == "", but gateways echo a type
-		// on every fragment, so each argument chunk became a brand-new call and
-		// the named call was dispatched with an empty input.
+		// NUDGEBEE: a continuation fragment is identified by having no function
+		// NAME, not by having an empty Type. Upstream keyed on Type, so a gateway
+		// that echoes "type":"function" on argument chunks (OpenRouter does) had
+		// every fragment appended as a phantom tool call: one entry with the name
+		// and no arguments, a second with the arguments and no name. The caller
+		// then dispatched a named tool with an empty input.
 		//
-		// Fragments match on the delta Index VALUE — not used as a slice offset,
-		// since a gateway may emit sparse or non-zero-based indices — falling
-		// back to the most recent call when no index is supplied.
-		// NUDGEBEE: a nameless delta is never a new tool call (openers always carry the
-		// name); vLLM closes every call with an empty {name:null, arguments:""}
-		// trailer, which must not become a phantom, nameless tool call.
+		// Fragments are also merged by their delta Index — the only field the
+		// OpenAI streaming protocol guarantees for correlating chunks — instead of
+		// blindly into the last element, which mis-assigns arguments whenever a
+		// model emits parallel tool calls.
+		//
+		// NUDGEBEE: a nameless delta is NEVER a new tool call (openers always carry the
+		// name), so don't require non-empty Arguments to treat it as a fragment:
+		// vLLM closes every call with {name:null, arguments:""}, and that empty
+		// trailer used to fall through to append and become a phantom, nameless
+		// tool call the planner rejected on every iteration until max iterations.
 		if t.Function.Name == `` {
 			if t.Function.Arguments == `` {
-				continue
+				continue // nothing to merge; dropping beats appending a phantom
 			}
+			// Match on the Index VALUE rather than using it as a slice offset.
+			// A gateway is free to emit indices that are sparse or do not start
+			// at zero, in which case slice position and Index disagree and the
+			// fragment would land on the wrong call.
 			if idx := t.Index; idx != nil {
 				matched := false
 				for i := range tools {
@@ -563,6 +761,8 @@ func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 					continue
 				}
 			}
+			// No usable index: fall back to the most recent call, matching
+			// upstream behaviour rather than dropping the fragment.
 			if lindex := len(tools) - 1; lindex >= 0 {
 				appendArgumentsFragment(&tools[lindex], t.Function.Arguments)
 			}
@@ -573,16 +773,18 @@ func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 		tools = append(tools, *t)
 	}
 
-	chunk, _ := common.MarshalJson(delta) // nolint:errchkjson
+	chunk, _ := json.Marshal(delta) // nolint:errchkjson
 
 	return chunk, tools
 }
 
 // StreamingChatResponseTools is a helper function to append tool calls to the stack.
 //
-// NUDGEBEE: this carried a second, independent copy of the merge logic with the
-// same upstream bug. It now delegates so there is one implementation to keep
-// correct rather than two that can drift.
+// NUDGEBEE: upstream carried a second, independent copy of the merge logic here,
+// still keyed on Type == "" and still merging blindly into the last call — i.e.
+// the exact bug updateToolCalls fixes. It has no callers, but an exported
+// buggy twin sitting beside the fixed one is a trap for whoever reaches for it
+// next, so it now delegates rather than duplicating.
 func StreamingChatResponseTools(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 	if len(delta) == 0 {
 		return []byte{}, tools
