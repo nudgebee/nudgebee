@@ -1409,7 +1409,7 @@ func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, 
 	}
 
 	if dockerMode() {
-		resp, err := dockerAPIRequest(ctx.GetContext(), &http.Client{}, accountId, method, endpoint, queryParams, bodyBytes)
+		resp, err := dockerAPIRequest(ctx.GetContext(), common.HttpClient(), accountId, method, endpoint, queryParams, bodyBytes)
 		if err != nil {
 			return nil, err
 		}

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"nudgebee/llm/config"
@@ -30,6 +31,11 @@ const (
 )
 
 var errDockerWorkspaceNotFound = errors.New("docker workspace container not found")
+
+var dockerRuntimeCache = struct {
+	sync.Mutex
+	byHost map[string]*dockerRuntime
+}{byHost: make(map[string]*dockerRuntime)}
 
 type dockerRuntime struct {
 	client     *http.Client
@@ -66,7 +72,17 @@ func newDockerRuntime() (*dockerRuntime, error) {
 	if !strings.HasPrefix(host, "unix://") {
 		return nil, fmt.Errorf("workspace docker host %q must use a local unix:// socket; remote Engines cannot route workspace traffic", host)
 	}
-	return newDockerRuntimeForHost(host)
+	dockerRuntimeCache.Lock()
+	defer dockerRuntimeCache.Unlock()
+	if runtime := dockerRuntimeCache.byHost[host]; runtime != nil {
+		return runtime, nil
+	}
+	runtime, err := newDockerRuntimeForHost(host)
+	if err != nil {
+		return nil, err
+	}
+	dockerRuntimeCache.byHost[host] = runtime
+	return runtime, nil
 }
 
 func newDockerRuntimeForHost(host string) (*dockerRuntime, error) {
@@ -283,7 +299,9 @@ func (d *dockerRuntime) ensureImageEnv(ctx context.Context, image string) ([]str
 		return env, nil
 	}
 	pullPath := "/images/create?fromImage=" + url.QueryEscape(image)
-	data, pullStatus, err := d.requestWithClient(ctx, d.pullClient, http.MethodPost, pullPath, nil)
+	pullCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	defer cancel()
+	data, pullStatus, err := d.requestWithClient(pullCtx, d.pullClient, http.MethodPost, pullPath, nil)
 	if err != nil {
 		return nil, err
 	}
