@@ -162,6 +162,7 @@ measured every run.
 | 2026-07-10 | 1 | Go toolchain 1.26.4→1.26.5 across all 8 Go images (CVE-2026-42505 stdlib); `GOTOOLCHAIN=local` on all builders (#587 merged) | fleet 88 fixable |
 | 2026-07-11 | 1 | migrations `migrate` builder Go 1.26.5 (#588, open); committed `OS_PKG_EPOCH` cache-bust for c-ares + gzip/tar across 7 Dockerfiles (#589, open) | services → ~61 fixable |
 | 2026-07-11 | 2 | **Live scan of running `nudgebee-oss` namespace** (26 images) → deployed third-party surface is ~2,000 fixable / ~100 CRIT, ~35× the first-party services. Phase 2 opened. | fleet 2,148 fixable |
-| 2026-09-03 | 3 | Atlas v1.3.0 in migrations (#711); Go toolchain 1.26.5→1.26.6 and OS_PKG_EPOCH 2026-W36 across first-party Go images & mirrors | fleet ~40 fixable |
+| 2026-09-03 | 3 | Atlas v1.3.0 in migrations (#711); Go toolchain 1.26.5→1.26.6 and OS_PKG_EPOCH 2026-W36 across first-party Go images & mirrors (#712) | fleet ~40 fixable |
+| 2026-09-03 | 4 | Bump `golang.org/x/mod` v0.40.0, `x/text` v0.41.0, `x/net` v0.58.0, `x/crypto` v0.56.0 across Go services; PowerShell LTS 7.4.19 in runbook-server | fleet ~20 fixable |
 
 _Update this table after every merged iteration PR. Re-run the scan workflow (or `trivy image --ignore-unfixed --severity CRITICAL,HIGH,MEDIUM <image>`) to get the new numbers._
