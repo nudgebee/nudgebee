@@ -9,8 +9,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { getLast24Hrs } from '@lib/datetime';
 import Heading from '@components/common/Heading';
-import EmptyData from '@shared/EmptyData';
-import { DataNotAvailable } from '@assets';
+import { EmptyState } from '@ui/EmptyState';
 import Loader from '@shared/Loader';
 import observability from '@api1/observability';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -660,7 +659,7 @@ function AppDashboard({
     return (
       <ListingLayout id='appDashboardNoData'>
         <ListingLayout.Body>
-          <EmptyData img={DataNotAvailable} heading='No Dashboard Available' id={'app-dashboard'}>
+          <EmptyState illustration='first-time' title='No Dashboard Available' id={'app-dashboard'}>
             <Typography>
               For Python, Java, NodeJs, Golang configure{' '}
               <Link href='https://opentelemetry.io/docs/languages/' openInNew>
@@ -675,7 +674,7 @@ function AppDashboard({
               </Link>
               .
             </Typography>
-          </EmptyData>
+          </EmptyState>
         </ListingLayout.Body>
       </ListingLayout>
     );
