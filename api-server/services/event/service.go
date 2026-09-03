@@ -2309,7 +2309,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 				StartedAt:   &eventruleStart,
 				EndedAt:     &eventruleEnd,
 				IncidentAt: resolveIncidentAt(sc, webhookEvent.AggregationKey, webhookEvent.AccountId,
-					webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.StartsAt),
+					webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.SubjectType, webhookEvent.StartsAt),
 				Source:                  webhookEvent.Source,
 				SubjectName:             webhookEvent.SubjectName,
 				SubjectType:             webhookEvent.SubjectType,
@@ -2437,8 +2437,19 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 // the event classes where that differs from when the event was raised. Returns
 // nil whenever the cluster cannot answer, so enrichment falls back to the
 // event's own timestamps. See playbooks.PodTerminationTime.
-func resolveIncidentAt(sc *security.RequestContext, aggregationKey, accountId, subjectName, subjectNamespace string, startsAt *time.Time) *time.Time {
+func resolveIncidentAt(sc *security.RequestContext, aggregationKey, accountId, subjectName, subjectNamespace, subjectType string, startsAt *time.Time) *time.Time {
 	if !playbooks.NeedsIncidentTimeAnchor(aggregationKey) {
+		return nil
+	}
+	// The anchor is read off a Pod's container statuses, so a subject that is not
+	// a pod can only ever miss — and missing is expensive: get_resource ignores
+	// its name filter, so each futile lookup ships back every pod in the cluster.
+	// Measured on dev, events whose subject was a workload name (report-worker,
+	// web-app — no ReplicaSet hash) each pulled 501-543 objects to find nothing.
+	switch strings.ToLower(subjectType) {
+	case "", "pod":
+		// Unspecified is treated as a pod, matching linkK8sCloudResourceId.
+	default:
 		return nil
 	}
 	terminatedAt, ok := playbooks.PodTerminationTime(accountId, subjectName, subjectNamespace, sc.GetLogger())
@@ -2640,7 +2651,7 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		StartedAt:   &eventruleStart,
 		EndedAt:     &eventruleEnd,
 		IncidentAt: resolveIncidentAt(sc, *event.AggregationKey, accountId,
-			*event.SubjectName, subjectNamespace, event.StartsAt),
+			*event.SubjectName, subjectNamespace, common.StrVal(event.SubjectType), event.StartsAt),
 		Source:           *event.Source,
 		SubjectName:      *event.SubjectName,
 		SubjectType:      *event.SubjectType,

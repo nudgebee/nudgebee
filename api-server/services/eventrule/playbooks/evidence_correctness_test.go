@@ -144,6 +144,10 @@ func TestNeedsIncidentTimeAnchorIsNarrowerThanTheLogSet(t *testing.T) {
 	assert.True(t, NeedsIncidentTimeAnchor("pod_oom_killer_enricher"))
 	assert.True(t, NeedsIncidentTimeAnchor("report_crash_loop"))
 
+	// Its subject is the workload, never the pod — 56 events over 30 days on dev,
+	// none of them pod-subject — so the anchor could never resolve for it.
+	assert.False(t, NeedsIncidentTimeAnchor("KubePodCrashLooping"))
+
 	// No container ever started, so there is no termination to read.
 	assert.False(t, NeedsIncidentTimeAnchor("image_pull_backoff_reporter"))
 	// Subject is the Job, not a pod — the pod lookup could only ever miss.

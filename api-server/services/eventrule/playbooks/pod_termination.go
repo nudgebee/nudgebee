@@ -25,7 +25,12 @@ func IsTerminatedContainerAggKey(aggregationKey string) bool {
 // subject is the Job, not a pod, so the lookup could only ever miss.
 func NeedsIncidentTimeAnchor(aggregationKey string) bool {
 	switch aggregationKey {
-	case "pod_oom_killer_enricher", "report_crash_loop", "KubePodCrashLooping":
+	// KubePodCrashLooping is deliberately absent: it is a Prometheus alert whose
+	// subject is the workload, never the pod. Across 30 days on dev its 56 events
+	// were 34 deployment, 5 daemonset and 17 unspecified — not one a pod — so the
+	// anchor could never resolve for it, and every attempt cost a 500-object
+	// get_resource response.
+	case "pod_oom_killer_enricher", "report_crash_loop":
 		return true
 	}
 	return false
