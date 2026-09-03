@@ -5,8 +5,6 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import LabelOutlinedIcon from '@mui/icons-material/LabelOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
-import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
 import {
   EMPTY_TRACE_LABEL_SETTINGS,
@@ -224,11 +222,10 @@ const featureRecommendedContent = (baseTitle) => ({
 
 // Recommended Category and Who Can Change It are in the sheet but weren't part of the reviewed design, so they're omitted here.
 const FEATURE_TABLE_HEADERS = [
-  { name: 'Feature', width: '16%' },
-  { name: 'Description', width: '36%' },
+  { name: 'Feature', width: '44%' },
   { name: 'When to turn it on', width: '27%' },
   { name: 'Why / notes', width: '12%', align: 'center' },
-  { name: 'Toggle', width: '15%', align: 'right' },
+  { name: 'Toggle', width: '17%', align: 'right' },
 ];
 
 // Where a flag surfaces once it's on: `route` for a plain in-app path, or `path`/`reason` when it needs context this modal doesn't have.
@@ -291,26 +288,31 @@ const FeatureNavigationIcon = ({ feature }) => {
   }
   return (
     <DsTooltip title={nav.path ? `${nav.path} — ${nav.reason}` : nav.reason} placement='top'>
-      <Box component='span' aria-label={`${label} has no direct link`} sx={{ display: 'inline-flex', cursor: 'help', opacity: 0.4 }}>
+      <Box component='span' aria-label={`${label} has no direct link`} sx={{ display: 'inline-flex', opacity: 0.4 }}>
         <OpenInNewIcon sx={{ fontSize: 13 }} />
       </Box>
     </DsTooltip>
   );
 };
 
-const FeatureNameCell = ({ feature, isOn, showFlagIds }) => (
-  <Box minWidth={0} display='flex' alignItems='flex-start' gap='4px'>
-    <Box minWidth={0}>
-      <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
-        {feature.display_name || feature.value}
-      </Typography>
-      {/* Raw id, behind the eye toggle above the table; omitted when there's no display name since the title is already the id. */}
-      {showFlagIds && feature.display_name && (
-        <Typography sx={{ fontSize: ds.text.caption, fontFamily: ds.font.mono, color: ds.gray[400], mt: '2px' }}>{feature.value}</Typography>
+const FeatureNameCell = ({ feature, description, isOn }) => (
+  <Box minWidth={0} display='flex' flexDirection='column' gap='4px'>
+    <Box display='flex' alignItems='flex-start' justifyContent='space-between' gap='8px'>
+      <Box minWidth={0} display='flex' alignItems='center' gap='4px'>
+        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium, color: ds.gray[700] }}>
+          {feature.display_name || feature.value}
+        </Typography>
+        {/* Only once the flag is on -- for an off feature there's nothing to navigate to. */}
+        {isOn && <FeatureNavigationIcon feature={feature} />}
+      </Box>
+      {/* Raw id, right-aligned on the same line; omitted when there's no display name since the title is already the id. */}
+      {feature.display_name && (
+        <Typography sx={{ fontSize: ds.text.caption, fontFamily: ds.font.mono, color: ds.gray[400], whiteSpace: 'nowrap', flexShrink: 0 }}>
+          {feature.value}
+        </Typography>
       )}
     </Box>
-    {/* Only once the flag is on -- for an off feature there's nothing to navigate to. */}
-    {isOn && <FeatureNavigationIcon feature={feature} />}
+    {description && <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], lineHeight: 1.5 }}>{description}</Typography>}
   </Box>
 );
 
@@ -318,7 +320,7 @@ const FeatureWhyCell = ({ text }) => {
   if (!text) return null;
   return (
     <DsTooltip title={text} placement='top'>
-      <Box component='span' sx={{ display: 'inline-flex', cursor: 'help', opacity: 0.6 }}>
+      <Box component='span' sx={{ display: 'inline-flex', opacity: 0.6 }}>
         <SafeIcon src={infoIcon} alt='Why it exists' width={14} height={14} />
       </Box>
     </DsTooltip>
@@ -326,28 +328,16 @@ const FeatureWhyCell = ({ text }) => {
 };
 
 const FeatureToggleCell = ({ feature, choice, canEdit, onChange }) => {
-  // No third "Default" state on the switch: with no override it shows the flag's shipped polarity instead of an unselected state.
+  // Plain on/off switch: with no override it shows the flag's shipped polarity instead of an unselected state.
   const effectiveChoice = effectiveFeatureChoice(feature, choice);
-  // Reset link shown only on a real conflict with the shipped polarity; stored value stays lowercase 'on'/'off' -- only the button text is uppercased.
-  const defaultChoice = feature.polarity === 'default_on' ? 'on' : 'off';
-  const showReset = choice !== 'default' && choice !== defaultChoice;
   return (
-    <Box display='flex' flexDirection='column' alignItems='flex-end' gap='4px'>
-      <Switch
-        size='md'
-        checked={effectiveChoice === 'on'}
-        onChange={(_, checked) => onChange(checked ? 'on' : 'off')}
-        disabled={!canEdit}
-        aria-label={feature.display_name || feature.value}
-      />
-      {showReset && (
-        <Box sx={{ '& button': { color: `${ds.gray[500]} !important` } }}>
-          <Button composition='text' tone='link' size='xs' disabled={!canEdit} onClick={() => onChange('default')}>
-            {`Set to default ${defaultChoice.toUpperCase()}`}
-          </Button>
-        </Box>
-      )}
-    </Box>
+    <Switch
+      size='md'
+      checked={effectiveChoice === 'on'}
+      onChange={(_, checked) => onChange(checked ? 'on' : 'off')}
+      disabled={!canEdit}
+      aria-label={feature.display_name || feature.value}
+    />
   );
 };
 
@@ -389,8 +379,6 @@ const TenantSettings = ({ open, title, onClose }) => {
   const [activeTab, setActiveTab] = useState('general');
   const [activeLabelTab, setActiveLabelTab] = useState('log');
   const [activeFeatureGroup, setActiveFeatureGroup] = useState(ALL_FEATURES_GROUP_ID);
-  // Ids are for whoever is debugging, not the admin reading descriptions, so off by default.
-  const [showFlagIds, setShowFlagIds] = useState(false);
   // Each flag is on/off/default, since "default" (no explicit row) and "off" are distinct states for a default-on flag.
   const [featureChoices, setFeatureChoices] = useState({});
   const [initialChoices, setInitialChoices] = useState({});
@@ -673,12 +661,11 @@ const TenantSettings = ({ open, title, onClose }) => {
     return [
       {
         component: (
-          <FeatureNameCell feature={f} isOn={effectiveFeatureChoice(f, featureChoices[f.value] || 'default') === 'on'} showFlagIds={showFlagIds} />
-        ),
-      },
-      {
-        component: (
-          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], lineHeight: 1.5 }}>{content?.description || f.description}</Typography>
+          <FeatureNameCell
+            feature={f}
+            description={content?.description || f.description}
+            isOn={effectiveFeatureChoice(f, featureChoices[f.value] || 'default') === 'on'}
+          />
         ),
       },
       {
@@ -950,19 +937,10 @@ const TenantSettings = ({ open, title, onClose }) => {
 
         {activeTab === 'features' && (
           <Box sx={{ px: ds.space[4] }}>
-            <Box sx={{ mb: ds.space[4], display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: ds.space[3] }}>
+            <Box sx={{ mb: ds.space[4] }}>
               <SectionHeader
                 title='Feature Flags'
                 description='Control which Nubi capabilities are active for your tenant. Toggle a feature on or off, changes apply immediately.'
-              />
-              <Button
-                composition='icon-only'
-                tone='ghost'
-                size='sm'
-                icon={showFlagIds ? <VisibilityOffOutlinedIcon sx={{ fontSize: 16 }} /> : <VisibilityOutlinedIcon sx={{ fontSize: 16 }} />}
-                aria-label={showFlagIds ? 'Hide flag ids' : 'Show flag ids'}
-                tooltip={showFlagIds ? 'Hide flag ids' : 'Show flag ids'}
-                onClick={() => setShowFlagIds((v) => !v)}
               />
             </Box>
             <Tabs
