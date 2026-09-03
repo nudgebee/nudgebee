@@ -81,6 +81,22 @@ const (
 // since the engine reads its label index instead of materialising every series. No metric
 // family name is assumed here; families are always read back from the engine.
 func (s *PrometheusMetricSource) FetchMetricSeries(ctx *security.RequestContext, req FetchMetricSeriesRequest) (MetricSeriesResult, error) {
+	return fetchMetricSeriesCommon(ctx, req, func(selector string, start, end int64, limit int) ([]string, bool, error) {
+		return s.fetchCandidateFamilies(ctx, req.AccountId, selector, start, end, limit)
+	})
+}
+
+// candidateFamilyFetcher runs ONE /api/v1/label/__name__/values lookup for a
+// single candidate selector and reports the metric families it matched, plus
+// whether the engine truncated the list at limit.
+type candidateFamilyFetcher func(selector string, start, end int64, limit int) ([]string, bool, error)
+
+// fetchMetricSeriesCommon holds the discovery orchestration shared by every
+// Prometheus-shaped source: limit clamping, the default lookback, selector
+// construction, the bounded concurrent sweep, and the partial-failure policy.
+// Only the per-candidate lookup differs between the agent-relayed source and the
+// direct one, so it is the single injected dependency.
+func fetchMetricSeriesCommon(ctx *security.RequestContext, req FetchMetricSeriesRequest, fetchFamilies candidateFamilyFetcher) (MetricSeriesResult, error) {
 	limit := req.Limit
 	if limit <= 0 {
 		limit = seriesMatchDefaultLimit
@@ -121,7 +137,7 @@ func (s *PrometheusMetricSource) FetchMetricSeries(ctx *security.RequestContext,
 	for i := range selectors {
 		i := i
 		eg.Go(func() error {
-			fam, trunc, ferr := s.fetchCandidateFamilies(ctx, req.AccountId, selectors[i], start, end, limit)
+			fam, trunc, ferr := fetchFamilies(selectors[i], start, end, limit)
 			families[i], truncated[i], errs[i] = fam, trunc, ferr
 			return nil
 		})

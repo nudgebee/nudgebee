@@ -104,6 +104,12 @@ const CANONICAL_TRACE_FIELD_OPTIONS = [...TRACE_LABEL_FIELDS, ...TRACE_LABEL_ADV
 // something readable. Values not listed here fall back to snakeToTitleCase.
 const ENUM_VALUE_LABELS = {
   vm_agent: 'Proxy Agent',
+  // Prometheus auth_type values that snakeToTitleCase mangles ("Aws Sigv4",
+  // "Azure Ad"). The scheme's other values ('none', 'basic', 'bearer_token',
+  // 'coralogix') title-case correctly and are shared with other integrations,
+  // so they are deliberately left alone.
+  aws_sigv4: 'AWS SigV4 (Amazon Managed Prometheus)',
+  azure_ad: 'Azure AD (Azure Monitor managed Prometheus)',
   cloud_api_token: 'Confluence Cloud — email + API token',
   datacenter_pat: 'Data Center / Server — personal access token',
   datacenter_password: 'Data Center / Server — username + password',
@@ -1196,6 +1202,56 @@ const IntegrationDynamicFormModal = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openModal, connectionVerified, isLoadingSchema, formValues?.url]);
 
+  // Label names available on the connected Prometheus, shown under the
+  // additional-labels field so the operator knows what to put in the JSON.
+  // metrics_list_labels resolves the endpoint from the SAVED integration row, so
+  // this only runs on edit — a not-yet-created integration has nothing to read.
+  const [promLabels, setPromLabels] = useState([]);
+
+  // The endpoint returns EVERY label in the Prometheus — hundreds — which is
+  // unusable as a list and overflows the modal. Surface only the ones that
+  // plausibly identify a cluster (what this field is for) and report the rest
+  // as a count, so the hint stays one or two lines.
+  const promLabelHint = useMemo(() => {
+    if (promLabels.length === 0) {
+      return null;
+    }
+    const candidates = promLabels.filter((l) => /cluster|region|environment|^env$|tenant|datacenter|^dc$|site/i.test(l)).slice(0, 8);
+    if (candidates.length === 0) {
+      return `${promLabels.length} labels available on this endpoint — none look cluster-identifying. Type the label name your setup uses.`;
+    }
+    return `Likely cluster labels: ${candidates.join(', ')} — ${promLabels.length} labels available in total.`;
+  }, [promLabels]);
+
+  useEffect(() => {
+    if (!openModal || isLoadingSchema || integrationName !== 'prometheus' || !editData?.id) return;
+    const accountId = currentAccountIds()[0];
+    if (!accountId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await observability.metricsLabelList(accountId, '');
+        const raw = res?.data?.data?.metrics_list_labels || [];
+        const names = raw
+          .map((l) => (typeof l === 'string' ? l : l?.label))
+          .filter(Boolean)
+          .filter((l) => l !== '__name__');
+        if (!cancelled) {
+          setPromLabels(names);
+        }
+      } catch {
+        // A failed lookup must not block editing: the field still accepts input.
+        if (!cancelled) {
+          setPromLabels([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openModal, isLoadingSchema, integrationName, editData?.id, formValues?.account_id]);
+
   const handleTestConnection = async () => {
     if (!validateForm()) return;
     setIsTesting(true);
@@ -2139,6 +2195,17 @@ const IntegrationDynamicFormModal = ({
                                     size='sm'
                                     error={errorText || undefined}
                                   />
+                                  {key === 'prometheus_additional_labels' && promLabelHint && (
+                                    <Box
+                                      sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2], mt: ds.space[2] }}
+                                      data-testid='prometheus-available-labels'
+                                    >
+                                      <SafeIcon src={infoIcon} alt='info' width={16} height={16} style={{ marginTop: 2, flexShrink: 0 }} />
+                                      <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400], lineHeight: 1.5 }}>
+                                        {promLabelHint}
+                                      </Typography>
+                                    </Box>
+                                  )}
                                 </Box>
                               </Box>
                             );

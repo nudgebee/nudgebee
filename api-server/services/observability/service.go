@@ -491,6 +491,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &DatadogMetricSource{}, nil
 	case provider == "prometheus" && integrationSource == "agent":
 		return &PrometheusMetricSource{}, nil
+	case provider == "prometheus" && integrationSource == "user":
+		return &PrometheusSaasMetricSource{}, nil
 	case provider == "chronosphere" && integrationSource == "user":
 		return &ChronosphereMetricSaasSource{}, nil
 	case provider == "chronosphere" && integrationSource == "agent":
