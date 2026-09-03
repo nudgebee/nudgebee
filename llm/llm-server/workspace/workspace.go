@@ -237,22 +237,16 @@ func (w *workspaceManager) WaitForReady(ctx *security.RequestContext, accountId 
 	}
 
 	if dockerMode() {
-		runtime, err := newDockerRuntime()
-		if err != nil {
-			return err
-		}
 		deadline := time.Now().Add(300 * time.Second)
 		if ctxDeadline, ok := ctx.GetContext().Deadline(); ok {
 			deadline = ctxDeadline
 		}
 		for time.Now().Before(deadline) {
-			if _, _, endpointErr := runtime.endpoint(ctx.GetContext(), accountId); endpointErr == nil {
-				resp, healthErr := dockerAPIRequest(ctx.GetContext(), w.httpClient, accountId, http.MethodGet, "/health", nil, nil)
-				if healthErr == nil {
-					_ = resp.Body.Close()
-					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-						return nil
-					}
+			resp, healthErr := dockerAPIRequest(ctx.GetContext(), w.httpClient, accountId, http.MethodGet, "/health", nil, nil)
+			if healthErr == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					return nil
 				}
 			}
 			select {

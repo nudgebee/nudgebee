@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -550,11 +551,17 @@ func (d *dockerRuntime) delete(ctx context.Context, accountID string) error {
 func cleanupDockerWorkspaces(ctx context.Context) {
 	runtime, err := newDockerRuntime()
 	if err != nil {
+		slog.Warn("workspace: initialize Docker runtime for cleanup", "error", err)
 		return
 	}
 	filters, _ := json.Marshal(map[string][]string{"label": {dockerManagedLabel + "=true"}})
 	data, status, err := runtime.request(ctx, http.MethodGet, "/containers/json?all=true&filters="+url.QueryEscape(string(filters)), nil)
-	if err != nil || status < 200 || status >= 300 {
+	if err != nil {
+		slog.Warn("workspace: list Docker containers for cleanup", "error", err)
+		return
+	}
+	if status < 200 || status >= 300 {
+		slog.Warn("workspace: list Docker containers for cleanup", "status", status)
 		return
 	}
 	var containers []struct {
@@ -562,6 +569,7 @@ func cleanupDockerWorkspaces(ctx context.Context) {
 		Labels map[string]string `json:"Labels"`
 	}
 	if err := json.Unmarshal(data, &containers); err != nil {
+		slog.Warn("workspace: decode Docker containers for cleanup", "error", err)
 		return
 	}
 	for _, container := range containers {
@@ -571,6 +579,9 @@ func cleanupDockerWorkspaces(ctx context.Context) {
 		if container.Labels[dockerImageLabel] == config.Config.LlmServerCodeAgentImage {
 			continue
 		}
-		_, _, _ = runtime.request(ctx, http.MethodDelete, "/containers/"+url.PathEscape(container.ID)+"?force=true", nil)
+		_, status, err := runtime.request(ctx, http.MethodDelete, "/containers/"+url.PathEscape(container.ID)+"?force=true", nil)
+		if err != nil || (status != http.StatusNoContent && status != http.StatusNotFound) {
+			slog.Warn("workspace: delete stale Docker container", "container_id", container.ID, "status", status, "error", err)
+		}
 	}
 }
