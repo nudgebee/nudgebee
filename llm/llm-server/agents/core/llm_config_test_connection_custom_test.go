@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
+	"nudgebee/llm/llms/openai"
 )
 
 // Regression: buildLLMFromConfig's provider switch is separate from the runtime
