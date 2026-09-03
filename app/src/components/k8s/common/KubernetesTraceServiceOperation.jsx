@@ -8,40 +8,43 @@ import { Card } from '@ui/Card';
 import WidgetCard from '@ui/WidgetCard';
 import { Box, Typography } from '@mui/material';
 
+const randomColors = [
+  'var(--ds-red-300)',
+  'var(--ds-blue-400)',
+  'var(--ds-yellow-400)',
+  'var(--ds-green-400)',
+  'var(--ds-purple-400)',
+  'var(--ds-amber-400)',
+  'var(--ds-gray-400)',
+  'var(--ds-teal-400)',
+  'var(--ds-pink-500)',
+  'var(--ds-green-300)',
+  'var(--ds-teal-500)',
+  'var(--ds-amber-700)',
+  'var(--ds-pink-400)',
+  'var(--ds-brand-600)',
+  'var(--ds-yellow-500)',
+  'var(--ds-yellow-700)',
+  'var(--ds-gray-600)',
+];
+
 export const KubernetesTraceServiceOperation = ({ accountId, query, traceData, esIndex }) => {
-  const [data, setData] = useState([]);
+  const [fetchedData, setFetchedData] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const randomColors = [
-    'var(--ds-red-300)',
-    'var(--ds-blue-400)',
-    'var(--ds-yellow-400)',
-    'var(--ds-green-400)',
-    'var(--ds-purple-400)',
-    'var(--ds-amber-400)',
-    'var(--ds-gray-400)',
-    'var(--ds-teal-400)',
-    'var(--ds-pink-500)',
-    'var(--ds-green-300)',
-    'var(--ds-teal-500)',
-    'var(--ds-amber-700)',
-    'var(--ds-pink-400)',
-    'var(--ds-brand-600)',
-    'var(--ds-yellow-500)',
-    'var(--ds-yellow-700)',
-    'var(--ds-gray-600)',
-  ];
+  // Spans supplied by the caller win; only fall back to fetching when there are none.
+  const hasTraceData = Array.isArray(traceData) && traceData.length > 0;
+  const data = hasTraceData ? traceData : fetchedData;
 
   useEffect(() => {
-    if (traceData && traceData.length > 0) {
-      setData(traceData);
+    if (hasTraceData) {
       return;
     }
     if (!query.trace_id || !accountId) {
       return;
     }
     let cancelled = false;
-    setData([]);
+    setFetchedData([]);
     setLoading(true);
     apiTrace
       .traceServiceAndOperationV2(accountId, query.trace_id, esIndex)
@@ -51,7 +54,7 @@ export const KubernetesTraceServiceOperation = ({ accountId, query, traceData, e
         }
         if (res) {
           const traceDataRows = res?.traces_get_heatmap ?? [];
-          setData(traceDataRows);
+          setFetchedData(traceDataRows);
         }
       })
       .finally(() => {
@@ -63,7 +66,7 @@ export const KubernetesTraceServiceOperation = ({ accountId, query, traceData, e
     return () => {
       cancelled = true;
     };
-  }, [JSON.stringify(query), accountId, JSON.stringify(traceData), esIndex]);
+  }, [JSON.stringify(query), accountId, hasTraceData, esIndex]);
 
   const getHttpStatus = (item) => {
     let httpStatusText = '';

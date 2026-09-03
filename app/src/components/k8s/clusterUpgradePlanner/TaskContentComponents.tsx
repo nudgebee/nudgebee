@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography, Alert } from '@mui/material';
 import { Skeleton } from '@ui/Skeleton';
 import { Chip as DsChip, type ChipTone } from '@ui/Chip';
@@ -382,6 +382,26 @@ interface Workload {
   available: number;
 }
 
+const getWorkloadStatus = (available: number, replicas: number) => {
+  if (available === replicas && replicas > 0) {
+    return 'healthy';
+  }
+  if (available === 0) {
+    return 'failed';
+  }
+  if (available < replicas) {
+    return 'degraded';
+  }
+  return 'unknown';
+};
+
+const WORKLOAD_TABLE_HEADERS = [
+  { name: 'Workload Name', width: '30%' },
+  { name: 'Namespace', width: '25%' },
+  { name: 'Status', width: '15%' },
+  { name: 'Replicas', width: '30%' },
+];
+
 export const ClusterHealthWorkloadsContent: React.FC<{ accountId?: string }> = ({ accountId }) => {
   const [workloads, setWorkloads] = useState<Workload[]>([]);
   const [loading, setLoading] = useState(true);
@@ -416,6 +436,52 @@ export const ClusterHealthWorkloadsContent: React.FC<{ accountId?: string }> = (
     };
   }, [accountId]);
 
+  const tableData = useMemo(
+    () =>
+      workloads.map((workload) => {
+        const status = getWorkloadStatus(workload.available, workload.replicas);
+
+        return [
+          {
+            text: workload.name,
+            component: (
+              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>
+                {workload.name}
+              </Typography>
+            ),
+          },
+          {
+            text: workload.namespace,
+            component: <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{workload.namespace}</Typography>,
+          },
+          {
+            text: status,
+            component: <Label text={status} />,
+          },
+          {
+            text: `${workload.available}/${workload.replicas}`,
+            component: (
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontFamily: 'monospace' }}>
+                {workload.available}/{workload.replicas}
+              </Typography>
+            ),
+          },
+        ];
+      }),
+    [workloads]
+  );
+
+  // Count by status
+  const statusCounts = useMemo(
+    () =>
+      workloads.reduce((acc, workload) => {
+        const status = getWorkloadStatus(workload.available, workload.replicas);
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>),
+    [workloads]
+  );
+
   if (loading) {
     return (
       <Box sx={{ p: ds.space[4] }}>
@@ -432,64 +498,6 @@ export const ClusterHealthWorkloadsContent: React.FC<{ accountId?: string }> = (
       </Box>
     );
   }
-
-  const getWorkloadStatus = (available: number, replicas: number) => {
-    if (available === replicas && replicas > 0) {
-      return 'healthy';
-    }
-    if (available === 0) {
-      return 'failed';
-    }
-    if (available < replicas) {
-      return 'degraded';
-    }
-    return 'unknown';
-  };
-
-  const tableHeaders = [
-    { name: 'Workload Name', width: '30%' },
-    { name: 'Namespace', width: '25%' },
-    { name: 'Status', width: '15%' },
-    { name: 'Replicas', width: '30%' },
-  ];
-
-  const tableData = workloads.map((workload) => {
-    const status = getWorkloadStatus(workload.available, workload.replicas);
-
-    return [
-      {
-        text: workload.name,
-        component: (
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>
-            {workload.name}
-          </Typography>
-        ),
-      },
-      {
-        text: workload.namespace,
-        component: <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{workload.namespace}</Typography>,
-      },
-      {
-        text: status,
-        component: <Label text={status} />,
-      },
-      {
-        text: `${workload.available}/${workload.replicas}`,
-        component: (
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontFamily: 'monospace' }}>
-            {workload.available}/{workload.replicas}
-          </Typography>
-        ),
-      },
-    ];
-  });
-
-  // Count by status
-  const statusCounts = workloads.reduce((acc, workload) => {
-    const status = getWorkloadStatus(workload.available, workload.replicas);
-    acc[status] = (acc[status] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
 
   return (
     <Box>
@@ -509,7 +517,7 @@ export const ClusterHealthWorkloadsContent: React.FC<{ accountId?: string }> = (
           No workloads found in the cluster.
         </Typography>
       ) : (
-        <CustomTable2 tableData={tableData as any} headers={tableHeaders as any} loading={loading} rowsPerPage={10} />
+        <CustomTable2 tableData={tableData as any} headers={WORKLOAD_TABLE_HEADERS as any} loading={loading} rowsPerPage={10} />
       )}
     </Box>
   );
@@ -666,6 +674,20 @@ interface Node {
   };
 }
 
+const getNodeHealthStatus = (conditions: NodeCondition[] | undefined) => {
+  const hasIssues = !!conditions?.some(
+    (c) => (c.type === 'MemoryPressure' || c.type === 'DiskPressure' || c.type === 'PIDPressure') && c.status === 'True'
+  );
+  return hasIssues ? 'Issues' : 'Healthy';
+};
+
+const NODE_TABLE_HEADERS = [
+  { name: 'Node Name', width: '25%' },
+  { name: 'Version', width: '15%' },
+  { name: 'Status', width: '10%' },
+  { name: 'Conditions', width: '50%' },
+];
+
 export const ClusterHealthNodesContent: React.FC<{ accountId?: string }> = ({ accountId }) => {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [loading, setLoading] = useState(true);
@@ -700,6 +722,52 @@ export const ClusterHealthNodesContent: React.FC<{ accountId?: string }> = ({ ac
     };
   }, [accountId]);
 
+  const tableData = useMemo(
+    () =>
+      nodes.map((node) => {
+        const healthStatus = getNodeHealthStatus(node.conditions);
+        const conditionsText = node.conditions?.map((c) => `${c.type}: ${c.status}`).join(', ') ?? '';
+
+        return [
+          {
+            text: node.name,
+            component: (
+              <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>
+                {node.name}
+              </Typography>
+            ),
+            drilldownQuery: node.nodeGroup ? { nodeName: node.name, nodeGroup: node.nodeGroup } : undefined,
+          },
+          {
+            text: node.version,
+            component: (
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontFamily: 'monospace' }}>{node.version}</Typography>
+            ),
+          },
+          {
+            text: healthStatus,
+            component: <Label text={healthStatus} />,
+          },
+          {
+            text: conditionsText,
+            component: <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>{conditionsText}</Typography>,
+          },
+        ];
+      }),
+    [nodes]
+  );
+
+  // Count healthy vs unhealthy nodes
+  const healthyCounts = useMemo(
+    () =>
+      nodes.reduce((acc, node) => {
+        const status = getNodeHealthStatus(node.conditions);
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>),
+    [nodes]
+  );
+
   if (loading) {
     return (
       <Box sx={{ p: ds.space[4] }}>
@@ -716,61 +784,6 @@ export const ClusterHealthNodesContent: React.FC<{ accountId?: string }> = ({ ac
       </Box>
     );
   }
-
-  const getNodeHealthStatus = (conditions: NodeCondition[]) => {
-    const hasIssues = conditions.some(
-      (c) => (c.type === 'MemoryPressure' || c.type === 'DiskPressure' || c.type === 'PIDPressure') && c.status === 'True'
-    );
-    return hasIssues ? 'Issues' : 'Healthy';
-  };
-
-  const tableHeaders = [
-    { name: 'Node Name', width: '25%' },
-    { name: 'Version', width: '15%' },
-    { name: 'Status', width: '10%' },
-    { name: 'Conditions', width: '50%' },
-  ];
-
-  const tableData = nodes.map((node) => {
-    const healthStatus = getNodeHealthStatus(node.conditions);
-
-    return [
-      {
-        text: node.name,
-        component: (
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>
-            {node.name}
-          </Typography>
-        ),
-        drilldownQuery: node.nodeGroup ? { nodeName: node.name, nodeGroup: node.nodeGroup } : undefined,
-      },
-      {
-        text: node.version,
-        component: (
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', fontFamily: 'monospace' }}>{node.version}</Typography>
-        ),
-      },
-      {
-        text: healthStatus,
-        component: <Label text={healthStatus} />,
-      },
-      {
-        text: node.conditions.map((c) => `${c.type}: ${c.status}`).join(', '),
-        component: (
-          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
-            {node.conditions.map((c) => `${c.type}: ${c.status}`).join(', ')}
-          </Typography>
-        ),
-      },
-    ];
-  });
-
-  // Count healthy vs unhealthy nodes
-  const healthyCounts = nodes.reduce((acc, node) => {
-    const status = getNodeHealthStatus(node.conditions);
-    acc[status] = (acc[status] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
 
   return (
     <Box>
@@ -790,7 +803,7 @@ export const ClusterHealthNodesContent: React.FC<{ accountId?: string }> = ({ ac
           No nodes found in the cluster.
         </Typography>
       ) : (
-        <CustomTable2 tableData={tableData as any} headers={tableHeaders as any} loading={loading} />
+        <CustomTable2 tableData={tableData as any} headers={NODE_TABLE_HEADERS as any} loading={loading} />
       )}
     </Box>
   );
