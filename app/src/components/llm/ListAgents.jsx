@@ -1,6 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import OwnerTypeBadge from './common/OwnerTypeBadge';
 import apiKnowledgeBase, { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -554,24 +555,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                   <Box sx={{ fontWeight: ds.weight.medium }}>{agent.aliases?.[0] ?? agent.name}</Box>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
-                  <Box
-                    sx={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      backgroundColor: agent.type === 'system' ? ds.blue[100] : ds.gray[100],
-                      color: agent.type === 'system' ? ds.blue[700] : ds.gray[600],
-                      fontSize: ds.text.caption,
-                      fontWeight: ds.weight.semibold,
-                      padding: '2px 6px',
-                      borderRadius: ds.radius.pill,
-                      border: `1px solid ${agent.type === 'system' ? ds.blue[200] : ds.gray[200]}`,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.5px',
-                    }}
-                  >
-                    {agent.type === 'system' ? `${baseTitle} System Agent` : 'User Created Agent'}
-                  </Box>
+                  <OwnerTypeBadge type={agent.type} systemSuffix='System Agent' userLabel='User Created Agent' />
                   {agent.overridden && agent.type === 'custom' && (
                     <Box
                       sx={{

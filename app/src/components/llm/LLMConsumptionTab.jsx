@@ -1132,7 +1132,7 @@ const LLMConsumptionTab = ({ accountId }) => {
   // Budgets (tenant scope) + Budgets for All Accounts (everything else)
   // sections that operators can still act on.
   const isTenantWide = !accountId;
-  const { assistantName } = useTenantBranding();
+  const { assistantName, baseTitle } = useTenantBranding();
   const [loading, setLoading] = useState(true);
   const [budgetData, setBudgetData] = useState(null);
   const [error, setError] = useState(null);
@@ -1448,7 +1448,7 @@ const LLMConsumptionTab = ({ accountId }) => {
           this banner. */}
       {kpi?.tenantExhausted && (
         <Alert severity='warning' sx={{ mb: ds.space[3], fontSize: 'var(--ds-text-small)' }}>
-          Tenant budget exhausted. Please contact Nudgebee support to enable {assistantName} and LLM-based Event Analysis.
+          {`Tenant budget exhausted. Please contact ${baseTitle} support to enable ${assistantName} and LLM-based Event Analysis.`}
         </Alert>
       )}
 

@@ -887,13 +887,20 @@ export const NB_STATUS_OPTIONS = [
   // ACKNOWLEDGED and INVESTIGATING removed from UI but kept in backend for backwards compatibility
 ];
 
+/** Info tooltip on the Triage Score column. Deliberately brand-neutral — it
+ *  describes the score, and naming the product added nothing but a white-label
+ *  leak on partner tenants. Shared so the four tables that show the column
+ *  cannot drift apart. */
+export const TRIAGE_SCORE_INFO =
+  'Triage Score is a context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.';
+
 export const TRIAGE_STATUS_TOOLTIPS: Record<string, string> = {
   OPEN: 'No triage done yet. Awaiting review.',
   ACTION_REQUIRED: 'Triaged. Waiting on action from your team.',
   SNOOZED: 'Events paused temporarily. Will resume after the set duration.',
   SUPPRESSED: 'Events from this issue will not trigger alerts.',
-  DROPPED: 'Issue dismissed and excluded from NudgeBee.',
-  DUPLICATE: 'Automatically identified as a duplicate by NudgeBee.',
+  DROPPED: 'Issue dismissed and excluded from triage.',
+  DUPLICATE: 'Automatically identified as a duplicate.',
   RESOLVED: 'Issue has been resolved.',
 };
 

@@ -4,6 +4,7 @@ import { Chip } from '@ui/Chip';
 import { Stepper } from '@ui/Stepper';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import { ContentCopy, CheckCircleOutline, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import apiAccount from '@api1/account';
@@ -42,12 +43,12 @@ Grant the service account the **Viewer** role (or a custom role with read permis
 [Open GCP Service Accounts Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
 `;
 
-const WEBHOOK_MANUAL_INSTRUCTIONS = `### Manual Webhook Setup
+const webhookManualInstructions = () => `### Manual Webhook Setup
 1. Copy the **Webhook URL** below
 2. Go to **GCP Console** → **Monitoring** → **Notification channels**
 3. Click **Add new** → **Webhook** → paste the URL
 4. Attach the notification channel to your alert policies
-5. Alerts will be delivered to Nudgebee in real-time`;
+5. Alerts will be delivered to ${getBrandTitle()} in real-time`;
 
 const STEPS = ['Service Account', 'Projects', 'Billing'];
 
@@ -927,7 +928,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                   Manual Setup
                 </Typography>
               )}
-              <MarkDowns data={WEBHOOK_MANUAL_INSTRUCTIONS} sx={{ width: 'auto' }} />
+              <MarkDowns data={webhookManualInstructions()} sx={{ width: 'auto' }} />
 
               <Grid container mt={ds.space[2]} mb={ds.space[4]} spacing={ds.space[4]}>
                 <Grid item xs={12}>

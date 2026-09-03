@@ -1,4 +1,5 @@
 import apiAccount from '@api1/account';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiIntegrations from '@api1/integrations';
 import { withAccountGuard } from '@shared/AccountGuard';
 import k8sApi from '@api1/kubernetes';
@@ -749,8 +750,8 @@ const ListIntegrations = ({ integrationName }) => {
               </ol>
             </Typography>
             <Typography variant='body2' sx={{ color: 'text.secondary' }}>
-              Enter the <strong>Data Center Region</strong> and <strong>API Access Token</strong> in the form above to connect Nudgebee to your
-              SolarWinds account.
+              Enter the <strong>Data Center Region</strong> and <strong>API Access Token</strong> in the form above to connect{' '}
+              {`${getBrandTitle()} to your SolarWinds account.`}
             </Typography>
           </Stack>
         </Modal>
@@ -797,8 +798,8 @@ const ListIntegrations = ({ integrationName }) => {
               </ol>
             </Typography>
             <Typography variant='body2' sx={{ color: 'text.secondary' }}>
-              Enter the <strong>Realm</strong> and <strong>Access Token</strong> in the form above to connect Nudgebee to your Splunk Observability
-              Cloud account.
+              Enter the <strong>Realm</strong> and <strong>Access Token</strong> in the form above to connect{' '}
+              {`${getBrandTitle()} to your Splunk Observability Cloud account.`}
             </Typography>
           </Stack>
         </Modal>

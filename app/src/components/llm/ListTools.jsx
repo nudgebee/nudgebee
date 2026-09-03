@@ -10,9 +10,9 @@ import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import Text from '@shared/format/Text';
 import CreateTool from './CreateTool';
+import OwnerTypeBadge from './common/OwnerTypeBadge';
 import { Modal } from '@ui/Modal';
 import { hasWriteAccess } from '@lib/auth';
-import { useTenantBranding } from '@hooks/useTenantBranding';
 import { PlusIcon, EditIcon, ErrorIcon, DeleteIconRed } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { snakeToTitleCase } from 'src/utils/common';
@@ -38,7 +38,6 @@ const ListTools = ({ accountId, stickyTable = false }) => {
   // read. The UI replaces NB-Tool-Type with an Account column, drops the
   // per-account is_configured warning, and hides Create / Edit.
   const isTenantWide = !accountId;
-  const { baseTitle } = useTenantBranding();
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
@@ -156,25 +155,7 @@ const ListTools = ({ accountId, stickyTable = false }) => {
                         </Tooltip>
                       )}
                     </Box>
-                    <Box
-                      sx={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        backgroundColor: tool.type === 'system' ? ds.blue[100] : ds.gray[100],
-                        color: tool.type === 'system' ? ds.blue[700] : ds.gray[600],
-                        fontSize: ds.text.caption,
-                        fontWeight: ds.weight.semibold,
-                        padding: '2px 6px',
-                        borderRadius: ds.radius.pill,
-                        border: `1px solid ${tool.type === 'system' ? ds.blue[200] : ds.gray[200]}`,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px',
-                        width: 'fit-content',
-                      }}
-                    >
-                      {tool.type === 'system' ? `${baseTitle} System` : 'User Created'}
-                    </Box>
+                    <OwnerTypeBadge type={tool.type} systemSuffix='System' userLabel='User Created' />
                   </Box>
                 ),
                 rawData: { name: tool.name, type: tool.type, status: tool.status },

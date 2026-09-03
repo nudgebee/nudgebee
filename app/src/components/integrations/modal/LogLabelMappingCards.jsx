@@ -21,6 +21,7 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { Button } from '@ui/Button';
 import FilterDropdown from '@ui/FilterDropdown';
 import { ds } from '@utils/colors';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import EffectiveLabelMappingPanel from './EffectiveLabelMappingPanel';
 import { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 
@@ -140,8 +141,9 @@ export default function LogLabelMappingCards({
         Log Label Mapping (Optional)
       </Typography>
       <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', mb: ds.space[4], pl: ds.space[1] }}>
-        Tell Nudgebee which field in this backend holds each concept (e.g. <em>pod → kubernetes.pod_name.keyword</em>). What you set here wins over
-        the account and tenant mappings. Leave a concept out and it falls through to those.
+        {`Tell ${getBrandTitle()} which field in this backend holds each concept (e.g. `}
+        <em>pod → kubernetes.pod_name.keyword</em>
+        {`). What you set here wins over the account and tenant mappings. Leave a concept out and it falls through to those.`}
       </Typography>
 
       {/*

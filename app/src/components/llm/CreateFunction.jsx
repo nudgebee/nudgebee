@@ -2,6 +2,7 @@ import { Box, Typography } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import React, { useState, useEffect, useMemo } from 'react';
 import PropTypes from 'prop-types';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
@@ -441,7 +442,7 @@ const CreateFunction = ({
                   <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
                     @AgentName
                   </Box>{' '}
-                  to reference NudgeBee Agents in your prompt.
+                  {`to reference ${getBrandTitle()} Agents in your prompt.`}
                 </Typography>
                 <Box sx={{ display: 'flex', gap: ds.space[4], mt: ds.space[2] }}>
                   <Button tone='secondary' size='xs' onClick={() => setShowAgentList(true)}>

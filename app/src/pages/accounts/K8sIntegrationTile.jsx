@@ -38,7 +38,7 @@ import { Checkbox } from '@ui/Checkbox';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
 import CopyButton from '@shared/buttons/CopyButton';
-import AccountEnvToggle, { ACCOUNT_ENV_TOOLTIP, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import AccountEnvToggle, { accountEnvTooltip, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import AccountEnvText from '@shared/format/AccountEnvText';
 
 // Agents connect asynchronously minutes after an account is created, so the
@@ -664,7 +664,7 @@ const K8sIntegrationTile = () => {
           <Box sx={{ mt: ds.space[4] }}>
             <Box sx={{ display: 'flex', alignItems: 'center' }}>
               <Heading value='Environment' borderWidth='md' />
-              <Tooltip title={ACCOUNT_ENV_TOOLTIP} placement='right'>
+              <Tooltip title={accountEnvTooltip()} placement='right'>
                 <IconButton id='k8s-account-env-info-btn' size='small' sx={{ p: 0.5 }}>
                   <InfoOutlinedIcon fontSize='small' />
                 </IconButton>

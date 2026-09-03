@@ -61,7 +61,7 @@ import { useEventCloudFilter } from '@hooks/useCloudFilters';
 // Assets
 import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
 import { dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
-import { getTriageStatusTooltip } from '@api1/triage';
+import { TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import WorkflowIcon from '@assets/WorkflowIcon';
@@ -127,7 +127,7 @@ const DEFAULT_TABLE_COLUMNS = [
     width: '10%',
     align: 'left',
     defaultVisible: true,
-    info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+    info: TRIAGE_SCORE_INFO,
   },
   {
     name: 'Alert Status',
@@ -467,7 +467,7 @@ const KubernetesEventsTable = ({
         name: 'Triage Score',
         width: '10%',
         align: 'left',
-        info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+        info: TRIAGE_SCORE_INFO,
       },
       {
         name: 'Alert Status',

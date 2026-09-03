@@ -29,6 +29,7 @@ import DsTooltip from '@ui/Tooltip';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { infoIcon } from '@assets';
 import { ds } from '@utils/colors';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import {
   deleteTenantAttributes,
   getFeatures,
@@ -108,7 +109,9 @@ const SectionHeader = ({ title, description }) => (
 );
 
 // Hand-maintained: the DB catalog (public.feature) has no when/why columns yet, so a flag missing here just falls back to its own description.
-const FEATURE_RECOMMENDED_CONTENT = {
+// A function taking the brand, not a constant: two entries name the product, which
+// is tenant-branded and only resolved once /api/public/app_config has landed.
+const featureRecommendedContent = (baseTitle) => ({
   ANOMALY_DETECTION: {
     description:
       'Watches CPU, memory, latency, replica counts, error rates and cloud spend, and raises an event when a metric leaves its learned baseline.',
@@ -150,7 +153,7 @@ const FEATURE_RECOMMENDED_CONTENT = {
   EVENT_AUTO_RAISE_PR_ENABLED: {
     description: 'Opens a draft pull request with a proposed fix when log analysis localises a code-level cause. Nothing merges automatically.',
     whenToTurnOn: 'Repository mapping is in place and your team will triage bot-authored PRs.',
-    why: 'The only flag that causes Nudgebee to write outside its own system, so it stays opt-in and requires a mapped repository.',
+    why: `The only flag that causes ${baseTitle} to write outside its own system, so it stays opt-in and requires a mapped repository.`,
   },
   MEMORY_MODULE: {
     description:
@@ -182,7 +185,7 @@ const FEATURE_RECOMMENDED_CONTENT = {
   AI_COST_REPORT: {
     description: 'A daily and month-to-date digest of your AI and LLM spend, delivered to Slack and shown on the Accounts tab.',
     whenToTurnOn: 'Someone owns the AI budget and wants the number without opening the dashboard.',
-    why: 'Model usage is the one Nudgebee cost that moves with how much you use it. The digest makes that visible daily rather than at invoice time.',
+    why: `Model usage is the one ${baseTitle} cost that moves with how much you use it. The digest makes that visible daily rather than at invoice time.`,
   },
   LLM_ANALYSER: {
     description: 'Adds the LLM Analyser tab to Optimise, breaking model cost and usage down by model, feature and account.',
@@ -217,7 +220,7 @@ const FEATURE_RECOMMENDED_CONTENT = {
     whenToTurnOn: 'Not a toggle. It changes with the plan.',
     why: 'Same entitlement mechanism as Troubleshoot, tracked on the honour system rather than metered.',
   },
-};
+});
 
 // Recommended Category and Who Can Change It are in the sheet but weren't part of the reviewed design, so they're omitted here.
 const FEATURE_TABLE_HEADERS = [
@@ -371,6 +374,7 @@ const effectiveFeatureChoice = (feature, choice) => (choice === 'default' ? (fea
 const ALL_FEATURES_GROUP_ID = 'all';
 
 const TenantSettings = ({ open, title, onClose }) => {
+  const { title: baseTitle } = useBrandingConfig();
   const { data: session, update } = useSession();
   const VALID_ROLES = ['tenant_admin', 'tenant_admin_readonly'];
 
@@ -665,7 +669,7 @@ const TenantSettings = ({ open, title, onClose }) => {
   };
 
   const buildFeatureRow = (f) => {
-    const content = FEATURE_RECOMMENDED_CONTENT[f.value];
+    const content = featureRecommendedContent(baseTitle)[f.value];
     return [
       {
         component: (

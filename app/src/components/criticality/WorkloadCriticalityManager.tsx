@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box } from '@mui/material';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import Text from '@shared/format/Text';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import Chip from '@ui/Chip';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
@@ -229,7 +230,7 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
           dismissible
           onDismiss={() => setShowInfo(false)}
           title='Why set service criticality?'
-          message='Criticality tells Nudgebee how much each workload matters, so incident triage surfaces and prioritizes failures on your important services first — and downranks the noise from demo, test, and internal tooling. Nudgebee infers a baseline automatically (topology + AI); review and correct it here so scoring reflects what is actually business-critical in your environment. Your edits are kept and never overwritten by the automatic refresh.'
+          message={`Criticality tells ${getBrandTitle()} how much each workload matters, so incident triage surfaces and prioritizes failures on your important services first — and downranks the noise from demo, test, and internal tooling. ${getBrandTitle()} infers a baseline automatically (topology + AI); review and correct it here so scoring reflects what is actually business-critical in your environment. Your edits are kept and never overwritten by the automatic refresh.`}
         />
       )}
       <ListingLayout id='workload-criticality-list-box'>

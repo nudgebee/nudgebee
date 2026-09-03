@@ -4,6 +4,7 @@ import { Stepper } from '@ui/Stepper';
 import { ContentCopy, Check, HelpOutline, ExpandMore, ExpandLess, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
 import { Modal } from '@ui/Modal';
@@ -22,17 +23,17 @@ Your GCP service account needs the **Monitoring Editor** role (\`roles/monitorin
 ### How to grant the permission
 
 1. Open the [IAM page](https://console.cloud.google.com/iam-admin/iam?project=${projectId}) for project **${projectId}**
-2. Find the Nudgebee service account email
+2. Find the ${getBrandTitle()} service account email
 3. Click the pencil icon to edit permissions
 4. Click **Add Another Role** and select **Monitoring Editor**
 5. Click **Save**
 `;
 
-const WEBHOOK_INSTRUCTIONS = `### Complete the setup in GCP Console
+const webhookInstructions = () => `### Complete the setup in GCP Console
 
 1. Click **Open GCP Console** below — it opens the webhook notification channel creation page
 2. Paste the **Webhook URL** above into the **Endpoint URL** field
-3. Give the channel a display name (e.g., **Nudgebee Alerts**)
+3. Give the channel a display name (e.g., **${getBrandTitle()} Alerts**)
 4. Click **Save**
 5. Then attach this notification channel to your alert policies
 `;
@@ -273,8 +274,7 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
             {step === 0 && (
               <>
                 <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.brand[500], mb: ds.space[4] }}>
-                  Forward GCP Cloud Monitoring alerts to Nudgebee in real-time via a webhook notification channel. This lets you see alerts alongside
-                  your cloud resources without delay.
+                  {`Forward GCP Cloud Monitoring alerts to ${getBrandTitle()} in real-time via a webhook notification channel. This lets you see alerts alongside your cloud resources without delay.`}
                 </Typography>
 
                 <Box sx={{ mb: ds.space[4] }}>
@@ -456,7 +456,7 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                       </Grid>
                     </Grid>
 
-                    <MarkDowns data={WEBHOOK_INSTRUCTIONS} sx={{ width: 'auto' }} />
+                    <MarkDowns data={webhookInstructions()} sx={{ width: 'auto' }} />
                   </>
                 )}
 

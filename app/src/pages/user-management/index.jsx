@@ -15,6 +15,7 @@ import { userManagementFilters } from '@lib/authHooks';
 import { hasAdminSurfaceAccess, missingPermissionMessage } from '@lib/auth';
 import Loader from '@shared/Loader';
 import { ds } from '@utils/colors';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -26,7 +27,9 @@ import { ds } from '@utils/colors';
 // `description` is the one-line "what is this tab for" caption rendered under
 // the tab strip. Extension-registered filters carry their own (see
 // UserManagementFilter in @lib/authHooks).
-const baseFilters = [
+// A function taking the brand, not a constant: one caption names the product, which
+// is tenant-branded and only resolved once /api/public/app_config has landed.
+const baseFilters = (baseTitle) => [
   {
     name: 'Users',
     fragment: 'users',
@@ -75,8 +78,7 @@ const baseFilters = [
     icon: IntegrationsIcon,
     Body: Integrations,
     module: 'integrations',
-    description:
-      'Connect Nudgebee to your clouds, observability platforms, ticketing, repositories and messaging tools — and see what is already connected.',
+    description: `Connect ${baseTitle} to your clouds, observability platforms, ticketing, repositories and messaging tools — and see what is already connected.`,
   },
   {
     name: 'Ownership',
@@ -90,6 +92,7 @@ const baseFilters = [
 ];
 
 export default function UserManagement() {
+  const { title: baseTitle } = useBrandingConfig();
   const router = useRouter();
   const sessionData = useSession({ required: true });
   const session = sessionData?.data;
@@ -101,7 +104,7 @@ export default function UserManagement() {
     const isAdmin = roles.includes('tenant_admin') || roles.includes('tenant_admin_readonly') || !!session?.isSuperAdmin;
     // Dynamic-RBAC grants ("<module>:<class>") the signed-in user holds.
     const perms = session?.permissions ?? [];
-    const all = [...baseFilters, ...userManagementFilters(session)].filter((f) => !f.adminOnly || isAdmin);
+    const all = [...baseFilters(baseTitle), ...userManagementFilters(session)].filter((f) => !f.adminOnly || isAdmin);
     return all.map((f, i) => {
       // Tenant admins keep full access. A custom-role user gets a section only
       // if they hold Read on its module; the rest render disabled (visible but
@@ -116,7 +119,7 @@ export default function UserManagement() {
         disabledTooltip: lacksPermission ? missingPermissionMessage(`${f.module}:Read`) : undefined,
       };
     });
-  }, [session]);
+  }, [session, baseTitle]);
 
   const [selectedFilter, setSelectedFilter] = React.useState(null);
 

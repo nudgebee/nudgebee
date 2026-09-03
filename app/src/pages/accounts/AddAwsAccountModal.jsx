@@ -1,6 +1,7 @@
 import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Box, Collapse, IconButton } from '@mui/material';
 import { HelpOutline, ExpandMore, ExpandLess, InfoOutlined } from '@mui/icons-material';
 import Tooltip from '@ui/Tooltip';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import Tabs from '@shared/navigation/Tabs';
 import { ds } from 'src/utils/colors';
 import { Switch } from '@ui/Switch';
@@ -14,7 +15,7 @@ import { Button } from '@ui/Button';
 import { snackbar } from '@shared/snackbarService';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
-import { ACCOUNT_ENV_PROD, ACCOUNT_ENV_NON_PROD, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import { ACCOUNT_ENV_PROD, ACCOUNT_ENV_NON_PROD, DEFAULT_ACCOUNT_ENV, accountEnvTooltip } from '@shared/forms/AccountEnvToggle';
 
 const CF_INSTRUCTIONS = `### Step 1. Give Account Name
   ### Step 2. Click on Connect via AWS Console
@@ -25,8 +26,8 @@ const CF_INSTRUCTIONS = `### Step 1. Give Account Name
      - Once the CloudFormation stack is created, the account will be detected automatically.
      - No need to copy any values.`;
 
-const ROLE_INSTRUCTIONS = `### IAM Role ARN
-  Use this flow if you already have a cross-account IAM role that Nudgebee can assume.
+const roleInstructions = () => `### IAM Role ARN
+  Use this flow if you already have a cross-account IAM role that ${getBrandTitle()} can assume.
   The role must allow \`sts:AssumeRole\`, \`cur:DescribeReportDefinitions\`, and \`s3:GetBucketLocation\` / \`s3:ListBucket\` on the CUR bucket.
   Click **Validate** before connecting — we will probe STS, Cost & Usage Report discovery, and CUR S3 access upfront.
   Only the STS check is required: without a usable CUR the account still connects, but cost data stays empty until you attach one via **Edit Billing Config**.`;
@@ -363,7 +364,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       return CF_INSTRUCTIONS;
     }
     if (activeTab === TAB_ROLE_ARN) {
-      return ROLE_INSTRUCTIONS;
+      return roleInstructions();
     }
     return KEYS_INSTRUCTIONS;
   };
@@ -624,10 +625,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
               <Box>
                 <Box sx={{ display: 'flex', alignItems: 'center' }}>
                   <Typography variant='subtitle2'>Account Type</Typography>
-                  <Tooltip
-                    title='Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight. You can change this anytime later.'
-                    placement='right'
-                  >
+                  <Tooltip title={accountEnvTooltip()} placement='right'>
                     <IconButton id='aws-account-env-info-btn' size='small' sx={{ p: 0.5 }}>
                       <InfoOutlined fontSize='small' />
                     </IconButton>
@@ -668,7 +666,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
                   <Box sx={{ display: 'flex', alignItems: 'center' }}>
                     <Typography variant='subtitle2'>SSM Parameter Store access</Typography>
                     <Tooltip
-                      title='Allows Nudgebee to read parameter values. Only enable if your parameters do not contain secrets.'
+                      title={`Allows ${getBrandTitle()} to read parameter values. Only enable if your parameters do not contain secrets.`}
                       placement='right'
                     >
                       <IconButton id='aws-ssm-info-btn' size='small' sx={{ p: 0.5 }}>
@@ -677,7 +675,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
                     </Tooltip>
                   </Box>
                   <Typography sx={OPTION_DESC_SX}>
-                    Allows Nudgebee to read parameter values. Only enable if your parameters do not contain secrets.
+                    {`Allows ${getBrandTitle()} to read parameter values. Only enable if your parameters do not contain secrets.`}
                   </Typography>
                 </Box>
                 <Switch

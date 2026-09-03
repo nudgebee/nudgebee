@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Box, Typography, CircularProgress, Grid } from '@mui/material';
 import { Modal } from '@ui/Modal';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import AutoPilotHeaderCard from '@components/autopilot/card/AutoPilotHeaderCard';
 import AutoOptimizeForm from '@components/autopilot/form/AutoOptimizeVerticalRightSizingForm';
 import { formatMemory } from '@lib/formatter';
@@ -60,6 +61,7 @@ interface ResolveModalProps {
 }
 
 const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }: ResolveModalProps) => {
+  const { title: baseTitle } = useBrandingConfig();
   const [updatedData, setUpdatedData] = useState<Record<string, any>>({});
   const [allocatedData, setAllocatedData] = useState<Record<string, any>>({});
   const [additionalCpuInfo, setAdditionalCpuInfo] = useState<Record<string, any>>({});
@@ -928,7 +930,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
                   To enable pull request creation, configure one of the following on your workload:
                 </Typography>
                 <Typography variant='body2' sx={{ fontWeight: ds.weight.semibold, mb: 1 }}>
-                  Option 1: Nudgebee Annotations
+                  {`Option 1: ${baseTitle} Annotations`}
                 </Typography>
                 <ul>
                   <li>

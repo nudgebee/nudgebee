@@ -9,9 +9,9 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 
-const CF_UPDATE_INSTRUCTIONS = `### Update CloudFormation Permissions
+const cfUpdateInstructions = () => `### Update CloudFormation Permissions
   ### Step 1. Review the options below
-   - Choose which permissions to enable for your Nudgebee integration.
+   - Choose which permissions to enable for your ${getBrandTitle()} integration.
   ### Step 2. Click "Open AWS Console"
    - It will open the CloudFormation stack update page.
    - The new template will be pre-selected.
@@ -95,7 +95,7 @@ const CfUpdateModal = ({ open, onClose, accountId }) => {
             </Alert>
           )}
 
-          <MarkDowns data={CF_UPDATE_INSTRUCTIONS} sx={{ width: 'auto' }} />
+          <MarkDowns data={cfUpdateInstructions()} sx={{ width: 'auto' }} />
 
           <Grid container spacing={1} px={3} mt={1}>
             <Grid item xs={12}>
@@ -105,8 +105,8 @@ const CfUpdateModal = ({ open, onClose, accountId }) => {
                 onChange={(next) => setSsmAccess(next)}
                 label={
                   <Typography variant='body2' component='span'>
-                    <strong>Enable SSM Parameter Store access</strong> — allows Nudgebee to read parameter values. Only enable if your parameters do
-                    not contain secrets.
+                    <strong>Enable SSM Parameter Store access</strong>
+                    {` — allows ${getBrandTitle()} to read parameter values. Only enable if your parameters do not contain secrets.`}
                   </Typography>
                 }
               />

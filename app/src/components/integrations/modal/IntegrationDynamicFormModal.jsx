@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import VisibilityIcon from '@mui/icons-material/Visibility';
@@ -1701,14 +1702,13 @@ const IntegrationDynamicFormModal = ({
             <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.brand[500], lineHeight: 1.6, textAlign: 'justify' }}>
               <strong>Tip (optional):</strong> When you paste this URL into your webhook provider, you can optionally append extra query parameters
               (e.g. <code>&amp;env=prod</code>, <code>&amp;cluster=us-east-1</code>) directly to the URL inside the provider&apos;s configuration.
-              Every event delivered through that URL will be tagged with those labels in Nudgebee.
+              {` Every event delivered through that URL will be tagged with those labels in ${getBrandTitle()}.`}
               <br />
               <br />
               <strong>Why add them?</strong> The webhook payload itself rarely carries deployment context like environment or cluster, so multiple
-              senders pointing at the same Nudgebee webhook (e.g. dev and prod alertmanagers) produce events that look identical. Adding query labels
-              on the provider side lets you tell those events apart, route them to different accounts, and filter them in the Nudgebee inbox without
-              changing alert payloads. Reserved keys (<code>token</code>, <code>authorization</code>) are stripped automatically and any label the
-              integration extracts from the payload wins on collision.
+              {`senders pointing at the same ${getBrandTitle()} webhook (e.g. dev and prod alertmanagers) produce events that look identical. Adding query labels on the provider side lets you tell those events apart, route them to different accounts, and filter them in the ${getBrandTitle()} inbox without changing alert payloads.`}{' '}
+              Reserved keys (<code>token</code>, <code>authorization</code>) are stripped automatically and any label the integration extracts from
+              the payload wins on collision.
             </Typography>
           </Box>
         )}

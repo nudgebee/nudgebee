@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
 import { Banner } from '@ui/Banner';
@@ -112,7 +113,14 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({
     return parts.join('-').substring(0, 255); // CloudWatch alarm name max length is 255
   };
 
-  const [reason, setReason] = useState('Creating CloudWatch alarm from Nudgebee recommendation');
+  const { title: baseTitle } = useBrandingConfig();
+  // Seeded in an effect, not in useState: this modal is mounted with the page (not
+  // on open), so an initializer would capture the Nudgebee fallback before the
+  // branding config resolves and keep it for the session.
+  const [reason, setReason] = useState('');
+  React.useEffect(() => {
+    setReason(`Creating CloudWatch alarm from ${baseTitle} recommendation`);
+  }, [baseTitle]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [alarmName, setAlarmName] = useState(generateUserFriendlyAlarmName());
@@ -259,7 +267,7 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({
       const noun = selectedTargets.length === 1 ? targetVocab.singular : targetVocab.plural;
       return `${targetVocab.system} will notify ${selectedTargets.length} ${noun} when it fires.`;
     }
-    return `No notification channel selected — ${targetVocab.system} won't notify anyone when it fires; NudgeBee still tracks the alarm and records its state changes.`;
+    return `No notification channel selected — ${targetVocab.system} won't notify anyone when it fires; ${baseTitle} still tracks the alarm and records its state changes.`;
   };
 
   const renderNotificationTargets = () => {

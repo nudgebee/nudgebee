@@ -1,5 +1,6 @@
 import { Grid, Typography, Box } from '@mui/material';
 import { Stepper } from '@ui/Stepper';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import { Chip } from '@ui/Chip';
 import { Divider } from '@ui/Divider';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -163,7 +164,7 @@ const AddAwsOrgModal = ({ open, onClose }) => {
               Set Organization Name
             </Typography>
             <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: ds.text.small }}>
-              Enter a display name for your AWS Organization. This will be used to identify the organization in Nudgebee.
+              {`Enter a display name for your AWS Organization. This will be used to identify the organization in ${getBrandTitle()}.`}
             </Typography>
           </Box>
         </Grid>

@@ -25,11 +25,13 @@ export class StatusLocators extends CommonLocators {
     this.componentsCard = page.getByTestId("status-components-card");
     this.noticeBanner = page.getByTestId("status-notice-banner");
 
-    // Rendered as <Box component='h1'>, so role=heading reaches it; the text fallback
-    // is scoped to the page's single card rather than left loose on the document.
+    // The heading text is tenant-branded ("<brand> Status"), so it cannot be matched
+    // by name. Bind to the testid the page carries for exactly this reason; the
+    // role/regex fallback still reaches it on any build that predates that testid.
     this.heading = page
-      .getByRole("heading", { name: "Nudgebee Status" })
-      .or(page.locator("h1").filter({ hasText: "Nudgebee Status" }))
+      .getByTestId("status-heading")
+      .or(page.getByRole("heading", { name: /\bStatus$/ }))
+      .or(page.locator("h1").filter({ hasText: /\bStatus$/ }))
       .first();
 
     // MUI Tooltip renders its popper as role=tooltip when the explainer opens.

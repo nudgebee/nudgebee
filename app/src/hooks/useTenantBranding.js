@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { useSession } from 'next-auth/react';
 
 // Hardcoded fallback defaults — used during SSR and before the runtime config fetch resolves.
@@ -19,9 +19,30 @@ export const DEFAULT_NUBI_ICON_CIRCLE = '/branding/default/nubi-icon-circle.svg'
 // Empty by default — Loader.tsx falls back to the animated flying-Nubi mascot (NubiAnimation) when unset.
 export const DEFAULT_LOADER_URL = '';
 
-// Module-level cache so the fetch happens at most once per page load.
+// Module-level cache so the fetch happens at most once per page load. It doubles
+// as an external store: hooks read it *synchronously during render* via
+// useSyncExternalStore, so a component mounting after the fetch has resolved (any
+// modal, tab or table opened post-hydration) sees the real branding on its very
+// first render. Resolving it in an effect instead used to hand those components
+// the Nudgebee defaults for one render — long enough for anything that snapshots
+// a branded string into state to latch it permanently.
 let _configCache = null;
 let _configPromise = null;
+const _configListeners = new Set();
+// Resolved-but-empty marker. A failed config fetch must still clear `loading`,
+// or every Loader / favicon gated on it would wait forever; the per-field merge
+// below then falls back to the Nudgebee defaults, as it did before.
+const EMPTY_CONFIG = {};
+
+const subscribeToBrandingConfig = (onStoreChange) => {
+  _configListeners.add(onStoreChange);
+  return () => _configListeners.delete(onStoreChange);
+};
+// Must return a stable reference — _configCache is replaced once, never mutated.
+const getBrandingSnapshot = () => _configCache;
+// SSR and hydration both render the unbranded defaults, so the server HTML and
+// the first client render agree; React re-renders with the real value right after.
+const getBrandingServerSnapshot = () => null;
 
 function fetchBrandingConfig() {
   if (typeof window === 'undefined') return Promise.resolve(null);
@@ -30,10 +51,15 @@ function fetchBrandingConfig() {
     _configPromise = fetch('/api/public/app_config')
       .then((r) => r.json())
       .then((data) => {
-        _configCache = data;
+        _configCache = data || EMPTY_CONFIG;
+        _configListeners.forEach((notify) => notify());
         return data;
       })
-      .catch(() => null);
+      .catch(() => {
+        _configCache = EMPTY_CONFIG;
+        _configListeners.forEach((notify) => notify());
+        return null;
+      });
   }
   return _configPromise;
 }
@@ -54,58 +80,43 @@ export const getTenantKey = (tenantName) => {
     .replace(/(?:^_)|(?:_$)/g, '');
 };
 
+// Default (Nudgebee) tenant — branding fallbacks use Nudgebee assets (nubi bee, etc.).
+const BRANDING_DEFAULTS = {
+  isWhiteLabel: false,
+  logoUrl: DEFAULT_LOGO,
+  faviconUrl: DEFAULT_FAVICON,
+  title: DEFAULT_TITLE,
+  assistantName: DEFAULT_ASSISTANT_NAME,
+  nubiIconUrl: DEFAULT_NUBI_ICON,
+  nubiIconLightUrl: DEFAULT_NUBI_ICON_LIGHT,
+  loaderUrl: DEFAULT_LOADER_URL,
+  // Empty (not DEFAULT_SIGNIN_IMAGE) to mirror app_config's `signinImageUrl ?? ''`
+  // for the default tenant: signin/signup then fall back to the bundled
+  // NBIconSignIn asset rather than the page logo.
+  signinImageUrl: '',
+  signinLeftImageUrl: '',
+  carouselSlides: null,
+  theme: null,
+  colorTokens: null,
+  fontRemap: null,
+  relayUrl: DEFAULT_RELAY_URL,
+  k8sCollectorUrl: DEFAULT_K8S_COLLECTOR_URL,
+  signingPublicKey: DEFAULT_SIGNING_PUBLIC_KEY,
+};
+
 /**
  * Lightweight hook for pages that only need the four branding defaults
  * (logo, favicon, title, assistantName) without the full tenant/partner logic.
  * Useful for auth pages (signin, signup, etc.) that render before any session exists.
  */
 export const useBrandingConfig = () => {
-  const defaults = {
-    // Default (Nudgebee) tenant — branding fallbacks use Nudgebee assets (nubi bee, etc.).
-    isWhiteLabel: false,
-    logoUrl: DEFAULT_LOGO,
-    faviconUrl: DEFAULT_FAVICON,
-    title: DEFAULT_TITLE,
-    assistantName: DEFAULT_ASSISTANT_NAME,
-    nubiIconUrl: DEFAULT_NUBI_ICON,
-    nubiIconLightUrl: DEFAULT_NUBI_ICON_LIGHT,
-    loaderUrl: DEFAULT_LOADER_URL,
-    // Empty (not DEFAULT_SIGNIN_IMAGE) to mirror app_config's `signinImageUrl ?? ''`
-    // for the default tenant: signin/signup then fall back to the bundled
-    // NBIconSignIn asset rather than the page logo.
-    signinImageUrl: '',
-    signinLeftImageUrl: '',
-    carouselSlides: null,
-    theme: null,
-    colorTokens: null,
-    fontRemap: null,
-    relayUrl: DEFAULT_RELAY_URL,
-    k8sCollectorUrl: DEFAULT_K8S_COLLECTOR_URL,
-    signingPublicKey: DEFAULT_SIGNING_PUBLIC_KEY,
-  };
-
-  // Always start with null/loading on both server and client to avoid hydration mismatch.
-  // The useEffect will pick up the cached value immediately on the client.
-  const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (_configCache) {
-      setConfig(_configCache);
-      setLoading(false);
-      return;
-    }
-    fetchBrandingConfig().then((data) => {
-      setConfig(data || defaults);
-      setLoading(false);
-    });
-  }, []);
+  const config = useSyncExternalStore(subscribeToBrandingConfig, getBrandingSnapshot, getBrandingServerSnapshot);
 
   // Merge defaults UNDER the fetched config so any field the config omits falls
   // back to its Nudgebee default per-field. The branding apparatus is EE-only:
   // in OSS (and EE without a custom branding file) /api/public/app_config returns
   // only the non-branding runtime fields, so the branding fields must default here.
-  return { ...defaults, ...(config || {}), loading };
+  return useMemo(() => ({ ...BRANDING_DEFAULTS, ...(config || {}), loading: config === null }), [config]);
 };
 
 /**
@@ -115,29 +126,12 @@ export const useBrandingConfig = () => {
  * true — llm-server unmounts the /v1/watches route when the flag is off, so
  * gating here avoids the otherwise-guaranteed 404 per conversation.
  *
- * Starts false on both server and client (matching useBrandingConfig) to avoid
- * a hydration mismatch, then resolves from the eagerly-fetched config cache.
+ * Reads the same store as useBrandingConfig: false on the server and during
+ * hydration, then the real value as soon as the config resolves.
  */
 export const useWatchFeatureEnabled = () => {
-  const [enabled, setEnabled] = useState(false);
-
-  useEffect(() => {
-    if (_configCache) {
-      setEnabled(!!_configCache.watchEnabled);
-      return undefined;
-    }
-    let mounted = true;
-    fetchBrandingConfig().then((data) => {
-      if (mounted) {
-        setEnabled(!!data?.watchEnabled);
-      }
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  return enabled;
+  const config = useSyncExternalStore(subscribeToBrandingConfig, getBrandingSnapshot, getBrandingServerSnapshot);
+  return !!config?.watchEnabled;
 };
 
 /**

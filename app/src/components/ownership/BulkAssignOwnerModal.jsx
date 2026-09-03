@@ -123,7 +123,7 @@ export default function BulkAssignOwnerModal({ open, onClose, defaultAccountId, 
           value={owner}
           onChange={setOwner}
           id='bulk-owner'
-          label={<LabelWithInfo text='Owner' info='The Nudgebee user or group to assign as owner of the selected workloads.' />}
+          label={<LabelWithInfo text='Owner' info='The user or group to assign as owner of the selected workloads.' />}
         />
         <Text value='Assigns a direct owner to each selected workload (overrides rule / inherited ownership).' secondaryText />
       </Box>

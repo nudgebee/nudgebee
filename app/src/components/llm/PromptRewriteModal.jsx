@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Typography, TextareaAutosize } from '@mui/material';
 import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import CopyButton from '@shared/buttons/CopyButton';
 import { toast as snackbar } from '@ui/Toast';
 import apiAskNudgebee from '@api1/ask-nudgebee';
@@ -34,6 +35,7 @@ const styles = {
 };
 
 const PromptRewriteModal = ({ open, onClose, currentPrompt, onPromptUpdate, accountId }) => {
+  const { assistantName } = useBrandingConfig();
   const [additionalInstructions, setAdditionalInstructions] = useState('');
   const [suggestedPrompt, setSuggestedPrompt] = useState('');
   const [editableCurrentPrompt, setEditableCurrentPrompt] = useState(currentPrompt);
@@ -242,7 +244,7 @@ Return only the improved prompt without any additional explanation.`;
         <Box sx={{ mb: 'var(--ds-space-6)' }}>
           <Typography sx={styles.label}>Enter Any Additional Instructions for Rewriting</Typography>
           <Typography sx={styles.instructionText}>
-            Note: You can provide additional instructions, guidance or tips that NudgeBee should consider while rewriting this prompt
+            {`Note: You can provide additional instructions, guidance or tips that ${assistantName} should consider while rewriting this prompt`}
           </Typography>
           <TextareaAutosize
             value={additionalInstructions}

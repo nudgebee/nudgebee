@@ -37,7 +37,7 @@ import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import WorkflowIcon from '@assets/WorkflowIcon';
 import Tooltip from '@ui/Tooltip';
 import TicketLink from '@shared/links/TicketLink';
-import { getTriageStatusTooltip } from '@api1/triage';
+import { TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 const TABLE_COLUMNS = [
@@ -59,7 +59,7 @@ const TABLE_COLUMNS = [
   {
     name: 'Triage Score',
     width: '9%',
-    info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+    info: TRIAGE_SCORE_INFO,
   },
   {
     name: 'Alert Status',

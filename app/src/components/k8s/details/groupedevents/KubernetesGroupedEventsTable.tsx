@@ -46,7 +46,7 @@ import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
 import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
-import { CLASSIFICATION_OPTIONS, getTriageStatusTooltip } from '@api1/triage';
+import { CLASSIFICATION_OPTIONS, TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { action } from 'src/utils/actionStyles';
 import CategoryOutlinedIcon from '@mui/icons-material/CategoryOutlined';
@@ -769,7 +769,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           name: 'Triage Score',
           width: '10%',
           sortable: true,
-          info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+          info: TRIAGE_SCORE_INFO,
         },
         triageStatusHeader,
         {

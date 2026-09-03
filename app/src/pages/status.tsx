@@ -1,5 +1,6 @@
 import * as React from 'react';
 import Head from 'next/head';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { Box } from '@mui/material';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import ReportProblemRoundedIcon from '@mui/icons-material/ReportProblemRounded';
@@ -95,6 +96,7 @@ const NOTICE_TONE: Record<NoticeState, CardTone> = {
 };
 
 export default function StatusPage() {
+  const { title: baseTitle } = useBrandingConfig();
   const [payload, setPayload] = React.useState<StatusPayload | null>(null);
   const [failed, setFailed] = React.useState(false);
 
@@ -137,7 +139,7 @@ export default function StatusPage() {
   return (
     <>
       <Head>
-        <title>Nudgebee Status</title>
+        <title>{`${baseTitle} Status`}</title>
         <meta name='robots' content='noindex' />
       </Head>
 
@@ -145,8 +147,14 @@ export default function StatusPage() {
         {/* Everything sits inside a single elevated white card floating on the grey page. */}
         <Card variant='elevated' size='lg' sx={{ maxWidth: 880, mx: 'auto' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
-            <Box component='h1' sx={{ m: 0, fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], letterSpacing: '-0.01em' }}>
-              Nudgebee Status
+            {/* The heading text is tenant-branded, so it is no longer a stable selector —
+                app-e2e-tests binds to this testid instead. */}
+            <Box
+              component='h1'
+              data-testid='status-heading'
+              sx={{ m: 0, fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], letterSpacing: '-0.01em' }}
+            >
+              {`${baseTitle} Status`}
             </Box>
 
             {/* Saturated status bar — the Statuspage / Datadog signature element. */}
