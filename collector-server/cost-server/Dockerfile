@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Upstream github.com/opencost/opencost is public, so no GOPRIVATE/token is needed.
-FROM golang:1.26.5-alpine AS build-stage
+FROM golang:1.26.6-alpine AS build-stage
 
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
 # Pins the compile to the base's Go and gives the build layer a distinct cache
@@ -23,7 +23,10 @@ RUN chmod +x /app/cost-server
 
 
 FROM alpine:3.22 AS release-stage
-RUN apk add --no-cache ca-certificates \
+ARG OS_PKG_EPOCH=2026-W36
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates \
     && adduser -D -g '' appuser
 WORKDIR /app
 COPY --from=build-stage /app/cost-server /app/cost-server

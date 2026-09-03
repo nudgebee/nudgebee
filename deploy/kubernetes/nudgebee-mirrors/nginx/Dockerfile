@@ -6,7 +6,7 @@
 # OS-package CVEs (e.g. libcrypto3/libssl3). Same nginx version + base -- no
 # behaviour change. Bump OS_PKG_EPOCH (ISO week) to force a weekly re-pull. The
 # official image runs as root at build, so no USER switch is needed for apk.
-ARG OS_PKG_EPOCH=2026-W28
+ARG OS_PKG_EPOCH=2026-W36
 FROM docker.io/library/nginx:stable-alpine3.20-slim
 
 # Re-declare in the build-stage scope (an ARG before FROM is only visible to FROM
