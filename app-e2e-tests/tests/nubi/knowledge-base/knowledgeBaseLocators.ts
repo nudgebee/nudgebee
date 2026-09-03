@@ -5,6 +5,7 @@ export class KnowledgeBaseLocators {
   readonly page: Page;
 
   readonly bCortexBtn: Locator;
+  readonly knowledgeGroupTab: Locator;
   readonly knowledgeBaseTab: Locator;
   readonly userSubTab: Locator;
   readonly addKBBtn: Locator;
@@ -41,6 +42,12 @@ export class KnowledgeBaseLocators {
     this.bCortexBtn = page
       .getByTestId("nav-bcortex-btn")
       .or(page.getByRole("button", { name: "b-Cortex", exact: true }));
+
+    // Top-level "Knowledge" tab (docs/ia-consolidation-plan.md, PR 2) — Knowledge
+    // Base is one of its sub-tabs now, not reachable until this is selected.
+    // exact:true is required: without it this also matches "Knowledge Base" and
+    // "Knowledge Graph", both of which are also `role=tab` at that point.
+    this.knowledgeGroupTab = page.getByRole("tab", { name: "Knowledge", exact: true });
 
     this.knowledgeBaseTab = page.locator("#tab-knowledge-base").or(page.getByRole("tab", { name: /Knowledge Base/i }));
 
@@ -120,12 +127,21 @@ export class KnowledgeBaseLocators {
 
     await this.bCortexBtn.first().waitFor({ state: "visible", timeout: 15000 });
     await this.bCortexBtn.first().click();
-    await this.knowledgeBaseTab.first().waitFor({ state: "visible", timeout: 15000 });
+    await this.openKnowledgeGroup();
 
     if (await this.modalGenuinelyClosed()) {
       await this.bCortexBtn.first().click();
-      await this.knowledgeBaseTab.first().waitFor({ state: "visible", timeout: 15000 });
+      await this.openKnowledgeGroup();
     }
+  }
+
+  // b-Cortex opens on its Memory tab by default; Knowledge Base is a sub-tab
+  // under the separate top-level "Knowledge" tab, so it only exists in the DOM
+  // once that tab is selected.
+  private async openKnowledgeGroup(): Promise<void> {
+    await this.knowledgeGroupTab.first().waitFor({ state: "visible", timeout: 15000 });
+    await this.knowledgeGroupTab.first().click();
+    await this.knowledgeBaseTab.first().waitFor({ state: "visible", timeout: 15000 });
   }
 
   private async waitNubiPageSettled(): Promise<void> {

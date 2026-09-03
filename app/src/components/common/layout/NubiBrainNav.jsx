@@ -120,10 +120,12 @@ const NubiBrainNav = ({ surface = 'dark', accountId, agents = null, loadingAgent
   }, []);
 
   // Only the tabs we actually mint links to. Deliberately not the full tab list
-  // from BCortexModal: an unrecognised value falls through that component's
-  // switch to Knowledge Graph, so a stale or mistyped link would quietly open
-  // the wrong tab instead of doing nothing. Kept here rather than exported from
-  // the modal so this stays a link allowlist, not a second copy of the registry.
+  // from BCortexModal: even though that component's own resolveTabState now
+  // falls back to a sane default (Memory → Patterns) for an unrecognised id
+  // rather than the wrong tab, a stale or mistyped link should still do
+  // nothing rather than silently open something. Kept here rather than
+  // exported from the modal so this stays a link allowlist, not a second
+  // copy of the registry.
   const DEEP_LINKABLE_TABS = ['digests'];
 
   useEffect(() => {
