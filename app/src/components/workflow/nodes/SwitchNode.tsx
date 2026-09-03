@@ -104,7 +104,7 @@ const SwitchNode = ({ id, data, isConnectable, selected, onAddFromHandle }: any)
             height: '28px',
             borderRadius: 'var(--ds-radius-xl)',
             width: '28px',
-            backgroundColor: 'white',
+            backgroundColor: 'var(--ds-background-100)',
             padding: 'var(--ds-space-1)',
             color: 'var(--ds-red-600)',
           }}
@@ -237,7 +237,7 @@ const SwitchNode = ({ id, data, isConnectable, selected, onAddFromHandle }: any)
             padding: 'var(--ds-space-1) var(--ds-space-2)',
             borderRadius: 999,
             background: 'var(--ds-red-600)',
-            color: 'white',
+            color: 'var(--ds-background-100)',
             fontSize: 10,
             fontWeight: 'var(--ds-font-weight-semibold)',
             letterSpacing: 0.3,
