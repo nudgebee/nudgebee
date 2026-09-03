@@ -93,7 +93,23 @@ func newDockerRuntime() (*dockerRuntime, error) {
 }
 
 func newDockerRuntimeForHost(host string) (*dockerRuntime, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var transport *http.Transport
+	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaultTransport.Clone()
+	} else {
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
 	baseURL := "http://docker"
 	switch {
 	case strings.HasPrefix(host, "unix://"):
@@ -549,6 +565,9 @@ func cleanupDockerWorkspaces(ctx context.Context) {
 		return
 	}
 	for _, container := range containers {
+		if ctx.Err() != nil {
+			break
+		}
 		if container.Labels[dockerImageLabel] == config.Config.LlmServerCodeAgentImage {
 			continue
 		}
