@@ -273,6 +273,8 @@ func getLogSource(provider, integrationSource string) (LogSource, error) {
 	switch {
 	case provider == "loki" && integrationSource == "agent":
 		return &LokiSource{}, nil
+	case provider == "loki" && integrationSource == "user":
+		return &LokiSaasSource{}, nil
 	case provider == "signoz" && integrationSource == "agent":
 		return &SignozSource{}, nil
 	case provider == "signoz" && integrationSource == "user":

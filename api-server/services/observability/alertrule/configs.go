@@ -26,6 +26,33 @@ func listIntegrationConfigValues(sc *security.RequestContext, accountId, integra
 	return listIntegrationConfigValuesWithSource(sc, accountId, integrationType, "")
 }
 
+// hasIntegrationWithSource reports whether the account has an integration of this type
+// and source. Unlike listIntegrationConfigValuesWithSource it treats "no such row" as a
+// normal answer (false, nil) rather than an error, so callers asking a question about
+// configuration can tell an absent integration apart from a failed query.
+func hasIntegrationWithSource(sc *security.RequestContext, accountId, integrationType, source string) (bool, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	var exists bool
+	err = dbms.Db.Get(&exists, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM integrations i
+			JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
+			WHERE i.type = $1
+			  AND i.tenant_id = $2
+			  AND ica.cloud_account_id = $3
+			  AND i.source = $4
+		)`, integrationType, sc.GetSecurityContext().GetTenantId(), accountId, source)
+	if err != nil {
+		return false, fmt.Errorf("failed to check for %s/%s integration: %w", integrationType, source, err)
+	}
+	return exists, nil
+}
+
 // listIntegrationConfigValuesWithSource is like listIntegrationConfigValues but optionally filters by source.
 func listIntegrationConfigValuesWithSource(sc *security.RequestContext, accountId, integrationType, source string) ([]integrationConfigValue, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -230,6 +257,88 @@ type elasticsearchConfig struct {
 	// — so without honouring this, rule listing fails at the TLS handshake for
 	// exactly the deployments most likely to need it.
 	TlsSkipVerify bool
+}
+
+// lokiRulerConfig is the resolved connection for the Loki ruler API.
+type lokiRulerConfig struct {
+	Url string
+	// RulesUrl is the ruler endpoint when it is a separate service from the query
+	// endpoint; empty means the ruler shares Url (single-binary Loki).
+	RulesUrl string
+	// AuthType mirrors the integration form's loki_auth_type; only the selected
+	// method's credential is sent.
+	AuthType    string
+	Username    string
+	Password    string
+	BearerToken string
+	TenantID    string
+	Headers     map[string]string
+}
+
+// RulerBaseURL returns the base URL ruler calls should target.
+func (c *lokiRulerConfig) RulerBaseURL() string {
+	if c.RulesUrl != "" {
+		return c.RulesUrl
+	}
+	return c.Url
+}
+
+// getLokiConfigs returns Loki configs (user-sourced integrations only). Agent-sourced
+// rows carry no URL — LokiAlertRuleSource serves those over the relay instead.
+func getLokiConfigs(sc *security.RequestContext, accountId string) (*lokiRulerConfig, error) {
+	configs, err := listIntegrationConfigValuesWithSource(sc, accountId, "loki", "user")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get loki integration: %w", err)
+	}
+
+	cfg := &lokiRulerConfig{Headers: map[string]string{}}
+	for _, c := range configs {
+		value, err := decryptConfigValue(c)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt loki config %s: %w", c.Name, err)
+		}
+		switch c.Name {
+		case "loki_url":
+			cfg.Url = strings.TrimRight(strings.TrimSpace(value), "/")
+		case "loki_rules_url":
+			cfg.RulesUrl = strings.TrimRight(strings.TrimSpace(value), "/")
+		case "loki_auth_type":
+			cfg.AuthType = strings.TrimSpace(value)
+		case "loki_username":
+			cfg.Username = strings.TrimSpace(value)
+		case "loki_password":
+			cfg.Password = value
+		case "loki_bearer_token":
+			cfg.BearerToken = strings.TrimSpace(value)
+		case "loki_tenant_id":
+			cfg.TenantID = strings.TrimSpace(value)
+		case "loki_headers":
+			headers := map[string]string{}
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				if err := json.Unmarshal([]byte(trimmed), &headers); err != nil {
+					return nil, fmt.Errorf("loki integration has invalid loki_headers: %w", err)
+				}
+			}
+			cfg.Headers = headers
+		}
+	}
+
+	// Integrations saved before the auth selector existed carry no loki_auth_type.
+	if cfg.AuthType == "" {
+		switch {
+		case cfg.Username != "" && cfg.Password != "":
+			cfg.AuthType = "basic"
+		case cfg.BearerToken != "":
+			cfg.AuthType = "bearer_token"
+		default:
+			cfg.AuthType = "none"
+		}
+	}
+
+	if cfg.Url == "" {
+		return nil, fmt.Errorf("missing required loki configuration values")
+	}
+	return cfg, nil
 }
 
 // getElasticsearchConfigs returns Elasticsearch configs (user-sourced integrations only).

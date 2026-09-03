@@ -75,6 +75,7 @@ const integrationConnectionKey = {
   splunk_enterprise: 'splunk_url',
   chronosphere: 'chronosphere_url',
   signoz: 'signoz_url',
+  loki: 'loki_url',
   openobserve: 'openobserve_url',
   cubeapm: 'cubeapm_url',
   observe: 'domain',
@@ -1045,10 +1046,10 @@ const ListIntegrations = ({ integrationName }) => {
             </Stack>
           }
           actions={
-            integrationName != 'loki' &&
-            integrationName != 'prometheus' &&
-            integrationName != 'otel_clickhouse' &&
-            canManage('integrations', 'Write') ? (
+            // prometheus and otel_clickhouse are still agent-only: they have no
+            // user-configurable form, so there is nothing for an Add button to open.
+            // Loki is no longer in that list — it can now be connected directly.
+            integrationName != 'prometheus' && integrationName != 'otel_clickhouse' && canManage('integrations', 'Write') ? (
               <DsButton
                 id={`add-${toKebabCase(integrationName)}-account-btn`}
                 tone='primary'
