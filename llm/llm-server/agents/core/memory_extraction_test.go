@@ -8,7 +8,7 @@ import (
 
 func TestRetrieveAndBuildMemoryNotebook_Broadened(t *testing.T) {
 	// Setup mock agent
-	mockAgent := &MockAgent{} // Assumes ReWoo by default from executor_planner_test.go or similar
+	mockAgent := &MockAgent{} // MockAgent uses the orchestrating planner by default.
 
 	t.Run("Investigation task - Should trigger", func(t *testing.T) {
 		req := NBAgentRequest{Query: "investigate why pod is failing"}

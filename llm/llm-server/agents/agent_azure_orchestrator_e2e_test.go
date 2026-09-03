@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestAzureAgentReWoo_VMStatus(t *testing.T) {
+func TestAzureAgentOrchestrating_VMStatus(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), nil)
 	tests := []struct {
 		UserId    string
@@ -45,7 +45,7 @@ func TestAzureAgentReWoo_VMStatus(t *testing.T) {
 	}
 }
 
-func TestAzureAgentReWoo_CostBreakDown(t *testing.T) {
+func TestAzureAgentOrchestrating_CostBreakDown(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), nil)
 	tests := []struct {
 		UserId    string
@@ -78,7 +78,7 @@ func TestAzureAgentReWoo_CostBreakDown(t *testing.T) {
 	}
 }
 
-func TestAzureAgentReWoo_AKSDetails(t *testing.T) {
+func TestAzureAgentOrchestrating_AKSDetails(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), nil)
 	tests := []struct {
 		UserId    string
@@ -111,7 +111,7 @@ func TestAzureAgentReWoo_AKSDetails(t *testing.T) {
 	}
 }
 
-func TestAzureAgentReWoo_AzureMonitor(t *testing.T) {
+func TestAzureAgentOrchestrating_AzureMonitor(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), nil)
 	tests := []struct {
 		UserId    string

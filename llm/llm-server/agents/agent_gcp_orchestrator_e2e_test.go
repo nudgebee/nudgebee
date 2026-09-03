@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestGcpAgentReWoo_GCSBucketPublic tests the GCP agent's ability to generate a plan
+// TestGcpAgentOrchestrating_GCSBucketPublic tests the GCP agent's ability to generate a plan
 // for identifying public GCS buckets.
-func TestGcpAgentReWoo_GCSBucketPublic(t *testing.T) {
+func TestGcpAgentOrchestrating_GCSBucketPublic(t *testing.T) {
 	// Ensure TEST_TENANT, TEST_ACCOUNT, TEST_USER, and TEST_GCP_ACCOUNT are set in your environment
 	// For example:
 	// export TEST_TENANT="your_tenant_id"
@@ -32,7 +32,7 @@ func TestGcpAgentReWoo_GCSBucketPublic(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_GCP_ACCOUNT"), // Using TEST_GCP_ACCOUNT for GCP context
 			Query:     "Can you check all the GCS buckets and identify if there are any public buckets?",
-			SessionId: "ut-gcp-chain-gcs-rewoo",
+			SessionId: "ut-gcp-chain-gcs-rewoo", // Historical persistent E2E database key.
 		},
 	}
 
@@ -57,9 +57,9 @@ func TestGcpAgentReWoo_GCSBucketPublic(t *testing.T) {
 	}
 }
 
-// TestGcpAgentReWoo_BillingExport tests the GCP agent's ability to generate a plan
+// TestGcpAgentOrchestrating_BillingExport tests the GCP agent's ability to generate a plan
 // for checking billing export configurations.
-func TestGcpAgentReWoo_BillingExport(t *testing.T) {
+func TestGcpAgentOrchestrating_BillingExport(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_ACCOUNT"), nil)
 	tests := []struct {
 		UserId    string
@@ -71,7 +71,7 @@ func TestGcpAgentReWoo_BillingExport(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_GCP_ACCOUNT"),
 			Query:     "Can you show me how my billing export is configured?",
-			SessionId: "ut-gcp-chain-billing-rewoo",
+			SessionId: "ut-gcp-chain-billing-rewoo", // Historical persistent E2E database key.
 		},
 	}
 
@@ -95,9 +95,9 @@ func TestGcpAgentReWoo_BillingExport(t *testing.T) {
 	}
 }
 
-// TestGcpAgentReWoo_GCEInstanceDetails tests the GCP agent's ability to generate a plan
+// TestGcpAgentOrchestrating_GCEInstanceDetails tests the GCP agent's ability to generate a plan
 // for getting details about GCE instances.
-func TestGcpAgentReWoo_GCEInstanceDetails(t *testing.T) {
+func TestGcpAgentOrchestrating_GCEInstanceDetails(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_ACCOUNT"), nil)
 	tests := []struct {
 		UserId    string
@@ -109,7 +109,7 @@ func TestGcpAgentReWoo_GCEInstanceDetails(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_GCP_ACCOUNT"),
 			Query:     "How many GCE instances do I have, what are their types, and in which zones are they running in project " + envOr("TEST_GCP_PROJECT", "my-gcp-project-dev") + " ?",
-			SessionId: "ut-gcp-chain-gce-rewoo",
+			SessionId: "ut-gcp-chain-gce-rewoo", // Historical persistent E2E database key.
 		},
 	}
 

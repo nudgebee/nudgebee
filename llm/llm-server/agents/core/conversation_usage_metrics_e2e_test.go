@@ -22,6 +22,8 @@ func TestConversationUsageMetricsApi(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
 
 	request := ConversationUsageMetricsRequest{
+		// Historical seeded conversation ID; changing it would make this DB-backed
+		// metrics test query a different (usually nonexistent) fixture.
 		ConversationId: "ut-k8s-chain-43-rewoo",
 		AccountId:      os.Getenv("TEST_ACCOUNT"),
 		UserId:         os.Getenv("TEST_USER"),

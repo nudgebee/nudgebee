@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestAwsAgentReWoo_S3BucketPublic(t *testing.T) {
+func TestAwsAgentOrchestrating_S3BucketPublic(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_AWS_ACCOUNT"), nil)
 	tests := []struct {
 		UserId    string
@@ -24,7 +24,7 @@ func TestAwsAgentReWoo_S3BucketPublic(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_AWS_ACCOUNT"),
 			Query:     "Can you check all the buckets and identify if there are any public buckets",
-			SessionId: "ut-aws-chain-s3-rewoo",
+			SessionId: "ut-aws-chain-s3-rewoo", // Historical persistent E2E database key.
 		},
 	}
 
@@ -46,7 +46,7 @@ func TestAwsAgentReWoo_S3BucketPublic(t *testing.T) {
 	}
 }
 
-func TestAwsAgentReWoo_CostBreakDown(t *testing.T) {
+func TestAwsAgentOrchestrating_CostBreakDown(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_AWS_ACCOUNT"), nil)
 	tests := []struct {
 		UserId    string
@@ -58,7 +58,7 @@ func TestAwsAgentReWoo_CostBreakDown(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_AWS_ACCOUNT"),
 			Query:     "Can you get me cost breakdown on last month ?",
-			SessionId: "ut-aws-chain-ec2-rewoo",
+			SessionId: "ut-aws-chain-ec2-rewoo", // Historical persistent E2E database key.
 		},
 	}
 
@@ -79,7 +79,7 @@ func TestAwsAgentReWoo_CostBreakDown(t *testing.T) {
 	}
 }
 
-func TestAwsAgentReWoo_ECSDetails(t *testing.T) {
+func TestAwsAgentOrchestrating_ECSDetails(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_AWS_ACCOUNT"), nil)
 	tests := []struct {
 		UserId    string
@@ -91,7 +91,7 @@ func TestAwsAgentReWoo_ECSDetails(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_AWS_ACCOUNT"),
 			Query:     "How many ECS clusters and I have, and how many services they are running and how many tasks each service has?",
-			SessionId: "ut-aws-chain-lambda-rewoo",
+			SessionId: "ut-aws-chain-lambda-rewoo", // Historical persistent E2E database key.
 		},
 	}
 
@@ -112,7 +112,7 @@ func TestAwsAgentReWoo_ECSDetails(t *testing.T) {
 	}
 }
 
-func TestAwsAgentReWoo_CloudCost(t *testing.T) {
+func TestAwsAgentOrchestrating_CloudCost(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_AWS_ACCOUNT"), nil)
 	tests := []struct {
 		UserId    string
@@ -124,7 +124,7 @@ func TestAwsAgentReWoo_CloudCost(t *testing.T) {
 			UserId:    os.Getenv("TEST_USER"),
 			AccountId: os.Getenv("TEST_AWS_ACCOUNT"),
 			Query:     "our AWS cost has increased again.. review with respect to last months call and what all things are increasing user: Can you cross check billing differences in last 2 months and tell where cost increase is",
-			SessionId: "ut-aws-chain-cost-rewoo",
+			SessionId: "ut-aws-chain-cost-rewoo", // Historical persistent E2E database key.
 		},
 	}
 

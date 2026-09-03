@@ -248,20 +248,20 @@ See [docs/caching.md](docs/caching.md) for the ReAct3 planner message layout, ca
 - Loading priority: experiment config → account override → global DB config → embedded file
 - **Prompts must not contain literal "TODO"** — enforced by `TestPromptContent_NoTODOMarkers`
 
-## The `_2` and `_3` Suffixes on Planners
+## Planner Versions
 
-The runtime has exactly one planner: **`planner_react_3.go`** (the ReAct3 planner — iterative reasoning with parallel action execution). The executor routes every non-tool/non-custom/non-classification agent to `NewReActAgent3()`. The older `planner_react_2.go` and `planner_rewoo_2.go` have been deleted; symbols they hosted that ReAct3 still needs live in `planner_react_shared.go`.
+ReAct and Orchestrating agents use **ReAct4** (`planner_react_4.go`) by default when the selected provider/model supports native tools. `LLM_SERVER_REACT4_ENABLED=false` is the rollback path, and unsupported models fall back to **ReAct3** (`planner_react_3.go`). The older `planner_react_2.go` and `planner_rewoo_2.go` were deleted; shared compatibility symbols live in `planner_react_shared.go`.
 
 For agent files, `_2` / `V2` suffixes mark genuinely versioned agents where both versions still coexist:
 
 | Component | v1 | v2 | Active? |
 |-----------|----|----|---------|
-| Planner runtime | — | `planner_react_3.go` | Only planner at runtime |
+| Planner runtime | `planner_react_3.go` | `planner_react_4.go` | ReAct4 by default; ReAct3 fallback |
 | Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
 
-The domain orchestrators — `agent_k8s_orchestrator.go`, `agent_aws_orchestrator.go`, `agent_gcp_orchestrator.go`, `agent_azure_orchestrator.go`, `agent_datadog_orchestrator.go` — declare `Orchestrating` and run under ReAct3. They were renamed from `*_debug` (which itself dropped a vestigial `_2`); the old `*_debug` names stay registered as back-compat aliases (`RegisterNBAgentFactoryWithAliases`) so stored history and `@*_debug` invocations keep resolving. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not the AWS orchestrator.
+The domain orchestrators — `agent_k8s_orchestrator.go`, `agent_aws_orchestrator.go`, `agent_gcp_orchestrator.go`, `agent_azure_orchestrator.go`, `agent_datadog_orchestrator.go` — declare `Orchestrating` and use the same ReAct4-default/ReAct3-fallback routing. They were renamed from `*_debug` (which itself dropped a vestigial `_2`); the old `*_debug` names stay registered as back-compat aliases (`RegisterNBAgentFactoryWithAliases`) so stored history and `@*_debug` invocations keep resolving. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not the AWS orchestrator.
 
-**Rule: new code targets ReAct3. There is no v1/v2 planner choice to make.**
+**Rule: new planner behavior must account for both ReAct4 and the ReAct3 rollback/capability fallback. There is no v1/v2 planner choice to make.**
 
 ### Deprecated Patterns
 
@@ -440,7 +440,8 @@ chore(deps): bump github.com/gin-contrib/pprof (#27311)
 
 **Modifying planner logic:**
 - Executor loop: `agents/core/executor_planner.go`
-- ReAct3 loop (all runtime planning): `agents/core/planner_react_3.go`
+- ReAct4 native-tool loop (default): `agents/core/planner_react_4.go`
+- ReAct3 XML loop (rollback/capability fallback): `agents/core/planner_react_3.go`
 
 **Adding an LLM provider:**
 1. Create client in `llms/<provider>/`, implement provider interface

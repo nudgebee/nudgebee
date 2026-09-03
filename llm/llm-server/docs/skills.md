@@ -9,7 +9,7 @@ Two agent families consume skills via two different mechanisms, because they run
 ```
  User Query
    → Executor Entry (top-level stamps OriginalQuery + optional SelectedSkillIds)
-   ├─ ReAct / Orchestrating agent (both run under ReAct3)
+   ├─ ReAct / Orchestrating agent (ReAct4 default, ReAct3 fallback)
    │    → injectKBContext:
    │         ├─ manual KBs: <skill-lists> (names+descriptions from DB)
    │         └─ integration KBs: parallel RAG search (module: "knowledge_base")
