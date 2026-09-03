@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ElementType } from 'react';
 import { Box, Typography } from '@mui/material';
 import AccountBalanceWalletOutlinedIcon from '@mui/icons-material/AccountBalanceWalletOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
@@ -42,16 +42,15 @@ const CAT_META: Record<MainCategory, { label: string; tone: 'savings' | 'warning
 
 const CAT_ORDER: MainCategory[] = ['performance', 'cost', 'security_config'];
 
-// ─── Count chip: DS Chip with dot composition; neutral when count = 0 ─────
+// ─── Count chip: DS Chip with dot composition ─────────────────────────────
+// Only rendered for non-zero counts — a row of "0 perf / 0 sec" chips competed
+// with the account name for width and carried no information.
 
-const CountChip = ({ count, tone, label }: { count: number; tone: 'savings' | 'warning' | 'critical'; label: string }) => {
-  const active = count > 0;
-  return (
-    <Chip size='2xs' tone={active ? tone : 'neutral'} dot>
-      {count} {label}
-    </Chip>
-  );
-};
+const CountChip = ({ count, tone, label }: { count: number; tone: 'savings' | 'warning' | 'critical'; label: string }) => (
+  <Chip size='2xs' tone={tone} dot>
+    {count} {label}
+  </Chip>
+);
 
 // ─── Format with currency symbol ──────────────────────────────────────────
 
@@ -60,11 +59,34 @@ const formatCurrency = (value: number, symbol: string): string => {
   return symbol + Math.round(value).toLocaleString('en-US');
 };
 
+// ─── Section icon chip ─────────────────────────────────────────────────────
+// Light rounded-square icon chip for section headings — matches the "Quick
+// Links" pattern used on the home page (28px, radius-md), kept neutral gray
+// rather than per-section color.
+
+const SectionIcon = ({ icon: Icon }: { icon: ElementType }) => (
+  <Box
+    sx={{
+      width: 28,
+      height: 28,
+      borderRadius: ds.radius.md,
+      backgroundColor: ds.gray[100],
+      color: ds.gray[600],
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+    }}
+  >
+    <Icon sx={{ fontSize: 16 }} />
+  </Box>
+);
+
 // ─── Cost overview header ──────────────────────────────────────────────────
 
 const OverviewHeader = (
-  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-    <AccountBalanceWalletOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+    <SectionIcon icon={AccountBalanceWalletOutlinedIcon} />
     <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Cost & Health Overview</Typography>
   </Box>
 );
@@ -93,7 +115,7 @@ const PaneHeader = ({ costByCurrency, costLoading }: { costByCurrency?: Currency
 
   return (
     <Box sx={{ mb: ds.space[4] }}>
-      <Card size='md' header={OverviewHeader}>
+      <Card size='md' elevation='flat' header={OverviewHeader}>
         {costByCurrency.map((summary, idx) => (
           <Box key={summary.currencySymbol}>
             {idx > 0 && <Divider sx={{ my: ds.space[4] }} />}
@@ -211,17 +233,10 @@ const AccountCard = ({
         py: ds.space[3],
       }}
     >
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: '1fr auto',
-          columnGap: ds.space[4],
-          rowGap: ds.space[2],
-          alignItems: 'center',
-        }}
-      >
-        {/* Row 1, col 1 — Account name + (optional) critical pill */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2], minWidth: 0 }}>
+        {/* Row 1 — name takes the remaining width, savings is pinned right and
+            never shrinks, so the figures line up card-to-card. */}
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: ds.space[2], minWidth: 0 }}>
           <CustomTooltip title={isTruncated ? account.accountName : ''} placement='top'>
             <Typography
               ref={nameRef}
@@ -235,59 +250,42 @@ const AccountCard = ({
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
+                flex: 1,
+                minWidth: 0,
               }}
             >
               {account.accountName}
             </Typography>
           </CustomTooltip>
-          {account.criticalCount > 0 && (
-            <Chip size='xs' tone='critical' aria-label={`${account.criticalCount} critical`}>
-              {account.criticalCount} critical
-            </Chip>
-          )}
+          <Typography
+            sx={{
+              fontSize: ds.text.caption,
+              fontWeight: account.totalDollarImpact > 0 ? ds.weight.semibold : ds.weight.regular,
+              color: account.totalDollarImpact > 0 ? ds.green[600] : ds.gray[500],
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {account.totalDollarImpact > 0
+              ? `${formatCurrency(account.totalDollarImpact, acctCost?.currencySymbol || defaultCurrencySymbol)}/mo savings`
+              : 'no savings'}
+          </Typography>
         </Box>
 
-        {/* Row 1, col 2 — Savings */}
-        <Typography
-          sx={{
-            fontSize: ds.text.caption,
-            fontWeight: account.totalDollarImpact > 0 ? ds.weight.semibold : ds.weight.regular,
-            color: account.totalDollarImpact > 0 ? ds.green[600] : ds.gray[500],
-            whiteSpace: 'nowrap',
-            justifySelf: 'end',
-          }}
-        >
-          {account.totalDollarImpact > 0
-            ? `${formatCurrency(account.totalDollarImpact, acctCost?.currencySymbol || defaultCurrencySymbol)}/mo savings`
-            : 'no savings'}
-        </Typography>
-
-        {/* Row 2, col 1 — MTD value (large) + trend, or empty-state */}
-        {acctCost && acctCost.mtd > 0 ? (
-          <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: ds.space[1], whiteSpace: 'nowrap', minWidth: 0, lineHeight: 1 }}>
-            <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700], lineHeight: 1 }}>
-              {formatCurrency(acctCost.mtd, acctCost.currencySymbol)}
-            </Typography>
-            <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], textTransform: 'uppercase', letterSpacing: '0.4px', lineHeight: 1 }}>
-              MTD
-            </Typography>
-            {acctCost.change !== 0 && (
-              <Box sx={{ display: 'inline-flex', alignItems: 'center', lineHeight: 1, '& *': { lineHeight: 1 } }}>
-                <Trend value={Math.abs(acctCost.change)} sign={acctCost.change > 0 ? -1 : 1} size='sm' />
-              </Box>
+        {/* Row 2 — badges. Zero-count categories are omitted rather than rendered
+            as neutral "0 perf" / "0 sec" chips. */}
+        {(account.criticalCount > 0 || CAT_ORDER.some((cat) => (account.categoryCounts[cat] ?? 0) > 0)) && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap', minWidth: 0 }}>
+            {account.criticalCount > 0 && (
+              <Chip size='xs' tone='critical' aria-label={`${account.criticalCount} critical`}>
+                {account.criticalCount} critical
+              </Chip>
             )}
+            {CAT_ORDER.filter((cat) => (account.categoryCounts[cat] ?? 0) > 0).map((cat) => (
+              <CountChip key={cat} count={account.categoryCounts[cat]} tone={CAT_META[cat].tone} label={CAT_META[cat].label} />
+            ))}
           </Box>
-        ) : (
-          <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], fontStyle: 'italic' }}>No billing data</Typography>
         )}
-
-        {/* Row 2, col 2 — Counts (perf · cost · sec), right-aligned */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], justifySelf: 'end' }}>
-          {CAT_ORDER.map((cat) => {
-            const meta = CAT_META[cat];
-            return <CountChip key={cat} count={account.categoryCounts[cat] ?? 0} tone={meta.tone} label={meta.label} />;
-          })}
-        </Box>
       </Box>
     </Box>
   );
@@ -320,13 +318,14 @@ const AccountClusterPane = ({
     onSelectAccount(selectedAccountId === accountId ? null : accountId);
   };
   return (
-    <Box sx={{ width: '370px', flexShrink: 0 }}>
+    <Box sx={{ width: '300px', flexShrink: 0 }}>
       <PaneHeader costByCurrency={costByCurrency} costLoading={costLoading} />
       <Card
-        size='sm'
+        size='md'
+        elevation='flat'
         header={
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-            <StorageOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+            <SectionIcon icon={StorageOutlinedIcon} />
             <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Accounts</Typography>
           </Box>
         }

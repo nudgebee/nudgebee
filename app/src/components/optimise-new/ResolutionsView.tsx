@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import apiRecommendations from '@api1/recommendation';
 import apiHome from '@api1/home';
 import apiUser from '@api1/user';
@@ -136,6 +136,21 @@ const ResolutionsView = () => {
   // the listing so the row reflects its new InProgress state.
   const [retryingId, setRetryingId] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // One-time hydration of status/account from a cross-tab deep link (e.g. the
+  // Summary insight widget's "Work in progress" tile linking in with
+  // ?status=InProgress&accountId=...#resolutions). Applied once per mount —
+  // guarded by a ref rather than state so it never fights a later interactive
+  // change to the same filters.
+  const urlFiltersAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!router.isReady || urlFiltersAppliedRef.current) return;
+    urlFiltersAppliedRef.current = true;
+    const statusParam = typeof router.query.status === 'string' ? router.query.status : '';
+    const accountParam = router.query.accountId;
+    if (statusParam) setSelectedStatus(statusParam);
+    if (accountParam) setSelectedAccounts(Array.isArray(accountParam) ? accountParam : [accountParam]);
+  }, [router.isReady, router.query]);
 
   const handleRetry = useCallback(async (resolutionId: string, accountId: string) => {
     setRetryingId(resolutionId);

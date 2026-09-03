@@ -34,6 +34,11 @@ query list_k8_recommendation_summary($limit:Int, $offset:Int) {
       updated_at
     }
   }
+  recommendation_aggregate: recommendation_groupings_v2(where: __WHERE__){
+    rows{
+      count
+    }
+  }
 }`;
 
 const OPTIMISE_SUMMARY_RECS_CACHE_KEY = 'optimise_summary_recommendations';
@@ -152,12 +157,27 @@ query k8s_recommendation_summary {
   }
 }`;
 
+// Tenant-wide (not capped to any curated list) spend-by-account ranking — used
+// to find the single account carrying the most $ at stake, decoupled from
+// whatever subset of recommendations a curated list happens to have pulled.
+export const LIST_k8_RECOMMENDATION_SUMMARY_BY_ACCOUNT = `
+query k8s_recommendation_summary_by_account($limit: Int) {
+  recommendation_aggregate: recommendation_groupings_v2(where: __WHERE__, group_by: ["account_id"], order_by: [{column: "sum_estimated_savings", order: desc}], limit: $limit) {
+    rows {
+      account_id
+      sum_estimated_savings
+      count
+    }
+  }
+}`;
+
 export const LIST_k8_RECOMMENDATION_SAFETY_GROUPS = `
 query k8s_recommendation_safety_groups {
   recommendation_aggregate: recommendation_groupings_v2(where: __WHERE__){
     rows{
       count
       safety_band
+      sum_estimated_savings
     }
   }
 }`;
@@ -983,7 +1003,12 @@ const apiRecommendations = {
           if (parsed) item.recommendation = parsed;
         }
       });
-      const result = { data: { recommendation: rows } };
+      // True count across the full `where` match, independent of `limit` — the
+      // Summary tab's curated list only ever pulls the top N rows, so callers
+      // that need "N of TOTAL" framing (e.g. the headline briefing) can't infer
+      // the total from rows.length once the result set exceeds `limit`.
+      const totalCount = response?.data?.data?.recommendation_aggregate?.rows?.[0]?.count ?? rows.length;
+      const result = { data: { recommendation: rows, recommendation_aggregate: { aggregate: { count: totalCount } } } };
       cache.setWithSuffix(OPTIMISE_SUMMARY_RECS_CACHE_KEY, result, cacheSuffix, OPTIMISE_SUMMARY_RECS_TTL_SEC);
       return result;
     } catch (error) {
@@ -1275,6 +1300,52 @@ const apiRecommendations = {
     }
   },
 
+  // Tenant-wide $-at-stake ranking by account, for a cross-account "worst
+  // account" callout. Deliberately takes no accountId — call it only when
+  // viewing all accounts; once a single account is selected there is nothing
+  // to rank against.
+  async getK8sRecommendationSummaryByAccount({
+    accountId,
+    category,
+    excludeRuleName,
+    status = ['Open', 'Assigned'],
+    limit = 1,
+  }: {
+    /** Narrows the ranking to a subset of accounts — mirrors the `_in` scoping
+     *  on getK8sRecommendationSummaryByRuleName. Omitted ⇒ every account. */
+    accountId?: string | string[];
+    category?: string | string[];
+    excludeRuleName?: string[];
+    status?: string[];
+    limit?: number;
+  }): Promise<{ account_id: string; sum_estimated_savings: number; count: number }[]> {
+    try {
+      const gqlQuery: any = {};
+      if (Array.isArray(accountId)) {
+        gqlQuery['account_id'] = { _in: accountId };
+      } else if (accountId) {
+        gqlQuery['account_id'] = { _eq: accountId };
+      }
+      if (Array.isArray(category)) {
+        gqlQuery['category'] = { _in: category };
+      } else if (category) {
+        gqlQuery['category'] = { _eq: category };
+      }
+      if (excludeRuleName && excludeRuleName.length > 0) {
+        gqlQuery['rule_name'] = { _not_in: excludeRuleName };
+      }
+      if (status && status.length > 0) {
+        gqlQuery['status'] = { _in: status };
+      }
+      const query = LIST_k8_RECOMMENDATION_SUMMARY_BY_ACCOUNT.replace('__WHERE__', gqlStringify(gqlQuery));
+      const response = await queryGraphQL(query, 'k8s_recommendation_summary_by_account', { limit });
+      return response?.data?.data?.recommendation_aggregate?.rows || [];
+    } catch (error) {
+      console.error('getK8sRecommendationSummaryByAccount error', error);
+      return [];
+    }
+  },
+
   // Per-safety-band counts for the Safety filter chips. Same scoping params as
   // the rule-name summary above, minus safetyBand itself (a facet's own counts
   // must not shrink when that facet is selected).
@@ -1301,7 +1372,7 @@ const apiRecommendations = {
     excludeRuleName?: string[];
     severity?: string | string[];
     status?: string[];
-  } & Omit<RecommendationFacetFilters, 'safetyBand'>): Promise<{ count: number; safety_band: string | null }[]> {
+  } & Omit<RecommendationFacetFilters, 'safetyBand'>): Promise<{ count: number; safety_band: string | null; sum_estimated_savings: number }[]> {
     if (accountId === 'demo') {
       return [];
     }

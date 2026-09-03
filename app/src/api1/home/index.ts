@@ -20,6 +20,7 @@ query GetCloudAccounts {
         account_type
         id
         account_name
+        account_env
         status
         created_at
         agents

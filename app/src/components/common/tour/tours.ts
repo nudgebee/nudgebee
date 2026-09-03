@@ -1502,21 +1502,22 @@ const optimizeTour: TourDef = {
  * wrappers exist but only for K8s pod-right-sizing recs behind a row click, which
  * is too data-dependent to build a step on.
  *
- * Anchors for "Optimize: Summary" (#summary-savings-card, #summary-filter-category,
- * #summary-filter-provider and #summary-view-toggle were added with this guide —
- * Card/ToggleGroup already forwarded `id`; FilterFacet gained an optional one):
+ * Anchors for "Optimize: Summary":
  *   #anchor-tab-summary                    → the tab
- *   #summary-savings-card                  → headline savings + freshness Card
- *   #summary-filter-category / -provider   → the two chip facets
- *   #auto-complete-account-filter-select   → Account (FilterDropdown rewrites its id)
- *   #top3-open-autopilot / #sort-toggle / #ask-nubi-footer
- *                                          → all render only once findings load and
- *                                            are non-empty → optional
- *   #summary-view-toggle                   → cards/list switch
- * Note the findings table (#summary-findings-table) is NOT spotlit: viewMode
- * defaults to 'cards', so it isn't mounted on landing. The view-toggle step covers
- * it. And #category-section-<category> is a decoy — InsightSection passes that id to
- * CollapsableCard, which only uses it as a localStorage key and never renders it.
+ *   #summary-savings-card                  → headline savings + briefing Card
+ *   #summary-do-this-first                 → the ranked "Do this first" queue
+ *                                             (severity × impact × age — not a
+ *                                             filtered view; the category/provider
+ *                                             facets below don't touch it)
+ *   #summary-filter-category / -provider   → the two chip facets — narrow the
+ *                                             "Top findings" table only
+ *   #auto-complete-account-filter-select   → Account (FilterDropdown rewrites its id) —
+ *                                             narrows the whole page, ranked queue included
+ *   #sort-toggle / #summary-findings-table → render only once findings load and
+ *                                             are non-empty → optional
+ * The card/list view toggle was removed — the table is the only view now, so
+ * #summary-findings-table is always mounted (once findings load) and gets its
+ * own step instead of being skipped.
  */
 const optimizeSummaryTour: TourDef = {
   id: 'optimize-summary',
@@ -1545,34 +1546,34 @@ const optimizeSummaryTour: TourDef = {
       align: 'start',
     },
     {
+      element: '#summary-do-this-first',
+      title: 'Do this first',
+      description: '{brand} ranks findings by severity, impact and age — not just savings — and surfaces the ones worth your time first.',
+      side: 'bottom',
+      align: 'start',
+      // Only renders once findings have loaded and are non-empty.
+      optional: true,
+    },
+    {
       element: '#summary-filter-category',
       title: 'Filter by category',
-      description: 'Cost, Performance, or Security & Config — pick the kind of problem you’re here to solve. All is the default.',
+      description: 'Cost, Performance, or Security & Config — narrows the findings table below. All is the default.',
       side: 'bottom',
       align: 'start',
     },
     {
       element: '#summary-filter-provider',
       title: 'Filter by provider',
-      description: 'Narrow to AWS, Azure, GCP, or Kubernetes when you only own one slice of the estate.',
+      description: 'Narrow the table to AWS, Azure, GCP, or Kubernetes when you only own one slice of the estate.',
       side: 'bottom',
       align: 'start',
     },
     {
       element: '#auto-complete-account-filter-select',
       title: 'Filter by account',
-      description: 'Scope everything below to one cloud account or cluster.',
+      description: 'Scope everything on this page to one cloud account or cluster.',
       side: 'bottom',
       align: 'start',
-    },
-    {
-      element: '#top3-open-autopilot',
-      title: 'Start with the top 3',
-      description: '{brand} picks the three findings worth your time first. Open the Autopilot queue to let automations handle the repetitive ones.',
-      side: 'top',
-      align: 'end',
-      // Only renders once findings have loaded and there are more than the top 3.
-      optional: true,
     },
     {
       element: '#sort-toggle',
@@ -1584,16 +1585,9 @@ const optimizeSummaryTour: TourDef = {
       optional: true,
     },
     {
-      element: '#summary-view-toggle',
-      title: 'Cards or list',
-      description: 'Cards read better when you’re exploring; switch to list for a dense, sortable table of every finding.',
-      side: 'bottom',
-      align: 'end',
-    },
-    {
-      element: '#ask-nubi-footer',
-      title: 'Ask Nubi',
-      description: 'Not sure what a finding means or whether it’s safe to apply? Ask Nubi about any of it in plain language.',
+      element: '#summary-findings-table',
+      title: 'Every finding, sortable',
+      description: 'A dense table of everything matching your filters — not just the curated picks above.',
       side: 'top',
       align: 'center',
       optional: true,

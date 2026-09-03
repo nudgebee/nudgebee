@@ -9,7 +9,9 @@ export type SecConfigSubCategory = 'security_vulnerability' | 'critical_config' 
 export type SubCategory = CostSubCategory | PerfSubCategory | SecConfigSubCategory;
 
 export type Provider = 'aws' | 'azure' | 'gcp' | 'k8s';
-export type Environment = 'prod' | 'staging' | 'dev' | 'sandbox';
+// Mirrors the cloud_accounts.account_env column, which is binary — an account is
+// either production or it isn't. There is no staging/dev/sandbox tier in the data.
+export type Environment = 'prod' | 'non_prod';
 
 export type SortKey = 'savings' | 'age' | 'confidence' | 'resource';
 
@@ -132,7 +134,7 @@ export const SEC_CONFIG_SUBCATEGORIES: SubCategoryMeta[] = [
 // ─── Sort / rank helpers ───────────────────────────────────────────────────
 
 const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-const ENV_RANK: Record<Environment, number> = { prod: 0, staging: 1, dev: 2, sandbox: 3 };
+const ENV_RANK: Record<Environment, number> = { prod: 0, non_prod: 1 };
 
 export const sortInsights = (items: InsightItem[], sortBy: SortKey = 'savings'): InsightItem[] => {
   return [...items].sort((a, b) => {
@@ -141,7 +143,7 @@ export const sortInsights = (items: InsightItem[], sortBy: SortKey = 'savings'):
         return (
           b.dollarImpact - a.dollarImpact ||
           (SEV_RANK[a.severity] ?? 4) - (SEV_RANK[b.severity] ?? 4) ||
-          (ENV_RANK[a.env] ?? 3) - (ENV_RANK[b.env] ?? 3)
+          (ENV_RANK[a.env] ?? 1) - (ENV_RANK[b.env] ?? 1)
         );
       case 'age':
         return b.ageDays - a.ageDays || b.dollarImpact - a.dollarImpact;
@@ -150,7 +152,7 @@ export const sortInsights = (items: InsightItem[], sortBy: SortKey = 'savings'):
       case 'resource':
         return a.resourceId.localeCompare(b.resourceId);
       default:
-        return (SEV_RANK[a.severity] ?? 4) - (SEV_RANK[b.severity] ?? 4) || (ENV_RANK[a.env] ?? 3) - (ENV_RANK[b.env] ?? 3);
+        return (SEV_RANK[a.severity] ?? 4) - (SEV_RANK[b.severity] ?? 4) || (ENV_RANK[a.env] ?? 1) - (ENV_RANK[b.env] ?? 1);
     }
   });
 };
@@ -163,7 +165,19 @@ export const subtotal = (items: InsightItem[]): number => items.reduce((s, i) =>
 // is denominated in the account currency, not always USD). Defaults to '$'.
 export const formatDollars = (n: number, symbol = '$'): string => {
   if (n >= 1000) return symbol + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-  return symbol + n.toLocaleString('en-US');
+  // Cap at cents: bare toLocaleString defaults to 3 fraction digits, which
+  // rendered a filtered total of 203.5432 as "$203.543".
+  return symbol + n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+};
+
+// Whole-currency formatting for headline-weight figures ("$18,420") — unabbreviated,
+// unlike `formatDollars` above. Mirrors what CostCallout does internally.
+export const formatWholeCurrency = (value: number, currency: string): string => {
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 0 }).format(value);
+  } catch {
+    return `$${Math.round(value).toLocaleString('en-US')}`;
+  }
 };
 
 // Secondary line for cards/list rows: show the terse `brief` under the title only
@@ -191,18 +205,46 @@ export const formatAge = (days: number): string => {
   return `${Math.floor(days / 365)}y`;
 };
 
-// ─── Top-3 weighted score: savings × confidence × recency ──────────────────
+// ─── Ranked queue: severity × savings × confidence × recency ───────────────
 
-export const getTop3 = (items: InsightItem[]): InsightItem[] => {
+// Severity multiplier. Without it the score is savings-only for monetary findings
+// and a flat baseline for risk findings, which ranked a critical public bucket
+// below a medium right-sizing — visibly wrong in a list headed "Do this first".
+const SEV_WEIGHT: Record<string, number> = { critical: 3, high: 2, medium: 1.2, low: 0.8, info: 0.5 };
+
+export const getTopRanked = (items: InsightItem[], count = 3): InsightItem[] => {
   const scored = items.map((item) => {
     const recencyWeight = Math.max(0.1, 1 - item.ageDays / 180);
     const confWeight = item.confidence / 100;
     const dollarWeight = item.dollarImpact > 0 ? item.dollarImpact : 500; // risk items get baseline weight
-    const score = dollarWeight * confWeight * recencyWeight;
+    const sevWeight = SEV_WEIGHT[(item.severity || '').toLowerCase()] ?? 1;
+    const score = dollarWeight * confWeight * recencyWeight * sevWeight;
     return { item, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, 3).map((s) => s.item);
+
+  // A pure severity-weighted score lets a wave of $0-impact critical findings
+  // (e.g. CPU/Mem right-sizing with no cost estimate) fill every slot — visible
+  // on live data as "Top N impact" reading $0/mo. Reserve
+  // up to half the queue for genuine dollar savings so both signals surface,
+  // instead of the highest-scoring severity picks silently squeezing them all out.
+  const impactQuota = Math.ceil(count / 2);
+  const topBySavings = [...items]
+    .filter((i) => i.dollarImpact > 0)
+    .sort((a, b) => b.dollarImpact - a.dollarImpact)
+    .slice(0, impactQuota);
+
+  const picked = new Map(topBySavings.map((item) => [item.id, item]));
+  for (const { item } of scored) {
+    if (picked.size >= count) break;
+    if (!picked.has(item.id)) picked.set(item.id, item);
+  }
+
+  // Re-order the final set by the same composite score so it reads as one
+  // ranked list — "savings picks, then severity picks" stitched together would
+  // read as two lists instead of one priority order.
+  const scoreById = new Map(scored.map((s) => [s.item.id, s.score]));
+  return [...picked.values()].sort((a, b) => (scoreById.get(b.id) ?? 0) - (scoreById.get(a.id) ?? 0));
 };
 
 // ─── Sub-category one-liner generator ──────────────────────────────────────
@@ -229,22 +271,56 @@ export const subCategorySummaryLine = (items: InsightItem[], symbol = '$'): stri
 
 // ─── Nubi briefing generator ───────────────────────────────────────────────
 
+// Which words in the (still fully static) briefing sentence get bold + colour.
+// The copy itself stays a fixed template — only `criticals`/`dollars` interpolate
+// — this just lets the two numbers that matter stand out in the sentence.
+export type BriefingEmphasis = 'money' | 'alert';
+
+export interface BriefingSegment {
+  text: string;
+  emphasis?: BriefingEmphasis;
+}
+
 // `totalDollars` is the canonical full-set savings total (the headline number); pass
 // it so the briefing agrees with the headline instead of summing only the shown rows.
-export const generateNubiBriefing = (items: InsightItem[], totalDollars?: number, symbol = '$'): string => {
+// `totalCount` is the true count of in-scope recommendations across the whole
+// tenant — `items` itself is already a curated subset (top-by-urgency ∪
+// top-by-impact), so once a tenant has more findings than that curation pulls,
+// `items.length` alone understates what's actually out there. Appended as a
+// trailing clause — critical/savings info leads, the "out of N total" context
+// follows — only when it's actually informative, i.e. curation is discarding
+// something.
+export const generateNubiBriefing = (items: InsightItem[], totalDollars?: number, symbol = '$', totalCount?: number): BriefingSegment[] => {
   const criticals = items.filter((i) => i.severity === 'critical').length;
   const dollars = totalDollars ?? subtotal(items);
+  const suffix: BriefingSegment[] =
+    totalCount != null && totalCount > items.length ? [{ text: ` Selected from ${totalCount.toLocaleString()} total recommendations.` }] : [];
 
   if (criticals > 0 && dollars > 0) {
-    return `${criticals} critical issues and ${formatDollars(
-      dollars,
-      symbol
-    )}/mo in savings potential need your attention this week. The biggest risks are in security and cost.`;
+    return [
+      { text: `${criticals} critical issue${criticals > 1 ? 's' : ''}`, emphasis: 'alert' },
+      { text: ' and ' },
+      { text: `${formatDollars(dollars, symbol)}/mo`, emphasis: 'money' },
+      { text: ' in savings potential need your attention this week.' },
+      ...suffix,
+    ];
   }
   if (dollars > 0) {
-    return `${formatDollars(dollars, symbol)}/mo in optimization opportunities across ${items.length} findings. ${criticals} are critical severity.`;
+    return [
+      { text: `${formatDollars(dollars, symbol)}/mo`, emphasis: 'money' },
+      { text: ` in optimization opportunities across ${items.length} findings. ` },
+      { text: `${criticals}`, emphasis: 'alert' },
+      { text: ' are critical severity.' },
+      ...suffix,
+    ];
   }
-  return `${items.length} findings flagged this week, ${criticals} critical. Start with the top 3 below.`;
+  return [
+    { text: `${items.length} findings` },
+    { text: ' flagged this week, ' },
+    { text: `${criticals} critical`, emphasis: 'alert' },
+    { text: '. Start with the top 3 below.' },
+    ...suffix,
+  ];
 };
 
 // ─── Overflow count for collapsed groups ───────────────────────────────────

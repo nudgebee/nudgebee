@@ -56,26 +56,41 @@ test.describe("Optimize", () => {
   );
 
   test(
-    "Optimize Summary - open the Summary tab, verify the savings card reports a findings count and the Category, Provider and Account filters render",
+    "Optimize Summary - open the Summary tab, verify the savings card loads real data and the Category, Provider and Account filters render",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openOptimizeTab(page, "summary");
 
-      await test.step("The headline card resolves from its loading state to a real findings count", async () => {
+      await test.step("The headline card resolves from its loading state to real data", async () => {
         await expect(locators.summarySavingsCard).toBeVisible({ timeout: 60000 });
-        // StatusIndicator's label is `${filtered.length} findings…` once the fetch
-        // lands, and the literal "Loading…" until then — so matching a digit is what
-        // separates "the card rendered its data" from "the card is still a skeleton".
-        await expect(locators.summarySavingsCard).toContainText(/\d+\s+findings/, { timeout: 60000 });
-        await expect(locators.summarySavingsCard).toContainText("Potential savings");
+        // "Potential savings" is the label that separates "the card rendered its
+        // data" from "the card is still a skeleton", but WHERE it lives depends on
+        // the build: the metrics grid used to sit inside the headline card and now
+        // sits in its own insight widget below it. Wait for the label anywhere on
+        // the page first, then assert against whichever host is actually rendered —
+        // the suite runs against a deployed environment, so both shapes are live at
+        // different times and neither may be assumed.
+        await expect(page.getByText("Potential savings").first()).toBeVisible({ timeout: 60000 });
+        const hasInsightWidget = await locators.summaryInsightWidget.isVisible();
+        const metricsHost = hasInsightWidget ? locators.summaryInsightWidget : locators.summarySavingsCard;
+        await expect(metricsHost).toContainText("Potential savings");
+        // Severity is labelled "Critical findings" in the widget and was a bare
+        // findings count in the older headline card.
+        await expect(metricsHost).toContainText(hasInsightWidget ? "Critical findings" : /\d+\s+findings/);
       });
 
-      await test.step("Both filter facets and the account picker are on screen", async () => {
+      await test.step("The listing facets and the account picker are on screen", async () => {
         await expect(locators.summaryCategoryFacet).toBeVisible();
         await expect(locators.summaryCategoryFacet).toContainText("Category");
         await expect(locators.summaryProviderFacet).toBeVisible();
         await expect(locators.summaryProviderFacet).toContainText("Provider");
         await expect(locators.summaryAccountFilter).toBeVisible();
+        // The page-wide Environment facet ships with the insight widget; skip it on
+        // builds that predate both rather than asserting an element that cannot exist.
+        if (await locators.summaryInsightWidget.isVisible()) {
+          await expect(locators.summaryEnvFacet).toBeVisible();
+          await expect(locators.summaryEnvFacet).toContainText("Environment");
+        }
       });
     }
   );
