@@ -297,12 +297,10 @@ rabbitmq:
 services-server:
   fullnameOverride: services-server
   env:
-    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-12T15-41-58_3b33692e2739d958a11eb43346c4240a70fd15cd'
-    K8S_VERSION_UPGRADE_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-12T15-41-58_3b33692e2739d958a11eb43346c4240a70fd15cd'
+    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c'
     TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.58.0'
     POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1'
     KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.10.4'
-    CERT_SCANNER_IMAGE: 'ghcr.io/nudgebee/cert-scanner:v0.1.0'
 k8s-collector:
   fullnameOverride: k8s-collector
 relay-server:
