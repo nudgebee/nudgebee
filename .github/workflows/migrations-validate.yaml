@@ -61,11 +61,11 @@ jobs:
           python3 api-server/migrations/validate_migrations.py \
             --refs origin/main,origin/test,origin/prod
 
-      # Pin matches the Dockerfile (api-server/migrations/Dockerfile:33).
-      - name: Install atlas (community v0.36.0)
+      # Pin matches the Dockerfile (api-server/migrations/Dockerfile).
+      - name: Install atlas (community v1.3.0)
         env:
-          ATLAS_VERSION: v0.36.0
-          ATLAS_SHA256: 31df223059700191b80032906590bb6030f864ba202dfbc57ba90e593292301a
+          ATLAS_VERSION: v1.3.0
+          ATLAS_SHA256: 10d7913e3dce43ab99b8d71534a4cbadaf11a16dc293adf3b91d10e83a0ac70b
         run: |
           curl -fsSL --connect-timeout 30 --max-time 300 --retry 5 \
             "https://release.ariga.io/atlas/atlas-community-linux-amd64-${ATLAS_VERSION}" \
