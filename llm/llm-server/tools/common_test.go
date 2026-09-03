@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,12 @@ func TestExecuteCliCommand(t *testing.T) {
 	})
 
 	t.Run("allowed command with path", func(t *testing.T) {
+		// Absolute POSIX path: present on Linux/macOS (including CI), absent on
+		// Windows dev machines, where os/exec resolves it against the current
+		// drive rather than any shell mount. Skip rather than fail there.
+		if _, err := os.Stat("/bin/echo"); err != nil {
+			t.Skipf("/bin/echo not available: %v", err)
+		}
 		output, err := ExecuteCliCommand(toolContext, "/bin/echo hello", nil, []string{"/bin/echo"})
 		assert.NoError(t, err)
 		assert.Equal(t, "hello\n", output)

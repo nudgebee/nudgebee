@@ -6,7 +6,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -286,10 +286,18 @@ func kubectlReadsSecretFilesystemPath(command string) bool {
 	// Clean every path-shaped token before matching. This covers normal shell
 	// path resolution such as `/var/run/./secrets` and
 	// `/var/run/tmp/../secrets`, including the `pod:/path` form used by cp.
+	//
+	// path.Clean, NOT filepath.Clean: these are paths inside the target
+	// container, which are always POSIX, and they are matched against the
+	// POSIX patterns in kubectlSecretFilesystemPatterns. filepath.Clean is
+	// OS-dependent: on a Windows host it rewrites a dot-segment secret path
+	// into one separated by backslashes, which matches no pattern, so every
+	// obfuscated secret path silently passes the check. The deny policy must
+	// not depend on the OS the validator happens to run on.
 	cleanedTokens := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
 		if strings.Contains(tok, "/") {
-			tok = filepath.Clean(tok)
+			tok = path.Clean(tok)
 		}
 		cleanedTokens = append(cleanedTokens, tok)
 	}
@@ -650,7 +658,7 @@ func validateKubectlCommandAccess(command string) error {
 	normalizedCommand := shellQuoteStripper.Replace(command)
 	for _, word := range words {
 		if strings.Contains(word, "/") {
-			normalizedCommand += " " + filepath.Clean(word)
+			normalizedCommand += " " + path.Clean(word)
 		}
 	}
 	for _, path := range kubectlSecretFilesystemPatterns {
