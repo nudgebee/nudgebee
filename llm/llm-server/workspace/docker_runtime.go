@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 
@@ -280,6 +281,9 @@ func (d *dockerRuntime) endpoint(ctx context.Context, accountID string) (string,
 }
 
 func dockerAPIRequest(ctx context.Context, client *http.Client, accountID, method, endpoint string, queryParams map[string]string, body []byte) (*http.Response, error) {
+	if client == nil {
+		client = common.HttpClient()
+	}
 	runtime, err := newDockerRuntime()
 	if err != nil {
 		return nil, err

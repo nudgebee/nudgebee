@@ -238,7 +238,7 @@ func (w *workspaceManager) WaitForReady(ctx *security.RequestContext, accountId 
 
 	if dockerMode() {
 		deadline := time.Now().Add(300 * time.Second)
-		if ctxDeadline, ok := ctx.GetContext().Deadline(); ok {
+		if ctxDeadline, ok := ctx.GetContext().Deadline(); ok && ctxDeadline.Before(deadline) {
 			deadline = ctxDeadline
 		}
 		for time.Now().Before(deadline) {
