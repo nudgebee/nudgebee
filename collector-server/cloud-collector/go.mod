@@ -136,7 +136,7 @@ require (
 	github.com/microsoft/azure-devops-go-api/azuredevops/v7 v7.1.0
 	github.com/microsoftgraph/msgraph-sdk-go v1.98.0
 	github.com/mitchellh/mapstructure v1.5.0
-	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/rabbitmq/amqp091-go v1.13.0
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/samber/lo v1.53.0
 	github.com/samber/slog-formatter v1.3.0
