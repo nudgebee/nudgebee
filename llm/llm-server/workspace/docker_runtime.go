@@ -93,7 +93,7 @@ func newDockerRuntime() (*dockerRuntime, error) {
 }
 
 func newDockerRuntimeForHost(host string) (*dockerRuntime, error) {
-	transport := &http.Transport{}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseURL := "http://docker"
 	switch {
 	case strings.HasPrefix(host, "unix://"):
@@ -114,6 +114,18 @@ func newDockerRuntimeForHost(host string) (*dockerRuntime, error) {
 		pullClient: &http.Client{Transport: transport, Timeout: 10 * time.Minute},
 		baseURL:    baseURL,
 	}, nil
+}
+
+func (d *dockerRuntime) start(ctx context.Context, accountID string) error {
+	name := dockerWorkspaceName(accountID)
+	_, status, err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/start", nil)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusNoContent || status == http.StatusNotModified {
+		return nil
+	}
+	return fmt.Errorf("start workspace container %s: Docker returned %d", name, status)
 }
 
 func dockerWorkspaceName(accountID string) string {
@@ -433,8 +445,11 @@ func (d *dockerRuntime) create(ctx *security.RequestContext, accountID string) e
 			return err
 		}
 		token := dockerEnvValue(existing.Config.Env, ENV_NB_WORKSPACE_TOKEN)
-		if existing.Config.Image == config.Config.LlmServerCodeAgentImage && existing.State.Running && dockerWorkspaceTokenReusable(token, time.Now()) {
-			return nil
+		if existing.Config.Image == config.Config.LlmServerCodeAgentImage && dockerWorkspaceTokenReusable(token, time.Now()) {
+			if existing.State.Running {
+				return nil
+			}
+			return d.start(ctx.GetContext(), accountID)
 		}
 		if err := d.delete(ctx.GetContext(), accountID); err != nil {
 			return err
@@ -489,19 +504,19 @@ func (d *dockerRuntime) create(ctx *security.RequestContext, accountID string) e
 		if ownershipErr := validateDockerWorkspaceOwnership(winner, accountID); ownershipErr != nil {
 			return ownershipErr
 		}
-		return nil
+		winnerToken := dockerEnvValue(winner.Config.Env, ENV_NB_WORKSPACE_TOKEN)
+		if winner.Config.Image != config.Config.LlmServerCodeAgentImage || !dockerWorkspaceTokenReusable(winnerToken, time.Now()) {
+			return fmt.Errorf("conflicting workspace container %s does not match the requested image and token", name)
+		}
+		if winner.State.Running {
+			return nil
+		}
+		return d.start(ctx.GetContext(), accountID)
 	}
 	if status < 200 || status >= 300 {
 		return fmt.Errorf("create workspace container %s: Docker returned %d: %s", name, status, strings.TrimSpace(string(data)))
 	}
-	_, status, err = d.request(ctx.GetContext(), http.MethodPost, "/containers/"+url.PathEscape(name)+"/start", nil)
-	if err != nil {
-		return err
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("start workspace container %s: Docker returned %d", name, status)
-	}
-	return nil
+	return d.start(ctx.GetContext(), accountID)
 }
 
 func (d *dockerRuntime) delete(ctx context.Context, accountID string) error {

@@ -216,6 +216,41 @@ func TestDockerRuntimeCreateDoesNotMaskInspectionFailure(t *testing.T) {
 	require.False(t, createCalled)
 }
 
+func TestDockerRuntimeCreateStartsExistingReusableContainer(t *testing.T) {
+	accountID := "account-stopped"
+	withDockerConfig(t, "unused")
+	token, err := signWorkspaceToken(accountID, "")
+	require.NoError(t, err)
+	startCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/containers/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"Config": map[string]any{
+					"Image": config.Config.LlmServerCodeAgentImage,
+					"Env":   []string{ENV_NB_WORKSPACE_TOKEN + "=" + token},
+					"Labels": map[string]string{
+						dockerManagedLabel: "true", dockerAccountLabel: accountID,
+					},
+				},
+				"State": map[string]any{"Running": false, "Status": "created"},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/start"):
+			startCalls++
+			w.WriteHeader(http.StatusNotModified)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	config.Config.LlmServerWorkspaceDockerHost = server.URL
+
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+	require.NoError(t, runtime.create(security.NewRequestContextForSuperAdmin(), accountID))
+	require.Equal(t, 1, startCalls)
+}
+
 func TestMergeDockerEnvPreservesImageDefaultsAndOverridesByName(t *testing.T) {
 	merged := mergeDockerEnv(
 		[]string{"PATH=/image/bin", "IMAGE_DEFAULT=preserved"},
