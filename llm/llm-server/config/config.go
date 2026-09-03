@@ -608,6 +608,15 @@ type appConfig struct {
 	// persisting Type:"file" refs) is always-on, so flipping this needs no backfill.
 	// See llm/llm-server/WORKSPACE_FS_EVIDENCE_RECALL_SPEC.md.
 	LlmServerFsEvidenceRecallEnabled bool `mapstructure:"llm_server_fs_evidence_recall_enabled"`
+	// LlmServerEventEvidenceOverflowThreshold is the byte threshold above which
+	// get_event_evidence (tools/tool_event_evidence.go) offloads a response to
+	// a workspace file instead of returning it inline, mirroring the
+	// overflow-trigger convention agent_traces.go uses. Configurable rather
+	// than a literal so the extra workspace round-trip it adds can be tuned or
+	// effectively disabled in prod without a revert — unlike the FS
+	// evidence-recall layer it feeds into (LlmServerFsEvidenceRecallEnabled),
+	// this save path had no independent on/off switch. Default 2000.
+	LlmServerEventEvidenceOverflowThreshold int `mapstructure:"llm_server_event_evidence_overflow_threshold"`
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
@@ -1383,6 +1392,7 @@ func init() {
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
+	viper.SetDefault("llm_server_event_evidence_overflow_threshold", 2000)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_logs_v3_canonical_fast_path_enabled", true)
 	viper.SetDefault("llm_server_log_validate_request_enabled", true)
