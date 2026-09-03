@@ -30,6 +30,8 @@ const (
 	dockerTenantLabel       = "com.nudgebee.workspace.tenant-id"
 	dockerImageLabel        = "com.nudgebee.workspace.image"
 	dockerResponseBodyLimit = 1024 * 1024
+	dockerCommandBodyLimit  = 2 * 1024 * 1024
+	dockerAPIBodyHardLimit  = 64 * 1024 * 1024
 )
 
 var (
@@ -144,9 +146,12 @@ func (d *dockerRuntime) requestWithClient(ctx context.Context, client *http.Clie
 		return nil, 0, fmt.Errorf("call Docker Engine: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit+1))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read Docker response: %w", err)
+	}
+	if len(data) > dockerResponseBodyLimit {
+		return nil, resp.StatusCode, fmt.Errorf("docker response exceeds %d bytes", dockerResponseBodyLimit)
 	}
 	return data, resp.StatusCode, nil
 }
@@ -180,6 +185,36 @@ func dockerEnvValue(env []string, key string) string {
 	return ""
 }
 
+func validateDockerWorkspaceOwnership(container *dockerContainer, accountID string) error {
+	if container.Config.Labels[dockerManagedLabel] != "true" || container.Config.Labels[dockerAccountLabel] != accountID {
+		return fmt.Errorf("refusing to use unmanaged Docker container %s", dockerWorkspaceName(accountID))
+	}
+	return nil
+}
+
+func readDockerWorkspaceBody(body io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("docker workspace response exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+func dockerWorkspaceAPIBodyLimit() int64 {
+	limit := int64(config.Config.LlmServerWorkspaceFileMaxDownloadBytes)
+	if limit <= 0 {
+		limit = 5 * 1024 * 1024
+	}
+	limit += dockerResponseBodyLimit // JSON envelope and non-file endpoint headroom.
+	if limit > dockerAPIBodyHardLimit {
+		return dockerAPIBodyHardLimit
+	}
+	return limit
+}
+
 func dockerWorkspaceTokenReusable(token string, now time.Time) bool {
 	claims := &WorkspaceTokenClaims{}
 	parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
@@ -199,8 +234,8 @@ func (d *dockerRuntime) endpoint(ctx context.Context, accountID string) (string,
 	if err != nil {
 		return "", "", err
 	}
-	if container.Config.Labels[dockerManagedLabel] != "true" || container.Config.Labels[dockerAccountLabel] != accountID {
-		return "", "", fmt.Errorf("refusing to use unmanaged Docker container %s", dockerWorkspaceName(accountID))
+	if err := validateDockerWorkspaceOwnership(container, accountID); err != nil {
+		return "", "", err
 	}
 	token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN)
 	if !dockerWorkspaceTokenReusable(token, time.Now()) {
@@ -324,14 +359,41 @@ func (d *dockerRuntime) ensureImageEnv(ctx context.Context, image string) ([]str
 	pullPath := "/images/create?fromImage=" + url.QueryEscape(image)
 	pullCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 	defer cancel()
-	data, pullStatus, err := d.requestWithClient(pullCtx, d.pullClient, http.MethodPost, pullPath, nil)
+	req, err := http.NewRequestWithContext(pullCtx, http.MethodPost, d.baseURL+pullPath, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build Docker image pull request: %w", err)
 	}
-	if pullStatus < 200 || pullStatus >= 300 {
-		return nil, fmt.Errorf("pull workspace image %q: Docker returned %d: %s", image, pullStatus, strings.TrimSpace(string(data)))
+	resp, err := d.pullClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("pull workspace image %q: %w", image, err)
 	}
-	env, status, err = d.imageEnv(ctx, image)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
+		return nil, fmt.Errorf("pull workspace image %q: Docker returned %d: %s", image, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var progress struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := decoder.Decode(&progress); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("decode Docker image pull response for %q: %w", image, err)
+		}
+		if progress.Error != "" {
+			return nil, fmt.Errorf("pull workspace image %q: %s", image, progress.Error)
+		}
+		if progress.ErrorDetail.Message != "" {
+			return nil, fmt.Errorf("pull workspace image %q: %s", image, progress.ErrorDetail.Message)
+		}
+	}
+	env, status, err = d.imageEnv(pullCtx, image)
 	if err != nil {
 		return nil, err
 	}
@@ -367,8 +429,8 @@ func (d *dockerRuntime) create(ctx *security.RequestContext, accountID string) e
 		return inspectErr
 	}
 	if inspectErr == nil {
-		if existing.Config.Labels[dockerManagedLabel] != "true" || existing.Config.Labels[dockerAccountLabel] != accountID {
-			return fmt.Errorf("refusing to reuse unmanaged Docker container %s", name)
+		if err := validateDockerWorkspaceOwnership(existing, accountID); err != nil {
+			return err
 		}
 		token := dockerEnvValue(existing.Config.Env, ENV_NB_WORKSPACE_TOKEN)
 		if existing.Config.Image == config.Config.LlmServerCodeAgentImage && existing.State.Running && dockerWorkspaceTokenReusable(token, time.Now()) {
@@ -418,7 +480,15 @@ func (d *dockerRuntime) create(ctx *security.RequestContext, accountID string) e
 		return err
 	}
 	if status == http.StatusConflict {
-		// Concurrent lazy creation won the race. The winner owns readiness.
+		// Concurrent lazy creation may have won the race. Verify that the
+		// conflicting name belongs to the requested account before trusting it.
+		winner, inspectErr := d.inspect(ctx.GetContext(), accountID)
+		if inspectErr != nil {
+			return fmt.Errorf("verify conflicting workspace container %s: %w", name, inspectErr)
+		}
+		if ownershipErr := validateDockerWorkspaceOwnership(winner, accountID); ownershipErr != nil {
+			return ownershipErr
+		}
 		return nil
 	}
 	if status < 200 || status >= 300 {

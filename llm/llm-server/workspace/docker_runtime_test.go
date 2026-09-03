@@ -298,7 +298,104 @@ func TestDockerRuntimeLimitsEngineResponseBody(t *testing.T) {
 	require.NoError(t, err)
 
 	body, status, err := runtime.request(context.Background(), http.MethodGet, "/large", nil)
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "docker response exceeds")
 	require.Equal(t, http.StatusOK, status)
-	require.Len(t, body, dockerResponseBodyLimit)
+	require.Nil(t, body)
+}
+
+func TestDockerRuntimeConsumesLargeImagePullStream(t *testing.T) {
+	var imageAvailable bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/images/"):
+			if !imageAvailable {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"Config": map[string]any{"Env": []string{"PATH=/usr/bin"}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/images/create":
+			progress := strings.Repeat("p", 1024)
+			for written := 0; written < dockerResponseBodyLimit+1024; written += len(progress) {
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]string{"status": progress}))
+			}
+			imageAvailable = true
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+
+	env, err := runtime.ensureImageEnv(context.Background(), "example.test/code-agent:v1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"PATH=/usr/bin"}, env)
+}
+
+func TestDockerRuntimeReportsImagePullStreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "registry denied access"})
+	}))
+	defer server.Close()
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+
+	_, err = runtime.ensureImageEnv(context.Background(), "example.test/private:v1")
+	require.ErrorContains(t, err, "registry denied access")
+}
+
+func TestDockerRuntimeCreateConflictRejectsUnmanagedWinner(t *testing.T) {
+	accountID := "account-conflict"
+	containerInspections := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/containers/"):
+			containerInspections++
+			if containerInspections == 1 {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"Config": map[string]any{"Labels": map[string]string{}},
+				"State":  map[string]any{"Running": true, "Status": "running"},
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/images/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"Config": map[string]any{"Env": []string{}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/containers/create":
+			http.Error(w, "name conflict", http.StatusConflict)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	withDockerConfig(t, server.URL)
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+
+	err = runtime.create(security.NewRequestContextForSuperAdmin(), accountID)
+	require.ErrorContains(t, err, "refusing to use unmanaged Docker container")
+}
+
+func TestReadDockerWorkspaceBodyRejectsOverflow(t *testing.T) {
+	body, err := readDockerWorkspaceBody(strings.NewReader("12345"), 4)
+	require.ErrorContains(t, err, "response exceeds 4 bytes")
+	require.Nil(t, body)
+
+	body, err = readDockerWorkspaceBody(strings.NewReader("1234"), 4)
+	require.NoError(t, err)
+	require.Equal(t, []byte("1234"), body)
+}
+
+func TestDockerWorkspaceAPIBodyLimitRespectsConfigAndHardCap(t *testing.T) {
+	original := config.Config.LlmServerWorkspaceFileMaxDownloadBytes
+	t.Cleanup(func() { config.Config.LlmServerWorkspaceFileMaxDownloadBytes = original })
+
+	config.Config.LlmServerWorkspaceFileMaxDownloadBytes = 5 * 1024 * 1024
+	require.EqualValues(t, 6*1024*1024, dockerWorkspaceAPIBodyLimit())
+	config.Config.LlmServerWorkspaceFileMaxDownloadBytes = 128 * 1024 * 1024
+	require.EqualValues(t, dockerAPIBodyHardLimit, dockerWorkspaceAPIBodyLimit())
 }

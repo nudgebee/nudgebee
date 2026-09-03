@@ -755,11 +755,18 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 			return err
 		}
 		container, inspectErr := runtime.inspect(ctx.GetContext(), accountId)
-		if inspectErr == nil {
-			if token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN); token != "" {
-				if err := common.CacheSet(CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
-					ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
-				}
+		if stderrors.Is(inspectErr, errDockerWorkspaceNotFound) {
+			return nil
+		}
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if err := validateDockerWorkspaceOwnership(container, accountId); err != nil {
+			return err
+		}
+		if token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN); token != "" {
+			if err := common.CacheSet(CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
+				ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
 			}
 		}
 		return runtime.delete(ctx.GetContext(), accountId)
@@ -965,7 +972,7 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 			return "", err
 		}
 		defer func() { _ = resp.Body.Close() }()
-		resultRaw, readErr := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
+		resultRaw, readErr := readDockerWorkspaceBody(resp.Body, dockerCommandBodyLimit)
 		if readErr != nil {
 			return "", fmt.Errorf("read Docker workspace response: %w", readErr)
 		}
@@ -1255,7 +1262,7 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 			return nil, err
 		}
 		defer func() { _ = resp.Body.Close() }()
-		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
+		respBody, readErr := readDockerWorkspaceBody(resp.Body, dockerWorkspaceAPIBodyLimit())
 		if readErr != nil {
 			return nil, fmt.Errorf("read Docker workspace response: %w", readErr)
 		}
