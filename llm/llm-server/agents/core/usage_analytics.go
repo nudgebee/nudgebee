@@ -1016,13 +1016,20 @@ func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter, readable
 
 	var err error
 
-	// Users present in the window (system user excluded), resolved to a name.
+	// Users present in the window. The synthetic system user was previously
+	// excluded outright (AND t.user_id <> systemUserID), leaving the User
+	// dropdown empty ("No results found") whenever the window held only
+	// system-generated investigations/events (#37368). Surface it instead,
+	// labeled the same way the per-user breakdown and the audit log already
+	// label the same sentinel (breakdownForDimension's "user" case above;
+	// app/src/components/audits/index.jsx).
 	userQuery := fmt.Sprintf(`
 		SELECT DISTINCT t.user_id::text AS id,
-			COALESCE(u.display_name, u.username, t.user_id::text) AS name
-		%s
+			CASE WHEN t.user_id = '%[3]s' THEN 'SYSTEM'
+				ELSE COALESCE(u.display_name, u.username, t.user_id::text) END AS name
+		%[1]s
 		LEFT JOIN users u ON u.id = t.user_id
-		WHERE %s AND t.user_id IS NOT NULL AND t.user_id <> '%s'
+		WHERE %[2]s AND t.user_id IS NOT NULL
 		ORDER BY name`, usageFilterFrom, scope, systemUserID)
 	users := []UsageFilterOption{}
 	if err = chat.dbManager.Db.Select(&users, userQuery, args...); err != nil {
