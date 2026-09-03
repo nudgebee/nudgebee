@@ -122,8 +122,22 @@ def _process_metrics_list(metrics) -> List[str]:
         return []
 
     logger.info(f"Fetched {len(metrics)} metrics from server")
-    filtered_metrics = [metric for metric in metrics if metric]
-    return list(set(filtered_metrics))
+    processed_metrics = []
+    for metric in metrics:
+        if not metric:
+            continue
+        if isinstance(metric, dict):
+            metric_name = metric.get("metric") or metric.get("__name__") or metric.get("name")
+            if metric_name:
+                processed_metrics.append(str(metric_name))
+            else:
+                processed_metrics.append(json.dumps(metric, sort_keys=True))
+        elif isinstance(metric, str):
+            processed_metrics.append(metric)
+        else:
+            processed_metrics.append(str(metric))
+
+    return list(set(processed_metrics))
 
 
 def extract_metric_names(documents: List[Dict[str, Any]]) -> set:
