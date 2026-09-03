@@ -534,7 +534,15 @@ type appConfig struct {
 	LlmServerWorkspaceKubeconfigPath string `mapstructure:"llm_server_workspace_kubeconfig_path"`
 	// LlmServerWorkspaceKubeContext optionally selects a specific context within the
 	// kubeconfig (only applied when a kubeconfig file is loaded, not in-cluster).
-	LlmServerWorkspaceKubeContext           string `mapstructure:"llm_server_workspace_kube_context"`
+	LlmServerWorkspaceKubeContext string `mapstructure:"llm_server_workspace_kube_context"`
+	// LlmServerWorkspaceRuntime selects the workspace lifecycle backend. Supported
+	// values are "kubernetes" (the default) and "docker" (for Compose installs).
+	LlmServerWorkspaceRuntime string `mapstructure:"llm_server_workspace_runtime"`
+	// LlmServerWorkspaceDockerHost is the local Docker Engine unix socket used in
+	// docker mode. Remote Engines are unsupported because workspace HTTP traffic
+	// is routed over the Engine-local Docker network.
+	LlmServerWorkspaceDockerHost            string `mapstructure:"llm_server_workspace_docker_host"`
+	LlmServerWorkspaceDockerNetwork         string `mapstructure:"llm_server_workspace_docker_network"`
 	LlmServerWorkspaceResourceLimitCpu      string `mapstructure:"llm_server_workspace_resource_limit_cpu"`
 	LlmServerWorkspaceResourceLimitMemory   string `mapstructure:"llm_server_workspace_resource_limit_memory"`
 	LlmServerWorkspaceResourceRequestCpu    string `mapstructure:"llm_server_workspace_resource_request_cpu"`
@@ -1292,6 +1300,9 @@ func init() {
 	// lean-only after the #32503 Phase 1 collapse — no per-cloud mode setting.
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
 	viper.SetDefault("llm_server_workspace_port", 8080)
+	viper.SetDefault("llm_server_workspace_runtime", "kubernetes")
+	viper.SetDefault("llm_server_workspace_docker_host", "unix:///var/run/docker.sock")
+	viper.SetDefault("llm_server_workspace_docker_network", "nudgebee-workspace")
 	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
 

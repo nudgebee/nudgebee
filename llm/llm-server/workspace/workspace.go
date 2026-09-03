@@ -55,6 +55,24 @@ type WorkspaceTokenClaims struct {
 	jwt.RegisteredClaims
 }
 
+func signWorkspaceToken(accountID, tenantID string) (string, error) {
+	claims := WorkspaceTokenClaims{
+		AccountId: accountID,
+		TenantId:  tenantID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(workspaceTokenLifetime)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "llm-server",
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(config.Config.LlmServerJwtSecret))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign workspace token: %w", err)
+	}
+	return signed, nil
+}
+
 type WorkspaceManager interface {
 	CreateWorkspace(ctx *security.RequestContext, accountId string) error
 	IsWorkspaceExists(ctx *security.RequestContext, accountId string) (bool, error)
@@ -149,6 +167,9 @@ func (w *workspaceManager) isRecoverableError(err error) bool {
 	if errors.IsNotFound(err) || errors.IsServiceUnavailable(err) || errors.IsTimeout(err) {
 		return true
 	}
+	if stderrors.Is(err, errDockerWorkspaceNotFound) {
+		return true
+	}
 
 	// Check error string for connectivity issues or readiness failures
 	errMsg := strings.ToLower(err.Error())
@@ -213,6 +234,34 @@ func (w *workspaceManager) WaitForReady(ctx *security.RequestContext, accountId 
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for wait")
 		return fmt.Errorf("workspace: accountId is required")
+	}
+
+	if dockerMode() {
+		runtime, err := newDockerRuntime()
+		if err != nil {
+			return err
+		}
+		deadline := time.Now().Add(300 * time.Second)
+		if ctxDeadline, ok := ctx.GetContext().Deadline(); ok {
+			deadline = ctxDeadline
+		}
+		for time.Now().Before(deadline) {
+			if _, _, endpointErr := runtime.endpoint(ctx.GetContext(), accountId); endpointErr == nil {
+				resp, healthErr := dockerAPIRequest(ctx.GetContext(), w.httpClient, accountId, http.MethodGet, "/health", nil, nil)
+				if healthErr == nil {
+					_ = resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						return nil
+					}
+				}
+			}
+			select {
+			case <-ctx.GetContext().Done():
+				return ctx.GetContext().Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+		return fmt.Errorf("timed out waiting for Docker workspace %s to be ready", dockerWorkspaceName(accountId))
 	}
 
 	clientset, err := getKubeClient(100, 200)
@@ -296,6 +345,13 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	}
 
 	logger := ctx.GetLogger()
+	if dockerMode() {
+		runtime, err := newDockerRuntime()
+		if err != nil {
+			return err
+		}
+		return runtime.create(ctx, accountId)
+	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -366,17 +422,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	}
 
 	// Generate JWT workspace token
-	claims := WorkspaceTokenClaims{
-		AccountId: accountId,
-		TenantId:  tenantId,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(workspaceTokenLifetime)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "llm-server",
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	workspaceToken, err := token.SignedString([]byte(config.Config.LlmServerJwtSecret))
+	workspaceToken, err := signWorkspaceToken(accountId, tenantId)
 	if err != nil {
 		logger.Error("workspace: failed to sign workspace token", "error", err)
 		return fmt.Errorf("failed to sign workspace token: %w", err)
@@ -602,6 +648,21 @@ func (w *workspaceManager) IsWorkspaceExists(ctx *security.RequestContext, accou
 		return false, fmt.Errorf("workspace: accountId is required")
 	}
 
+	if dockerMode() {
+		runtime, err := newDockerRuntime()
+		if err != nil {
+			return false, err
+		}
+		container, err := runtime.inspect(ctx.GetContext(), accountId)
+		if err != nil {
+			if stderrors.Is(err, errDockerWorkspaceNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		return container.Config.Labels[dockerManagedLabel] == "true", nil
+	}
+
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
 		return false, err
@@ -688,6 +749,22 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 		return fmt.Errorf("workspace: accountId is required")
 	}
 
+	if dockerMode() {
+		runtime, err := newDockerRuntime()
+		if err != nil {
+			return err
+		}
+		container, inspectErr := runtime.inspect(ctx.GetContext(), accountId)
+		if inspectErr == nil {
+			if token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN); token != "" {
+				if err := common.CacheSet(CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
+					ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
+				}
+			}
+		}
+		return runtime.delete(ctx.GetContext(), accountId)
+	}
+
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
 		return err
@@ -730,6 +807,10 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 // API failure — observed to delay code-analysis fixes by nearly two weeks.
 // Deleted pods are recreated lazily by CreateWorkspace on next use.
 func CleanupStaleWorkspaces(ctx context.Context) {
+	if dockerMode() {
+		cleanupDockerWorkspaces(ctx)
+		return
+	}
 	// Skip cleanup when running outside K8s (local development).
 	// Only treat rest.ErrNotInCluster as "not in K8s"; log other errors as warnings.
 	if _, err := rest.InClusterConfig(); err != nil {
@@ -869,6 +950,37 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	if ctx.GetSecurityContext() != nil {
 		env["nb_tenant_id"] = ctx.GetSecurityContext().GetTenantId()
 	}
+	payload := executePayload{
+		Command:        command,
+		ConversationId: conversationId,
+		Env:            env,
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	if dockerMode() {
+		resp, err := dockerAPIRequest(ctx.GetContext(), w.httpClient, accountId, http.MethodPost, "/execute", nil, jsonData)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		resultRaw, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", fmt.Errorf("read Docker workspace response: %w", readErr)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", fmt.Errorf("docker workspace returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(resultRaw)))
+		}
+		var result executeResponse
+		if err := json.Unmarshal(resultRaw, &result); err != nil {
+			return string(resultRaw), fmt.Errorf("failed to decode response: %w", err)
+		}
+		if cmdErr := classifyExecuteResponse(result); cmdErr != nil {
+			return result.Response, cmdErr
+		}
+		return result.Response, nil
+	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -901,18 +1013,6 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 			workspaceToken = envVar.Value
 			break
 		}
-	}
-
-	// Prepare payload
-	payload := executePayload{
-		Command:        command,
-		ConversationId: conversationId,
-		Env:            env,
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
 	// 2. Try Direct IP Execution (Fastest, works in-cluster)
@@ -998,6 +1098,9 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 
 	logger := ctx.GetLogger()
 	logger.Debug("workspace: calling API", "method", method, "endpoint", endpoint, "account_id", accountId)
+	if dockerMode() {
+		return w.callWorkspaceAPIWithClient(ctx, accountId, method, endpoint, queryParams, body, w.httpClient)
+	}
 
 	clientset, err := getKubeClient(100, 200)
 	if err != nil {
@@ -1146,6 +1249,22 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 		return u.String()
 	}
 
+	if dockerMode() {
+		resp, err := dockerAPIRequest(ctx.GetContext(), httpClient, accountId, method, endpoint, queryParams, bodyBytes)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("read Docker workspace response: %w", readErr)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("docker workspace returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		}
+		return respBody, nil
+	}
+
 	// Local mode: bypass K8s entirely, call a local code-analysis server directly
 	if localURL := config.Config.LlmServerWorkspaceLocalUrl; localURL != "" {
 		directUrl := buildURL(fmt.Sprintf("%s%s", strings.TrimRight(localURL, "/"), endpoint))
@@ -1287,6 +1406,19 @@ func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, 
 		}
 		u.RawQuery = q.Encode()
 		return u.String()
+	}
+
+	if dockerMode() {
+		resp, err := dockerAPIRequest(ctx.GetContext(), &http.Client{}, accountId, method, endpoint, queryParams, bodyBytes)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			defer func() { _ = resp.Body.Close() }()
+			errBody, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("docker workspace returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
+		}
+		return resp.Body, nil
 	}
 
 	// Local mode: bypass K8s entirely
