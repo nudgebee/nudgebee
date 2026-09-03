@@ -167,7 +167,7 @@ func (w *workspaceManager) isRecoverableError(err error) bool {
 	if errors.IsNotFound(err) || errors.IsServiceUnavailable(err) || errors.IsTimeout(err) {
 		return true
 	}
-	if stderrors.Is(err, errDockerWorkspaceNotFound) {
+	if stderrors.Is(err, errDockerWorkspaceNotFound) || stderrors.Is(err, errDockerWorkspaceTokenInvalid) {
 		return true
 	}
 

@@ -20,6 +20,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 
+	"github.com/golang-jwt/jwt/v5"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -30,7 +31,10 @@ const (
 	dockerImageLabel   = "com.nudgebee.workspace.image"
 )
 
-var errDockerWorkspaceNotFound = errors.New("docker workspace container not found")
+var (
+	errDockerWorkspaceNotFound     = errors.New("docker workspace container not found")
+	errDockerWorkspaceTokenInvalid = errors.New("docker workspace token is invalid or expiring")
+)
 
 var dockerRuntimeCache = struct {
 	sync.Mutex
@@ -175,6 +179,20 @@ func dockerEnvValue(env []string, key string) string {
 	return ""
 }
 
+func dockerWorkspaceTokenReusable(token string, now time.Time) bool {
+	claims := &WorkspaceTokenClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method %s", token.Method.Alg())
+		}
+		return []byte(config.Config.LlmServerJwtSecret), nil
+	})
+	if err != nil || !parsed.Valid || claims.ExpiresAt == nil {
+		return false
+	}
+	return claims.ExpiresAt.After(now.Add(10 * time.Minute))
+}
+
 func (d *dockerRuntime) endpoint(ctx context.Context, accountID string) (string, string, error) {
 	container, err := d.inspect(ctx, accountID)
 	if err != nil {
@@ -183,13 +201,17 @@ func (d *dockerRuntime) endpoint(ctx context.Context, accountID string) (string,
 	if container.Config.Labels[dockerManagedLabel] != "true" || container.Config.Labels[dockerAccountLabel] != accountID {
 		return "", "", fmt.Errorf("refusing to use unmanaged Docker container %s", dockerWorkspaceName(accountID))
 	}
+	token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN)
+	if !dockerWorkspaceTokenReusable(token, time.Now()) {
+		return "", "", fmt.Errorf("%w: %s", errDockerWorkspaceTokenInvalid, dockerWorkspaceName(accountID))
+	}
 	if !container.State.Running {
 		return "", "", fmt.Errorf("workspace container is not ready: state=%s", container.State.Status)
 	}
 	if container.State.Health != nil && container.State.Health.Status == "unhealthy" {
 		return "", "", fmt.Errorf("workspace container is not ready: health=unhealthy")
 	}
-	return fmt.Sprintf("http://%s:%d", dockerWorkspaceName(accountID), config.Config.LlmServerWorkspacePort), dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN), nil
+	return fmt.Sprintf("http://%s:%d", dockerWorkspaceName(accountID), config.Config.LlmServerWorkspacePort), token, nil
 }
 
 func dockerAPIRequest(ctx context.Context, client *http.Client, accountID, method, endpoint string, queryParams map[string]string, body []byte) (*http.Response, error) {
@@ -347,7 +369,8 @@ func (d *dockerRuntime) create(ctx *security.RequestContext, accountID string) e
 		if existing.Config.Labels[dockerManagedLabel] != "true" || existing.Config.Labels[dockerAccountLabel] != accountID {
 			return fmt.Errorf("refusing to reuse unmanaged Docker container %s", name)
 		}
-		if existing.Config.Image == config.Config.LlmServerCodeAgentImage && existing.State.Running {
+		token := dockerEnvValue(existing.Config.Env, ENV_NB_WORKSPACE_TOKEN)
+		if existing.Config.Image == config.Config.LlmServerCodeAgentImage && existing.State.Running && dockerWorkspaceTokenReusable(token, time.Now()) {
 			return nil
 		}
 		if err := d.delete(ctx.GetContext(), accountID); err != nil {

@@ -14,6 +14,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,6 +31,7 @@ func withDockerConfig(t *testing.T, serverURL string) {
 	config.Config.LlmServerWorkspaceDockerNetwork = "test-workspace"
 	config.Config.LlmServerCodeAgentImage = "example.test/code-agent:v1"
 	config.Config.LlmServerWorkspacePort = 8080
+	config.Config.LlmServerJwtSecret = "docker-runtime-test-secret"
 	t.Cleanup(func() {
 		config.Config.LlmServerWorkspaceRuntime = originalRuntime
 		config.Config.LlmServerWorkspaceDockerHost = originalHost
@@ -118,27 +120,29 @@ func TestDockerWorkspaceNameIsDeterministicAndSafe(t *testing.T) {
 
 func TestDockerRuntimeEndpoint(t *testing.T) {
 	accountID := "account-1"
+	withDockerConfig(t, "unused")
+	token, err := signWorkspaceToken(accountID, "")
+	require.NoError(t, err)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/containers/"+dockerWorkspaceName(accountID)+"/json", r.URL.Path)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"Id": "container-id",
 			"Config": map[string]any{
 				"Image":  "example.test/code-agent:v1",
-				"Env":    []string{ENV_NB_WORKSPACE_TOKEN + "=signed-token"},
+				"Env":    []string{ENV_NB_WORKSPACE_TOKEN + "=" + token},
 				"Labels": map[string]string{dockerManagedLabel: "true", dockerAccountLabel: accountID},
 			},
 			"State": map[string]any{"Running": true, "Status": "running"},
 		})
 	}))
 	defer server.Close()
-	withDockerConfig(t, server.URL)
 
 	runtime, err := newDockerRuntimeForHost(server.URL)
 	require.NoError(t, err)
 	endpoint, token, err := runtime.endpoint(context.Background(), accountID)
 	require.NoError(t, err)
 	require.Equal(t, "http://"+dockerWorkspaceName(accountID)+":8080", endpoint)
-	require.Equal(t, "signed-token", token)
+	require.NotEmpty(t, token)
 }
 
 func TestDockerMissingContainerIsRecoverableForLazyCreation(t *testing.T) {
@@ -244,4 +248,43 @@ func TestDockerRuntimeEndpointRejectsUnmanagedContainer(t *testing.T) {
 
 	_, _, err = runtime.endpoint(context.Background(), accountID)
 	require.ErrorContains(t, err, "refusing to use unmanaged Docker container")
+}
+
+func TestDockerWorkspaceTokenReusable(t *testing.T) {
+	withDockerConfig(t, "unused")
+	now := time.Now()
+	valid, err := jwt.NewWithClaims(jwt.SigningMethodHS256, WorkspaceTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))},
+	}).SignedString([]byte(config.Config.LlmServerJwtSecret))
+	require.NoError(t, err)
+	expiring, err := jwt.NewWithClaims(jwt.SigningMethodHS256, WorkspaceTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute))},
+	}).SignedString([]byte(config.Config.LlmServerJwtSecret))
+	require.NoError(t, err)
+
+	require.True(t, dockerWorkspaceTokenReusable(valid, now))
+	require.False(t, dockerWorkspaceTokenReusable(expiring, now))
+	require.False(t, dockerWorkspaceTokenReusable("not-a-jwt", now))
+}
+
+func TestDockerRuntimeExpiredTokenTriggersLazyRecreation(t *testing.T) {
+	accountID := "account-expired"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"Config": map[string]any{
+				"Env": []string{ENV_NB_WORKSPACE_TOKEN + "=expired"},
+				"Labels": map[string]string{
+					dockerManagedLabel: "true", dockerAccountLabel: accountID,
+				},
+			},
+			"State": map[string]any{"Running": true, "Status": "running"},
+		})
+	}))
+	defer server.Close()
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+
+	_, _, err = runtime.endpoint(context.Background(), accountID)
+	require.ErrorIs(t, err, errDockerWorkspaceTokenInvalid)
+	require.True(t, NewWorkspaceManager().(*workspaceManager).isRecoverableError(err))
 }
