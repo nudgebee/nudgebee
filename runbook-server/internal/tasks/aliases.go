@@ -64,16 +64,16 @@ var SearchAliases = map[string][]string{
 	},
 
 	// Tickets & incidents
-	"tickets.create":       {"create ticket", "new ticket", "jira", "github issue", "gitlab issue", "pagerduty", "zenduty", "servicenow", "freshdesk", "incident create"},
-	"tickets.update":       {"update ticket", "edit ticket", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"},
-	"tickets.get":          {"get ticket", "fetch ticket", "read ticket", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"},
-	"tickets.get_comments": {"get comments", "fetch comments", "ticket comments", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"},
+	"tickets.create":       {"create ticket", "new ticket", "jira", "github issue", "gitlab issue", "pagerduty", "zenduty", "servicenow", "freshdesk", "incidentio", "incident create"},
+	"tickets.update":       {"update ticket", "edit ticket", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk", "incidentio"},
+	"tickets.get":          {"get ticket", "fetch ticket", "read ticket", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk", "incidentio"},
+	"tickets.get_comments": {"get comments", "fetch comments", "ticket comments", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk", "incidentio"},
 	"tickets.add_comment":  {"add comment", "comment", "reply", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"},
 	"tickets.assign":       {"assign", "assignee", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"},
-	"tickets.transition":   {"transition", "change status", "status", "move state", "jira workflow", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"},
-	"tickets.acknowledge":  {"acknowledge", "ack", "pagerduty", "zenduty", "incident ack"},
+	"tickets.transition":   {"transition", "change status", "status", "move state", "jira workflow", "jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk", "incidentio"},
+	"tickets.acknowledge":  {"acknowledge", "ack", "pagerduty", "zenduty", "incidentio", "incident ack"},
 	"tickets.escalate":     {"escalate", "pagerduty", "zenduty", "incident escalate"},
-	"tickets.resolve":      {"resolve", "close incident", "pagerduty", "zenduty", "incident resolve"},
+	"tickets.resolve":      {"resolve", "close incident", "pagerduty", "zenduty", "incidentio", "incident resolve"},
 
 	// AI / LLM
 	"llm.summary":           {"summary", "summarize", "tldr", "ai summary", "llm summary", "claude", "gpt", "openai", "anthropic"},

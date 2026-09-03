@@ -23,6 +23,7 @@ const TICKET_PROJECT_TERMS: Record<string, TicketProjectTerm> = {
   pagerduty: { noun: 'Service', selectLabel: 'Select PagerDuty Service' },
   zenduty: { noun: 'Service', selectLabel: 'Select ZenDuty Service' },
   freshdesk: { noun: 'Group', selectLabel: 'Select Freshdesk Group' },
+  incidentio: { noun: 'Incident Type', selectLabel: 'Select incident.io Incident Type' },
 };
 
 /**

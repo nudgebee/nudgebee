@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
 import ZenDutyAccountModal from '@components/integrations/modal/ZenDutyAccountModal';
 import FreshdeskAccountModal from '@components/integrations/modal/FreshdeskAccountModal';
+import IncidentIOAccountModal from '@components/integrations/modal/IncidentIOAccountModal';
 import ListIntegrations from './ListIntegrations';
 import MessagingIntegrationTile from './MessagingIntegrationTile';
 import GoogleChatSpacesPanel from './GoogleChatSpacesPanel';
@@ -171,6 +172,15 @@ export default function AddAccountForm() {
                 AccountModalComponent={FreshdeskAccountModal}
               />
             );
+          case 'incidentio':
+            return (
+              <TicketingIntegrationTile
+                tool='incidentio'
+                displayName='incident.io'
+                cloudProvider='INCIDENTIO'
+                AccountModalComponent={IncidentIOAccountModal}
+              />
+            );
           case 'redis':
             return <ListIntegrations integrationName={'redis'} />;
           case 'llm':
@@ -203,6 +213,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'openobserve'} />;
           case 'openobserve_webhook':
             return <ListIntegrations integrationName={'openobserve_webhook'} />;
+          case 'incidentio_webhook':
+            return <ListIntegrations integrationName={'incidentio_webhook'} />;
           case 'azure_monitor_webhook':
             return <ListIntegrations integrationName={'azure_monitor_webhook'} />;
           case 'ssh':

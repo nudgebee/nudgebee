@@ -6,7 +6,7 @@ import TicketsDescriptionEditor from './TicketsDescriptionEditor';
 import apiTickets from '@api1/tickets';
 import PropTypes from 'prop-types';
 import TicketFormComponent from './TicketFormComponent';
-import { JiraIcon, ServiceNowIcon, GithubIcon, GitLabIcon, PagerDutyIcon, ZenDutyIcon, FreshdeskIcon } from '@assets';
+import { JiraIcon, ServiceNowIcon, GithubIcon, GitLabIcon, PagerDutyIcon, ZenDutyIcon, FreshdeskIcon, IncidentIOIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Select } from '@ui/Select';
 
@@ -33,6 +33,8 @@ const getToolIcon = (tool) => {
       return ZenDutyIcon;
     case 'freshdesk':
       return FreshdeskIcon;
+    case 'incidentio':
+      return IncidentIOIcon;
     default:
       return null;
   }
@@ -341,9 +343,10 @@ const TicketFormSection = ({
       selectedConfig?.tool === 'servicenow' ||
       selectedConfig?.tool === 'pagerduty' ||
       selectedConfig?.tool === 'zenduty' ||
-      selectedConfig?.tool === 'freshdesk'
+      selectedConfig?.tool === 'freshdesk' ||
+      selectedConfig?.tool === 'incidentio'
     ) {
-      // For ServiceNow, PagerDuty, ZenDuty, and Freshdesk, use "incident" type
+      // For ServiceNow, PagerDuty, ZenDuty, Freshdesk and incident.io, use "incident" type
       setIssueTypes(['incident']);
     }
   }, [selectedProject]);

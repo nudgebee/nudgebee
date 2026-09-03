@@ -35,15 +35,43 @@ const TicketMasterToolNameV2 = "ticket_master_v2"
 // listTicketIntegrations, the platform-inference helper, the human-readable
 // Description, and tests. Adding a new platform integration requires updating
 // only this list (and the corresponding integration handler).
-var supportedTicketPlatforms = []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty", "freshdesk"}
+var supportedTicketPlatforms = []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty", "freshdesk", "incidentio"}
 
-// platformInferenceRegex matches any supported platform as a whole word
-// (case-insensitive). Word boundaries prevent false positives from substrings
-// like "github copilot" triggering "github" when the query is unrelated.
-// Compiled once at package init since the platform list is immutable.
+// platformInferenceAliases maps how a user actually spells a platform onto its
+// integration type. Needed where the two differ: the type must be a single
+// lowercase token (it is also a DB enum value and a URL segment), but nobody
+// asks about "incidentio" — they write "incident.io".
+var platformInferenceAliases = map[string]string{
+	"incident.io": "incidentio",
+}
+
+// platformInferenceRegex matches any supported platform — or a spelling alias —
+// as a whole word (case-insensitive). Word boundaries prevent false positives
+// from substrings like "github copilot" triggering "github" when the query is
+// unrelated. Compiled once at package init since the platform list is immutable.
 var platformInferenceRegex = func() *regexp.Regexp {
-	return regexp.MustCompile(`(?i)\b(` + strings.Join(supportedTicketPlatforms, "|") + `)\b`)
+	// Aliases first: alternation is leftmost-first, so a longer dotted spelling
+	// must get the chance to match before its bare-token form.
+	alts := make([]string, 0, len(platformInferenceAliases)+len(supportedTicketPlatforms))
+	for alias := range platformInferenceAliases {
+		alts = append(alts, regexp.QuoteMeta(alias))
+	}
+	// Map iteration order is random; sort so the compiled pattern is stable.
+	sort.Strings(alts)
+	for _, p := range supportedTicketPlatforms {
+		alts = append(alts, regexp.QuoteMeta(p))
+	}
+	return regexp.MustCompile(`(?i)\b(` + strings.Join(alts, "|") + `)\b`)
 }()
+
+// canonicalTicketPlatform folds a matched spelling onto its integration type.
+func canonicalTicketPlatform(match string) string {
+	lowered := strings.ToLower(match)
+	if canonical, ok := platformInferenceAliases[lowered]; ok {
+		return canonical
+	}
+	return lowered
+}
 
 type TicketMasterV2 struct{}
 
@@ -56,7 +84,7 @@ func (m TicketMasterV2) GetType() core.NBToolType {
 }
 
 func (m TicketMasterV2) Description() string {
-	return `Manage tickets across Jira/GitHub/GitLab/ServiceNow/PagerDuty/ZenDuty/Freshdesk. Input is a JSON object with operation_type ∈ {get_create_meta, create_ticket, add_comment, get_comments, get_ticket, list_tickets} plus per-op fields: create_ticket needs title (+ optional description/severity/project_key/ticket_type/assignee/additional_fields); add_comment needs ticket_id and comment_text; get_comments/get_ticket need ticket_id; list_tickets takes filters (status, priority, assignee, limit, offset, created_after, created_before, sort_by, sort_order). Call get_create_meta before create_ticket to discover required fields and valid assignees.`
+	return `Manage tickets across Jira/GitHub/GitLab/ServiceNow/PagerDuty/ZenDuty/Freshdesk/incident.io. Input is a JSON object with operation_type ∈ {get_create_meta, create_ticket, add_comment, get_comments, get_ticket, list_tickets} plus per-op fields: create_ticket needs title (+ optional description/severity/project_key/ticket_type/assignee/additional_fields); add_comment needs ticket_id and comment_text; get_comments/get_ticket need ticket_id; list_tickets takes filters (status, priority, assignee, limit, offset, created_after, created_before, sort_by, sort_order). Call get_create_meta before create_ticket to discover required fields and valid assignees.`
 }
 
 func (m TicketMasterV2) InputSchema() core.ToolSchema {
@@ -1260,9 +1288,11 @@ func inferTicketPlatformFromQuery(query string) string {
 	if len(matches) == 0 {
 		return ""
 	}
-	first := strings.ToLower(matches[0])
+	// Compare canonical types, not raw spellings, so "incident.io" and
+	// "incidentio" in the same query count as one platform rather than two.
+	first := canonicalTicketPlatform(matches[0])
 	for _, m := range matches[1:] {
-		if !strings.EqualFold(m, first) {
+		if canonicalTicketPlatform(m) != first {
 			return ""
 		}
 	}

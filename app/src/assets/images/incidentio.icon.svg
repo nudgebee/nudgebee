@@ -1,0 +1,6 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="incident.io">
+  <rect width="32" height="32" rx="7" fill="#F25533"/>
+  <path d="M16 6.5a1.4 1.4 0 0 1 1.4 1.4v6.2a1.4 1.4 0 0 1-2.8 0V7.9A1.4 1.4 0 0 1 16 6.5Z" fill="#fff"/>
+  <path d="M22.36 9.64a1.4 1.4 0 0 1 0 1.98l-2.2 2.2a1.4 1.4 0 1 1-1.98-1.98l2.2-2.2a1.4 1.4 0 0 1 1.98 0ZM9.64 9.64a1.4 1.4 0 0 1 1.98 0l2.2 2.2a1.4 1.4 0 1 1-1.98 1.98l-2.2-2.2a1.4 1.4 0 0 1 0-1.98Z" fill="#fff" fill-opacity=".75"/>
+  <circle cx="16" cy="21.4" r="3.1" fill="#fff"/>
+</svg>

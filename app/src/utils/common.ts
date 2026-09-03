@@ -195,6 +195,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'FRESHDESK':
       label = 'Freshdesk';
       break;
+    case 'INCIDENTIO':
+      label = 'incident.io';
+      break;
     case 'POSTGRES':
       label = 'PostgreSQL';
       break;
@@ -260,6 +263,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       break;
     case 'OPENOBSERVE_WEBHOOK':
       label = 'OpenObserve Webhook';
+      break;
+    case 'INCIDENTIO_WEBHOOK':
+      label = 'incident.io Webhook';
       break;
     case 'OBSERVE':
       label = 'Observe';

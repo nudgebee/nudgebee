@@ -41,7 +41,7 @@ func fetchConfigurationList() ([]models.TicketConfigurations, error) {
 			COALESCE(icv.is_encrypted, false)     AS is_encrypted
 		FROM integrations i
 		LEFT JOIN integration_config_values icv ON i.id = icv.integration_id
-		WHERE i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
+		WHERE i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk', 'incidentio')
 		  AND i.status = 'enabled'
 		ORDER BY i.created_at DESC, i.id
 	`
@@ -322,6 +322,7 @@ func SyncConfigurations() {
 		"pagerduty":  true,
 		"zenduty":    true,
 		"freshdesk":  true,
+		"incidentio": true,
 	}
 
 	configurations, err := fetchConfigurationList()

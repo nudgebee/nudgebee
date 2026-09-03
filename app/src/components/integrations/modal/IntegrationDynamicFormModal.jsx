@@ -1073,7 +1073,7 @@ const IntegrationDynamicFormModal = ({
     }
     setIsSubmitting(true);
 
-    if (['pagerduty', 'servicenow', 'github', 'gitlab', 'zenduty', 'freshdesk'].includes(integrationName)) {
+    if (['pagerduty', 'servicenow', 'github', 'gitlab', 'zenduty', 'freshdesk', 'incidentio'].includes(integrationName)) {
       const { integration_config_name, ...restFormValues } = formValues;
       const transformedValues = Object.entries(restFormValues).reduce((acc, [key, value]) => {
         const field = config.properties?.[key];
@@ -1289,7 +1289,7 @@ const IntegrationDynamicFormModal = ({
 
     // Ticketing systems use ticket_integration_create_config (ticket server)
     // Webhooks and other integrations use integrations_create_config (services server)
-    const ticketingIntegrations = ['pagerduty', 'jira', 'github', 'gitlab', 'zenduty', 'servicenow', 'freshdesk'];
+    const ticketingIntegrations = ['pagerduty', 'jira', 'github', 'gitlab', 'zenduty', 'servicenow', 'freshdesk', 'incidentio'];
     const isTicketingSystem = ticketingIntegrations.includes(integrationName);
 
     if (isTicketingSystem) {

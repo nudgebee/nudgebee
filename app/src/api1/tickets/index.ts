@@ -264,7 +264,7 @@ const apiIntegrations = {
         // Map is_active to status (enabled/disabled)
         gqlQuery.status = { _eq: 'enabled' };
         // Filter for only ticketing-related integrations
-        const ticketingTypes = ['jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk'];
+        const ticketingTypes = ['jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk', 'incidentio'];
         if (query?.tool) {
           gqlQuery.type = { _eq: query.tool };
         } else {
@@ -326,7 +326,7 @@ const apiIntegrations = {
   listTool: async function () {
     try {
       // Filter for only ticketing-related integrations
-      const ticketingTypes = ['jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk'];
+      const ticketingTypes = ['jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk', 'incidentio'];
       const gqlQuery = {
         type: { _in: ticketingTypes },
         status: { _eq: 'enabled' },

@@ -26,6 +26,7 @@ import GChatIcon from '@assets/gchat-icon.icon.svg';
 import PagerDutyIcon from '@assets/auto-pilot/pager-duty.svg';
 import ServiceNowIcon from '@assets/servicenow.icon.svg';
 import FreshdeskIcon from '@assets/freshdesk.icon.svg';
+import IncidentIOIcon from '@assets/incidentio.icon.svg';
 import JiraIcon from '@assets/jira_icon.icon.svg';
 import GithubIcon from '@assets/github-icon.icon.svg';
 import LogsIcon from '@assets/home/logs-icon.icon.svg';
@@ -1813,6 +1814,7 @@ const Home = () => {
         { name: 'Service Now', icon: ServiceNowIcon, redirect: '/accounts/account-form?cloudProvider=SERVICENOW' },
         { name: 'Jira', icon: JiraIcon, redirect: '/accounts/account-form?cloudProvider=JIRA' },
         { name: 'Freshdesk', icon: FreshdeskIcon, redirect: '/accounts/account-form?cloudProvider=FRESHDESK' },
+        { name: 'incident.io', icon: IncidentIOIcon, redirect: '/accounts/account-form?cloudProvider=INCIDENTIO' },
       ],
       actionText: 'Add Ticketing',
       actionIcon: <FiArrowRight />,

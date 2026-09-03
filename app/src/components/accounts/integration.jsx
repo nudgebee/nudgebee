@@ -99,7 +99,7 @@ const SECTIONS_CONFIG = [
     id: 'ticket',
     label: 'Ticketing',
     icon: TicketBlueIcon,
-    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK', 'GITHUB', 'GITLAB'],
+    providers: ['JIRA', 'SERVICENOW', 'PAGERDUTY', 'ZENDUTY', 'FRESHDESK', 'GITHUB', 'GITLAB', 'INCIDENTIO'],
     tab: 3,
   },
   {
@@ -120,6 +120,7 @@ const SECTIONS_CONFIG = [
       'DYNATRACE_WEBHOOK',
       'SOLARWINDS_WEBHOOK',
       'ELASTICSEARCH_WEBHOOK',
+      'INCIDENTIO_WEBHOOK',
       'WORKFLOW_WEBHOOK',
     ],
     tab: 4,
