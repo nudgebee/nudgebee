@@ -16,8 +16,7 @@ import { getAllowedNamespaces } from '@lib/auth';
 import { Box } from '@mui/material';
 import { Switch } from '@ui/Switch';
 import { Chip } from '@ui/Chip';
-import EmptyData from '@shared/EmptyData';
-import noDataImg from '@assets/Icon-no-data-available.svg';
+import { EmptyState } from '@ui/EmptyState';
 import { useData } from '@context/DataContext';
 import { action } from 'src/utils/actionStyles';
 import KubernetesTracesListing from './KubernetesTracesListing';
@@ -481,13 +480,13 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
           bgcolor: 'var(--ds-background-100)',
         }}
       >
-        <EmptyData
+        <EmptyState
           id='log-grouping-unsupported'
-          img={noDataImg}
-          heading='Log Grouping not supported'
-          subHeading='Neither your log provider nor your metrics provider supports log grouping.'
-          height='400px'
-          sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
+          size='page'
+          illustration='no-permissions'
+          title='Log Grouping not supported'
+          description='Neither your log provider nor your metrics provider supports log grouping.'
+          sx={{ minHeight: '400px' }}
         />
       </Box>
     );

@@ -7,8 +7,8 @@ import VerticalStepNavigation from '@shared/navigation/VerticalStepNavigation';
 import TaskAccordion from './TaskAccordion';
 import { toast as snackbar } from '@ui/Toast';
 import apiKubernetes1 from '@api1/kubernetes1';
-import EmptyData from '@shared/EmptyData';
-import { DataNotAvailable, aapRightArrow } from '@assets';
+import { EmptyState } from '@ui/EmptyState';
+import { aapRightArrow } from '@assets';
 import Loader from '@shared/Loader';
 import { hasFeatureAccess, hasWriteAccess } from '@lib/auth';
 import { Card } from '@ui/Card';
@@ -389,7 +389,7 @@ const KubernetesClusterUpgradePlanner: React.FC<KubernetesClusterUpgradePlannerP
           minHeight: ds.space.mul(0, 200),
         }}
       >
-        <EmptyData img={DataNotAvailable} heading='This feature is restricted' subHeading='You can change this in tenant settings' />
+        <EmptyState illustration='no-permissions' title='This feature is restricted' description='You can change this in tenant settings' />
       </Box>
     );
   }
@@ -681,7 +681,11 @@ const KubernetesClusterUpgradePlanner: React.FC<KubernetesClusterUpgradePlannerP
           </Box>
         ) : (
           <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: ds.space.mul(0, 200), p: ds.space[6] }}>
-            <EmptyData img={DataNotAvailable} heading='No upgrade plan available' subHeading="Please click on 'Create Plan' button to generate one" />
+            <EmptyState
+              illustration='first-time'
+              title='No upgrade plan available'
+              description="Please click on 'Create Plan' button to generate one"
+            />
           </Box>
         )}
       </Box>

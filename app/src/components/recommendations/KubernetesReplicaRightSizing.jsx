@@ -17,7 +17,6 @@ import { timeFormatIn24Hours } from '@lib/datetime';
 import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { DataNotAvailable } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
 import AutoOptimizeHorizontalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeHorizontalRightSizingSingleConfiguration';
 import apiAccount from '@api1/account';
@@ -25,7 +24,7 @@ import { useData } from '@context/DataContext';
 import apiHome from '@api1/home';
 import { Link as CustomLink } from '@ui/Link';
 import useRecommendationExport from '@hooks/useRecommendationExport';
-import EmptyData from '@shared/EmptyData';
+import { EmptyState } from '@ui/EmptyState';
 import Link from 'next/link';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
@@ -785,10 +784,10 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   if (!isOptimisePage && !selectedCluster?.agent?.connection_status?.prometheusConnection) {
     return (
       <WidgetCard id='replica-rightsizing' sx={{ mt: 0, mb: 0, padding: ds.space[4] }}>
-        <EmptyData
-          img={DataNotAvailable}
-          heading='Agent Not Connected'
-          subHeading='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
+        <EmptyState
+          illustration='first-time'
+          title='Agent Not Connected'
+          description='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
         >
           <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mt: 'var(--ds-space-2)' }}>
             Check the{' '}
@@ -797,7 +796,7 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
             </Link>{' '}
             page for connection details.
           </Typography>
-        </EmptyData>
+        </EmptyState>
       </WidgetCard>
     );
   }

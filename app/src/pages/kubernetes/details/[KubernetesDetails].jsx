@@ -99,7 +99,7 @@ import PropTypes from 'prop-types';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { Chip } from '@ui/Chip';
 import apiRecommendations from '@api1/recommendation';
-import EmptyData from '@shared/EmptyData';
+import { EmptyState } from '@ui/EmptyState';
 import WorkloadCriticalityManager from '@components/criticality/WorkloadCriticalityManager';
 import SafeIcon from '@shared/icons/SafeIcon';
 
@@ -645,7 +645,7 @@ const KubernetesDetails = () => {
     } else if (selectedCluster?.agent?.connection_status?.karpenterEnabled) {
       return <KubernetesAutoScalerNodePool accountId={kubeId} />;
     } else {
-      return <EmptyData sx={{ textAlign: 'center' }} heading='Auto Scaler is NOT configured' subHeading='' />;
+      return <EmptyState illustration='first-time' title='Auto Scaler is NOT configured' />;
     }
   };
 
@@ -955,9 +955,9 @@ const KubernetesDetails = () => {
                   {!selectedCluster?.agent?.connection_status?.autoScalerEnabled && !selectedCluster?.agent?.connection_status?.karpenterEnabled ? (
                     <ListingLayout>
                       <ListingLayout.Body>
-                        <EmptyData sx={{ textAlign: 'center' }} heading='Auto Scaler is NOT configured' subHeading=''>
+                        <EmptyState illustration='first-time' title='Auto Scaler is NOT configured'>
                           {renderingAutoscalerConfiguringSuggestion()}
-                        </EmptyData>
+                        </EmptyState>
                       </ListingLayout.Body>
                     </ListingLayout>
                   ) : (

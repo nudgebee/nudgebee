@@ -12,8 +12,7 @@ import apiUser from '@api1/user';
 import { useData } from '@context/DataContext';
 import KubernetesTracesListing from './KubernetesTracesListing';
 import { Box } from '@mui/material';
-import EmptyData from '@shared/EmptyData';
-import noDataImg from '@assets/Icon-no-data-available.svg';
+import { EmptyState } from '@ui/EmptyState';
 import { ds } from '@utils/colors';
 
 interface PassedTimestamp {
@@ -221,15 +220,15 @@ const KubernetesTracesCrossZoneListing: React.FC<KubernetesTracesCrossZoneListin
   if (supportsFeature === false) {
     return (
       <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 'var(--ds-radius-lg)', bgcolor: ds.background[100] }}>
-        <EmptyData
+        <EmptyState
           id='cross-zone-unsupported'
-          img={noDataImg}
-          heading='Cross-Zone Communication not supported'
-          subHeading={`Your current trace provider ${
+          size='page'
+          illustration='no-permissions'
+          title='Cross-Zone Communication not supported'
+          description={`Your current trace provider ${
             tracesProviderName ? `(${tracesProviderName}) ` : ''
           }does not support cross-zone communication metrics.`}
-          height='400px'
-          sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
+          sx={{ minHeight: '400px' }}
         />
       </Box>
     );
