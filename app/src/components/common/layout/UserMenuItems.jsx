@@ -2,8 +2,8 @@ import React from 'react';
 import { MenuItem, Typography, ListItemAvatar, Avatar, ListItemText } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { signOut } from 'next-auth/react';
-import { canViewTenantSettings, getUserSession, missingPermissionMessage } from '@lib/auth';
-import { SwitchTenentIconDark, LogoutIconDark, SettingsIcon, ApiIcon } from '@assets';
+import { getUserSession } from '@lib/auth';
+import { SwitchTenentIconDark, LogoutIconDark, ApiIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 import Tooltip from '@ui/Tooltip';
 
@@ -55,12 +55,11 @@ const VersionMenuItem = () => {
  * @param {Object} params
  * @param {Function} params.setAnchorElUser
  * @param {Function} params.setOpenSwitchAccount
- * @param {Function} params.setOpenSettings
  * @param {Function} params.setOpenApiTokens
  * @param {Function} params.handleSubMenuClick
  * @returns {Function} getMenuItem function
  */
-export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOpenSettings, setOpenApiTokens, handleSubMenuClick }) => {
+export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOpenApiTokens, handleSubMenuClick }) => {
   const getMenuItem = (setting) => {
     if (setting === 'UserInfo') {
       return (
@@ -184,47 +183,6 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
       );
     } else if (setting === 'Version') {
       return <VersionMenuItem key={setting} />;
-    } else if (setting === 'Settings') {
-      // Rendered for everyone, disabled without the grant, so the entry is
-      // discoverable and names the permission to ask an admin for — rather than
-      // vanishing, which reads as "this tenant has no settings". `pointerEvents:
-      // 'auto'` on the label is what lets the tooltip fire on a disabled
-      // MenuItem (MUI sets pointer-events:none on the item itself); same idiom
-      // as VersionMenuItem above.
-      const canOpenSettings = canViewTenantSettings();
-      return (
-        <MenuItem
-          key={setting}
-          disabled={!canOpenSettings}
-          sx={{
-            padding: 'var(--ds-overlay-item-padding-md)',
-            margin: '0 var(--ds-overlay-item-margin-x)',
-            borderRadius: 'var(--ds-overlay-item-radius)',
-            borderBottom: '0.5px solid var(--ds-gray-200)',
-            '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
-          }}
-          onClick={() => {
-            if (!canOpenSettings) return;
-            setAnchorElUser(null);
-            setOpenSettings(true);
-          }}
-        >
-          <Tooltip title={canOpenSettings ? '' : missingPermissionMessage('tenants:Read')} placement='left' disableInteractive>
-            <Typography
-              textAlign='left'
-              fontSize={'var(--ds-text-body-lg)'}
-              display={'flex'}
-              alignItems={'center'}
-              gap={'var(--ds-space-2)'}
-              fontWeight={'400'}
-              color={'var(--ds-gray-700)'}
-              sx={{ pointerEvents: 'auto' }}
-            >
-              <SafeIcon src={SettingsIcon} alt='settings' /> Tenant Settings
-            </Typography>
-          </Tooltip>
-        </MenuItem>
-      );
     } else if (setting === 'API Tokens') {
       return (
         <MenuItem
@@ -277,10 +235,8 @@ export const generateMenuItems = (hasMultipleTenantAccess = false) => {
   if (hasMultipleTenantAccess) {
     menu.push('Switch Tenant');
   }
-  // Always listed. Entitlement is decided at render time (disabled + tooltip
-  // naming the missing grant) rather than by omitting the entry here, so a user
-  // who lacks the grant can see the surface exists and what to ask for.
-  menu.push('Settings');
+  // Tenant Settings relocated to Admin -> Tenant Settings (a real page tab now,
+  // not an avatar-menu modal) — see docs/ia-consolidation-plan.md.
 
   menu.push('API Tokens', 'Logout', 'Version');
 

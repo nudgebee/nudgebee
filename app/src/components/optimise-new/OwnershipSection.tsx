@@ -139,7 +139,7 @@ const OwnershipSection = ({ rec }: { rec: any }) => {
               <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0, flexWrap: 'wrap' }}>
                 <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{derivedText(levels, effIndex)}</Typography>
                 {matchedByRule && (
-                  <Link href='/user-management#ownership' openInNew secondaryText>
+                  <Link href='/user-management#access-users/ownership' openInNew secondaryText>
                     Manage rules
                   </Link>
                 )}

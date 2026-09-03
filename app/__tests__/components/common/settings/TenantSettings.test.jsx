@@ -40,6 +40,10 @@ jest.mock('@api1/user', () => ({
   },
 }));
 
+jest.mock('@hooks/useTenantBranding', () => ({
+  useBrandingConfig: () => ({ title: 'Nudgebee' }),
+}));
+
 jest.mock('@ui/Toast', () => ({
   toast: { success: jest.fn(), error: jest.fn() },
   snackbar: { success: jest.fn(), error: jest.fn() },
@@ -56,19 +60,8 @@ jest.mock('src/utils/common', () => ({
   }),
 }));
 
-jest.mock('@ui/Modal', () => ({
-  __esModule: true,
-  Modal: ({ open, children, title }) =>
-    open ? (
-      <div data-testid='modal'>
-        <h2>{title}</h2>
-        {children}
-      </div>
-    ) : null,
-}));
-
-// Props-driven stub, keyed on idPrefix: the modal renders this component twice now
-// (logs and traces), so the previous fixed data-testid would be ambiguous. It renders
+// Props-driven stub, keyed on idPrefix: the tab renders this component twice
+// (logs and traces), so a single fixed data-testid would be ambiguous. It renders
 // one input per supplied field — flat, no disclosure, which is the real component's own
 // test's job — so the hydrate and save-payload tests can drive the trace mapper without
 // mounting the real grid. @shared/settings/labelMapperFields is deliberately NOT mocked,
@@ -151,120 +144,104 @@ global.fetch = jest.fn().mockResolvedValue({
   json: jest.fn().mockResolvedValue({}),
 });
 
+// TenantSettings is a plain Admin page-tab body now (relocated from an
+// avatar-menu modal — see docs/ia-consolidation-plan.md): no open/onClose
+// props, no Modal wrapper, no Cancel/Close button to dismiss.
 describe('TenantSettings', () => {
-  const defaultProps = {
-    open: true,
-    title: 'Tenant Settings',
-    onClose: jest.fn(),
-  };
-
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  // The modal is tabbed: General / Label Mapping / Features, with Logs / Traces /
-  // Webhook alerts nested under Label Mapping. Anything below the General tab has to be
-  // navigated to before it exists in the DOM.
+  // Tabbed: General / Label Mapping / Features, with Logs / Traces / Webhook
+  // alerts nested under Label Mapping. Anything below the General tab has to
+  // be navigated to before it exists in the DOM.
   const openTab = async (...tabNames) => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     for (const name of tabNames) {
       fireEvent.click(screen.getByRole('tab', { name }));
     }
   };
 
-  it('renders modal when open is true', async () => {
+  it('renders the General tab by default', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
-    expect(screen.getByTestId('modal')).toBeInTheDocument();
-  });
-
-  it('does not render modal when open is false', () => {
-    render(<TenantSettings {...defaultProps} open={false} />);
-    expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
-  });
-
-  it('renders the modal title', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    expect(screen.getByText('Tenant Settings')).toBeInTheDocument();
+    expect(screen.getByTestId('field-Tenant Name')).toBeInTheDocument();
   });
 
   it('renders Tenant Name field', async () => {
-    render(<TenantSettings {...defaultProps} />);
+    render(<TenantSettings />);
     await waitFor(() => {
       expect(screen.getByTestId('field-Tenant Name')).toBeInTheDocument();
     });
   });
 
-  it('renders Save and Cancel buttons', async () => {
+  it('renders the Save button', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByTestId('btn-Save')).toBeInTheDocument();
-    expect(screen.getByTestId('btn-Cancel')).toBeInTheDocument();
-  });
-
-  it('calls onClose when Cancel button is clicked', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    fireEvent.click(screen.getByTestId('btn-Cancel'));
-    expect(defaultProps.onClose).toHaveBeenCalledWith(null, 'hide');
   });
 
   it('renders domain login checkbox', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByText('Allow self-onboarding via domain login')).toBeInTheDocument();
   });
 
   it('renders Allowed Domains field (disabled by default)', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByTestId('field-Allowed Domains')).toBeDisabled();
   });
 
   it('renders Default Auth Role field (disabled by default)', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByTestId('field-Default Auth Role')).toBeDisabled();
   });
 
   it('enables Allowed Domains field after checking the checkbox', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     fireEvent.click(screen.getByRole('checkbox'));
     expect(screen.getByTestId('field-Allowed Domains')).not.toBeDisabled();
   });
 
-  it('renders the log label mapper on the Label Mapping tab', async () => {
-    await openTab('Label Mapping');
-    expect(screen.getByTestId('common-settings-log-label')).toBeInTheDocument();
+  it('shows error snackbar when empty allowed domains with checkbox enabled', async () => {
+    const { toast } = require('@ui/Toast');
+    render(<TenantSettings />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('btn-Save')).not.toBeDisabled();
+    });
+
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByTestId('btn-Save'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('Allowed Domains field cannot be empty when domain login is enabled.');
+    });
   });
 
-  it('renders Webhook Label Mapping section', async () => {
-    await openTab('Label Mapping', 'Webhook alerts');
-    expect(screen.getByText(/Map alert label keys to event fields/)).toBeInTheDocument();
-  });
+  describe('Label Mapping tab', () => {
+    it('renders the log label mapper on the Logs sub-tab (default)', async () => {
+      await openTab('Label Mapping');
+      expect(screen.getByTestId('common-settings-log-label')).toBeInTheDocument();
+    });
 
-  it('renders Feature Flag section', async () => {
-    await openTab('Features');
-    expect(screen.getByText('Feature Flags')).toBeInTheDocument();
-  });
-
-  it('renders webhook autocomplete fields', async () => {
-    await openTab('Label Mapping', 'Webhook alerts');
-    expect(screen.getByTestId('autocomplete-Subject Name Labels')).toBeInTheDocument();
-    expect(screen.getByTestId('autocomplete-Namespace Labels')).toBeInTheDocument();
-    expect(screen.getByTestId('autocomplete-Severity Labels')).toBeInTheDocument();
+    it('renders webhook autocomplete fields on the Webhook alerts sub-tab', async () => {
+      await openTab('Label Mapping', 'Webhook alerts');
+      expect(screen.getByTestId('autocomplete-Subject Name Labels')).toBeInTheDocument();
+      expect(screen.getByTestId('autocomplete-Namespace Labels')).toBeInTheDocument();
+      expect(screen.getByTestId('autocomplete-Severity Labels')).toBeInTheDocument();
+    });
   });
 
   describe('trace label mapping', () => {
@@ -338,20 +315,9 @@ describe('TenantSettings', () => {
     });
   });
 
-  it('shows error snackbar when empty allowed domains with checkbox enabled', async () => {
-    const { toast } = require('@ui/Toast');
-    render(<TenantSettings {...defaultProps} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('btn-Save')).not.toBeDisabled();
-    });
-
-    fireEvent.click(screen.getByRole('checkbox'));
-    fireEvent.click(screen.getByTestId('btn-Save'));
-
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith('Allowed Domains field cannot be empty when domain login is enabled.');
-    });
+  it('renders the Feature Flags section on the Features tab', async () => {
+    await openTab('Features');
+    expect(screen.getByText('Feature Flags')).toBeInTheDocument();
   });
 
   describe('read-only viewer (tenants:Read, no write grant)', () => {
@@ -360,38 +326,33 @@ describe('TenantSettings', () => {
     beforeEach(() => canEditTenantSettings.mockReturnValue(false));
     afterEach(() => canEditTenantSettings.mockReturnValue(true));
 
-    it('drops Save and offers Close instead of Cancel', async () => {
+    it('drops the Save button', async () => {
       await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
+        render(<TenantSettings />);
       });
       expect(screen.queryByTestId('btn-Save')).not.toBeInTheDocument();
-      expect(screen.getByTestId('btn-Close')).toBeInTheDocument();
     });
 
     it('explains why, naming the grant to ask for', async () => {
       await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
+        render(<TenantSettings />);
       });
       expect(screen.getByText(/You need the "tenants:Write" permission/)).toBeInTheDocument();
     });
 
-    it('renders the trace label inputs read-only', async () => {
-      await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
-      });
-      fireEvent.click(screen.getByRole('tab', { name: 'Label Mapping' }));
-      fireEvent.click(screen.getByRole('tab', { name: 'Traces' }));
-      expect(screen.getByTestId('trace-label-service_name')).toBeDisabled();
-    });
-
     it('renders the tenant name field read-only', async () => {
       await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
+        render(<TenantSettings />);
       });
       // The whole form is inert for a viewer, so the backend write gate is never
       // reached from the UI — Tenant Name stands in for every field here.
       const input = screen.getByLabelText(/Tenant Name/i);
       expect(input).toBeDisabled();
+    });
+
+    it('renders the trace label inputs read-only', async () => {
+      await openTab('Label Mapping', 'Traces');
+      expect(screen.getByTestId('trace-label-service_name')).toBeDisabled();
     });
   });
 });

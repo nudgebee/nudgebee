@@ -5,6 +5,8 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import LabelOutlinedIcon from '@mui/icons-material/LabelOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
 import {
   EMPTY_TRACE_LABEL_SETTINGS,
@@ -14,7 +16,7 @@ import {
   traceSettingsToLabelsValue,
 } from '@shared/settings/labelMapperFields';
 import { Input } from '@ui/Input';
-import { Modal } from '@ui/Modal';
+import Loader from '@shared/Loader';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
 import Tabs from '@shared/navigation/Tabs';
@@ -232,7 +234,7 @@ const FEATURE_TABLE_HEADERS = [
 const FEATURE_NAVIGATION = {
   LLM_ANALYSER: { route: '/optimise#llm-analyser' },
   AI_COST_REPORT: { route: '/optimise#llm-analyser' },
-  CUSTOM_ROLES: { route: '/user-management#roles' },
+  CUSTOM_ROLES: { route: '/user-management#access-users/roles' },
   CHANNEL_AWARENESS: { route: '/user-management#integrations' },
   TROUBLESHOOT: { route: '/troubleshoot' },
   OPTIMIZE: { route: '/optimise' },
@@ -295,7 +297,7 @@ const FeatureNavigationIcon = ({ feature }) => {
   );
 };
 
-const FeatureNameCell = ({ feature, description, isOn }) => (
+const FeatureNameCell = ({ feature, description, isOn, showFlagIds }) => (
   <Box minWidth={0} display='flex' flexDirection='column' gap='4px'>
     <Box display='flex' alignItems='flex-start' justifyContent='space-between' gap='8px'>
       <Box minWidth={0} display='flex' alignItems='center' gap='4px'>
@@ -306,7 +308,7 @@ const FeatureNameCell = ({ feature, description, isOn }) => (
         {isOn && <FeatureNavigationIcon feature={feature} />}
       </Box>
       {/* Raw id, right-aligned on the same line; omitted when there's no display name since the title is already the id. */}
-      {feature.display_name && (
+      {showFlagIds && feature.display_name && (
         <Typography sx={{ fontSize: ds.text.caption, fontFamily: ds.font.mono, color: ds.gray[400], whiteSpace: 'nowrap', flexShrink: 0 }}>
           {feature.value}
         </Typography>
@@ -363,7 +365,13 @@ const effectiveFeatureChoice = (feature, choice) => (choice === 'default' ? (fea
 // Synthetic id for the "All" tab ahead of the per-category feature tabs.
 const ALL_FEATURES_GROUP_ID = 'all';
 
-const TenantSettings = ({ open, title, onClose }) => {
+// Admin > Tenant Settings tab body — relocated here from an avatar-menu modal
+// (see docs/ia-consolidation-plan.md), so this now mounts once as a page
+// section rather than being opened/closed. `initialLoading` gates a
+// full-section loader for the first fetch only, so a subsequent Save doesn't
+// blank the page out from under the user — that used `loading` alone via the
+// old modal wrapper's own overlay, which no longer exists here.
+const TenantSettings = () => {
   const { title: baseTitle } = useBrandingConfig();
   const { data: session, update } = useSession();
   const VALID_ROLES = ['tenant_admin', 'tenant_admin_readonly'];
@@ -376,9 +384,11 @@ const TenantSettings = ({ open, title, onClose }) => {
   });
   const [traceSettings, setTraceSettings] = useState({ ...EMPTY_TRACE_LABEL_SETTINGS });
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('general');
   const [activeLabelTab, setActiveLabelTab] = useState('log');
   const [activeFeatureGroup, setActiveFeatureGroup] = useState(ALL_FEATURES_GROUP_ID);
+  const [showFlagIds, setShowFlagIds] = useState(false);
   // Each flag is on/off/default, since "default" (no explicit row) and "off" are distinct states for a default-on flag.
   const [featureChoices, setFeatureChoices] = useState({});
   const [initialChoices, setInitialChoices] = useState({});
@@ -494,6 +504,7 @@ const TenantSettings = ({ open, title, onClose }) => {
       } finally {
         if (!cancelled) {
           setLoading(false);
+          setInitialLoading(false);
         }
       }
     };
@@ -517,20 +528,19 @@ const TenantSettings = ({ open, title, onClose }) => {
       }
     };
 
-    if (open) {
-      fetchTenantAttributes();
-      fetchTenant();
-    }
+    fetchTenantAttributes();
+    fetchTenant();
     return () => {
       cancelled = true;
     };
-  }, [open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once fetch, same as the modal version's `[open]` effect it replaces
+  }, []);
 
   const handleSaveSettings = async () => {
     // Belt-and-braces: the Save button isn't rendered without canEdit, but this handler is the only path to these mutations.
     if (!canEdit) return;
     setLoading(true);
-    // Only true when every op below succeeds -- without it, onClose(..., 'show') fired on the catch path too. See issue #32868.
+    // Only true when every op below succeeds -- without it, the success toast fired on the catch path too. See issue #32868.
     let saveSucceeded = false;
     try {
       if (checkboxEnabled && !allowDomainValue.trim()) {
@@ -648,7 +658,7 @@ const TenantSettings = ({ open, title, onClose }) => {
     }
 
     if (saveSucceeded) {
-      onClose(null, 'show');
+      snackbar.success('Tenant Settings saved successfully');
     }
   };
 
@@ -665,6 +675,7 @@ const TenantSettings = ({ open, title, onClose }) => {
             feature={f}
             description={content?.description || f.description}
             isOn={effectiveFeatureChoice(f, featureChoices[f.value] || 'default') === 'on'}
+            showFlagIds={showFlagIds}
           />
         ),
       },
@@ -718,47 +729,26 @@ const TenantSettings = ({ open, title, onClose }) => {
     return featureGroups.find((g) => g.id === activeFeatureGroup) || featureGroups[0] || null;
   };
 
-  const handleClose = () => {
-    onClose(null, 'hide');
-  };
+  if (initialLoading) {
+    return <Loader />;
+  }
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={title}
-      loader={loading}
-      width='lg'
-      maxHeight='90vh'
-      contentStyles={{
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        padding: '0px',
-      }}
-      sx={{
-        // Fixed height, matching Nubi settings -- otherwise every tab switch resizes the dialog since Features is far taller than Tenant Identity.
-        '& .MuiPaper-root': {
-          height: '90vh',
-        },
-      }}
-    >
-      {/* Sticky so the tabs stay reachable while a long tab scrolls; painted so rows don't show through underneath. */}
-      <Box
-        sx={{
-          position: 'sticky',
-          top: 0,
-          zIndex: 10,
-          backgroundColor: ds.background[100],
-          mb: ds.space[4],
-          padding: `${ds.space[2]} ${ds.space[5]} 0px ${ds.space[5]}`,
-        }}
-      >
+    <>
+      {/* No background/padding chrome here -- matches how AnchorComponent itself
+          wraps a tabOptions sub-tab strip elsewhere (just position + bottom
+          margin), rather than boxing it in its own card-like surface. Not
+          sticky either (unlike the modal version this replaced): the page's own
+          top-level tab strip may already be sticky, and stacking two sticky
+          bars without a live browser to check the result risks an overlap this
+          diff can't verify. */}
+      <Box sx={{ position: 'relative', mb: ds.space[4] }}>
         <Tabs
           options={{
             tabOptions: [
-              { value: 'general', text: 'General', icon: SettingsOutlinedIcon, iconSize: 16 },
-              { value: 'labels', text: 'Label Mapping', icon: LabelOutlinedIcon, iconSize: 16 },
-              { value: 'features', text: 'Features', icon: TuneOutlinedIcon, iconSize: 16 },
+              { value: 'general', text: 'General', icon: SettingsOutlinedIcon, iconSize: 16, showBottomMargin: true },
+              { value: 'labels', text: 'Label Mapping', icon: LabelOutlinedIcon, iconSize: 16, showBottomMargin: true },
+              { value: 'features', text: 'Features', icon: TuneOutlinedIcon, iconSize: 16, showBottomMargin: true },
             ],
           }}
           value={activeTab}
@@ -769,27 +759,19 @@ const TenantSettings = ({ open, title, onClose }) => {
           ariaLabel='Tenant settings'
         />
       </Box>
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5], padding: `0px ${ds.space[5]}`, pb: ds.space[5] }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5], pb: ds.space[5] }}>
         {/* Stated once here rather than as a tooltip on each of the ~12 controls, since every field is inert for a read-only viewer. */}
         {!canEdit && <Banner tone='info' message={missingPermissionMessage('tenants:Write')} />}
         {activeTab === 'general' && (
-          <Box sx={{ px: ds.space[4], display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
-            <Card
-              variant='outlined'
-              elevation='flat'
-              header={<SectionHeader title='Tenant Identity' description='Display name shown across the app.' />}
-            >
-              <Box sx={{ width: '40%' }}>
+          <Card variant='outlined' elevation='flat'>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: ds.space[5], alignItems: 'start' }}>
+              <Box display='flex' flexDirection='column' gap={ds.space[3]}>
+                <SectionHeader title='Tenant Identity' description='Display name shown across the app.' />
                 <Input size='sm' label='Tenant Name' value={tenantName} onChange={setTenantName} disabled={!canEdit} />
               </Box>
-            </Card>
 
-            <Card
-              variant='outlined'
-              elevation='flat'
-              header={<SectionHeader title='Self-Onboarding' description='Self-onboarding rules for users joining this tenant.' />}
-            >
               <Box display='flex' flexDirection='column' gap={ds.space[3]}>
+                <SectionHeader title='Self-Onboarding' description='Self-onboarding rules for users joining this tenant.' />
                 <Checkbox
                   size='sm'
                   checked={checkboxEnabled}
@@ -798,35 +780,49 @@ const TenantSettings = ({ open, title, onClose }) => {
                   disabled={!canEdit}
                 />
                 <Box display='flex' flexDirection='column' gap={ds.space[3]}>
-                  <Box sx={{ width: '40%' }}>
-                    <Input
-                      size='sm'
-                      label='Allowed Domains'
-                      value={allowDomainValue}
-                      onChange={setAllowDomainValue}
-                      disabled={!canEdit || !checkboxEnabled}
-                      placeholder='Enter allowed login domains, such as gmail.com'
-                    />
-                  </Box>
-                  <Box sx={{ width: '40%' }}>
-                    <Input
-                      size='sm'
-                      label='Default Auth Role'
-                      value={defaultAuthRole}
-                      instructionText='Only "tenant_admin" or "tenant_admin_readonly" are allowed'
-                      onChange={(value) => setDefaultAuthRole(value?.trim())}
-                      disabled={!canEdit || !checkboxEnabled}
-                      placeholder='Enter default auth role for self-onboarding'
-                    />
-                  </Box>
+                  <Input
+                    size='sm'
+                    label='Allowed Domains'
+                    value={allowDomainValue}
+                    onChange={setAllowDomainValue}
+                    disabled={!canEdit || !checkboxEnabled}
+                    placeholder='Enter allowed login domains, such as gmail.com'
+                  />
+                  <Input
+                    size='sm'
+                    label='Default Auth Role'
+                    value={defaultAuthRole}
+                    instructionText='Only "tenant_admin" or "tenant_admin_readonly" are allowed'
+                    onChange={(value) => setDefaultAuthRole(value?.trim())}
+                    disabled={!canEdit || !checkboxEnabled}
+                    placeholder='Enter default auth role for self-onboarding'
+                  />
                 </Box>
               </Box>
-            </Card>
-          </Box>
+            </Box>
+
+            {/* handleSaveSettings commits pending changes from all tabs at once, not just
+                General's -- each tab/subtab just carries its own Save button to this one handler. */}
+            {canEdit && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  mt: ds.space[5],
+                  pt: ds.space[4],
+                  borderTop: `1px solid ${ds.gray[200]}`,
+                }}
+              >
+                <Button size='md' onClick={handleSaveSettings} loading={loading} sx={{ minWidth: ds.space.mul(0, 70) }}>
+                  Save
+                </Button>
+              </Box>
+            )}
+          </Card>
         )}
 
         {activeTab === 'labels' && (
-          <Box sx={{ px: ds.space[4], display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
             <Tabs
               options={{
                 tabOptions: [
@@ -843,7 +839,20 @@ const TenantSettings = ({ open, title, onClose }) => {
               ariaLabel='Label mapping'
             />
             {activeLabelTab === 'log' && (
-              <Card variant='outlined' elevation='flat' header={<SectionHeader description='Map Logs label keys to product concepts.' />}>
+              <Card
+                variant='outlined'
+                elevation='flat'
+                header={
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: ds.space[3] }}>
+                    <SectionHeader description='Map Logs label keys to product concepts.' />
+                    {canEdit && (
+                      <Button size='sm' onClick={handleSaveSettings} loading={loading} sx={{ minWidth: ds.space.mul(0, 70) }}>
+                        Save
+                      </Button>
+                    )}
+                  </Box>
+                }
+              >
                 <Box display='flex' flexDirection='column' gap={ds.space[3]}>
                   <TenantAccountCommonSettings idPrefix='log-label' settings={logSettings} setSettings={setLogSettings} disabled={!canEdit} />
                   <Input
@@ -863,7 +872,14 @@ const TenantSettings = ({ open, title, onClose }) => {
                 variant='outlined'
                 elevation='flat'
                 header={
-                  <SectionHeader description="Map your trace backend's field names onto the canonical trace fields. Leave a field blank to use the provider default." />
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: ds.space[3] }}>
+                    <SectionHeader description="Map your trace backend's field names onto the canonical trace fields. Leave a field blank to use the provider default." />
+                    {canEdit && (
+                      <Button size='sm' onClick={handleSaveSettings} loading={loading} sx={{ minWidth: ds.space.mul(0, 70) }}>
+                        Save
+                      </Button>
+                    )}
+                  </Box>
                 }
               >
                 <TenantAccountCommonSettings
@@ -883,7 +899,16 @@ const TenantSettings = ({ open, title, onClose }) => {
               <Card
                 variant='outlined'
                 elevation='flat'
-                header={<SectionHeader description='Map alert label keys to event fields. Order matters — first non-empty value is used.' />}
+                header={
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: ds.space[3] }}>
+                    <SectionHeader description='Map alert label keys to event fields. Order matters — first non-empty value is used.' />
+                    {canEdit && (
+                      <Button size='sm' onClick={handleSaveSettings} loading={loading} sx={{ minWidth: ds.space.mul(0, 70) }}>
+                        Save
+                      </Button>
+                    )}
+                  </Box>
+                }
               >
                 <Box display='flex' flexDirection='column' gap={ds.space[3]}>
                   <Typography sx={{ color: ds.gray[600], fontSize: ds.text.body, lineHeight: ds.space.mul(0, 10) }}>
@@ -936,61 +961,67 @@ const TenantSettings = ({ open, title, onClose }) => {
         )}
 
         {activeTab === 'features' && (
-          <Box sx={{ px: ds.space[4] }}>
-            <Box sx={{ mb: ds.space[4] }}>
-              <SectionHeader
-                title='Feature Flags'
-                description='Control which Nubi capabilities are active for your tenant. Toggle a feature on or off, changes apply immediately.'
-              />
-            </Box>
-            <Tabs
-              options={{
-                tabOptions: [
-                  { value: allFeaturesGroup.id, text: allFeaturesGroup.label, count: allFeaturesGroup.items.length },
-                  ...featureGroups.map((g) => ({ value: g.id, text: g.label, count: g.items.length })),
-                ],
-              }}
-              value={currentFeatureGroup()?.id || ''}
-              onChange={(next) => setActiveFeatureGroup(next)}
-              smallSize
-              behavior='filter'
-              variant='secondary'
-              ariaLabel='Feature groups'
-            />
-            <CustomTable
-              id='tenant-features-table'
-              headers={FEATURE_TABLE_HEADERS}
-              tableData={(currentFeatureGroup()?.items || []).map(buildFeatureRow)}
-            />
+          <Box>
+            <Card
+              variant='outlined'
+              elevation='flat'
+              header={
+                <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: ds.space[3] }}>
+                  <SectionHeader
+                    title='Feature Flags'
+                    description='Control which Nubi capabilities are active for your tenant. Toggle a feature on or off, changes apply immediately.'
+                  />
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
+                    {canEdit && (
+                      <Button size='sm' onClick={handleSaveSettings} loading={loading} sx={{ minWidth: ds.space.mul(0, 70) }}>
+                        Save
+                      </Button>
+                    )}
+                    <Button
+                      composition='icon-only'
+                      tone='ghost'
+                      size='sm'
+                      icon={showFlagIds ? <VisibilityOffOutlinedIcon sx={{ fontSize: 16 }} /> : <VisibilityOutlinedIcon sx={{ fontSize: 16 }} />}
+                      aria-label={showFlagIds ? 'Hide flag ids' : 'Show flag ids'}
+                      tooltip={showFlagIds ? 'Hide flag ids' : 'Show flag ids'}
+                      onClick={() => setShowFlagIds((v) => !v)}
+                    />
+                  </Box>
+                </Box>
+              }
+            >
+              <Box display='flex' flexDirection='column' gap={ds.space[4]}>
+                <Tabs
+                  options={{
+                    tabOptions: [
+                      { value: allFeaturesGroup.id, text: allFeaturesGroup.label, count: allFeaturesGroup.items.length },
+                      ...featureGroups.map((g) => ({ value: g.id, text: g.label, count: g.items.length })),
+                    ],
+                  }}
+                  value={currentFeatureGroup()?.id || ''}
+                  onChange={(next) => setActiveFeatureGroup(next)}
+                  smallSize
+                  behavior='filter'
+                  variant='secondary'
+                  ariaLabel='Feature groups'
+                />
+                <CustomTable
+                  id='tenant-features-table'
+                  headers={FEATURE_TABLE_HEADERS}
+                  tableData={(currentFeatureGroup()?.items || []).map(buildFeatureRow)}
+                />
+              </Box>
+            </Card>
           </Box>
         )}
       </Box>
-      <Box
-        display='flex'
-        alignItems='center'
-        justifyContent='flex-end'
-        gap={ds.space[3]}
-        p={`${ds.space[4]} ${ds.space[5]}`}
-        sx={{
-          borderTop: '0.5px solid var(--ds-gray-200)',
-          '& button': { minWidth: ds.space.mul(0, 70) },
-          position: 'sticky',
-          bottom: 0,
-          backgroundColor: 'white',
-          zIndex: 1,
-        }}
-      >
-        <Button tone='secondary' size='md' onClick={handleClose}>
-          {canEdit ? 'Cancel' : 'Close'}
-        </Button>
-        {/* Dropped entirely rather than disabled for a read-only viewer -- nothing here for Save to act on. */}
-        {canEdit && (
-          <Button size='md' onClick={handleSaveSettings} disabled={loading}>
-            Save
-          </Button>
-        )}
-      </Box>
-    </Modal>
+      {/* No Cancel/Close here -- there's no dialog to dismiss now that this is a
+          page tab, not a modal. Switching to another Admin tab remounts this one
+          fresh (ErrorBoundary's key in user-management/index.jsx), so navigating
+          away already discards unsaved edits the same way Cancel used to.
+          Every tab (General, Labels' three subtabs, Features) carries its own Save
+          in its card header/footer now -- no shared bottom bar. */}
+    </>
   );
 };
 

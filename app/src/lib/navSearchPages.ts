@@ -149,19 +149,27 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Tickets', label: 'All Tickets', path: '/tickets#tickets' },
   { group: 'Tickets', label: 'All Tickets - Assigned to me', path: '/tickets#assigned-me' },
 
-  { group: 'Admin', label: 'Users', path: '/user-management#users' },
-  { group: 'Admin', label: 'Groups', path: '/user-management#groups' },
-  { group: 'Admin', label: 'Audits', path: '/user-management#audits' },
-  { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
-  { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
-  { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
+  // Users, Groups, Ownership, Roles and Audit Log all consolidated into one
+  // "Access & Users" top-level tab as sibling sub-tabs (AnchorComponent's
+  // parent/child hash routing) — Users is the default sub-tab, so its path
+  // carries no child fragment.
+  { group: 'Admin', label: 'Users', path: '/user-management#access-users' },
+  { group: 'Admin', label: 'Groups', path: '/user-management#access-users/groups' },
+  { group: 'Admin', label: 'Ownership', path: '/user-management#access-users/ownership' },
   // Registered dynamically via registerUserManagementFilter in
   // src/ee/components/user-management/RolePermissions.jsx, not a static
-  // baseFilters entry. Gated in search by GlobalPageSearch.jsx's own
-  // canAccessRoles check, mirroring that registration's shouldShow — the tab
-  // is absent for a tenant without the CUSTOM_ROLES feature, so a search row
-  // leading to it would dead-end.
-  { group: 'Admin', label: 'Roles', path: '/user-management#roles' },
+  // baseFilters entry — folded into Access & Users as a sub-tab rather than
+  // staying a top-level fragment. Gated in search by GlobalPageSearch.jsx's
+  // own canAccessRoles check, mirroring that registration's shouldShow — the
+  // tab is absent for a tenant without the CUSTOM_ROLES feature, so a search
+  // row leading to it would dead-end.
+  { group: 'Admin', label: 'Roles', path: '/user-management#access-users/roles' },
+  { group: 'Admin', label: 'Audit Log', path: '/user-management#access-users/audit-log' },
+  { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
+  { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
+  // Relocated from an avatar-menu modal (see docs/ia-consolidation-plan.md) —
+  // now a plain top-level Admin tab, gated the same way (tenants:Read).
+  { group: 'Admin', label: 'Tenant Settings', path: '/user-management#tenant-settings' },
   // Billing tab removed from admin panel (PR #32989) — billingFilter.tsx is no
   // longer imported from src/ee/init.ts, so the tab never registers. Commented
   // out (not deleted) rather than added to navSearchIgnoredFragments below,

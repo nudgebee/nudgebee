@@ -51,10 +51,9 @@ import {
   TicketBlueIcon,
   UserIconOutline,
   User1,
-  UserGroupIcon,
-  AuditIcon,
   NotificationIcon1,
   ApplicationsIcon,
+  SettingsIcon,
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
@@ -62,9 +61,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import FirstLoginTour from '@components/onboarding/FirstLoginTour';
 import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
-import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
-import { toast as snackbar } from '@ui/Toast';
 import { tenantSwitcher } from '@lib/tenantSwitcherService';
 import { useData } from '@context/DataContext';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
@@ -325,7 +322,6 @@ const PageLayout = ({ children }) => {
   // State
   const [anchorElUser, setAnchorElUser] = useState(null);
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
-  const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
   // Which nav item's sub-section flyout is open, and the rail button it hangs
   // off. One flyout for the whole rail, re-anchored per item.
@@ -569,9 +565,18 @@ const PageLayout = ({ children }) => {
         text: 'Admin',
         id: 'admin-sidenav',
         subItems: [
-          { text: 'Users', path: '/user-management#users', id: 'sidenav-admin-users', module: 'users', icon: User1 },
-          { text: 'Groups', path: '/user-management#groups', id: 'sidenav-admin-groups', module: 'usergroups', icon: UserGroupIcon },
-          { text: 'Audits', path: '/user-management#audits', id: 'sidenav-admin-audits', module: 'audits', icon: AuditIcon },
+          // Users, Groups, Ownership, Roles and Audit Log all live under this one
+          // Access & Users tab as sub-tabs (#access-users, #access-users/groups,
+          // #access-users/ownership, #access-users/roles, #access-users/audit-log)
+          // — this flyout carries only top-level tabs (see "Keeping Global Search
+          // in sync" in app/CLAUDE.md), so they get one row, not five.
+          {
+            text: 'Access & Users',
+            path: '/user-management#access-users',
+            id: 'sidenav-admin-access-users',
+            modules: ['users', 'usergroups', 'ownership', 'audits'],
+            icon: User1,
+          },
           {
             text: 'Notification Rules',
             path: '/user-management#notification-rules',
@@ -586,24 +591,32 @@ const PageLayout = ({ children }) => {
             module: 'integrations',
             icon: IntegrationsIcon,
           },
-          { text: 'Ownership', path: '/user-management#ownership', id: 'sidenav-admin-ownership', module: 'ownership', icon: UserGroupIcon },
-          // Admin sections registered by extensions (Roles & Permissions, Billing)
-          // rather than hardcoded above. Read from the SAME registry the
-          // /user-management page builds its tabs from, in the same order, so the
-          // flyout cannot drift from the tab list — the Roles tab had existed for
-          // a while with no way to reach it from the sidebar.
+          {
+            text: 'Tenant Settings',
+            path: '/user-management#tenant-settings',
+            id: 'sidenav-admin-tenant-settings',
+            module: 'tenants',
+            icon: SettingsIcon,
+          },
+          // Admin sections registered by extensions (Billing) rather than
+          // hardcoded above. Read from the SAME registry the /user-management
+          // page builds its tabs from, so the flyout cannot drift from the tab
+          // list for anything that's still top-level. Roles is excluded — it
+          // merges into Access & Users as a sub-tab (see filterOptions in
+          // user-management/index.jsx), same reason Ownership isn't listed here
+          // either.
           //
           // No `module` is set on purpose: these self-gate via their own
           // shouldShow(session) and are HIDDEN when it fails, whereas the base
-          // sections above always exist and render disabled-with-a-tooltip. Roles
-          // has no meaningful disabled state — a tenant without the CUSTOM_ROLES
-          // feature has nothing to administer there at all.
-          ...userManagementFilters(session).map((f) => ({
-            text: f.name,
-            path: `/user-management#${f.fragment}`,
-            id: `sidenav-admin-${f.fragment}`,
-            icon: f.icon,
-          })),
+          // sections above always exist and render disabled-with-a-tooltip.
+          ...userManagementFilters(session)
+            .filter((f) => f.fragment !== 'roles')
+            .map((f) => ({
+              text: f.name,
+              path: `/user-management#${f.fragment}`,
+              id: `sidenav-admin-${f.fragment}`,
+              icon: f.icon,
+            })),
         ],
       });
     }
@@ -703,7 +716,6 @@ const PageLayout = ({ children }) => {
   const getMenuItem = createGetMenuItem({
     setAnchorElUser,
     setOpenSwitchAccount,
-    setOpenSettings,
     setOpenApiTokens,
     handleSubMenuClick,
   });
@@ -733,16 +745,6 @@ const PageLayout = ({ children }) => {
               afterInteractive strategy injects itself regardless of position. */}
           {renderSlot('LayoutHeadExtras')}
 
-          <TenantSettings
-            open={openSettings}
-            title={'Tenant Settings'}
-            onClose={(_, msg) => {
-              setOpenSettings(false);
-              if (msg === 'show') {
-                snackbar.success('Tenant Settings saved successfully');
-              }
-            }}
-          />
           <ApiTokens open={openApiTokens} title={'API Tokens'} onClose={() => setOpenApiTokens(false)} />
           <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
 

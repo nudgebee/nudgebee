@@ -249,15 +249,18 @@ test(
 );
 
 test(
-  "Notifications sanity - switch from Notifications to the Audits tab and back, verify the rules listing is restored",
+  "Notifications sanity - switch from Notifications to the Access & Users > Audit Log tab and back, verify the rules listing is restored",
   { tag: ["@dev", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
 
     await test.step("Audits replaces the notification listing", async () => {
+      // Audit Log is a sub-tab of the separate Access & Users top-level tab now,
+      // so it only exists in the DOM once that top-level tab is open.
+      await noti.accessUsersTab.click();
       await noti.auditsTab.click();
-      await expect(noti.auditsTab).toHaveAttribute("data-tab-selected", "true", { timeout: 30000 });
+      await expect(noti.auditsTab).toHaveAttribute("aria-selected", "true", { timeout: 30000 });
       // The tab body is swapped, not hidden — /user-management renders only the selected
       // section's Body, so the notifications toolbar leaves the DOM entirely.
       await expect(noti.notificationRuleBtn).toHaveCount(0, { timeout: 30000 });

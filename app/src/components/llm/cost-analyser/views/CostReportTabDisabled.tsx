@@ -153,7 +153,7 @@ export function CostReportTabDisabled() {
             surface='section'
             tone='info'
             title='How to enable it'
-            message='Open your profile menu → Tenant Settings → Features, enable “AI/LLM cost report”, then Save. Make sure a default Slack channel is mapped under Admin → Integrations so the daily digest has somewhere to post.'
+            message='Open Admin → Tenant Settings → Features, enable “AI/LLM cost report”, then Save. Make sure a default Slack channel is mapped under Admin → Integrations so the daily digest has somewhere to post.'
           />
         ) : (
           <Banner

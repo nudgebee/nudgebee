@@ -32,6 +32,7 @@ export class NotificationsModuleLocators extends NotificationLocators {
   readonly deleteConfirmBtn: Locator;
   readonly deleteCancelBtn: Locator;
 
+  readonly accessUsersTab: Locator;
   readonly auditsTab: Locator;
 
   constructor(page: Page) {
@@ -90,9 +91,16 @@ export class NotificationsModuleLocators extends NotificationLocators {
 
     this.deleteCancelBtn = this.deleteDialog.locator("#cancel").or(this.deleteDialog.getByRole("button", { name: /^Cancel$/i })).first();
 
-    // AnchorComponent renders `anchor-tab-${opt?.id || opt?.name}`; the /user-management
-    // filterOptions carry a `name` and no `id`, so the tab id is the display name.
-    this.auditsTab = page.locator("#anchor-tab-Audits").or(page.getByRole("tab", { name: "Audits" })).first();
+    // Access & Users is the top-level tab Audit Log now lives under (AnchorComponent's
+    // own anchor-tab-<id> button — id is pinned to "AccessUsers" in
+    // user-management/index.jsx since the display name has a space and an
+    // ampersand, neither safe in a bare CSS id selector). Audit Log itself is
+    // one of its sub-tabs, not reachable until this top-level tab is open — see
+    // the two-step click in NotificationsModule.spec.ts.
+    this.accessUsersTab = page.locator("#anchor-tab-AccessUsers").or(page.getByRole("link", { name: "Access & Users" })).first();
+    // Sub-tab of Access & Users, rendered by the shared Tabs.jsx (a real MUI Tab)
+    // — id comes from a11yProps(value, opt.id) where opt.id is "audit-log".
+    this.auditsTab = page.locator("#audit-log").or(page.getByRole("tab", { name: "Audit Log", exact: true })).first();
   }
 
   // Rows are matched on the rule name, which this suite generates unique per rule — so

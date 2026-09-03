@@ -362,7 +362,14 @@ const AnchorComponent = ({
             position: 'absolute',
             left: 0,
             right: 0,
-            zIndex: 2,
+            // Higher than the plain "2" a page's own Tabs.jsx active-tab underline
+            // uses (e.g. TenantSettings' General/Label Mapping/Features row, which
+            // sits below this component as an unrelated sibling stacking context).
+            // At equal z-index, later-in-DOM wins ties, so that underline used to
+            // paint through this tab strip's own hover dropdown despite the
+            // dropdown's local zIndex:3 -- that only wins against z-index'd
+            // descendants of *this* Box, not against unrelated page content.
+            zIndex: 5,
             borderTop: '0.5px solid var(--ds-gray-200)',
           }}
           onMouseLeave={handlePopoverClose}
@@ -392,6 +399,14 @@ const AnchorComponent = ({
               {currentOpt?.tabOptions && anchorEl && (
                 <Popover
                   sx={{
+                    // Explicit local z-index: disablePortal keeps this popover a DOM
+                    // descendant of the tab strip (required so onMouseLeave above
+                    // doesn't fire while the pointer crosses from the tab button into
+                    // the menu), which means it's stacked within the tab strip's own
+                    // z-index context rather than at the page's modal layer. Without
+                    // this, the active tab's sliding indicator bar (z-index 2 on its
+                    // own ::after, see tabsRootRef below) could paint over it.
+                    zIndex: 3,
                     '& .MuiPopover-paper': {
                       backgroundColor: 'var(--ds-overlay-bg)',
                       borderRadius: 'var(--ds-overlay-radius)',

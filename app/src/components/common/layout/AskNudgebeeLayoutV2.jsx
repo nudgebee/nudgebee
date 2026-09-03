@@ -13,7 +13,6 @@ import { tenantSwitcher } from '@lib/tenantSwitcherService';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import SettingsModal from '@components/llm/SettingsModal';
 import apiHome from '@api1/home';
-import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
 import Head from 'next/head';
@@ -166,7 +165,6 @@ const AskNudgebeeLayout = ({
   const [anchorElUser, setAnchorElUser] = useState(null);
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
   const [openSettingsModal, setOpenSettingsModal] = useState(false);
-  const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
   const [internalAgents, setInternalAgents] = useState([]);
   const [internalLoading, setInternalLoading] = useState(false);
@@ -261,7 +259,6 @@ const AskNudgebeeLayout = ({
   const getMenuItem = createGetMenuItem({
     setAnchorElUser,
     setOpenSwitchAccount,
-    setOpenSettings,
     setOpenApiTokens,
     handleSubMenuClick,
   });
@@ -310,13 +307,6 @@ const AskNudgebeeLayout = ({
         loadingAgents={effectiveLoading}
       />
       <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
-      <TenantSettings
-        open={openSettings}
-        title={'Tenant Settings'}
-        onClose={() => {
-          setOpenSettings(false);
-        }}
-      />
       <ApiTokens open={openApiTokens} title={'API Tokens'} onClose={() => setOpenApiTokens(false)} />
       <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
         <Box sx={{ display: 'flex', alignItems: 'stretch', justifyContent: 'center' }}>

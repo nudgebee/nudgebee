@@ -286,13 +286,13 @@ test(
 
     await test.step("The Users tab replaces the audit listing", async () => {
       await locators.usersTab.click();
-      await expect(locators.usersTab).toHaveAttribute("data-tab-selected", "true");
+      await expect(locators.usersTab).toHaveAttribute("aria-selected", "true");
       await expect(locators.table).toHaveCount(0);
     });
 
     await test.step("Returning reselects Audits and refetches the log", async () => {
       const returned = await withAuditsCapture(page, () => locators.auditsTab.click());
-      await expect(locators.auditsTab).toHaveAttribute("data-tab-selected", "true");
+      await expect(locators.auditsTab).toHaveAttribute("aria-selected", "true");
       await expect(locators.table).toBeVisible();
       await expect(locators.dataRows).toHaveCount(returned.rows.length);
     });

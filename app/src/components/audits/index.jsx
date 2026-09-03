@@ -212,7 +212,7 @@ export const AuditsTable = () => {
       );
     } else if (item.event_category == 'GROUPS') {
       return (
-        <Link href={`/user-management?groupId=${item.event_target}#groups`}>
+        <Link href={`/user-management?groupId=${item.event_target}#access-users/groups`}>
           <Text sx={{ color: 'inherit' }} value={item.event_target} showAutoEllipsis />
         </Link>
       );

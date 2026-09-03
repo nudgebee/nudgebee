@@ -8,7 +8,8 @@ import { Box, Typography } from '@mui/material';
 import Notifications from '@components/notifications';
 import Integrations from '@components/accounts/integration';
 import OwnershipRules from '@components/user-management/OwnershipRules';
-import { AuditIcon, NotificationIcon1, User1, UserGroupIcon, IntegrationsIcon } from '@assets';
+import TenantSettings from '@shared/settings/TenantSettings';
+import { AuditIcon, NotificationIcon1, User1, UserGroupIcon, IntegrationsIcon, SettingsIcon } from '@assets';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { userManagementFilters } from '@lib/authHooks';
@@ -16,6 +17,7 @@ import { hasAdminSurfaceAccess, missingPermissionMessage } from '@lib/auth';
 import Loader from '@shared/Loader';
 import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
+import AssignmentIndOutlinedIcon from '@mui/icons-material/AssignmentIndOutlined';
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -29,39 +31,74 @@ import { useBrandingConfig } from '@hooks/useTenantBranding';
 // UserManagementFilter in @lib/authHooks).
 // A function taking the brand, not a constant: one caption names the product, which
 // is tenant-branded and only resolved once /api/public/app_config has landed.
+// A filter can carry `tabOptions` instead of its own `Body`/`module` — Access
+// & Users below consolidates Users, Groups, Ownership and Audit Log this way,
+// as sibling sub-tabs reached at `#access-users/<fragment>` (AnchorComponent's
+// built-in 2-level hash routing; the default sub-tab, Users, keeps the bare
+// `#access-users` URL working unchanged). Each sub-tab is gated on its own
+// `module`, independently of its siblings — see the parent/child disabled
+// computation in filterOptions below.
+// Roles & Permissions (dynamic RBAC) merges into Access & Users' tabOptions
+// the same way, but it isn't a baseFilters entry to merge statically — it's
+// EE-only, registered at runtime via registerUserManagementFilter (stripped
+// in OSS), gated by its own shouldShow(session) rather than a `module`. See
+// the rolesFilter handling in filterOptions below, which folds it in (right
+// after Groups) only when userManagementFilters(session) actually returns it.
 const baseFilters = (baseTitle) => [
   {
-    name: 'Users',
-    fragment: 'users',
+    name: 'Access & Users',
+    // Explicit id: AnchorComponent falls back to `anchor-tab-${name}` when no id
+    // is given, and "Access & Users" contains a space and an ampersand — neither
+    // safe in a bare CSS id selector (see the identical reasoning pinning
+    // Notification Rules' id below).
+    id: 'AccessUsers',
+    fragment: 'access-users',
     icon: User1,
-    Body: AllUsers,
-    module: 'users',
-    description:
-      'Everyone who can sign in to this tenant — invite users, set their role and status, and review the groups and integration profiles each one belongs to.',
+    tabOptions: [
+      {
+        id: 'users',
+        fragment: '',
+        text: 'Users',
+        icon: User1,
+        Body: AllUsers,
+        module: 'users',
+        description:
+          'Everyone who can sign in to this tenant — invite users, set their role and status, and review the groups and integration profiles each one belongs to.',
+      },
+      {
+        id: 'groups',
+        fragment: 'groups',
+        text: 'Groups',
+        icon: UserGroupIcon,
+        Body: UserGroup,
+        module: 'usergroups',
+        description:
+          'Bundle users into groups and assign roles at the group level — scoped to an account or namespace — instead of granting access user by user.',
+      },
+      {
+        id: 'ownership',
+        fragment: 'ownership',
+        text: 'Ownership',
+        icon: AssignmentIndOutlinedIcon,
+        Body: OwnershipRules,
+        module: 'ownership',
+        description:
+          'Rules that map a namespace, workload label or cloud resource to an owning user or group, so resources are attributed to a team automatically.',
+      },
+      {
+        id: 'audit-log',
+        fragment: 'audit-log',
+        text: 'Audit Log',
+        icon: AuditIcon,
+        Body: AuditsTable,
+        module: 'audits',
+        description:
+          'The searchable trail of configuration, access and automation changes in this tenant — who did what, when, and what the change altered.',
+      },
+    ],
   },
-  {
-    name: 'Groups',
-    fragment: 'groups',
-    icon: UserGroupIcon,
-    Body: UserGroup,
-    module: 'usergroups',
-    description:
-      'Bundle users into groups and assign roles at the group level — scoped to an account or namespace — instead of granting access user by user.',
-  },
-  // Roles & Permissions (dynamic RBAC) is EE-only: registered via
-  // registerUserManagementFilter from app/src/ee (stripped in OSS). It slots in
-  // after the base filters. OSS ships without it and uses the built-in roles.
-  {
-    name: 'Audits',
-    fragment: 'audits',
-    icon: AuditIcon,
-    Body: AuditsTable,
-    module: 'audits',
-    description:
-      'The searchable trail of configuration, access and automation changes in this tenant — who did what, when, and what the change altered.',
-  },
-  // id is pinned to the old tab name so the DOM id (#anchor-tab-Notifications) that
-  // app-e2e-tests locates the tab by stays stable across the label rename.
+  // id is pinned so the DOM id (#anchor-tab-Notifications) that app-e2e-tests
+  // locates the tab by stays stable if the label ever changes independently.
   {
     name: 'Notification Rules',
     id: 'Notifications',
@@ -81,13 +118,16 @@ const baseFilters = (baseTitle) => [
     description: `Connect ${baseTitle} to your clouds, observability platforms, ticketing, repositories and messaging tools — and see what is already connected.`,
   },
   {
-    name: 'Ownership',
-    fragment: 'ownership',
-    icon: UserGroupIcon,
-    Body: OwnershipRules,
-    module: 'ownership',
-    description:
-      'Rules that map a namespace, workload label or cloud resource to an owning user or group, so resources are attributed to a team automatically.',
+    name: 'Tenant Settings',
+    fragment: 'tenant-settings',
+    icon: SettingsIcon,
+    // SettingsIcon's own SVG renders larger than its sibling top-level icons at
+    // the default size — iconSize normalizes it, same fix troubleshoot/index.jsx
+    // and optimise/index.jsx apply to their own top-level tab icons.
+    iconSize: 16,
+    Body: TenantSettings,
+    module: 'tenants',
+    description: 'Tenant identity, self-onboarding, label mapping for logs and webhook alerts, and feature flags for this tenant.',
   },
 ];
 
@@ -104,8 +144,62 @@ export default function UserManagement() {
     const isAdmin = roles.includes('tenant_admin') || roles.includes('tenant_admin_readonly') || !!session?.isSuperAdmin;
     // Dynamic-RBAC grants ("<module>:<class>") the signed-in user holds.
     const perms = session?.permissions ?? [];
-    const all = [...baseFilters(baseTitle), ...userManagementFilters(session)].filter((f) => !f.adminOnly || isAdmin);
+    // userManagementFilters(session) already applies each entry's own
+    // shouldShow(session) — an entry is simply absent when it fails (OSS build,
+    // or e.g. CUSTOM_ROLES off for this tenant), not present-but-disabled. Roles
+    // gets pulled out and folded into Access & Users' tabOptions (right after
+    // Groups) instead of staying a top-level tab; any OTHER registered filter
+    // (none today — Billing's registration exists but isn't imported) is
+    // unaffected and still renders as its own top-level tab, same as before.
+    const registeredFilters = userManagementFilters(session);
+    const rolesFilter = registeredFilters.find((f) => f.fragment === 'roles');
+    const otherRegisteredFilters = registeredFilters.filter((f) => f.fragment !== 'roles');
+    const filtersWithMergedGroups = baseFilters(baseTitle).map((f) => {
+      if (f.fragment !== 'access-users' || !rolesFilter) return f;
+      const rolesOption = {
+        id: 'roles',
+        fragment: 'roles',
+        text: rolesFilter.name,
+        icon: rolesFilter.icon,
+        Body: rolesFilter.Body,
+        description: rolesFilter.description,
+        // No `module`: Roles' own shouldShow already decided whether it exists
+        // here at all (see rolesFilter above) — same "hidden, not disabled"
+        // semantics it had as a top-level tab, preserved by simply never
+        // marking it disabled below (sub.module is undefined, so the
+        // lacksPermission check for it is always false).
+      };
+      const groupsIdx = f.tabOptions.findIndex((opt) => opt.id === 'groups');
+      const tabOptions = [...f.tabOptions];
+      tabOptions.splice(groupsIdx + 1, 0, rolesOption);
+      return { ...f, tabOptions };
+    });
+    const all = [...filtersWithMergedGroups, ...otherRegisteredFilters].filter((f) => !f.adminOnly || isAdmin);
     return all.map((f, i) => {
+      if (f.tabOptions) {
+        // A merged tab (Groups + Ownership): each sub-tab is gated on its own
+        // module independently, same rule as a top-level tab below. The parent
+        // tab is only disabled if every one of its sub-tabs is — otherwise a
+        // custom-role user holding a grant on just one of the merged modules
+        // (e.g. ownership:Read without usergroups:Read) would lose access to
+        // both instead of just the one they actually lack.
+        const tabOptions = f.tabOptions.map((sub, subIdx) => {
+          const lacksPermission = !isAdmin && !!sub.module && !perms.includes(`${sub.module}:Read`);
+          return {
+            ...sub,
+            value: subIdx,
+            disabled: sub.disabled ?? lacksPermission,
+            disabledTooltip: lacksPermission ? missingPermissionMessage(`${sub.module}:Read`) : undefined,
+          };
+        });
+        return {
+          ...f,
+          value: i,
+          tabOptions,
+          disabled: f.disabled ?? tabOptions.every((sub) => sub.disabled),
+          disabledTooltip: undefined,
+        };
+      }
       // Tenant admins keep full access. A custom-role user gets a section only
       // if they hold Read on its module; the rest render disabled (visible but
       // not clickable). Filters without a module (extensions) are unaffected.
@@ -122,10 +216,30 @@ export default function UserManagement() {
   }, [session, baseTitle]);
 
   const [selectedFilter, setSelectedFilter] = React.useState(null);
+  // Which sub-tab is active within the selected top-level filter, when it has
+  // tabOptions (only Access & Users today). Meaningless — and ignored — otherwise.
+  const [selectedSubFilter, setSelectedSubFilter] = React.useState(0);
+
+  // Given a resolved top-level tab, picks its active sub-tab from the URL's
+  // child fragment (the part after `/`, e.g. `ownership` in `#groups/ownership`),
+  // falling back to the first enabled sub-tab if the requested one is missing,
+  // disabled, or absent (bare `#groups` lands on sub-tab 0, "Groups" itself).
+  const resolveSubFilter = (tab, subFragment) => {
+    if (!tab?.tabOptions) return 0;
+    const requested = subFragment ? tab.tabOptions.find((opt) => opt.fragment === subFragment) : null;
+    if (requested && !requested.disabled) return requested.value;
+    const firstEnabledSub = tab.tabOptions.find((opt) => !opt.disabled);
+    return firstEnabledSub ? firstEnabledSub.value : 0;
+  };
 
   useEffect(() => {
     if (!filterOptions.length) return;
-    const fragment = router.asPath.split('#')[1];
+    const hashFragment = router.asPath.split('#')[1];
+    // AnchorComponent's own 2-level hash shape is `parentFragment/childFragment`
+    // (see its getInitialState) — split the same way here so a deep link into a
+    // merged tab's sub-tab (e.g. `#groups/ownership`) still matches its parent
+    // by fragment, instead of failing to match `groups/ownership` against `groups`.
+    const [fragment, subFragment] = (hashFragment || '').split('/');
     // The tab AnchorComponent highlights: the URL hash's section, else the
     // first tab (its no-hash default). If that section is one the user can
     // open, honor it — body and highlight already agree.
@@ -133,6 +247,7 @@ export default function UserManagement() {
     const anchorTab = current ?? filterOptions[0];
     if (anchorTab && !anchorTab.disabled) {
       setSelectedFilter(anchorTab.value);
+      setSelectedSubFilter(resolveSubFilter(anchorTab, subFragment));
       return;
     }
     // Otherwise the target section is disabled (e.g. an Audit-Read-only user
@@ -142,9 +257,11 @@ export default function UserManagement() {
     const firstEnabled = filterOptions.find((opt) => !opt.disabled);
     if (!firstEnabled) {
       setSelectedFilter(0);
+      setSelectedSubFilter(0);
       return;
     }
     setSelectedFilter(firstEnabled.value);
+    setSelectedSubFilter(resolveSubFilter(firstEnabled, undefined));
     if (firstEnabled.fragment && fragment !== firstEnabled.fragment) {
       const [pathWithQuery] = router.asPath.split('#');
       // Swallow the "Cancel rendering route" rejection Next.js emits when this
@@ -156,9 +273,9 @@ export default function UserManagement() {
 
   // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
   // user who can't see that nav entry shouldn't be able to reach any of its
-  // tabs (Users, Groups, Audits, Notifications, Integrations, Ownership) via
-  // a typed/bookmarked URL either. hasAdminSurfaceAccess() (not hasReadAccess())
-  // is what the sidebar uses, so a custom-role holder with a grant on an
+  // tabs (Access & Users — Users/Groups/Roles/Ownership/Audit Log — Notification
+  // Rules, Integrations, Tenant Settings) via a typed/bookmarked URL either.
+  // hasAdminSurfaceAccess() (not hasReadAccess()) is what the sidebar uses, so a custom-role holder with a grant on an
   // Admin-page module (e.g. audits:Read) can open the page — the per-section
   // disabled-tab gating above then hides sections they lack Read on. Depends on
   // `session` itself (not just `sessionData.status`) so a mid-session role
@@ -171,7 +288,10 @@ export default function UserManagement() {
   }, [session, router]);
 
   const selectedOption = filterOptions[selectedFilter];
-  const SelectedBody = selectedOption?.Body;
+  const activeSubOption = selectedOption?.tabOptions?.[selectedSubFilter];
+  const SelectedBody = activeSubOption?.Body ?? selectedOption?.Body;
+  const activeDescription = activeSubOption?.description ?? selectedOption?.description;
+  const isSelectedDisabled = activeSubOption ? activeSubOption.disabled : selectedOption?.disabled;
 
   if (!session || !hasAdminSurfaceAccess()) {
     return <Loader />;
@@ -183,21 +303,22 @@ export default function UserManagement() {
         manageRoute={true}
         options={selectedOption?.options || []}
         filterOptions={filterOptions}
-        onChangeFilter={(val) => {
+        onChangeFilter={(val, subVal) => {
           setSelectedFilter(val);
+          setSelectedSubFilter(subVal ?? 0);
         }}
       />
-      <ErrorBoundary key={selectedFilter}>
+      <ErrorBoundary key={`${selectedFilter}-${selectedSubFilter}`}>
         {/* Guard against the brief mount tick where AnchorComponent reports its
             disabled default (0) before the hash-steer above lands — never render
             a section the user can't open. */}
         <Box mt={2}>
-          {SelectedBody && !selectedOption?.disabled && (
+          {SelectedBody && !isSelectedDisabled && (
             <>
               {/* One-line "what is this tab for" caption. Rendered here rather
                   than inside each section body so every tab — including the
                   EE-registered ones — gets it from a single place. */}
-              {selectedOption?.description && (
+              {activeDescription && (
                 <Typography
                   id='user-management-tab-description'
                   sx={{
@@ -207,7 +328,7 @@ export default function UserManagement() {
                     color: ds.gray[600],
                   }}
                 >
-                  {selectedOption.description}
+                  {activeDescription}
                 </Typography>
               )}
               <SelectedBody session={session} />

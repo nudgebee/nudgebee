@@ -119,7 +119,7 @@ describe('OwnershipSection', () => {
     render(<OwnershipSection rec={k8sRec()} />);
 
     expect(await screen.findByText('Matched by an ownership rule.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Manage rules/ })).toHaveAttribute('href', '/user-management#ownership');
+    expect(screen.getByRole('link', { name: /Manage rules/ })).toHaveAttribute('href', '/user-management#access-users/ownership');
     // Hybrid: a rule match still offers an in-place assign to override it.
     expect(screen.getByRole('button', { name: 'Assign owner' })).toBeInTheDocument();
   });
