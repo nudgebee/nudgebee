@@ -32,7 +32,7 @@
 # `postgres_exporter_build_info` keeps reporting version 0.20.1 rather than an
 # empty string — dashboards and alerts key on that label. PGEXP_REVISION is the
 # commit the v0.20.1 tag points at; bump both together.
-FROM golang:1.26.5-alpine AS exporter-build
+FROM golang:1.26.6-alpine AS exporter-build
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 ARG PGEXP_VERSION=v0.20.1
 ARG PGEXP_REVISION=eeda61f11c918c1b8c0d410b911e4b004669e57a

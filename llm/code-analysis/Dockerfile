@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.5-alpine AS builder
+FROM golang:1.26.6-alpine AS builder
 
 WORKDIR /app
 
@@ -67,10 +67,8 @@ WORKDIR /app
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches instead of a stale cached layer. Committed (not a build-arg) so each
 # refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
-# package (e.g. c-ares CVE-2026-33630); currently W31 pulls bind 9.20.26-r0,
-# clearing 14 HIGH — 7 CVEs (CVE-2026-11331/-11605/-11622/-11721/-12617/-13204/
-# -13321) counted against both bind-libs and bind-tools.
-ARG OS_PKG_EPOCH=2026-W31
+# package (e.g. c-ares CVE-2026-33630); currently W36 pulls patched packages (libcrypto3 3.5.8-r0).
+ARG OS_PKG_EPOCH=2026-W36
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \
     && apk add --no-cache \

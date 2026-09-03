@@ -20,14 +20,14 @@
 # root at build, so no USER switch is needed for apk.
 
 # Stage 1: rebuild gosu on a patched Go toolchain.
-FROM golang:1.26.5-alpine AS gosu
-# Use the builder's bundled Go (1.26.5), never an auto-downloaded one, so gosu
+FROM golang:1.26.6-alpine AS gosu
+# Use the builder's bundled Go (1.26.6), never an auto-downloaded one, so gosu
 # picks up the stdlib fixes instead of a stale toolchain. CGO off -> the same
 # static binary the upstream release ships.
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 RUN go install github.com/tianon/gosu@1.17
 
-ARG OS_PKG_EPOCH=2026-W29
+ARG OS_PKG_EPOCH=2026-W36
 FROM docker.io/library/postgres:16.10-alpine
 
 # Re-declare in the build-stage scope (an ARG before FROM is only visible to FROM

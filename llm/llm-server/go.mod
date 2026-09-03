@@ -2,7 +2,7 @@ module nudgebee/llm
 
 go 1.26.1
 
-toolchain go1.26.4
+toolchain go1.26.6
 
 require (
 	cloud.google.com/go/aiplatform v1.126.0

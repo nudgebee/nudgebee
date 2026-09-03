@@ -20,8 +20,8 @@
 #     migration, not this change).
 
 # Stage 1: rebuild wait-for-port on a patched Go toolchain.
-FROM golang:1.26.5-alpine AS wait-for-port
-# Use the builder's bundled Go (1.26.5), never an auto-downloaded one, so the
+FROM golang:1.26.6-alpine AS wait-for-port
+# Use the builder's bundled Go (1.26.6), never an auto-downloaded one, so the
 # helper picks up the stdlib fixes (e.g. CVE-2026-39822 / -42505 are fixed in
 # 1.26.5) instead of a stale toolchain. CGO_ENABLED=0 forces a fully static
 # binary — the builder is musl (alpine) but the runtime is glibc (debian-11), so
@@ -29,7 +29,7 @@ FROM golang:1.26.5-alpine AS wait-for-port
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 RUN go install github.com/bitnami/wait-for-port@v1.0.10
 
-ARG OS_PKG_EPOCH=2026-W29
+ARG OS_PKG_EPOCH=2026-W36
 FROM docker.io/bitnamilegacy/redis:7.0.12-debian-11-r0
 
 # Re-declare in the build-stage scope (an ARG before FROM is only visible to FROM

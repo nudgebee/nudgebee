@@ -13,7 +13,7 @@
 #
 # The extra packages (libxml2, libxslt1.1, perl) are inherited from the
 # original build: ClickHouse UDFs / dictionary sources shell out to them.
-ARG OS_PKG_EPOCH=2026-W29
+ARG OS_PKG_EPOCH=2026-W36
 FROM docker.io/bitnamilegacy/clickhouse:24.12.4-debian-12-r0
 
 # Re-declare in the build-stage scope (an ARG before FROM is only visible to

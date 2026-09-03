@@ -6,7 +6,7 @@
 # of the exact same bitnami image (same PostgreSQL version + base -- no data/behaviour
 # change) so the still-security-supported Debian base picks up current patches.
 # Bump OS_PKG_EPOCH (ISO week) to force a weekly re-pull.
-ARG OS_PKG_EPOCH=2026-W28
+ARG OS_PKG_EPOCH=2026-W36
 FROM docker.io/bitnamilegacy/postgresql:16.1.0-debian-11-r16
 
 # Re-declare in the build-stage scope (an ARG before FROM is only visible to FROM
