@@ -757,6 +757,13 @@ const IntegrationDynamicFormModal = ({
     const ag = autogenState[key] || { options: [], message: '', loading: false };
     const isMulti = field.type === 'array';
     const fieldLabel = field.display_name || snakeToTitleCase(key);
+    // Selected entries also render as a removable row below the field. The
+    // dropdown can only untick what it can list, so a picker whose suggestions
+    // failed to load — an edit form with no re-typed secret, most of all —
+    // leaves the field-level clear as the only way out, and that drops every
+    // entry at once.
+    const selectedValues = isMulti && Array.isArray(formValues[key]) ? formValues[key] : [];
+    const labelForValue = (v) => ag.options.find((opt) => String(opt?.value ?? opt) === String(v))?.label ?? String(v);
     return (
       <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
         <Typography
@@ -799,6 +806,53 @@ const IntegrationDynamicFormModal = ({
           disabled={field.disabled || field.allow_edit === false}
           searchPlaceholder={field.search_placeholder || 'Search or type to add…'}
         />
+        {selectedValues.length > 0 && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[2], mt: ds.space[2] }} data-testid={`${key}-selected`}>
+            {selectedValues.map((v) => (
+              <Box
+                key={String(v)}
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: ds.space[1],
+                  border: `1px solid ${ds.gray[200]}`,
+                  borderRadius: 'var(--ds-radius-sm)',
+                  pl: ds.space[2],
+                  pr: ds.space[1],
+                  py: ds.space[1],
+                  fontSize: 'var(--ds-text-small)',
+                  color: ds.gray[600],
+                }}
+              >
+                <span>{labelForValue(v)}</span>
+                <Box
+                  component='button'
+                  type='button'
+                  aria-label={`Remove ${labelForValue(v)}`}
+                  data-testid={`${key}-remove-${String(v)}`}
+                  onClick={() =>
+                    handleChange(
+                      key,
+                      selectedValues.filter((x) => x !== v)
+                    )
+                  }
+                  sx={{
+                    border: 'none',
+                    background: 'none',
+                    cursor: 'pointer',
+                    lineHeight: 1,
+                    padding: ds.space[1],
+                    color: ds.gray[500],
+                    fontSize: 'var(--ds-text-small)',
+                    '&:hover': { color: ds.red[500] },
+                  }}
+                >
+                  ×
+                </Box>
+              </Box>
+            ))}
+          </Box>
+        )}
         {errorText && (
           <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
             {errorText}

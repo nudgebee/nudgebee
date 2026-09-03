@@ -437,6 +437,41 @@ describe('schema-driven advanced fields', () => {
     expect(payload.integration_id).toBe('conf-1');
     expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '100,200', is_encrypted: false });
   });
+
+  // The picker returns no suggestions here, which is what an edit form does
+  // when its secret was not re-typed. Removal must not depend on the dropdown
+  // being able to list the entry, or the only way out is clearing them all.
+  test('removes one saved entry without dropping the rest, even with no suggestions loaded', async () => {
+    const editData = {
+      id: 'conf-1',
+      name: 'conf',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'conf', host: 'https://wiki.example.com', page_trees: '100,200' },
+    };
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'confluence', editData });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('page_trees-remove-100')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page_trees-remove-100'));
+    });
+
+    expect(screen.queryByTestId('page_trees-remove-100')).not.toBeInTheDocument();
+    expect(screen.getByTestId('page_trees-remove-200')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Update'));
+    });
+    await waitFor(() => {
+      expect(mockAddIntegrations).toHaveBeenCalled();
+    });
+    const payload = mockAddIntegrations.mock.calls[0][0];
+    expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '200', is_encrypted: false });
+  });
 });
 
 // A schema property flagged `advanced` is rendered by the same picker branch as
