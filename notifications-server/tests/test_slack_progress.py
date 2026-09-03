@@ -901,6 +901,45 @@ class TestPollLifecycle:
         assert len(appended) == 3
         common.slack_app.client.stop_stream.assert_called_once()
 
+    def test_terminal_conversation_status_ignored_while_a_message_row_still_runs(self):
+        """On a reused thread `conversation.status` can read COMPLETED before the
+        turn actually ends. The panel must keep polling until the message row
+        itself settles, not close on the stale conversation status."""
+        common = self._common()
+        cache = MagicMock()
+        cache.get_event_entry.side_effect = [{}, {"stream_ts": "pending-fixed"}] + [{"stream_ts": "3000.3"}] * 4
+        cache.update_event_entry.return_value = True
+        deltas = [
+            {
+                "conversation": {"status": "IN_PROGRESS"},
+                "messages": [{"id": "m1", "status": "IN_PROGRESS", "response": "working"}],
+                "tool_calls": [_tool_row("t1", "IN_PROGRESS")],
+                "cursor": "c1",
+            },
+            # conversation.status stale-COMPLETED, m1 still running: must not close.
+            {
+                "conversation": {"status": "COMPLETED"},
+                "messages": [{"id": "m1", "status": "IN_PROGRESS", "response": "still working"}],
+                "tool_calls": [_tool_row("t1", "SUCCESS")],
+                "cursor": "c2",
+            },
+            # m1 settled: genuinely terminal, panel closes.
+            {
+                "conversation": {"status": "COMPLETED"},
+                "messages": [{"id": "m1", "status": "COMPLETED", "response": "answer"}],
+                "tool_calls": [_tool_row("t2", "SUCCESS")],
+                "cursor": "c3",
+            },
+        ]
+        # last delta repeated for the finally-block re-fetch
+        self._run(common, cache, deltas=deltas + deltas[-1:])
+        appended = common.slack_app.client.append_stream.call_args_list
+        # t2 in append #3 proves the loop ran the third poll instead of closing
+        # on the stale COMPLETED in the second.
+        assert len(appended) == 4
+        assert appended[2].kwargs["chunks"][0]["id"] == "t2"
+        common.slack_app.client.stop_stream.assert_called_once()
+
     def test_poller_self_close_still_flushes_a_tool_call_that_missed_the_last_poll(self):
         """A tool call can finish in the same window the poller decides the
         turn is done (a live incident: the conversation read COMPLETED before
