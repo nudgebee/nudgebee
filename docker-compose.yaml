@@ -56,6 +56,10 @@ x-db-url: &db-url postgresql://postgres:postgrespassword@postgres:5432/nudgebee?
 
 networks:
   nudgebee:
+  workspace:
+    # Dynamic workspace containers use this stable Engine-level name so
+    # llm-server can attach them independently of the Compose project name.
+    name: nudgebee-workspace
 
 volumes:
   pg_data:
@@ -259,7 +263,7 @@ services:
     build:
       context: ./collector-server/k8s-collector/relay-server
     restart: unless-stopped
-    networks: [nudgebee]
+    networks: [nudgebee, workspace]
     ports:
       - "8004:8080"
     environment:
@@ -280,12 +284,23 @@ services:
     build:
       context: ./llm/llm-server
     restart: unless-stopped
-    networks: [nudgebee]
+    networks: [nudgebee, workspace]
     ports:
       - "8005:8000"
+    volumes:
+      # Required for dynamic Docker-backed workspaces. Treat this as
+      # host-equivalent Docker authority.
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - path: ./llm/llm-server/.env
+        required: false
     environment:
       <<: *app-common
       LLM_SERVER_DB_URL: *db-url
+      LLM_SERVER_WORKSPACE_RUNTIME: docker
+      LLM_SERVER_WORKSPACE_DOCKER_HOST: unix:///var/run/docker.sock
+      LLM_SERVER_WORKSPACE_DOCKER_NETWORK: nudgebee-workspace
+      LLM_SERVER_AGENT_CODEAGENT_IMAGE: ${LLM_SERVER_AGENT_CODEAGENT_IMAGE:-ghcr.io/nudgebee/code-analysis-agent:latest}
       # Vector search is proxied through the rag-server, not Qdrant directly.
       RAG_SERVER_URL: http://rag-server:9999
     depends_on:
