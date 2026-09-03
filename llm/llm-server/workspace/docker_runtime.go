@@ -252,7 +252,7 @@ func dockerWorkspaceTokenReusable(token string, now time.Time) bool {
 		}
 		return []byte(config.Config.LlmServerJwtSecret), nil
 	})
-	if err != nil || !parsed.Valid || claims.ExpiresAt == nil {
+	if err != nil || parsed == nil || !parsed.Valid || claims.ExpiresAt == nil {
 		return false
 	}
 	return claims.ExpiresAt.After(now.Add(10 * time.Minute))
@@ -320,7 +320,7 @@ func workspaceToken(ctx *security.RequestContext, accountID string) (string, err
 	return signWorkspaceToken(accountID, tenantID)
 }
 
-func dockerWorkspaceEnv(ctx *security.RequestContext, accountID, token string) []string {
+func dockerWorkspaceEnv(accountID, token string) []string {
 	env := []string{
 		ENV_NB_LLM_SERVER_URL + "=" + config.Config.LlmServerUrl,
 		ENV_NB_ACCOUNT_ID + "=" + accountID,
@@ -386,7 +386,7 @@ func (d *dockerRuntime) ensureImageEnv(ctx context.Context, image string) ([]str
 		return env, nil
 	}
 	pullPath := "/images/create?fromImage=" + url.QueryEscape(image)
-	pullCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	pullCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(pullCtx, http.MethodPost, d.baseURL+pullPath, nil)
 	if err != nil {
@@ -494,7 +494,7 @@ func (d *dockerRuntime) create(ctx *security.RequestContext, accountID string) e
 		"Image": config.Config.LlmServerCodeAgentImage,
 		"Cmd":   []string{"/app/code-analysis-agent", "--server"},
 		"User":  "1000:3000",
-		"Env":   mergeDockerEnv(imageEnv, dockerWorkspaceEnv(ctx, accountID, token)),
+		"Env":   mergeDockerEnv(imageEnv, dockerWorkspaceEnv(accountID, token)),
 		"Labels": map[string]string{
 			dockerManagedLabel: "true", dockerAccountLabel: accountID,
 			dockerTenantLabel: tenantID, dockerImageLabel: config.Config.LlmServerCodeAgentImage,

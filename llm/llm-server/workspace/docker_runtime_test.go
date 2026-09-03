@@ -383,6 +383,29 @@ func TestDockerRuntimeReportsImagePullStreamError(t *testing.T) {
 	require.ErrorContains(t, err, "registry denied access")
 }
 
+func TestDockerRuntimeImagePullHonorsRequestCancellation(t *testing.T) {
+	pullStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		close(pullStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-pullStarted
+		cancel()
+	}()
+
+	_, err = runtime.ensureImageEnv(ctx, "example.test/code-agent:v1")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestDockerRuntimeCreateConflictRejectsUnmanagedWinner(t *testing.T) {
 	accountID := "account-conflict"
 	containerInspections := 0
