@@ -39,21 +39,11 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
   placeholder = 'No related events found',
 }) => {
   const router = useRouter();
-  const [optionsData, setOptionsData] = useState<SelectOption[]>([]);
-  const [accountId, setAccountId] = useState<string | string[] | undefined>('');
+  const [fetchedOptions, setFetchedOptions] = useState<SelectOption[]>([]);
+  const accountId = router.query.accountId;
 
   useEffect(() => {
-    if (accountId != router.query.accountId) {
-      setAccountId(router?.query?.accountId);
-    }
-  }, [router.query.accountId]);
-
-  useEffect(() => {
-    if (optionsOverride) {
-      setOptionsData(optionsOverride);
-      return;
-    }
-    if (!query.id) {
+    if (optionsOverride || !query.id || !accountId) {
       return;
     }
     const queryParams: any = {};
@@ -64,28 +54,37 @@ const InvestigateDropdown: React.FC<InvestigateDropdownProps> = ({
     if (subjectNamespace) {
       queryParams.subject_namespace = subjectNamespace;
     }
-    if (accountId) {
-      queryParams.account_id = accountId;
-    }
+    queryParams.account_id = accountId;
     queryParams.finding_type = 'issue';
-    if (accountId) {
-      k8sApi
-        .getK8sEventsName(10, 0, queryParams)
-        .then((res: any) => {
-          const options: SelectOption[] = (res?.data?.events ?? [])
-            .filter((item: any) => !excludeIds?.includes(String(item.id)))
-            .map((item: any) => ({
-              value: String(item.id),
-              label: item.title,
-              subtext: dayjs(item.starts_at).fromNow(),
-            }));
-          setOptionsData(options);
-        })
-        .catch((e) => {
+
+    let cancelled = false;
+    k8sApi
+      .getK8sEventsName(10, 0, queryParams)
+      .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
+        const events = res?.data?.events;
+        const options: SelectOption[] = (Array.isArray(events) ? events : [])
+          .filter((item: any) => !excludeIds?.includes(String(item.id)))
+          .map((item: any) => ({
+            value: String(item.id),
+            label: item.title,
+            subtext: dayjs(item.starts_at).fromNow(),
+          }));
+        setFetchedOptions(options);
+      })
+      .catch((e) => {
+        if (!cancelled) {
           console.error(e);
-        });
-    }
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [query, accountId, optionsOverride, excludeIds]);
+
+  const optionsData = optionsOverride ?? fetchedOptions;
 
   const handleChange = (next: string) => {
     if (next) {

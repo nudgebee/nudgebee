@@ -262,6 +262,10 @@ const SummaryView = () => {
   const perfItems = useMemo(() => filtered.filter((i) => i.category === 'performance'), [filtered]);
   const secItems = useMemo(() => filtered.filter((i) => i.category === 'security_config'), [filtered]);
 
+  const costSummary = useMemo(() => costConvoSummary(costItems, savingsSymbol), [costItems, savingsSymbol]);
+  const perfSummary = useMemo(() => perfConvoSummary(perfItems), [perfItems]);
+  const secSummary = useMemo(() => secConvoSummary(secItems), [secItems]);
+
   const costOneLiner = `${costItems.length} findings`;
   const perfOneLiner = `${perfItems.length} findings, ${perfItems.filter((i) => i.severity === 'critical').length} critical`;
   const secOneLiner = `${secItems.filter((i) => i.severity === 'critical').length} critical vulnerabilities, ${secItems.length} total`;
@@ -535,7 +539,7 @@ const SummaryView = () => {
                       category='cost'
                       label='Cost'
                       oneLiner={costOneLiner}
-                      conversationalSummary={costConvoSummary(costItems, savingsSymbol)}
+                      conversationalSummary={costSummary}
                       subCategories={COST_SUBCATEGORIES}
                       items={costItems}
                       sortBy={sortBy}
@@ -549,7 +553,7 @@ const SummaryView = () => {
                       category='performance'
                       label='Performance'
                       oneLiner={perfOneLiner}
-                      conversationalSummary={perfConvoSummary(perfItems)}
+                      conversationalSummary={perfSummary}
                       subCategories={PERF_SUBCATEGORIES}
                       items={perfItems}
                       sortBy={sortBy}
@@ -563,7 +567,7 @@ const SummaryView = () => {
                       category='security_config'
                       label='Security & Configuration'
                       oneLiner={secOneLiner}
-                      conversationalSummary={secConvoSummary(secItems)}
+                      conversationalSummary={secSummary}
                       subCategories={SEC_CONFIG_SUBCATEGORIES}
                       items={secItems}
                       sortBy={sortBy}

@@ -59,19 +59,26 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
       setNamespaceOption([]);
       return;
     }
-    getDropDownData();
+    let cancelled = false;
+    apiKubernetes
+      .getK8sNamespaceNames(selectedCluster.value)
+      .then((response: any) => {
+        if (cancelled) {
+          return;
+        }
+        const namespaces = response?.data?.namespaces;
+        setNamespaceOption(Array.isArray(namespaces) ? namespaces : []);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error(error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCluster?.value]);
-
-  const getDropDownData = async () => {
-    try {
-      const response: any = await apiKubernetes.getK8sNamespaceNames(selectedCluster?.value);
-      const namespaces = response?.data?.namespaces || [];
-      setNamespaceOption(namespaces);
-    } catch (error) {
-      console.error(error);
-    }
-  };
 
   const handleChange = (panel: string) => (_event: React.SyntheticEvent, isExpanded: boolean) => {
     setExpanded(isExpanded ? panel : false);
@@ -126,16 +133,21 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
   };
 
   useEffect(() => {
+    let cancelled = false;
+    const isCancelled = (): boolean => cancelled;
     if (Array.isArray(selectedNamespace)) {
       if (selectedNamespace.length > 0 && selectedCluster) {
-        handleWorkloadList(selectedNamespace);
+        handleWorkloadList(selectedNamespace, isCancelled);
       } else {
         setApplications([]);
       }
     } else if (selectedNamespace && selectedCluster) {
-      handleWorkloadList(selectedNamespace);
+      handleWorkloadList(selectedNamespace, isCancelled);
     }
-  }, [selectedNamespace, JSON.stringify(selectedCluster)]);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedNamespace, selectedCluster?.value]);
 
   useEffect(() => {
     if (selectedApplications?.length) {
@@ -150,7 +162,7 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
     }
   }, [selectedApplications]);
 
-  const handleWorkloadList = (namespace: string | string[]) => {
+  const handleWorkloadList = (namespace: string | string[], isCancelled: () => boolean) => {
     const query = {
       accountId: selectedCluster.value,
       namespaceName: namespace,
@@ -160,10 +172,15 @@ const RunbookTargetResource: React.FC<RunbookTargetResourceProps> = ({
     apiKubernetes
       .getAllK8sWorkload(query)
       .then((res) => {
-        setApplications(res?.data);
+        if (isCancelled()) {
+          return;
+        }
+        setApplications(Array.isArray(res?.data) ? res.data : []);
       })
       .finally(() => {
-        setIsLoadingApplications(false);
+        if (!isCancelled()) {
+          setIsLoadingApplications(false);
+        }
       });
   };
 
