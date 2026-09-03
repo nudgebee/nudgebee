@@ -245,6 +245,13 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Description: "Model context window in tokens (total input + output). Optional — defaults to 32,000 if not set. For self-hosted / HuggingFace models, set this to your deployment's --max-model-len (the model's known max is used otherwise).",
 				Priority:    14,
 			},
+			"llm_disable_thinking": {
+				Type: core.ToolSchemaTypeString,
+				Description: "Set to \"true\" to stop the model reasoning before it answers (sent as chat_template_kwargs enable_thinking=false). " +
+					"For self-hosted reasoning models that can spend a whole response budget thinking and never answer. " +
+					"Optional; only honoured on OpenAI-compatible endpoints (llm_provider=custom).",
+				Priority: 14,
+			},
 			"llm_provider_access_key": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "AWS Access Key ID for the Bedrock service.",

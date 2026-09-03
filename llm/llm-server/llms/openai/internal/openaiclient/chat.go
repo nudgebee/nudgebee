@@ -57,6 +57,10 @@ type ChatRequest struct {
 	// logprobs must be set to true if this parameter is used.
 	TopLogProbs int `json:"top_logprobs,omitempty"`
 
+	// NUDGEBEE: vLLM extension — extra kwargs for the server-side chat
+	// template (e.g. {"enable_thinking": false} for Qwen3 models).
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
+
 	Tools []Tool `json:"tools,omitempty"`
 	// This can be either a string or a ToolChoice object.
 	// If it is a string, it should be one of 'none', or 'auto', otherwise it should be a ToolChoice object specifying a specific tool to use.
@@ -434,6 +438,11 @@ type StreamedChatResponsePayload struct {
 			ToolCalls []*ToolCall `json:"tool_calls,omitempty"`
 			// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
 			ReasoningContent string `json:"reasoning_content,omitempty"`
+			// NUDGEBEE: vLLM reasoning parsers stream the same content under
+			// "reasoning". Without this mapping a reasoning model's entire
+			// chain-of-thought was silently dropped, making a reasoning-only
+			// turn indistinguishable from a hung one.
+			Reasoning string `json:"reasoning,omitempty"`
 		} `json:"delta,omitempty"`
 		FinishReason FinishReason `json:"finish_reason,omitempty"`
 	} `json:"choices,omitempty"`
@@ -655,10 +664,16 @@ func combineStreamingChatResponse(
 		}
 		choice := streamResponse.Choices[0]
 		chunk := []byte(choice.Delta.Content)
-		reasoningChunk := []byte(choice.Delta.ReasoningContent) // TODO: not sure if there will be any reasoning related to function call later, so just pass it here
+		// NUDGEBEE: accept the reasoning delta under either wire name —
+		// "reasoning_content" (deepseek) or "reasoning" (vLLM parsers).
+		reasoningDelta := choice.Delta.ReasoningContent
+		if reasoningDelta == "" {
+			reasoningDelta = choice.Delta.Reasoning
+		}
+		reasoningChunk := []byte(reasoningDelta)
 		response.Choices[0].Message.Content += choice.Delta.Content
 		response.Choices[0].FinishReason = choice.FinishReason
-		response.Choices[0].Message.ReasoningContent += choice.Delta.ReasoningContent
+		response.Choices[0].Message.ReasoningContent += reasoningDelta
 
 		if choice.Delta.FunctionCall != nil {
 			chunk = updateFunctionCall(&response.Choices[0].Message, choice.Delta.FunctionCall)
@@ -712,7 +727,13 @@ func updateFunctionCall(message *ChatMessage, functionCall *FunctionCall) []byte
 // object is complete — once json.Valid says it is complete, anything further
 // is that duplicate trailer and is dropped.
 func appendArgumentsFragment(tc *ToolCall, fragment string) {
-	if tc.Function.Arguments != `` && json.Valid([]byte(tc.Function.Arguments)) {
+	// Cheap gate first: a complete arguments object always ends in "}" (modulo
+	// trailing whitespace some servers emit), so the json.Valid scan and its
+	// []byte copy are skipped for nearly every intermediate fragment rather
+	// than run per fragment over the whole accumulated string.
+	args := tc.Function.Arguments
+	trimmed := strings.TrimRight(args, " \t\r\n")
+	if trimmed != `` && strings.HasSuffix(trimmed, `}`) && json.Valid([]byte(args)) {
 		return
 	}
 	tc.Function.Arguments += fragment

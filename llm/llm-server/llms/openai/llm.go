@@ -55,6 +55,9 @@ func newClient(opts ...Option) (*options, *openaiclient.Client, error) {
 	if options.embeddingDimensions != 0 {
 		clientOptions = append(clientOptions, openaiclient.WithEmbeddingDimensions(options.embeddingDimensions))
 	}
+	if options.chatTemplateKwargs != nil {
+		clientOptions = append(clientOptions, openaiclient.WithChatTemplateKwargs(options.chatTemplateKwargs))
+	}
 	cli, err := openaiclient.New(options.token, options.model, options.baseURL, options.organization,
 		openaiclient.APIType(options.apiType), options.apiVersion, options.httpClient, options.embeddingModel,
 		options.responseFormat, clientOptions...,

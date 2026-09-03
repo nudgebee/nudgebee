@@ -348,6 +348,18 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	if o.client.ResponseFormat != nil {
 		req.ResponseFormat = o.client.ResponseFormat
 	}
+	// NUDGEBEE: client-level chat-template kwargs (vLLM extension) ride on
+	// every request, e.g. {"enable_thinking": false} for Qwen3 models.
+	if o.client.ChatTemplateKwargs != nil {
+		// Copied per request: the client is shared across goroutines, so handing
+		// out the same map would let any downstream mutation race with, or
+		// silently rewrite, every other request's configuration.
+		kwargs := make(map[string]any, len(o.client.ChatTemplateKwargs))
+		for k, v := range o.client.ChatTemplateKwargs {
+			kwargs[k] = v
+		}
+		req.ChatTemplateKwargs = kwargs
+	}
 
 	result, err := o.client.CreateChat(ctx, req)
 	if err != nil {

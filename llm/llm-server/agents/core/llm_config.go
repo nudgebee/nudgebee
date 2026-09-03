@@ -931,6 +931,30 @@ func getLLMApiVersion(accountId, provider, agentName string, appendAgentName boo
 	return apiVersion
 }
 
+// getLLMDisableThinking reports whether the resolved LLM config asks for
+// model-side thinking to be disabled (integration config key
+// "llm_disable_thinking" = "true"). Serialized for OpenAI-compatible servers
+// as chat_template_kwargs {"enable_thinking": false} — the vLLM/Qwen3 switch.
+// Config-driven on purpose: which models ramble is a property of the deployed
+// model, not something to hardcode per model family.
+func getLLMDisableThinking(accountId string, resolution *LLMConfigResolution) bool {
+	if resolution != nil && resolution.PinnedConfigSource != "" {
+		return resolution.PinnedDisableThinking
+	}
+	var dbConfig map[string]string
+	if resolution != nil {
+		dbConfig = resolution.dbConfig
+	}
+	if accountId == "" {
+		return false
+	}
+	cfg, err := getLLMIntegrationConfig(nil, accountId, dbConfig)
+	if err != nil || cfg == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(cfg["llm_disable_thinking"]), "true")
+}
+
 func getLLMApiType(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
 	slog.Debug("Getting LLM API type", "accountId", accountId, "provider", provider, "agentName", agentName, "appendAgentName", appendAgentName)
 
@@ -1700,6 +1724,12 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 			slog.Debug("Using Azure deployment name for URL with body model rewrite", "deployment", deployment, "model", modelName)
 		}
 	}
+	if getLLMDisableThinking(accountId, res) {
+		// vLLM extension; strict OpenAI-compatible servers that don't know the
+		// field simply ignore unknown request keys.
+		opts = append(opts, openai.WithChatTemplateKwargs(map[string]any{"enable_thinking": false}))
+		slog.Debug("Disabling model-side thinking via chat_template_kwargs", "provider", provider, "model", modelName, "agentName", agentName)
+	}
 	opts = append(opts, openai.WithHTTPClient(newOpenAIHTTPClient(authClient)))
 	llm, err := openai.New(opts...)
 	if err != nil {
@@ -1859,6 +1889,11 @@ type LLMConfigResolution struct {
 	PinnedApiType      string `json:"-"`
 	PinnedApiVersion   string `json:"-"`
 	PinnedRegion       string `json:"-"`
+	// PinnedDisableThinking mirrors the integration's llm_disable_thinking flag
+	// through the pinned path, which bypasses the layered walk entirely (the
+	// MaxContext gap taught us a pinned field that is not carried here is
+	// silently lost).
+	PinnedDisableThinking bool `json:"-"`
 	// AWS-style credentials and the adapter id complete the destination. Without
 	// them a pinned bedrock/sagemaker slot would still resolve its identity via
 	// the layered walk, so the pin wouldn't actually pin.
@@ -3200,6 +3235,10 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 	default:
 		return nil, fmt.Errorf("readDbSlotInto: unknown scope %q", p.Scope)
 	}
+
+	// llm_disable_thinking is integration-global: it describes the model
+	// server's chat template, not a per-tier/per-agent choice.
+	res.PinnedDisableThinking = strings.EqualFold(strings.TrimSpace(cfg["llm_disable_thinking"]), "true")
 
 	// OAuth + extra headers (#36556): tier slots may override, everything else
 	// inherits the integration's global values. Per-agent OAuth keys do not

@@ -524,7 +524,13 @@ func updateFunctionCall(message ChatMessage, functionCall *FunctionCall) []byte 
 // object is complete — once json.Valid says it is complete, anything further
 // is that duplicate trailer and is dropped.
 func appendArgumentsFragment(tc *ToolCall, fragment string) {
-	if tc.Function.Arguments != `` && json.Valid([]byte(tc.Function.Arguments)) {
+	// Cheap gate first: a complete arguments object always ends in "}" (modulo
+	// trailing whitespace some servers emit), so the json.Valid scan and its
+	// []byte copy are skipped for nearly every intermediate fragment rather
+	// than run per fragment over the whole accumulated string.
+	args := tc.Function.Arguments
+	trimmed := strings.TrimRight(args, " \t\r\n")
+	if trimmed != `` && strings.HasSuffix(trimmed, `}`) && json.Valid([]byte(args)) {
 		return
 	}
 	tc.Function.Arguments += fragment

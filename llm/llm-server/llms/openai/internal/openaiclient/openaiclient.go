@@ -40,10 +40,25 @@ type Client struct {
 	apiVersion string
 
 	ResponseFormat *ResponseFormat
+
+	// NUDGEBEE: extra chat-template kwargs serialized on every ChatRequest.
+	// vLLM extension — e.g. {"enable_thinking": false} disables Qwen3's
+	// model-side reasoning, which otherwise can consume the entire output
+	// budget on a single turn.
+	ChatTemplateKwargs map[string]any
 }
 
 // Option is an option for the OpenAI client.
 type Option func(*Client) error
+
+// WithChatTemplateKwargs sets extra chat-template kwargs sent on every chat
+// request (vLLM extension). NUDGEBEE.
+func WithChatTemplateKwargs(kwargs map[string]any) Option {
+	return func(c *Client) error {
+		c.ChatTemplateKwargs = kwargs
+		return nil
+	}
+}
 
 // WithEmbeddingDimensions allows to setup specific dimensions for embedding's vector
 func WithEmbeddingDimensions(dimensions int) Option {

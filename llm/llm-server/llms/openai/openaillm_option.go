@@ -41,6 +41,10 @@ type options struct {
 	embeddingDimensions int
 
 	callbackHandler callbacks.Handler
+
+	// NUDGEBEE: extra chat-template kwargs (vLLM extension), serialized as
+	// chat_template_kwargs on every chat request.
+	chatTemplateKwargs map[string]any
 }
 
 // Option is a functional option for the OpenAI client.
@@ -57,6 +61,15 @@ type ResponseFormatJSONSchemaProperty = openaiclient.ResponseFormatJSONSchemaPro
 
 // ResponseFormatJSON is the JSON response format.
 var ResponseFormatJSON = &ResponseFormat{Type: "json_object"} //nolint:gochecknoglobals
+
+// WithChatTemplateKwargs sets extra chat-template kwargs sent on every chat
+// request (vLLM extension) — e.g. map[string]any{"enable_thinking": false}
+// disables Qwen3's model-side reasoning. NUDGEBEE.
+func WithChatTemplateKwargs(kwargs map[string]any) Option {
+	return func(opts *options) {
+		opts.chatTemplateKwargs = kwargs
+	}
+}
 
 // WithToken passes the OpenAI API token to the client. If not set, the token
 // is read from the OPENAI_API_KEY environment variable.

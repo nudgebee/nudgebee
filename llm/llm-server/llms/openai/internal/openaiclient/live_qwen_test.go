@@ -26,11 +26,18 @@ func TestLive_QwenStreamingToolCalls(t *testing.T) {
 		t.Skip("QWEN_LIVE_BASE_URL / QWEN_LIVE_TOKEN not set")
 	}
 
-	llm, err := openaifork.New(
+	opts := []openaifork.Option{
 		openaifork.WithToken(token),
 		openaifork.WithBaseURL(base),
 		openaifork.WithModel("Qwen/Qwen3.6-35B-A3B-FP8"),
-	)
+	}
+	// QWEN_LIVE_DISABLE_THINKING=1 exercises the llm_disable_thinking path:
+	// chat_template_kwargs {"enable_thinking": false} must suppress the model's
+	// chain-of-thought while leaving tool calling intact.
+	if os.Getenv("QWEN_LIVE_DISABLE_THINKING") != "" {
+		opts = append(opts, openaifork.WithChatTemplateKwargs(map[string]any{"enable_thinking": false}))
+	}
+	llm, err := openaifork.New(opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +77,12 @@ func TestLive_QwenStreamingToolCalls(t *testing.T) {
 	}
 	if len(resp.Choices) == 0 {
 		t.Fatal("no choices")
+	}
+
+	t.Logf("reasoning chars: %d", len(resp.Choices[0].ReasoningContent))
+	if os.Getenv("QWEN_LIVE_DISABLE_THINKING") != "" && resp.Choices[0].ReasoningContent != "" {
+		t.Errorf("thinking disabled but model still returned %d reasoning chars",
+			len(resp.Choices[0].ReasoningContent))
 	}
 
 	tcs := resp.Choices[0].ToolCalls

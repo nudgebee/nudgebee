@@ -145,3 +145,61 @@ func TestUpdateToolCalls_DuplicateFullArgumentsTrailerIsDropped(t *testing.T) {
 		t.Errorf("arguments corrupted by duplicate trailer:\n got %q\nwant %q", got, want)
 	}
 }
+
+// The "}"-suffix fast path in appendArgumentsFragment must not stop merging on a
+// brace that merely closes a string value — kubectl commands routinely contain
+// one (jsonpath, shell braces), so a premature stop would truncate arguments.
+func TestUpdateToolCalls_BraceInsideStringValueKeepsMerging(t *testing.T) {
+	want := `{"command": "kubectl get pods -o jsonpath={.items[0].metadata.name}", "reason": "find pod"}`
+	var tools []ToolCall
+	_, tools = updateToolCalls(tools, []*ToolCall{{
+		ID: "call_1", Type: "function", Index: idx(0),
+		Function: ToolFunction{Name: "kubectl_execute"},
+	}})
+	for _, frag := range []string{
+		`{"command": `,
+		`"kubectl get pods -o jsonpath={.items[0].metadata.name}"`, // ends with a quote, but contains }
+		`, "reason": `,
+		`"find pod"`,
+		`}`,
+	} {
+		_, tools = updateToolCalls(tools, []*ToolCall{{
+			Type: "function", Index: idx(0), Function: ToolFunction{Arguments: frag},
+		}})
+	}
+
+	if len(tools) != 1 {
+		t.Fatalf("want 1 tool call, got %d", len(tools))
+	}
+	if got := tools[0].Function.Arguments; got != want {
+		t.Errorf("arguments truncated by the fast path:\n got %q\nwant %q", got, want)
+	}
+}
+
+// Some servers close the arguments object with trailing whitespace. The
+// "}"-suffix gate must look past it, or a completed call is not recognised as
+// complete and the duplicate trailer corrupts it again.
+func TestUpdateToolCalls_TrailingWhitespaceStillCountsAsComplete(t *testing.T) {
+	want := "{\"command\": \"kubectl get pods\"}\n"
+	var tools []ToolCall
+	_, tools = updateToolCalls(tools, []*ToolCall{{
+		ID: "call_1", Type: "function", Index: idx(0),
+		Function: ToolFunction{Name: "kubectl_execute"},
+	}})
+	for _, frag := range []string{`{"command": `, `"kubectl get pods"`, "}\n"} {
+		_, tools = updateToolCalls(tools, []*ToolCall{{
+			Type: "function", Index: idx(0), Function: ToolFunction{Arguments: frag},
+		}})
+	}
+	_, tools = updateToolCalls(tools, []*ToolCall{{
+		Type: "function", Index: idx(0),
+		Function: ToolFunction{Arguments: `"{\"command\": \"kubectl get pods\"}"`},
+	}})
+
+	if len(tools) != 1 {
+		t.Fatalf("want 1 tool call, got %d", len(tools))
+	}
+	if got := tools[0].Function.Arguments; got != want {
+		t.Errorf("trailing whitespace defeated the completeness gate:\n got %q\nwant %q", got, want)
+	}
+}
