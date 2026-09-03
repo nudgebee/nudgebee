@@ -9,6 +9,8 @@ import { canManage, isTenantWideRole, hasPermission, canReadCustomRoles } from '
 import { listCustomRoles } from '@api1/roles';
 import UserModal from './modal/UserModal';
 import { Label } from '@ui/Label';
+import Chip from '@ui/Chip';
+import Tooltip from '@ui/Tooltip';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { ListingLayout } from '@ui/ListingLayout';
@@ -44,6 +46,84 @@ function UserRoleCell({ user, customRoleNames }) {
 UserRoleCell.propTypes = {
   user: PropTypes.object.isRequired,
   customRoleNames: PropTypes.arrayOf(PropTypes.string).isRequired,
+};
+
+const MAX_VISIBLE_GROUPS = 2;
+
+// The Group cell: one tag per group, capped at MAX_VISIBLE_GROUPS with a
+// "+N more" chip that lists the rest on hover. Every group name used to render
+// as one comma-separated string, so a user in many groups blew up the row
+// height and could not be scanned. Same shape as cloudaccount/TagsCell.
+function UserGroupsCell({ userGroups }) {
+  // Array.isArray, not just a nullish guard: `user_groups` is a Json field and
+  // safeJSONParse returns an object for a `{...}` payload, which would throw on
+  // .map. Note this hardens the cell only — drilldownQuery below maps the same
+  // field unguarded, so a malformed payload still fails there (pre-existing).
+  const names = (Array.isArray(userGroups) ? userGroups : []).map((group) => group?.name).filter(Boolean);
+  if (names.length === 0) {
+    return <Text value='-' />;
+  }
+
+  const visibleNames = names.slice(0, MAX_VISIBLE_GROUPS);
+  const hiddenNames = names.slice(MAX_VISIBLE_GROUPS);
+
+  return (
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1], alignItems: 'center' }}>
+      {visibleNames.map((name, index) => (
+        <Tooltip key={`${name}-${index}`} title={name} arrow>
+          <span>
+            <Chip variant='tag' size='xs' tone='neutral'>
+              <Box
+                component='span'
+                sx={{
+                  maxWidth: ds.space.mul(0, 70),
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  display: 'inline-block',
+                }}
+              >
+                {name}
+              </Box>
+            </Chip>
+          </span>
+        </Tooltip>
+      ))}
+      {hiddenNames.length > 0 && (
+        <Tooltip
+          title={
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: ds.space[1],
+                p: ds.space[1],
+                maxHeight: 240,
+                overflowY: 'auto',
+              }}
+            >
+              {hiddenNames.map((name, index) => (
+                <Box component='span' key={`${name}-${index}`} sx={{ wordBreak: 'break-all' }}>
+                  {name}
+                </Box>
+              ))}
+            </Box>
+          }
+          arrow
+        >
+          <span data-testid='user-groups-overflow'>
+            <Chip variant='count' size='xs' tone='neutral'>
+              +{hiddenNames.length} more
+            </Chip>
+          </span>
+        </Tooltip>
+      )}
+    </Box>
+  );
+}
+
+UserGroupsCell.propTypes = {
+  userGroups: PropTypes.arrayOf(PropTypes.object),
 };
 
 const AllUsers = () => {
@@ -124,13 +204,6 @@ const AllUsers = () => {
       setStatusOptions(statusArray);
     });
   }, []);
-
-  const showGroupNames = (usergroups) => {
-    if (usergroups && usergroups.length > 0) {
-      return usergroups.map((group) => group.name).join(', ');
-    }
-    return '-';
-  };
 
   const fetchUsers = () => {
     let sortColValue = '';
@@ -224,7 +297,7 @@ const AllUsers = () => {
           component: <Text value={user.username} />,
         },
         {
-          component: <Text value={showGroupNames(user?.user_groups) || '-'} />,
+          component: <UserGroupsCell userGroups={user?.user_groups} />,
         },
         {
           component: <Datetime value={user?.last_accessed_at} baseDate={new Date()} maxLevel={1} />,
