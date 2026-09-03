@@ -296,6 +296,8 @@ services:
         required: false
     environment:
       <<: *app-common
+      PORT: "8000"
+      SERVICE_API_SERVER_URL: http://services-server:8000
       LLM_SERVER_DB_URL: *db-url
       LLM_SERVER_WORKSPACE_RUNTIME: docker
       LLM_SERVER_WORKSPACE_DOCKER_HOST: unix:///var/run/docker.sock
