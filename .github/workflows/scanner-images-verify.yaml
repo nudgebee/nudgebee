@@ -1,0 +1,97 @@
+name: Verify scanner image pins
+
+# Every scanner image pin must resolve on its registry before it can merge.
+#
+# Why this gate exists: NOVA_IMAGE sat pinned to a tag that had never been
+# published (`2026-05-12T15-41-58_3b33692e...` — a mangled variant of the real
+# `2026-05-12T10-12-11_3b33692e...`). Nothing caught it, because nothing pulls
+# a scanner image until a scan Job is scheduled on a customer cluster — so the
+# bad pin surfaced as an ImagePullBackOff in the field rather than as a red
+# check on the PR that introduced it. Same class of miss hid
+# CERT_SCANNER_IMAGE, whose upstream Docker Hub repo does not exist at all.
+#
+# The job also enforces that the Go defaults in images.go match the base chart,
+# which is what the comment at the top of that file promises.
+
+on:
+  pull_request:
+    paths:
+      - 'api-server/services/scan_orchestrator/images.go'
+      - 'deploy/kubernetes/services-server/values.yaml'
+      - 'deploy/kubernetes/nudgebee/values.yaml'
+      - '.github/workflows/scanner-images-verify.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/regclient/regclient/releases/latest/download/regctl-linux-amd64 \
+            -o /usr/local/bin/regctl
+          chmod +x /usr/local/bin/regctl
+          curl -sSfL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Chart pins and Go defaults agree
+        run: |
+          set -euo pipefail
+
+          # Both charts carry the same env block, at different depths.
+          yq -o=props '.env | with_entries(select(.key == "*_IMAGE"))' \
+            deploy/kubernetes/services-server/values.yaml | sort > /tmp/subchart.props
+          yq -o=props '.["services-server"].env | with_entries(select(.key == "*_IMAGE"))' \
+            deploy/kubernetes/nudgebee/values.yaml | sort > /tmp/umbrella.props
+
+          if ! diff -u /tmp/subchart.props /tmp/umbrella.props; then
+            echo "::error::services-server subchart and umbrella chart disagree on scanner image pins"
+            exit 1
+          fi
+
+          # images.go promises its defaults match the base chart. Compare the
+          # bare refs rather than trying to map const names to env keys.
+          grep -oE '"ghcr\.io/[^"]+"' api-server/services/scan_orchestrator/images.go \
+            | tr -d '"' | sort -u > /tmp/go.refs
+          sed 's/^[A-Z_]* = //' /tmp/subchart.props | tr -d "'" | sort -u > /tmp/chart.refs
+
+          if ! diff -u /tmp/chart.refs /tmp/go.refs; then
+            echo "::error::images.go defaults drifted from deploy/kubernetes/services-server/values.yaml"
+            exit 1
+          fi
+
+          echo "Pins to verify:"
+          cat /tmp/chart.refs
+
+      - name: Every pin resolves on its registry
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            # `manifest head` is a HEAD against the manifest endpoint — it
+            # resolves the tag without pulling any layers, and keeps multi-arch
+            # manifest lists intact rather than resolving to one platform.
+            if regctl manifest head "$ref" >/dev/null 2>&1; then
+              echo "ok      $ref"
+            else
+              echo "::error::unresolvable image pin: $ref"
+              failed=1
+            fi
+          done < /tmp/chart.refs
+          exit "$failed"
