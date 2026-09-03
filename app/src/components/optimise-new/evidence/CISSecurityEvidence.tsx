@@ -1,4 +1,5 @@
 import { Box, Typography, Link } from '@mui/material';
+import { Card } from '@ui/Card';
 import { ds } from 'src/utils/colors';
 import { Label } from '@ui/Label';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
@@ -42,18 +43,7 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
 
       {/* Rule header */}
       {(ruleId || ruleNameStr) && (
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: ds.space.mul(0, 5),
-            p: ds.space[3],
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            border: `1px solid ${ds.gray[200]}`,
-            mb: ds.space[3],
-          }}
-        >
+        <Card variant='tinted' tone='neutral' size='sm' sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space.mul(0, 5), mb: ds.space[3] }}>
           {ruleId && (
             <Label size='sm' tone='info'>
               {ruleId}
@@ -67,7 +57,7 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
             )}
             {ruleDescription && <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.5 }}>{ruleDescription}</Typography>}
           </Box>
-        </Box>
+        </Card>
       )}
 
       {/* Severity + failure count */}
@@ -86,17 +76,9 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
 
       {/* Target resource */}
       {target && (
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space[3],
-            border: `1px solid ${ds.gray[200]}`,
-            mb: ds.space[3],
-          }}
-        >
+        <Card variant='tinted' tone='neutral' size='sm' sx={{ mb: ds.space[3] }}>
           <MetricRow label='Target' value={target} />
-        </Box>
+        </Card>
       )}
 
       {/* Misconfigurations detail */}

@@ -1,4 +1,5 @@
 import { Box, Typography, Link } from '@mui/material';
+import { Card } from '@ui/Card';
 import { ds } from 'src/utils/colors';
 import { Label } from '@ui/Label';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
@@ -111,17 +112,9 @@ const ImageScanEvidence = ({ recommendation, ruleName: _ruleName, estimatedSavin
 
       {/* Description */}
       {description && (
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space[3],
-            border: `1px solid ${ds.gray[200]}`,
-            mb: ds.space[3],
-          }}
-        >
+        <Card variant='tinted' tone='neutral' size='sm' sx={{ mb: ds.space[3] }}>
           <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6 }}>{description.replace(/\[b\]|\[\/b\]/g, '')}</Typography>
-        </Box>
+        </Card>
       )}
 
       {/* Severity counts (grouped view) */}
@@ -138,34 +131,24 @@ const ImageScanEvidence = ({ recommendation, ruleName: _ruleName, estimatedSavin
       )}
 
       {/* Vulnerability details */}
-      <Box
-        sx={{
-          backgroundColor: ds.gray[100],
-          borderRadius: ds.radius.lg,
-          p: ds.space[3],
-          border: `1px solid ${ds.gray[200]}`,
-          mb: ds.space[3],
-        }}
-      >
+      <Card variant='tinted' tone='neutral' size='sm' sx={{ mb: ds.space[3] }}>
         {image && <MetricRow label='Image' value={image} />}
         {packageId && <MetricRow label='Package' value={packageId} />}
         {vulnerabilityId && <MetricRow label='CVE ID' value={vulnerabilityId} />}
         {severity && <MetricRow label='Severity' value={severity.toUpperCase()} />}
         {fixVersion && <MetricRow label='Fix Version' value={fixVersion} highlight />}
-      </Box>
+      </Card>
 
       {/* Fix available */}
       {fixVersion && (
-        <Box
-          sx={{ backgroundColor: ds.green[100], borderRadius: ds.radius.lg, p: ds.space[3], border: `1px solid ${ds.green[200]}`, mb: ds.space[3] }}
-        >
+        <Card variant='tinted' tone='success' size='sm' sx={{ mb: ds.space[3] }}>
           <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.green[700], mb: ds.space[1] }}>
             Fix Available
           </Typography>
           <Typography sx={{ fontSize: ds.text.small, color: ds.green[700], lineHeight: 1.5 }}>
             Update package <strong>{packageId}</strong> to version <strong>{fixVersion}</strong> or later to resolve this vulnerability.
           </Typography>
-        </Box>
+        </Card>
       )}
 
       {estimatedSavings != null && estimatedSavings !== 0 && <SavingsFooter savings={estimatedSavings} />}

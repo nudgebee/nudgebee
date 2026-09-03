@@ -1,4 +1,5 @@
 import { Box, Typography, Link } from '@mui/material';
+import { Card } from '@ui/Card';
 import { ds } from 'src/utils/colors';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import ShieldIcon from '@mui/icons-material/Shield';
@@ -28,40 +29,24 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
         )}
 
         {rec.Description && (
-          <Box
-            sx={{
-              backgroundColor: ds.gray[100],
-              borderRadius: ds.radius.lg,
-              p: ds.space[3],
-              border: `1px solid ${ds.gray[200]}`,
-              mb: ds.space[3],
-            }}
-          >
+          <Card variant='tinted' tone='neutral' size='sm' sx={{ mb: ds.space[3] }}>
             <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6 }}>{rec.Description}</Typography>
-          </Box>
+          </Card>
         )}
 
-        <Box
-          sx={{
-            backgroundColor: ds.gray[100],
-            borderRadius: ds.radius.lg,
-            p: ds.space.mul(0, 5),
-            border: `1px solid ${ds.gray[200]}`,
-            mb: ds.space[3],
-          }}
-        >
+        <Card variant='tinted' tone='neutral' size='sm' sx={{ mb: ds.space[3] }}>
           {rec.ServiceName && <MetricRow label='Service' value={rec.ServiceName} />}
           {rec.Severity?.Label && <MetricRow label='Severity' value={rec.Severity.Label} />}
           {rec.Compliance?.Status && <MetricRow label='Compliance' value={rec.Compliance.Status} />}
           {rec.ProductName && <MetricRow label='Product' value={rec.ProductName} />}
           {rec.GeneratorId && <MetricRow label='Generator' value={rec.GeneratorId} />}
-        </Box>
+        </Card>
 
         {/* Remediation */}
         {(remediationText || remediationUrl) && (
           <>
             <SectionTitle title='Remediation' muiIcon={<BuildIcon sx={{ fontSize: ds.text.title }} />} />
-            <Box sx={{ backgroundColor: ds.green[100], borderRadius: ds.radius.lg, p: ds.space[3], border: `1px solid ${ds.green[200]}` }}>
+            <Card variant='tinted' tone='success' size='sm'>
               {remediationText && (
                 <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6, mb: remediationUrl ? ds.space[2] : 0 }}>
                   {remediationText}
@@ -77,7 +62,7 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
                   View remediation guide →
                 </Link>
               )}
-            </Box>
+            </Card>
           </>
         )}
 
@@ -91,14 +76,7 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
     <Box sx={{ p: ds.space.mul(0, 7) }}>
       <SectionTitle title='Security Details' muiIcon={<ShieldIcon sx={{ fontSize: ds.text.title }} />} />
 
-      <Box
-        sx={{
-          backgroundColor: ds.gray[100],
-          borderRadius: ds.radius.lg,
-          p: ds.space[3],
-          border: `1px solid ${ds.gray[200]}`,
-        }}
-      >
+      <Card variant='tinted' tone='neutral' size='sm'>
         {rec.reason && <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6, mb: ds.space[2] }}>{rec.reason}</Typography>}
         {rec.service_name && <MetricRow label='Service' value={rec.service_name} />}
         {rec.image && <MetricRow label='Image' value={rec.image} />}
@@ -111,7 +89,7 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
             {rec.description.replace(/\[b\]|\[\/b\]/g, '')}
           </Typography>
         )}
-      </Box>
+      </Card>
 
       {/* Render remaining key-value pairs */}
       {renderRemainingFields(rec)}
