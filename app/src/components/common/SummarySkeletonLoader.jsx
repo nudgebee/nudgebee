@@ -1,6 +1,13 @@
 import React from 'react';
-import { Box, Skeleton } from '@mui/material';
+import { Box } from '@mui/material';
+import { Skeleton } from '@ui/Skeleton';
 import { ds } from 'src/utils/colors';
+
+// ds/Skeleton is inline-block; MUI's was block. These placeholders stack vertically,
+// so keep them block-level to preserve the existing layout.
+// MUI painted its text bars at 60% of their box, which left a gap between stacked
+// lines; ds/Skeleton fills the box, so add that separation back explicitly.
+const block = { display: 'block', marginBottom: ds.space[1] };
 
 const SummarySkeletonLoader = () => {
   return (
@@ -24,19 +31,19 @@ const SummarySkeletonLoader = () => {
           }`,
         }}
       >
-        <Skeleton variant='text' width='60%' height={20} sx={{ mb: 2 }} />
+        <Skeleton shape='text' width='60%' height={20} sx={{ ...block, mb: ds.space[4] }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2, mb: 2 }}>
           <Box>
-            <Skeleton variant='text' width='80%' height={16} />
-            <Skeleton variant='text' width='50%' height={28} />
+            <Skeleton shape='text' width='80%' height={16} sx={block} />
+            <Skeleton shape='text' width='50%' height={28} sx={block} />
           </Box>
           <Box>
-            <Skeleton variant='text' width='70%' height={16} />
-            <Skeleton variant='text' width='60%' height={28} />
+            <Skeleton shape='text' width='70%' height={16} sx={block} />
+            <Skeleton shape='text' width='60%' height={28} sx={block} />
           </Box>
           <Box>
-            <Skeleton variant='text' width='85%' height={16} />
-            <Skeleton variant='text' width='55%' height={28} />
+            <Skeleton shape='text' width='85%' height={16} sx={block} />
+            <Skeleton shape='text' width='55%' height={28} sx={block} />
           </Box>
         </Box>
       </Box>
@@ -52,19 +59,19 @@ const SummarySkeletonLoader = () => {
           }`,
         }}
       >
-        <Skeleton variant='text' width='40%' height={20} sx={{ mb: 2 }} />
+        <Skeleton shape='text' width='40%' height={20} sx={{ ...block, mb: ds.space[4] }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 3 }}>
           <Box>
-            <Skeleton variant='text' width='60%' height={16} />
-            <Skeleton variant='text' width='80%' height={24} />
+            <Skeleton shape='text' width='60%' height={16} sx={block} />
+            <Skeleton shape='text' width='80%' height={24} sx={block} />
           </Box>
           <Box>
-            <Skeleton variant='text' width='70%' height={16} />
-            <Skeleton variant='text' width='75%' height={24} />
+            <Skeleton shape='text' width='70%' height={16} sx={block} />
+            <Skeleton shape='text' width='75%' height={24} sx={block} />
           </Box>
         </Box>
-        <Skeleton variant='text' width='50%' height={20} sx={{ mb: 1 }} />
-        <Skeleton variant='rectangular' height={120} />
+        <Skeleton shape='text' width='50%' height={20} sx={{ ...block, mb: ds.space[2] }} />
+        <Skeleton shape='rect' height={120} sx={block} />
       </Box>
 
       {/* Cost Summary Skeleton */}
@@ -78,22 +85,22 @@ const SummarySkeletonLoader = () => {
           }`,
         }}
       >
-        <Skeleton variant='text' width='70%' height={20} sx={{ mb: 2 }} />
+        <Skeleton shape='text' width='70%' height={20} sx={{ ...block, mb: ds.space[4] }} />
         <Box sx={{ mb: 2 }}>
-          <Skeleton variant='text' width='50%' height={16} />
-          <Skeleton variant='text' width='80%' height={24} />
-          <Skeleton variant='text' width='60%' height={14} />
+          <Skeleton shape='text' width='50%' height={16} sx={block} />
+          <Skeleton shape='text' width='80%' height={24} sx={block} />
+          <Skeleton shape='text' width='60%' height={14} sx={block} />
         </Box>
         <Box sx={{ mb: 2 }}>
-          <Skeleton variant='text' width='60%' height={16} />
-          <Skeleton variant='text' width='70%' height={24} />
-          <Skeleton variant='text' width='55%' height={14} />
+          <Skeleton shape='text' width='60%' height={16} sx={block} />
+          <Skeleton shape='text' width='70%' height={24} sx={block} />
+          <Skeleton shape='text' width='55%' height={14} sx={block} />
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Skeleton variant='circular' width={60} height={60} />
+          <Skeleton shape='circle' width={60} height={60} sx={block} />
           <Box>
-            <Skeleton variant='text' width='40%' height={16} />
-            <Skeleton variant='text' width='60%' height={20} />
+            <Skeleton shape='text' width='40%' height={16} sx={block} />
+            <Skeleton shape='text' width='60%' height={20} sx={block} />
           </Box>
         </Box>
       </Box>

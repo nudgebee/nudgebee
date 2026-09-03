@@ -10,8 +10,8 @@ describe('SummarySkeletonLoader', () => {
 
   test('renders skeleton elements', () => {
     const { container } = render(<SummarySkeletonLoader />);
-    // MUI Skeleton renders span elements with MuiSkeleton class
-    const skeletons = container.querySelectorAll('.MuiSkeleton-root');
+    // ds/Skeleton renders each placeholder with role='status' and aria-busy
+    const skeletons = container.querySelectorAll('[role="status"][aria-busy="true"]');
     expect(skeletons.length).toBeGreaterThan(0);
   });
 
