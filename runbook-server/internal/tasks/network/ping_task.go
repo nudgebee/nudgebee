@@ -88,8 +88,11 @@ func (t *PingTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 	packetLoss := 100.0
 	avgLatency := 0.0
 
-	// Regex for packet loss: "X% packet loss"
-	lossRe := regexp.MustCompile(`(\d+)%\s+packet\s+loss`)
+	// Regex for packet loss. iputils/BSD say "0% packet loss"; Windows says
+	// "Lost = 0 (0% loss)". The command above already has a Windows branch, so
+	// the parser has to understand Windows output too or every local-dev ping
+	// reports 100% loss and unreachable.
+	lossRe := regexp.MustCompile(`(\d+)%\s+(?:packet\s+)?loss`)
 	lossMatch := lossRe.FindStringSubmatch(output)
 	if len(lossMatch) > 1 {
 		if p, err := strconv.ParseFloat(lossMatch[1], 64); err == nil {
@@ -102,9 +105,15 @@ func (t *PingTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 	// Linux (Busybox): round-trip min/avg/max = 2.3/3.4/5.6 ms
 	// Linux (iputils): rtt min/avg/max/mdev = 2.3/3.4/5.6/0.1 ms
 	latRe := regexp.MustCompile(`(min/avg/max|round-trip).*?=\s*[\d\.]+/([\d\.]+)/`)
+	winLatRe := regexp.MustCompile(`Average\s*=\s*([\d\.]+)\s*ms`)
 	latMatch := latRe.FindStringSubmatch(output)
 	if len(latMatch) > 1 {
 		if l, err := strconv.ParseFloat(latMatch[2], 64); err == nil {
+			avgLatency = l
+		}
+	} else if winLatMatch := winLatRe.FindStringSubmatch(output); len(winLatMatch) > 1 {
+		// Windows: "Minimum = 0ms, Maximum = 0ms, Average = 0ms"
+		if l, err := strconv.ParseFloat(winLatMatch[1], 64); err == nil {
 			avgLatency = l
 		}
 	}
