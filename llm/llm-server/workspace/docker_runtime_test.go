@@ -288,3 +288,17 @@ func TestDockerRuntimeExpiredTokenTriggersLazyRecreation(t *testing.T) {
 	require.ErrorIs(t, err, errDockerWorkspaceTokenInvalid)
 	require.True(t, NewWorkspaceManager().(*workspaceManager).isRecoverableError(err))
 }
+
+func TestDockerRuntimeLimitsEngineResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", dockerResponseBodyLimit+1024)))
+	}))
+	defer server.Close()
+	runtime, err := newDockerRuntimeForHost(server.URL)
+	require.NoError(t, err)
+
+	body, status, err := runtime.request(context.Background(), http.MethodGet, "/large", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	require.Len(t, body, dockerResponseBodyLimit)
+}

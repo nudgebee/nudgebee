@@ -965,7 +965,7 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 			return "", err
 		}
 		defer func() { _ = resp.Body.Close() }()
-		resultRaw, readErr := io.ReadAll(resp.Body)
+		resultRaw, readErr := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
 		if readErr != nil {
 			return "", fmt.Errorf("read Docker workspace response: %w", readErr)
 		}
@@ -1255,7 +1255,7 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 			return nil, err
 		}
 		defer func() { _ = resp.Body.Close() }()
-		respBody, readErr := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
 		if readErr != nil {
 			return nil, fmt.Errorf("read Docker workspace response: %w", readErr)
 		}
@@ -1414,8 +1414,8 @@ func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, 
 			return nil, err
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			defer func() { _ = resp.Body.Close() }()
-			errBody, _ := io.ReadAll(resp.Body)
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("docker workspace returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 		}
 		return resp.Body, nil

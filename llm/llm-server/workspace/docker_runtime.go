@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	dockerManagedLabel = "com.nudgebee.workspace"
-	dockerAccountLabel = "com.nudgebee.workspace.account-id"
-	dockerTenantLabel  = "com.nudgebee.workspace.tenant-id"
-	dockerImageLabel   = "com.nudgebee.workspace.image"
+	dockerManagedLabel      = "com.nudgebee.workspace"
+	dockerAccountLabel      = "com.nudgebee.workspace.account-id"
+	dockerTenantLabel       = "com.nudgebee.workspace.tenant-id"
+	dockerImageLabel        = "com.nudgebee.workspace.image"
+	dockerResponseBodyLimit = 1024 * 1024
 )
 
 var (
@@ -143,7 +144,7 @@ func (d *dockerRuntime) requestWithClient(ctx context.Context, client *http.Clie
 		return nil, 0, fmt.Errorf("call Docker Engine: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, dockerResponseBodyLimit))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read Docker response: %w", err)
 	}
@@ -182,8 +183,8 @@ func dockerEnvValue(env []string, key string) string {
 func dockerWorkspaceTokenReusable(token string, now time.Time) bool {
 	claims := &WorkspaceTokenClaims{}
 	parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
-		if token.Method != jwt.SigningMethodHS256 {
-			return nil, fmt.Errorf("unexpected signing method %s", token.Method.Alg())
+		if token.Method == nil || token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, fmt.Errorf("unexpected signing method")
 		}
 		return []byte(config.Config.LlmServerJwtSecret), nil
 	})
