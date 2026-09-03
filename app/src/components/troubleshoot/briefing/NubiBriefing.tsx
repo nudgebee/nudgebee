@@ -147,7 +147,7 @@ const NubiBriefing = ({ onDrillDown }: Props) => {
   const isActive = useCallback(
     (drill?: Record<string, string>) => {
       if (!drill) return false;
-      const keys = Object.keys(drill).filter((key) => key !== 'status');
+      const keys = Object.keys(drill).filter((key) => key !== 'status' && key !== 'eventsView');
       return keys.length > 0 && keys.every((key) => router.query[key] === drill[key]);
     },
     [router.query]

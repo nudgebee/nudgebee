@@ -115,7 +115,10 @@ export interface BriefingModel {
 
 const ALL_EVENTS_DRILL = { status: 'ALL' };
 
-const rankDrill = (rank: NubiRank) => ({ ...ALL_EVENTS_DRILL, eventComputedPriority: rank });
+// Tiles whose value counts issues (DISTINCT account+fingerprint) drill into the
+// Events tab's "Unique" view so the list reconciles with the number clicked.
+// Tiles that count raw events (Events ingested, worst signal class) omit it.
+const rankDrill = (rank: NubiRank) => ({ ...ALL_EVENTS_DRILL, eventComputedPriority: rank, eventsView: 'unique' });
 
 const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
@@ -146,9 +149,11 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
     {
       key: 'issues',
       label: 'Issues you could see',
-      tooltip: 'Distinct issues after repeats were collapsed — what the list below shows.',
+      tooltip: 'Distinct issues after repeats were collapsed. Opens the Events tab in "Unique" view — one row per fingerprint.',
       value: formatCount(issues),
-      drill: ALL_EVENTS_DRILL,
+      // This count is DISTINCT fingerprint, so the drill opens the Events tab
+      // pre-switched to its fingerprint-deduped ("Unique") view.
+      drill: { ...ALL_EVENTS_DRILL, eventsView: 'unique' },
     },
   ];
 
@@ -215,7 +220,7 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
       label: 'Still firing now',
       tooltip: 'Issues whose underlying alert has not cleared.',
       value: formatCount(payload.firingNow),
-      drill: { ...ALL_EVENTS_DRILL, eventStatus: 'FIRING' },
+      drill: { ...ALL_EVENTS_DRILL, eventStatus: 'FIRING', eventsView: 'unique' },
     },
   ];
 
@@ -287,7 +292,7 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
       )} ${top.from} alerts ${top.to === 'P3' ? 'were put in the background' : `were ranked ${top.to}`}.`,
       value: formatCount(top.count),
       secondary: `${top.from} → ${top.to}`,
-      drill: { ...ALL_EVENTS_DRILL, eventPriority: top.from, eventComputedPriority: top.to },
+      drill: { ...ALL_EVENTS_DRILL, eventPriority: top.from, eventComputedPriority: top.to, eventsView: 'unique' },
     });
   }
 

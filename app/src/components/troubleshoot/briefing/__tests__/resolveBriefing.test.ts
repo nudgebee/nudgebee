@@ -114,8 +114,8 @@ describe('resolveBriefing — reproduces the approved prototype', () => {
     expect(biggest.value).toBe('237');
     expect(biggest.secondary).toBe('HIGH → P3');
     expect(biggest.tooltip).toBe('94% of the 251 HIGH alerts were put in the background.');
-    // Constrains both axes at once — arrived as HIGH, ranked P3.
-    expect(biggest.drill).toEqual({ status: 'ALL', eventPriority: 'HIGH', eventComputedPriority: 'P3' });
+    // Constrains both axes at once — arrived as HIGH, ranked P3. Opens the Unique view.
+    expect(biggest.drill).toEqual({ status: 'ALL', eventPriority: 'HIGH', eventComputedPriority: 'P3', eventsView: 'unique' });
 
     // Only the largest transition sits on the value line — the rest would wrap
     // the tile onto three rows and drag column C taller than its neighbours.
@@ -199,18 +199,19 @@ describe('resolveBriefing — drill-downs', () => {
 
   it('opens the unfiltered list from the population tiles', () => {
     expect(byKey(model.intake, 'ingested').drill).toEqual({ status: 'ALL' });
-    expect(byKey(model.intake, 'issues').drill).toEqual({ status: 'ALL' });
+    // Issues count is DISTINCT fingerprint, so it opens the Events tab in "Unique" view.
+    expect(byKey(model.intake, 'issues').drill).toEqual({ status: 'ALL', eventsView: 'unique' });
   });
 
-  it('filters by Nubi rank from each rank tile', () => {
-    expect(byKey(model.ranking, 'p0').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P0' });
-    expect(byKey(model.ranking, 'p1').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P1' });
-    expect(byKey(model.ranking, 'p2').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P2' });
-    expect(byKey(model.ranking, 'p3').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P3' });
+  it('filters by Nubi rank from each rank tile, in the Unique view', () => {
+    expect(byKey(model.ranking, 'p0').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P0', eventsView: 'unique' });
+    expect(byKey(model.ranking, 'p1').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P1', eventsView: 'unique' });
+    expect(byKey(model.ranking, 'p2').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P2', eventsView: 'unique' });
+    expect(byKey(model.ranking, 'p3').drill).toEqual({ status: 'ALL', eventComputedPriority: 'P3', eventsView: 'unique' });
   });
 
-  it('filters by alert state from the firing tile', () => {
-    expect(byKey(model.ranking, 'firing').drill).toEqual({ status: 'ALL', eventStatus: 'FIRING' });
+  it('filters by alert state from the firing tile, in the Unique view', () => {
+    expect(byKey(model.ranking, 'firing').drill).toEqual({ status: 'ALL', eventStatus: 'FIRING', eventsView: 'unique' });
   });
 
   it('leaves tiles without a matching list filter unclickable', () => {

@@ -1939,11 +1939,15 @@ const apiKubernetes1 = {
   // the numbers reconcile against each other and against the Events list below.
   //
   // Two counting units are deliberately mixed and must not be confused:
-  //   - EVENTS (raw count(*))          — "events ingested", the correlation splits
-  //   - ISSUES (distinct fingerprints) — everything the user acts on
-  // Blocks that count issues carry the distinct-over-fingerprint transformation.
+  //   - EVENTS (raw count(*))                 — "events ingested", the correlation splits
+  //   - ISSUES (distinct account+fingerprint) — everything the user acts on
+  // Blocks that count issues carry the distinct transformation. The key is
+  // (account_id, fingerprint), not fingerprint alone: the same fingerprint can
+  // land under two accounts (e.g. one cluster onboarded twice), and each copy is
+  // separately triaged/ticketed — so it is two issues, and this matches the
+  // Events tab's "Unique" view row-for-row.
   briefingAggregates: async function (data: { startDate: string; endDate: string; bandStartDate: string; accountId?: string[] | string }) {
-    const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
+    const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["account_id", "fingerprint"]}]';
     const BRIEFING_AGGREGATES = `
     query NubiBriefingAggregates {
       window_totals: event_groupings_v2(where: __WHERE__) {
@@ -2050,9 +2054,12 @@ const apiKubernetes1 = {
   // snapshot. This answers "are we improving" and "what keeps coming back",
   // which need a previous window to compare against and per-chain recurrence.
   //
-  // Every count is DISTINCT fingerprint, not raw rows: the issue unit is the
-  // fingerprint chain (one alert firing 1,797 times is one issue, not 1,797),
-  // which is also what keeps this tab agreeing with the briefing directly above.
+  // Every count is DISTINCT (account_id, fingerprint), not raw rows: the issue
+  // unit is one fingerprint in one account (one alert firing 1,797 times is one
+  // issue, not 1,797; the same fingerprint under two accounts is two issues).
+  // This keeps the tab agreeing with the briefing directly above and with the
+  // Events tab's "Unique" view. `chains` below stays fingerprint-only on purpose
+  // — see its comment.
   analyticsAggregates: async function (data: {
     startDate: string;
     endDate: string;
@@ -2060,10 +2067,11 @@ const apiKubernetes1 = {
     prevEndDate: string;
     accountId?: string[] | string;
   }) {
-    const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
+    const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["account_id", "fingerprint"]}]';
     // date_unit -> date_trunc(day, created_at) in the query engine
     // (query/sql.go generateColumnExpression).
-    const DAILY = '[{name: "created_at", expr: "date_unit", args: ["day"]}, {name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
+    const DAILY =
+      '[{name: "created_at", expr: "date_unit", args: ["day"]}, {name: "event_count", expr: "distinct", args: ["account_id", "fingerprint"]}]';
 
     // window_issues is the whole-window distinct count and is NOT the sum of
     // daily_volume: a fingerprint that fires on Monday and again on Thursday is
