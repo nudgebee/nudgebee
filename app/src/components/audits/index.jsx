@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
@@ -611,14 +611,16 @@ export const AuditsTable = () => {
     });
   }
 
-  const statusOptions = ['SUCCESS', 'FAILURE'].map((v) => ({ value: v, label: capitalize(v) }));
-  const categoryOptions = [...CategoryListing]
-    .sort((a, b) => a.localeCompare(b))
-    .map((v) => ({ value: v, label: capitalize(v.replaceAll('_', ' ')) }));
-  const eventTypeOptions = [...EventListing]
-    .sort((a, b) => a.localeCompare(b))
-    .map((v) => ({ value: v, label: convertToReadableFormat(v.replaceAll('_', ' ')) }));
-  const actionOptions = ['CREATE', 'UPDATE', 'DELETE', 'READ', 'EXECUTE'].map((v) => ({ value: v, label: capitalize(v) }));
+  const statusOptions = useMemo(() => ['SUCCESS', 'FAILURE'].map((v) => ({ value: v, label: capitalize(v) })), []);
+  const categoryOptions = useMemo(
+    () => [...CategoryListing].sort((a, b) => a.localeCompare(b)).map((v) => ({ value: v, label: capitalize(v.replaceAll('_', ' ')) })),
+    []
+  );
+  const eventTypeOptions = useMemo(
+    () => [...EventListing].sort((a, b) => a.localeCompare(b)).map((v) => ({ value: v, label: convertToReadableFormat(v.replaceAll('_', ' ')) })),
+    []
+  );
+  const actionOptions = useMemo(() => ['CREATE', 'UPDATE', 'DELETE', 'READ', 'EXECUTE'].map((v) => ({ value: v, label: capitalize(v) })), []);
 
   const findOption = (options, value) => (value ? options.find((o) => o.value === value) ?? null : null);
 
