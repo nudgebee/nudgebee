@@ -33,6 +33,17 @@ export function formatMemory(value: number, sourceUnit = 'bytes', targetUnit = '
   return result;
 }
 
+// CPU arrives from Prometheus in cores. Sub-core values read better in
+// millicores, which is also the unit requests and limits are written in.
+// Anything that is not a usable number renders as '-' rather than "NaN cores":
+// "we have no figure" and "the figure is zero" are different claims.
+export function formatCores(cores?: number | null): string {
+  if (cores === null || cores === undefined || !isFinite(cores) || cores === 0) {
+    return '-';
+  }
+  return cores < 1 ? `${Math.round(cores * 1000)} m` : `${cores.toFixed(2)} cores`;
+}
+
 export function titleCase(value?: string): string {
   if (!value) {
     return '';

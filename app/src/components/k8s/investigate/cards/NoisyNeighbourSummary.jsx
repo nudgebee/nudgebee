@@ -1,4 +1,4 @@
-import { formatMemory } from '@lib/formatter';
+import { formatCores, formatMemory } from '@lib/formatter';
 import { Box, Stack, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
 import { safeJSONParse } from 'src/utils/common';
@@ -156,6 +156,60 @@ const NoisyNeighbourSummary = ({ row }) => {
                   }}
                 >
                   {formatMemory(parsedItem?.memory_requested, 'bytes', 'gb', false)} GiB
+                </Typography>
+              </Box>
+            ) : null}
+            {parsedItem?.cpu_allocatable ? (
+              <Box marginLeft={ds.space.mul(0, 15)}>
+                <Typography
+                  sx={{
+                    color: 'var(--grey-80, var(--ds-gray-400))',
+                    display: 'block',
+                    fontSize: 'var(--ds-text-body)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    marginBottom: 'var(--ds-space-1)',
+                  }}
+                >
+                  CPU Capacity
+                </Typography>
+                <Typography
+                  sx={{
+                    color: 'var(--Data-Points-main, var(--ds-brand-500))',
+                    display: 'block',
+                    fontSize: 'var(--ds-text-body-lg)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    marginBottom: 'var(--ds-space-1)',
+                    textAlign: 'right',
+                  }}
+                >
+                  {formatCores(parsedItem?.cpu_allocatable)}
+                </Typography>
+              </Box>
+            ) : null}
+            {parsedItem?.cpu_used ? (
+              <Box marginLeft={ds.space.mul(0, 15)}>
+                <Typography
+                  sx={{
+                    color: 'var(--grey-80, var(--ds-gray-400))',
+                    display: 'block',
+                    fontSize: 'var(--ds-text-body)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    marginBottom: 'var(--ds-space-1)',
+                  }}
+                >
+                  CPU Used
+                </Typography>
+                <Typography
+                  sx={{
+                    color: 'var(--Data-Points-main, var(--ds-brand-500))',
+                    display: 'block',
+                    fontSize: 'var(--ds-text-body-lg)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    marginBottom: 'var(--ds-space-1)',
+                    textAlign: 'right',
+                  }}
+                >
+                  {formatCores(parsedItem?.cpu_used)}
                 </Typography>
               </Box>
             ) : null}
