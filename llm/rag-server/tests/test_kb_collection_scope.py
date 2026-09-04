@@ -119,6 +119,58 @@ def test_explicit_collection_name_cannot_bypass_the_gate(live_names):
     assert names == []
 
 
+def test_restrict_narrows_to_the_named_collection(live_names):
+    """``restrict_to_collection`` searches ONE collection instead of adding it.
+
+    The knowledge-base retrieval probe uses this to answer "does THIS knowledge
+    base answer the question?" — without it the named collection is merely
+    appended and the search still spans everything.
+    """
+    collections = [_integration_collection(LIVE_INTEGRATION), _manual_collection(LIVE_KB)]
+    names = rag._filter_collections_for_module_and_account(
+        collections, "knowledge_base", ACCOUNT, f"kb_{LIVE_KB}", tenant_id=TENANT, restrict_to_collection=True
+    )
+    assert names == [f"kb_{LIVE_KB}"]
+
+    # Same inputs without the flag keep the documented additive behaviour.
+    additive = rag._filter_collections_for_module_and_account(
+        collections, "knowledge_base", ACCOUNT, f"kb_{LIVE_KB}", tenant_id=TENANT
+    )
+    assert sorted(additive) == sorted([f"{LIVE_INTEGRATION}_knowledge_base", f"kb_{LIVE_KB}"])
+
+
+def test_restrict_cannot_reach_a_collection_outside_the_scope(live_names):
+    """Narrowing intersects with what was already visible — it never widens.
+
+    Without the intersection, naming any collection would turn a restricted
+    search into a targeted read of another tenant's knowledge base.
+    """
+    collections = [_manual_collection(LIVE_KB)]
+    names = rag._filter_collections_for_module_and_account(
+        collections,
+        "knowledge_base",
+        ACCOUNT,
+        "kb_99999999-9999-9999-9999-999999999999",
+        tenant_id=TENANT,
+        restrict_to_collection=True,
+    )
+    assert names == []
+
+
+def test_restrict_respects_the_live_kb_gate(live_names):
+    """An archived KB's collection cannot be reached by naming it explicitly."""
+    collections = [_integration_collection(DEAD_INTEGRATION)]
+    names = rag._filter_collections_for_module_and_account(
+        collections,
+        "knowledge_base",
+        ACCOUNT,
+        f"{DEAD_INTEGRATION}_knowledge_base",
+        tenant_id=TENANT,
+        restrict_to_collection=True,
+    )
+    assert names == []
+
+
 @pytest.mark.parametrize("account_id, tenant_id", [("global", None), ("", None), (None, None), ("not-a-uuid", "")])
 def test_non_uuid_scope_short_circuits_before_the_query(account_id, tenant_id):
     # Reaching Postgres with these would raise "invalid input syntax for type

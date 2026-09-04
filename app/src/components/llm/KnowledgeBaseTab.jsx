@@ -6,6 +6,7 @@ import { Label } from '@ui/Label';
 import { Chip } from '@ui/Chip';
 import CustomTable from '@shared/tables/CustomTable';
 import { Input } from '@ui/Input';
+import { Select } from '@ui/Select';
 import Tooltip from '@ui/Tooltip';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import HistoryIcon from '@mui/icons-material/History';
@@ -816,6 +817,241 @@ KBLoadHistoryModal.propTypes = {
   kbName: PropTypes.string,
 };
 
+// Names a list of knowledge bases for a one-line summary, capped so an account
+// with dozens of KBs doesn't render a wall of text (a real dev account returned
+// 29). The full list is available via tooltip at the call site.
+const KB_NAME_LIST_CAP = 5;
+const formatKBNameList = (kbs, cap = KB_NAME_LIST_CAP) => {
+  const names = kbs.map((kb) => kb.name);
+  if (names.length <= cap) return names.join(', ');
+  return `${names.slice(0, cap).join(', ')} +${names.length - cap} more`;
+};
+
+// Test retrieval panel — runs the real KB pre-step for a question and reports
+// what an agent would actually receive.
+//
+// Deliberately reports the pre-step's ACTUAL rules, not a score threshold: the
+// relative cutoff was removed from retrieveRelevantKB because cosine scores
+// cluster in a narrow high band (0.839-0.852) and it could never drop anything.
+// Relevance is decided upstream by rag-server's cross-encoder, which simply
+// doesn't return sub-threshold documents. The only drop the pre-step performs
+// is fail-closed on documents no knowledge base in scope owns.
+const TestRetrievalPanel = ({
+  knowledgeBases = [],
+  knowledgeBasesLoading = false,
+  query,
+  onQueryChange,
+  kbId,
+  onKbChange,
+  onRun,
+  running,
+  result,
+  error,
+}) => {
+  // Archived knowledge bases are excluded: rag-server drops their collections
+  // before searching, so offering one would only ever return nothing. A KB in
+  // "error" or "processing" IS still searchable — those are transient load
+  // states over documents that were already indexed — so it stays selectable
+  // and is labelled with its status.
+  const kbOptions = useMemo(
+    () => [
+      { value: '', label: 'All knowledge bases' },
+      ...knowledgeBases
+        .filter((kb) => kb.status !== 'archived')
+        .map((kb) => ({
+          value: kb.id,
+          label: kb.status === 'active' ? kb.name : `${kb.name} (${kb.status})`,
+        })),
+    ],
+    [knowledgeBases]
+  );
+  const scopedKB = kbId ? knowledgeBases.find((kb) => kb.id === kbId) : null;
+
+  // Split by ELIGIBILITY first. An archived KB, or one whose load failed and
+  // left it in "error", is skipped by attribution for every question — listing
+  // it as "contributed nothing" would imply it had a chance and lost.
+  const candidates = result?.candidates || [];
+  const unmatched = candidates.filter((kb) => kb.eligible && !kb.matched);
+  const ineligible = candidates.filter((kb) => !kb.eligible);
+  const archivedCount = ineligible.filter((kb) => kb.status === 'archived').length;
+  const erroredCount = ineligible.filter((kb) => kb.status === 'error').length;
+
+  return (
+    <WidgetCard sx={{ mt: ds.space[2], py: ds.space[4], px: ds.space.mul(1, 5) }}>
+      <Typography
+        sx={{
+          fontSize: 'var(--ds-text-body)',
+          fontWeight: 'var(--ds-font-weight-semibold)',
+          fontFamily: 'var(--ds-font-display)',
+          color: 'var(--ds-gray-700)',
+        }}
+      >
+        Test retrieval
+      </Typography>
+      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mt: ds.space[1] }}>
+        Ask a question the way an agent would receive it. This runs the real retrieval step and shows which documents would reach the agent — and
+        which are dropped because no knowledge base in scope owns them. Pick a single knowledge base to ask whether that one answers the question.
+      </Typography>
+
+      <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: ds.space[3], mt: ds.space[4], flexWrap: 'wrap' }}>
+        <Box sx={{ minWidth: '240px' }}>
+          {/* Select/Input 'sm' and Button 'md' are all 32px in the DS size
+              tokens — the only combination where the three line up exactly. */}
+          <Select
+            size='sm'
+            label='Knowledge base'
+            value={kbId}
+            onChange={onKbChange}
+            options={kbOptions}
+            loading={knowledgeBasesLoading}
+            placeholder='All knowledge bases'
+          />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: '280px' }}>
+          <Input
+            size='sm'
+            label='Question'
+            value={query}
+            onChange={onQueryChange}
+            placeholder='e.g. auth-svc is throwing 5xx after a deploy, safe to restart?'
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onRun();
+            }}
+          />
+        </Box>
+        <Button tone='primary' size='md' onClick={onRun} loading={running} disabled={!query.trim()}>
+          Run
+        </Button>
+      </Box>
+
+      {error && (
+        <Box sx={{ mt: ds.space[3] }}>
+          <Banner tone='critical' message={error} />
+        </Box>
+      )}
+
+      {result?.timed_out && (
+        <Box sx={{ mt: ds.space[3] }}>
+          <Banner
+            tone='warning'
+            message='Retrieval timed out. In a real request the agent would run with no knowledge base content at all (the pre-step fails open).'
+          />
+        </Box>
+      )}
+
+      {result && !result.timed_out && (
+        <Box sx={{ mt: ds.space[4] }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mb: ds.space[2] }}>
+            {`Retrieved ${result.retrieved} of a possible ${result.top_k} · ${result.injected} injected · ${result.dropped} dropped`}
+          </Typography>
+
+          {/* A single-KB search removes the competition that decides real
+              retrieval: normally every knowledge base contends for the same
+              top_k slots, so winning here is not the same as reaching an agent. */}
+          {scopedKB && (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mb: ds.space[2] }}>
+              {`Searched only "${scopedKB.name}". In a real request every knowledge base competes for the same ${result.top_k} slots, so a match here does not on its own mean an agent receives it.`}
+            </Typography>
+          )}
+
+          {(result.documents || []).length === 0 && (
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
+              Nothing was returned for this question. The relevance threshold is applied upstream, so an empty result means no document was judged
+              relevant — not that retrieval failed.
+            </Typography>
+          )}
+
+          {(result.documents || []).map((doc) => (
+            <Box
+              key={`${doc.rank}-${doc.url || doc.subject}`}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: ds.space[3],
+                px: ds.space[3],
+                py: ds.space[2],
+                mb: ds.space[2],
+                border: '1px solid var(--ds-gray-300)',
+                borderRadius: ds.radius.md,
+                backgroundColor: doc.injected ? 'transparent' : 'var(--ds-background-200)',
+              }}
+            >
+              <Typography
+                sx={{
+                  fontFamily: 'var(--ds-font-mono)',
+                  fontSize: 'var(--ds-text-caption)',
+                  color: 'var(--ds-gray-600)',
+                  flexShrink: 0,
+                }}
+              >
+                {Number(doc.score).toFixed(2)}
+              </Typography>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography
+                  sx={{
+                    fontSize: 'var(--ds-text-small)',
+                    color: 'var(--ds-gray-700)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {doc.subject || '(untitled document)'}
+                </Typography>
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+                  {doc.kb_name || doc.source || 'Not owned by a knowledge base'}
+                </Typography>
+              </Box>
+              {doc.injected ? (
+                <Label text='Injected' tone='success' />
+              ) : (
+                <Tooltip title={doc.drop_reason || 'Dropped before the prompt.'}>
+                  <Box sx={{ display: 'inline-flex' }}>
+                    <Label text='Dropped' tone='warning' />
+                  </Box>
+                </Tooltip>
+              )}
+            </Box>
+          ))}
+
+          {unmatched.length > 0 && (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: ds.space[2] }}>
+              {`In scope but contributed nothing to this question: ${formatKBNameList(unmatched)}`}
+            </Typography>
+          )}
+
+          {ineligible.length > 0 && (
+            <Tooltip title={formatKBNameList(ineligible, ineligible.length)}>
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: ds.space[1], width: 'fit-content' }}>
+                {`${ineligible.length} knowledge base${ineligible.length === 1 ? '' : 's'} could not contribute to any question${
+                  archivedCount > 0 || erroredCount > 0
+                    ? ` (${[erroredCount > 0 ? `${erroredCount} failed to load` : '', archivedCount > 0 ? `${archivedCount} archived` : '']
+                        .filter(Boolean)
+                        .join(', ')})`
+                    : ''
+                }.`}
+              </Typography>
+            </Tooltip>
+          )}
+        </Box>
+      )}
+    </WidgetCard>
+  );
+};
+
+TestRetrievalPanel.propTypes = {
+  knowledgeBases: PropTypes.array,
+  knowledgeBasesLoading: PropTypes.bool,
+  query: PropTypes.string,
+  onQueryChange: PropTypes.func,
+  kbId: PropTypes.string,
+  onKbChange: PropTypes.func,
+  onRun: PropTypes.func,
+  running: PropTypes.bool,
+  result: PropTypes.object,
+  error: PropTypes.string,
+};
+
 const KnowledgeBaseTab = ({ accountId }) => {
   // Tenant-wide read-only mode: when no accountId is in scope (b-Cortex
   // opened from the global sidebar where the page has no current
@@ -841,6 +1077,15 @@ const KnowledgeBaseTab = ({ accountId }) => {
   // all agents. Fetched before the modal opens so the picker never flips under
   // the user mid-edit.
   const [formAgentIds, setFormAgentIds] = useState([]);
+
+  // Test retrieval — runs the real KB pre-step for a question so an operator can
+  // see what an agent would actually receive, without asking the agent anything.
+  const [retrievalOpen, setRetrievalOpen] = useState(false);
+  const [retrievalQuery, setRetrievalQuery] = useState('');
+  const [retrievalKbId, setRetrievalKbId] = useState('');
+  const [retrievalRunning, setRetrievalRunning] = useState(false);
+  const [retrievalResult, setRetrievalResult] = useState(null);
+  const [retrievalError, setRetrievalError] = useState(null);
 
   // In tenant-wide mode every write affordance is hidden — writes always
   // require the per-account context, so we never paint Create / Edit /
@@ -1269,6 +1514,32 @@ const KnowledgeBaseTab = ({ accountId }) => {
     );
   }
 
+  const handleRunRetrieval = async () => {
+    const query = retrievalQuery.trim();
+    if (!query || retrievalRunning) return;
+    setRetrievalRunning(true);
+    setRetrievalError(null);
+    // Clear the previous run's results: leaving them on screen while the new
+    // query is in flight shows an answer to a question that is no longer the
+    // one in the box.
+    setRetrievalResult(null);
+    try {
+      const response = await apiKnowledgeBase.testRetrieval(accountId, query, retrievalKbId);
+      if (response.errors && response.errors.length > 0) {
+        setRetrievalResult(null);
+        setRetrievalError(response.errors[0]?.message || 'Failed to test retrieval');
+        return;
+      }
+      setRetrievalResult(response.data);
+    } catch (err) {
+      console.error('Error testing retrieval:', err);
+      setRetrievalResult(null);
+      setRetrievalError('An error occurred while testing retrieval');
+    } finally {
+      setRetrievalRunning(false);
+    }
+  };
+
   if (error && knowledgeBases.length === 0) {
     return (
       <Box sx={{ p: ds.space[5] }}>
@@ -1308,12 +1579,33 @@ const KnowledgeBaseTab = ({ accountId }) => {
               : "Account-scoped document library with AI semantic search-upload docs, map to agents, and they'll automatically search when needed."}
           </Typography>
         </Box>
-        {hasAccess && (
-          <Button tone='primary' size='sm' onClick={handleCreate}>
-            Add Knowledge Base
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexShrink: 0 }}>
+          {/* Read-only probe, so it stays available in tenant-wide mode too. */}
+          <Button tone='secondary' size='sm' onClick={() => setRetrievalOpen((open) => !open)} aria-expanded={retrievalOpen}>
+            Test retrieval
           </Button>
-        )}
+          {hasAccess && (
+            <Button tone='primary' size='sm' onClick={handleCreate}>
+              Add Knowledge Base
+            </Button>
+          )}
+        </Box>
       </WidgetCard>
+
+      {retrievalOpen && (
+        <TestRetrievalPanel
+          knowledgeBases={knowledgeBases}
+          knowledgeBasesLoading={loading}
+          query={retrievalQuery}
+          onQueryChange={setRetrievalQuery}
+          kbId={retrievalKbId}
+          onKbChange={setRetrievalKbId}
+          onRun={handleRunRetrieval}
+          running={retrievalRunning}
+          result={retrievalResult}
+          error={retrievalError}
+        />
+      )}
 
       {/* Empty State */}
       {knowledgeBases.length === 0 && (

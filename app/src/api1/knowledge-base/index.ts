@@ -706,6 +706,47 @@ const apiKnowledgeBase = {
     }
   },
 
+  /**
+   * Run the real KB pre-step retrieval for a question without asking an agent
+   * anything. Returns each retrieved document ranked, with whether it would
+   * actually reach the prompt.
+   *
+   * kbId is optional — supplying it searches ONLY that knowledge base's own
+   * collection, answering "does this KB answer the question?". Omitting it
+   * probes every KB in the account, which is what the pre-step does.
+   */
+  testRetrieval: async (accountId: string, query: string, kbId?: string) => {
+    const TEST_RETRIEVAL = `
+      query TestKBRetrieval($request: TestKBRetrievalRequest!) {
+        ai_list_kb_retrieval(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(TEST_RETRIEVAL, 'TestKBRetrieval', {
+        request: { account_id: accountId, query, kb_id: kbId || '' },
+      });
+      if (response?.data?.data?.ai_list_kb_retrieval) {
+        const result = response.data.data.ai_list_kb_retrieval;
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to test retrieval') }] };
+    } catch (error) {
+      console.error('Error testing KB retrieval:', error);
+      return { data: null, errors: [{ message: 'An error occurred while testing retrieval' }] };
+    }
+  },
+
   retriggerKB: async (accountId: string, kbId: string) => {
     const RETRIGGER_KB = `
       mutation RetriggerKB($request: RetriggerKBRequest!) {
