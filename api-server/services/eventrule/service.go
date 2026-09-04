@@ -143,6 +143,7 @@ func isExternalProviderSource(source string) bool {
 		"cloudwatch": true, "azure_monitor": true, "gcp_monitoring": true,
 		"splunk": true, "elasticsearch": true, "loki": true,
 		"signoz": true, "grafana": true, "chronosphere_user": true,
+		"cubeapm": true,
 	}
 	return externalSources[source]
 }
@@ -200,6 +201,8 @@ func resolveSourceFromMetricProvider(metricProvider string) string {
 		return "grafana"
 	case "chronosphere":
 		return "chronosphere_user"
+	case "cubeapm":
+		return "cubeapm"
 	case "loki":
 		return "loki"
 	case "aws_cloudwatch":

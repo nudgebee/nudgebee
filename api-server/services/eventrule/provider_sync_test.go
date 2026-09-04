@@ -77,3 +77,17 @@ func TestSyncProviderRulesRejectsUnknownInput(t *testing.T) {
 	_, err = SyncProviderRulesForAccount(nil, SyncProviderRulesRequest{AccountId: "acct-1"})
 	assert.ErrorContains(t, err, "security context is required")
 }
+
+// CubeAPM implements alertrule.AlertRuleLister, so it must be registered here or
+// the listing is never called and synced rules never appear.
+func TestCubeAPMIsSyncable(t *testing.T) {
+	entry, ok := syncableProviders["cubeapm"]
+	assert.True(t, ok, "cubeapm must be syncable")
+	assert.Equal(t, "cubeapm", entry.provider)
+	assert.Equal(t, "user", entry.providerSource)
+	assert.Equal(t, "cubeapm_webhook", entry.ruleSource,
+		"synced definitions must land on the same row as the webhook reporting their firings")
+	// The admin API returns the whole rule set in one call with no permission
+	// filtering, so an absent rule can be trusted to mean deleted upstream.
+	assert.True(t, entry.reconcileDeletions)
+}

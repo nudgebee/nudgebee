@@ -57,6 +57,9 @@ var syncableProviders = map[string]syncableProvider{
 	"dynatrace": {"dynatrace", "user", "dynatrace_webhook", true},
 	"signoz":    {"signoz", "user", "signoz_webhook", true},
 	"splunk":    {"splunk_observability_platform", "user", "splunk_webhook", true},
+	// CubeAPM's admin API returns the full rule set in one call with no
+	// permission filtering, so an absent rule can be trusted to mean deleted.
+	"cubeapm": {"cubeapm", "user", "cubeapm_webhook", true},
 	// Kibana filters _find by the caller's Kibana feature privileges and still
 	// returns 200 — a credential holding feature_stackAlerts.read but not
 	// feature_logs.read sees a subset, with `total` reporting only the visible
