@@ -435,12 +435,19 @@ func (r K8sResourceSearchTool) handleFuzzyResourceType(request K8sResourceSearch
 // Scoped to cloud_provider = 'K8s' and is_active = true: is_active is a PRESENCE
 // flag, so failing pods (CrashLoopBackOff/OOMKilled) are included — only deleted
 // resources and stale skeleton rows (is_active NULL) are excluded. Namespace and
-// live phase come from the meta JSONB. The caller applies any resource-type
-// filter; live kubectl remains the fallback when this returns empty.
-func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
+// live phase come from the meta JSONB. When the caller asked for a specific
+// namespace, the query is scoped to it too — some accounts have the same name
+// active in several namespaces at once (e.g. relay-server in 5), and without
+// this a namespace-scoped query still got every namespace's match back as one
+// ambiguous "multiple" result. The caller applies any resource-type filter;
+// live kubectl remains the fallback when this returns empty.
+func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, accountId string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
 	resourceName = strings.TrimSpace(resourceName)
 	if resourceName == "" {
 		return nil
+	}
+	if namespace == "--all-namespaces" {
+		namespace = ""
 	}
 
 	// Name variations so "orders api" also matches "orders-api" / "orders_api".
@@ -462,7 +469,7 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 	}
 
 	dbStart := time.Now()
-	found, err := r.queryK8sResourcesByName(accountId, patterns)
+	found, err := r.queryK8sResourcesByName(accountId, namespace, patterns)
 	// Render the statement the way a human would re-run it: the SQL text is a
 	// constant, so the patterns are the only informative part.
 	// Record the rows themselves, not a count: the whole point of the step list is
@@ -473,8 +480,12 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 	if rowsJSON, marshalErr := common.MarshalJson(found); marshalErr == nil {
 		dbOutput = fmt.Sprintf("%d row(s)\n%s", len(found), string(rowsJSON))
 	}
+	nsClause := ""
+	if namespace != "" {
+		nsClause = fmt.Sprintf(" AND meta->>'namespace' = '%s'", namespace)
+	}
 	nbRequestContext.Stats.RecordDB(
-		fmt.Sprintf("SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v) ORDER BY name LIMIT 20", accountId, patterns, patterns),
+		fmt.Sprintf("SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s ORDER BY name LIMIT 20", accountId, patterns, patterns, nsClause),
 		dbOutput, err, time.Since(dbStart))
 	if err != nil {
 		// Soft failure — fall through to the live-kubectl fallback, but surface
@@ -485,6 +496,36 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 	}
 	nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "terms", variations, "account", accountId, "count", len(found))
 	return found
+}
+
+// buildResourceSearchDBQuery builds the cloud_resourses lookup statement and its
+// positional args, adding the namespace predicate only when namespace is
+// non-empty. Split out from queryK8sResourcesByName so the statement text and
+// argument list can be asserted directly in a unit test, without a live or
+// mocked database — common.GetDatabaseManager(Metastore) is a process-wide
+// singleton cached on first use for the life of the test binary, which makes
+// sqlmock-based tests of this SQL fragile against unrelated tests elsewhere in
+// the package touching the same DB manager.
+func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) (string, []interface{}) {
+	query := `
+		SELECT type,
+		       name,
+		       COALESCE(meta->>'namespace', '') AS namespace,
+		       COALESCE(meta->>'status', '')    AS status
+		FROM cloud_resourses
+		WHERE account = $1
+		  AND cloud_provider = 'K8s'
+		  AND is_active = true
+		  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))`
+	args := []interface{}{accountId, pq.Array(patterns)}
+	if namespace != "" {
+		query += ` AND meta->>'namespace' = $3`
+		args = append(args, namespace)
+	}
+	query += `
+		ORDER BY name
+		LIMIT 20`
+	return query, args
 }
 
 // queryK8sResourcesByName runs the scoped cloud_resourses lookup for every name
@@ -501,7 +542,12 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, accountId stri
 // Both ILIKE branches must stay indexed: Postgres can only use indexes for an OR
 // when every branch has one, and an unindexed branch forces the full scan
 // regardless of the other index.
-func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId string, patterns []string) ([]K8sResourceInfo, error) {
+//
+// The namespace predicate (only added when namespace is non-empty) is applied
+// inside the same WHERE clause, before ORDER BY/LIMIT — not as a Go-side filter
+// on the result — so a real match in the requested namespace can't be crowded
+// out of the top-20 by same-name matches in other namespaces.
+func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, namespace string, patterns []string) ([]K8sResourceInfo, error) {
 	if len(patterns) == 0 {
 		return nil, nil
 	}
@@ -510,20 +556,8 @@ func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId string, pattern
 		return nil, err
 	}
 
-	const query = `
-		SELECT type,
-		       name,
-		       COALESCE(meta->>'namespace', '') AS namespace,
-		       COALESCE(meta->>'status', '')    AS status
-		FROM cloud_resourses
-		WHERE account = $1
-		  AND cloud_provider = 'K8s'
-		  AND is_active = true
-		  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))
-		ORDER BY name
-		LIMIT 20`
-
-	rows, err := dbms.Db.Queryx(query, accountId, pq.Array(patterns))
+	query, args := buildResourceSearchDBQuery(accountId, namespace, patterns)
+	rows, err := dbms.Db.Queryx(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +674,7 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	// (a new pod is queryable within ~1s), scoped to this account (= this
 	// cluster). It's authoritative and fast, so live kubectl runs only as a
 	// fallback when the DB returns nothing.
-	resources = r.searchDbForResources(request.ResourceName, nbRequestContext.AccountId, nbRequestContext)
+	resources = r.searchDbForResources(request.ResourceName, namespace, nbRequestContext.AccountId, nbRequestContext)
 	if r.isSpecificResourceType(request.ResourceType) {
 		resources = r.filterResourcesByType(resources, request.ResourceType)
 	}

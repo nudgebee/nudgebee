@@ -38,14 +38,14 @@ func TestResourceSearchTool_SearchDbForResources(t *testing.T) {
 	dummyCtx := core.NbToolContext{Ctx: sc, AccountId: accountId}
 
 	// Test 1: Simple name
-	results := tool.searchDbForResources("llm-server", accountId, dummyCtx)
+	results := tool.searchDbForResources("llm-server", "", accountId, dummyCtx)
 	t.Logf("Search 'llm-server' found %d results", len(results))
 
 	// Test 2: Multi-word name (should trigger variations)
-	results2 := tool.searchDbForResources("llm server", accountId, dummyCtx)
+	results2 := tool.searchDbForResources("llm server", "", accountId, dummyCtx)
 	t.Logf("Search 'llm server' found %d results", len(results2))
 
 	// Test 3: Empty name
-	results3 := tool.searchDbForResources("", accountId, dummyCtx)
+	results3 := tool.searchDbForResources("", "", accountId, dummyCtx)
 	assert.Equal(t, 0, len(results3))
 }

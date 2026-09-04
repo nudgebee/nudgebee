@@ -9,8 +9,28 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
+
+// TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace guards against the
+// bug where a namespace-specific query silently searched the whole account:
+// with a namespace given, the query must add the meta->>'namespace' predicate
+// and bind it as the 3rd arg; with none, the predicate and 3rd arg must be
+// absent so the unscoped account-wide search is unaffected.
+func TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace(t *testing.T) {
+	patterns := []string{"%relay-server%"}
+
+	query, args := buildResourceSearchDBQuery("acct-1", "team-alpha", patterns)
+	assert.Contains(t, query, "AND meta->>'namespace' = $3")
+	require.Len(t, args, 3)
+	assert.Equal(t, "acct-1", args[0])
+	assert.Equal(t, "team-alpha", args[2])
+
+	queryUnscoped, argsUnscoped := buildResourceSearchDBQuery("acct-1", "", patterns)
+	assert.NotContains(t, queryUnscoped, "AND meta->>'namespace' = $3")
+	require.Len(t, argsUnscoped, 2)
+}
 
 func TestResourceSearchTool(t *testing.T) {
 
