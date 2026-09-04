@@ -52,6 +52,8 @@ func getAlertRuleSource(provider, integrationSource string) (AlertRuleSource, er
 		return &GrafanaAlertRuleSource{}, nil
 	case provider == "chronosphere" && integrationSource == "user":
 		return &ChronosphereAlertRuleSource{}, nil
+	case provider == "cubeapm" && integrationSource == "user":
+		return &CubeAPMAlertRuleSource{}, nil
 	case provider == "loki" && integrationSource == "agent":
 		return &LokiAlertRuleSource{}, nil
 	case provider == "aws_cloudwatch" || provider == "azure_app_insights" || provider == "gcp_monitoring":

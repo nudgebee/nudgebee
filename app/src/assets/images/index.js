@@ -766,6 +766,7 @@ export const PlayCircleIcon = require('@assets/play-circle.svg');
 export const LoggleIcon = require('@assets/loggly.svg');
 export const ObserveIcon = require('@assets/observe-logo.svg');
 export const OpenObserveIcon = require('@assets/openobserve-icon.svg');
+export const CubeAPMIcon = require('@assets/cubeapm-icon.svg');
 export const AzureAppInsightIcon = require('@assets/azure_app_insight.svg');
 export const OpentelemetryIcon = require('@assets/opentelemetry.svg');
 export const ChronosphereIcon = require('@assets/chronosphere-icon.svg');

@@ -34,7 +34,7 @@ const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={
 
 // Log/observability integrations that support per-account "Default Log Filters"
 // (always-apply where-clause filters injected into every log query for the account).
-const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'datadog', 'dynatrace', 'chronosphere']);
+const LOG_FILTER_INTEGRATIONS = new Set(['pinot', 'ES', 'loki', 'signoz', 'openobserve', 'cubeapm', 'datadog', 'dynatrace', 'chronosphere']);
 
 // Display labels for enum values whose stored form doesn't title-case into
 // something readable. Values not listed here fall back to snakeToTitleCase.
@@ -1474,6 +1474,11 @@ const IntegrationDynamicFormModal = ({
     workflow_webhook: {
       endpoint: 'workflow',
       message: 'Point your external system at the following URL to trigger the associated automation',
+    },
+    cubeapm_webhook: {
+      endpoint: 'cubeapm',
+      message:
+        'Add the following URL as a Webhook notification channel in CubeAPM. Leave the payload template unset — CubeAPM’s default body is already Alertmanager-compatible, which is what NudgeBee parses',
     },
   };
 

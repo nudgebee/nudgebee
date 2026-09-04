@@ -27,7 +27,7 @@ import { ds } from '@utils/colors';
 // Providers whose metrics are queried with PromQL. They share the metric-name list, the
 // label/value endpoints and the CodeMirror PromQL autocomplete, so a provider missing from
 // this set silently renders an empty builder with no suggestions rather than erroring.
-const PROMQL_METRIC_PROVIDERS = ['prometheus', 'chronosphere', 'victoria-metrics', 'openobserve'];
+const PROMQL_METRIC_PROVIDERS = ['prometheus', 'chronosphere', 'victoria-metrics', 'openobserve', 'cubeapm'];
 
 const isPromQLMetricProvider = (provider) => PROMQL_METRIC_PROVIDERS.includes(provider);
 
@@ -142,6 +142,11 @@ const QueryModeSwitcher = ({
         return isMetric
           ? 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])'
           : "Example: SELECT * FROM \"default\" WHERE k8s_namespace_name = 'prod' AND str_match(body, 'ERROR')";
+      case 'cubeapm':
+        // Metrics go through the Prometheus-compatible API; logs are LogsQL.
+        return isMetric
+          ? 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])'
+          : 'Example: {env="prod"} k8s.namespace.name:="prod" AND log.level:=error | sort ("_time" desc) | limit 100';
       case 'signoz':
         return isMetric
           ? 'Example: sum(rate(signoz_calls_total{service_name="api-server",http_status_code="500"}[5m])) by (service_name)'

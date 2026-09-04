@@ -354,3 +354,17 @@ func TestNormalizeEventSource(t *testing.T) {
 		})
 	}
 }
+
+// Alert-rule create/update/delete only reaches the external provider when the
+// source is recognised as external; without this, CubeAPM rule push is dead code.
+func TestCubeAPMIsAnExternalProviderSource(t *testing.T) {
+	assert.True(t, isExternalProviderSource("cubeapm"),
+		"cubeapm rules must route to the external provider")
+
+	provider, providerSource := resolveProviderFromSource("cubeapm")
+	assert.Equal(t, "cubeapm", provider)
+	assert.Equal(t, "user", providerSource)
+
+	// The reverse mapping is the safety net for a request that omits the source.
+	assert.Equal(t, "cubeapm", resolveSourceFromMetricProvider("cubeapm"))
+}

@@ -491,6 +491,8 @@ const apiAccount = {
         'oracle',
         'splunk_observability_platform',
         'splunk_webhook',
+        'cubeapm',
+        'cubeapm_webhook',
         'dynatrace',
         'dynatrace_webhook',
         'gcp_monitoring_webhook',
