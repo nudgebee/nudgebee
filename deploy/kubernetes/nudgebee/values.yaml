@@ -341,7 +341,7 @@ nudgebee-qdrant-server:
     # ghcr clone of docker.io/qdrant/qdrant — avoids Docker Hub rate limits.
     # Copied via deploy/kubernetes/nudgebee-mirrors/clone-third-party.sh (crane).
     repository: ghcr.io/nudgebee/qdrant
-    tag: 'v1.18.3'
+    tag: 'v1.19.0'
 temporal:
   enabled: true
   fullnameOverride: temporal
