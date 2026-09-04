@@ -108,7 +108,10 @@ func CacheCreateNamespace(namespace string, options ...CacheNamespaceOption) {
 func cacheNamespaceExpiration(namespace string) time.Duration {
 	syncCacheManagers.Lock()
 	defer syncCacheManagers.Unlock()
-	return cacheManagers[namespace].Expiration
+	if options, ok := cacheManagers[namespace]; ok {
+		return options.Expiration
+	}
+	return 0
 }
 
 func cacheGetManager(namespace string) (*cache.Cache[any], error) {

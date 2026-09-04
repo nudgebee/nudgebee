@@ -1946,7 +1946,9 @@ func GetCurrentK8sAccountState(accountId string, limit int) map[string][]string 
 
 	// Cache the result
 	if cachedBytes, err := common.MarshalJson(response); err == nil {
-		_ = common.CacheSet(core.CacheNamespaceLlmToolConfig, cacheKey, cachedBytes, common.CacheSetWithExpiration(30*time.Minute))
+		_ = common.CacheSet(core.CacheNamespaceLlmToolConfig, cacheKey, cachedBytes,
+			common.CacheSetWithExpiration(30*time.Minute),
+			common.CacheSetWithTags(core.ToolConfigAccountTag(accountId)))
 	}
 
 	return response
