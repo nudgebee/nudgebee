@@ -461,6 +461,7 @@ const apiAccount = {
         'grafana_webhook',
         'postgresql',
         'rabbitmq',
+        'kafka',
         'mysql',
         'redis',
         'confluence',

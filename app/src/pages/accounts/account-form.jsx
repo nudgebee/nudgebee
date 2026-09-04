@@ -72,6 +72,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'mysql'} />;
           case 'rabbitmq':
             return <ListIntegrations integrationName={'rabbitmq'} />;
+          case 'kafka':
+            return <ListIntegrations integrationName={'kafka'} />;
           case 'confluence':
             return <ListIntegrations integrationName={'confluence'} />;
           case 'k8s':

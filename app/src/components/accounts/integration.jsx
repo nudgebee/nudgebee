@@ -53,7 +53,7 @@ const PROVIDERS = {
   ],
   REPOS: ['GITHUB'],
   CI_CD: ['ARGOCD', 'GITHUB'],
-  QUEUE: ['RABBITMQ'],
+  QUEUE: ['RABBITMQ', 'KAFKA'],
   DATABASE: ['POSTGRES', 'MYSQL', 'CLICKHOUSE', 'MSSQL', 'ORACLE'],
   IN_MEMORY: ['REDIS'],
   DOCS: ['CONFLUENCE'],
@@ -170,7 +170,7 @@ const SECTIONS_CONFIG = [
     id: 'queue',
     label: 'Messaging Queue',
     icon: QueueBlueIcon,
-    providers: ['RABBITMQ'],
+    providers: ['RABBITMQ', 'KAFKA'],
     tab: 8,
   },
   {

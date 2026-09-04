@@ -730,6 +730,7 @@ export const EmojiSad = require('@assets/emoji-sad.svg');
 
 // integrations
 export const RabbitmqIcon = require('@assets/rabbitmq.svg');
+export const KafkaIcon = require('@assets/kafka.svg');
 export const MySqlIcon = require('@assets/ou-management/mysql_icon.svg');
 export const RedisLogoIcon = require('@assets/redis-logo-icon.svg');
 export const AccountAddedIcon = require('@assets/user-management/acc-added-icon.svg');
