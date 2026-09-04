@@ -547,6 +547,9 @@ type appConfig struct {
 	AsyncPlanExecutionWorkerCount int  `mapstructure:"llm_server_async_plan_execution_worker_count"`
 	AsyncRefWorkerCount           int  `mapstructure:"llm_server_async_ref_worker_count"`
 	PlannerParallelExecEnabled    bool `mapstructure:"llm_server_planner_parallel_exec_enabled"`
+	// PlannerWorkerPoolSubmitTimeoutSeconds bounds how long a parallel action
+	// waits to be accepted onto ExecutePlannerWorkerPool's queue (#36378).
+	PlannerWorkerPoolSubmitTimeoutSeconds int `mapstructure:"llm_server_planner_worker_pool_submit_timeout_seconds"`
 
 	// DropExtraAgentMentions controls what happens to a repeated leading mention
 	// run ("@a @b q") in the query handed to the agent. false (default) keeps the
@@ -1334,6 +1337,7 @@ func init() {
 	viper.SetDefault("server_heartbeat_frequency_second", 15)
 	viper.SetDefault("server_heartbeat_timeout_second", 30)
 	viper.SetDefault("llm_server_async_plan_execution_worker_count", 10)
+	viper.SetDefault("llm_server_planner_worker_pool_submit_timeout_seconds", 30)
 	viper.SetDefault("llm_server_async_ref_worker_count", 10)
 	viper.SetDefault("llm_server_async_api_worker_count", 100)
 	viper.SetDefault("llm_server_async_api_queue_size", 1000)

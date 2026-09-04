@@ -1426,7 +1426,16 @@ func (e *plannerExecutor) doIterationParallel(
 				// Add to producerWg BEFORE Submit so cleanup() never sees a moment
 				// where a goroutine is in flight but not yet counted.
 				producerWg.Add(1)
-				err := ExecutePlannerWorkerPool.Submit(ctx, func() {
+				// ctx carries no deadline on the async resume path, so a
+				// saturated pool would otherwise block Submit forever (#36378).
+				// Bounds only the enqueue wait — workCtx below still governs
+				// the task's own cancellation once accepted.
+				submitTimeout := time.Duration(config.Config.PlannerWorkerPoolSubmitTimeoutSeconds) * time.Second
+				if submitTimeout <= 0 {
+					submitTimeout = 30 * time.Second // unset/overflowed config must not fail every submission instantly
+				}
+				submitCtx, cancelSubmit := context.WithTimeout(ctx, submitTimeout)
+				err := ExecutePlannerWorkerPool.Submit(submitCtx, func() {
 					defer producerWg.Done()
 					defer func() {
 						if releasePermit {
@@ -1599,6 +1608,7 @@ func (e *plannerExecutor) doIterationParallel(
 					mu.Unlock()
 					resultsChan <- n
 				})
+				cancelSubmit() // release once Submit returns; nothing left to bound
 				if err != nil {
 					// Submit failed: the worker goroutine never ran, so its deferred
 					// producerWg.Done() will never fire. Cancel the Add(1) here so
