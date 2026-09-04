@@ -266,6 +266,15 @@ type esNoisyNeighbourData struct {
 	NodeAllocatable float64
 	TotalRequested  float64
 	Neighbours      []map[string]any
+
+	// CPU is only populated on the Prometheus path. Elasticsearch clusters
+	// leave CPUMeasured false, and the renderer then omits the CPU keys
+	// entirely rather than reporting a hard zero — "we did not measure it"
+	// and "nothing is using CPU" must not look the same to a reader.
+	CPUMeasured     bool
+	NodeCPUUsed     float64
+	NodeCPUCapacity float64
+	CPUNeighbours   []map[string]any
 }
 
 type esNNResponse struct {

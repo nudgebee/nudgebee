@@ -29,9 +29,26 @@ func init() {
 
 type noisyNeighboursAction struct{}
 
+// Events worth asking "is something else on this node to blame?" about.
+//
+// The first group comes from the agent's own matchers and already carries the
+// node. The second group is Prometheus / kube-state alerts about a single pod:
+// they are the signals that actually point at contention — a throttled
+// container, a pod that never became ready, a container stuck waiting — and
+// they were all excluded, so the one question this enricher exists to answer
+// was never asked for them. They carry no node (measured: 3589/3589 such
+// events in a week on prod had neither a node nor an instance label), which is
+// why nodeForSubjectPod below resolves it from the pod inventory.
 var noisyNeighboursAggKeys = map[string]bool{
 	"pod_oom_killer_enricher": true,
 	"report_crash_loop":       true,
+	"KubePodCrashLooping":     true,
+	"CPUThrottlingHigh":       true,
+	"KubePodNotReady":         true,
+	"KubeContainerWaiting":    true,
+	// Kubelet warnings arrive under one key; a failing readiness probe —
+	// the textbook symptom of a neighbour eating the node — is one of them.
+	"Kubernetes Warning Event": true,
 }
 
 // We query Prometheus over a short RANGE window ending at the incident and
@@ -55,10 +72,9 @@ func (a *noisyNeighboursAction) CanAutoExecute(ctx playbooks.PlaybookActionConte
 	if name == "" || ns == "" {
 		return false
 	}
-	// Need the host node to filter peers — collector populates
-	// events.subject_node from the kubewatch payload; we read it from
-	// PlaybookEvent.SubjectNode without a relay call.
-	return playbooks.SubjectNodeName(ctx.GetEvent()) != ""
+	// Need the host node to filter peers. Agent-sourced events carry it on
+	// the event; alert-sourced ones do not, and are resolved from inventory.
+	return noisyNeighboursNodeName(ctx) != ""
 }
 
 func (a *noisyNeighboursAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
@@ -66,7 +82,7 @@ func (a *noisyNeighboursAction) AutoExecute(ctx playbooks.PlaybookActionContext)
 	return a.Execute(ctx, map[string]any{
 		"pod_name":  podName,
 		"namespace": namespace,
-		"node_name": playbooks.SubjectNodeName(ctx.GetEvent()),
+		"node_name": noisyNeighboursNodeName(ctx),
 	})
 }
 
@@ -75,7 +91,7 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 	namespace, _ := rawParams["namespace"].(string)
 	nodeName, _ := rawParams["node_name"].(string)
 	if nodeName == "" {
-		nodeName = playbooks.SubjectNodeName(ctx.GetEvent())
+		nodeName = noisyNeighboursNodeName(ctx)
 	}
 	if podName == "" || namespace == "" {
 		return nil, errors.New("noisy_neighbours_enricher: pod_name + namespace required")
@@ -116,12 +132,23 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 	// Keeping the `container` label intact lets us join against the
 	// kube_pod_container_resource_{requests,limits} series, which only
 	// carry `pod` / `namespace` / `container`.
-	perContainerUsage := func(extraFilters string) string {
+	perContainer := func(series func(selector string) string, extraFilters string) string {
 		return fmt.Sprintf(
-			`sum by (pod, namespace, container) (container_memory_working_set_bytes{__CLUSTER__ node="%s"%s}) `+
-				`or sum by (pod, namespace, container) (container_memory_working_set_bytes{__CLUSTER__ instance="%s"%s})`,
-			nodeName, extraFilters, nodeName, extraFilters,
+			`sum by (pod, namespace, container) (%s) or sum by (pod, namespace, container) (%s)`,
+			series(fmt.Sprintf(`__CLUSTER__ node="%s"%s`, nodeName, extraFilters)),
+			series(fmt.Sprintf(`__CLUSTER__ instance="%s"%s`, nodeName, extraFilters)),
 		)
+	}
+	memorySeries := func(selector string) string {
+		return fmt.Sprintf(`container_memory_working_set_bytes{%s}`, selector)
+	}
+	// CPU is a rate, so the node/instance `or` wraps the rate() per branch —
+	// aggregating first and rating after would be wrong across restarts.
+	cpuSeries := func(selector string) string {
+		return fmt.Sprintf(`rate(container_cpu_usage_seconds_total{%s}[5m])`, selector)
+	}
+	perContainerUsage := func(extraFilters string) string {
+		return perContainer(memorySeries, extraFilters)
 	}
 	topPodsQuery := fmt.Sprintf(
 		`topk(15, %s)`,
@@ -141,6 +168,32 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 	)
 	memoryLimitsQuery := fmt.Sprintf(
 		`kube_pod_container_resource_limits{__CLUSTER__ resource="memory", node="%s"}`,
+		nodeName,
+	)
+	// CPU, the half we never measured. A node pinned at its CPU limit starves
+	// every pod on it — probes time out, requests queue — while memory looks
+	// perfectly healthy, so a memory-only answer reports nothing wrong and the
+	// blame lands on whatever the reader can see (usually the probe's own
+	// settings).
+	topPodsCPUQuery := fmt.Sprintf(
+		`topk(%d, %s)`,
+		noisyNeighboursTopN,
+		perContainer(cpuSeries, `, pod!="", container!="", container!="POD", image!=""`),
+	)
+	nodeCPUUsageQuery := fmt.Sprintf(
+		`sum(%s)`,
+		perContainer(cpuSeries, `, pod!="", image!=""`),
+	)
+	nodeCPUCapacityQuery := fmt.Sprintf(
+		`kube_node_status_allocatable{__CLUSTER__ resource="cpu", node="%s"}`,
+		nodeName,
+	)
+	cpuRequestsQuery := fmt.Sprintf(
+		`kube_pod_container_resource_requests{__CLUSTER__ resource="cpu", node="%s"}`,
+		nodeName,
+	)
+	cpuLimitsQuery := fmt.Sprintf(
+		`kube_pod_container_resource_limits{__CLUSTER__ resource="cpu", node="%s"}`,
 		nodeName,
 	)
 
@@ -166,12 +219,20 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		return noisyNeighboursResponse(podName, namespace, rawParams, data)
 	}
 
+	// One batch, one relay round trip. Every query is scoped to a single node
+	// over a 10-minute range, so the added CPU half costs evaluation time on a
+	// few dozen series, not a fan-out.
 	results, err := playbooks.PromRangeQueries(ctx, []playbooks.NamedQuery{
 		{Key: "top_pods", Query: topPodsQuery},
 		{Key: "node_used", Query: nodeUsageQuery},
 		{Key: "node_alloc", Query: nodeAllocatableQuery},
 		{Key: "mem_requests", Query: memoryRequestsQuery},
 		{Key: "mem_limits", Query: memoryLimitsQuery},
+		{Key: "top_pods_cpu", Query: topPodsCPUQuery},
+		{Key: "node_cpu_used", Query: nodeCPUUsageQuery},
+		{Key: "node_cpu_alloc", Query: nodeCPUCapacityQuery},
+		{Key: "cpu_requests", Query: cpuRequestsQuery},
+		{Key: "cpu_limits", Query: cpuLimitsQuery},
 	}, noisyNeighboursLookbackMinutes)
 	if err != nil {
 		return nil, fmt.Errorf("noisy_neighbours_enricher: prom: %w", err)
@@ -217,6 +278,38 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		}
 	}
 
+	// Same shape for CPU, ranked on its own. Kept as a separate list rather
+	// than extra columns on `neighbours`: the pod hogging memory is usually not
+	// the pod hogging CPU, and one list can only be sorted by one of them.
+	cpuRequests := playbooks.IndexByPodContainer(results["cpu_requests"])
+	cpuLimits := playbooks.IndexByPodContainer(results["cpu_limits"])
+	cpuNeighbours := []map[string]any{}
+	if vec, ok := results["top_pods_cpu"]; ok {
+		for _, entry := range playbooks.LatestValueEntries(vec) {
+			pod, _ := entry.Metric["pod"].(string)
+			ns, _ := entry.Metric["namespace"].(string)
+			container, _ := entry.Metric["container"].(string)
+			key := ns + "/" + pod + "/" + container
+			cpuNeighbours = append(cpuNeighbours, map[string]any{
+				"name":          container,
+				"pod_name":      pod,
+				"namespace":     ns,
+				"node_name":     nodeName,
+				"cpu_used":      entry.Value,
+				"cpu_requested": cpuRequests[key],
+				"cpu_limit":     cpuLimits[key],
+			})
+		}
+		sort.Slice(cpuNeighbours, func(i, j int) bool {
+			vi, _ := cpuNeighbours[i]["cpu_used"].(float64)
+			vj, _ := cpuNeighbours[j]["cpu_used"].(float64)
+			return vi > vj
+		})
+		if len(cpuNeighbours) > noisyNeighboursTopN {
+			cpuNeighbours = cpuNeighbours[:noisyNeighboursTopN]
+		}
+	}
+
 	nodeUsed := playbooks.FirstLatestValue(results["node_used"])
 	nodeAlloc := playbooks.FirstLatestValue(results["node_alloc"])
 
@@ -226,6 +319,10 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		NodeAllocatable: nodeAlloc,
 		TotalRequested:  totalRequested,
 		Neighbours:      neighbours,
+		CPUMeasured:     true,
+		NodeCPUUsed:     playbooks.FirstLatestValue(results["node_cpu_used"]),
+		NodeCPUCapacity: playbooks.FirstLatestValue(results["node_cpu_alloc"]),
+		CPUNeighbours:   cpuNeighbours,
 	})
 }
 
@@ -234,16 +331,25 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 // the NoisyNeighbour card, and a missing `name` or `memory_requested` renders as
 // "Container undefined does not have a memory requests".
 func noisyNeighboursResponse(podName, namespace string, rawParams map[string]any, d *esNoisyNeighbourData) (playbooks.PlaybookActionResponse, error) {
+	data := map[string]any{
+		"node_name":          d.NodeName,
+		"memory_used":        d.NodeUsed,
+		"memory_allocatable": d.NodeAllocatable,
+		"memory_requested":   d.TotalRequested,
+		"total_pods":         len(d.Neighbours),
+		"neighbours":         d.Neighbours,
+	}
+	// Only when we actually measured CPU. On a provider that cannot report it,
+	// omitting the keys says "unknown"; a zero would say "nothing is using CPU",
+	// which is a different and much more misleading claim.
+	if d.CPUMeasured {
+		data["cpu_used"] = d.NodeCPUUsed
+		data["cpu_allocatable"] = d.NodeCPUCapacity
+		data["cpu_neighbours"] = d.CPUNeighbours
+	}
 	payload := map[string]any{
 		"name": "noisy_neighbours",
-		"data": map[string]any{
-			"node_name":          d.NodeName,
-			"memory_used":        d.NodeUsed,
-			"memory_allocatable": d.NodeAllocatable,
-			"memory_requested":   d.TotalRequested,
-			"total_pods":         len(d.Neighbours),
-			"neighbours":         d.Neighbours,
-		},
+		"data": data,
 	}
 
 	additionalInfo := map[string]any{

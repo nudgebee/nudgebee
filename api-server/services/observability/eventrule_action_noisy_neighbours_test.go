@@ -116,3 +116,93 @@ func TestNoisyNeighboursEmptyNodeRendersAsEmptyList(t *testing.T) {
 	assert.Empty(t, payload.Data.Neighbours)
 	assert.Contains(t, envelope.Data, `"neighbours":[]`)
 }
+
+// The alert-sourced events are the ones that actually suggest contention, and
+// they were all excluded — so the question "is a neighbour to blame?" was never
+// asked for a throttled container or a pod that never became ready.
+func TestNoisyNeighboursRunsForContentionAlerts(t *testing.T) {
+	ctxFor := func(aggKey string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+			AggregationKey:   aggKey,
+			SubjectType:      "pod",
+			SubjectName:      "p1",
+			SubjectNamespace: "ns",
+			SubjectNode:      "node-1",
+		})
+	}
+	a := &noisyNeighboursAction{}
+
+	for _, key := range []string{
+		"CPUThrottlingHigh",
+		"KubePodNotReady",
+		"KubeContainerWaiting",
+		"KubePodCrashLooping",
+		"Kubernetes Warning Event",
+	} {
+		assert.True(t, a.CanAutoExecute(ctxFor(key)), "expected %s to enrich with neighbours", key)
+	}
+
+	// Still scoped: unrelated events do not drag the node's whole neighbourhood in.
+	assert.False(t, a.CanAutoExecute(ctxFor("job_failure")))
+	assert.False(t, a.CanAutoExecute(ctxFor("image_pull_backoff_reporter")))
+}
+
+// A node pinned on CPU starves everything on it while memory looks fine, so the
+// payload has to carry CPU for a reader to reach the right answer.
+func TestNoisyNeighboursPayloadCarriesCPUWhenMeasured(t *testing.T) {
+	resp, err := noisyNeighboursResponse("p1", "ns", nil, &esNoisyNeighbourData{
+		NodeName:        "node-1",
+		CPUMeasured:     true,
+		NodeCPUUsed:     5.994,
+		NodeCPUCapacity: 6,
+		CPUNeighbours: []map[string]any{
+			{"pod_name": "batch-job", "namespace": "other-team", "cpu_used": 5.2},
+		},
+	})
+	require.NoError(t, err)
+
+	data := payloadData(t, resp)
+	assert.Equal(t, 5.994, data["cpu_used"])
+	assert.Equal(t, float64(6), data["cpu_allocatable"])
+	neighbours, ok := data["cpu_neighbours"].([]any)
+	require.True(t, ok, "cpu_neighbours missing from payload")
+	require.Len(t, neighbours, 1)
+	first, ok := neighbours[0].(map[string]any)
+	require.True(t, ok)
+	// The whole point: the culprit's namespace is named, not just the pod.
+	assert.Equal(t, "other-team", first["namespace"])
+}
+
+// Elasticsearch clusters cannot report CPU here. Reporting zero would read as
+// "nothing is using CPU", which is a stronger and wronger claim than silence.
+func TestNoisyNeighboursOmitsCPUWhenNotMeasured(t *testing.T) {
+	resp, err := noisyNeighboursResponse("p1", "ns", nil, &esNoisyNeighbourData{
+		NodeName:   "node-1",
+		Neighbours: []map[string]any{},
+	})
+	require.NoError(t, err)
+
+	data := payloadData(t, resp)
+	assert.NotContains(t, data, "cpu_used")
+	assert.NotContains(t, data, "cpu_allocatable")
+	assert.NotContains(t, data, "cpu_neighbours")
+	// The memory half is unchanged for the existing card.
+	assert.Contains(t, data, "memory_used")
+}
+
+// payloadData unwraps the response envelope, whose `data` is itself a JSON
+// string, and returns the card's data object.
+func payloadData(t *testing.T, resp playbooks.PlaybookActionResponse) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var envelope struct {
+		Data string `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	var payload struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(envelope.Data), &payload))
+	return payload.Data
+}
