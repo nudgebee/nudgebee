@@ -1,3 +1,4 @@
+import { isValidElement } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Divider } from '@ui/Divider';
 import { ds } from 'src/utils/colors';
@@ -27,7 +28,7 @@ export const MetricRow = ({ label, value, unit = '', highlight = false }: { labe
         wordBreak: 'break-word',
       }}
     >
-      {formatMetricValue(value, unit)}
+      {isValidElement(value) ? value : formatMetricValue(value, unit)}
     </Typography>
   </Box>
 );
