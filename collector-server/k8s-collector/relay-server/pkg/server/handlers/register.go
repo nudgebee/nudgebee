@@ -34,6 +34,16 @@ var upgrader = websocket.Upgrader{
 
 // RegisterHandler sets up a /register WebSocket that forwards RPCs to RabbitMQ in parallel,
 // and properly handles shutdown and channel-reconnect without hitting "channel not open" errors.
+// relaySessionHeartbeatInterval is how often a live websocket session
+// records that it is still alive (connection_status.relayLastSeenAt).
+//
+// It MUST stay well under api-server's agentConnectThresholdMinutes (30m,
+// services/account/agent_service.go), which retires agents that have not been
+// heard from in that window. Three heartbeats of headroom means a couple of
+// failed writes cannot retire a healthy agent. TestHeartbeatFitsCronThreshold
+// pins the relationship.
+const relaySessionHeartbeatInterval = 10 * time.Minute
+
 func RegisterHandler(
 	store db.AgentStore,
 	connMgr *mq.ConnectionManager,
@@ -232,6 +242,34 @@ func RegisterHandler(
 							return nil
 						}
 						return fmt.Errorf("ws write error: %w", err)
+					}
+				}
+			}
+		})
+
+		// —— heartbeat: record that this session is still alive ——
+		//
+		// The row otherwise only records when a session *started*, which is
+		// not evidence that it is still up. api-server's "Agent Status Check"
+		// cron retires agents that have not been heard from in 30 minutes, and
+		// with nothing refreshing that timestamp it was retiring healthy
+		// long-lived sessions (nudgebee/nudgebee#36114). This is what it reads
+		// instead. Also re-asserts CONNECTED, so a lost connect write repairs
+		// itself within one interval instead of stranding the account.
+		eg.Go(func() error {
+			ticker := time.NewTicker(relaySessionHeartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-egCtx.Done():
+					return egCtx.Err()
+				case <-ticker.C:
+					if err := store.TouchRelaySession(egCtx, accountID, agentType); err != nil && egCtx.Err() == nil {
+						// Not fatal to the session: the socket is fine and the
+						// next tick retries. Only the cron's view goes stale.
+						// A cancelled context means the session is ending and
+						// the write was abandoned on purpose — not a warning.
+						logger.Warn("failed to record relay session heartbeat", "err", err, "account", accountID, "agent_type", agentType)
 					}
 				}
 			}

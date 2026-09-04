@@ -58,6 +58,7 @@ type AgentStore interface {
 	IsAgentConnected(ctx context.Context, accountID, agentType string) (bool, error)
 	GetAgentStatus(ctx context.Context, accountID, agentType string) (connected bool, wsEnabled bool, fallbackURL string, prometheusAdditionalLabel string, err error)
 	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error)
+	TouchRelaySession(ctx context.Context, accountID, agentType string) error
 	UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error
 	UpdateDatasourceHealth(ctx context.Context, accountID, agentType string, datasources map[string]any) error
 	UpsertAgentDatasources(ctx context.Context, accountID, agentType string, datasources []AgentDatasource) error
@@ -372,6 +373,41 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 	}
 
 	return oldStatus.String != status, tenant.String, nil
+}
+
+// TouchRelaySession records that this agent's websocket session was still
+// alive just now, and re-asserts CONNECTED.
+//
+// It writes connection_status.relayLastSeenAt rather than last_connected_at
+// on purpose. last_connected_at identifies the *session* — the disconnect
+// branch of UpdateRelayConnectionStatus compares it against sessionStart to
+// tell a stale session's cleanup from a live one's — so moving it forward
+// mid-session would make every session look newer than itself and silently
+// skip its own disconnect write.
+//
+// Re-asserting the status makes the relay self-healing: before this, a
+// connect write lost to a DB blip left the account NOT_CONNECTED with a
+// perfectly good socket, and nothing repaired it until the agent happened to
+// reconnect. api-server's "Agent Status Check" cron reads relayLastSeenAt
+// alongside last_connected_at, so this is also what stops it retiring a live
+// long-lived session (nudgebee/nudgebee#36114).
+func (p *pgStore) TouchRelaySession(ctx context.Context, accountID, agentType string) error {
+	const query = `
+		UPDATE agent
+		SET connection_status = COALESCE(connection_status, '{}'::jsonb) || jsonb_build_object('relayLastSeenAt', to_jsonb(NOW())),
+		    status = 'CONNECTED'
+		WHERE cloud_account_id = $1 AND "type" = $2
+	`
+	if _, err := p.db.ExecContext(ctx, query, accountID, agentType); err != nil {
+		return fmt.Errorf("failed to touch relay session for account %s (type=%s): %w", accountID, agentType, err)
+	}
+
+	// The status we just asserted is cached; drop it so a stale NOT_CONNECTED
+	// cannot keep failing requests for the rest of the TTL.
+	if err := p.wsCache.Delete(ctx, wsCacheKey(accountID, agentType)); err != nil {
+		slog.Warn("failed to invalidate wsCache after relay session touch", "account_id", accountID, "agent_type", agentType, "error", err)
+	}
+	return nil
 }
 
 // UpdateAgentVersion persists the running agent build info to the agent row.

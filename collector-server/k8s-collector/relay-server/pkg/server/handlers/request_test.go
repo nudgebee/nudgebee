@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ type fakeStore struct {
 	fallback              string
 	prometheuClusterLabel string
 	err                   error
+	touched               atomic.Int64
 }
 
 func (f *fakeStore) IsWSEnabled(ctx context.Context, acct, agentType string) (bool, string, error) {
@@ -54,6 +56,11 @@ func (f *fakeStore) GetAgentStatus(ctx context.Context, accountID, agentType str
 
 func (f *fakeStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (bool, string, error) {
 	return false, "", f.err
+}
+
+func (f *fakeStore) TouchRelaySession(ctx context.Context, accountID, agentType string) error {
+	f.touched.Add(1)
+	return f.err
 }
 
 func (f *fakeStore) UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error {

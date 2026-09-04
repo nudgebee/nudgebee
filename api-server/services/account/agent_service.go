@@ -14,8 +14,33 @@ import (
 	"time"
 )
 
+// agentConnectThresholdMinutes is how long an agent can go unheard-from
+// before this cron retires it.
+//
+// MUST stay comfortably above relay-server's relaySessionHeartbeatInterval
+// (10m, relay-server/pkg/server/handlers/register.go); its
+// TestHeartbeatFitsCronThreshold pins the relationship from the other side.
 const agentConnectThresholdMinutes = 30
 
+// AgentCheckAndUpdateStatus retires agents nothing has heard from recently.
+//
+// It reads two independent signals, and only retires an agent when BOTH are
+// stale:
+//
+//   - last_connected_at — when the agent's current session STARTED (written by
+//     relay-server on connect/disconnect), plus the k8s runner's 60s telemetry
+//     post. It is not a liveness signal on its own: a session that stays up for
+//     hours never moves it, which is how this cron used to retire perfectly
+//     healthy long-lived connections and fail every request routed through them
+//     (#36114).
+//   - connection_status.relayLastSeenAt — written every 10 minutes by the relay
+//     for each live websocket session. This is the real liveness signal.
+//
+// Requiring both to be stale means the check is correct whether or not a given
+// agent's relay is emitting heartbeats yet, so no deploy ordering is implied.
+// Its remaining job is the case no in-band signal can cover: a relay pod killed
+// before its disconnect write runs, which would otherwise leave rows CONNECTED
+// forever.
 func AgentCheckAndUpdateStatus(ctx *security.RequestContext) error {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -24,7 +49,9 @@ func AgentCheckAndUpdateStatus(ctx *security.RequestContext) error {
 	rows, err := dbms.Db.Queryx(fmt.Sprintf(`select ca.account_name, ca.id::varchar as account_id, a.id::varchar as agent_id, a.last_connected_at as agent_last_connected_at, a.status  as agent_status
 		from agent a
 		join cloud_accounts ca on ca.id = cloud_account_id
-		where a.last_connected_at  < (now() - interval '%d minutes') and a.status != 'NOT_CONNECTED'
+		where a.status != 'NOT_CONNECTED'
+		and a.last_connected_at < (now() - interval '%[1]d minutes')
+		and coalesce((a.connection_status->>'relayLastSeenAt')::timestamptz, '-infinity'::timestamptz) < (now() - interval '%[1]d minutes')
 		and (ca.cloud_provider not in ('AWS', 'Azure', 'GCP', 'CloudFoundry') or a.type = 'proxy')`, agentConnectThresholdMinutes))
 
 	if err != nil {
