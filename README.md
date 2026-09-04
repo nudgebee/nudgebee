@@ -260,7 +260,7 @@ The repo ships a `docker-compose.yaml` that wires every service against the publ
 | `postgres`    | postgres:16                  | Primary RDBMS. App schema applied by golang-migrate on deploy.                                                                       |
 | `rabbitmq`    | rabbitmq:3-management        | Message bus. UI at `:15672`.                                                                                                         |
 | `redis`       | redis:7-alpine               | Cache.                                                                                                                               |
-| `qdrant`      | qdrant/qdrant:v1.16.0        | Vector store for RAG / LLM.                                                                                                          |
+| `qdrant`      | qdrant/qdrant:v1.19.0        | Vector store for RAG / LLM.                                                                                                          |
 | `temporal`    | temporalio/auto-setup:1.29.1 | Workflow engine. Backed by `postgres` (creates `temporal` + `temporal_visibility` DBs on first boot). Required by `workflow-server`. |
 | `temporal-ui` | temporalio/ui:2.44.0         | Optional Temporal Web UI at `:8233`.                                                                                                 |
 
