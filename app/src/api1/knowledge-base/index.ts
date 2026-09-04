@@ -12,6 +12,7 @@ interface KnowledgeBaseOutput {
   data_filename: string;
   data_size_bytes?: number;
   status: string;
+  enabled: boolean;
   kb_type: string;
   kb_source?: string;
   integration_id?: string;
@@ -94,6 +95,7 @@ const apiKnowledgeBase = {
             data_filename
             data_size_bytes
             status
+            enabled
             kb_type
             kb_source
             integration_id
@@ -131,6 +133,7 @@ const apiKnowledgeBase = {
           format: kb.data_format,
           fileName: kb.data_filename,
           status: kb.status,
+          enabled: kb.enabled,
           kb_type: kb.kb_type,
           kb_source: kb.kb_source,
           integration_id: kb.integration_id,
@@ -744,6 +747,49 @@ const apiKnowledgeBase = {
     } catch (error) {
       console.error('Error testing KB retrieval:', error);
       return { data: null, errors: [{ message: 'An error occurred while testing retrieval' }] };
+    }
+  },
+
+  /**
+   * Turn a knowledge base on or off. A disabled KB keeps its content, its
+   * indexed vectors and its agent mappings, but is excluded from RAG search
+   * and from every agent prompt until it is re-enabled.
+   */
+  setKnowledgeBaseEnabled: async (accountId: string, kbId: string, enabled: boolean) => {
+    const SET_KB_ENABLED = `
+      mutation SetKBEnabled($request: UpdateKBEnabledRequest!) {
+        ai_update_kb_enabled(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(SET_KB_ENABLED, 'SetKBEnabled', {
+        request: { account_id: accountId, kb_id: kbId, enabled },
+      });
+
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        const errorMessage = extractErrorMessage(response, 'Failed to update knowledge base');
+        return { data: null, errors: [{ message: errorMessage }] };
+      }
+
+      if (response?.data?.data?.ai_update_kb_enabled) {
+        const result = response.data.data.ai_update_kb_enabled;
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: 'Failed to update knowledge base' }] };
+    } catch (error) {
+      console.error('Error updating knowledge base enabled flag:', error);
+      return { data: null, errors: [{ message: 'An error occurred while updating the knowledge base' }] };
     }
   },
 

@@ -343,6 +343,36 @@ def _as_uuid_str(value):
         return None
 
 
+def _kb_collection_name(row):
+    """Vector-collection name a ``llm_knowledgebases`` row owns."""
+    if row.integration_id:
+        return f"{row.integration_id}_knowledge_base"
+    return f"kb_{row.id}"
+
+
+def _live_kb_names_from_rows(rows, account_uuid):
+    """Collapse ``llm_knowledgebases`` rows into the searchable collection names.
+
+    Enabled rows contribute their collection name. Disabled rows contribute
+    nothing — and a disabled row belonging to ``account_uuid`` additionally
+    *removes* that name, overriding any sibling row that would have added it.
+
+    That asymmetry exists because an integration's vector collection is shared
+    by every account in the tenant, while the switch is per KB row. Without the
+    subtraction, "account A turned this Confluence KB off" would be silently
+    undone by account B leaving its own row on. A disabled row in another
+    account never subtracts — it has no say over what this account searches.
+    """
+    names, disabled_here = set(), set()
+    for row in rows:
+        name = _kb_collection_name(row)
+        if row.enabled:
+            names.add(name)
+        elif account_uuid and str(row.account_id) == account_uuid:
+            disabled_here.add(name)
+    return names - disabled_here
+
+
 def get_live_kb_collection_names(account_id, tenant_id):
     """Vector-collection names still backed by a live knowledge base.
 
@@ -366,6 +396,14 @@ def get_live_kb_collection_names(account_id, tenant_id):
     asynchronous, and search must not serve a disabled integration's content
     while it catches up.
 
+    Rows the user has switched off (``kb.enabled = false``) are excluded, and —
+    unlike every other rule here — a switched-off row for *this account* also
+    subtracts the name a sibling row would have contributed. The scope clause is
+    an OR across account and tenant, and integration KBs share one collection
+    per integration across the tenant's accounts, so without the subtraction one
+    account disabling its row would be overruled by another account that left
+    the same integration on. See ``_live_kb_names_from_rows``.
+
     Returns ``None`` when the scope can't be resolved (neither identifier is a
     UUID) or the query fails. Callers treat ``None`` as "don't filter", so a
     database blip degrades to today's behaviour instead of emptying search.
@@ -376,8 +414,10 @@ def get_live_kb_collection_names(account_id, tenant_id):
         return None
     try:
         with engine.connect() as connection:
+            # kb.enabled is NOT filtered in SQL: the disabled rows are needed
+            # below to subtract this account's own switched-off collections.
             query = text("""
-                SELECT kb.id, kb.integration_id
+                SELECT kb.id, kb.integration_id, kb.account_id, kb.enabled
                 FROM llm_knowledgebases kb
                 LEFT JOIN integrations i ON kb.integration_id = i.id
                 WHERE kb.status != 'archived'
@@ -385,14 +425,7 @@ def get_live_kb_collection_names(account_id, tenant_id):
                   AND (kb.integration_id IS NULL OR i.status = 'enabled')
             """)
             result = connection.execute(query, {"account_id": account_uuid, "tenant_id": tenant_uuid})
-
-            names = set()
-            for row in result:
-                if row.integration_id:
-                    names.add(f"{row.integration_id}_knowledge_base")
-                else:
-                    names.add(f"kb_{row.id}")
-            return names
+            return _live_kb_names_from_rows(result, account_uuid)
     except Exception as e:
         logger.exception("Error fetching live knowledge bases for account %s / tenant %s: %s", account_id, tenant_id, e)
         return None

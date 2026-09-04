@@ -112,15 +112,18 @@ func TestBuildProbeDocumentsSurvivesRefAttributedDrift(t *testing.T) {
 // were non-active.
 func TestSummarizeCandidatesMarksNonActiveIneligible(t *testing.T) {
 	candidates := []toolcore.Knowledgebase{
-		{Id: "kb-active-hit", Name: "crashloop_triage_runbook", KBType: "manual", Status: "active"},
-		{Id: "kb-active-miss", Name: "office_meeting_rooms", KBType: "manual", Status: "active"},
+		{Id: "kb-active-hit", Name: "crashloop_triage_runbook", KBType: "manual", Status: "active", Enabled: true},
+		{Id: "kb-active-miss", Name: "office_meeting_rooms", KBType: "manual", Status: "active", Enabled: true},
 		{Id: "kb-archived", Name: "dev-confluence", KBType: "integration", Status: "archived"},
 		{Id: "kb-errored", Name: "incident_report", KBType: "manual", Status: "error"},
+		// Indexed fine, but the user switched it off — attribution skips it, so
+		// the panel must not imply it competed and lost.
+		{Id: "kb-disabled", Name: "retired_runbook", KBType: "manual", Status: "active", Enabled: false},
 	}
 	matched := map[string]struct{}{"kb-active-hit": {}}
 
 	got := summarizeCandidates(candidates, matched)
-	if len(got) != 4 {
+	if len(got) != 5 {
 		t.Fatalf("expected every candidate reported, got %d", len(got))
 	}
 
@@ -135,7 +138,7 @@ func TestSummarizeCandidatesMarksNonActiveIneligible(t *testing.T) {
 	if !byId["kb-active-miss"].Eligible || byId["kb-active-miss"].Matched {
 		t.Errorf("an active KB that contributed nothing is eligible but unmatched")
 	}
-	for _, id := range []string{"kb-archived", "kb-errored"} {
+	for _, id := range []string{"kb-archived", "kb-errored", "kb-disabled"} {
 		if byId[id].Eligible {
 			t.Errorf("%s (status %q) can never attribute and must be ineligible", id, byId[id].Status)
 		}

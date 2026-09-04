@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Box, Typography } from '@mui/material';
 import { Banner } from '@ui/Banner';
 import { Label } from '@ui/Label';
+import { Switch } from '@ui/Switch';
 import { Chip } from '@ui/Chip';
 import CustomTable from '@shared/tables/CustomTable';
 import { Input } from '@ui/Input';
@@ -106,8 +107,10 @@ const getKbMenuItems = (knowledgeBase, hasAccess) => [
           label: 'Retrigger',
           value: 'retrigger',
           icon: RefreshIcon,
-          // An archived KB's integration is disabled — nothing to re-sync.
-          disabled: knowledgeBase.status === 'processing' || knowledgeBase.status === 'archived',
+          // An archived KB's integration is disabled — nothing to re-sync. A
+          // switched-off KB is refused by the backend for the same reason
+          // (re-indexing content nothing can read), so don't offer it here.
+          disabled: knowledgeBase.status === 'processing' || knowledgeBase.status === 'archived' || knowledgeBase.enabled === false,
         },
       ]
     : []),
@@ -848,16 +851,16 @@ const TestRetrievalPanel = ({
   result,
   error,
 }) => {
-  // Archived knowledge bases are excluded: rag-server drops their collections
-  // before searching, so offering one would only ever return nothing. A KB in
-  // "error" or "processing" IS still searchable — those are transient load
-  // states over documents that were already indexed — so it stays selectable
-  // and is labelled with its status.
+  // Archived and switched-off knowledge bases are excluded: rag-server drops
+  // their collections before searching, so offering one would only ever return
+  // nothing. A KB in "error" or "processing" IS still searchable — those are
+  // transient load states over documents that were already indexed — so it
+  // stays selectable and is labelled with its status.
   const kbOptions = useMemo(
     () => [
       { value: '', label: 'All knowledge bases' },
       ...knowledgeBases
-        .filter((kb) => kb.status !== 'archived')
+        .filter((kb) => kb.status !== 'archived' && kb.enabled !== false)
         .map((kb) => ({
           value: kb.id,
           label: kb.status === 'active' ? kb.name : `${kb.name} (${kb.status})`,
@@ -867,14 +870,17 @@ const TestRetrievalPanel = ({
   );
   const scopedKB = kbId ? knowledgeBases.find((kb) => kb.id === kbId) : null;
 
-  // Split by ELIGIBILITY first. An archived KB, or one whose load failed and
-  // left it in "error", is skipped by attribution for every question — listing
-  // it as "contributed nothing" would imply it had a chance and lost.
+  // Split by ELIGIBILITY first. An archived KB, one whose load failed and left
+  // it in "error", and one the user has switched off are all skipped by
+  // attribution for every question — listing any of them as "contributed
+  // nothing" would imply it had a chance and lost.
   const candidates = result?.candidates || [];
   const unmatched = candidates.filter((kb) => kb.eligible && !kb.matched);
   const ineligible = candidates.filter((kb) => !kb.eligible);
   const archivedCount = ineligible.filter((kb) => kb.status === 'archived').length;
   const erroredCount = ineligible.filter((kb) => kb.status === 'error').length;
+  // Called out separately from the load failures: this one is a one-click fix.
+  const disabledCount = ineligible.filter((kb) => kb.enabled === false).length;
 
   return (
     <WidgetCard sx={{ mt: ds.space[2], py: ds.space[4], px: ds.space.mul(1, 5) }}>
@@ -1024,8 +1030,12 @@ const TestRetrievalPanel = ({
             <Tooltip title={formatKBNameList(ineligible, ineligible.length)}>
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: ds.space[1], width: 'fit-content' }}>
                 {`${ineligible.length} knowledge base${ineligible.length === 1 ? '' : 's'} could not contribute to any question${
-                  archivedCount > 0 || erroredCount > 0
-                    ? ` (${[erroredCount > 0 ? `${erroredCount} failed to load` : '', archivedCount > 0 ? `${archivedCount} archived` : '']
+                  archivedCount > 0 || erroredCount > 0 || disabledCount > 0
+                    ? ` (${[
+                        erroredCount > 0 ? `${erroredCount} failed to load` : '',
+                        archivedCount > 0 ? `${archivedCount} archived` : '',
+                        disabledCount > 0 ? `${disabledCount} switched off` : '',
+                      ]
                         .filter(Boolean)
                         .join(', ')})`
                     : ''
@@ -1077,6 +1087,17 @@ const KnowledgeBaseTab = ({ accountId }) => {
   // all agents. Fetched before the modal opens so the picker never flips under
   // the user mid-edit.
   const [formAgentIds, setFormAgentIds] = useState([]);
+  // Ids whose enable/disable request is in flight, so only that row's switch
+  // shows a spinner instead of blocking the whole table on `submitting`.
+  const [togglingEnabledIds, setTogglingEnabledIds] = useState([]);
+  // Refs mirror the two pieces of state fetchKnowledgeBases needs to read: it is
+  // re-created every render and captured by long-lived timers, so reading the
+  // state directly would give it whichever render's values the interval closed
+  // over rather than the current ones.
+  const togglingEnabledIdsRef = useRef(togglingEnabledIds);
+  togglingEnabledIdsRef.current = togglingEnabledIds;
+  const knowledgeBasesRef = useRef([]);
+  knowledgeBasesRef.current = knowledgeBases;
 
   // Test retrieval — runs the real KB pre-step for a question so an operator can
   // see what an agent would actually receive, without asking the agent anything.
@@ -1109,7 +1130,20 @@ const KnowledgeBaseTab = ({ accountId }) => {
           snackbar.error('Failed to fetch knowledge bases');
         }
       } else if (response.data) {
-        setKnowledgeBases(response.data);
+        // A row whose switch is mid-flight keeps its optimistic `enabled`: the
+        // 60s poll can carry pre-write data and would otherwise flip the switch
+        // back under the user for a whole poll interval. Every other field
+        // still comes from the server.
+        const pending = togglingEnabledIdsRef.current;
+        setKnowledgeBases(
+          pending.length === 0
+            ? response.data
+            : response.data.map((kb) => {
+                if (!pending.includes(kb.id)) return kb;
+                const local = knowledgeBasesRef.current.find((prev) => prev.id === kb.id);
+                return local ? { ...kb, enabled: local.enabled } : kb;
+              })
+        );
         setError(null);
       } else {
         setKnowledgeBases([]);
@@ -1260,6 +1294,34 @@ const KnowledgeBaseTab = ({ accountId }) => {
     }
   };
 
+  // Enable/disable is applied optimistically: the switch is the only feedback a
+  // user gets, and waiting for a round trip before it moves reads as a dead
+  // control. The row is reverted from the server response on failure.
+  const handleToggleEnabled = async (knowledgeBase, nextEnabled) => {
+    const { id } = knowledgeBase;
+    const applyLocally = (value) => setKnowledgeBases((prev) => prev.map((kb) => (kb.id === id ? { ...kb, enabled: value } : kb)));
+
+    setTogglingEnabledIds((prev) => [...prev, id]);
+    applyLocally(nextEnabled);
+    try {
+      const response = await apiKnowledgeBase.setKnowledgeBaseEnabled(accountId, id, nextEnabled);
+      if (response.errors && response.errors.length > 0) {
+        applyLocally(!nextEnabled);
+        snackbar.error(response.errors[0]?.message || 'Failed to update knowledge base');
+        return;
+      }
+      snackbar.success(
+        nextEnabled ? `"${knowledgeBase.name}" enabled — agents can use it again` : `"${knowledgeBase.name}" disabled — agents will no longer use it`
+      );
+    } catch (err) {
+      applyLocally(!nextEnabled);
+      console.error('Error updating knowledge base enabled flag:', err);
+      snackbar.error('An error occurred while updating the knowledge base');
+    } finally {
+      setTogglingEnabledIds((prev) => prev.filter((pendingId) => pendingId !== id));
+    }
+  };
+
   const handleViewHistory = (knowledgeBase) => {
     setHistoryKB(knowledgeBase);
     setHistoryModalOpen(true);
@@ -1313,6 +1375,32 @@ const KnowledgeBaseTab = ({ accountId }) => {
         },
       },
       { key: 'status', label: 'Status', type: 'status', render: (kb) => <KbStatusLabel knowledgeBase={kb} /> },
+      {
+        key: 'enabled',
+        label: 'Enabled',
+        type: 'status',
+        width: '90px',
+        render: (kb) =>
+          // A tenant-wide grouped row covers several accounts' KB rows; when
+          // they disagree there is no single switch position to show, so the
+          // rollup states it rather than picking one.
+          kb.enabledMixed ? (
+            <Tooltip title={`${kb.enabledCount} of ${kb.accounts?.length ?? 0} accounts have this enabled`} placement='top'>
+              <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+                <Label text='mixed' tone='warning' />
+              </Box>
+            </Tooltip>
+          ) : (
+            <Switch
+              size='sm'
+              checked={kb.enabled !== false}
+              loading={togglingEnabledIds.includes(kb.id)}
+              disabled={!hasAccess}
+              onChange={(_event, checked) => handleToggleEnabled(kb, checked)}
+              aria-label={`${kb.enabled === false ? 'Enable' : 'Disable'} knowledge base ${kb.name}`}
+            />
+          ),
+      },
       {
         key: 'document_count',
         label: 'Docs',
@@ -1410,7 +1498,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
           ]),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers intentionally omitted, see docstring above
-    [hasAccess, accountId, isTenantWide]
+    [hasAccess, accountId, isTenantWide, togglingEnabledIds]
   );
 
   // Applies the picker's selection to llm_kb_agent_mappings. The KB itself is
@@ -1647,6 +1735,12 @@ const KnowledgeBaseTab = ({ accountId }) => {
                     // twice and React doesn't warn about duplicate keys.
                     if (!existing.accounts.some((acc) => acc.id === kb.account_id)) {
                       existing.accounts.push({ id: kb.account_id, name: kb.account_name });
+                      // The enable switch is per KB row, so members can
+                      // disagree. Track the tally and flag disagreement rather
+                      // than letting the first member's value speak for all.
+                      if (kb.enabled !== false) existing.enabledCount += 1;
+                      existing.enabled = existing.enabled && kb.enabled !== false;
+                      existing.enabledMixed = existing.enabledCount > 0 && existing.enabledCount < existing.accounts.length;
                     }
                     // "Added" for a grouped row = the most recent creation
                     // across member accounts (deterministic; #33339). Without
@@ -1660,7 +1754,13 @@ const KnowledgeBaseTab = ({ accountId }) => {
                       existing.created_by = kb.created_by;
                     }
                   } else {
-                    grouped.set(key, { ...kb, accounts: [{ id: kb.account_id, name: kb.account_name }] });
+                    grouped.set(key, {
+                      ...kb,
+                      accounts: [{ id: kb.account_id, name: kb.account_name }],
+                      enabled: kb.enabled !== false,
+                      enabledCount: kb.enabled !== false ? 1 : 0,
+                      enabledMixed: false,
+                    });
                   }
                 }
                 return [...grouped.values(), ...standalone];
