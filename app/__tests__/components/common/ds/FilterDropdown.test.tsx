@@ -137,4 +137,27 @@ describe('FilterDropdown', () => {
     expect(screen.getByText('node-0')).toBeInTheDocument();
     expect(screen.queryByText('node-1')).not.toBeInTheDocument();
   });
+  it('lists a freeSolo value that is not in options so it can be removed on its own', () => {
+    // Shape of the workflow email "To" field: the generator saved a template
+    // recipient, the user then picked a real one from the list.
+    const onSelect = jest.fn();
+    const template = '{{ Inputs.recipient_email }}';
+    render(<FilterDropdown multiple freeSolo options={['qa@nudgebee.com']} value={[template, 'qa@nudgebee.com']} onSelect={onSelect} label='To' />);
+    // Trigger only (limitTag 1) before the panel opens.
+    expect(screen.getAllByText(template)).toHaveLength(1);
+
+    fireEvent.click(screen.getByText('To'));
+    const rows = screen.getAllByText(template);
+    expect(rows).toHaveLength(2);
+
+    // Unchecking the template row drops it and keeps the real recipient.
+    fireEvent.click(rows[1]);
+    expect(onSelect).toHaveBeenCalledWith(expect.anything(), ['qa@nudgebee.com']);
+  });
+
+  it('does not list values outside options when freeSolo is off', () => {
+    render(<FilterDropdown multiple options={['Apple']} value={['Ghost']} onSelect={jest.fn()} label='Fruit' />);
+    fireEvent.click(screen.getByText('Fruit'));
+    expect(screen.getAllByText('Ghost')).toHaveLength(1);
+  });
 });
