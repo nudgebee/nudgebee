@@ -3202,6 +3202,31 @@ async function compareRuns() {
     const candWins = lowerIsBetter ? candVal < baseVal : candVal > baseVal;
     return candWins ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
   };
+  // Compact number display for token counts: 2000 -> "2k", 5400 -> "5.4k",
+  // 2233184 -> "2.2m". Raw counts stay in the Excel export (spreadsheets
+  // need real numbers to sort/sum) — this is display-only, for the table.
+  const bmCompactNumFmt = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+  const bmFmtTokens = (n) => bmCompactNumFmt.format(Number(n) || 0).toLowerCase();
+  // Renders a "B → C" pair with each side colored on its own: the higher
+  // number red, the lower one green (used for lower-is-better metrics —
+  // duration, tokens — so a reader can spot which specific number is worse
+  // without reading both). Ties render neutral on both sides.
+  // `Number(missing) || 0` would render an absent value (a field an older
+  // cached report predates, e.g. input_tokens before this table added it)
+  // as "0" and color it green as if it beat the other side — misleading,
+  // since 0 here means "no data", not "used nothing". Missing renders as
+  // "—" in neutral gray instead, and only real numbers get compared.
+  const bmPairColored = (a, b, fmt) => {
+    const av = (a === null || a === undefined || a === '') ? NaN : Number(a);
+    const cv = (b === null || b === undefined || b === '') ? NaN : Number(b);
+    const hasA = !isNaN(av), hasC = !isNaN(cv);
+    let aCls = 'text-gray-600', cCls = 'text-gray-600';
+    if (hasA && hasC && av !== cv) {
+      aCls = av > cv ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold';
+      cCls = cv > av ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold';
+    }
+    return `<span class="${aCls}">${hasA ? fmt(av) : '—'}</span> → <span class="${cCls}">${hasC ? fmt(cv) : '—'}</span>`;
+  };
   // Tool calls: fewer failures wins; a failure tie falls back to fewer total
   // calls (fewer round-trips for the same outcome).
   const bmToolCallsCls = (tc) => {
@@ -3225,9 +3250,9 @@ async function compareRuns() {
       return `<div class="grid ${perQueryGridCols} gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center text-[11px]">
         <span class="text-gray-700 truncate" title="${esc(q.test_id||'')}">${esc(q.test_id||'')}</span>
         <span class="text-center ${bmWinnerCls(acc.baseline||0, acc.candidate||0, false)}" title="Baseline → Candidate; green = candidate more accurate">${bmPairFmt(acc.baseline, acc.candidate, 1)}</span>
-        <span class="text-center ${bmWinnerCls(lat.baseline||0, lat.candidate||0, true)}" title="Baseline → Candidate; green = candidate faster">${bmPairFmt(lat.baseline, lat.candidate, 1)}</span>
-        <span class="text-center ${bmWinnerCls(inTok.baseline||0, inTok.candidate||0, true)}" title="Baseline → Candidate; green = candidate used fewer tokens">${bmPairFmt(inTok.baseline, inTok.candidate, 0)}</span>
-        <span class="text-center ${bmWinnerCls(outTok.baseline||0, outTok.candidate||0, true)}" title="Baseline → Candidate; green = candidate used fewer tokens">${bmPairFmt(outTok.baseline, outTok.candidate, 0)}</span>
+        <span class="text-center" title="Baseline → Candidate; red = higher (slower), green = lower (faster)">${bmPairColored(lat.baseline, lat.candidate, v => v.toFixed(1))}</span>
+        <span class="text-center" title="Baseline → Candidate; red = higher, green = lower">${bmPairColored(inTok.baseline, inTok.candidate, bmFmtTokens)}</span>
+        <span class="text-center" title="Baseline → Candidate; red = higher, green = lower">${bmPairColored(outTok.baseline, outTok.candidate, bmFmtTokens)}</span>
         <span class="text-center ${bmToolCallsCls(tc)}" title="Baseline → Candidate, successful✓/failed✗; green = candidate had fewer failures">${toolCallsStr}</span>
         <span class="text-gray-500 text-center truncate">${(q.tags||[]).join(', ')}</span>
         <span class="text-gray-400 text-center">${q.status || ''}</span>
