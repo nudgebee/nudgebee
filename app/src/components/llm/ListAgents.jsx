@@ -799,7 +799,10 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                           ),
                         },
                         {
-                          component: <Label text={kb.status || 'active'} />,
+                          // A disabled KB can still be mapped — the mapping is just
+                          // dormant until it is switched back on. Say so here, or the
+                          // row reads as "active" and the agent silently ignores it.
+                          component: kb.enabled === false ? <Label text='disabled' tone='warning' /> : <Label text={kb.status || 'active'} />,
                         },
                         {
                           component: <Text value={kb.created_by?.display_name || '-'} />,

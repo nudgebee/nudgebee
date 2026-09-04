@@ -1828,6 +1828,18 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Update a knowledge base
+  - name: ai_update_kb_enabled
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Turn a knowledge base on or off without changing its content
   - name: ai_update_tool
     comment: Update a custom agent tool
     definition:

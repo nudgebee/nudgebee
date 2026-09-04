@@ -445,6 +445,12 @@ type Mutation {
 }
 
 type Mutation {
+  ai_update_kb_enabled(
+    request: UpdateKBEnabledRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
   ai_update_tool(
     request: UpdateToolRequest!
   ): UpdateToolResponse
@@ -5232,6 +5238,12 @@ input UpdateKBRequest {
   knowledgebase: KnowledgebaseUpdateInput!
 }
 
+input UpdateKBEnabledRequest {
+  account_id: String!
+  kb_id: String!
+  enabled: Boolean!
+}
+
 input DeleteKBRequest {
   account_id: String!
   id: String!
@@ -9286,6 +9298,11 @@ type ListKBResponse {
 }
 
 type UpdateKBResponse {
+  data: jsonb
+  errors: [Error]
+}
+
+type UpdateKBEnabledResponse {
   data: jsonb
   errors: [Error]
 }

@@ -266,3 +266,29 @@ func TestWithKBAgentWildcard(t *testing.T) {
 		assert.Equal(t, "inherited_parent", full[1], "caller's slice must be untouched")
 	})
 }
+
+func TestUsableForAgents(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		on     bool
+		want   bool
+	}{
+		{"active and enabled is usable", string(KBStatusActive), true, true},
+		{"active but switched off", string(KBStatusActive), false, false},
+		{"enabled but still indexing", string(KBStatusProcessing), true, false},
+		{"enabled but failed to index", string(KBStatusError), true, false},
+		{"enabled but archived", string(KBStatusArchived), true, false},
+		{"archived and switched off", string(KBStatusArchived), false, false},
+		// The zero value must not read as usable: a SELECT that forgets
+		// kb.enabled leaves Enabled false, and failing closed there surfaces as
+		// "my KB stopped working" rather than as a silently ignored switch.
+		{"zero value", "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kb := Knowledgebase{Status: tc.status, Enabled: tc.on}
+			assert.Equal(t, tc.want, kb.UsableForAgents())
+		})
+	}
+}

@@ -48,6 +48,15 @@ type kbUpdateRequest struct {
 	} `json:"knowledgebase"`
 }
 
+type kbUpdateEnabledRequest struct {
+	AccountId string `json:"account_id"`
+	KbId      string `json:"kb_id"`
+	// Pointer so an omitted field is a 400 rather than silently disabling the
+	// KB: `false` is the zero value and would otherwise be indistinguishable
+	// from "the caller forgot to send it".
+	Enabled *bool `json:"enabled"`
+}
+
 type kbDeleteRequest struct {
 	AccountId string `json:"account_id"`
 	Id        string `json:"id"`
@@ -293,6 +302,56 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	c.JSON(200, buildApiResponse(map[string]string{"status": "ok", "id": request.Knowledgebase.Id}, nil))
+}
+
+// kbUpdateEnabled flips a knowledge base's on/off switch. Separate from
+// ai_update_kb because that action rewrites the KB's content fields, which are
+// sync-owned for integration KBs — the switch has to work for both kinds.
+func kbUpdateEnabled(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	var request kbUpdateEnabledRequest
+	err := common.DecodeMapToStruct(payload, &request)
+	if err != nil {
+		slog.Error("kb: error binding request", "error", err)
+		c.JSON(400, buildApiResponse(nil, []error{
+			common.Error{Message: err.Error()},
+		}))
+		return
+	}
+
+	if request.AccountId == "" {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		return
+	}
+
+	if request.KbId == "" {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
+		return
+	}
+
+	if request.Enabled == nil {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: enabled is required")}))
+		return
+	}
+
+	// Check if user has access to account
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
+		c.JSON(403, buildApiResponse(nil, []error{
+			common.Error{Message: errorKBUserAccessMessage},
+		}))
+		return
+	}
+
+	err = core.SetKnowledgebaseEnabled(context, request.AccountId, request.KbId, *request.Enabled)
+	if err != nil {
+		slog.Error("kb: failed to set enabled", "error", err, "kb_id", request.KbId)
+		c.JSON(500, buildApiResponse(nil, []error{
+			common.Error{Message: err.Error()},
+		}))
+		return
+	}
+
+	c.JSON(200, buildApiResponse(map[string]any{"status": "ok", "id": request.KbId, "enabled": *request.Enabled}, nil))
 }
 
 func kbDelete(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -726,6 +785,9 @@ func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 		case "ai_update_kb":
 			common.MetricsApiRequestsTotal("kb_update")
 			kbUpdate(c, context, payload)
+		case "ai_update_kb_enabled":
+			common.MetricsApiRequestsTotal("kb_update_enabled")
+			kbUpdateEnabled(c, context, payload)
 		case "ai_delete_kb":
 			common.MetricsApiRequestsTotal("kb_delete")
 			kbDelete(c, context, payload)
