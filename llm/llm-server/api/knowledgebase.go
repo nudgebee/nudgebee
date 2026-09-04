@@ -3,6 +3,9 @@ package api
 import (
 	"errors"
 	"log/slog"
+	"strings"
+
+	agentcore "nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -88,6 +91,17 @@ type kbLoadHistoryRequest struct {
 type kbRetriggerRequest struct {
 	AccountId string `json:"account_id"`
 	KbId      string `json:"kb_id"`
+}
+
+type kbTestRetrievalRequest struct {
+	AccountId string `json:"account_id"`
+	// KbId and AgentId are both optional and narrow the probe, KbId first:
+	// KbId searches only that knowledge base's own collection, AgentId scopes
+	// to an agent's mapped KBs, and neither covers every KB in the account —
+	// wider than any single agent sees.
+	KbId    string `json:"kb_id"`
+	AgentId string `json:"agent_id"`
+	Query   string `json:"query"`
 }
 
 const errorKBUserAccessMessage = "kb: user doesn't have access to this account"
@@ -622,6 +636,51 @@ func kbRetrigger(c *gin.Context, context *security.RequestContext, payload map[s
 	c.JSON(200, buildApiResponse(map[string]string{"status": "ok", "id": request.KbId}, nil))
 }
 
+// kbTestRetrieval answers "what would an agent actually retrieve for this
+// question?" It runs the real KB pre-step retrieval path (same search, dedup
+// and attribution) and reports each document with the reason it would or would
+// not reach the prompt. Read-only: it writes nothing and is not billed to the
+// account's token usage.
+func kbTestRetrieval(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	var request kbTestRetrievalRequest
+	err := common.DecodeMapToStruct(payload, &request)
+	if err != nil {
+		slog.Error("kb: error binding request", "error", err)
+		c.JSON(400, buildApiResponse(nil, []error{
+			common.Error{Message: err.Error()},
+		}))
+		return
+	}
+
+	if request.AccountId == "" {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		return
+	}
+	if strings.TrimSpace(request.Query) == "" {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: query is required")}))
+		return
+	}
+
+	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
+		c.JSON(403, buildApiResponse(nil, []error{
+			common.Error{Message: errorKBUserAccessMessage},
+		}))
+		return
+	}
+
+	result, err := agentcore.ProbeKBRetrieval(context, request.AccountId, request.AgentId, request.KbId, request.Query)
+	if err != nil {
+		slog.Error("kb: test retrieval failed", "error", err, "agent_id", request.AgentId, "kb_id", request.KbId)
+		c.JSON(500, buildApiResponse(nil, []error{
+			common.Error{Message: err.Error()},
+		}))
+		return
+	}
+
+	c.JSON(200, buildApiResponse(result, nil))
+}
+
 func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	groupV2 := r.Group("/v1/knowledgebases")
 
@@ -691,6 +750,9 @@ func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 		case "ai_get_kb_load_history":
 			common.MetricsApiRequestsTotal("kb_get_load_history")
 			kbGetLoadHistory(c, context, payload)
+		case "ai_list_kb_retrieval":
+			common.MetricsApiRequestsTotal("kb_test_retrieval")
+			kbTestRetrieval(c, context, payload)
 		case "ai_retrigger_kb", "ai_sync_kb":
 			common.MetricsApiRequestsTotal("kb_retrigger")
 			kbRetrigger(c, context, payload)

@@ -39,6 +39,12 @@ class GetMatchingDocRequest(BaseModel):
     # ServiceNow) are visible without the caller needing to know about tenants.
     tenant_id: Optional[str] = None
     use_reranking: bool = Config.reranking_enabled  # Enable LLM-based reranking (default from RAG_RERANKING_ENABLED)
+    # When true, ``collection_name`` RESTRICTS the search to that one collection
+    # instead of being added to the discovered set. Used by the knowledge-base
+    # retrieval probe to answer "does THIS knowledge base answer the question?".
+    # The named collection must still be one this account/tenant could already
+    # search - restricting never widens visibility.
+    restrict_to_collection: bool = False
 
 
 def _validate_token_tracking(
@@ -159,6 +165,7 @@ async def get_matching_doc(request: GetMatchingDocRequest):
             account_id=request.account_id,
             module=request.module,
             collection_name=request.collection_name,
+            restrict_to_collection=request.restrict_to_collection,
             metadata_filter=request.metadata_filter,
             use_reranking=request.use_reranking,
             tenant_id=request.tenant_id,

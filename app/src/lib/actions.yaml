@@ -1391,6 +1391,19 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
     comment: Get load history for a knowledge base
+  - name: ai_list_kb_retrieval
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: List the knowledge base documents a query would retrieve, ranked, with whether each would reach the agent
   - name: ai_sync_kb
     definition:
       kind: synchronous
