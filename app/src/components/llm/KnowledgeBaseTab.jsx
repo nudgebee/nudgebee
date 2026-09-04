@@ -4,7 +4,6 @@ import { Box, Typography } from '@mui/material';
 import { Banner } from '@ui/Banner';
 import { Label } from '@ui/Label';
 import { Chip } from '@ui/Chip';
-import { Checkbox } from '@ui/Checkbox';
 import CustomTable from '@shared/tables/CustomTable';
 import { Input } from '@ui/Input';
 import Tooltip from '@ui/Tooltip';
@@ -27,10 +26,23 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import WidgetCard from '@ui/WidgetCard';
 import Tabs from '@shared/navigation/Tabs';
 import { MemoryTable } from '@components/llm/MemoryTable';
+import MentionContentInput from '@components/llm/MentionContentInput';
 import ScopeChip from '@components/llm/ScopeChip';
 import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/kbLoadHistoryFormat';
 
 const MAX_CONTENT_LENGTH = 5000;
+
+// Shown as placeholder text, not pre-filled content: the only way left to tell
+// people they can @-mention an agent or #-mention a tool right in the note now
+// that the agent-picker checklist is gone.
+const CONTENT_PLACEHOLDER = `## When to use
+Describe the situation this applies to — e.g. "When auth-svc returns 5xx and a restart is being considered."
+
+## Agent usage
+Mention agents that should use this, e.g. @k8s_ops
+
+## Tool usage
+Mention tools relevant to this, e.g. #query_logs`;
 
 const formatExactDate = (dateString) => {
   if (!dateString) return '-';
@@ -181,6 +193,8 @@ const KnowledgeBaseFormModal = ({
   loading,
   agents = [],
   agentsLoading = false,
+  tools = [],
+  toolsLoading = false,
   initialAgentIds = [],
 }) => {
   const [name, setName] = useState('');
@@ -195,7 +209,6 @@ const KnowledgeBaseFormModal = ({
   // menu and load_skills cannot fetch it — which is why creates default to 'all'.
   const [agentMode, setAgentMode] = useState('all');
   const [selectedAgentIds, setSelectedAgentIds] = useState([]);
-  const [agentSearch, setAgentSearch] = useState('');
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
 
@@ -213,12 +226,14 @@ const KnowledgeBaseFormModal = ({
     setFileContent('');
   }, [editKnowledgeBase, open]);
 
-  // Seed the agent picker from the KB's existing mappings. An edit of a KB that
-  // nobody mapped opens in 'specific' with nothing ticked (and shows the warning
-  // below) rather than silently defaulting to all agents — quietly widening a KB's
-  // reach because someone fixed a typo in it would be a surprise.
+  // Carry the KB's existing mappings through the form untouched. Routing is
+  // expressed in the note itself now — an `@agent` in the content is what points
+  // the knowledge at an agent — so the form deliberately has no mapping control,
+  // and this is the only thing standing between an edit and a rewritten mapping
+  // set: a create lands on 'all' (the wildcard row, so the KB is visible to every
+  // agent), and an edit re-submits exactly what it opened with, including the
+  // empty set for a KB nobody mapped.
   useEffect(() => {
-    setAgentSearch('');
     if (initialAgentIds.includes(KB_AGENT_WILDCARD)) {
       setAgentMode('all');
       setSelectedAgentIds([]);
@@ -349,16 +364,6 @@ const KnowledgeBaseFormModal = ({
       content: selectedFile ? fileContent.trim() : content.trim(),
       agentIds: agentMode === 'all' ? [KB_AGENT_WILDCARD] : selectedAgentIds,
     });
-  };
-
-  const filteredAgents = (() => {
-    const term = agentSearch.trim().toLowerCase();
-    if (!term) return agents;
-    return agents.filter((a) => a.name?.toLowerCase().includes(term) || a.description?.toLowerCase().includes(term));
-  })();
-
-  const toggleAgent = (agentName) => {
-    setSelectedAgentIds((prev) => (prev.includes(agentName) ? prev.filter((n) => n !== agentName) : [...prev, agentName]));
   };
 
   const contentOverBy = content.length - MAX_CONTENT_LENGTH;
@@ -656,18 +661,18 @@ const KnowledgeBaseFormModal = ({
           >
             Content
           </Typography>
-          <Box sx={{ position: 'relative' }}>
-            <Input
-              type='textarea'
-              minRows={8}
-              maxRows={15}
-              placeholder={
-                fileContent ? 'File content will be used — remove the file to type manually' : 'Paste or type your knowledge base content here...'
-              }
-              value={fileContent ? '' : content}
-              onChange={(next) => !fileContent && setContent(next)}
-              disabled={!!fileContent}
-            />
+          <MentionContentInput
+            minRows={8}
+            maxRows={15}
+            placeholder={fileContent ? 'File content will be used — remove the file to type manually' : CONTENT_PLACEHOLDER}
+            value={fileContent ? '' : content}
+            onChange={(next) => !fileContent && setContent(next)}
+            disabled={!!fileContent}
+            agents={agents}
+            tools={tools}
+            suggestionsLoading={agentsLoading || toolsLoading}
+            data-testid='kb-content-input'
+          >
             {contentOverLimit && (
               <Tooltip
                 title={`Content is ${contentOverBy.toLocaleString()} character(s) over the ${MAX_CONTENT_LENGTH.toLocaleString()} limit`}
@@ -694,135 +699,12 @@ const KnowledgeBaseFormModal = ({
                 </Box>
               </Tooltip>
             )}
-          </Box>
+          </MentionContentInput>
         </Box>
 
-        {/* Agent Mapping */}
-        <Box sx={{ marginBottom: ds.space[5] }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: ds.space.mul(0, 3), gap: ds.space[1] }}>
-            <Typography
-              sx={{
-                fontSize: 'var(--ds-text-body)',
-                fontWeight: 'var(--ds-font-weight-medium)',
-                color: 'var(--ds-blue-500)',
-              }}
-            >
-              Which agents should use this? *
-            </Typography>
-            <Tooltip
-              title="An agent can only see a knowledge base that is mapped to it — an unmapped knowledge base never appears in the agent's skill list and cannot be loaded by name."
-              placement='right'
-            >
-              <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-700)', cursor: 'pointer' }} />
-            </Tooltip>
-          </Box>
-
-          <Box sx={{ display: 'flex', gap: ds.space[2], marginBottom: ds.space[3] }}>
-            <Chip size='sm' selected={agentMode === 'all'} onClick={() => setAgentMode('all')}>
-              All agents
-            </Chip>
-            <Chip size='sm' selected={agentMode === 'specific'} onClick={() => setAgentMode('specific')}>
-              Specific agents
-            </Chip>
-          </Box>
-
-          {agentMode === 'all' ? (
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-              Every agent — including agents added later — can use this knowledge base.
-            </Typography>
-          ) : (
-            <Box>
-              <Input size='sm' placeholder='Search agents' value={agentSearch} onChange={(next) => setAgentSearch(next)} />
-              <Box
-                sx={{
-                  marginTop: ds.space[2],
-                  maxHeight: '200px',
-                  overflowY: 'auto',
-                  border: `1px solid var(--ds-gray-300)`,
-                  borderRadius: ds.radius.md,
-                }}
-              >
-                {agentsLoading && (
-                  <Typography sx={{ padding: ds.space[3], fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-                    Loading agents...
-                  </Typography>
-                )}
-                {!agentsLoading && filteredAgents.length === 0 && (
-                  <Typography sx={{ padding: ds.space[3], fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-                    No agents match your search.
-                  </Typography>
-                )}
-                {!agentsLoading &&
-                  filteredAgents.map((agent) => (
-                    <Box
-                      key={agent.name}
-                      onClick={() => toggleAgent(agent.name)}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: ds.space[2],
-                        padding: ds.space[2],
-                        cursor: 'pointer',
-                        '&:hover': { backgroundColor: 'var(--ds-background-200)' },
-                      }}
-                    >
-                      {/* The row itself toggles, so the checkbox must not bubble a
-                          second toggle into it — the two would cancel out. */}
-                      <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex' }}>
-                        <Checkbox
-                          size='sm'
-                          checked={selectedAgentIds.includes(agent.name)}
-                          onChange={() => toggleAgent(agent.name)}
-                          aria-label={`Select agent ${agent.name}`}
-                        />
-                      </Box>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>{agent.name}</Typography>
-                        {agent.description && (
-                          <Typography
-                            sx={{
-                              fontSize: 'var(--ds-text-caption)',
-                              color: 'var(--ds-gray-500)',
-                              display: '-webkit-box',
-                              WebkitLineClamp: 1,
-                              WebkitBoxOrient: 'vertical',
-                              overflow: 'hidden',
-                            }}
-                          >
-                            {agent.description}
-                          </Typography>
-                        )}
-                      </Box>
-                    </Box>
-                  ))}
-              </Box>
-              {selectedAgentIds.length === 0 ? (
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: ds.space.mul(0, 3),
-                    marginTop: ds.space[2],
-                    py: ds.space[2],
-                    px: ds.space[3],
-                    backgroundColor: 'var(--ds-amber-100)',
-                    border: `1px solid var(--ds-amber-500)`,
-                    borderRadius: ds.radius.md,
-                  }}
-                >
-                  <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-amber-700)', flexShrink: 0 }} />
-                  <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }}>
-                    No agent is selected — no agent will be able to use this knowledge base.
-                  </Typography>
-                </Box>
-              ) : (
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', marginTop: ds.space[1] }}>
-                  {selectedAgentIds.length} agent{selectedAgentIds.length === 1 ? '' : 's'} selected
-                </Typography>
-              )}
-            </Box>
-          )}
-        </Box>
+        {/* Agent mapping has no control here. A create maps to every agent via
+            the wildcard row; an edit keeps whatever mapping the knowledge base
+            already had — both seeded into state above from `initialAgentIds`. */}
 
         {/* Action Buttons */}
         <Box
@@ -852,6 +734,8 @@ KnowledgeBaseFormModal.propTypes = {
   loading: PropTypes.bool,
   agents: PropTypes.array,
   agentsLoading: PropTypes.bool,
+  tools: PropTypes.array,
+  toolsLoading: PropTypes.bool,
   initialAgentIds: PropTypes.array,
 };
 
@@ -948,9 +832,11 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyKB, setHistoryKB] = useState(null);
-  const [activeTab, setActiveTab] = useState('integration');
+  const [activeTab, setActiveTab] = useState('manual');
   const [agents, setAgents] = useState([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
+  const [tools, setTools] = useState([]);
+  const [toolsLoading, setToolsLoading] = useState(false);
   // agent ids the KB being edited is already mapped to; [KB_AGENT_WILDCARD] means
   // all agents. Fetched before the modal opens so the picker never flips under
   // the user mid-edit.
@@ -1003,8 +889,9 @@ const KnowledgeBaseTab = ({ accountId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
-  // Agent list for the create/edit picker. Skipped in tenant-wide mode, which
-  // paints no write affordances and so never opens the form.
+  // Agents and tools back the `@`/`#` suggestions in the content box. Both are
+  // skipped in tenant-wide mode, which paints no write affordances and so never
+  // opens the form.
   useEffect(() => {
     if (isTenantWide) return undefined;
     let cancelled = false;
@@ -1023,6 +910,30 @@ const KnowledgeBaseTab = ({ accountId }) => {
       })
       .finally(() => {
         if (!cancelled) setAgentsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, isTenantWide]);
+
+  useEffect(() => {
+    if (isTenantWide) return undefined;
+    let cancelled = false;
+    setToolsLoading(true);
+    apiAskNudgebee
+      .listTools({ accountId })
+      .then((response) => {
+        if (cancelled) return;
+        const list = response?.data?.data?.ai_list_tools?.data;
+        setTools((Array.isArray(list) ? [...list] : []).sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Error fetching tools:', err);
+        setTools([]);
+      })
+      .finally(() => {
+        if (!cancelled) setToolsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -1478,8 +1389,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
                 smallSize
                 options={{
                   tabOptions: [
-                    { value: 'integration', text: 'Integration', count: integrationKBs.length },
                     { value: 'manual', text: 'User', count: userKBs.length },
+                    { value: 'integration', text: 'Integration', count: integrationKBs.length },
                   ],
                 }}
               />
@@ -1507,6 +1418,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
         loading={submitting}
         agents={agents}
         agentsLoading={agentsLoading}
+        tools={tools}
+        toolsLoading={toolsLoading}
         initialAgentIds={formAgentIds}
       />
 
