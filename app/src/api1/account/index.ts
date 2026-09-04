@@ -31,6 +31,7 @@ query list_account {
       type
       status
       name
+      integrations_cloud_accounts
     }
   }
 }

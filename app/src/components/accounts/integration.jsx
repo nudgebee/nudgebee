@@ -3,7 +3,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiAccount from '@api1/account';
 import { useRouter } from 'next/router';
-import { getCloudProviderLabel } from 'src/utils/common';
+import { getCloudProviderLabel, safeJSONParse } from 'src/utils/common';
 import { Skeleton } from '@ui/Skeleton';
 import { ds } from 'src/utils/colors';
 import Tabs from '@shared/navigation/Tabs';
@@ -240,10 +240,46 @@ const INTEGRATION_SLUG_BY_ID = {
   server: 'server',
 };
 
+// An observability integration can be flagged as the default source for logs,
+// traces, or metrics on each account it is linked to. That flag is PER-ACCOUNT
+// (it lives inside the `integrations_cloud_accounts` JSON blob, same shape the
+// integration form reads): one account has exactly one default logs provider, but
+// two different accounts can each have their own — so several tiles legitimately
+// carry a logs default. The badge therefore names the account it is default for,
+// otherwise the tenant-wide grid reads as if there were many default logs
+// providers with no way to tell whose is whose.
+//
+// Returns, per telemetry type, the account names this provider is the default for.
+const deriveDefaultProviders = (integration) => {
+  const raw = integration?.integrations_cloud_accounts;
+  const parsed = Array.isArray(raw) ? raw : safeJSONParse(raw);
+  const linked = Array.isArray(parsed) ? parsed : [];
+  const accountsFor = (flag) =>
+    linked
+      .filter((a) => a?.[flag] === true)
+      .map((a) => a?.cloud_account_name)
+      .filter(Boolean);
+  return {
+    logs: accountsFor('default_log_provider'),
+    traces: accountsFor('default_traces_provider'),
+    metrics: accountsFor('default_metrics_provider'),
+  };
+};
+
 // Optimized Component
-const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled = 0, label, activeClouds = [] }) => {
+const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled = 0, label, activeClouds = [], defaultProviders }) => {
   const router = useRouter();
   const hasAnyConnections = active > 0 || disabled > 0;
+  // One badge per telemetry type, accounts comma-separated: "Default Logs:
+  // k8s-dev, k8s-prod". The default is a per-account fact — naming the accounts is
+  // what stops two tiles both reading "Default: Logs" from looking contradictory —
+  // but a single label per type keeps a tile with many accounts from stacking a
+  // separate chip for each one.
+  const defaultBadges = [
+    ['Logs', defaultProviders?.logs],
+    ['Traces', defaultProviders?.traces],
+    ['Metrics', defaultProviders?.metrics],
+  ].filter(([, accts]) => accts && accts.length > 0);
 
   const handleClick = useCallback(() => {
     router.push(`/accounts/account-form?cloudProvider=${cloud_provider}`);
@@ -341,6 +377,12 @@ const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled =
                 Inactive {disabled}
               </Chip>
             )}
+
+            {defaultBadges.map(([type, accts]) => (
+              <Chip key={type} size='xs' tone='info'>
+                Default {type}: {accts.join(', ')}
+              </Chip>
+            ))}
 
             {!hasAnyConnections && !isDisabled && (
               <Typography fontSize={ds.text.caption} color={ds.gray[600]} fontStyle='italic'>
@@ -826,7 +868,7 @@ const Integrations = () => {
         key = 'OTEL';
       }
 
-      addToMap(key, { ...acc, status });
+      addToMap(key, { ...acc, status, defaultProviders: deriveDefaultProviders(acc) });
     });
 
     return map;
@@ -841,12 +883,29 @@ const Integrations = () => {
         const activeCount = accounts.filter((a) => a.status === 'active' || a.is_active).length;
         const disabledCount = accounts.filter((a) => a.status === 'disabled' || a.status === 'inactive').length;
 
+        // Roll the per-account telemetry-defaults up to the provider tile: one
+        // provider can appear as several integration records (one per account), so
+        // union the account names each record is the default for, per type. Sorted
+        // so the badge text is stable — the list query has no order_by, so raw
+        // insertion order can otherwise reshuffle the chip between refreshes.
+        const mergeAccounts = (type) => {
+          const names = new Set();
+          accounts.forEach((a) => (a.defaultProviders?.[type] || []).forEach((n) => names.add(n)));
+          return [...names].sort();
+        };
+        const defaultProviders = {
+          logs: mergeAccounts('logs'),
+          traces: mergeAccounts('traces'),
+          metrics: mergeAccounts('metrics'),
+        };
+
         return {
           cloud_provider: providerKey,
           label: getCloudProviderLabel(providerKey),
           active: activeCount,
           disabled: disabledCount,
           activeClouds: accounts, // Passed down for Messaging channel checks
+          defaultProviders,
         };
       });
 
