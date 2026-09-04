@@ -199,6 +199,29 @@ func handleRequestExecution(
 	}
 }
 
+// rejectIfConversationLocked rejects IN_PROGRESS (already running) and KILLED
+// (sticky by design in shouldSkipSaveBack — a retry would run a full turn for
+// real and then have it silently discarded) conversations before a new turn
+// starts. See #37486.
+func rejectIfConversationLocked(c *gin.Context, endpoint string, conversation core.Conversation) bool {
+	var message string
+	switch conversation.Status {
+	case core.ConversationStatusInProgress:
+		message = "api: conversation is in progress"
+	case core.ConversationStatusKilled:
+		message = "api: conversation was terminated and cannot be resumed; start a new conversation"
+	default:
+		return false
+	}
+	slog.Warn("chains: rejecting request for locked conversation",
+		"endpoint", endpoint, "conversation_id", conversation.ID.String(),
+		"account_id", conversation.AccountID.String(), "status", conversation.Status)
+	c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		common.Error{Message: message},
+	}))
+	return true
+}
+
 func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	groupV2 := r.Group("/v1/completions")
 
@@ -323,12 +346,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if conversation.Status == core.ConversationStatusInProgress {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: conversation is in progress",
-					},
-				}))
+			if rejectIfConversationLocked(c, "/v1/completions/chat", conversation) {
 				return
 			}
 
@@ -793,12 +811,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if conversation.Status == core.ConversationStatusInProgress {
-				c.JSON(400, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: conversation is in progress",
-					},
-				}))
+			if rejectIfConversationLocked(c, "/v1/completions/chat/auto", conversation) {
 				return
 			}
 
@@ -1553,12 +1566,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if conversation.Status == core.ConversationStatusInProgress {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: conversation is in progress",
-					},
-				}))
+			if rejectIfConversationLocked(c, "/v1/completions/workflow-generate", conversation) {
 				return
 			}
 
