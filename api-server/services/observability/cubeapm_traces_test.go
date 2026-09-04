@@ -260,111 +260,187 @@ func TestCubeAPMEndTime(t *testing.T) {
 	}
 }
 
-func TestCubeAPMLocalFilters(t *testing.T) {
-	// service.name is pushed down as the API's `service` parameter, so re-checking
-	// it locally would be redundant work on every span.
-	t.Run("excludes the pushed-down service filter", func(t *testing.T) {
-		filters := cubeAPMLocalFilters(query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"workload_name": {query.Eq: "checkout"},
-			"span_name":     {query.Eq: "POST /v1/payment"},
-		}})
-		for _, f := range filters {
-			if f.Field == "service.name" {
-				t.Error("service.name must not be filtered locally; it is a server-side parameter")
-			}
+func TestCubeAPMWhereHasFilters(t *testing.T) {
+	if cubeAPMWhereHasFilters(query.QueryWhereClause{}) {
+		t.Error("an empty clause has no filters")
+	}
+	for name, where := range map[string]query.QueryWhereClause{
+		"binary": {Binary: query.BinaryWhereClause{"span_name": {query.Eq: "a"}}},
+		"and":    {And: []query.QueryWhereClause{{}}},
+		"or":     {Or: []query.QueryWhereClause{{}}},
+		"not":    {Not: &query.QueryWhereClause{}},
+	} {
+		if !cubeAPMWhereHasFilters(where) {
+			t.Errorf("%s clause should report filters", name)
 		}
-		if len(filters) != 1 || filters[0].Field != "operation_name" {
-			t.Errorf("filters = %+v, want only the mapped span_name", filters)
-		}
-	})
+	}
+}
 
-	t.Run("collects top-level AND clauses", func(t *testing.T) {
-		filters := cubeAPMLocalFilters(query.QueryWhereClause{
-			Binary: query.BinaryWhereClause{"http_status_code": {query.Eq: "500"}},
-			And: []query.QueryWhereClause{
-				{Binary: query.BinaryWhereClause{"span_name": {query.Contains: "payment"}}},
-			},
-		})
-		if len(filters) != 2 {
-			t.Fatalf("got %d filters, want 2: %+v", len(filters), filters)
-		}
-	})
+func testCubeAPMSpans() []common.OpenTelemetryTrace {
+	return []common.OpenTelemetryTrace{
+		{SpanName: "POST /pay", ServiceName: "checkout", HTTPStatusCode: "500",
+			WorkloadNamespace: "payments",
+			SpanAttributes:    map[string]string{"http.method": "POST"}, ResourceAttributes: map[string]string{}},
+		{SpanName: "GET /health", ServiceName: "checkout", HTTPStatusCode: "200",
+			WorkloadNamespace: "payments",
+			SpanAttributes:    map[string]string{"http.method": "GET"}, ResourceAttributes: map[string]string{}},
+		{SpanName: "GET /balance", ServiceName: "ledger", HTTPStatusCode: "200",
+			WorkloadNamespace: "payments",
+			SpanAttributes:    map[string]string{"http.method": "GET"}, ResourceAttributes: map[string]string{}},
+	}
+}
 
-	t.Run("is deterministic", func(t *testing.T) {
-		where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"span_name":        {query.Eq: "a"},
-			"http_status_code": {query.Eq: "500"},
-			"status_code":      {query.Eq: "2"},
-		}}
-		first := cubeAPMLocalFilters(where)
-		for i := 0; i < 20; i++ {
-			got := cubeAPMLocalFilters(where)
-			for j := range first {
-				if got[j] != first[j] {
-					t.Fatalf("filter order is not stable: %+v vs %+v", first, got)
-				}
-			}
-		}
-	})
+func filterNames(t *testing.T, where query.QueryWhereClause) []string {
+	t.Helper()
+	got, err := filterCubeAPMSpans(testCubeAPMSpans(), where)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := make([]string, 0, len(got))
+	for _, span := range got {
+		names = append(names, span.SpanName)
+	}
+	return names
 }
 
 func TestFilterCubeAPMSpans(t *testing.T) {
-	spans := []common.OpenTelemetryTrace{
-		{SpanName: "POST /pay", ServiceName: "checkout", HTTPStatusCode: "500",
-			SpanAttributes: map[string]string{"http.method": "POST"}, ResourceAttributes: map[string]string{}},
-		{SpanName: "GET /health", ServiceName: "checkout", HTTPStatusCode: "200",
-			SpanAttributes: map[string]string{"http.method": "GET"}, ResourceAttributes: map[string]string{}},
-	}
-
 	t.Run("no filters returns everything", func(t *testing.T) {
-		got := filterCubeAPMSpans(spans, nil)
-		if len(got) != 2 {
-			t.Errorf("got %d spans, want 2", len(got))
+		if got := filterNames(t, query.QueryWhereClause{}); len(got) != 3 {
+			t.Errorf("got %v, want all three spans", got)
 		}
 	})
 
 	t.Run("eq", func(t *testing.T) {
-		got := filterCubeAPMSpans(append([]common.OpenTelemetryTrace(nil), spans...),
-			[]cubeAPMLocalFilter{{Field: "http.status_code", Op: query.Eq, Value: "500"}})
-		if len(got) != 1 || got[0].SpanName != "POST /pay" {
-			t.Errorf("got %+v", got)
+		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"http_status_code": {query.Eq: "500"},
+		}})
+		if len(got) != 1 || got[0] != "POST /pay" {
+			t.Errorf("got %v", got)
 		}
 	})
 
 	t.Run("neq", func(t *testing.T) {
-		got := filterCubeAPMSpans(append([]common.OpenTelemetryTrace(nil), spans...),
-			[]cubeAPMLocalFilter{{Field: "http.status_code", Op: query.Nq, Value: "500"}})
-		if len(got) != 1 || got[0].SpanName != "GET /health" {
-			t.Errorf("got %+v", got)
+		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"http_status_code": {query.Nq: "500"},
+		}})
+		if len(got) != 2 {
+			t.Errorf("got %v", got)
 		}
 	})
 
 	t.Run("contains is case-insensitive", func(t *testing.T) {
-		got := filterCubeAPMSpans(append([]common.OpenTelemetryTrace(nil), spans...),
-			[]cubeAPMLocalFilter{{Field: "operation_name", Op: query.Contains, Value: "PAY"}})
-		if len(got) != 1 || got[0].SpanName != "POST /pay" {
-			t.Errorf("got %+v", got)
+		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"span_name": {query.Contains: "PAY"},
+		}})
+		if len(got) != 1 || got[0] != "POST /pay" {
+			t.Errorf("got %v", got)
 		}
 	})
 
 	t.Run("span attribute lookup", func(t *testing.T) {
-		got := filterCubeAPMSpans(append([]common.OpenTelemetryTrace(nil), spans...),
-			[]cubeAPMLocalFilter{{Field: "http.method", Op: query.Eq, Value: "GET"}})
-		if len(got) != 1 || got[0].SpanName != "GET /health" {
-			t.Errorf("got %+v", got)
+		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"http.method": {query.Eq: "GET"},
+		}})
+		if len(got) != 2 {
+			t.Errorf("got %v", got)
 		}
 	})
 
-	t.Run("filters are ANDed", func(t *testing.T) {
-		got := filterCubeAPMSpans(append([]common.OpenTelemetryTrace(nil), spans...),
-			[]cubeAPMLocalFilter{
-				{Field: "http.method", Op: query.Eq, Value: "POST"},
-				{Field: "http.status_code", Op: query.Eq, Value: "200"},
-			})
+	t.Run("conditions in one clause are ANDed", func(t *testing.T) {
+		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"http.method":      {query.Eq: "POST"},
+			"http_status_code": {query.Eq: "200"},
+		}})
 		if len(got) != 0 {
-			t.Errorf("got %+v, want no matches", got)
+			t.Errorf("got %v, want no matches", got)
 		}
 	})
+
+	t.Run("in and not_in", func(t *testing.T) {
+		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"span_name": {query.In: []any{"POST /pay", "GET /balance"}},
+		}})
+		if len(got) != 2 {
+			t.Errorf("got %v", got)
+		}
+		got = filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			"span_name": {query.NotIn: []any{"POST /pay"}},
+		}})
+		if len(got) != 2 {
+			t.Errorf("got %v", got)
+		}
+	})
+}
+
+// An OR-shaped filter used to be dropped entirely by the flat filter collector,
+// so the query returned every span as though the filter had matched — the exact
+// failure this source refuses to accept from the server.
+func TestFilterCubeAPMSpansEvaluatesOrAndNot(t *testing.T) {
+	t.Run("or matches either branch", func(t *testing.T) {
+		got := filterNames(t, query.QueryWhereClause{Or: []query.QueryWhereClause{
+			{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "POST /pay"}}},
+			{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "GET /balance"}}},
+		}})
+		if len(got) != 2 {
+			t.Fatalf("got %v, want exactly the two OR branches", got)
+		}
+		for _, name := range got {
+			if name == "GET /health" {
+				t.Error("a span matching neither OR branch was returned")
+			}
+		}
+	})
+
+	t.Run("not excludes", func(t *testing.T) {
+		got := filterNames(t, query.QueryWhereClause{Not: &query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "ledger"}},
+		}})
+		if len(got) != 2 {
+			t.Errorf("got %v, want the two non-ledger spans", got)
+		}
+	})
+
+	t.Run("nested and inside or", func(t *testing.T) {
+		got := filterNames(t, query.QueryWhereClause{Or: []query.QueryWhereClause{
+			{And: []query.QueryWhereClause{
+				{Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "checkout"}}},
+				{Binary: query.BinaryWhereClause{"http_status_code": {query.Eq: "500"}}},
+			}},
+			{Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "ledger"}}},
+		}})
+		if len(got) != 2 {
+			t.Errorf("got %v, want POST /pay and GET /balance", got)
+		}
+	})
+
+	// A top-level binary is ANDed with the OR group, so the service equality that
+	// gets pushed down as the API's `service` parameter stays correct.
+	t.Run("top-level binary ands with an or group", func(t *testing.T) {
+		got := filterNames(t, query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "checkout"}},
+			Or: []query.QueryWhereClause{
+				{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "POST /pay"}}},
+				{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "GET /balance"}}},
+			},
+		})
+		if len(got) != 1 || got[0] != "POST /pay" {
+			t.Errorf("got %v, want only POST /pay (GET /balance is on the other service)", got)
+		}
+	})
+}
+
+// Silently treating an unevaluatable operator as a match would return unfiltered
+// spans as though the filter had been applied.
+func TestFilterCubeAPMSpansRejectsUnsupportedOperator(t *testing.T) {
+	_, err := filterCubeAPMSpans(testCubeAPMSpans(), query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{"span_name": {query.Between: "a"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error rather than a silently unfiltered result")
+	}
+	if !strings.Contains(err.Error(), "unsupported operator") {
+		t.Errorf("error = %v", err)
+	}
 }
 
 func TestSortCubeAPMSpans(t *testing.T) {
@@ -608,58 +684,87 @@ func TestCubeAPMTraceCountsAreEstimates(t *testing.T) {
 	}
 }
 
-// Every operator advertised for traces must be one the local filter actually
-// evaluates, or the builder offers a filter that silently matches nothing.
+// Every operator advertised for traces must be one the evaluator actually
+// implements, or the builder offers a filter that errors at query time.
 func TestCubeAPMTraceSupportedOperatorsAreEvaluated(t *testing.T) {
 	s := &CubeAPMTraceSource{}
-	span := common.OpenTelemetryTrace{
-		SpanName:           "POST /pay",
-		SpanAttributes:     map[string]string{},
-		ResourceAttributes: map[string]string{},
-	}
-
 	for _, op := range s.GetSupportedOperators() {
 		t.Run(op, func(t *testing.T) {
-			filters := cubeAPMLocalFilters(query.QueryWhereClause{Binary: query.BinaryWhereClause{
-				"span_name": {query.BinaryWhereClauseType(op): "POST /pay"},
-			}})
-			if len(filters) == 0 {
-				t.Fatalf("advertised operator %q is not collected as a local filter", op)
+			_, err := filterCubeAPMSpans(testCubeAPMSpans(), query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"span_name": {query.BinaryWhereClauseType(op): "POST /pay"}},
+			})
+			if err != nil {
+				t.Errorf("advertised operator %q is not evaluated: %v", op, err)
 			}
-			// Just assert it evaluates without panicking and produces a decision.
-			filterCubeAPMSpans([]common.OpenTelemetryTrace{span}, filters)
 		})
 	}
 }
 
-// A non-equality filter on the service has no server-side equivalent — the
-// search API's `service` parameter only expresses equality — so it has to stay
-// in the local filter set or it silently matches everything.
-func TestCubeAPMLocalFiltersKeepsNonEqualityServiceFilters(t *testing.T) {
-	t.Run("eq is pushed down and skipped locally", func(t *testing.T) {
-		filters := cubeAPMLocalFilters(query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"workload_name": {query.Eq: "checkout"},
-		}})
-		if len(filters) != 0 {
-			t.Errorf("filters = %+v, want none (the equality is a server-side parameter)", filters)
-		}
-	})
+// The service equality is pushed down as the API's `service` parameter AND
+// re-evaluated locally. Re-checking is free — it is already true of every fetched
+// span — and keeps the evaluator free of push-down special cases, which would be
+// wrong inside an OR branch.
+func TestCubeAPMServiceFilterIsEvaluatedLocallyToo(t *testing.T) {
+	got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"workload_name": {query.Eq: "ledger"},
+	}})
+	if len(got) != 1 || got[0] != "GET /balance" {
+		t.Errorf("got %v, want only the ledger span", got)
+	}
 
-	t.Run("neq is kept local", func(t *testing.T) {
-		filters := cubeAPMLocalFilters(query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"workload_name": {query.Nq: "checkout"},
-		}})
-		if len(filters) != 1 || filters[0].Field != "service.name" || filters[0].Op != query.Nq {
-			t.Errorf("filters = %+v, want a local service.name != filter", filters)
-		}
-	})
+	// A non-equality on the service has no server-side equivalent at all, so the
+	// local evaluator is the only thing enforcing it.
+	got = filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"workload_name": {query.Nq: "ledger"},
+	}})
+	if len(got) != 2 {
+		t.Errorf("got %v, want the two checkout spans", got)
+	}
+}
 
-	t.Run("contains is kept local", func(t *testing.T) {
-		filters := cubeAPMLocalFilters(query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"service_name": {query.Contains: "check"},
-		}})
-		if len(filters) != 1 || filters[0].Field != "service.name" {
-			t.Errorf("filters = %+v, want a local service.name contains filter", filters)
-		}
-	})
+// Regression: sorting the RFC3339 strings directly inverts order when two spans
+// differ in fractional-second digit width. 100ms renders as ".1Z" and 120ms as
+// ".12Z", which compare on 'Z' (0x5A) against '2' (0x32) — putting the later span
+// first. Sub-millisecond spacing is what a trace waterfall is made of.
+func TestSortCubeAPMSpansHandlesFractionalSecondWidths(t *testing.T) {
+	spans := []common.OpenTelemetryTrace{
+		{SpanName: "later", Timestamp: "2025-10-29T03:55:04.12Z"},
+		{SpanName: "earlier", Timestamp: "2025-10-29T03:55:04.1Z"},
+	}
+
+	// Guard the premise: a raw string compare really does get this wrong, i.e.
+	// the EARLIER span's timestamp sorts as greater than the later one's.
+	if spans[1].Timestamp <= spans[0].Timestamp {
+		t.Fatal("premise no longer holds; the fixture no longer exercises the bug")
+	}
+
+	sortCubeAPMSpans(spans, []query.QueryOrderBy{{Column: "timestamp", Order: query.Asc}})
+	if spans[0].SpanName != "earlier" {
+		t.Errorf("ascending order = %s then %s, want earlier first",
+			spans[0].SpanName, spans[1].SpanName)
+	}
+
+	sortCubeAPMSpans(spans, []query.QueryOrderBy{{Column: "timestamp", Order: query.Desc}})
+	if spans[0].SpanName != "later" {
+		t.Errorf("descending order = %s then %s, want later first",
+			spans[0].SpanName, spans[1].SpanName)
+	}
+}
+
+func TestCubeAPMSpanStartNanos(t *testing.T) {
+	got := cubeAPMSpanStartNanos(common.OpenTelemetryTrace{Timestamp: "2025-10-29T03:55:04.1Z"})
+	want := cubeAPMSpanStartNanos(common.OpenTelemetryTrace{Timestamp: "2025-10-29T03:55:04.100Z"})
+	if got != want {
+		t.Errorf(".1Z and .100Z are the same instant but parsed to %d and %d", got, want)
+	}
+
+	// Falls back to StartTime when Timestamp is absent.
+	if cubeAPMSpanStartNanos(common.OpenTelemetryTrace{StartTime: "2025-10-29T03:55:04Z"}) == 0 {
+		t.Error("StartTime fallback did not parse")
+	}
+
+	// A malformed start sorts as 0 rather than failing the whole query.
+	if cubeAPMSpanStartNanos(common.OpenTelemetryTrace{Timestamp: "not-a-time"}) != 0 {
+		t.Error("an unparseable timestamp should sort as 0")
+	}
 }

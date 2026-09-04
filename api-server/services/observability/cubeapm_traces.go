@@ -446,8 +446,7 @@ func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req Traces
 
 	limit := cubeAPMTraceLimit(req)
 	fetchLimit := limit
-	filters := cubeAPMLocalFilters(req.QueryRequest.Where)
-	if len(filters) > 0 {
+	if cubeAPMWhereHasFilters(req.QueryRequest.Where) {
 		fetchLimit = min(limit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
 	}
 
@@ -473,7 +472,10 @@ func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req Traces
 		}
 	}
 
-	spans = filterCubeAPMSpans(spans, filters)
+	spans, err = filterCubeAPMSpans(spans, req.QueryRequest.Where)
+	if err != nil {
+		return nil, err
+	}
 	sortCubeAPMSpans(spans, req.QueryRequest.OrderBy)
 
 	if len(spans) > limit {
@@ -482,74 +484,28 @@ func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req Traces
 	return spans, nil
 }
 
-// cubeAPMLocalFilter is one equality-shaped predicate evaluated against a decoded
-// span.
-type cubeAPMLocalFilter struct {
-	Field string
-	Op    query.BinaryWhereClauseType
-	Value string
-}
-
-// cubeAPMLocalFilters flattens the where clause into the predicates that must be
-// applied locally. An equality on `service.name` is excluded because it is already
-// pushed down as the API's `service` parameter; every other operator on it stays,
-// since the API has no equivalent for them.
-//
-// Only the top-level AND-of-binaries shape is extracted: OR and NOT trees have no
-// faithful local evaluation without re-implementing the whole clause engine, and
-// silently dropping half of one would be worse than the current behaviour of
-// leaving those filters to the operator's eye.
-func cubeAPMLocalFilters(where query.QueryWhereClause) []cubeAPMLocalFilter {
-	var filters []cubeAPMLocalFilter
-
-	collect := func(binary query.BinaryWhereClause) {
-		for field, ops := range binary {
-			mapped := field
-			if m, ok := cubeAPMTraceLabelMapping[field]; ok {
-				mapped = m
-			}
-			for op, val := range ops {
-				// Only the equality on service.name is pushed down as the API's
-				// `service` parameter (see cubeAPMSearchParams). Any other operator on
-				// it — a negation, a substring — has no server-side equivalent, so it
-				// must still be evaluated locally or the filter silently does nothing.
-				if mapped == "service.name" && op == query.Eq {
-					continue
-				}
-				switch op {
-				case query.Eq, query.Nq, query.Contains, query.ILike:
-					filters = append(filters, cubeAPMLocalFilter{
-						Field: mapped,
-						Op:    op,
-						Value: fmt.Sprintf("%v", val),
-					})
-				}
-			}
-		}
+// cubeAPMWhereHasFilters reports whether a where-clause carries any predicate at
+// all, which is what decides whether the fetch needs to over-fetch.
+func cubeAPMWhereHasFilters(where query.QueryWhereClause) bool {
+	if len(where.Binary) > 0 || len(where.And) > 0 || len(where.Or) > 0 || where.Not != nil {
+		return true
 	}
-
-	collect(where.Binary)
-	for _, sub := range where.And {
-		collect(sub.Binary)
-	}
-
-	sort.Slice(filters, func(i, j int) bool {
-		if filters[i].Field != filters[j].Field {
-			return filters[i].Field < filters[j].Field
-		}
-		return filters[i].Op < filters[j].Op
-	})
-	return filters
+	return false
 }
 
 // cubeAPMSpanFieldValue resolves a filter field against a decoded span, checking
 // the promoted columns before falling back to the raw attribute maps.
 func cubeAPMSpanFieldValue(span common.OpenTelemetryTrace, field string) string {
+	if mapped, ok := cubeAPMTraceLabelMapping[field]; ok {
+		field = mapped
+	}
 	switch field {
 	case "operation_name", "span_name":
 		return span.SpanName
 	case "service.name":
 		return span.ServiceName
+	case "k8s.namespace.name":
+		return span.WorkloadNamespace
 	case "trace_id":
 		return span.TraceID
 	case "span_id":
@@ -569,37 +525,180 @@ func cubeAPMSpanFieldValue(span common.OpenTelemetryTrace, field string) string 
 	return span.ResourceAttributes[field]
 }
 
-func filterCubeAPMSpans(spans []common.OpenTelemetryTrace, filters []cubeAPMLocalFilter) []common.OpenTelemetryTrace {
-	if len(filters) == 0 {
-		return spans
+// cubeAPMFilterValues normalizes a filter operand into the list of strings to
+// compare against, so the scalar and list operators share one code path.
+func cubeAPMFilterValues(val any) []string {
+	switch v := val.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, fmt.Sprintf("%v", item))
+		}
+		return out
+	default:
+		return []string{fmt.Sprintf("%v", val)}
 	}
-	kept := spans[:0]
-	for _, span := range spans {
-		matched := true
-		for _, f := range filters {
-			actual := cubeAPMSpanFieldValue(span, f.Field)
-			switch f.Op {
-			case query.Eq:
-				matched = strings.EqualFold(actual, f.Value)
-			case query.Nq:
-				matched = !strings.EqualFold(actual, f.Value)
-			case query.Contains, query.ILike:
-				matched = strings.Contains(strings.ToLower(actual), strings.ToLower(f.Value))
+}
+
+// evalCubeAPMBinary evaluates one binary clause against a span. Conditions within
+// a clause are ANDed, matching how every other provider here reads the shape.
+func evalCubeAPMBinary(span common.OpenTelemetryTrace, binary query.BinaryWhereClause) (bool, error) {
+	for field, ops := range binary {
+		actual := cubeAPMSpanFieldValue(span, field)
+		for op, val := range ops {
+			values := cubeAPMFilterValues(val)
+
+			matchesAny := func() bool {
+				for _, want := range values {
+					if strings.EqualFold(actual, want) {
+						return true
+					}
+				}
+				return false
 			}
-			if !matched {
+
+			var ok bool
+			switch op {
+			case query.Eq:
+				ok = matchesAny()
+			case query.Nq:
+				ok = !matchesAny()
+			case query.In:
+				ok = matchesAny()
+			case query.NotIn:
+				ok = !matchesAny()
+			case query.Contains, query.ILike:
+				ok = false
+				for _, want := range values {
+					if strings.Contains(strings.ToLower(actual), strings.ToLower(want)) {
+						ok = true
+						break
+					}
+				}
+			default:
+				// Refusing beats guessing. An operator evaluated as "matches" would
+				// return unfiltered spans as though the filter had been applied —
+				// the same failure this source avoids by not inventing a server-side
+				// query syntax.
+				return false, fmt.Errorf("unsupported operator %q for CubeAPM traces (field %q)", op, field)
+			}
+			if !ok {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+// evalCubeAPMWhere evaluates a full where-clause tree against one span.
+//
+// This is recursive rather than a flat predicate list on purpose. CubeAPM's search
+// API documents no filter syntax beyond `service` and `env`, so every other
+// predicate has to be decided here — and a flat list silently drops OR and NOT
+// subtrees, which means an OR-shaped filter returns every span as though it had
+// matched. That is the precise failure mode this source refuses to accept from the
+// server, so it must not introduce it on the client.
+func evalCubeAPMWhere(span common.OpenTelemetryTrace, where query.QueryWhereClause) (bool, error) {
+	if len(where.Binary) > 0 {
+		ok, err := evalCubeAPMBinary(span, where.Binary)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+
+	for _, sub := range where.And {
+		ok, err := evalCubeAPMWhere(span, sub)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+
+	if len(where.Or) > 0 {
+		matched := false
+		for _, sub := range where.Or {
+			ok, err := evalCubeAPMWhere(span, sub)
+			if err != nil {
+				return false, err
+			}
+			if ok {
+				matched = true
 				break
 			}
 		}
-		if matched {
+		if !matched {
+			return false, nil
+		}
+	}
+
+	if where.Not != nil {
+		ok, err := evalCubeAPMWhere(span, *where.Not)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// filterCubeAPMSpans keeps the spans matching the where-clause. An equality on the
+// service is also re-evaluated here even though it was pushed down as the API's
+// `service` parameter: it is already true of every span fetched, so re-checking
+// costs nothing and keeps the evaluator free of push-down special cases that would
+// be wrong inside an OR branch.
+func filterCubeAPMSpans(spans []common.OpenTelemetryTrace, where query.QueryWhereClause) ([]common.OpenTelemetryTrace, error) {
+	if !cubeAPMWhereHasFilters(where) {
+		return spans, nil
+	}
+
+	kept := spans[:0]
+	for _, span := range spans {
+		ok, err := evalCubeAPMWhere(span, where)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			kept = append(kept, span)
 		}
 	}
-	return kept
+	return kept, nil
+}
+
+// cubeAPMSpanStartNanos parses a span's start timestamp into a comparable value.
+//
+// Ordering the RFC3339 strings directly is wrong, and wrong in a way that looks
+// right in most fixtures: the format trims trailing zeros from the fractional
+// second, so 100ms and 120ms render as "…04.1Z" and "…04.12Z". Those compare on
+// their first differing byte — 'Z' (0x5A) against '2' (0x32) — which puts the
+// LATER span first. It only shows up when two spans differ in fractional-second
+// digit width, which is exactly the sub-millisecond spacing a trace waterfall is
+// made of.
+//
+// An unparseable timestamp sorts as 0 rather than failing the query; a span with
+// a malformed start is still worth showing.
+func cubeAPMSpanStartNanos(span common.OpenTelemetryTrace) int64 {
+	ts := span.Timestamp
+	if ts == "" {
+		ts = span.StartTime
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(ts))
+	if err != nil {
+		return 0
+	}
+	return parsed.UnixNano()
 }
 
 // sortCubeAPMSpans orders spans by the request's primary sort column. The search
 // API returns traces in its own order and the span list within a trace is
 // execution order, so without this the table's sort header does nothing.
+//
+// Sort keys are computed once up front rather than inside the comparator: a
+// comparator that parses timestamps would do O(n log n) parses and would have to
+// swallow errors mid-sort.
 func sortCubeAPMSpans(spans []common.OpenTelemetryTrace, orderBy []query.QueryOrderBy) {
 	column, desc := "timestamp", true
 	if len(orderBy) > 0 && orderBy[0].Column != "" {
@@ -607,16 +706,30 @@ func sortCubeAPMSpans(spans []common.OpenTelemetryTrace, orderBy []query.QueryOr
 		desc = strings.HasPrefix(string(orderBy[0].Order), "desc")
 	}
 
-	sort.SliceStable(spans, func(i, j int) bool {
-		a, b := i, j
-		if desc {
-			a, b = j, i
-		}
+	type keyed struct {
+		span common.OpenTelemetryTrace
+		key  int64
+	}
+
+	rows := make([]keyed, len(spans))
+	for i, span := range spans {
+		key := cubeAPMSpanStartNanos(span)
 		if column == "duration_ns" {
-			return spans[a].DurationNs < spans[b].DurationNs
+			key = span.DurationNs
 		}
-		return spans[a].Timestamp < spans[b].Timestamp
+		rows[i] = keyed{span: span, key: key}
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		if desc {
+			return rows[j].key < rows[i].key
+		}
+		return rows[i].key < rows[j].key
 	})
+
+	for i := range rows {
+		spans[i] = rows[i].span
+	}
 }
 
 // CountTraces returns -1: CubeAPM exposes no trace-count endpoint, and the
@@ -859,7 +972,9 @@ func (s *CubeAPMTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, re
 		spans = append(spans, cubeAPMSpanToTrace(span))
 	}
 	// Execution order, not ingest order — the waterfall reads wrong otherwise.
-	sort.SliceStable(spans, func(i, j int) bool { return spans[i].Timestamp < spans[j].Timestamp })
+	// Ordered through the shared ascending sort so it uses parsed timestamps
+	// rather than raw strings (see cubeAPMSpanStartNanos).
+	sortCubeAPMSpans(spans, []query.QueryOrderBy{{Column: "timestamp", Order: query.Asc}})
 
 	return cubeAPMTracesToHeatmap(spans), nil
 }
