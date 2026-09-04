@@ -68,7 +68,10 @@ class Cache:
             try:
                 installations_dict = [installation.to_dict() for installation in installations]
                 pipe.set(key, json.dumps(installations_dict, default=self._json_serializable))
-                pipe.expire(key, settings.redis.cache_expiration_minutes * 30)
+                # redis EXPIRE takes SECONDS, so a minutes setting converts with * 60 —
+                # as every other expire in this file does. This one used * 30, giving
+                # installations half the configured lifetime.
+                pipe.expire(key, settings.redis.cache_expiration_minutes * 60)
                 pipe.execute()
             except TypeError as e:
                 LOG.exception(f"Error serializing installations: {e}")

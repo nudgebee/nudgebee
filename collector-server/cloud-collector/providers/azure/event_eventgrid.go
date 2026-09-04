@@ -38,18 +38,65 @@ type CloudEvent struct {
 	Data            json.RawMessage `json:"data"`
 }
 
-// AccountMetadata stores additional metadata about an account that's not in providers.Account
-type AccountMetadata struct {
-	ID       string // UUID of the account in cloud_accounts table
-	TenantID string // UUID of the Nudgebee tenant
+// azureAccountTenantCache maps a resolved cloud account UUID to its Nudgebee
+// tenant. providers.Account carries no tenant field, so the tenant has to be
+// remembered alongside the account for update_cloud_resource. Written on every
+// successful account resolution and read later in the same message flow, so an
+// entry is always refreshed immediately before use.
+//
+// Keyed by account UUID, NOT by Azure account number. getAzureAccountByExternalId
+// exists precisely because multiple Nudgebee tenants can use the same Azure
+// subscription, so an account-number key makes those tenants collide on one entry
+// and lets a resource update be attributed to whichever tenant resolved last. The
+// account UUID is unique per tenant and the consumer already holds it.
+//
+// Entries expire so a deleted or re-onboarded account cannot pin stale metadata
+// for the process lifetime, and so the map cannot grow without bound. The TTL is
+// long because a read is always preceded by a write in the same flow, and an
+// expiry racing a read would fail a resource update.
+const azureAccountTenantTTL = time.Hour
+
+var (
+	azureAccountTenantCache   = make(map[string]azureAccountTenantEntry)
+	azureAccountTenantCacheMu sync.RWMutex
+)
+
+type azureAccountTenantEntry struct {
+	tenantId string
+	expiry   time.Time
 }
 
-// Global map to store account metadata by account number (temporary solution)
-// Key: account_number (Azure tenant ID), Value: AccountMetadata
-var (
-	azureAccountMetadataCache      = make(map[string]AccountMetadata)
-	azureAccountMetadataCacheMutex sync.RWMutex
-)
+// azureAccountTenantPruneInterval is how often setAzureAccountTenant sweeps
+// aged-out entries. The sweep is O(N) under the write lock and a write happens on
+// every resolved message, so sweeping per write would put a full scan on the hot
+// path; once per interval makes it amortised O(1). Reads check expiry
+// themselves, so a lingering entry is never served.
+const azureAccountTenantPruneInterval = 5 * time.Minute
+
+var azureAccountTenantLastPrune time.Time
+
+// setAzureAccountTenant caches the tenant owning accountId, sweeping aged-out
+// entries at most once per azureAccountTenantPruneInterval.
+func setAzureAccountTenant(accountId, tenantId string) {
+	if accountId == "" {
+		return
+	}
+	now := time.Now()
+	azureAccountTenantCacheMu.Lock()
+	defer azureAccountTenantCacheMu.Unlock()
+	if now.Sub(azureAccountTenantLastPrune) >= azureAccountTenantPruneInterval {
+		azureAccountTenantLastPrune = now
+		for k, e := range azureAccountTenantCache {
+			if now.After(e.expiry) {
+				delete(azureAccountTenantCache, k)
+			}
+		}
+	}
+	azureAccountTenantCache[accountId] = azureAccountTenantEntry{
+		tenantId: tenantId,
+		expiry:   now.Add(azureAccountTenantTTL),
+	}
+}
 
 // eventGridSourceToServiceName maps common Azure Event Grid sources to standardized service names.
 // Azure uses resource provider namespaces (Microsoft.Compute, Microsoft.Storage, etc.)
@@ -311,17 +358,21 @@ func getAccountFromEventGridEvent(ctx providers.CloudProviderContext, event Even
 	return getAzureAccountByExternalId(ctx, externalId, accountNumber)
 }
 
-// GetAzureAccountMetadata retrieves the account ID and tenant ID for a given Azure account number (tenant ID).
-// This is used after account lookup to get metadata needed for resource updates.
-func GetAzureAccountMetadata(accountNumber string) (accountId string, tenantId string, found bool) {
-	azureAccountMetadataCacheMutex.RLock()
-	defer azureAccountMetadataCacheMutex.RUnlock()
-
-	metadata, ok := azureAccountMetadataCache[accountNumber]
-	if !ok {
-		return "", "", false
+// GetAzureAccountTenant returns the Nudgebee tenant owning the given cloud account
+// UUID. Used after account lookup to get the tenant needed for resource updates,
+// which providers.Account cannot carry.
+func GetAzureAccountTenant(accountId string) (tenantId string, found bool) {
+	if accountId == "" {
+		return "", false
 	}
-	return metadata.ID, metadata.TenantID, true
+	azureAccountTenantCacheMu.RLock()
+	defer azureAccountTenantCacheMu.RUnlock()
+
+	entry, ok := azureAccountTenantCache[accountId]
+	if !ok || time.Now().After(entry.expiry) {
+		return "", false
+	}
+	return entry.tenantId, true
 }
 
 // getAzureAccountByExternalId looks up cloud_account by external_id (token) and Azure account number (tenant ID or subscription ID).
@@ -370,13 +421,8 @@ func getAzureAccountByExternalId(ctx providers.CloudProviderContext, externalId 
 			expectedAccountNumber, err)
 	}
 
-	// Store account metadata (ID and TenantID) in cache for later use
-	azureAccountMetadataCacheMutex.Lock()
-	azureAccountMetadataCache[accountRow.AccountNumber] = AccountMetadata{
-		ID:       accountRow.Id,
-		TenantID: accountRow.Tenant,
-	}
-	azureAccountMetadataCacheMutex.Unlock()
+	// Remember the tenant owning this account for later use
+	setAzureAccountTenant(accountRow.Id, accountRow.Tenant)
 
 	// Build providers.Account with the fields it actually has
 	account := providers.Account{
@@ -479,13 +525,8 @@ func getAzureAccountBySubscriptionId(ctx providers.CloudProviderContext, subscri
 		"accountNumber", accountRow.AccountNumber,
 		"accountName", accountRow.AccountName)
 
-	// Store account metadata in cache
-	azureAccountMetadataCacheMutex.Lock()
-	azureAccountMetadataCache[accountRow.AccountNumber] = AccountMetadata{
-		ID:       accountRow.Id,
-		TenantID: accountRow.Tenant,
-	}
-	azureAccountMetadataCacheMutex.Unlock()
+	// Remember the tenant owning this account for later use
+	setAzureAccountTenant(accountRow.Id, accountRow.Tenant)
 
 	// Build providers.Account
 	account := providers.Account{

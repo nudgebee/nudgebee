@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/relay"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/samber/lo"
 )
@@ -59,8 +60,21 @@ var k8sSupportedListObjects = []string{K8sObjectDeployments, K8sObjectDaemonsets
 
 const k8sRBACCacheNamespace = "k8s_rbac"
 
+// k8sRBACCacheTTL bounds how long a stale cluster RBAC view can keep granting a
+// permission. This cache sits on the authz path — ListK8sPermissions,
+// VerifyK8sPermission and ListK8sObjectNames all resolve through it — and its
+// source of truth is the customer's live cluster (roles/rolebindings fetched
+// through the relay) plus collector-maintained metastore tables. Neither
+// produces an event api-server could invalidate on, so the TTL is the ONLY
+// freshness mechanism: removing a RoleBinding in the cluster keeps working here
+// for up to this long. Registered explicitly rather than inheriting the global
+// cache_expiration_minutes default (30m), which is a general-purpose knob and
+// too long a window to leave a revoked permission live. A miss costs one relay
+// round-trip per account (not per user), so a short window is affordable.
+const k8sRBACCacheTTL = 5 * time.Minute
+
 func init() {
-	common.CacheCreateNamespace(k8sRBACCacheNamespace)
+	common.CacheCreateNamespace(k8sRBACCacheNamespace, common.CacheNamespaceWithExpiration(k8sRBACCacheTTL))
 }
 
 func getRoleAndBindings(accountId string) (map[string]any, error) {

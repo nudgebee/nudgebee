@@ -101,6 +101,17 @@ func CacheCreateNamespace(namespace string, options ...CacheNamespaceOption) {
 	cacheManagers[namespace] = cacheNamespaceOptions
 }
 
+// cacheNamespaceExpiration returns the TTL a namespace was registered with, or
+// 0 when the namespace is unknown.
+func cacheNamespaceExpiration(namespace string) time.Duration {
+	syncCacheManagers.Lock()
+	defer syncCacheManagers.Unlock()
+	if options, ok := cacheManagers[namespace]; ok {
+		return options.Expiration
+	}
+	return 0
+}
+
 type CacheHealthInfo struct {
 	Err      error
 	Provider string
@@ -175,6 +186,15 @@ func CacheSet(namespace string, key string, value []byte, options ...CacheSetOpt
 	for _, option := range options {
 		option(&cacheOption)
 	}
+	if cacheOption.Expiration == 0 {
+		// Fall back to the TTL the namespace was registered with. Without this
+		// the redis provider stores entries with no expiry at all: gocache
+		// passes the expiration straight through to SET, where 0 means "keep
+		// forever", and CacheCreateNamespace's expiration only ever reaches the
+		// in-memory store's LifeWindow. Every missed invalidation then became
+		// permanent instead of bounded by the declared TTL.
+		cacheOption.Expiration = cacheNamespaceExpiration(namespace)
+	}
 	if cacheOption.Expiration > 0 {
 		storeOptions = append(storeOptions, store.WithExpiration(cacheOption.Expiration))
 	}
@@ -208,7 +228,16 @@ func CacheDeleteWithTag(namespace string, tags ...string) error {
 	if err != nil {
 		return err
 	}
-	tags = append(tags, "namespace:"+namespace)
+	if len(tags) == 0 {
+		// No tags to invalidate — a no-op. Never fall through to Invalidate with
+		// an empty tag set, whose behavior is store-dependent (could wipe all).
+		return nil
+	}
+	// Do NOT append the namespace tag here. Every entry is tagged with
+	// "namespace:<ns>" at set time, and gocache tag-invalidation is an OR over
+	// the given tags — so including it would invalidate the whole namespace
+	// (every account/tenant) on every call, not just the entries matching the
+	// caller's tags. The namespace tag is reserved for CacheClear.
 	return cache.Invalidate(context.Background(), store.WithInvalidateTags(tags))
 }
 

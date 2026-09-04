@@ -59,18 +59,72 @@ type SNSNotificationPayload struct {
 	MessageAttributes map[string]SNSMessageAttribute `json:"MessageAttributes,omitempty"`
 }
 
-// AccountMetadata stores additional metadata about an account that's not in providers.Account
-type AccountMetadata struct {
-	ID       string // UUID of the account in cloud_accounts table
-	TenantID string // UUID of the tenant
+// accountTenantCache maps a resolved cloud account UUID to its Nudgebee tenant.
+// providers.Account carries no tenant field, so the tenant has to be remembered
+// alongside the account for the consumers that need it (agent status, cloud
+// resource updates). Written on every successful account resolution (cache hit
+// and DB lookup alike) and read later in the same message flow, so an entry is
+// always refreshed immediately before use.
+//
+// Keyed by account UUID, NOT by AWS account number. The same AWS account number
+// can belong to multiple Nudgebee tenants — which is exactly why
+// accountLookupCache above is keyed by (external_id, account_number) — so an
+// account-number key makes the two tenants collide on one entry and lets
+// updateCloudResource attribute a resource update to whichever tenant resolved
+// last. The account UUID is unique per tenant and every consumer already holds
+// it on the providers.Account it is working with.
+//
+// Entries expire so a deleted or re-onboarded account cannot pin stale metadata
+// for the process lifetime, and so the map cannot grow without bound. The TTL is
+// deliberately much longer than accountLookupTTL: a read is always preceded by a
+// write in the same flow, and an expiry that raced a read would surface as
+// "tenant not found in cache", failing a resource update.
+const accountTenantTTL = time.Hour
+
+var (
+	accountTenantCache   = make(map[string]accountTenantEntry)
+	accountTenantCacheMu sync.RWMutex
+)
+
+type accountTenantEntry struct {
+	tenantId string
+	expiry   time.Time
 }
 
-// Global map to store account metadata by account number (temporary solution)
-// Key: account_number, Value: AccountMetadata
-var (
-	accountMetadataCache      = make(map[string]AccountMetadata)
-	accountMetadataCacheMutex sync.RWMutex
-)
+// accountTenantPruneInterval is how often setAccountTenant sweeps aged-out
+// entries. The sweep is O(N) over the map while holding the write lock, and a
+// write happens on every resolved message, so doing it on every write would put
+// a full scan on the hot path and serialise the consumer goroutines behind it.
+// Sweeping at most once per interval makes it amortised O(1) per write. Reads
+// check expiry themselves, so an entry lingering until the next sweep is never
+// served — the sweep bounds memory, it does not enforce the TTL.
+const accountTenantPruneInterval = 5 * time.Minute
+
+var accountTenantLastPrune time.Time
+
+// setAccountTenant caches the tenant owning accountId, sweeping aged-out entries
+// at most once per accountTenantPruneInterval. Keeps the map bounded without a
+// background sweeper.
+func setAccountTenant(accountId, tenantId string) {
+	if accountId == "" {
+		return
+	}
+	now := time.Now()
+	accountTenantCacheMu.Lock()
+	defer accountTenantCacheMu.Unlock()
+	if now.Sub(accountTenantLastPrune) >= accountTenantPruneInterval {
+		accountTenantLastPrune = now
+		for k, e := range accountTenantCache {
+			if now.After(e.expiry) {
+				delete(accountTenantCache, k)
+			}
+		}
+	}
+	accountTenantCache[accountId] = accountTenantEntry{
+		tenantId: tenantId,
+		expiry:   now.Add(accountTenantTTL),
+	}
+}
 
 // accountLookupCache caches the result of getAccountByExternalId so the SQS
 // receive loop avoids a per-message PG SELECT. Key is (external_id, account_number)
@@ -92,7 +146,14 @@ type accountLookupEntry struct {
 var (
 	accountLookupCache   = make(map[accountLookupKey]accountLookupEntry)
 	accountLookupCacheMu sync.RWMutex
+	// accountLookupLastPrune is the last aged-out sweep; see the sweep in
+	// getAccountByExternalId for why it is interval-based.
+	accountLookupLastPrune time.Time
 )
+
+// accountLookupPruneInterval matches accountLookupTTL: one sweep per TTL window
+// is enough to keep the map bounded.
+const accountLookupPruneInterval = accountLookupTTL
 
 // EventBridge agent status throttle cache.
 // Limits DB writes to at most once per hour per cloud account.
@@ -397,17 +458,21 @@ func getAccountFromEventBridgeEvent(ctx providers.CloudProviderContext, event Ev
 	return getAccountByExternalId(ctx, externalId, event.Account)
 }
 
-// GetAccountMetadata retrieves the account ID and tenant ID for a given account number.
-// This is used after account lookup to get metadata needed for resource updates.
-func GetAccountMetadata(accountNumber string) (accountId string, tenantId string, found bool) {
-	accountMetadataCacheMutex.RLock()
-	defer accountMetadataCacheMutex.RUnlock()
-
-	metadata, ok := accountMetadataCache[accountNumber]
-	if !ok {
-		return "", "", false
+// GetAccountTenant returns the Nudgebee tenant owning the given cloud account
+// UUID. Used after account lookup to get the tenant needed for resource updates,
+// which providers.Account cannot carry.
+func GetAccountTenant(accountId string) (tenantId string, found bool) {
+	if accountId == "" {
+		return "", false
 	}
-	return metadata.ID, metadata.TenantID, true
+	accountTenantCacheMu.RLock()
+	defer accountTenantCacheMu.RUnlock()
+
+	entry, ok := accountTenantCache[accountId]
+	if !ok || time.Now().After(entry.expiry) {
+		return "", false
+	}
+	return entry.tenantId, true
 }
 
 // getAccountByExternalId looks up cloud_account by external_id (token) and AWS account number.
@@ -423,9 +488,7 @@ func getAccountByExternalId(ctx providers.CloudProviderContext, externalId strin
 		tenantId := v.tenantId
 		accountLookupCacheMu.RUnlock()
 		// Refresh derived metadata cache so downstream throttled status updates work.
-		accountMetadataCacheMutex.Lock()
-		accountMetadataCache[acct.AccountNumber] = AccountMetadata{ID: acct.ID, TenantID: tenantId}
-		accountMetadataCacheMutex.Unlock()
+		setAccountTenant(acct.ID, tenantId)
 		return acct, nil
 	}
 	accountLookupCacheMu.RUnlock()
@@ -481,13 +544,8 @@ func getAccountByExternalId(ctx providers.CloudProviderContext, externalId strin
 		return providers.Account{}, lookupErr
 	}
 
-	// Store account metadata (ID and TenantID) in cache for later use
-	accountMetadataCacheMutex.Lock()
-	accountMetadataCache[accountRow.AccountNumber] = AccountMetadata{
-		ID:       accountRow.Id,
-		TenantID: accountRow.Tenant,
-	}
-	accountMetadataCacheMutex.Unlock()
+	// Remember the tenant owning this account for later use
+	setAccountTenant(accountRow.Id, accountRow.Tenant)
 
 	// Build providers.Account with the fields it actually has
 	account := providers.Account{
@@ -502,11 +560,26 @@ func getAccountByExternalId(ctx providers.CloudProviderContext, externalId strin
 	}
 
 	// Cache the resolved account+tenant for fast subsequent lookups.
+	now := time.Now()
 	accountLookupCacheMu.Lock()
+	// Drop aged-out entries. The read path skips expired entries but never
+	// removed them, so every (external_id, account) pair ever seen stayed
+	// resident for the process lifetime. Swept at most once per interval rather
+	// than on every write: the scan is O(N) under the write lock and this runs
+	// per resolved message. Reads still check expiry, so a lingering entry is
+	// never served.
+	if now.Sub(accountLookupLastPrune) >= accountLookupPruneInterval {
+		accountLookupLastPrune = now
+		for k, e := range accountLookupCache {
+			if now.After(e.expiry) {
+				delete(accountLookupCache, k)
+			}
+		}
+	}
 	accountLookupCache[cacheKey] = accountLookupEntry{
 		account:  account,
 		tenantId: accountRow.Tenant,
-		expiry:   time.Now().Add(accountLookupTTL),
+		expiry:   now.Add(accountLookupTTL),
 	}
 	accountLookupCacheMu.Unlock()
 
@@ -832,11 +905,11 @@ func processBatchConcurrent(
 
 			// Update EventBridge agent status (throttled, best-effort).
 			go func(acc providers.Account, region string) {
-				accId, tenantId, found := GetAccountMetadata(acc.AccountNumber)
+				tenantId, found := GetAccountTenant(acc.ID)
 				if !found {
 					return
 				}
-				updateEventBridgeAgentStatusThrottled(accId, tenantId, region)
+				updateEventBridgeAgentStatusThrottled(acc.ID, tenantId, region)
 			}(originatingAccount, processedEvent.ResourceRegion)
 
 			results <- batchProcessResult{receiptHandle: rh, messageId: mid, ackDelete: true}

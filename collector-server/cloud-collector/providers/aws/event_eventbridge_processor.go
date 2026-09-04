@@ -1476,13 +1476,16 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 		"newStatus", params.NewStatus,
 		"accountNumber", awsAccount.AccountNumber)
 
-	// Get account metadata (UUID) from cache
-	accountID, tenantID, found := GetAccountMetadata(awsAccount.AccountNumber)
+	// The account UUID is already on the resolved account; only its tenant needs
+	// looking up, keyed by that UUID so two tenants sharing one AWS account
+	// number cannot be attributed to each other.
+	accountID := awsAccount.ID
+	tenantID, found := GetAccountTenant(accountID)
 	if !found {
-		logger.Error("eventprocessor: account metadata not found in cache", "accountNumber", awsAccount.AccountNumber)
-		return nil, fmt.Errorf("eventprocessor: account metadata not found in cache for account %s", awsAccount.AccountNumber)
+		logger.Error("eventprocessor: account tenant not found in cache", "accountId", accountID, "accountNumber", awsAccount.AccountNumber)
+		return nil, fmt.Errorf("eventprocessor: account tenant not found in cache for account %s", awsAccount.AccountNumber)
 	}
-	logger.Info("eventprocessor: found account metadata", "accountID", accountID, "tenantID", tenantID)
+	logger.Info("eventprocessor: resolved account tenant", "accountID", accountID, "tenantID", tenantID)
 
 	// Get database manager
 	dbms, err := common.GetDatabaseManager(common.Metastore)
