@@ -33,6 +33,14 @@ type podMetricEntry struct {
 	Values     []string       `json:"values"`
 }
 
+// VariantKey distinguishes the cpu and memory registrations of this action, which
+// are the same type and so would otherwise collapse into one run under
+// auto-discovery's per-implementation dedup — leaving OOM events with CPU
+// evidence only.
+func (a *podMetricAction) VariantKey() string {
+	return a.autodetectResource
+}
+
 func (a *podMetricAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if a.autodetectResource == "" {
 		return false

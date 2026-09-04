@@ -51,6 +51,22 @@ var agentToServerActionMap = map[string][]string{
 	"event_resource_events_enricher":      {"event_resource_events_enricher"},
 }
 
+// actionImplKey identifies one *configured* action implementation for the
+// auto-discovery dedup: the Go type, plus the variant key for types registered
+// under several names with different configuration.
+type actionImplKey struct {
+	typ     reflect.Type
+	variant string
+}
+
+func implKeyOf(action playbooks.PlaybookAction) actionImplKey {
+	key := actionImplKey{typ: reflect.TypeOf(action)}
+	if v, ok := action.(playbooks.PlaybookActionVariant); ok {
+		key.variant = v.VariantKey()
+	}
+	return key
+}
+
 // IsLogAction reports whether an action name belongs to the mutually exclusive
 // log-collection set. Callers outside this package need it to know that treating
 // one of these as "already ran" suppresses the whole category, not just that action.
@@ -1327,11 +1343,12 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 	// enumerates names, so without this both aliases pass CanAutoExecute, both
 	// run, and the event ends up with byte-identical duplicate evidence.
 	// AutoExecute never sees the action name, so one run per implementation is
-	// always equivalent.
-	executedImpls := make(map[reflect.Type]bool)
+	// equivalent — except where the same type is registered under several names
+	// with different configuration, which PlaybookActionVariant reports.
+	executedImpls := make(map[actionImplKey]bool)
 	for _, actionName := range executedAction {
 		if action, found := playbooks.GetAction(actionName); found {
-			executedImpls[reflect.TypeOf(action)] = true
+			executedImpls[implKeyOf(action)] = true
 		}
 	}
 
@@ -1361,7 +1378,7 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 		if !ok {
 			continue
 		}
-		implKey := reflect.TypeOf(action)
+		implKey := implKeyOf(action)
 		if executedImpls[implKey] {
 			context.GetLogger().Info("eventrule: skipping auto action (same implementation already ran under another name)", "actionName", actionName)
 			continue

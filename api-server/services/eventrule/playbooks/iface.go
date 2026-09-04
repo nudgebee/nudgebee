@@ -69,3 +69,16 @@ type PlaybookAutoAction interface {
 	CanAutoExecute(ctx PlaybookActionContext) bool
 	AutoExecute(ctx PlaybookActionContext) (PlaybookActionResponse, error)
 }
+
+// PlaybookActionVariant is implemented by actions registered under several
+// names with *different* configuration — e.g. the pod metric enricher's cpu and
+// memory variants, which are the same Go type differing only in an unexported
+// field. Auto-discovery dedups by implementation type (so that pure aliases like
+// cloud_metrics / cloud_list_metrics run once); without a variant key the first
+// configured instance to run would silently suppress every other one.
+//
+// Actions registered under a single name, or under several names with identical
+// configuration, must NOT implement this.
+type PlaybookActionVariant interface {
+	VariantKey() string
+}
