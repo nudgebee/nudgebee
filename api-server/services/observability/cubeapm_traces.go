@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -39,6 +40,40 @@ const (
 // applied locally (see filterCubeAPMSpans). Without it, a filter that matches one
 // span in ten would return a tenth of a page and read as "no more data".
 const cubeAPMTraceOverFetch = 5
+
+// The trace search API rejects a request missing any of index, env, service or
+// spanKind with a 400 — none of which appear in CubeAPM's published example
+// (`?query=*&env=UNSET&service=order&start=…&end=…&limit=10`). Verified against a
+// live instance, where omitting each in turn produced "index is required",
+// "env is required", "service is required", "spanKind is required".
+const (
+	// cubeAPMTraceIndex is the traces index to search. The server accepts any
+	// value here; "traces" is the meaningful one.
+	cubeAPMTraceIndex = "traces"
+
+	// cubeAPMTraceSpanKind is sent because the parameter is mandatory, not because
+	// it selects anything: on a live instance every value (server/client/internal/
+	// producer/consumer/all/*) returned an identical 32 matches, so the server
+	// requires it to be present and non-empty and then ignores it.
+	//
+	// "all" rather than a real span kind on purpose. If a later version starts
+	// honouring the parameter, "all" most likely fails loudly with a 400, whereas
+	// "server" would silently drop every client and internal span — data loss that
+	// looks like a quiet trace backend.
+	cubeAPMTraceSpanKind = "all"
+
+	// cubeAPMDefaultEnv is the environment tag searched when the integration has
+	// none configured. CubeAPM files telemetry with no explicit env under "UNSET",
+	// and env accepts no wildcard — "*" is accepted but matches nothing — so a
+	// concrete value has to be sent.
+	cubeAPMDefaultEnv = "UNSET"
+)
+
+// cubeAPMMaxFanoutServices bounds how many services an unfiltered trace query
+// fans out over. The search API requires an exact service name and supports no
+// wildcard, so "show me recent traces" has to be answered by asking per service;
+// the cap keeps that from becoming an unbounded request burst on a large install.
+const cubeAPMMaxFanoutServices = 20
 
 // cubeAPMHeatmapDefaultLookback is how far back a by-id trace fetch searches when
 // the caller supplies no window. The trace-detail view asks by trace_id alone, and
@@ -392,32 +427,63 @@ func cubeAPMTraceLimit(req TracesV3Request) int {
 	return limit
 }
 
-// cubeAPMSearchParams builds the query string for the search API.
+// cubeAPMSearchParams builds the query string for one search call.
 //
-// Only `service` and `env` are pushed down, because those are the only filter
-// parameters CubeAPM documents; `query` is sent as the documented wildcard. Every
-// other filter is applied to the decoded spans (see filterCubeAPMSpans) rather
-// than guessed at in an undocumented query syntax — a filter the server silently
+// index, env, service and spanKind are all mandatory (see the constants above);
+// service is the caller's because an unfiltered query has to fan out over
+// discovered services. `query` is sent as the documented wildcard: every real
+// filter is applied to the decoded spans (see filterCubeAPMSpans) rather than
+// guessed at in an undocumented query syntax — a filter the server silently
 // ignored would render unfiltered results as though they were filtered, which is
 // worse than fetching a little more than needed.
-func cubeAPMSearchParams(req TracesV3Request, env string, fetchLimit int) string {
+func cubeAPMSearchParams(req TracesV3Request, env, service string, fetchLimit int) string {
 	params := neturl.Values{}
 	params.Set("query", "*")
+	params.Set("index", cubeAPMTraceIndex)
+	params.Set("spanKind", cubeAPMTraceSpanKind)
 	params.Set("limit", strconv.Itoa(fetchLimit))
 
 	startMs, endMs := cubeAPMTimeRangeMillis(req.StartTime, req.EndTime, time.Now())
 	params.Set("start", strconv.FormatInt(startMs/1000, 10))
 	params.Set("end", strconv.FormatInt(endMs/1000, 10))
 
-	if env != "" {
-		params.Set("env", env)
+	if env == "" {
+		env = cubeAPMDefaultEnv
 	}
-	if service := extractFirstValueFromBinaryFilter(req.QueryRequest.Where.Binary,
-		"workload_name", "service_name", "service.name"); service != "" {
-		params.Set("service", service)
-	}
+	params.Set("env", env)
+	params.Set("service", service)
 
 	return "?" + params.Encode()
+}
+
+// cubeAPMRequestedService reads the service a query is scoped to, if any. This is
+// the one filter the API can apply itself.
+func cubeAPMRequestedService(req TracesV3Request) string {
+	return extractFirstValueFromBinaryFilter(req.QueryRequest.Where.Binary,
+		"workload_name", "service_name", "service.name")
+}
+
+// discoverCubeAPMServices lists the services that have trace data in the window.
+//
+// The traces API exposes no services endpoint (/services, /indexes and /streams
+// all answer "unsupported path requested"), so the service list is read from the
+// `service` label on CubeAPM's own APM metrics — the same label its alert-rule
+// examples use, and verified on a live instance to return exactly the services
+// that have spans.
+func discoverCubeAPMServices(cfg integrations.CubeAPMConfig, startMs, endMs int64) ([]string, error) {
+	endpoint := cfg.URL + cubeAPMMetricsAPIPath + "/label/service/values" +
+		cubeAPMMetadataQuery(startMs, endMs, nil, time.Now())
+
+	services, err := cubeAPMStringList(cfg, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover CubeAPM services: %w", err)
+	}
+
+	sort.Strings(services)
+	if len(services) > cubeAPMMaxFanoutServices {
+		services = services[:cubeAPMMaxFanoutServices]
+	}
+	return services, nil
 }
 
 func (s *CubeAPMTraceSource) GetQuery(ctx *security.RequestContext, req TracesV3Request) (string, error) {
@@ -425,7 +491,11 @@ func (s *CubeAPMTraceSource) GetQuery(ctx *security.RequestContext, req TracesV3
 	if err != nil {
 		return "", fmt.Errorf("failed to get CubeAPM configs: %w", err)
 	}
-	return cfg.URL + cubeAPMTraceSearchPath + cubeAPMSearchParams(req, cfg.Env, cubeAPMTraceLimit(req)), nil
+	// Reports the shape of the call; an unfiltered query actually issues one of
+	// these per discovered service.
+	service := cubeAPMRequestedService(req)
+	return cfg.URL + cubeAPMTraceSearchPath +
+		cubeAPMSearchParams(req, cfg.Env, service, cubeAPMTraceLimit(req)), nil
 }
 
 func (s *CubeAPMTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
@@ -450,26 +520,64 @@ func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req Traces
 		fetchLimit = min(limit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
 	}
 
-	endpoint := cfg.URL + cubeAPMTraceSearchPath + cubeAPMSearchParams(req, cfg.Env, fetchLimit)
-	ctx.GetLogger().Info("CubeAPM Trace Search", "endpoint", endpoint)
-
-	body, err := cubeAPMGet(cfg, endpoint, cubeAPMTraceQueryTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	var matches []cubeAPMSearchMatch
-	dec := json.NewDecoder(strings.NewReader(string(body)))
-	dec.UseNumber()
-	if err := dec.Decode(&matches); err != nil {
-		return nil, fmt.Errorf("failed to decode CubeAPM trace search response: %w", err)
+	// The API requires an exact service and supports no wildcard, so a query that
+	// names one asks only about it, and a query that does not has to ask about
+	// each service that has traces in the window.
+	services := []string{cubeAPMRequestedService(req)}
+	if services[0] == "" {
+		startMs, endMs := cubeAPMTimeRangeMillis(req.StartTime, req.EndTime, time.Now())
+		services, err = discoverCubeAPMServices(cfg, startMs, endMs)
+		if err != nil {
+			return nil, err
+		}
+		if len(services) == 0 {
+			return nil, nil
+		}
 	}
 
 	var spans []common.OpenTelemetryTrace
-	for _, match := range matches {
-		for _, span := range match.Trace.Spans {
-			spans = append(spans, cubeAPMSpanToTrace(span))
+	var firstErr error
+	failures := 0
+
+	for _, service := range services {
+		endpoint := cfg.URL + cubeAPMTraceSearchPath +
+			cubeAPMSearchParams(req, cfg.Env, service, fetchLimit)
+		ctx.GetLogger().Info("CubeAPM Trace Search", "endpoint", endpoint)
+
+		body, err := cubeAPMGet(cfg, endpoint, cubeAPMTraceQueryTimeout)
+		if err != nil {
+			// One service failing says nothing about the others, so the fan-out
+			// keeps going and only reports if every leg failed.
+			failures++
+			if firstErr == nil {
+				firstErr = err
+			}
+			ctx.GetLogger().Warn("CubeAPM trace search failed for service", "service", service, "error", err)
+			continue
 		}
+
+		var matches []cubeAPMSearchMatch
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.UseNumber()
+		if err := dec.Decode(&matches); err != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to decode CubeAPM trace search response: %w", err)
+			}
+			continue
+		}
+
+		for _, match := range matches {
+			for _, span := range match.Trace.Spans {
+				spans = append(spans, cubeAPMSpanToTrace(span))
+			}
+		}
+	}
+
+	// Every leg failing means the backend is unreachable, not that there are no
+	// traces — surfacing it beats returning a misleading empty result.
+	if failures == len(services) && firstErr != nil {
+		return nil, firstErr
 	}
 
 	spans, err = filterCubeAPMSpans(spans, req.QueryRequest.Where)

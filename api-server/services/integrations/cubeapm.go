@@ -83,11 +83,13 @@ func (m CubeAPM) ConfigSchema() core.IntegrationSchema {
 			},
 			"cubeapm_env": {
 				Type: core.ToolSchemaTypeString,
-				Description: "Restrict log and trace queries to one CubeAPM environment tag (env). " +
-					"Leave empty to search all environments; a single-environment install reports " +
-					"everything under 'UNSET'. Metrics are not scoped by this — filter them with an " +
-					"env label chip instead, since injecting the matcher would blank out any metric " +
-					"family that does not carry the label.",
+				Description: "CubeAPM environment tag (env) to query. Traces REQUIRE one — the search " +
+					"API rejects a request without it and accepts no wildcard — so leaving this empty " +
+					"searches 'UNSET', which is where CubeAPM files telemetry that carries no explicit " +
+					"env. Set it if your collectors tag a real environment, or traces will come back " +
+					"empty. Logs are scoped by it too. Metrics are not — filter those with an env label " +
+					"chip instead, since injecting the matcher would blank out any metric family that " +
+					"does not carry the label.",
 				Default:  "",
 				Priority: 65,
 			},
@@ -284,9 +286,11 @@ type CubeAPMConfig struct {
 	AdminURL string
 	// AdminToken authenticates against AdminURL.
 	AdminToken string
-	// Env scopes log and trace queries to one CubeAPM environment tag. Empty means
-	// all environments — those queries omit the parameter rather than sending a
-	// blank. Metrics deliberately ignore it (see the schema description).
+	// Env is the CubeAPM environment tag to query. Empty is NOT "all environments":
+	// the traces API requires the parameter and treats "*" as a literal that matches
+	// nothing, so an empty value falls back to "UNSET" — where CubeAPM files
+	// telemetry carrying no explicit env. Metrics deliberately ignore it (see the
+	// schema description).
 	Env string
 }
 

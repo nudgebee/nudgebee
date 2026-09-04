@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -566,29 +567,74 @@ func TestCubeAPMSearchParams(t *testing.T) {
 	req := TracesV3Request{
 		StartTime: 1_700_000_000_000,
 		EndTime:   1_700_003_600_000,
+	}
+
+	params, err := url.ParseQuery(strings.TrimPrefix(
+		cubeAPMSearchParams(req, "prod", "checkout", 100), "?"))
+	if err != nil {
+		t.Fatalf("not a valid query string: %v", err)
+	}
+
+	// Every one of these is mandatory: omitting any produces a 400 from the
+	// search API, and none of them appear in CubeAPM's published example.
+	for key, want := range map[string]string{
+		"query":    "*",
+		"index":    cubeAPMTraceIndex,
+		"spanKind": cubeAPMTraceSpanKind,
+		"env":      "prod",
+		"service":  "checkout",
+		"limit":    "100",
+		"start":    "1700000000",
+		"end":      "1700003600",
+	} {
+		if got := params.Get(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// env has no wildcard — "*" is accepted but matches nothing — so an unconfigured
+// integration must still send a concrete value rather than omitting the param.
+func TestCubeAPMSearchParamsAlwaysSendsEnvAndService(t *testing.T) {
+	params, _ := url.ParseQuery(strings.TrimPrefix(
+		cubeAPMSearchParams(TracesV3Request{StartTime: 1, EndTime: 2}, "", "checkout", 10), "?"))
+
+	if params.Get("env") != cubeAPMDefaultEnv {
+		t.Errorf("env = %q, want the %q default", params.Get("env"), cubeAPMDefaultEnv)
+	}
+	for _, key := range []string{"index", "spanKind", "env", "service"} {
+		if params.Get(key) == "" {
+			t.Errorf("%s must never be empty; the API rejects the request with a 400", key)
+		}
+	}
+}
+
+// "all" is deliberate: the parameter is required but ignored today, so if a later
+// version starts honouring it we want a loud 400 rather than the silent loss of
+// every client and internal span that "server" would cause.
+func TestCubeAPMTraceSpanKindIsNotARealSpanKind(t *testing.T) {
+	for _, realKind := range []string{"server", "client", "internal", "producer", "consumer"} {
+		if cubeAPMTraceSpanKind == realKind {
+			t.Errorf("spanKind is %q; a real span kind risks silently filtering spans "+
+				"if the server ever honours the parameter", realKind)
+		}
+	}
+}
+
+func TestCubeAPMRequestedService(t *testing.T) {
+	got := cubeAPMRequestedService(TracesV3Request{
 		QueryRequest: TracesQueryBuilderRequest{Where: query.QueryWhereClause{
 			Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "checkout"}},
 		}},
-	}
-
-	got := cubeAPMSearchParams(req, "prod", 100)
-
-	for _, want := range []string{"query=%2A", "limit=100", "env=prod", "service=checkout",
-		"start=1700000000", "end=1700003600"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("params missing %q\ngot: %s", want, got)
-		}
-	}
-
-	t.Run("omits env and service when absent", func(t *testing.T) {
-		got := cubeAPMSearchParams(TracesV3Request{StartTime: 1, EndTime: 2}, "", 10)
-		if strings.Contains(got, "env=") {
-			t.Errorf("env should be omitted when unconfigured: %s", got)
-		}
-		if strings.Contains(got, "service=") {
-			t.Errorf("service should be omitted when unfiltered: %s", got)
-		}
 	})
+	if got != "checkout" {
+		t.Errorf("got %q, want checkout", got)
+	}
+
+	// No service filter means the caller must fan out over discovered services.
+	if got := cubeAPMRequestedService(TracesV3Request{}); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
 }
 
 func TestCubeAPMTraceLimit(t *testing.T) {

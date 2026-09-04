@@ -62,10 +62,15 @@ var cubeAPMLogLabelMapping = map[string]string{
 	"cluster":   "k8s.cluster.name",
 	"host":      "host.name",
 	"hostname":  "host.name",
-	"service":   "service.name",
-	"severity":  "log.level",
-	"level":     "log.level",
-	"env":       "env",
+	// `service`, not the OTel `service.name`. CubeAPM's logs-API doc shows a
+	// stream selector of {env="UNSET",service.name="order"}, but a live instance
+	// running CubeAPM's own demo app indexes the stream field as `service` — the
+	// documented spelling matches nothing. Verified against a real deployment;
+	// a shipper that does write service.name is remapped per-account.
+	"service":  "service",
+	"severity": "log.level",
+	"level":    "log.level",
+	"env":      "env",
 }
 
 // cubeAPMLogMessageFields are the keys read as the rendered log line, in priority
