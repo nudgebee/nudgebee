@@ -6,6 +6,7 @@
 <title>Benchmarks — Nudgebee</title>
 <link rel="icon" href="https://app.nudgebee.com/favicon.ico">
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 tailwind.config = {
   theme: {
@@ -667,6 +668,7 @@ function escAttr(s) {
 // staging hostname must not appear as a literal in this file. Empty until
 // that fetch resolves, and stays empty if the operator hasn't set
 // ASK_NUDGEBEE_BASE_URL, in which case bmSessionUrl() just returns ''.
+// Shared by the Compare Reports per-query links and the Excel export.
 let BM_ASK_NUDGEBEE_URL = '';
 function bmSessionUrl(accountId, sessionId) {
   return (BM_ASK_NUDGEBEE_URL && accountId && sessionId)
@@ -3000,6 +3002,81 @@ function downloadCompareReport() {
   win.document.close();
 }
 
+function downloadCompareExcel() {
+  const data = window._lastCompareData;
+  const ids = window._lastCompareIds || {};
+  if (!data) { toast('No comparison data', 'error'); return; }
+  try {
+    const b = data.baseline || {}, c = data.candidate || {};
+
+    const summaryRows = [
+      { Field: 'Baseline Run', Value: `${(b.agent||'').toUpperCase()} — ${b.run_id||''}` },
+      { Field: 'Baseline Tests', Value: b.total_queries || 0 },
+      { Field: 'Baseline Timestamp', Value: b.timestamp || '' },
+      { Field: 'Candidate Run', Value: `${(c.agent||'').toUpperCase()} — ${c.run_id||''}` },
+      { Field: 'Candidate Tests', Value: c.total_queries || 0 },
+      { Field: 'Candidate Timestamp', Value: c.timestamp || '' },
+    ];
+    for (const [key, val] of Object.entries(data.summary_delta || {})) {
+      if (!val || typeof val !== 'object') continue;
+      summaryRows.push({
+        Field: key.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase()),
+        Baseline: val.baseline, Candidate: val.candidate, Delta: val.delta, 'Delta %': val.delta_pct,
+      });
+    }
+
+    const perQueryRows = (data.per_query || []).map(q => {
+      const acc = q.accuracy || {}, lat = q.latency_seconds || {}, inTok = q.input_tokens || {},
+            outTok = q.output_tokens || {}, tc = q.tool_calls || {}, sid = q.session_id || {};
+      return {
+        Test: q.test_id || '',
+        Tags: (q.tags||[]).join(', '),
+        Status: q.status || '',
+        'Accuracy Baseline': acc.baseline || 0,
+        'Accuracy Candidate': acc.candidate || 0,
+        'Accuracy Delta': acc.delta || 0,
+        'Duration Baseline (s)': lat.baseline || 0,
+        'Duration Candidate (s)': lat.candidate || 0,
+        'Input Tokens Baseline': inTok.baseline || 0,
+        'Input Tokens Candidate': inTok.candidate || 0,
+        'Output Tokens Baseline': outTok.baseline || 0,
+        'Output Tokens Candidate': outTok.candidate || 0,
+        'Tool Calls Baseline (success/fail)': `${tc.baseline_successful||0}/${tc.baseline_failed||0}`,
+        'Tool Calls Candidate (success/fail)': `${tc.candidate_successful||0}/${tc.candidate_failed||0}`,
+        'Baseline Session URL': bmSessionUrl(b.account_id, sid.baseline),
+        'Candidate Session URL': bmSessionUrl(c.account_id, sid.candidate),
+      };
+    });
+
+    const changeRows = [
+      ...(data.regressions || []).map(r => ({
+        Type: 'Regression', Test: r.test_id, 'Accuracy Delta': r.accuracy_delta,
+        'Tool Calls Delta': r.changes?.tool_calls_delta || 0,
+        'Latency Delta (s)': r.changes?.latency_delta_seconds || 0,
+        Tags: (r.tags||[]).join(', '),
+      })),
+      ...(data.improvements || []).map(r => ({
+        Type: 'Improvement', Test: r.test_id, 'Accuracy Delta': r.accuracy_delta,
+        'Tool Calls Delta': r.changes?.tool_calls_delta || 0,
+        'Latency Delta (s)': r.changes?.latency_delta_seconds || 0,
+        Tags: (r.tags||[]).join(', '),
+      })),
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Summary');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(perQueryRows), 'Per-Query');
+    if (changeRows.length) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(changeRows), 'Regressions & Improvements');
+    }
+    XLSX.writeFile(wb, `benchmark-compare-${ids.base||'baseline'}-vs-${ids.cand||'candidate'}.xlsx`);
+    toast('Excel file downloaded', 'success');
+  } catch (e) {
+    console.error(e);
+    toast('Failed to build Excel file', 'error');
+  }
+}
+
 // ============================================================
 // Compare
 // ============================================================
@@ -3179,7 +3256,8 @@ async function compareRuns() {
   window._lastCompareIds = { base, cand };
 
   $('compare-content').innerHTML = `
-    <div class="flex justify-end mb-2">
+    <div class="flex justify-end gap-2 mb-2">
+      <button onclick="downloadCompareExcel()" class="az-btn-secondary text-white px-3 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><span class="material-icons-outlined text-[14px]">table_view</span> Download Excel</button>
       <button onclick="downloadCompareReport()" class="az-btn-secondary text-white px-3 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><span class="material-icons-outlined text-[14px]">picture_as_pdf</span> Download PDF</button>
     </div>
     ${headerHtml}
