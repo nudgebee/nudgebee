@@ -1,6 +1,7 @@
-import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Box, Collapse, IconButton } from '@mui/material';
-import { HelpOutline, ExpandMore, ExpandLess, InfoOutlined } from '@mui/icons-material';
+import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Box, IconButton } from '@mui/material';
+import { HelpOutline, InfoOutlined } from '@mui/icons-material';
 import Tooltip from '@ui/Tooltip';
+import { CollapsableCard } from '@ui/CollapsableCard';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import Tabs from '@shared/navigation/Tabs';
 import { ds } from 'src/utils/colors';
@@ -74,7 +75,6 @@ const parseRegions = (value) =>
 
 const AddAwsAccountModal = ({ open, onClose }) => {
   const [activeTab, setActiveTab] = useState(TAB_CLOUDFORMATION);
-  const [guideExpanded, setGuideExpanded] = useState(false);
   const [accountNameValue, setAccountNameValue] = useState('');
   const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [validationError, setValidationError] = useState({});
@@ -120,7 +120,6 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     setIsValidating(false);
     setValidationResult(null);
     setActiveTab(TAB_CLOUDFORMATION);
-    setGuideExpanded(false);
     stopPolling();
   }, [stopPolling]);
 
@@ -537,54 +536,29 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       </Box>
 
       {/* Collapsible Setup Guide — mirrors AddAzureAccountModal / AddGcpAccountModal */}
-      <Box sx={{ mb: ds.space[2] }}>
-        <Box
-          component='button'
-          type='button'
-          aria-expanded={guideExpanded}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            gap: ds.space[1],
-            py: ds.space[2],
-            px: 0,
-            background: 'none',
-            border: 'none',
-            font: 'inherit',
-            color: 'inherit',
-            textAlign: 'left',
-          }}
-          onClick={() => setGuideExpanded(!guideExpanded)}
-        >
-          <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
-          <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
-            Setup Guide — How to connect your AWS account
-          </Typography>
-          {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
-        </Box>
-        <Collapse in={guideExpanded}>
-          <Box
-            sx={{
-              mt: ds.space[2],
-              p: ds.space[4],
-              bgcolor: ds.background[200],
-              borderRadius: ds.radius.lg,
-              border: `1px solid ${ds.gray[300]}`,
-            }}
-          >
-            <MarkDowns
-              data={getInstructionsData()}
-              sx={{
-                maxHeight: ds.space.mul(1, 75),
-                overflowY: 'auto',
-                padding: '0px',
-                borderRadius: '0px',
-              }}
-            />
+      <CollapsableCard
+        defaultOpen={false}
+        elevation='flat'
+        sx={{ mb: ds.space[2] }}
+        header={
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+            <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+              Setup Guide — How to connect your AWS account
+            </Typography>
           </Box>
-        </Collapse>
-      </Box>
+        }
+      >
+        <MarkDowns
+          data={getInstructionsData()}
+          sx={{
+            maxHeight: ds.space.mul(1, 75),
+            overflowY: 'auto',
+            padding: '0px',
+            borderRadius: '0px',
+          }}
+        />
+      </CollapsableCard>
 
       <Grid container>
         <Box sx={{ mt: 2, width: '100%' }}>

@@ -1,19 +1,10 @@
-import { Grid, Typography, Box, Collapse, Alert } from '@mui/material';
+import { Grid, Typography, Box, Alert } from '@mui/material';
 import { Chip } from '@ui/Chip';
+import { CollapsableCard } from '@ui/CollapsableCard';
 import { Stepper } from '@ui/Stepper';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
-import {
-  Visibility,
-  VisibilityOff,
-  HelpOutline,
-  ExpandMore,
-  ExpandLess,
-  InfoOutlined,
-  SearchOutlined,
-  CheckCircleOutline,
-  ErrorOutline,
-} from '@mui/icons-material';
+import { Visibility, VisibilityOff, HelpOutline, InfoOutlined, SearchOutlined, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import { useState, useEffect, useRef } from 'react';
 import { Banner } from '@ui/Banner';
 import { useTour } from '@components/common/tour';
@@ -70,7 +61,6 @@ const AddAzureAccountModal = ({ open, onClose }) => {
   const [clientSecret, setClientSecret] = useState('');
   const [showSecret, setShowSecret] = useState(false);
   const [validationError, setValidationError] = useState({});
-  const [guideExpanded, setGuideExpanded] = useState(false);
 
   // Step 1: Subscriptions
   const [step, setStep] = useState(0);
@@ -92,7 +82,6 @@ const AddAzureAccountModal = ({ open, onClose }) => {
     setClientSecret('');
     setShowSecret(false);
     setValidationError({});
-    setGuideExpanded(false);
     setStep(0);
     setIsDiscovering(false);
     setDiscoveredSubscriptions([]);
@@ -341,45 +330,29 @@ const AddAzureAccountModal = ({ open, onClose }) => {
       {step === 0 && (
         <>
           {/* Collapsible Setup Guide */}
-          <Box sx={{ mb: ds.space[2] }}>
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                cursor: 'pointer',
-                gap: ds.space[1],
-                py: ds.space[2],
-              }}
-              onClick={() => setGuideExpanded(!guideExpanded)}
-            >
-              <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
-              <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
-                Setup Guide — How to create an Azure service principal
-              </Typography>
-              {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
-            </Box>
-            <Collapse in={guideExpanded}>
-              <Box
-                sx={{
-                  mt: ds.space[2],
-                  p: ds.space[4],
-                  bgcolor: ds.background[200],
-                  borderRadius: ds.radius.lg,
-                  border: `1px solid ${ds.gray[300]}`,
-                }}
-              >
-                <MarkDowns
-                  data={SETUP_GUIDE_CONTENT}
-                  sx={{
-                    maxHeight: ds.space.mul(1, 75),
-                    overflowY: 'auto',
-                    padding: '0px',
-                    borderRadius: '0px',
-                  }}
-                />
+          <CollapsableCard
+            defaultOpen={false}
+            elevation='flat'
+            sx={{ mb: ds.space[2] }}
+            header={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+                <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+                  Setup Guide — How to create an Azure service principal
+                </Typography>
               </Box>
-            </Collapse>
-          </Box>
+            }
+          >
+            <MarkDowns
+              data={SETUP_GUIDE_CONTENT}
+              sx={{
+                maxHeight: ds.space.mul(1, 75),
+                overflowY: 'auto',
+                padding: '0px',
+                borderRadius: '0px',
+              }}
+            />
+          </CollapsableCard>
 
           <Grid container>
             <Box sx={{ mt: ds.space[4], width: '100%' }}>

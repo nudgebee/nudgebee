@@ -1,7 +1,8 @@
-import { Grid, Typography, Box, Collapse, Alert, CircularProgress, Link } from '@mui/material';
+import { Grid, Typography, Box, Alert, CircularProgress, Link } from '@mui/material';
 import { Input } from '@ui/Input';
+import { CollapsableCard } from '@ui/CollapsableCard';
 import { Stepper } from '@ui/Stepper';
-import { ContentCopy, Check, HelpOutline, ExpandMore, ExpandLess, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
+import { ContentCopy, Check, HelpOutline, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { getBrandTitle } from '@hooks/useTenantBranding';
@@ -92,7 +93,6 @@ const attemptGcpAutoSetup = async (accountId, url) => {
 const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = false, existedIntegration = undefined }) => {
   const [showWizard, setShowWizard] = useState(!isAlreadyEnabled);
   const [step, setStep] = useState(0);
-  const [guideExpanded, setGuideExpanded] = useState(false);
 
   // Step 1: Permission check
   const [isCheckingPermission, setIsCheckingPermission] = useState(false);
@@ -111,7 +111,6 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
   const clearForm = () => {
     setShowWizard(!isAlreadyEnabled);
     setStep(0);
-    setGuideExpanded(false);
     setIsCheckingPermission(false);
     setPermissionResult(null);
     setIsSettingUp(false);
@@ -277,39 +276,21 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                   {`Forward GCP Cloud Monitoring alerts to ${getBrandTitle()} in real-time via a webhook notification channel. This lets you see alerts alongside your cloud resources without delay.`}
                 </Typography>
 
-                <Box sx={{ mb: ds.space[4] }}>
-                  <Box
-                    role='button'
-                    tabIndex={0}
-                    sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1], py: ds.space[2] }}
-                    onClick={() => setGuideExpanded(!guideExpanded)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        setGuideExpanded(!guideExpanded);
-                      }
-                    }}
-                  >
-                    <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
-                    <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
-                      Setup Guide — IAM permissions required
-                    </Typography>
-                    {guideExpanded ? <ExpandLess sx={{ color: ds.gray[600] }} /> : <ExpandMore sx={{ color: ds.gray[600] }} />}
-                  </Box>
-                  <Collapse in={guideExpanded}>
-                    <Box
-                      sx={{
-                        mt: ds.space[2],
-                        p: ds.space[4],
-                        bgcolor: ds.background[200],
-                        borderRadius: ds.radius.lg,
-                        border: `1px solid ${ds.gray[300]}`,
-                      }}
-                    >
-                      <MarkDowns data={buildSetupGuide(projectId)} sx={{ maxHeight: ds.space.mul(1, 75), overflowY: 'auto' }} />
+                <CollapsableCard
+                  defaultOpen={false}
+                  elevation='flat'
+                  sx={{ mb: ds.space[4] }}
+                  header={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                      <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+                      <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+                        Setup Guide — IAM permissions required
+                      </Typography>
                     </Box>
-                  </Collapse>
-                </Box>
+                  }
+                >
+                  <MarkDowns data={buildSetupGuide(projectId)} sx={{ maxHeight: ds.space.mul(1, 75), overflowY: 'auto' }} />
+                </CollapsableCard>
 
                 <Box
                   sx={{

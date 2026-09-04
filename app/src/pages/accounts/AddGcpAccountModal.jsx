@@ -1,11 +1,12 @@
-import { Grid, Typography, Box, Collapse, Alert } from '@mui/material';
+import { Grid, Typography, Box, Alert } from '@mui/material';
 import Tabs from '@shared/navigation/Tabs';
+import { CollapsableCard } from '@ui/CollapsableCard';
 import { Chip } from '@ui/Chip';
 import { Stepper } from '@ui/Stepper';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import { getBrandTitle } from '@hooks/useTenantBranding';
-import { ContentCopy, CheckCircleOutline, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
+import { ContentCopy, CheckCircleOutline, HelpOutline, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
@@ -68,7 +69,6 @@ const AddGcpAccountModal = ({ open, onClose }) => {
   const [validationError, setValidationError] = useState({});
   const [isValidating, setIsValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
-  const [guideExpanded, setGuideExpanded] = useState(false);
 
   // Step 2: Projects
   const [projectTab, setProjectTab] = useState(0);
@@ -108,7 +108,6 @@ const AddGcpAccountModal = ({ open, onClose }) => {
     setValidationError({});
     setIsValidating(false);
     setValidationResult(null);
-    setGuideExpanded(false);
     setProjectTab(0);
     setDiscoveredProjects([]);
     setSelectedProjectIds(new Set());
@@ -441,36 +440,21 @@ const AddGcpAccountModal = ({ open, onClose }) => {
       {/* ──── Step 1: Service Account ──── */}
       {step === 0 && (
         <>
-          <Box sx={{ mb: ds.space[2] }}>
-            <Box
-              role='button'
-              tabIndex={0}
-              sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1], py: ds.space[2] }}
-              onClick={() => setGuideExpanded(!guideExpanded)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  setGuideExpanded(!guideExpanded);
-                }
-              }}
-            >
-              <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
-              <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
-                Setup Guide — How to create a GCP service account
-              </Typography>
-              {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
-            </Box>
-            <Collapse in={guideExpanded}>
-              <Box
-                sx={{ mt: ds.space[2], p: ds.space[4], bgcolor: ds.background[200], borderRadius: ds.radius.lg, border: `1px solid ${ds.gray[300]}` }}
-              >
-                <MarkDowns
-                  data={SETUP_GUIDE_CONTENT}
-                  sx={{ maxHeight: ds.space.mul(1, 75), overflowY: 'auto', padding: '0px', borderRadius: '0px' }}
-                />
+          <CollapsableCard
+            defaultOpen={false}
+            elevation='flat'
+            sx={{ mb: ds.space[2] }}
+            header={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+                <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+                  Setup Guide — How to create a GCP service account
+                </Typography>
               </Box>
-            </Collapse>
-          </Box>
+            }
+          >
+            <MarkDowns data={SETUP_GUIDE_CONTENT} sx={{ maxHeight: ds.space.mul(1, 75), overflowY: 'auto', padding: '0px', borderRadius: '0px' }} />
+          </CollapsableCard>
 
           <Grid container>
             <Box sx={{ mt: ds.space[4], width: '100%' }}>
