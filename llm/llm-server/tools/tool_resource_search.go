@@ -1502,30 +1502,27 @@ func (r K8sResourceSearchTool) executeKubectlCommand(command string, nbRequestCo
 		command = "kubectl " + command
 	}
 
+	// Same workspace-pod path as shell_execute/kubectl_execute, so resource
+	// search no longer needs its own relay dispatch. validateKubectlCommandAccess
+	// must still run here: it's normally enforced by ExecuteContainerJob's
+	// RelayJobKubectl branch, which this call bypasses.
+	if err := validateKubectlCommandAccess(command); err != nil {
+		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command rejected", "error", err.Error(), "command", command)
+		return ""
+	}
+
 	relayStart := time.Now()
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, nbRequestContext.AccountId, map[string]any{}, false)
-	nbRequestContext.Stats.RecordRelay(command, fmt.Sprintf("%v", response), err, time.Since(relayStart))
+	// wm (tool_shell.go) is the package-wide WorkspaceManager; reuse it rather than
+	// constructing a new http.Client per call — resource_search fans out into many
+	// of these in one tool invocation.
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{})
+	nbRequestContext.Stats.RecordRelay(command, response, err, time.Since(relayStart))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command failed", "error", err.Error(), "command", command)
 		return ""
 	}
 
-	// ExecuteApiCall returns a JSON string with format {"stdout": "actual_output"}
-	if responseStr, ok := response.(string); ok {
-		var responseObj map[string]any
-		if err := common.UnmarshalJson([]byte(responseStr), &responseObj); err == nil {
-			if stdout, exists := responseObj["stdout"]; exists {
-				if stdoutStr, ok := stdout.(string); ok {
-					return stdoutStr
-				}
-			}
-		}
-		nbRequestContext.Ctx.GetLogger().Error("resource-search: failed to parse kubectl response JSON", "response", responseStr)
-		return ""
-	}
-
-	nbRequestContext.Ctx.GetLogger().Error("resource-search: unexpected response type", "response_type", fmt.Sprintf("%T", response), "response", response)
-	return ""
+	return response
 }
 
 // executeKubectlAndParseResources executes kubectl and parses the result into resource info
