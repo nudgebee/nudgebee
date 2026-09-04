@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"nudgebee/services/eventrule/playbooks"
@@ -20,14 +21,47 @@ import (
 // itself. We fall back to the pod inventory, which the k8s collector keeps
 // current and which records the node for 99.99% of pods.
 func noisyNeighboursNodeName(ctx playbooks.PlaybookActionContext) string {
-	if n := playbooks.SubjectNodeName(ctx.GetEvent()); n != "" {
+	event := ctx.GetEvent()
+	if event.SubjectNode != "" {
+		return event.SubjectNode
+	}
+	if strings.EqualFold(event.SubjectType, "node") && event.SubjectName != "" {
+		return event.SubjectName
+	}
+	if n := event.Labels["node"]; n != "" {
 		return n
 	}
-	podName, namespace := playbooks.SubjectPodNamespace(ctx.GetEvent())
-	if podName == "" || namespace == "" {
-		return ""
+
+	// Inventory before any `instance` label. SubjectNodeName falls back to
+	// `instance` last, which for a kube-state-metrics-sourced alert is the KSM
+	// pod's scrape address, not a node: a live KubePodCrashLooping event on dev
+	// carried instance="10.64.0.141:8080", every query filtered on a node by
+	// that name matched nothing, and the card rendered as an all-zero node —
+	// which reads as "this machine is idle" rather than "we could not tell".
+	if podName, namespace := playbooks.SubjectPodNamespace(event); podName != "" && namespace != "" {
+		if n := lookupPodNode(ctx, podName, namespace); n != "" {
+			return n
+		}
 	}
-	return lookupPodNode(ctx, podName, namespace)
+
+	// Only now the instance label, and only when it could be a node name.
+	if n := event.Labels["instance"]; looksLikeNodeName(n) {
+		return n
+	}
+	return ""
+}
+
+// looksLikeNodeName rejects scrape-target addresses — "10.64.0.141:8080" —
+// which alert labels carry in `instance` and which no node is called.
+//
+// A bare IP is allowed through: some clusters really do name their nodes by
+// address, and refusing them would skip the card on exactly those clusters
+// whenever the inventory lookup above missed. The asymmetry that used to make
+// this dangerous is gone — if the value turns out not to be a node, every
+// query returns empty and the enricher declines to render rather than
+// reporting an idle machine.
+func looksLikeNodeName(v string) bool {
+	return v != "" && !strings.Contains(v, ":")
 }
 
 // lookupPodNode reads the node from the K8s pod inventory. Hits

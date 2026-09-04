@@ -312,6 +312,18 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 
 	nodeUsed := playbooks.FirstLatestValue(results["node_used"])
 	nodeAlloc := playbooks.FirstLatestValue(results["node_alloc"])
+	nodeCPUUsed := playbooks.FirstLatestValue(results["node_cpu_used"])
+	nodeCPUCapacity := playbooks.FirstLatestValue(results["node_cpu_alloc"])
+
+	// Every query came back empty, allocatable included. A real node always
+	// reports allocatable, so this is a node Prometheus has never heard of —
+	// a name we guessed wrong — not an idle one. Rendering it would put a card
+	// on the event saying the machine has no usage and no neighbours, which is
+	// a claim we have not earned; failing leaves the event without the card,
+	// which is what it had before.
+	if len(neighbours) == 0 && len(cpuNeighbours) == 0 && nodeAlloc == 0 && nodeCPUCapacity == 0 {
+		return nil, fmt.Errorf("noisy_neighbours_enricher: no metrics for node %q — it does not look like a node this cluster's Prometheus knows", nodeName)
+	}
 
 	return noisyNeighboursResponse(podName, namespace, rawParams, &esNoisyNeighbourData{
 		NodeName:        nodeName,
@@ -320,8 +332,8 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		TotalRequested:  totalRequested,
 		Neighbours:      neighbours,
 		CPUMeasured:     true,
-		NodeCPUUsed:     playbooks.FirstLatestValue(results["node_cpu_used"]),
-		NodeCPUCapacity: playbooks.FirstLatestValue(results["node_cpu_alloc"]),
+		NodeCPUUsed:     nodeCPUUsed,
+		NodeCPUCapacity: nodeCPUCapacity,
 		CPUNeighbours:   cpuNeighbours,
 	})
 }

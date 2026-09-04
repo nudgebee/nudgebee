@@ -206,3 +206,25 @@ func payloadData(t *testing.T, resp playbooks.PlaybookActionResponse) map[string
 	require.NoError(t, json.Unmarshal([]byte(envelope.Data), &payload))
 	return payload.Data
 }
+
+// Alert labels carry `instance` for the scrape target, which for a
+// kube-state-metrics-sourced alert is the KSM pod's address, not a node.
+// Observed live on dev: a KubePodCrashLooping event with
+// instance="10.64.0.141:8080" and no node produced a card reporting the node
+// as completely idle, because every query filtered on a node by that name and
+// matched nothing.
+func TestLooksLikeNodeNameRejectsScrapeTargets(t *testing.T) {
+	for _, addr := range []string{"10.64.0.141:8080", "1.2.3.4:9100", ""} {
+		assert.Falsef(t, looksLikeNodeName(addr), "%q is an address, not a node name", addr)
+	}
+	for _, node := range []string{
+		"gke-example-cluster-default-pool-a1b2c3d4-xk9p",
+		"ip-10-0-1-23.ec2.internal",
+		"worker-01",
+		// Some clusters really do name nodes by address. Allowed through
+		// because the empty-result guard catches it if this one is not a node.
+		"10.64.0.141",
+	} {
+		assert.Truef(t, looksLikeNodeName(node), "%q is a plausible node name", node)
+	}
+}
