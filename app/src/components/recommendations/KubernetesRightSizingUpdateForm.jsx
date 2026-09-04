@@ -25,8 +25,8 @@ import { parseHttpResponseBodyMessage } from 'src/utils/common';
 const detectGitProvider = (repoUrl) => {
   if (!repoUrl) return null;
   const url = repoUrl.toLowerCase();
-  if (url.includes('github.com')) return 'github';
-  if (url.includes('gitlab')) return 'gitlab';
+  if (/(?:^|\.)github\.com(?:\/|:|$)/.test(url)) return 'github';
+  if (/(?:^|\.)gitlab\.com(?:\/|:|$)/.test(url) || url.includes('gitlab')) return 'gitlab';
   return null;
 };
 

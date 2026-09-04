@@ -65,8 +65,8 @@ const KubernetesSecurityDetails = (props) => {
   const detectGitProvider = (repoUrl) => {
     if (!repoUrl) return null;
     const url = repoUrl.toLowerCase();
-    if (url.includes('github.com')) return 'github';
-    if (url.includes('gitlab')) return 'gitlab';
+    if (/(?:^|\.)github\.com(?:\/|:|$)/.test(url)) return 'github';
+    if (/(?:^|\.)gitlab\.com(?:\/|:|$)/.test(url) || url.includes('gitlab')) return 'gitlab';
     return null;
   };
 
@@ -169,7 +169,7 @@ const KubernetesSecurityDetails = (props) => {
         const annotations = workloads[0].meta?.config?.annotations || {};
         // For security recommendations, we need workloads.nudgebee.com (source code repo) or ci.nudgebee.com or argocd
         const filteredKeys = Object.keys(annotations).filter(
-          (key) => key.startsWith(WORKLOADS_PREFIX) || key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io')
+          (key) => key.startsWith(WORKLOADS_PREFIX) || key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io/')
         );
         if (filteredKeys.length > 0) {
           const filtered = {};
