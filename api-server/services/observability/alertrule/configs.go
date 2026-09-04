@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	neturl "net/url"
 	"strings"
 
 	"nudgebee/services/common"
@@ -394,4 +396,97 @@ func getChronosphereConfigs(sc *security.RequestContext, accountId string) (stri
 	}
 
 	return chronoUrl, bearerToken, nil
+}
+
+// cubeAPMConn holds CubeAPM connection config for alert-rule management.
+//
+// Duplicated from integrations.CubeAPMConfig rather than reused: this package
+// cannot import integrations (integrations → event → triage → alertrule is an
+// import cycle), which is the same reason listIntegrationConfigValues exists.
+// Only the fields alert-rule management needs are carried — the query URL is here
+// solely to explain, in the error, why the admin URL could not be derived.
+type cubeAPMConn struct {
+	QueryURL   string
+	AdminURL   string
+	AdminToken string
+}
+
+// CubeAPM port pair. The admin API is a separate server from the query API, and
+// on a standard deployment they differ only by port — so an unset admin URL is
+// derived rather than demanded.
+const (
+	cubeAPMQueryPort = "3140"
+	cubeAPMAdminPort = "3199"
+)
+
+// getCubeAPMConfigs returns CubeAPM connection config for alert-rule management.
+func getCubeAPMConfigs(sc *security.RequestContext, accountId string) (cubeAPMConn, error) {
+	configs, err := listIntegrationConfigValues(sc, accountId, "cubeapm")
+	if err != nil {
+		return cubeAPMConn{}, fmt.Errorf("failed to list cubeapm integration configs: %w", err)
+	}
+
+	var conn cubeAPMConn
+	for _, c := range configs {
+		value, err := decryptConfigValue(c)
+		if err != nil {
+			return cubeAPMConn{}, fmt.Errorf("failed to decrypt cubeapm config %s: %w", c.Name, err)
+		}
+		switch c.Name {
+		case "cubeapm_url":
+			conn.QueryURL = normalizeCubeAPMBaseURL(value)
+		case "cubeapm_admin_url":
+			conn.AdminURL = normalizeCubeAPMBaseURL(value)
+		case "cubeapm_admin_token":
+			conn.AdminToken = strings.TrimSpace(value)
+		}
+	}
+
+	if conn.AdminURL == "" {
+		conn.AdminURL = deriveCubeAPMAdminBaseURL(conn.QueryURL)
+	}
+	return conn, nil
+}
+
+// normalizeCubeAPMBaseURL strips any path/query/fragment so a URL pasted from the
+// browser still resolves. The port is preserved deliberately — for CubeAPM it
+// selects which server answers.
+func normalizeCubeAPMBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := neturl.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+// deriveCubeAPMAdminBaseURL turns a query URL into the admin URL by swapping the
+// port. Returns "" when the query URL is on a non-standard port: guessing there
+// would silently target whatever else is listening, so the caller asks the
+// operator for the admin URL explicitly instead.
+func deriveCubeAPMAdminBaseURL(queryURL string) string {
+	parsed, err := neturl.Parse(queryURL)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil || port != cubeAPMQueryPort {
+		return ""
+	}
+	return parsed.Scheme + "://" + net.JoinHostPort(host, cubeAPMAdminPort)
+}
+
+// cubeAPMAdminHeaders builds the header set for an admin API call. The
+// Authorization header is omitted entirely when no token is configured: CubeAPM's
+// http-token-admin setting is optional, and sending `Bearer ` with an empty value
+// is a malformed credential rather than an absent one.
+func cubeAPMAdminHeaders(token string) map[string]string {
+	headers := map[string]string{"Content-Type": "application/json"}
+	if token = strings.TrimSpace(token); token != "" {
+		headers["Authorization"] = "Bearer " + token
+	}
+	return headers
 }

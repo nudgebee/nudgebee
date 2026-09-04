@@ -1,4 +1,4 @@
-h1:yZsdMW4AhNdhoE9dRo4oEIJFiz5XWFZsEaLO9QrtJAA=
+h1:F1l8ZgoEAy56x1ngpjfjzcsBAYzvfk7sNDw4mNoQa8s=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1094,3 +1094,4 @@ h1:yZsdMW4AhNdhoE9dRo4oEIJFiz5XWFZsEaLO9QrtJAA=
 1786965554770_V876_llm_analyser_feature_flag.up.sql h1:VHq9i3fOoJLV4Lhyk1TjSWaBJ929kln5/RhJVnNWcA8=
 1786997559724_V851_openobserve_webhook_integration.up.sql h1:+FQ69YkQGGwAhjQ0Zt9NQQoCA8vr0/XB2p76pHFXgMc=
 1787735946161_V897_drop_workflow_feature_flag_rows.up.sql h1:IJAlVU0jvpflyZ1dKmKLmu+gcDBZkYmRtLdMUcy1oqw=
+1788489360995_V1828_cubeapm_integration.up.sql h1:TTerLX83ryt9X4ooT+3bh39BwKvlUJeFS6bSGx7g394=

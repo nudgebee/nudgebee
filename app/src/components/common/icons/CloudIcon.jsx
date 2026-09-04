@@ -37,6 +37,7 @@ import {
   SignozIcon,
   ObserveIcon,
   OpenObserveIcon,
+  CubeAPMIcon,
   AzureAppInsightIcon,
   OpentelemetryIcon,
   ChronosphereIcon,
@@ -145,6 +146,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ObserveIcon;
   } else if (cloud_provider.toUpperCase() === 'OPENOBSERVE' || cloud_provider.toUpperCase() === 'OPENOBSERVE_WEBHOOK') {
     Icon = OpenObserveIcon;
+  } else if (cloud_provider.toUpperCase() === 'CUBEAPM' || cloud_provider.toUpperCase() === 'CUBEAPM_WEBHOOK') {
+    Icon = CubeAPMIcon;
   } else if (cloud_provider.toUpperCase() === 'AZURE_APP_INSIGHTS') {
     Icon = AzureAppInsightIcon;
   } else if (cloud_provider.toUpperCase() === 'PROMETHEUS') {
