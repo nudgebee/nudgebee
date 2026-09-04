@@ -814,3 +814,29 @@ func TestCubeAPMSpanStartNanos(t *testing.T) {
 		t.Error("an unparseable timestamp should sort as 0")
 	}
 }
+
+// The search API answers 400 {"error":"invalid limit"} above 100 — verified by
+// bisection against a live instance (100 -> 200, 101 -> 400). This is a server
+// constraint, not a policy choice, and exceeding it fails the request outright
+// rather than degrading it, so it needs a guard CI can see: the live test that
+// found it does not run in CI.
+func TestCubeAPMTraceLimitRespectsServerCap(t *testing.T) {
+	if cubeAPMMaxTraceLimit > 100 {
+		t.Errorf("cubeAPMMaxTraceLimit = %d; the CubeAPM search API rejects limit > 100 with a 400",
+			cubeAPMMaxTraceLimit)
+	}
+
+	// Requests above the cap must be clamped, not passed through.
+	if got := cubeAPMTraceLimit(TracesV3Request{
+		QueryRequest: TracesQueryBuilderRequest{Limit: 5000},
+	}); got > 100 {
+		t.Errorf("cubeAPMTraceLimit(5000) = %d, want it clamped to at most 100", got)
+	}
+
+	// The over-fetch multiplier must also stay under the cap, or a filtered query
+	// turns into a 400 instead of a wider scan.
+	fetch := min(cubeAPMDefaultTraceLimit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
+	if fetch > 100 {
+		t.Errorf("over-fetch resolves to %d, above the server cap of 100", fetch)
+	}
+}

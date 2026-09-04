@@ -33,12 +33,24 @@ const (
 const (
 	cubeAPMTraceQueryTimeout = 30 * time.Second
 	cubeAPMDefaultTraceLimit = 100
-	cubeAPMMaxTraceLimit     = 2000
+
+	// cubeAPMMaxTraceLimit is the server's hard cap, not a policy of ours: the
+	// search API answers 400 {"error":"invalid limit"} for anything above 100.
+	// Verified by bisection against a live instance — limit=100 returns 200 and
+	// limit=101 returns 400. Exceeding it is not a degraded result, it is a
+	// failed request, which is how the trace label-value dropdown broke.
+	cubeAPMMaxTraceLimit = 100
 )
 
 // cubeAPMTraceOverFetch multiplies the requested page size when filters have to be
 // applied locally (see filterCubeAPMSpans). Without it, a filter that matches one
 // span in ten would return a tenth of a page and read as "no more data".
+//
+// It is bounded by cubeAPMMaxTraceLimit, so at the default page size the server
+// cap absorbs it entirely. The breadth that makes local filtering workable comes
+// from the per-service fan-out instead: each service is a separate request with
+// its own cap, and every span of every matched trace is returned, so one page of
+// traces yields far more than one page of spans.
 const cubeAPMTraceOverFetch = 5
 
 // The trace search API rejects a request missing any of index, env, service or
