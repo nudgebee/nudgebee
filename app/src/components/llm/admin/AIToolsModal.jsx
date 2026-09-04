@@ -12,7 +12,7 @@
  * lighter internal Tabs strip, same pattern BCortexModal already uses for
  * b-Cortex's own tab groups.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { useSession } from 'next-auth/react';
 import { Box } from '@mui/material';
@@ -55,6 +55,17 @@ const AIToolsModal = ({ open, onClose }) => {
     [bcortexEnabled, llmFunctionEnabled]
   );
   const [activeTab, setActiveTab] = useState(AI_TOOLS_SUB_TABS[0].id);
+
+  // The active tab's own gate (legacyOnly/requiresFeature/requiresUiFeature)
+  // can flip false after an async check resolves while it's selected — reset
+  // to the first still-visible tab so the strip's highlighted tab and the
+  // rendered body never disagree. Same pattern BCortexModal.jsx already uses
+  // for its own gated sub-tabs.
+  useEffect(() => {
+    if (!visibleSubTabs.some((t) => t.id === activeTab)) {
+      setActiveTab(visibleSubTabs[0]?.id ?? AI_TOOLS_SUB_TABS[0].id);
+    }
+  }, [visibleSubTabs, activeTab]);
 
   // Same per-tab dynamic-RBAC gating as Admin's own page (filterOptions in
   // user-management/index.jsx) — a custom-role holder sees the identical set

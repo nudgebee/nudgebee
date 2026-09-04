@@ -37,7 +37,8 @@ export function uniqueAgentName(): string {
   return `nb-e2e-agent-${uniqueSuffix()}`;
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > Egress Filter.
+// Logs in, opens the Nubi panel and lands on AI & Tools > Egress Filter
+// (relocated from Settings, docs/ia-consolidation-plan.md PR 3).
 export async function openEgressFilterTab(page: Page): Promise<EgressFilterLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -45,7 +46,7 @@ export async function openEgressFilterTab(page: Page): Promise<EgressFilterLocat
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
+  await nubi.aiToolsBtn.click();
   await locators.egressFilterTab.waitFor({ state: "visible", timeout: 20000 });
   await locators.egressFilterTab.click();
   // The tab renders a spinner until egressfilter_get resolves, so the toggle is

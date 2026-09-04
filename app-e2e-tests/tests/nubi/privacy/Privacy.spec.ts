@@ -2,7 +2,7 @@
 import { test, expect } from "@playwright/test";
 import { ensureLayerEnabled, openPrivacyTab, remountPrivacyTab, restoreLayer, setLayerEnabled } from "./privacyHelper";
 
-// Nubi > Settings > Privacy (app/src/ee/components/memory2/PrivacyTab.jsx).
+// Nubi > b-Cortex > Memory > Privacy (app/src/ee/components/memory2/PrivacyTab.jsx).
 // Every write here lands on the signed-in user's own consent rows (scope
 // 'user'), never on the tenant rows, and each case puts back the state it found.
 // The tab has no Save button: each switch commits on click, so there is no
@@ -11,7 +11,7 @@ import { ensureLayerEnabled, openPrivacyTab, remountPrivacyTab, restoreLayer, se
 
 test.describe("Nubi Privacy Tab", () => {
   test(
-    "Nubi Privacy sanity - open Nubi Settings, select the Privacy tab, verify the tab is selected and the personal consent description and Personal scope render",
+    "Nubi Privacy sanity - open b-Cortex, select the Privacy tab, verify the tab is selected and the personal consent description and Personal scope render",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);

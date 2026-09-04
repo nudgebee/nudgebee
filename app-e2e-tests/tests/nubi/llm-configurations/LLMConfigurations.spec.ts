@@ -17,25 +17,26 @@ import {
   waitForListingSettled,
 } from "./llmConfigurationsHelper";
 
-// Nubi > Settings > Configurations (app/src/components/llm/LLMModelConfigurationTab.jsx).
-// Both sub-tabs are read-only by design — every management action lives on
+// Nubi > Admin > AI & Tools > Providers / Tools & MCP. Formerly one Settings
+// tab, "Configurations" (SettingsModal.jsx / LLMModelConfigurationTab.jsx,
+// both deleted) — LLM Providers and MCP Servers now live on two separate AI &
+// Tools tabs (docs/ia-consolidation-plan.md PR 3), see llmConfigurationsHelper.ts.
+// Both are read-only by design — every management action lives on
 // Admin > Integrations — so nothing in this suite writes to the shared tenant.
 // The filter assertions read the outgoing ListIntegrations query rather than
 // counting rows, which is what keeps them stable against changing dev data.
 
-test.describe("Nubi Settings Configurations Tab", () => {
+test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
   test(
-    "Configurations sanity - open Nubi Settings, select the Configurations tab, verify the LLM Providers sub-tab is the selected one and its table lists the provider columns",
+    "Configurations sanity - open AI & Tools, select the Providers tab, verify it's the selected tab and its table lists the provider columns",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openConfigurationsTab(page);
 
-      await expect(locators.subTabGroup).toBeVisible({ timeout: 20000 });
-      // ToggleGroup keeps selection in aria-checked, so this reads the real
-      // selected state rather than inferring it from the highlight colour.
-      await expect(locators.llmProvidersSubTab).toHaveAttribute("aria-checked", "true");
-      await expect(locators.mcpServersSubTab).toHaveAttribute("aria-checked", "false");
+      // Providers has no internal sub-tab toggle (unlike Tools & MCP) — the
+      // top-level AI & Tools tab itself carries the selected state.
+      await expect(locators.providersTab).toHaveAttribute("aria-selected", "true", { timeout: 20000 });
 
       await expect(locators.llmTable).toBeVisible({ timeout: 30000 });
       await expect(locators.llmTable).toContainText("Name");
@@ -59,7 +60,7 @@ test.describe("Nubi Settings Configurations Tab", () => {
   );
 
   test(
-    "Configurations sanity - select the MCP Servers sub-tab, verify the Connection column replaces Updated By and the status filter arrives preset to Enabled",
+    "Configurations sanity - select Tools & MCP > MCP Servers, verify the Connection column replaces Updated By and the status filter arrives preset to Enabled",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
@@ -67,8 +68,9 @@ test.describe("Nubi Settings Configurations Tab", () => {
 
       await openMcpSubTab(locators);
 
-      await expect(locators.mcpServersSubTab).toHaveAttribute("aria-checked", "true");
-      await expect(locators.llmProvidersSubTab).toHaveAttribute("aria-checked", "false");
+      // ToggleGroup keeps selection in aria-checked, so this reads the real
+      // selected state rather than inferring it from the highlight colour.
+      await expect(locators.mcpServersToggle).toHaveAttribute("aria-checked", "true");
 
       await expect(locators.mcpTable).toBeVisible({ timeout: 30000 });
       await expect(locators.mcpTable).toContainText("Connection");
@@ -246,14 +248,17 @@ test.describe("Nubi Settings Configurations Tab", () => {
   );
 
   test(
-    "Configurations - use the read-only banner's Manage in Admin action, verify a new tab opens on the Admin integrations form for the llm provider type and Settings stays open behind it",
+    "Configurations - use the read-only banner's Manage in Integrations action, verify a new tab opens on the Admin integrations form for the llm provider type and AI & Tools stays open behind it",
     { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const locators = await openConfigurationsTab(page);
 
-      await expect(locators.manageInAdminBtn).toBeVisible({ timeout: 20000 });
-      const [adminTab] = await Promise.all([page.context().waitForEvent("page", { timeout: 45000 }), locators.manageInAdminBtn.click()]);
+      await expect(locators.manageInIntegrationsBtn).toBeVisible({ timeout: 20000 });
+      const [adminTab] = await Promise.all([
+        page.context().waitForEvent("page", { timeout: 45000 }),
+        locators.manageInIntegrationsBtn.click(),
+      ]);
 
       await adminTab.waitForURL(/\/accounts\/account-form\?cloudProvider=llm/, { timeout: 45000 });
       await adminTab.close();
@@ -261,7 +266,7 @@ test.describe("Nubi Settings Configurations Tab", () => {
       // The banner opens Admin in a new tab rather than navigating away, so the
       // listing the user was reading has to still be there afterwards.
       await expect(locators.llmListingCard).toBeVisible({ timeout: 20000 });
-      await expect(locators.llmProvidersSubTab).toHaveAttribute("aria-checked", "true");
+      await expect(locators.providersTab).toHaveAttribute("aria-selected", "true");
     }
   );
 });

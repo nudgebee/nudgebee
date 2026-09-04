@@ -9,7 +9,7 @@ import {
   uniqueShorthand,
 } from "./soulHelper";
 
-// Nubi > Settings > Soul (app/src/ee/components/memory2/SoulTab.jsx).
+// Nubi > b-Cortex > Memory > Soul (app/src/ee/components/memory2/SoulTab.jsx).
 // Every write here lands on the signed-in user's own Soul row (scope 'user'),
 // never on the tenant profile, and the one case that saves puts back the text it
 // found. The tab has no autosave: edits live in React state until Save, which is
@@ -21,7 +21,7 @@ import {
 
 test.describe("Nubi Soul Tab", () => {
   test(
-    "Nubi Soul sanity - open Nubi Settings, select the Soul tab, verify the personal style-profile header, the provenance chip and the Personal scope render",
+    "Nubi Soul sanity - open b-Cortex, select the Soul tab, verify the personal style-profile header, the provenance chip and the Personal scope render",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);

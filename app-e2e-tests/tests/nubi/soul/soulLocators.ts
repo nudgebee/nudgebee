@@ -20,7 +20,8 @@ import { CommonLocators } from "../../GlobalLocators";
 // different element satisfy the very check the test exists to make.
 export class SoulLocators extends CommonLocators {
   readonly soulTab: Locator;
-  readonly settingsDialog: Locator;
+  readonly patternsTab: Locator;
+  readonly bCortexDialog: Locator;
   readonly personalHeader: Locator;
   readonly tenantHeader: Locator;
   readonly provenanceChip: Locator;
@@ -47,13 +48,21 @@ export class SoulLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // The Nubi panel entry point and its Settings button are not redeclared —
-    // tests/nubi/nubiLocators.ts owns them and openSoulTab() drives it.
-    // SettingsModal renders its strip through shared/navigation/Tabs (MUI Tabs),
-    // so every tab is a real role=tab even while scrolled out of view.
+    // The Nubi panel entry point and its "b-Cortex" button are not redeclared —
+    // tests/nubi/nubiLocators.ts owns them and openSoulTab() drives it. Soul
+    // relocated from the (now-deleted) Settings modal into BCortexModal.jsx's
+    // Memory group as a sub-tab (docs/ia-consolidation-plan.md PR 4) — Memory
+    // is b-Cortex's default landing group, so "Soul" is a real role=tab as
+    // soon as the modal opens, no extra top-level-tab click needed.
+    // BCortexModal renders its strips through shared/navigation/Tabs (MUI
+    // Tabs), so every tab is a real role=tab even while scrolled out of view.
     this.soulTab = page.getByRole("tab", { name: "Soul" });
+    // Sibling Memory sub-tab used to remount Soul (leave and come back) —
+    // Memory's own default sub-tab, so it's always reachable without a filter
+    // check of its own the way Soul itself needs one.
+    this.patternsTab = page.getByRole("tab", { name: "Patterns", exact: true });
 
-    // Every locator below scopes to the Settings dialog so a matching string on
+    // Every locator below scopes to the b-Cortex dialog so a matching string on
     // the page behind the modal cannot satisfy it. Filtered on "Soul" because
     // that label is in the tab strip whichever tab is showing, which keeps the
     // anchor stable while tab content is being switched. Deliberately
@@ -63,29 +72,29 @@ export class SoulLocators extends CommonLocators {
     // dialog underneath a second modal aria-hidden, which drops it out of the
     // accessibility tree. Anything done inside that editor is scoped to
     // expandDialog instead.
-    this.settingsDialog = page.getByRole("dialog").filter({ hasText: "Soul" }).first();
+    this.bCortexDialog = page.getByRole("dialog").filter({ hasText: "Soul" }).first();
 
     // TabHeader's title is the one string that separates the two scopes, so it
     // doubles as the assertion that a scope switch took effect. Matched exactly
     // and with no fallback for that reason — a substring match would also hit
     // the tab label and both scopes would look identical.
-    this.personalHeader = this.settingsDialog.getByText("Soul — your style profile", { exact: true }).first();
-    this.tenantHeader = this.settingsDialog.getByText("Soul — tenant style profile", { exact: true }).first();
+    this.personalHeader = this.bCortexDialog.getByText("Soul — your style profile", { exact: true }).first();
+    this.tenantHeader = this.bCortexDialog.getByText("Soul — tenant style profile", { exact: true }).first();
 
     // Either chip is correct here: SoulTab derives the kind from the row's
     // `sources` map, so a profile nobody has edited reads "Inferred" and one
     // with a user-set field reads "Explicit". The assertion is that the header
     // rail rendered its provenance at all, not which value it carries.
-    this.provenanceChip = this.settingsDialog
+    this.provenanceChip = this.bCortexDialog
       .getByText("Explicit", { exact: true })
-      .or(this.settingsDialog.getByText("Inferred", { exact: true }))
+      .or(this.bCortexDialog.getByText("Inferred", { exact: true }))
       .first();
 
     // ds/ToggleGroup renders role=group with the ariaLabel it is given, and each
     // single-selection option as role=radio carrying aria-checked. The radios
     // are scoped to that group so the aria-checked assertions cannot drift onto
     // another control; a text fallback would match the scope labels in the copy.
-    this.scopeToggle = this.settingsDialog.getByRole("group", { name: "Memory scope" }).first();
+    this.scopeToggle = this.bCortexDialog.getByRole("group", { name: "Memory scope" }).first();
     this.personalScopeOption = this.scopeToggle.getByRole("radio", { name: "Personal" });
     this.globalScopeOption = this.scopeToggle.getByRole("radio", { name: "Global" });
 
@@ -98,15 +107,15 @@ export class SoulLocators extends CommonLocators {
     // where this is also the only textarea. The expand editor renders a second
     // textarea carrying the same placeholder, but it portals to a sibling
     // dialog, so it is outside this scope.
-    this.domainShorthandTextarea = this.settingsDialog
+    this.domainShorthandTextarea = this.bCortexDialog
       .getByPlaceholder("`prod` = ...")
-      .or(this.settingsDialog.locator("textarea"))
+      .or(this.bCortexDialog.locator("textarea"))
       .first();
 
     // ds/Button forwards aria-label for an icon-only button, so the expand
     // affordance has a real accessible name. No fallback: an icon-only button
     // has no text, and the tooltip only exists while hovered.
-    this.expandEditorBtn = this.settingsDialog.getByRole("button", { name: "Expand editor" });
+    this.expandEditorBtn = this.bCortexDialog.getByRole("button", { name: "Expand editor" });
 
     // The expand editor is a second MUI Dialog portaled to the body, so it is a
     // sibling of the Settings dialog rather than a descendant. Identified by the
@@ -131,19 +140,18 @@ export class SoulLocators extends CommonLocators {
     // saving, which is what makes "Save is enabled" the tab's load signal.
     // No fallback: their enabled state is load-bearing, so matching a different
     // button would pass a test that proved nothing.
-    this.saveBtn = this.settingsDialog.getByRole("button", { name: "Save", exact: true });
-    this.resetBtn = this.settingsDialog.getByRole("button", { name: "Reset", exact: true });
+    this.saveBtn = this.bCortexDialog.getByRole("button", { name: "Save", exact: true });
+    this.resetBtn = this.bCortexDialog.getByRole("button", { name: "Reset", exact: true });
 
     // Rendered in place of the whole editor when the tenant's b-Cortex flag is
-    // off, and the one part of this surface that does carry a testid. Asserted
-    // against so a disabled module reports itself by name instead of surfacing
-    // as every control being absent. Deliberately not matched on "b-Cortex"
-    // text: SettingsModal's own header renders an "Open b-Cortex" action, so a
-    // text match would report the module disabled on every run.
-    this.bCortexDisabledPanel = this.settingsDialog
-      .getByTestId("bcortex-view-old-memory-btn")
-      .or(this.settingsDialog.getByRole("button", { name: /old memory/i }))
-      .first();
+    // off (BCortexDisabled.jsx). Asserted against so a disabled module reports
+    // itself by name instead of surfacing as every control being absent.
+    // Matched on its own title, not its former "View legacy memory layer"
+    // button — that button only rendered while NubiBrainNav.jsx passed
+    // BCortexModal an onOpenSettingsMemory callback, removed along with the
+    // non-admin-gated "Memory" rail button it opened (Decision AB) — the title
+    // still renders unconditionally whenever the module is off.
+    this.bCortexDisabledPanel = this.bCortexDialog.getByText("b-Cortex not enabled for your tenant", { exact: true }).first();
 
     // SnackbarComponent mounts at the app root, so it is a sibling of the
     // Settings dialog's portal and MUI marks it aria-hidden while that dialog is
@@ -157,7 +165,7 @@ export class SoulLocators extends CommonLocators {
   // Anchoring on the title rather than on position means a reordered tab cannot
   // silently point a section assertion at another card.
   sectionCard(title: string): Locator {
-    return this.settingsDialog.getByText(title, { exact: true }).locator("xpath=../..").first();
+    return this.bCortexDialog.getByText(title, { exact: true }).locator("xpath=../..").first();
   }
 
   // The option cards under one FieldLabel. SoulTab wraps each label, its hint
@@ -166,7 +174,7 @@ export class SoulLocators extends CommonLocators {
   // "Detailed + tradeoffs" an Explain reasoning one, so a dialog-wide lookup
   // would resolve in document order and assert against the wrong grid.
   optionGroup(label: string): Locator {
-    return this.settingsDialog.getByText(label, { exact: true }).locator("xpath=..").first();
+    return this.bCortexDialog.getByText(label, { exact: true }).locator("xpath=..").first();
   }
 
   // One choice inside a labelled group. ds/Card sets role="button" only while

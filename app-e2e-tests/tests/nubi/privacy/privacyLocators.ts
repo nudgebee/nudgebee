@@ -2,7 +2,7 @@
 import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 
-// Nubi > Settings > Privacy (app/src/ee/components/memory2/PrivacyTab.jsx).
+// Nubi > b-Cortex > Memory > Privacy (app/src/ee/components/memory2/PrivacyTab.jsx).
 // `grep -c data-testid` returns 0 for that file and for the ScopeToggle it
 // composes, so the only rung-1 handle on this surface is the b-Cortex
 // placeholder. The tab strip and the scope radios carry accessible names and are
@@ -12,8 +12,8 @@ import { CommonLocators } from "../../GlobalLocators";
 // help line, the only string unique to its row.
 export class PrivacyLocators extends CommonLocators {
   readonly privacyTab: Locator;
-  readonly agentsTab: Locator;
-  readonly settingsDialog: Locator;
+  readonly patternsTab: Locator;
+  readonly bCortexDialog: Locator;
   readonly personalDescription: Locator;
   readonly tenantDescription: Locator;
   readonly tenantWarningBanner: Locator;
@@ -44,22 +44,29 @@ export class PrivacyLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // The Nubi panel entry point and its Settings button are not redeclared —
+    // The Nubi panel entry point and its "b-Cortex" button are not redeclared —
     // tests/nubi/nubiLocators.ts owns them and openPrivacyTab() drives them.
-    // SettingsModal renders its strip through shared/navigation/Tabs (MUI Tabs),
+    // Privacy relocated from the (now-deleted) Settings modal into
+    // BCortexModal.jsx's Memory group as a sub-tab (docs/ia-consolidation-plan.md
+    // PR 4) — Memory is b-Cortex's default landing group, so "Privacy" is a real
+    // role=tab as soon as the modal opens, no extra top-level-tab click needed.
+    // BCortexModal renders its strips through shared/navigation/Tabs (MUI Tabs),
     // so every tab is a real role=tab carrying aria-selected even while scrolled
     // out of view. No text fallback: "Privacy" is also this tab's own header
     // title, so a text match could return the heading instead of the tab.
     this.privacyTab = page.getByRole("tab", { name: "Privacy" });
-    this.agentsTab = page.getByRole("tab", { name: "Agents" });
+    // Sibling Memory sub-tab used to remount Privacy (leave and come back) —
+    // Memory's own default sub-tab, so it's always reachable without a filter
+    // check of its own the way Privacy itself needs one.
+    this.patternsTab = page.getByRole("tab", { name: "Patterns", exact: true });
 
-    // Everything below scopes to the Settings dialog so a matching string on the
+    // Everything below scopes to the b-Cortex dialog so a matching string on the
     // page behind the modal cannot satisfy it. Filtered on "Privacy" because
     // that label is in the tab strip whichever tab is showing, which keeps the
     // anchor stable while tab content is being switched. Deliberately
     // single-rung: this is what every locator below scopes to, so a wider
     // fallback here would widen all of them at once.
-    this.settingsDialog = page.getByRole("dialog").filter({ hasText: "Privacy" }).first();
+    this.bCortexDialog = page.getByRole("dialog").filter({ hasText: "Privacy" }).first();
 
     // The TabHeader title is the bare word "Privacy", which is also the tab
     // label, so it cannot tell the two apart. The header's description can:
@@ -67,25 +74,25 @@ export class PrivacyLocators extends CommonLocators {
     // so each doubles as the assertion that a scope switch took effect. Matched
     // as substrings that exclude the tenant's assistant name, which is branding
     // config and differs per tenant, and that carry no typographic punctuation.
-    this.personalDescription = this.settingsDialog.getByText(/Turning a layer off stops injection/).first();
-    this.tenantDescription = this.settingsDialog.getByText(/Tenant-wide opt-out/).first();
+    this.personalDescription = this.bCortexDialog.getByText(/Turning a layer off stops injection/).first();
+    this.tenantDescription = this.bCortexDialog.getByText(/Tenant-wide opt-out/).first();
 
     // ds/Banner renders plain copy, so this is a scoped text match by necessity.
     // Anchored on the banner's own opening clause rather than on the phrase it
     // shares with the Global description, which would match both.
-    this.tenantWarningBanner = this.settingsDialog.getByText(/These toggles apply to every user in this tenant/).first();
+    this.tenantWarningBanner = this.bCortexDialog.getByText(/These toggles apply to every user in this tenant/).first();
 
     // ds/ToggleGroup renders role=group with the ariaLabel it is given, and each
     // single-selection option as role=radio carrying aria-checked. The radios are
     // scoped to that group so the aria-checked assertions cannot drift onto
     // another control; a text fallback would match the scope labels in the copy.
-    this.scopeToggle = this.settingsDialog.getByRole("group", { name: "Memory scope" }).first();
+    this.scopeToggle = this.bCortexDialog.getByRole("group", { name: "Memory scope" }).first();
     this.personalScopeOption = this.scopeToggle.getByRole("radio", { name: "Personal" });
     this.globalScopeOption = this.scopeToggle.getByRole("radio", { name: "Global" });
 
     // Rows are anchored on their help line, not their label: four of the seven
     // labels ("Soul", "Preferences", "Sessions", "Privacy" itself) are also
-    // Settings tab labels inside this same dialog, so a label match would resolve
+    // b-Cortex tab labels inside this same dialog, so a label match would resolve
     // to the tab strip. Every help line here is unique to its own row.
     this.masterRow = this.privacyRow("Master switch. When off, no layer is injected.");
     this.masterSwitch = this.rowSwitch(this.masterRow);
@@ -123,18 +130,17 @@ export class PrivacyLocators extends CommonLocators {
     this.layerRowSwitches = this.layerRows.map((row) => this.rowSwitches(row));
 
     // Rendered in place of the whole panel when the tenant's b-Cortex flag is
-    // off, and the one part of this surface that does carry a testid. Asserted
-    // against so a disabled module reports itself by name instead of surfacing as
-    // every row being absent. Deliberately not matched on "b-Cortex" text:
-    // SettingsModal's own header renders an "Open b-Cortex" action, so a text
-    // match would report the module disabled on every run.
-    this.bCortexDisabledPanel = this.settingsDialog
-      .getByTestId("bcortex-view-old-memory-btn")
-      .or(this.settingsDialog.getByRole("button", { name: /old memory/i }))
-      .first();
+    // off (BCortexDisabled.jsx). Asserted against so a disabled module reports
+    // itself by name instead of surfacing as every row being absent. Matched on
+    // its own title, not its former "View legacy memory layer" button — that
+    // button only rendered while NubiBrainNav.jsx passed BCortexModal an
+    // onOpenSettingsMemory callback, removed along with the non-admin-gated
+    // "Memory" rail button it opened (Decision AB) — the title still renders
+    // unconditionally whenever the module is off.
+    this.bCortexDisabledPanel = this.bCortexDialog.getByText("b-Cortex not enabled for your tenant", { exact: true }).first();
 
     // SnackbarComponent mounts at the app root, so it is a sibling of the
-    // Settings dialog's portal and MUI marks it aria-hidden while that dialog is
+    // b-Cortex dialog's portal and MUI marks it aria-hidden while that dialog is
     // open. That drops it out of the accessibility tree, so getByRole finds
     // nothing even though the node is in the DOM — matched by attribute instead.
     this.notificationsRegion = page.locator('[aria-label="Notifications"]');
@@ -147,7 +153,7 @@ export class PrivacyLocators extends CommonLocators {
   // cannot silently point a switch assertion at another layer. Single-rung
   // because this walk is itself the scoping step for rowSwitch.
   privacyRow(help: string): Locator {
-    return this.settingsDialog.getByText(help, { exact: true }).locator("xpath=../..").first();
+    return this.bCortexDialog.getByText(help, { exact: true }).locator("xpath=../..").first();
   }
 
   // The switch inside one row. Both rungs are scoped to that row, because

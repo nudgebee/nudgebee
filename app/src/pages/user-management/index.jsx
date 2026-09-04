@@ -21,6 +21,12 @@ import AssignmentIndOutlinedIcon from '@mui/icons-material/AssignmentIndOutlined
 import { AI_TOOLS_SUB_TABS } from '@components/llm/admin/aiToolsConfig';
 import { useBCortexEnabled } from '@hooks/useBCortexEnabled';
 import { useFeatureAccess } from '@hooks/useFeatureAccess';
+import withBrandBlue from '@shared/icons/withBrandBlue';
+
+// AssignmentIndOutlinedIcon defaults to `currentColor` and would otherwise
+// render gray/black instead of matching its blue-SVG siblings (Users,
+// Groups, Audit Log) in the same Access & Users dropdown.
+const OwnershipIcon = withBrandBlue(AssignmentIndOutlinedIcon);
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -82,7 +88,7 @@ const baseFilters = (baseTitle) => [
         id: 'ownership',
         fragment: 'ownership',
         text: 'Ownership',
-        icon: AssignmentIndOutlinedIcon,
+        icon: OwnershipIcon,
         Body: OwnershipRules,
         module: 'ownership',
         description:

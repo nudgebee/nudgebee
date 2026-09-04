@@ -2,23 +2,30 @@
 import { Page, Locator, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 
-// Nubi > Settings > Configurations (app/src/components/llm/LLMModelConfigurationTab.jsx,
-// which mounts LLMConfigList.jsx or MCPConfigList.jsx one at a time).
+// Nubi > Admin > AI & Tools > Providers / Tools & MCP. The old "Configurations"
+// tab (SettingsModal.jsx, LLMModelConfigurationTab.jsx — both deleted,
+// docs/ia-consolidation-plan.md PR 3) mounted LLMConfigList.jsx and
+// MCPConfigList.jsx behind one internal LLM Providers/MCP Servers toggle.
+// They split into two separate AI & Tools tabs instead: LLM Providers is now
+// the standalone "Providers" tab (ProvidersAdminTab.jsx, no internal toggle —
+// it's the only content there), and MCP Servers is the "MCP Servers" option of
+// the "Tools & MCP" tab's own Tools/MCP Servers toggle (ToolsAndMCPAdminTab.jsx).
+// LLMConfigList.jsx and MCPConfigList.jsx themselves are untouched, so every
+// id-based locator below (listing card, table, search, filters) is unchanged —
+// only the navigation to reach each one changed.
 // All three components render zero data-testid, so rung 1 does not exist on this
-// surface. The sub-tab strip and the banner action carry real roles (ToggleGroup
-// renders role=radio inside role=group, Banner renders role=status with a
-// ButtonBase action), so those are rung 2. Everything else is a ds primitive the
-// tab gives an explicit id — ListingLayout, CustomTable, SearchInput,
-// FilterDropdown — which is rung 3, each with a fallback scoped to the same
-// listing card so `.or()` cannot resolve into the other sub-tab's listing.
+// surface. The tab strip, the toggle and the banner action carry real roles
+// (ToggleGroup renders role=radio inside role=group, Banner renders role=status
+// with a ButtonBase action), so those are rung 2. Everything else is a ds
+// primitive the tab gives an explicit id — ListingLayout, CustomTable,
+// SearchInput, FilterDropdown — which is rung 3, each with a fallback scoped to
+// the same listing card so `.or()` cannot resolve into the other listing's.
 export class LLMConfigurationsLocators extends CommonLocators {
-  readonly configurationsTab: Locator;
-  readonly agentsTab: Locator;
-  readonly subTabGroup: Locator;
-  readonly llmProvidersSubTab: Locator;
-  readonly mcpServersSubTab: Locator;
+  readonly providersTab: Locator;
+  readonly toolsAndMcpTab: Locator;
+  readonly mcpServersToggle: Locator;
   readonly readOnlyBanner: Locator;
-  readonly manageInAdminBtn: Locator;
+  readonly manageInIntegrationsBtn: Locator;
   readonly llmListingCard: Locator;
   readonly llmTable: Locator;
   readonly llmTableBody: Locator;
@@ -36,23 +43,24 @@ export class LLMConfigurationsLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // The Nubi panel entry point and its Settings button stay in
-    // tests/nubi/nubiLocators.ts; openConfigurationsTab() drives that class.
-    // SettingsModal renders its strip through shared/navigation/Tabs (a MUI
-    // Tabs), so every tab is a real role=tab even while scrolled out of view.
-    this.configurationsTab = page.getByRole("tab", { name: "Configurations" });
-    this.agentsTab = page.getByRole("tab", { name: "Agents" });
+    // The Nubi panel entry point and its "AI & Tools" button stay in
+    // tests/nubi/nubiLocators.ts; openProvidersTab()/openMcpServersTab() drive
+    // that class. AIToolsModal renders its strip through shared/navigation/Tabs
+    // (a MUI Tabs), so every tab is a real role=tab even while scrolled out of
+    // view.
+    this.providersTab = page.getByRole("tab", { name: "Providers" });
+    this.toolsAndMcpTab = page.getByRole("tab", { name: "Tools & MCP" });
 
     // ds/ToggleGroup wraps its options in role=group named by ariaLabel, and a
-    // single-selection option is role=radio carrying aria-checked — not a class.
-    this.subTabGroup = page.getByRole("group", { name: "LLM Configuration" });
-    this.llmProvidersSubTab = this.subTabGroup.getByRole("radio", { name: "LLM Providers" }).or(this.subTabGroup.getByText("LLM Providers", { exact: true })).first();
-    this.mcpServersSubTab = this.subTabGroup.getByRole("radio", { name: "MCP Servers" }).or(this.subTabGroup.getByText("MCP Servers", { exact: true })).first();
+    // single-selection option is role=radio carrying aria-checked — not a
+    // class. "Tools" is the toggle's own default, so no locator is needed for
+    // it here; MCP Servers is the one this suite has to select explicitly.
+    this.mcpServersToggle = page.getByRole("group", { name: "Tools & MCP" }).getByRole("radio", { name: "MCP Servers" });
 
     // ds/Banner renders role=status for the info tone. The toast region uses the
     // same role, so the text filter is what keeps this off a snackbar.
     this.readOnlyBanner = page.getByRole("status").filter({ hasText: /This view is read-only/ }).or(page.getByText(/This view is read-only/)).first();
-    this.manageInAdminBtn = this.readOnlyBanner.getByRole("button", { name: "Manage in Admin" }).first();
+    this.manageInIntegrationsBtn = this.readOnlyBanner.getByRole("button", { name: "Manage in Integrations" }).first();
 
     // ListingLayout puts its `id` on the wrapping DS Card, so this is the whole
     // listing: toolbar, table and empty state. Deliberately id-only — the Card is

@@ -11,7 +11,7 @@ import {
   uniqueNote,
 } from "./preferencesHelper";
 
-// Nubi > Settings > Preferences (app/src/ee/components/memory2/PreferencesTab.jsx).
+// Nubi > b-Cortex > Preferences > Typed (app/src/ee/components/memory2/PreferencesTab.jsx).
 // Every write here lands on the signed-in user's own preference rows (scope
 // 'user'), never on tenant defaults, and each case puts back the value it found.
 // The tab has no autosave: edits live in React state until Save, which is what
@@ -19,7 +19,7 @@ import {
 
 test.describe("Nubi Preferences Tab", () => {
   test(
-    "Nubi Preferences sanity - open Nubi Settings, select the Preferences tab, verify the durable-facts header, the Explicit provenance chip and the Personal scope render",
+    "Nubi Preferences sanity - open b-Cortex, select Preferences > Typed, verify the durable-facts header, the Explicit provenance chip and the Personal scope render",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);

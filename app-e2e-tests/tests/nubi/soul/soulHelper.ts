@@ -26,7 +26,10 @@ export async function waitForSoulLoaded(locators: SoulLocators): Promise<void> {
   await expect(locators.saveBtn).toBeEnabled({ timeout: 30000 });
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > Soul.
+// Logs in, opens the Nubi panel and lands on b-Cortex > Memory > Soul
+// (relocated from Settings, docs/ia-consolidation-plan.md PR 4). Memory is
+// b-Cortex's default landing group, so Soul is a real, clickable tab as soon
+// as the modal opens — no separate top-level-group click first.
 export async function openSoulTab(page: Page): Promise<SoulLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -34,7 +37,7 @@ export async function openSoulTab(page: Page): Promise<SoulLocators> {
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
+  await nubi.bcortexBtn.click();
   await locators.soulTab.waitFor({ state: "visible", timeout: 20000 });
   await locators.soulTab.click();
 
@@ -55,8 +58,7 @@ export async function openSoulTab(page: Page): Promise<SoulLocators> {
 // textarea: the textarea locator falls back to any textarea inside the dialog,
 // so a textarea on the tab being switched to would keep it from ever detaching.
 export async function remountSoulTab(page: Page, locators: SoulLocators): Promise<void> {
-  const nubi = new NubiLocators(page);
-  await nubi.customAgentTab.click();
+  await locators.patternsTab.click();
   await locators.personalHeader.waitFor({ state: "detached", timeout: 20000 });
   await locators.soulTab.click();
   await locators.personalHeader.waitFor({ state: "visible", timeout: 30000 });

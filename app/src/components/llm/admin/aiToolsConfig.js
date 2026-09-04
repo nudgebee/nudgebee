@@ -1,8 +1,17 @@
-import { AgentIcon, ToolsIcon, LLMFunctionIcon, LLMConsumptionIcon, FileOutlineIcon, InMemoryIcon, DocumentationIcon } from '@assets';
+import {
+  AgentIconTabBlue,
+  ToolsIconTabBlue,
+  LLMFunctionIconTabBlue,
+  LLMConsumptionIcon,
+  FileOutlineIcon,
+  InMemoryIcon,
+  DocumentationIcon,
+} from '@assets';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import withBrandBlue from '@shared/icons/withBrandBlue';
 import AgentsAdminTab from './AgentsAdminTab';
 import ToolsAndMCPAdminTab from './ToolsAndMCPAdminTab';
 import FunctionsAdminTab from './FunctionsAdminTab';
@@ -14,6 +23,14 @@ import MemoryPolicyAdminTab from './MemoryPolicyAdminTab';
 import RCAFormatAdminTab from './RCAFormatAdminTab';
 import MemoryLegacyAdminTab from './MemoryLegacyAdminTab';
 import AccountContextAdminTab from './AccountContextAdminTab';
+
+// MUI icons default to `currentColor` and would otherwise render in the
+// dropdown's gray/black text color instead of matching the hardcoded blue
+// of their custom-SVG siblings (Agents, Tools & MCP, …) in the same list.
+const ProvidersIcon = withBrandBlue(SettingsOutlinedIcon);
+const GatewayIcon = withBrandBlue(HubOutlinedIcon);
+const EgressFilterIcon = withBrandBlue(ShieldOutlinedIcon);
+const MemoryPolicyIcon = withBrandBlue(LockOutlinedIcon);
 
 /**
  * AI & Tools sub-tabs (docs/ia-consolidation-plan.md, PR 3) — the single
@@ -47,7 +64,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'agents',
     fragment: '',
     text: 'Agents',
-    icon: AgentIcon,
+    icon: AgentIconTabBlue,
     Body: AgentsAdminTab,
     module: 'ai',
   },
@@ -55,7 +72,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'tools-mcp',
     fragment: 'tools-mcp',
     text: 'Tools & MCP',
-    icon: ToolsIcon,
+    icon: ToolsIconTabBlue,
     Body: ToolsAndMCPAdminTab,
     module: 'ai',
   },
@@ -63,7 +80,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'functions',
     fragment: 'functions',
     text: 'Functions',
-    icon: LLMFunctionIcon,
+    icon: LLMFunctionIconTabBlue,
     Body: FunctionsAdminTab,
     module: 'ai',
     // Settings only ever pushed this tab after an async hasFeatureAccess('LLM_FUNCTION')
@@ -74,7 +91,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'providers',
     fragment: 'providers',
     text: 'Providers',
-    icon: SettingsOutlinedIcon,
+    icon: ProvidersIcon,
     Body: ProvidersAdminTab,
     module: 'integrations',
   },
@@ -82,7 +99,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'gateway',
     fragment: 'gateway',
     text: 'Gateway',
-    icon: HubOutlinedIcon,
+    icon: GatewayIcon,
     Body: GatewayAdminTab,
     module: 'llm',
     // Settings additionally gated this on the llmGateway UI feature toggle
@@ -95,7 +112,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'egress-filter',
     fragment: 'egress-filter',
     text: 'Egress Filter',
-    icon: ShieldOutlinedIcon,
+    icon: EgressFilterIcon,
     Body: EgressFilterAdminTab,
     module: 'egressfilter',
   },
@@ -111,7 +128,7 @@ export const AI_TOOLS_SUB_TABS = [
     id: 'memory-policy',
     fragment: 'memory-policy',
     text: 'Memory Policy',
-    icon: LockOutlinedIcon,
+    icon: MemoryPolicyIcon,
     Body: MemoryPolicyAdminTab,
     module: 'ai',
   },

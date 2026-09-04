@@ -25,7 +25,10 @@ export async function waitForPreferencesLoaded(locators: PreferencesLocators): P
   await expect(locators.timezoneInput).not.toHaveValue("", { timeout: 30000 });
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > Preferences.
+// Logs in, opens the Nubi panel and lands on b-Cortex > Preferences > Typed
+// (relocated from Settings, docs/ia-consolidation-plan.md PR 4). Preferences
+// is not b-Cortex's default landing group, and Typed is not its default
+// sub-tab, so this takes two clicks: the group tab, then the sub-tab.
 export async function openPreferencesTab(page: Page): Promise<PreferencesLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -33,9 +36,11 @@ export async function openPreferencesTab(page: Page): Promise<PreferencesLocator
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
+  await nubi.bcortexBtn.click();
   await locators.preferencesTab.waitFor({ state: "visible", timeout: 20000 });
   await locators.preferencesTab.click();
+  await locators.typedTab.waitFor({ state: "visible", timeout: 20000 });
+  await locators.typedTab.click();
 
   // A tenant with the b-Cortex module off renders the placeholder instead of the
   // editor, which would otherwise surface as every control below being absent.
@@ -54,9 +59,9 @@ export async function openPreferencesTab(page: Page): Promise<PreferencesLocator
 // textarea: the textarea locator falls back to any textarea inside the dialog,
 // so a textarea on the tab being switched to would keep it from ever detaching.
 export async function remountPreferencesTab(locators: PreferencesLocators): Promise<void> {
-  await locators.agentsTab.click();
+  await locators.inferredTab.click();
   await locators.personalHeader.waitFor({ state: "detached", timeout: 20000 });
-  await locators.preferencesTab.click();
+  await locators.typedTab.click();
   await locators.personalHeader.waitFor({ state: "visible", timeout: 30000 });
   await waitForPreferencesLoaded(locators);
 }

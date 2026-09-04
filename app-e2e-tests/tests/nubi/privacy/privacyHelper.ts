@@ -25,7 +25,10 @@ export async function waitForPrivacyLoaded(locators: PrivacyLocators): Promise<v
   await expect(locators.masterSwitch).toBeEnabled({ timeout: 30000 });
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > Privacy.
+// Logs in, opens the Nubi panel and lands on b-Cortex > Memory > Privacy
+// (relocated from Settings, docs/ia-consolidation-plan.md PR 4). Memory is
+// b-Cortex's default landing group, so Privacy is a real, clickable tab as
+// soon as the modal opens — no separate top-level-group click first.
 export async function openPrivacyTab(page: Page): Promise<PrivacyLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -33,7 +36,7 @@ export async function openPrivacyTab(page: Page): Promise<PrivacyLocators> {
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
+  await nubi.bcortexBtn.click();
   await locators.privacyTab.waitFor({ state: "visible", timeout: 20000 });
   await locators.privacyTab.click();
 
@@ -55,7 +58,7 @@ export async function openPrivacyTab(page: Page): Promise<PrivacyLocators> {
 // unique to this tab, so a matching string on the tab being switched to cannot
 // keep it from ever detaching.
 export async function remountPrivacyTab(page: Page, locators: PrivacyLocators, testName: string): Promise<void> {
-  await locators.agentsTab.click();
+  await locators.patternsTab.click();
   await locators.masterRow.waitFor({ state: "detached", timeout: 20000 });
 
   // Asserting the consent read actually left the browser is what makes the

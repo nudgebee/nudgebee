@@ -89,8 +89,13 @@ export function absentConfigName(): string {
   return `nb_e2e_absent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > Configurations, which
-// mounts the LLM Providers sub-tab by default.
+// Logs in, opens the Nubi panel and lands on AI & Tools > Providers — LLM
+// Providers' new home, split out of the old "Configurations" tab
+// (docs/ia-consolidation-plan.md PR 3). Kept as the default entry point
+// (matching the old tab's own LLM-Providers-first default) so the rest of this
+// suite reaches it the same way it always has; openMcpSubTab/openLlmSubTab
+// below now switch between AI & Tools' Providers and Tools & MCP tabs instead
+// of an internal sub-tab toggle.
 export async function openConfigurationsTab(page: Page): Promise<LLMConfigurationsLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -98,9 +103,9 @@ export async function openConfigurationsTab(page: Page): Promise<LLMConfiguratio
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
-  await locators.configurationsTab.waitFor({ state: "visible", timeout: 20000 });
-  await locators.configurationsTab.click();
+  await nubi.aiToolsBtn.click();
+  await locators.providersTab.waitFor({ state: "visible", timeout: 20000 });
+  await locators.providersTab.click();
   await locators.llmListingCard.waitFor({ state: "visible", timeout: 30000 });
   // The card renders before its first ListIntegrations response arrives. Every
   // caller that records a query count straight afterwards would otherwise race
@@ -109,18 +114,22 @@ export async function openConfigurationsTab(page: Page): Promise<LLMConfiguratio
   return locators;
 }
 
-// The two sub-tabs are a conditional render, not a hidden panel, so the one
-// being left really does detach — waiting on that is what proves the switch
-// landed before the next assertion reads the new listing.
+// Providers and Tools & MCP are now separate top-level AI & Tools tabs, not
+// sub-tabs of one — AIToolsModal remounts its whole body on a top-level switch
+// (key={activeTab}), so leaving Providers really does detach its listing.
+// MCP Servers is itself the non-default option of Tools & MCP's own Tools/MCP
+// Servers toggle, so reaching it takes the tab click plus one toggle click.
 export async function openMcpSubTab(locators: LLMConfigurationsLocators): Promise<void> {
-  await locators.mcpServersSubTab.click();
+  await locators.toolsAndMcpTab.click();
   await locators.llmListingCard.waitFor({ state: "detached", timeout: 20000 });
+  await locators.mcpServersToggle.waitFor({ state: "visible", timeout: 20000 });
+  await locators.mcpServersToggle.click();
   await locators.mcpListingCard.waitFor({ state: "visible", timeout: 30000 });
   await waitForListingSettled(locators.mcpRows(), locators.mcpEmptyState);
 }
 
 export async function openLlmSubTab(locators: LLMConfigurationsLocators): Promise<void> {
-  await locators.llmProvidersSubTab.click();
+  await locators.providersTab.click();
   await locators.mcpListingCard.waitFor({ state: "detached", timeout: 20000 });
   await locators.llmListingCard.waitFor({ state: "visible", timeout: 30000 });
   await waitForListingSettled(locators.llmRows(), locators.llmEmptyState);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box } from '@mui/material';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import ListAgents from '@components/llm/ListAgents';
@@ -19,16 +19,26 @@ const AgentsAdminTab = () => {
   const [accountId, setAccountId] = useState('');
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Guards against a slower request for a previous accountId resolving after
+  // a faster one for the current selection and overwriting it with stale data.
+  const requestSeq = useRef(0);
 
   const fetchAgents = useCallback(() => {
+    const seq = ++requestSeq.current;
     setLoading(true);
     apiAskNudgebee
       .listAgents({ accountId })
       .then((res) => {
-        setAgents(res?.data?.data?.ai_list_agents?.data ?? []);
-        setLoading(false);
+        if (seq === requestSeq.current) {
+          setAgents(res?.data?.data?.ai_list_agents?.data ?? []);
+          setLoading(false);
+        }
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        if (seq === requestSeq.current) {
+          setLoading(false);
+        }
+      });
   }, [accountId]);
 
   useEffect(() => {
