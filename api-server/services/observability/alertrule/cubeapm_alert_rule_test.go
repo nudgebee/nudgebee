@@ -443,3 +443,38 @@ func TestParseCubeAPMRulesResponse(t *testing.T) {
 		}
 	})
 }
+
+// An install with no rules yet returns an empty list, not a parse failure. The
+// length test this replaced could not distinguish "key absent" from "key present
+// and empty", so a fresh CubeAPM broke alert-rule sync entirely.
+func TestParseCubeAPMRulesResponseAcceptsEmptyListings(t *testing.T) {
+	for name, body := range map[string]string{
+		"bare empty array": `[]`,
+		"empty data wrap":  `{"data": []}`,
+		"empty rules wrap": `{"rules": []}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rules, err := parseCubeAPMRulesResponse([]byte(body))
+			if err != nil {
+				t.Fatalf("empty listing should parse cleanly, got error: %v", err)
+			}
+			if len(rules) != 0 {
+				t.Errorf("got %d rules, want 0", len(rules))
+			}
+		})
+	}
+}
+
+// An empty account id must fail rather than resolve to whichever CubeAPM
+// integration happens to come first in the tenant — the account filter is
+// conditional and the query ends in LIMIT 1, so the wrong account's admin
+// credentials would otherwise be used to write alert rules.
+func TestGetCubeAPMConfigsRequiresAccountID(t *testing.T) {
+	_, err := getCubeAPMConfigs(nil, "")
+	if err == nil {
+		t.Fatal("expected an error for an empty account id")
+	}
+	if !strings.Contains(err.Error(), "account_id is required") {
+		t.Errorf("error = %v", err)
+	}
+}

@@ -85,6 +85,12 @@ func (s *CubeAPMMetricSource) GenerateQuery(ctx playbooks.PlaybookActionContext)
 	if workload == "" || namespace == "" {
 		return "", nil, fmt.Errorf("cubeapm: workload name and namespace required to generate a metric query")
 	}
+	// The context below is synthesized with tenant-admin rights, so an empty
+	// tenant would build an admin context scoped to nothing and surface later as
+	// an opaque database error rather than as the missing input it is.
+	if ctx.GetTenantId() == "" {
+		return "", nil, fmt.Errorf("cubeapm: tenant id is required to generate a metric query")
+	}
 
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 	startMs, endMs := cubeAPMWorkloadProbeWindow(ctx)

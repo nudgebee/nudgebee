@@ -294,6 +294,16 @@ type CubeAPMConfig struct {
 func GetCubeAPMConfigs(sc *security.RequestContext, accountId string) (CubeAPMConfig, error) {
 	var cfg CubeAPMConfig
 
+	// ListIntegrationConfigs always scopes by tenant (and rejects an empty tenant
+	// outright), so this is not a cross-tenant guard. It guards the ACCOUNT: that
+	// query applies the cloud_account_id filter only when accountId is non-empty,
+	// so an empty one silently returns whichever CubeAPM integration happens to
+	// come first in the tenant — connecting to another account's CubeAPM with
+	// another account's token, and reporting success.
+	if accountId == "" {
+		return cfg, fmt.Errorf("account_id is required to resolve a CubeAPM integration")
+	}
+
 	cubeIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationCubeAPM)
 	if err != nil {
 		return cfg, fmt.Errorf("failed to list CubeAPM integration configs: %w", err)

@@ -187,3 +187,16 @@ func TestCubeAPMRegisteredInRegistry(t *testing.T) {
 		}
 	}
 }
+
+// ListIntegrationConfigs applies its cloud_account_id filter only when accountId
+// is non-empty, so an empty one silently resolves to another account's CubeAPM
+// integration — different URL, different token — and reports success.
+func TestGetCubeAPMConfigsRequiresAccountID(t *testing.T) {
+	_, err := GetCubeAPMConfigs(nil, "")
+	if err == nil {
+		t.Fatal("expected an error for an empty account id")
+	}
+	if !strings.Contains(err.Error(), "account_id is required") {
+		t.Errorf("error = %v", err)
+	}
+}

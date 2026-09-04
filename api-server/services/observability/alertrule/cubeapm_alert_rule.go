@@ -217,15 +217,20 @@ func parseCubeAPMRulesResponse(body []byte) ([]cubeAPMRuleResponse, error) {
 		return asArray, nil
 	}
 
+	// Presence is tested with != nil rather than len() > 0. An absent key leaves
+	// the slice nil, but a present-but-empty one ("data": []) decodes to a
+	// non-nil empty slice — and a length test cannot tell those apart, so an
+	// install with no rules yet fell through to the single-rule branch and came
+	// back as a parse error instead of an empty listing.
 	var wrapped struct {
 		Data  []cubeAPMRuleResponse `json:"data"`
 		Rules []cubeAPMRuleResponse `json:"rules"`
 	}
 	if err := json.Unmarshal(body, &wrapped); err == nil {
-		if len(wrapped.Data) > 0 {
+		if wrapped.Data != nil {
 			return wrapped.Data, nil
 		}
-		if len(wrapped.Rules) > 0 {
+		if wrapped.Rules != nil {
 			return wrapped.Rules, nil
 		}
 	}

@@ -421,6 +421,15 @@ const (
 
 // getCubeAPMConfigs returns CubeAPM connection config for alert-rule management.
 func getCubeAPMConfigs(sc *security.RequestContext, accountId string) (cubeAPMConn, error) {
+	// listIntegrationConfigValues is always tenant-scoped, but its
+	// cloud_account_id filter is conditional and the query ends in LIMIT 1 — so an
+	// empty accountId returns an arbitrary CubeAPM integration from the tenant
+	// rather than none, and alert rules would be written to the wrong account's
+	// CubeAPM.
+	if accountId == "" {
+		return cubeAPMConn{}, fmt.Errorf("account_id is required to resolve a CubeAPM integration")
+	}
+
 	configs, err := listIntegrationConfigValues(sc, accountId, "cubeapm")
 	if err != nil {
 		return cubeAPMConn{}, fmt.Errorf("failed to list cubeapm integration configs: %w", err)
