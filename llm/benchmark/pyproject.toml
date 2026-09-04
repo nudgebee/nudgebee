@@ -22,7 +22,7 @@ dependencies = [
     "black==26.5.1",
     "boto3==1.43.6",
     "botocore==1.43.6",
-    "cryptography==50.0.0",
+    "cryptography==50.0.1",
     "datasets==4.0.0",
     "fastapi==0.141.1",
     "flake8==6.1.0",
