@@ -3712,7 +3712,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 '&:hover': {
                   backgroundColor: 'var(--ds-background-200)',
                 },
-                boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
+                boxShadow: `2px 0 8px ${ds.gray.alpha[300]}`,
               }}
             >
               {showNubiChat ? (

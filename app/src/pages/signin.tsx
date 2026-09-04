@@ -54,7 +54,7 @@ const AuthMethodButton: React.FC<AuthMethodButtonProps> = ({ title, subtitle, on
           backgroundColor: 'white',
           border: `1px solid ${ds.gray[300]}`,
           transform: 'translateY(-1.5px)',
-          boxShadow: '0 6px 8px rgba(0, 0, 0, 0.08)',
+          boxShadow: `0 6px 8px ${ds.gray.alpha[200]}`,
         },
       }}
     >
@@ -673,7 +673,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
                   backgroundColor: 'white',
                   border: '1px solid var(--ds-brand-200)',
                   transform: 'translateY(-1px)',
-                  boxShadow: '0 6px 8px rgba(0, 0, 0, 0.1)',
+                  boxShadow: `0 6px 8px ${ds.gray.alpha[300]}`,
                 },
               }}
             >

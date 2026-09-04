@@ -128,7 +128,7 @@ const TierRow = ({ item, color, goTo, showRarity, isChange, folded, seedName }) 
         borderLeft: `3px solid ${color}`,
         bgcolor: folded ? 'var(--ds-gray-100)' : 'var(--ds-background-100)',
         borderRadius: 'var(--ds-radius-sm)',
-        boxShadow: folded ? 'none' : '0 1px 2px rgba(0,0,0,0.05)',
+        boxShadow: folded ? 'none' : '0 1px 2px var(--ds-gray-alpha-100)',
         p: 1,
         mb: 0.75,
         cursor: item.event_id ? 'pointer' : 'default',
