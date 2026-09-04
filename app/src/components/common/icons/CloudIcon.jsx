@@ -169,7 +169,11 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = VictoriaMetricsIcon;
   } else if (cloud_provider.toUpperCase() === 'JAEGER') {
     Icon = JaegerIcon;
-  } else if (cloud_provider.toUpperCase() === 'SPLUNK_OBSERVABILITY_PLATFORM' || cloud_provider.toUpperCase() === 'SPLUNK_WEBHOOK') {
+  } else if (
+    cloud_provider.toUpperCase() === 'SPLUNK_OBSERVABILITY_PLATFORM' ||
+    cloud_provider.toUpperCase() === 'SPLUNK_ENTERPRISE' ||
+    cloud_provider.toUpperCase() === 'SPLUNK_WEBHOOK'
+  ) {
     Icon = SplunkIcon;
   } else if (cloud_provider.toUpperCase() === 'SOLARWINDS' || cloud_provider.toUpperCase() === 'SOLARWINDS_WEBHOOK') {
     Icon = SolarWindsIcon;

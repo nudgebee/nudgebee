@@ -142,6 +142,13 @@ const QueryModeSwitcher = ({
         return isMetric
           ? 'Example: rate(http_requests_total{status="500", job="api-server"}[5m])'
           : "Example: SELECT * FROM \"default\" WHERE k8s_namespace_name = 'prod' AND str_match(body, 'ERROR')";
+      case 'splunk_enterprise':
+        // Both modes are SPL, but metrics and logs use different halves of it: metrics
+        // live in a metrics index reachable only through the mstats generating command,
+        // logs in an event index reached with a plain search.
+        return isMetric
+          ? 'Example: | mstats avg(k8s.pod.cpu.usage) WHERE index="otel_metrics" AND k8s.namespace.name="prod" span=1m BY k8s.pod.name'
+          : 'Example: search index="otel_logs" k8s.namespace.name="prod" severity_text="ERROR"';
       case 'signoz':
         return isMetric
           ? 'Example: sum(rate(signoz_calls_total{service_name="api-server",http_status_code="500"}[5m])) by (service_name)'

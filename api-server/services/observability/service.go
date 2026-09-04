@@ -253,6 +253,8 @@ func getLogSource(provider, integrationSource string) (LogSource, error) {
 		return &HiveSaasSource{}, nil
 	case provider == "openobserve" && integrationSource == "user":
 		return &OpenObserveLogSource{}, nil
+	case provider == "splunk_enterprise" && integrationSource == "user":
+		return &SplunkEnterpriseLogSource{}, nil
 		// hive:agent is intentionally NOT wired here yet — the relay-mode
 		// `HiveSource` is implemented but the matching `hive_query` /
 		// `hive_schema` actions don't exist in nudgebee-agent yet. Returning
@@ -363,6 +365,8 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 		return &NewRelicTraceSource{}, nil
 	case provider == "splunk_observability_platform" && integrationSource == "user":
 		return &SplunkTraceSource{}, nil
+	case provider == "splunk_enterprise" && integrationSource == "user":
+		return &SplunkEnterpriseTraceSource{}, nil
 	case provider == "ES" && integrationSource == "user":
 		return &ElasticSaasTraceSource{}, nil
 	case provider == "dynatrace" && integrationSource == "user":
@@ -437,6 +441,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &NewRelicMetricSource{}, nil
 	case provider == "splunk_observability_platform" && integrationSource == "user":
 		return &SplunkMetricSource{}, nil
+	case provider == "splunk_enterprise" && integrationSource == "user":
+		return &SplunkEnterpriseMetricSource{}, nil
 	case provider == "ES" && integrationSource == "user":
 		return &ElasticSaasMetricSource{}, nil
 	case provider == "dynatrace" && integrationSource == "user":
@@ -1448,6 +1454,25 @@ var allProviderCaps = map[string]providerStaticCaps{
 	"prometheus": {
 		SupportsServiceMap: true,
 		SupportsRawQuery:   true,
+	},
+	// Logs, metrics and traces are all implemented.
+	//
+	// SupportsRawQuery is true because QueryLogs, FetchMetricsQuery and QueryTraces all
+	// honour a caller-supplied query directly. Grouping and the heatmap are true because
+	// SplunkEnterpriseTraceSource implements QueryGroupedTraces and QueryTracesHeatmap
+	// with real SPL aggregations rather than the "not implemented" stubs some providers
+	// return.
+	//
+	// SupportsServiceMap stays false: the map needs caller-to-callee edges, and a Splunk
+	// span carries only a bare peer NAME for its callee with no peer namespace anywhere
+	// in the schema — the same reason destination_workload_namespace is unfilterable. An
+	// edge list built from names alone would silently merge same-named services in
+	// different namespaces, so the view is not advertised rather than drawn wrong.
+	"splunk_enterprise": {
+		SupportsServiceMap:    false,
+		SupportsRawQuery:      true,
+		SupportsHeatmap:       true,
+		SupportsTraceGrouping: true,
 	},
 }
 

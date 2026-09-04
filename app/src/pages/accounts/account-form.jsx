@@ -223,6 +223,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'newrelic'} />;
           case 'splunk_observability_platform':
             return <ListIntegrations integrationName={'splunk_observability_platform'} />;
+          case 'splunk_enterprise':
+            return <ListIntegrations integrationName={'splunk_enterprise'} />;
           case 'splunk_webhook':
             return <ListIntegrations integrationName={'splunk_webhook'} />;
           case 'solarwinds':
