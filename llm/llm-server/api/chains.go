@@ -199,17 +199,20 @@ func handleRequestExecution(
 	}
 }
 
-// rejectIfConversationLocked rejects IN_PROGRESS (already running) and KILLED
-// (sticky by design in shouldSkipSaveBack — a retry would run a full turn for
-// real and then have it silently discarded) conversations before a new turn
-// starts. See #37486.
-func rejectIfConversationLocked(c *gin.Context, endpoint string, conversation core.Conversation) bool {
+// rejectIfConversationLocked rejects IN_PROGRESS, and rejects KILLED unless
+// allowFollowupCompletion — shouldSkipResumeForTerminalConversation always lets a
+// pending followup's cancel/resume through regardless of conversation status, so
+// this must too. KILLED today comes only from the stranded-conversation sweep
+// (MarkInProgressConversationAsKilled), sticky by design in shouldSkipSaveBack: an
+// unexempted retry would run a full turn for real and then have it silently
+// discarded. See #37486.
+func rejectIfConversationLocked(c *gin.Context, endpoint string, conversation core.Conversation, allowFollowupCompletion bool) bool {
 	var message string
-	switch conversation.Status {
-	case core.ConversationStatusInProgress:
-		message = "api: conversation is in progress"
-	case core.ConversationStatusKilled:
-		message = "api: conversation was terminated and cannot be resumed; start a new conversation"
+	switch {
+	case conversation.Status == core.ConversationStatusInProgress:
+		message = "This conversation is in progress."
+	case conversation.Status == core.ConversationStatusKilled && !allowFollowupCompletion:
+		message = "This conversation was terminated and cannot be resumed. Please start a new conversation."
 	default:
 		return false
 	}
@@ -346,7 +349,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if rejectIfConversationLocked(c, "/v1/completions/chat", conversation) {
+			// A follow-up cancel (request.Resolution) or resume-by-agentId is an
+			// in-flight commitment shouldSkipResumeForTerminalConversation always
+			// lets through — must not be blocked here just because the parent
+			// conversation was swept to KILLED in the meantime.
+			isFollowupCompletion := request.Resolution != "" || request.AgentId != ""
+			if rejectIfConversationLocked(c, "/v1/completions/chat", conversation, isFollowupCompletion) {
 				return
 			}
 
@@ -811,7 +819,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if rejectIfConversationLocked(c, "/v1/completions/chat/auto", conversation) {
+			// See the matching comment in /v1/completions/chat: agentId-resume of a
+			// pending followup must stay allowed on a KILLED conversation.
+			isFollowupCompletion := request.AgentId != ""
+			if rejectIfConversationLocked(c, "/v1/completions/chat/auto", conversation, isFollowupCompletion) {
 				return
 			}
 
@@ -1566,7 +1577,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if rejectIfConversationLocked(c, "/v1/completions/workflow-generate", conversation) {
+			// No followup-completion exemption here: this endpoint's agentId feeds
+			// ConversationSessionRequestWithAgentId, not a followup-resume lookup.
+			if rejectIfConversationLocked(c, "/v1/completions/workflow-generate", conversation, false) {
 				return
 			}
 
