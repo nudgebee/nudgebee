@@ -167,6 +167,19 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Audit Log', path: '/user-management#access-users/audit-log' },
   { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
+  // Relocated from the Settings modal (see docs/ia-consolidation-plan.md,
+  // PR 3) into one "AI & Tools" top-level tab, same sibling-sub-tab shape as
+  // Access & Users above. Agents is the default sub-tab, so its path carries
+  // no child fragment.
+  { group: 'Admin', label: 'Agents', path: '/user-management#ai-tools' },
+  { group: 'Admin', label: 'Tools & MCP', path: '/user-management#ai-tools/tools-mcp' },
+  { group: 'Admin', label: 'Functions', path: '/user-management#ai-tools/functions' },
+  { group: 'Admin', label: 'Providers', path: '/user-management#ai-tools/providers' },
+  { group: 'Admin', label: 'Gateway', path: '/user-management#ai-tools/gateway' },
+  { group: 'Admin', label: 'Egress Filter', path: '/user-management#ai-tools/egress-filter' },
+  { group: 'Admin', label: 'Budgets & Limits', path: '/user-management#ai-tools/budgets-limits' },
+  { group: 'Admin', label: 'Memory Policy', path: '/user-management#ai-tools/memory-policy' },
+  { group: 'Admin', label: 'RCA Format', path: '/user-management#ai-tools/rca-format' },
   // Relocated from an avatar-menu modal (see docs/ia-consolidation-plan.md) —
   // now a plain top-level Admin tab, gated the same way (tenants:Read).
   { group: 'Admin', label: 'Tenant Settings', path: '/user-management#tenant-settings' },

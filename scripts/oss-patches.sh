@@ -157,6 +157,40 @@ const RequestBodyModal = (_props: Record<string, unknown>) => null;' app/src/com
     fi
   fi
 
+  # Admin's AI & Tools tab (PR 3, docs/ia-consolidation-plan.md) has three
+  # of its own next/dynamic imports pointing at @ee/ components — Gateway,
+  # Egress Filter, Memory Policy (PrivacyTab) — each in its own thin wrapper
+  # under app/src/components/llm/admin/ rather than user-management/index.jsx
+  # itself, so index.jsx stays free of @ee/ references like it is today. Same
+  # Turbopack constraint as SettingsModal's own gateway-config/memory patches
+  # above — replace each marker-delimited block with a () => null stub.
+  if [ -f app/src/components/llm/admin/GatewayAdminTab.jsx ]; then
+    _sed_inplace '/OSS-STRIP-BEGIN-ADMIN-GATEWAY-CONFIG-DYNAMIC-IMPORT/,/OSS-STRIP-END-ADMIN-GATEWAY-CONFIG-DYNAMIC-IMPORT/c\
+const GatewayAdminTab = () => null;' app/src/components/llm/admin/GatewayAdminTab.jsx
+    if grep -q "@ee/components/gateway-config" app/src/components/llm/admin/GatewayAdminTab.jsx; then
+      echo "❌ oss-patches: gateway-config dynamic import survived in GatewayAdminTab.jsx (sed range markers drifted)" >&2
+      failed=1
+    fi
+  fi
+
+  if [ -f app/src/components/llm/admin/EgressFilterAdminTab.jsx ]; then
+    _sed_inplace '/OSS-STRIP-BEGIN-ADMIN-EGRESS-FILTER-DYNAMIC-IMPORT/,/OSS-STRIP-END-ADMIN-EGRESS-FILTER-DYNAMIC-IMPORT/c\
+const EgressFilterAdminTab = () => null;' app/src/components/llm/admin/EgressFilterAdminTab.jsx
+    if grep -q "@ee/components/egress-filter" app/src/components/llm/admin/EgressFilterAdminTab.jsx; then
+      echo "❌ oss-patches: egress-filter dynamic import survived in EgressFilterAdminTab.jsx (sed range markers drifted)" >&2
+      failed=1
+    fi
+  fi
+
+  if [ -f app/src/components/llm/admin/MemoryPolicyAdminTab.jsx ]; then
+    _sed_inplace '/OSS-STRIP-BEGIN-ADMIN-MEMORY-POLICY-DYNAMIC-IMPORT/,/OSS-STRIP-END-ADMIN-MEMORY-POLICY-DYNAMIC-IMPORT/c\
+const PrivacyTab = () => null;' app/src/components/llm/admin/MemoryPolicyAdminTab.jsx
+    if grep -q "@ee/components/memory2/PrivacyTab" app/src/components/llm/admin/MemoryPolicyAdminTab.jsx; then
+      echo "❌ oss-patches: memory2/PrivacyTab dynamic import survived in MemoryPolicyAdminTab.jsx (sed range markers drifted)" >&2
+      failed=1
+    fi
+  fi
+
   # NubiBrainNav has a single next/dynamic import for BCortexModal, which
   # is also stripped. Same story as the SettingsModal patch — replace the
   # marker-delimited line with a null stub.

@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-// Nubi › Settings › Functions tab.
+// Nubi › AI & Tools › Functions tab.
 
 const OP_CREATE = "CreateAiFunction";
 const OP_UPDATE = "AiEditFunction";
@@ -19,9 +19,20 @@ async function openFunctionsTab(page: Page): Promise<NubiLocators> {
   const locators = new NubiLocators(page);
   await loginPage.doFullLogin();
   await locators.openPanel(); // retries the Nubi panel open (known flaky)
-  await locators.settingsBtn.click();
-  await locators.functionsTab.waitFor({ state: "visible", timeout: 20000 });
+  // AIToolsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
+  // round trip, and an AI & Tools click landing while the panel is still animating
+  // in opens nothing at all. Retry the pair until the tab is actually there.
+  await expect(async () => {
+    if (!(await locators.functionsTab.isVisible().catch(() => false))) {
+      await locators.aiToolsBtn.click();
+    }
+    await locators.functionsTab.waitFor({ state: "visible", timeout: 5000 });
+  }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
   await locators.functionsTab.click();
+  // FunctionsAdminTab defaults to tenant-wide (accountId=''), and ListFunctions
+  // hides Create entirely at tenant-wide — narrow to a real account first, same
+  // as an admin would via the header filter.
+  await locators.selectFirstAdminAccount();
   await locators.createFunctionBtn.waitFor({ state: "visible", timeout: 15000 });
   return locators;
 }

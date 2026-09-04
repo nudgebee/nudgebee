@@ -54,6 +54,7 @@ import {
   NotificationIcon1,
   ApplicationsIcon,
   SettingsIcon,
+  AgentIcon,
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
@@ -590,6 +591,17 @@ const PageLayout = ({ children }) => {
             id: 'sidenav-admin-integrations',
             module: 'integrations',
             icon: IntegrationsIcon,
+          },
+          // Agents, Tools & MCP, Functions, Providers, Gateway, Egress Filter,
+          // Budgets & Limits, Memory Policy and RCA Format all live under this
+          // one AI & Tools tab as sub-tabs (docs/ia-consolidation-plan.md, PR 3)
+          // — same "one row, not nine" rule as Access & Users above.
+          {
+            text: 'AI & Tools',
+            path: '/user-management#ai-tools',
+            id: 'sidenav-admin-ai-tools',
+            modules: ['ai', 'integrations', 'llm', 'egressfilter'],
+            icon: AgentIcon,
           },
           {
             text: 'Tenant Settings',

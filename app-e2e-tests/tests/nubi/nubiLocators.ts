@@ -5,7 +5,18 @@ export class NubiLocators {
   readonly newChatBtn: Locator;
   readonly chatTextbox: Locator;
   readonly submitBtn: Locator;
-  readonly settingsBtn: Locator;
+  // SettingsModal is deleted (docs/ia-consolidation-plan.md, PR 3/Decision AA).
+  // Its content now lives behind "AI & Tools" (admin-gated — every tab-name
+  // locator below that used to open through "More", e.g. customAgentTab/
+  // ToolButton/functionsTab, opens through this one now). A non-admin-gated
+  // "Memory" button was tried as a fix for tenants without b-Cortex losing
+  // access to Memory/Account Context, then reverted (Decision AB) — that
+  // narrowing is an accepted trade-off. The rail is just these two buttons;
+  // neither is unconditionally present ("AI & Tools" is admin-gated, "b-Cortex"
+  // is hidden in OSS mode), so openPanel()'s own "did it open" check uses
+  // chatTextbox instead.
+  readonly aiToolsBtn: Locator;
+  readonly bcortexBtn: Locator;
   // Create Custom Agent Locators
   readonly customAgentTab: Locator;
   readonly searchAgentInput: Locator;
@@ -108,7 +119,8 @@ export class NubiLocators {
       .first();
     this.submitBtn = page.locator('#set-config-btn')
     // Create Custom Agent Locators
-    this.settingsBtn = page.getByRole('button', { name: 'Settings', exact: true });
+    this.aiToolsBtn = page.getByTestId('nav-nubi-ai-tools-btn').or(page.getByRole('button', { name: 'AI & Tools', exact: true }));
+    this.bcortexBtn = page.getByTestId('nav-bcortex-btn').or(page.getByRole('button', { name: 'b-Cortex', exact: true }));
     this.createCustomAgentBtn = page.getByRole("button", { name: "Create Custom Agent" });
     this.customAgentTab = page.getByRole("tab", { name: /agents/i });
     this.searchAgentInput = page.getByPlaceholder('Search Agent')
@@ -123,7 +135,11 @@ export class NubiLocators {
     this.submitCreateAgentBtn = page.getByRole("button", { name: "Create Agent" });
 
     // create custom tool locators
-    this.ToolButton = page.getByRole('tab', { name: 'Tools' });
+    // "Tools" is now a ToggleGroup option (role=radio) nested inside the
+    // "Tools & MCP" top-level tab (ToolsAndMCPAdminTab.jsx), not a top-level
+    // tab itself — but that inner toggle already defaults to 'tools', so
+    // clicking the top-level tab alone lands on the same view "Tools" used to.
+    this.ToolButton = page.getByRole('tab', { name: 'Tools & MCP' });
     this.CreateToolButton = page.locator('#create-tool');
     this.ToolName = page.getByPlaceholder('Enter tool name');
     this.ToolDescription = page.getByPlaceholder('Describe what this tool does');
@@ -236,14 +252,51 @@ export class NubiLocators {
     await popover.waitFor({ state: "detached", timeout }).catch(() => {});
   }
 
+  // Admin → AI & Tools' Agents/Tools & MCP/Functions sub-tabs each mount their
+  // own AdminAccountFilter (AdminAccountFilter.jsx), defaulting to tenant-wide
+  // (accountId=''). ListAgents/ListTools/ListFunctions all hide their Create
+  // button entirely at tenant-wide (`!isTenantWide && hasWriteAccess(...)`) —
+  // the old Settings mount always carried a real accountId from the panel, so
+  // this never came up there. Picks the first real account so Create becomes
+  // reachable, same as an admin narrowing the filter by hand.
+  //
+  // AccountSelect (ds/Select, `grouped`) always has 2+ groups once any real
+  // account exists — the synthetic "All accounts" entry is its own group
+  // ('All'), so `effectiveGrouped` is true and every group renders collapsed
+  // behind a group-header button. Expanding every header (harmless if already
+  // open) is what makes an option clickable regardless of which provider
+  // group holds the first real account.
+  async selectFirstAdminAccount(timeout = 15000): Promise<void> {
+    const trigger = this.page.locator("#account-select");
+    await trigger.click();
+    const listbox = this.page.getByRole("listbox");
+    await listbox.waitFor({ state: "visible", timeout });
+
+    const groupHeaders = listbox.getByRole("button");
+    const groupCount = await groupHeaders.count();
+    for (let i = 0; i < groupCount; i++) {
+      await groupHeaders.nth(i).click();
+    }
+
+    const realAccountOption = listbox.getByRole("option").filter({ hasNotText: "All accounts" }).first();
+    await realAccountOption.waitFor({ state: "visible", timeout });
+    await realAccountOption.click();
+    await listbox.waitFor({ state: "detached", timeout }).catch(() => {});
+  }
+
   // Clicks the Nubi icon and retries up to 3 times if the panel does not open.
   // Uses a generous click timeout because on the /home page the icon navigates
   // to /ask-nudgebee (slow on dev env) before the panel settles.
+  //
+  // chatTextbox is the "did it open" signal because neither rail button is a
+  // reliable universal one any more: "AI & Tools" only renders for an admin
+  // user, and "Memory" only renders for a tenant without b-Cortex (Decision AA).
+  // chatTextbox has no such condition — it is the panel's own chat input.
   async openPanel(): Promise<void> {
     await this.askNudgebeeBtn.waitFor({ state: "visible", timeout: 30000 });
     for (let attempt = 1; attempt <= 3; attempt++) {
       await this.askNudgebeeBtn.click({ timeout: 30000 });
-      const opened = await this.settingsBtn
+      const opened = await this.chatTextbox
         .waitFor({ state: "visible", timeout: 10000 })
         .then(() => true)
         .catch(() => false);

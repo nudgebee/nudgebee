@@ -322,8 +322,11 @@ export function missingPermissionMessage(permission: string): string {
 }
 
 // Modules backing the sections of the Admin page (/user-management): Users,
-// Groups, Audits, Notifications, Integrations, Ownership, and the EE Roles &
-// Permissions tab. Kept in sync with baseFilters in
+// Groups, Audits, Notifications, Integrations, Ownership, the EE Roles &
+// Permissions tab, Tenant Settings, and AI & Tools (Agents/Tools & MCP/
+// Functions/Budgets & Limits/Memory Policy/RCA Format share `ai`; Providers
+// reuses `integrations`; Gateway reuses `llm`; Egress Filter is
+// `egressfilter`). Kept in sync with baseFilters in
 // app/src/pages/user-management/index.jsx.
 // Cross-tenant super admin (full, not the read-only flavor). Kept distinct from
 // isTenantWideRole() because destructive / write gates must not accept
@@ -359,7 +362,24 @@ export function canEditTenantSettings(): boolean {
   return canManage('tenants', 'Write');
 }
 
-const ADMIN_SURFACE_MODULES = ['users', 'usergroups', 'audits', 'notifications', 'integrations', 'ownership', 'customroles', 'roles', 'tenants'];
+// 'ai', 'llm' and 'egressfilter' cover Admin → AI & Tools (docs/ia-consolidation-plan.md,
+// PR 3) — the dynamic-RBAC modules its own sub-tabs gate on (see baseFilters
+// in pages/user-management/index.jsx). Keep this list in sync with those
+// `module` fields, same rule as every other Admin-page module here.
+const ADMIN_SURFACE_MODULES = [
+  'users',
+  'usergroups',
+  'audits',
+  'notifications',
+  'integrations',
+  'ownership',
+  'customroles',
+  'roles',
+  'tenants',
+  'ai',
+  'llm',
+  'egressfilter',
+];
 
 // Should the Admin sidebar tab / route be reachable for the current user?
 // True for tenant-wide admins (hasReadAccess) and for any custom-role holder

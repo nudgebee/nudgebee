@@ -10,8 +10,9 @@ import { CommonLocators } from "../../GlobalLocators";
 // FilterDropdown), which is rung 3, with a role fallback scoped to the same
 // container wherever the accessible name is unambiguous.
 export class ModelPricingLocators extends CommonLocators {
-  readonly modelPricingTab: Locator;
-  readonly agentsTab: Locator;
+  readonly budgetsLimitsTab: Locator;
+  readonly modelPricingToggle: Locator;
+  readonly usageLimitsToggle: Locator;
   readonly listingCard: Locator;
   readonly table: Locator;
   readonly tableBody: Locator;
@@ -38,14 +39,18 @@ export class ModelPricingLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // The panel entry point and its Settings button are not redeclared here —
+    // The panel entry point and its AI & Tools button are not redeclared here —
     // tests/nubi/nubiLocators.ts already owns them, and openModelPricingTab()
     // drives that class to get into the modal.
     //
-    // SettingsModal renders its strip through shared/navigation/Tabs, which is a
-    // MUI Tabs — every tab is a real role=tab even while scrolled out of view.
-    this.modelPricingTab = page.getByRole("tab", { name: "Model Pricing" });
-    this.agentsTab = page.getByRole("tab", { name: "Agents" });
+    // Model Pricing now lives inside the "Budgets & Limits" top-level tab
+    // (AIToolsModal.jsx / BudgetsAndLimitsAdminTab.jsx), as an internal
+    // ToggleGroup option alongside "Usage & Limits" — role=radio, not role=tab.
+    // The top-level tab still renders through shared/navigation/Tabs (MUI Tabs),
+    // so it is a real role=tab even while scrolled out of view.
+    this.budgetsLimitsTab = page.getByRole("tab", { name: "Budgets & Limits" });
+    this.modelPricingToggle = page.getByRole("radio", { name: "Model Pricing" });
+    this.usageLimitsToggle = page.getByRole("radio", { name: "Usage & Limits" });
 
     // ListingLayout puts its `id` on the wrapping DS Card, so this is the whole
     // listing: toolbar, table and empty state. Deliberately id-only — the Card

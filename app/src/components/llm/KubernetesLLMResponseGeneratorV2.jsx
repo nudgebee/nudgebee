@@ -9,7 +9,6 @@ import Tooltip from '@ui/Tooltip';
 import AskNudgebeeLayout from '@shared/layout/AskNudgebeeLayoutV2';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
-import SettingsModal from '@components/llm/SettingsModal';
 import { useData } from '@context/DataContext';
 import { useOptionalNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { useAgentConfiguration } from '@hooks/useAgentConfiguration';
@@ -183,7 +182,6 @@ const KubernetesLLMResponseGenerator = ({
       generateQuestionText: queryPrefix || '',
       isConversationListVisible: false,
       collapsedObj: {},
-      openSettingsModal: false,
       // Per-question "Show more / Show less" expand state, keyed by message index —
       // mirrors collapsedObj so each question bubble owns its own toggle (issue #35751).
       showFullText: {},
@@ -209,7 +207,6 @@ const KubernetesLLMResponseGenerator = ({
     generateQuestionText,
     isConversationListVisible,
     collapsedObj,
-    openSettingsModal,
     showFullText,
     selectedSessionId,
     selectedConversationId,
@@ -221,7 +218,6 @@ const KubernetesLLMResponseGenerator = ({
   const setGenerateQuestionText = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'generateQuestionText', payload }), []);
   const setIsConversationListVisible = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'isConversationListVisible', payload }), []);
   const setCollapsedObj = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'collapsedObj', payload }), []);
-  const setOpenSettingsModal = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'openSettingsModal', payload }), []);
   const setShowFullText = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'showFullText', payload }), []);
   const setSelectedSessionId = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'selectedSessionId', payload }), []);
   const setSelectedConversationId = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'selectedConversationId', payload }), []);
@@ -1120,14 +1116,6 @@ const KubernetesLLMResponseGenerator = ({
 
   const content = (
     <>
-      <SettingsModal
-        open={openSettingsModal}
-        onClose={() => setOpenSettingsModal(false)}
-        accountId={accountId}
-        allAgents={allAgents}
-        refreshAgentListing={refreshAgents}
-        loadingAgents={loadingAgents}
-      />
       <Box
         sx={{
           position: popup ? 'relative' : 'static',

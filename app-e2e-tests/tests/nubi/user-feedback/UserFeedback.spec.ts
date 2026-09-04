@@ -207,7 +207,7 @@ test.describe("Nubi User Feedback Tab", () => {
   );
 
   test(
-    "User Feedback - apply a module filter, switch to the Agents tab and return, verify the tab remounts with the filter cleared and re-queries the default 7 day window",
+    "User Feedback - apply a module filter, switch to the Digests tab and return, verify the tab remounts with the filter cleared and re-queries the default 7 day window",
     { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
@@ -219,7 +219,8 @@ test.describe("Nubi User Feedback Tab", () => {
       await remountUserFeedbackTab(locators);
       const query = await nextFeedbackQuery(log, afterModule);
 
-      // SettingsModal swaps the tab body out entirely, so the filter is not
+      // Switching Insights sub-tabs swaps the tab body out entirely (different
+      // component types, BCortexModal.jsx's renderBody), so the filter is not
       // merely hidden — it is gone, and the refetch must not still carry it.
       expect(hasAnyModuleFilter(query)).toBe(false);
       expect(windowOf(query).spanMs).toBeGreaterThan(6.9 * DAY_MS);

@@ -77,9 +77,11 @@ export function hasAnyModuleFilter(query: string): boolean {
   return /module:\{_eq:/.test(query);
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > User Feedback. The
-// query log is attached before the tab is selected so the tab's own first
-// listing request is captured too.
+// Logs in, opens the Nubi panel via "b-Cortex" and lands on Insights >
+// Feedback (User Feedback relocated out of Settings into b-Cortex's Insights
+// group, see docs/ia-consolidation-plan.md PR 4 — it was never part of AI &
+// Tools). The query log is attached before the tab is selected so the tab's
+// own first listing request is captured too.
 export async function openUserFeedbackTab(page: Page): Promise<{ locators: UserFeedbackLocators; log: FeedbackQueryLog }> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -87,22 +89,25 @@ export async function openUserFeedbackTab(page: Page): Promise<{ locators: UserF
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
-  await locators.userFeedbackTab.waitFor({ state: "visible", timeout: 20000 });
+  await nubi.bcortexBtn.click();
+  await locators.insightsGroupTab.waitFor({ state: "visible", timeout: 20000 });
+  await locators.insightsGroupTab.click();
+  await locators.feedbackTab.waitFor({ state: "visible", timeout: 20000 });
 
   const log = trackFeedbackQueries(page);
-  await locators.userFeedbackTab.click();
+  await locators.feedbackTab.click();
   await locators.listingCard.waitFor({ state: "visible", timeout: 30000 });
   await locators.waitForRowsSettled();
   return { locators, log };
 }
 
-// Leaves the tab and comes back, which unmounts UserFeedbackTab and drops the
-// filter state it holds — the only way to tell a reset from a value still held
-// in React state.
+// Switches to the sibling "Digests" sub-tab and back, which unmounts
+// UserFeedbackTab and drops the filter state it holds — the only way to tell
+// a reset from a value still held in React state. Both are sub-tabs of the
+// same "Insights" group, so there is no need to leave it.
 export async function remountUserFeedbackTab(locators: UserFeedbackLocators): Promise<void> {
-  await locators.agentsTab.click();
+  await locators.digestsTab.click();
   await locators.listingCard.waitFor({ state: "detached", timeout: 20000 });
-  await locators.userFeedbackTab.click();
+  await locators.feedbackTab.click();
   await locators.listingCard.waitFor({ state: "visible", timeout: 30000 });
 }

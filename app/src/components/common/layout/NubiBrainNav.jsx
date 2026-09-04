@@ -1,18 +1,23 @@
 /**
- * NubiBrainNav — the "B-Cortex" + "Settings" button pair shown at the bottom of
- * a left navigation rail. Self-contained: it owns both the BCortexModal and the
- * SettingsModal, and (when an agent list isn't supplied by the parent) lazily
- * fetches the agents the Settings modal needs the first time it's opened.
+ * NubiBrainNav — the "b-Cortex" / "AI & Tools" buttons shown at the bottom
+ * of a left navigation rail. Self-contained: it owns BCortexModal and
+ * AIToolsModal.
+ *
+ * "AI & Tools" repurposes what used to be the rail's only "Settings" button
+ * (docs/ia-consolidation-plan.md, PR 3) — same content Admin's own AI & Tools
+ * tab shows, at modal density, admin-gated (Decision T), surface='light'-only
+ * (Decision W — the main docked sidebar already has its own "Admin" entry
+ * for this content, so a second copy there was redundant).
+ *
+ * A non-admin user on a tenant without b-Cortex (OSS, or not yet migrated to
+ * MEMORY_MODULE) has no rail path to Memory / Account Context — both live
+ * inside the admin-gated AI & Tools content only (Decision Y). A dedicated,
+ * non-admin-gated "Memory" button was tried and reverted (Decision AB): the
+ * narrowing is an accepted trade-off, not a regression to mitigate.
  *
  * Surface tinting:
  *   • surface='dark'  — white icons/labels for the main app rail (brand-600 bg).
  *   • surface='light' — grey icons/labels for the Ask-Nubi rail (light bg).
- *
- * Agent source:
- *   • Pass `agents` (+ `loadingAgents` / `onRefreshAgents`) to reuse a list the
- *     parent already maintains (Ask-Nubi layout does this).
- *   • Omit them to let this component fetch its own list using `accountId`
- *     (falls back to the route's accountId) — used by the global main nav.
  */
 import { useCallback, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
@@ -20,18 +25,24 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Box, ButtonBase, Typography } from '@mui/material';
 import PsychologyOutlined from '@mui/icons-material/PsychologyOutlined';
-import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import SafeIcon from '@components/common/icons/SafeIcon';
-import apiAskNudgebee from '@api1/ask-nudgebee';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
+import { hasAdminSurfaceAccess } from '@lib/auth';
 
-// Both modals are click-gated (default closed) and client-only, but this nav rail
-// is rendered by the global PageLayout on every authenticated route. Importing the
-// modals statically pulled their entire transitive tree — reactflow, elkjs, xterm,
+// These modals are click-gated (default closed) and client-only, but this nav rail
+// is rendered by the global PageLayout on every authenticated route. Importing them
+// statically pulled their entire transitive tree — reactflow, elkjs, xterm,
 // codemirror — into the shared layout chunk on *every* page, including /home, where
 // none of it is used. next/dynamic + the mount latch below keep that code out of the
 // initial bundle and fetch it on first open instead. See enterprise#25990.
-const SettingsModal = dynamic(() => import('@components/llm/SettingsModal'), { ssr: false });
+//
+// AI & Tools — the repurposed rail button's own content, same
+// AI_TOOLS_SUB_TABS Admin's own page renders (aiToolsConfig.js). No @ee/
+// reference in this file or AIToolsModal.jsx (each of AI & Tools' leaf
+// components handles its own EE dynamic-import internally), so no
+// OSS-STRIP marker is needed here.
+const AIToolsModal = dynamic(() => import('@components/llm/admin/AIToolsModal'), { ssr: false });
 // BCortexModal is stripped from the OSS snapshot (see .oss-exclude).
 // The marker-delimited line below is range-replaced with a () => null
 // stub by scripts/oss-patches.sh — Turbopack's static analysis rejects
@@ -73,32 +84,27 @@ RailButton.propTypes = {
   onClick: PropTypes.func,
 };
 
-const NubiBrainNav = ({ surface = 'dark', accountId, agents = null, loadingAgents = false, onRefreshAgents }) => {
+const NubiBrainNav = ({ surface = 'dark', accountId }) => {
   const router = useRouter();
   const resolvedAccountId = accountId ?? router.query?.accountId ?? '';
 
-  const [openSettingsModal, setOpenSettingsModal] = useState(false);
+  const [openAIToolsModal, setOpenAIToolsModal] = useState(false);
   const [openBCortexModal, setOpenBCortexModal] = useState(false);
-  // Set when Settings is opened programmatically (e.g. from b-Cortex's
-  // BCortexDisabled placeholder) so Settings starts on a specific tab.
-  // Reset on close so the next normal open lands on the default 'agents' tab.
-  const [settingsInitialTab, setSettingsInitialTab] = useState(null);
-  // Same idea for b-Cortex, driven by a ?bcortex=<tab> deep link. The weekly
-  // weekly digest is delivered to notification channels, and its "view the
-  // full review" link has to land on the Digests tab — b-Cortex is a modal, so
-  // there is no route to point at.
+  // Driven by a ?bcortex=<tab> deep link. The weekly digest is delivered to
+  // notification channels, and its "view the full review" link has to land
+  // on the Digests tab — b-Cortex is a modal, so there is no route to point at.
   const [bcortexInitialTab, setBcortexInitialTab] = useState(null);
 
   // Mount latches: a dynamically-imported modal only fetches its chunk once it is
   // actually rendered. We latch on first open so the chunk loads on the user's first
   // click (not on page load), then stay mounted so the `open` prop keeps driving the
   // show/hide transition exactly as before.
-  const [settingsMounted, setSettingsMounted] = useState(false);
+  const [aiToolsMounted, setAiToolsMounted] = useState(false);
   const [bcortexMounted, setBcortexMounted] = useState(false);
 
-  const handleOpenSettings = useCallback(() => {
-    setSettingsMounted(true);
-    setOpenSettingsModal(true);
+  const handleOpenAITools = useCallback(() => {
+    setAiToolsMounted(true);
+    setOpenAIToolsModal(true);
   }, []);
   const handleOpenBCortex = useCallback(() => {
     setBcortexMounted(true);
@@ -107,16 +113,6 @@ const NubiBrainNav = ({ surface = 'dark', accountId, agents = null, loadingAgent
   const handleCloseBCortex = useCallback(() => {
     setOpenBCortexModal(false);
     setBcortexInitialTab(null);
-  }, []);
-  // Cross-modal hand-off used by BCortexDisabled → "View legacy memory
-  // layer". Closes b-Cortex and opens Settings on its Memory tab; when
-  // MEMORY_MODULE is disabled the Memory tab renders the legacy MemoryTab
-  // inline rather than the b-Cortex redirect panel.
-  const handleOpenSettingsMemory = useCallback(() => {
-    setOpenBCortexModal(false);
-    setSettingsMounted(true);
-    setSettingsInitialTab('memory');
-    setOpenSettingsModal(true);
   }, []);
 
   // Only the tabs we actually mint links to. Deliberately not the full tab list
@@ -147,76 +143,13 @@ const NubiBrainNav = ({ surface = 'dark', accountId, agents = null, loadingAgent
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, router.query?.bcortex]);
 
-  // When the parent passes an agent list we mirror it; otherwise self-fetch.
-  const usingExternalAgents = Array.isArray(agents);
-  const [internalAgents, setInternalAgents] = useState([]);
-  const [internalLoading, setInternalLoading] = useState(false);
-
-  const effectiveAgents = usingExternalAgents ? agents : internalAgents;
-  const effectiveLoading = usingExternalAgents ? !!loadingAgents : internalLoading;
-
-  const fetchAgents = useCallback(() => {
-    if (usingExternalAgents) {
-      onRefreshAgents?.();
-      return;
-    }
-    // Empty resolvedAccountId is valid: backend's agentListAgent routes it
-    // to ListAgentsForTenant — system catalog + every custom agent the
-    // caller can read across the tenant. The Settings/b-Cortex modals
-    // open from the global sidebar with no account in scope, so we must
-    // fire the request regardless.
-    setInternalLoading(true);
-    apiAskNudgebee
-      .listAgents({ accountId: resolvedAccountId })
-      .then((res) => {
-        setInternalAgents(res?.data?.data?.ai_list_agents?.data ?? []);
-        setInternalLoading(false);
-      })
-      .catch(() => setInternalLoading(false));
-  }, [usingExternalAgents, onRefreshAgents, resolvedAccountId]);
-
-  // Lazily load agents the first time Settings is opened (self-fetch mode only).
-  // resolvedAccountId is in the dep list because fetchAgents bails when it's
-  // empty — if the modal opens before the account id has hydrated, the first
-  // call returns early; we need to re-fire as soon as the id arrives.
-  // fetchAgents itself is intentionally omitted: it'd re-run on every
-  // callback identity change and re-trigger after a successful load, since
-  // internalAgents.length transitions to non-zero would still satisfy the
-  // guard on the immediately-next render only if openSettingsModal flips.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (openSettingsModal && !usingExternalAgents && internalAgents.length === 0 && !internalLoading) {
-      fetchAgents();
-    }
-  }, [openSettingsModal, resolvedAccountId]);
-
   const tint = surface === 'dark' ? 'var(--ds-background-100)' : 'var(--ds-gray-600)';
 
   return (
     <>
-      {settingsMounted && (
-        <SettingsModal
-          open={openSettingsModal}
-          onClose={() => {
-            setOpenSettingsModal(false);
-            setSettingsInitialTab(null);
-          }}
-          accountId={resolvedAccountId}
-          allAgents={effectiveAgents}
-          refreshAgentListing={fetchAgents}
-          loadingAgents={effectiveLoading}
-          onOpenBCortex={handleOpenBCortex}
-          initialTab={settingsInitialTab}
-        />
-      )}
+      {aiToolsMounted && <AIToolsModal open={openAIToolsModal} onClose={() => setOpenAIToolsModal(false)} />}
       {bcortexMounted && (
-        <BCortexModal
-          open={openBCortexModal}
-          onClose={handleCloseBCortex}
-          accountId={resolvedAccountId}
-          onOpenSettingsMemory={handleOpenSettingsMemory}
-          initialTab={bcortexInitialTab}
-        />
+        <BCortexModal open={openBCortexModal} onClose={handleCloseBCortex} accountId={resolvedAccountId} initialTab={bcortexInitialTab} />
       )}
 
       <Box
@@ -246,14 +179,20 @@ const NubiBrainNav = ({ surface = 'dark', accountId, agents = null, loadingAgent
             onClick={handleOpenBCortex}
           />
         )}
-        <RailButton
-          label='Settings'
-          testId='nav-nubi-settings-btn'
-          iconComponent={SettingsOutlined}
-          iconSx={{ color: tint }}
-          color={tint}
-          onClick={handleOpenSettings}
-        />
+        {/* Decision T: admin-gated like every other Admin tab. Decision W:
+            surface='light'-only — the main docked sidebar already has its
+            own "Admin" entry for this content, so a second copy there was
+            redundant. */}
+        {hasAdminSurfaceAccess() && surface === 'light' && (
+          <RailButton
+            label='AI & Tools'
+            testId='nav-nubi-ai-tools-btn'
+            iconComponent={AutoAwesomeIcon}
+            iconSx={{ color: tint }}
+            color={tint}
+            onClick={handleOpenAITools}
+          />
+        )}
       </Box>
     </>
   );
@@ -262,9 +201,6 @@ const NubiBrainNav = ({ surface = 'dark', accountId, agents = null, loadingAgent
 NubiBrainNav.propTypes = {
   surface: PropTypes.oneOf(['dark', 'light']),
   accountId: PropTypes.string,
-  agents: PropTypes.array,
-  loadingAgents: PropTypes.bool,
-  onRefreshAgents: PropTypes.func,
 };
 
 export default NubiBrainNav;

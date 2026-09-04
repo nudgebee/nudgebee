@@ -1125,7 +1125,7 @@ ActiveConfigsCompact.propTypes = {
 
 // ─── main component ──────────────────────────────────────────────────────────
 
-const LLMConsumptionTab = ({ accountId }) => {
+const LLMConsumptionTab = ({ accountId, readOnly = false }) => {
   // Tenant-wide mode: when Settings is opened from the global sidebar
   // there's no current account. Budget status is per-account, so we skip
   // the KPI strip + Usage matrix entirely and show only the Active
@@ -1156,7 +1156,12 @@ const LLMConsumptionTab = ({ accountId }) => {
 
   const session = getUserSession();
   const isSuperAdmin = !!session?.isSuperAdmin;
-  const isAdmin = isTenantAdmin() || isSuperAdmin;
+  // readOnly forces this false regardless of role — b-Cortex's My Usage
+  // (docs/ia-consolidation-plan.md, PR 4, Decision F) is a personal read
+  // view; editing budget configs is centralized at Admin → AI & Tools →
+  // Budgets & Limits (BudgetsAndLimitsAdminTab.jsx), which mounts this same
+  // component without the prop.
+  const isAdmin = !readOnly && (isTenantAdmin() || isSuperAdmin);
   const tenantName = session?.tenant?.name || 'Tenant';
 
   // Suppress setState / toast after unmount. Settings tab switching
@@ -1707,6 +1712,11 @@ LLMConsumptionTab.propTypes = {
   // section collapses to Tenant only with all account configs flowing
   // into the bottom list.
   accountId: PropTypes.string,
+  // Forces isAdmin false regardless of role, hiding "Add Budget" and the
+  // Active Budgets/edit section — b-Cortex's My Usage mount (personal
+  // read view, Decision F) uses this; Admin's Budgets & Limits mount
+  // (canonical editing) doesn't pass it.
+  readOnly: PropTypes.bool,
 };
 
 export default LLMConsumptionTab;

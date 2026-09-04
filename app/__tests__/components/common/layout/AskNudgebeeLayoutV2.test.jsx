@@ -69,14 +69,14 @@ jest.mock('@hooks/useTenantBranding', () => ({
   DEFAULT_FAVICON: '/favicon.ico',
 }));
 
-// Mock @assets
+// Mock @assets — component imports SettingOutlineIconGrey (not SettingOutlineIcon)
 jest.mock(
   '@assets',
   () => ({
     PlusIconSecondary: '/plus-icon.png',
     ProfileOutlineIcon: '/profile-icon.png',
     ChatOutlineDarkIcon: '/chat-icon.png',
-    SettingOutlineIcon: '/setting-icon.png',
+    SettingOutlineIconGrey: '/setting-icon.png',
     ArrowBackGrayIcon: '/arrow-back-icon.png',
   }),
   { virtual: true }
@@ -101,12 +101,13 @@ jest.mock('@api1/ask-nudgebee', () => ({
   },
 }));
 
-// Mock SafeIcon
+// Mock SafeIcon — strip next/image-specific props (priority, fill, unoptimized, onError)
+// before spreading onto the DOM <img> to avoid "non-boolean attribute" warnings.
 jest.mock(
   '@shared/icons/SafeIcon',
   () =>
-    function MockSafeIcon({ alt, src, ...props }) {
-      return <img alt={alt} src={typeof src === 'string' ? src : '/mock-icon.png'} {...props} />;
+    function MockSafeIcon({ alt, src, priority: _p, fill: _f, unoptimized: _u, onError: _e, ...props }) {
+      return React.createElement('img', { alt, src: typeof src === 'string' ? src : '/mock-icon.png', ...props });
     }
 );
 
@@ -153,31 +154,6 @@ jest.mock(
     }
 );
 
-jest.mock('@shared/layout/SwitchTenant', () => ({
-  SwitchTenant: function MockSwitchTenant({ open, onClose }) {
-    return open ? (
-      <div data-testid='switch-tenant'>
-        <button onClick={onClose} data-testid='close-switch-tenant'>
-          Close
-        </button>
-      </div>
-    ) : null;
-  },
-}));
-
-// Mock NewCustomButton
-jest.mock(
-  '@shared/NewCustomButton',
-  () =>
-    function MockCustomButton({ onClick, toolTipTitle, ...props }) {
-      return (
-        <button onClick={onClick} data-testid={`custom-btn-${toolTipTitle || 'btn'}`} {...props}>
-          {toolTipTitle || 'button'}
-        </button>
-      );
-    }
-);
-
 // Mock UserMenuItems
 jest.mock('@shared/layout/UserMenuItems', () => ({
   createGetMenuItem: jest.fn(() => (setting) => (
@@ -189,26 +165,7 @@ jest.mock('@shared/layout/UserMenuItems', () => ({
 }));
 
 // Mock colors
-jest.mock('src/utils/colors', () => ({
-  colors: {
-    text: { tertiary: '#666', secondary: '#333', secondaryDark: '#555', white: '#fff' },
-    background: {
-      pages: '#fff',
-      home: '#f5f5f5',
-      transparent: 'transparent',
-      activeButtonColor: '#eee',
-      askNudgebeePage: '#f9f9f9',
-      sideBar: '#1B2D4A',
-      white: '#fff',
-      secondaryDark: '#444',
-    },
-    border: { secondaryLightest: '#eee', secondary: '#ddd' },
-    secondary: { default: '#0000ff' },
-    primary: { main: '#0000ff' },
-    switchIconColor: '#aaa',
-    white: '#fff',
-  },
-}));
+jest.mock('@utils/colors');
 
 const apiAskNudgebee = require('@api1/ask-nudgebee').default;
 const { useRouter } = require('next/router');
@@ -287,8 +244,7 @@ describe('AskNudgebeeLayoutV2', () => {
     await act(async () => {
       render(<AskNudgebeeLayoutWrapped {...defaultProps} />);
     });
-    const settingsBtn = screen.getByTestId('custom-btn-Settings');
-    fireEvent.click(settingsBtn);
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByTestId('settings-modal')).toBeInTheDocument();
   });
 
@@ -296,7 +252,7 @@ describe('AskNudgebeeLayoutV2', () => {
     await act(async () => {
       render(<AskNudgebeeLayoutWrapped {...defaultProps} />);
     });
-    fireEvent.click(screen.getByTestId('custom-btn-Settings'));
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByTestId('settings-modal')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('close-settings'));
     expect(screen.queryByTestId('settings-modal')).not.toBeInTheDocument();
@@ -374,8 +330,7 @@ describe('AskNudgebeeLayoutV2', () => {
         />
       );
     });
-    // Open settings modal to trigger refreshAgentListing
-    fireEvent.click(screen.getByTestId('custom-btn-Settings'));
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByTestId('settings-modal')).toBeInTheDocument();
   });
 

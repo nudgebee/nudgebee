@@ -20,11 +20,11 @@ export function uniqueAgentName(): string {
   return `e2e_custom_agent_${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
-// Logs in and opens Nubi Settings on the Agents tab with the listing settled.
+// Logs in and opens Nubi's AI & Tools on the Agents tab with the listing settled.
 //
-// This is the entry path CreateCustomAgent.spec.ts already proves: Settings opened
-// from the Nubi panel carries an accountId, and ListAgents hides Create / Edit /
-// Delete entirely when it has none (its isTenantWide branch).
+// This is the entry path CreateCustomAgent.spec.ts already proves: AI & Tools
+// opened from the Nubi panel carries an accountId, and ListAgents hides Create /
+// Edit / Delete entirely when it has none (its isTenantWide branch).
 export async function openAgentsTab(page: Page): Promise<AgentsView> {
   const nubi = new NubiLocators(page);
   const agents = new CustomAgentsLocators(page);
@@ -32,19 +32,25 @@ export async function openAgentsTab(page: Page): Promise<AgentsView> {
   await new LoginPage(page).doFullLogin();
   await nubi.openPanel();
 
-  // SettingsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
-  // round trip, and a Settings click landing while the panel is still animating in
+  // AIToolsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
+  // round trip, and an AI & Tools click landing while the panel is still animating in
   // opens nothing at all. Retry the pair until the tabs are actually there.
   await expect(async () => {
     // Probe: "the tabs are not up yet" is the normal state on the first pass and
     // must come back as false rather than throw, since that is what drives the retry.
     if (!(await nubi.customAgentTab.isVisible().catch(() => false))) {
-      await nubi.settingsBtn.click();
+      await nubi.aiToolsBtn.click();
     }
     await nubi.customAgentTab.waitFor({ state: "visible", timeout: 5000 });
   }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
 
   await nubi.customAgentTab.click();
+  // AgentsAdminTab defaults to tenant-wide (accountId=''), and ListAgents hides
+  // Create entirely at tenant-wide — narrow to a real account first, same as an
+  // admin would via the header filter. Edit/Delete (the row three-dot menu) are
+  // unaffected: ListAgents gates those on hasWriteAccess(accountId) alone, which
+  // a tenant_admin passes regardless of accountId.
+  await nubi.selectFirstAdminAccount();
   await expect(agents.listingBox).toBeVisible({ timeout: 30000 });
   await expectListingSettled(agents);
 

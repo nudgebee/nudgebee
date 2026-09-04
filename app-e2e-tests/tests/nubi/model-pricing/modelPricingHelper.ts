@@ -18,7 +18,8 @@ export function uniqueModelName(): string {
   return `nb_e2e_price_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
-// Logs in, opens the Nubi panel and lands on Settings > Model Pricing.
+// Logs in, opens the Nubi panel and lands on AI & Tools > Budgets & Limits >
+// Model Pricing.
 export async function openModelPricingTab(page: Page): Promise<ModelPricingLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -26,19 +27,23 @@ export async function openModelPricingTab(page: Page): Promise<ModelPricingLocat
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.settingsBtn.click();
-  await locators.modelPricingTab.waitFor({ state: "visible", timeout: 20000 });
-  await locators.modelPricingTab.click();
+  await nubi.aiToolsBtn.click();
+  await locators.budgetsLimitsTab.waitFor({ state: "visible", timeout: 20000 });
+  await locators.budgetsLimitsTab.click();
+  await locators.modelPricingToggle.waitFor({ state: "visible", timeout: 15000 });
+  await locators.modelPricingToggle.click();
   await locators.listingCard.waitFor({ state: "visible", timeout: 30000 });
   return locators;
 }
 
-// Leaves the tab and comes back, which unmounts ModelPricingTab and makes it
-// refetch — the only way to tell a saved row from one still held in React state.
+// Switches to the sibling "Usage & Limits" toggle and back, which unmounts
+// ModelPricingTab and makes it refetch — the only way to tell a saved row from
+// one still held in React state. Both are ToggleGroup options inside the same
+// "Budgets & Limits" tab, so there is no need to leave it.
 export async function remountModelPricingTab(locators: ModelPricingLocators): Promise<void> {
-  await locators.agentsTab.click();
+  await locators.usageLimitsToggle.click();
   await locators.listingCard.waitFor({ state: "detached", timeout: 20000 });
-  await locators.modelPricingTab.click();
+  await locators.modelPricingToggle.click();
   await locators.listingCard.waitFor({ state: "visible", timeout: 30000 });
 }
 

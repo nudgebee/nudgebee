@@ -11,8 +11,9 @@ import { CommonLocators } from "../../GlobalLocators";
 // component's derived id as the fallback. The only testids on the surface come
 // from CustomDateTimeRangePicker's popover.
 export class UserFeedbackLocators extends CommonLocators {
-  readonly userFeedbackTab: Locator;
-  readonly agentsTab: Locator;
+  readonly insightsGroupTab: Locator;
+  readonly feedbackTab: Locator;
+  readonly digestsTab: Locator;
   readonly listingCard: Locator;
   readonly listingTitle: Locator;
   readonly table: Locator;
@@ -26,12 +27,18 @@ export class UserFeedbackLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // The panel entry point and its Settings button stay in tests/nubi/nubiLocators.ts;
-    // openUserFeedbackTab() drives that class to get into the modal.
-    // SettingsModal renders its strip through shared/navigation/Tabs (MUI Tabs),
-    // so every tab is a real role=tab even while scrolled out of view.
-    this.userFeedbackTab = page.getByRole("tab", { name: "User Feedback" });
-    this.agentsTab = page.getByRole("tab", { name: "Agents" });
+    // The panel entry point and its b-Cortex button stay in tests/nubi/nubiLocators.ts;
+    // openUserFeedbackTab() drives that class to get into the modal. User Feedback
+    // relocated from Settings to b-Cortex's "Insights" group (docs/ia-consolidation-plan.md,
+    // PR 4), relabeled "Feedback" there, alongside its sibling "Digests". Both the
+    // top-level group tab and its sub-tabs render through shared/navigation/Tabs
+    // (MUI Tabs), so every one of them is a real role=tab even while scrolled out
+    // of view. exact:true on the group tab: without it "Insights" would also match
+    // nothing else here, but every sub-tab locator below stays exact for the same
+    // reason the Knowledge group tab does (knowledgeBaseLocators.ts).
+    this.insightsGroupTab = page.getByRole("tab", { name: "Insights", exact: true });
+    this.feedbackTab = page.getByRole("tab", { name: "Feedback", exact: true });
+    this.digestsTab = page.getByRole("tab", { name: "Digests", exact: true });
 
     // ListingLayout puts its `id` on the wrapping DS Card, so this is the whole
     // listing: toolbar, table and empty state. Deliberately id-only — the Card is

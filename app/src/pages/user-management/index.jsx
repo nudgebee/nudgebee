@@ -9,15 +9,18 @@ import Notifications from '@components/notifications';
 import Integrations from '@components/accounts/integration';
 import OwnershipRules from '@components/user-management/OwnershipRules';
 import TenantSettings from '@shared/settings/TenantSettings';
-import { AuditIcon, NotificationIcon1, User1, UserGroupIcon, IntegrationsIcon, SettingsIcon } from '@assets';
+import { AuditIcon, NotificationIcon1, User1, UserGroupIcon, IntegrationsIcon, SettingsIcon, AgentIcon } from '@assets';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { userManagementFilters } from '@lib/authHooks';
-import { hasAdminSurfaceAccess, missingPermissionMessage } from '@lib/auth';
+import { hasAdminSurfaceAccess, missingPermissionMessage, isUiFeatureEnabled } from '@lib/auth';
 import Loader from '@shared/Loader';
 import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import AssignmentIndOutlinedIcon from '@mui/icons-material/AssignmentIndOutlined';
+import { AI_TOOLS_SUB_TABS } from '@components/llm/admin/aiToolsConfig';
+import { useBCortexEnabled } from '@hooks/useBCortexEnabled';
+import { useFeatureAccess } from '@hooks/useFeatureAccess';
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -117,6 +120,26 @@ const baseFilters = (baseTitle) => [
     module: 'integrations',
     description: `Connect ${baseTitle} to your clouds, observability platforms, ticketing, repositories and messaging tools — and see what is already connected.`,
   },
+  // AI & Tools (docs/ia-consolidation-plan.md, PR 3) — "what the AI is made
+  // of", relocated out of the Settings modal into Admin. Same tabOptions
+  // pattern Access & Users uses above: flat siblings, each independently
+  // module-gated, hash-routed at `#ai-tools/<fragment>`. The sub-tab list
+  // itself lives in AI_TOOLS_SUB_TABS (components/llm/admin/aiToolsConfig.js)
+  // — shared with the Nubi rail's AIToolsModal per the "mirrors" rule (one
+  // component, two mounts), rather than duplicated here.
+  //
+  // Scope note: this wires the UI-level gate only. actions.yaml's own
+  // `permissions:` role lists for these actions are untouched — narrowing
+  // them to Admin's usual tenant_admin-only pattern is a distinct, larger
+  // change (removing account_admin/k8s_namespace_admin API access, not just
+  // a menu entry) held pending explicit confirmation (Decision U).
+  {
+    name: 'AI & Tools',
+    id: 'AITools',
+    fragment: 'ai-tools',
+    icon: AgentIcon,
+    tabOptions: AI_TOOLS_SUB_TABS,
+  },
   {
     name: 'Tenant Settings',
     fragment: 'tenant-settings',
@@ -136,6 +159,14 @@ export default function UserManagement() {
   const router = useRouter();
   const sessionData = useSession({ required: true });
   const session = sessionData?.data;
+  // Gates AI & Tools' legacyOnly sub-tabs (Memory, Account Context) — see
+  // aiToolsConfig.js. `true` keeps the lookup always-active, same as
+  // AIToolsModal's own call.
+  const bcortexEnabled = useBCortexEnabled(true);
+  // Gates AI & Tools' Functions sub-tab (requiresFeature) — same
+  // hasFeatureAccess('LLM_FUNCTION') check Settings used to decide whether
+  // to push the tab at all.
+  const llmFunctionEnabled = useFeatureAccess('LLM_FUNCTION');
 
   // Combine base filters with any registered extensions filtered by session,
   // then stamp positional values so AnchorComponent's routing keeps working.
@@ -183,7 +214,34 @@ export default function UserManagement() {
         // custom-role user holding a grant on just one of the merged modules
         // (e.g. ownership:Read without usergroups:Read) would lose access to
         // both instead of just the one they actually lack.
-        const tabOptions = f.tabOptions.map((sub, subIdx) => {
+        //
+        // legacyOnly sub-tabs (AI & Tools' Memory / Account Context) are
+        // dropped entirely — not just disabled — unless this tenant lacks
+        // b-Cortex (aiToolsConfig.js). `bcortexEnabled !== false` (i.e. true
+        // or still resolving) treats them as hidden by default so a tenant
+        // that DOES have b-Cortex never sees a flash of the extra tabs while
+        // the flag lookup is in flight.
+        //
+        // requiresFeature (Functions) / requiresUiFeature (Gateway) are the
+        // same two extra gates Settings applied on top of its own module
+        // check — dropped, not just disabled, matching Settings never
+        // pushing the tab at all when either failed. requiresFeature only
+        // ever names 'LLM_FUNCTION' today, so it's checked against
+        // llmFunctionEnabled directly rather than a per-feature-name map —
+        // revisit if a second requiresFeature value is ever added.
+        const visibleTabOptions = f.tabOptions.filter((sub) => {
+          if (sub.legacyOnly && bcortexEnabled !== false) {
+            return false;
+          }
+          if (sub.requiresFeature && llmFunctionEnabled !== true) {
+            return false;
+          }
+          if (sub.requiresUiFeature && !isUiFeatureEnabled(sub.requiresUiFeature)) {
+            return false;
+          }
+          return true;
+        });
+        const tabOptions = visibleTabOptions.map((sub, subIdx) => {
           const lacksPermission = !isAdmin && !!sub.module && !perms.includes(`${sub.module}:Read`);
           return {
             ...sub,
@@ -213,7 +271,7 @@ export default function UserManagement() {
         disabledTooltip: lacksPermission ? missingPermissionMessage(`${f.module}:Read`) : undefined,
       };
     });
-  }, [session, baseTitle]);
+  }, [session, baseTitle, bcortexEnabled, llmFunctionEnabled]);
 
   const [selectedFilter, setSelectedFilter] = React.useState(null);
   // Which sub-tab is active within the selected top-level filter, when it has

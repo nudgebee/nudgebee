@@ -7,10 +7,10 @@ function esc(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Agents tab of the Nubi Settings modal — app/src/components/llm/ListAgents.jsx.
+// Agents tab of the Nubi AI & Tools modal — app/src/components/llm/ListAgents.jsx.
 //
 // That component renders zero data-testid (`grep -c data-testid ListAgents.jsx` -> 0),
-// and so do SettingsModal.jsx and CreateAgentNew.jsx, so rung 1 is unavailable
+// and so do AIToolsModal.jsx and CreateAgentNew.jsx, so rung 1 is unavailable
 // everywhere here. Controls that carry an accessible name are reached by role
 // first; the toolbar and table primitives have none, so their ListingLayout /
 // CustomTable ids are the highest rung available for them and are used as the

@@ -24,12 +24,17 @@ test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "
 
   await loginPage.doFullLogin();
   await locators.askNudgebeeBtn.click();
-  await locators.settingsBtn.click();
-  console.log("Navigated to Settings");
+  await locators.aiToolsBtn.click();
+  console.log("Navigated to AI & Tools");
 
   await locators.ToolButton.waitFor({ state: "visible", timeout: 15000 });
   await locators.ToolButton.click();
   console.log("Clicked Tools tab");
+
+  // ToolsAndMCPAdminTab defaults to tenant-wide (accountId=''), and ListTools
+  // hides Create entirely at tenant-wide — narrow to a real account first,
+  // same as an admin would via the header filter.
+  await locators.selectFirstAdminAccount();
 
   // ── Create ──────────────────────────────────────────────────────────────
   await locators.CreateToolButton.waitFor({ state: "visible", timeout: 15000 });
