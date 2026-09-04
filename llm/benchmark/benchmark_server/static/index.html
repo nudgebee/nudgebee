@@ -661,6 +661,19 @@ function escAttr(s) {
     .replace(/'/g, '&#39;');
 }
 
+// Base URL for jumping straight into the live conversation a benchmark query
+// ran in ("accountId=...&session_id=..." appended). Fetched from the server
+// at startup (see init(), below) rather than hardcoded — the internal
+// staging hostname must not appear as a literal in this file. Empty until
+// that fetch resolves, and stays empty if the operator hasn't set
+// ASK_NUDGEBEE_BASE_URL, in which case bmSessionUrl() just returns ''.
+let BM_ASK_NUDGEBEE_URL = '';
+function bmSessionUrl(accountId, sessionId) {
+  return (BM_ASK_NUDGEBEE_URL && accountId && sessionId)
+    ? `${BM_ASK_NUDGEBEE_URL}accountId=${encodeURIComponent(accountId)}&session_id=${encodeURIComponent(sessionId)}`
+    : '';
+}
+
 // formatAge: short human-readable duration since ``isoTs`` ("3m", "2h",
 // "1d"). Used to render a "waiting 3h" hint next to waiting status badges
 // so users can spot abandoned followups without opening the test. Returns
@@ -3099,32 +3112,65 @@ async function compareRuns() {
 
   // Per-query details
   const perQuery = data.per_query || [];
+  const bmSessionLink = (url, label, colorCls) => url
+    ? `<a href="${escAttr(url)}" target="_blank" rel="noopener" class="${colorCls} font-semibold hover:underline" title="Open ${label === 'B' ? 'baseline' : 'candidate'} session in app">${label}</a>`
+    : `<span class="text-gray-300" title="No session recorded">${label}</span>`;
+  const bmPairFmt = (a, b, digits) => `${Number(a||0).toFixed(digits)} → ${Number(b||0).toFixed(digits)}`;
+  // Per-query winner color: green when the candidate beats the baseline on
+  // this metric, red when it's worse, gray on a tie. `lowerIsBetter` mirrors
+  // the Summary Delta table's convention (latency/tokens/tool-calls: lower
+  // wins; accuracy: higher wins).
+  const bmWinnerCls = (baseVal, candVal, lowerIsBetter) => {
+    if (candVal === baseVal) return 'text-gray-600';
+    const candWins = lowerIsBetter ? candVal < baseVal : candVal > baseVal;
+    return candWins ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
+  };
+  // Tool calls: fewer failures wins; a failure tie falls back to fewer total
+  // calls (fewer round-trips for the same outcome).
+  const bmToolCallsCls = (tc) => {
+    const bf = tc.baseline_failed || 0, cf = tc.candidate_failed || 0;
+    if (bf !== cf) return bmWinnerCls(bf, cf, true);
+    return bmWinnerCls(tc.baseline || 0, tc.candidate || 0, true);
+  };
+  const perQueryGridCols = 'grid-cols-[1.6fr_0.85fr_0.85fr_0.75fr_0.75fr_1fr_0.6fr_0.45fr_0.55fr]';
   let perQueryRows = '';
   if (perQuery.length) {
     perQueryRows = perQuery.map(q => {
-      const sim = q.similarity || {};
-      const rel = q.relevancy || {};
-      const d = sim.delta || 0;
-      const dCls = d > 0 ? 'text-green-600' : d < 0 ? 'text-red-600' : 'text-gray-500';
-      return `<div class="grid grid-cols-[2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center text-[11px]">
+      const acc = q.accuracy || {};
+      const lat = q.latency_seconds || {};
+      const inTok = q.input_tokens || {};
+      const outTok = q.output_tokens || {};
+      const tc = q.tool_calls || {};
+      const toolCallsStr = `${tc.baseline_successful||0}✓/${tc.baseline_failed||0}✗ → ${tc.candidate_successful||0}✓/${tc.candidate_failed||0}✗`;
+      const sid = q.session_id || {};
+      const bUrl = bmSessionUrl(bInfo.account_id, sid.baseline);
+      const cUrl = bmSessionUrl(cInfo.account_id, sid.candidate);
+      return `<div class="grid ${perQueryGridCols} gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center text-[11px]">
         <span class="text-gray-700 truncate" title="${esc(q.test_id||'')}">${esc(q.test_id||'')}</span>
-        <span class="text-gray-600 text-center">${(sim.baseline||0).toFixed(1)}</span>
-        <span class="text-gray-600 text-center">${(sim.candidate||0).toFixed(1)}</span>
-        <span class="font-semibold text-center ${dCls}">${d > 0 ? '▲' : d < 0 ? '▼' : ''} ${Math.abs(d).toFixed(1)}</span>
-        <span class="text-gray-500 text-center">${(q.tags||[]).join(', ')}</span>
+        <span class="text-center ${bmWinnerCls(acc.baseline||0, acc.candidate||0, false)}" title="Baseline → Candidate; green = candidate more accurate">${bmPairFmt(acc.baseline, acc.candidate, 1)}</span>
+        <span class="text-center ${bmWinnerCls(lat.baseline||0, lat.candidate||0, true)}" title="Baseline → Candidate; green = candidate faster">${bmPairFmt(lat.baseline, lat.candidate, 1)}</span>
+        <span class="text-center ${bmWinnerCls(inTok.baseline||0, inTok.candidate||0, true)}" title="Baseline → Candidate; green = candidate used fewer tokens">${bmPairFmt(inTok.baseline, inTok.candidate, 0)}</span>
+        <span class="text-center ${bmWinnerCls(outTok.baseline||0, outTok.candidate||0, true)}" title="Baseline → Candidate; green = candidate used fewer tokens">${bmPairFmt(outTok.baseline, outTok.candidate, 0)}</span>
+        <span class="text-center ${bmToolCallsCls(tc)}" title="Baseline → Candidate, successful✓/failed✗; green = candidate had fewer failures">${toolCallsStr}</span>
+        <span class="text-gray-500 text-center truncate">${(q.tags||[]).join(', ')}</span>
         <span class="text-gray-400 text-center">${q.status || ''}</span>
+        <span class="text-center">${bmSessionLink(bUrl, 'B', 'text-gray-500')} · ${bmSessionLink(cUrl, 'C', 'text-blue-500')}</span>
       </div>`;
     }).join('');
   }
 
   const perQueryHtml = perQuery.length ? `
     <div class="mt-4">
-      <div class="text-[12px] font-semibold text-gray-600 mb-1.5">Per-Query Comparison</div>
+      <div class="text-[12px] font-semibold text-gray-600 mb-1.5">Per-Query Comparison <span class="text-[10px] text-gray-400 font-normal">(Duration excludes followup wait time; B → C = Baseline → Candidate; green = candidate wins that metric, red = candidate loses)</span></div>
       <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
-        <div class="grid grid-cols-[2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
-          <span>Test</span><span class="text-center">Base Sim</span><span class="text-center">Cand Sim</span><span class="text-center">Delta</span><span class="text-center">Tags</span><span class="text-center">Status</span>
+        <div class="overflow-x-auto">
+          <div class="min-w-[1150px]">
+            <div class="grid ${perQueryGridCols} gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+              <span>Test</span><span class="text-center">Accuracy (%)</span><span class="text-center">Duration (s)</span><span class="text-center">Input Tok</span><span class="text-center">Output Tok</span><span class="text-center">Tool Calls</span><span class="text-center">Tags</span><span class="text-center">Status</span><span class="text-center">Open</span>
+            </div>
+            <div class="flex flex-col gap-[1px] max-h-[400px] overflow-y-auto">${perQueryRows}</div>
+          </div>
         </div>
-        <div class="flex flex-col gap-[1px] max-h-[400px] overflow-y-auto">${perQueryRows}</div>
       </div>
     </div>` : '';
 
@@ -3819,6 +3865,9 @@ async function clearCache() {
 
   const d = await api('GET', '/agent-benchmark/agents');
   if (d) agents = d.agents || [];
+
+  const cfg = await api('GET', '/agent-benchmark/config');
+  if (cfg?.ask_nudgebee_base_url) BM_ASK_NUDGEBEE_URL = cfg.ask_nudgebee_base_url;
 
   // Sidebar click handlers
   document.querySelectorAll('.nav-link').forEach(link => {
