@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Select } from '@ui/Select';
 import { Button } from '@ui/Button';
 import { Link } from '@ui/Link';
@@ -228,8 +228,8 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath, gitDiff, sx }) => {
             <Button size='sm' tone='secondary' onClick={closeModal} disabled={submitting}>
               Cancel
             </Button>
-            <Button size='sm' onClick={handleRaise} disabled={!selected || submitting || (result && result.ok)}>
-              {submitting ? <CircularProgress size={16} /> : 'Raise PR'}
+            <Button size='sm' onClick={handleRaise} loading={submitting} disabled={!selected || (result && result.ok)}>
+              Raise PR
             </Button>
           </Box>
         </Box>
