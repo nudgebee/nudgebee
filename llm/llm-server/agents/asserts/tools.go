@@ -9,6 +9,7 @@ import (
 	"nudgebee/llm/agents/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================
@@ -77,9 +78,7 @@ func ToolUsed(t *testing.T, resp core.NBAgentResponse, name string) bool {
 func FirstToolIs(t *testing.T, resp core.NBAgentResponse, name string) bool {
 	t.Helper()
 	invs := investigationTools(resp)
-	if !assert.NotEmpty(t, invs, "expected first tool %q, but no investigation tools were invoked", name) {
-		return false
-	}
+	require.NotEmpty(t, invs, "expected first tool %q, but no investigation tools were invoked", name)
 	return assert.Equal(t, name, toolName(invs[0]),
 		"expected first investigation tool %q; got tools=%v", name, investigationToolNames(resp))
 }

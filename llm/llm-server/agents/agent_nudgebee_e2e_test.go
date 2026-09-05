@@ -169,7 +169,12 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 
 			matchedExpectedCalls := make(map[int]int, len(tc.ExpectedToolCalls))
 			allowedToolNames := make(map[string]bool, len(tc.ExpectedToolCalls))
+			expectationSignatures := make(map[string]bool, len(tc.ExpectedToolCalls))
 			for _, expected := range tc.ExpectedToolCalls {
+				signature := strings.Join([]string{expected.Name, expected.ParameterFragment, expected.ResponseFragment}, "\x00")
+				require.False(t, expectationSignatures[signature],
+					"duplicate expectation for tool %q; express identical repeated calls with MaxOccurrences", expected.Name)
+				expectationSignatures[signature] = true
 				allowedToolNames[expected.Name] = true
 			}
 			lastExpectedIndex := -1
@@ -180,19 +185,14 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				assert.False(t, toolCall.IsError)
 				assert.NotEmpty(t, toolCall.Response)
 
-				for i, expected := range tc.ExpectedToolCalls {
-					if toolCall.ToolName != expected.Name {
-						continue
-					}
-					if expected.ParameterFragment != "" && !strings.Contains(toolCall.Parameters, expected.ParameterFragment) {
-						continue
-					}
-					if expected.ResponseFragment != "" && !strings.Contains(toolCall.Response, expected.ResponseFragment) {
-						continue
-					}
+				matches := matchingExpectedNudgebeeToolCalls(tc.ExpectedToolCalls, toolCall.ToolName, toolCall.Parameters, toolCall.Response)
+				require.LessOrEqual(t, len(matches), 1,
+					"tool call ambiguously matched multiple expectations; use non-overlapping parameter or response fragments: %v", matches)
+				if len(matches) == 1 {
+					i := matches[0]
 					matchedExpectedCalls[i]++
 					if tc.EnforceToolOrder && matchedExpectedCalls[i] == 1 {
-						assert.Greater(t, i, lastExpectedIndex, "expected dependent Nudgebee tools in declared order")
+						require.Greater(t, i, lastExpectedIndex, "expected dependent Nudgebee tools in declared order")
 						lastExpectedIndex = i
 					}
 				}
@@ -207,4 +207,39 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 			}
 		})
 	}
+}
+
+func matchingExpectedNudgebeeToolCalls(expectedCalls []expectedNudgebeeToolCall, name, parameters, response string) []int {
+	matches := make([]int, 0, 1)
+	for i, expected := range expectedCalls {
+		if name != expected.Name {
+			continue
+		}
+		if expected.ParameterFragment != "" && !strings.Contains(parameters, expected.ParameterFragment) {
+			continue
+		}
+		if expected.ResponseFragment != "" && !strings.Contains(response, expected.ResponseFragment) {
+			continue
+		}
+		matches = append(matches, i)
+	}
+	return matches
+}
+
+func TestMatchingExpectedNudgebeeToolCallsDetectsAmbiguity(t *testing.T) {
+	expected := []expectedNudgebeeToolCall{
+		{Name: "nudgebee_integration_get_status", ParameterFragment: `"name":"datadog"`},
+		{Name: "nudgebee_integration_get_status", ParameterFragment: `"name":"datadog-dev-alert"`},
+	}
+	assert.Equal(t, []int{0}, matchingExpectedNudgebeeToolCalls(expected,
+		"nudgebee_integration_get_status", `{"name":"datadog"}`, "response"))
+	assert.Equal(t, []int{1}, matchingExpectedNudgebeeToolCalls(expected,
+		"nudgebee_integration_get_status", `{"name":"datadog-dev-alert"}`, "response"))
+
+	overlapping := []expectedNudgebeeToolCall{
+		{Name: "nudgebee_integration_get_status"},
+		{Name: "nudgebee_integration_get_status", ParameterFragment: `"name":"datadog"`},
+	}
+	assert.Equal(t, []int{0, 1}, matchingExpectedNudgebeeToolCalls(overlapping,
+		"nudgebee_integration_get_status", `{"name":"datadog"}`, "response"))
 }

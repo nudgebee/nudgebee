@@ -86,7 +86,7 @@ func (NudgebeeAgentHealthGetTool) InferToolRequestType(ctx *security.RequestCont
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeAgentHealthGetTool) Description() string {
-	return "Get Nudgebee-recorded agent or collector health for one visible account: heartbeat, status, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
+	return "Get Nudgebee-recorded agent or collector health for one visible account: normalized deployment model and health verdicts, heartbeat or synchronization status, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
 }
 func (NudgebeeAgentHealthGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
@@ -110,12 +110,18 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		return triageErrorResponse(err), nil
 	}
 	var result struct {
-		Rows []map[string]any `json:"rows"`
+		DeploymentModel string           `json:"deployment_model"`
+		OverallHealth   string           `json:"overall_health"`
+		Rows            []map[string]any `json:"rows"`
 	}
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		return triageErrorResponse(errors.New("nudgebee: agent health returned an invalid response")), nil
 	}
+	normalizedRows := result.Rows[:0]
 	for _, row := range result.Rows {
+		if row == nil {
+			continue
+		}
 		features := map[string]any{}
 		connectionStatus, _ := row["connection_status"].(map[string]any)
 		if encoded, ok := row["connection_status"].(string); ok {
@@ -127,13 +133,173 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 			}
 		}
 		row["features"] = features
+		row["deployment_model"] = nudgebeeDeploymentModel(row["type"])
+		row["health_signal"] = map[string]any{
+			"kind":        nudgebeeHealthSignalKind(row["type"]),
+			"status":      nudgebeeHealthSignalStatus(row["type"], row["status"]),
+			"observed_at": nudgebeeHealthSignalObservedAt(row["type"], row["last_connected_at"]),
+		}
+		featureHealth := nudgebeeFeatureHealth(features)
+		row["feature_health"] = featureHealth
+		row["overall_health"] = nudgebeeRowHealth(row["type"], row["status"], featureHealth)
 		delete(row, "connection_status")
+		normalizedRows = append(normalizedRows, row)
 	}
+	result.Rows = normalizedRows
+	result.DeploymentModel, result.OverallHealth = nudgebeeAggregateHealth(result.Rows)
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return triageErrorResponse(errors.New("nudgebee: could not format agent health")), nil
 	}
 	return triageResponse(string(encoded)), nil
+}
+
+func nudgebeeDeploymentModel(value any) string {
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+	case "k8s", "kubernetes":
+		return "kubernetes_agent"
+	case "proxy", "vm", "vm_agent":
+		return "vm_proxy"
+	case "aws", "azure", "gcp", "eventbridge", "gcp_monitoring_webhook":
+		return "agentless_cloud"
+	default:
+		return "unknown"
+	}
+}
+
+func nudgebeeHealthSignalKind(value any) string {
+	switch nudgebeeDeploymentModel(value) {
+	case "kubernetes_agent", "vm_proxy":
+		return "heartbeat"
+	case "agentless_cloud":
+		return "synchronization"
+	default:
+		return "unknown"
+	}
+}
+
+func nudgebeeHealthSignalStatus(agentType, status any) string {
+	model := nudgebeeDeploymentModel(agentType)
+	if model == "agentless_cloud" || model == "unknown" {
+		return "unknown"
+	}
+	return nudgebeeStatusVerdict(status)
+}
+
+func nudgebeeHealthSignalObservedAt(agentType, lastConnectedAt any) any {
+	model := nudgebeeDeploymentModel(agentType)
+	if model == "agentless_cloud" || model == "unknown" {
+		return nil
+	}
+	return lastConnectedAt
+}
+
+func nudgebeeStatusVerdict(value any) string {
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+	case "connected", "healthy", "success", "succeeded":
+		return "healthy"
+	case "not_connected", "disconnected", "unhealthy", "failed", "failure":
+		return "disconnected"
+	case "stale":
+		return "stale"
+	default:
+		return "unknown"
+	}
+}
+
+func nudgebeeFeatureHealth(features map[string]any) map[string]string {
+	result := map[string]string{}
+	connections := map[string]string{
+		"relayConnection": "relay", "prometheusConnection": "prometheus",
+		"alertManagerConnection": "alertmanager", "logsConnection": "logs",
+		"nodeAgentConnection": "node_agents", "opencostConnection": "opencost",
+	}
+	for key, name := range connections {
+		value, present := features[key]
+		if !present {
+			result[name] = "unknown"
+			continue
+		}
+		connected, ok := value.(bool)
+		if !ok {
+			result[name] = "unknown"
+		} else if connected {
+			result[name] = "healthy"
+		} else {
+			result[name] = "disconnected"
+		}
+	}
+	if serverManaged, _ := features["opencostServerSide"].(bool); serverManaged {
+		result["opencost"] = "server_managed"
+	}
+	return result
+}
+
+func nudgebeeRowHealth(agentType, status any, features map[string]string) string {
+	model := nudgebeeDeploymentModel(agentType)
+	if model == "agentless_cloud" || model == "unknown" {
+		return "unknown"
+	}
+	heartbeat := nudgebeeStatusVerdict(status)
+	if heartbeat != "healthy" {
+		return heartbeat
+	}
+	if model != "kubernetes_agent" {
+		return "unknown"
+	}
+	hasUnknown := false
+	for _, verdict := range features {
+		if verdict == "disconnected" {
+			return "degraded"
+		}
+		if verdict == "unknown" {
+			hasUnknown = true
+		}
+	}
+	if hasUnknown {
+		return "unknown"
+	}
+	return "healthy"
+}
+
+func nudgebeeAggregateHealth(rows []map[string]any) (string, string) {
+	first := 0
+	for first < len(rows) && rows[first] == nil {
+		first++
+	}
+	if first == len(rows) {
+		return "unknown", "unknown"
+	}
+	model := fmt.Sprint(rows[first]["deployment_model"])
+	overall := "healthy"
+	for _, row := range rows[first:] {
+		if row == nil {
+			continue
+		}
+		if fmt.Sprint(row["deployment_model"]) != model {
+			model = "mixed"
+		}
+		candidate := fmt.Sprint(row["overall_health"])
+		if nudgebeeHealthSeverity(candidate) > nudgebeeHealthSeverity(overall) {
+			overall = candidate
+		}
+	}
+	return model, overall
+}
+
+func nudgebeeHealthSeverity(verdict string) int {
+	switch verdict {
+	case "disconnected":
+		return 4
+	case "degraded":
+		return 3
+	case "stale":
+		return 2
+	case "unknown":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func nudgebeeStringProperty(description string) core.ToolSchemaProperty {

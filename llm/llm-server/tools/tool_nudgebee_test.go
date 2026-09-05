@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -202,7 +203,7 @@ func TestNudgebeeAgentHealthGetSanitizesConnectionStatus(t *testing.T) {
 		assert.Equal(t, "agents_list_health", action)
 		where := input["where"].(map[string]any)
 		assert.Equal(t, "acc-1", where["cloud_account_id"].(map[string]any)["_eq"])
-		return http.StatusOK, `{"rows":[{"cloud_account_id":"acc-1","type":"k8s","status":"CONNECTED","connection_status":{"prometheusConnection":false,"logsConnection":true,"nodeAgentCount":3,"prometheusUrl":"http://secret.internal","logProviderConfig":{"token":"secret"},"schedule_jobs":[{"id":"internal"}]}}]}`
+		return http.StatusOK, `{"rows":[null,{"cloud_account_id":"acc-1","type":"k8s","status":"CONNECTED","connection_status":{"prometheusConnection":false,"logsConnection":true,"nodeAgentCount":3,"prometheusUrl":"http://secret.internal","logProviderConfig":{"token":"secret"},"schedule_jobs":[{"id":"internal"}]}}]}`
 	})
 	defer cleanup()
 
@@ -211,10 +212,81 @@ func TestNudgebeeAgentHealthGetSanitizesConnectionStatus(t *testing.T) {
 	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
 	assert.Contains(t, resp.Data, `"prometheusConnection":false`)
 	assert.Contains(t, resp.Data, `"nodeAgentCount":3`)
+	assert.Contains(t, resp.Data, `"deployment_model":"kubernetes_agent"`)
+	assert.Contains(t, resp.Data, `"overall_health":"degraded"`)
+	assert.Contains(t, resp.Data, `"prometheus":"disconnected"`)
+	assert.Contains(t, resp.Data, `"kind":"heartbeat"`)
 	assert.NotContains(t, resp.Data, "prometheusUrl")
 	assert.NotContains(t, resp.Data, "logProviderConfig")
 	assert.NotContains(t, resp.Data, "schedule_jobs")
 	assert.NotContains(t, resp.Data, "secret")
+	var normalized struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Data), &normalized))
+	require.Len(t, normalized.Rows, 1, "null rows must be removed before normalization")
+	require.NotNil(t, normalized.Rows[0])
+}
+
+func TestNudgebeeHealthNormalization(t *testing.T) {
+	healthyKubernetesFeatures := map[string]any{
+		"relayConnection": true, "prometheusConnection": true,
+		"alertManagerConnection": true, "logsConnection": true,
+		"nodeAgentConnection": true, "opencostConnection": true,
+	}
+	tests := []struct {
+		name      string
+		agentType any
+		status    any
+		features  map[string]any
+		model     string
+		signal    string
+		overall   string
+		opencost  string
+	}{
+		{name: "healthy kubernetes", agentType: "k8s", status: "CONNECTED", features: healthyKubernetesFeatures, model: "kubernetes_agent", signal: "heartbeat", overall: "healthy", opencost: "healthy"},
+		{name: "degraded kubernetes", agentType: "k8s", status: "CONNECTED", features: map[string]any{"logsConnection": false}, model: "kubernetes_agent", signal: "heartbeat", overall: "degraded", opencost: "unknown"},
+		{name: "incomplete kubernetes", agentType: "k8s", status: "CONNECTED", features: map[string]any{"prometheusConnection": true}, model: "kubernetes_agent", signal: "heartbeat", overall: "unknown", opencost: "unknown"},
+		{name: "server managed opencost", agentType: "k8s", status: "CONNECTED", features: map[string]any{"relayConnection": true, "prometheusConnection": true, "alertManagerConnection": true, "logsConnection": true, "nodeAgentConnection": true, "opencostConnection": false, "opencostServerSide": true}, model: "kubernetes_agent", signal: "heartbeat", overall: "healthy", opencost: "server_managed"},
+		{name: "disconnected proxy", agentType: "proxy", status: "NOT_CONNECTED", features: map[string]any{}, model: "vm_proxy", signal: "heartbeat", overall: "disconnected", opencost: "unknown"},
+		{name: "connected proxy lacks datasource health", agentType: "proxy", status: "CONNECTED", features: map[string]any{}, model: "vm_proxy", signal: "heartbeat", overall: "unknown", opencost: "unknown"},
+		{name: "agentless cloud lacks sync evidence", agentType: "AWS", status: "CONNECTED", features: map[string]any{}, model: "agentless_cloud", signal: "synchronization", overall: "unknown", opencost: "unknown"},
+		{name: "agentless disconnected record lacks sync evidence", agentType: "Azure", status: "NOT_CONNECTED", features: map[string]any{}, model: "agentless_cloud", signal: "synchronization", overall: "unknown", opencost: "unknown"},
+		{name: "agentless stale record lacks sync evidence", agentType: "GCP", status: "STALE", features: map[string]any{}, model: "agentless_cloud", signal: "synchronization", overall: "unknown", opencost: "unknown"},
+		{name: "unknown type and status", agentType: "other", status: nil, features: map[string]any{}, model: "unknown", signal: "unknown", overall: "unknown", opencost: "unknown"},
+		{name: "nil feature evidence", agentType: "k8s", status: "CONNECTED", features: nil, model: "kubernetes_agent", signal: "heartbeat", overall: "unknown", opencost: "unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			featureHealth := nudgebeeFeatureHealth(tc.features)
+			assert.Equal(t, tc.model, nudgebeeDeploymentModel(tc.agentType))
+			assert.Equal(t, tc.signal, nudgebeeHealthSignalKind(tc.agentType))
+			assert.Equal(t, tc.overall, nudgebeeRowHealth(tc.agentType, tc.status, featureHealth))
+			assert.Equal(t, tc.opencost, featureHealth["opencost"])
+		})
+	}
+	assert.Equal(t, "unknown", nudgebeeHealthSignalStatus("AWS", "CONNECTED"))
+	assert.Nil(t, nudgebeeHealthSignalObservedAt("AWS", "2026-09-06T00:00:00Z"))
+	for _, status := range []string{"CONNECTED", "NOT_CONNECTED"} {
+		assert.Equal(t, "unknown", nudgebeeHealthSignalStatus("future_agent", status))
+		assert.Nil(t, nudgebeeHealthSignalObservedAt("future_agent", "2026-09-06T00:00:00Z"))
+	}
+	model, overall := nudgebeeAggregateHealth(nil)
+	assert.Equal(t, "unknown", model)
+	assert.Equal(t, "unknown", overall)
+
+	rows := []map[string]any{
+		nil,
+		{"deployment_model": "kubernetes_agent", "overall_health": "degraded"},
+		nil,
+		{"deployment_model": "vm_proxy", "overall_health": "stale"},
+	}
+	model, overall = nudgebeeAggregateHealth(rows)
+	assert.Equal(t, "mixed", model)
+	assert.Equal(t, "degraded", overall, "aggregate severity must not depend on row order")
+	slices.Reverse(rows)
+	_, reversedOverall := nudgebeeAggregateHealth(rows)
+	assert.Equal(t, overall, reversedOverall)
 }
 
 func TestNudgebeeIntegrationDiagnoseTool(t *testing.T) {

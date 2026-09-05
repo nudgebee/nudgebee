@@ -92,7 +92,8 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 			"For mixed questions, call documentation and live-data tools as independent actions, then combine the evidence into one concise answer.",
 			"A recorded integration status means configured state, not runtime health. Never call an active integration healthy from status alone.",
 			"For Nudgebee agent, collector, heartbeat, or feature connectivity questions, call nudgebee_agent_health_get. Treat Kubernetes workload readiness as supporting runtime evidence, not proof of Nudgebee-recorded health.",
-			"Report agent status and last_connected_at separately from feature flags. Connected does not prove every feature is connected, and a missing health row means unknown rather than healthy.",
+			"Use deployment_model, overall_health, health_signal, and feature_health from nudgebee_agent_health_get as the normalized verdicts. Do not re-derive a conflicting verdict from the raw status or features fields.",
+			"Report health_signal status and observed_at separately from feature_health. A healthy heartbeat does not prove every feature is healthy, and a missing or incomplete health row means unknown rather than healthy. Agentless synchronization remains unknown unless the tool returns explicit synchronization evidence.",
 			"Interpret opencostConnection false with opencostServerSide true as server-managed OpenCost, not as a disconnected OpenCost agent.",
 			"When the user explicitly asks why an integration is not working or connected, first resolve the visible integration and its exact id with nudgebee_integration_get_status, then call nudgebee_integration_diagnose once. Do not diagnose multiple ambiguous matches.",
 			"If an integration status lookup returns multiple matches, stop after that lookup: do not search documentation, do not diagnose, and do not infer that a disabled match is the one the user meant. List the matching names, types, and recorded statuses, then ask the user to choose the exact integration.",
@@ -135,7 +136,7 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 				"Actively investigate one exact integration id after an explicit not-working/not-connected request and a successful status lookup.",
 			},
 			tools.ToolNudgebeeAgentHealthGet: {
-				"Nudgebee-recorded agent or collector heartbeat and sanitized feature connectivity for one account.",
+				"Nudgebee-recorded normalized deployment model, overall health, heartbeat or synchronization signal, and sanitized feature connectivity for one account.",
 			},
 		},
 		OutputFormat: "Lead with the direct answer. Clearly distinguish facts from documentation from current tenant data. Keep lists concise and state when results are limited by the requesting user's permissions.",
