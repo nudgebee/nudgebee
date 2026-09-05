@@ -1863,6 +1863,34 @@ func WithoutWorkflowRefire() InsertOption {
 	return func(c *insertConfig) { c.skipWorkflowRefire = true }
 }
 
+// legacyEventSources maps event source values that were renamed in the
+// event_source lookup table onto their current canonical value.
+//
+// events.source is a FK onto event_source.value (V175), so an insert carrying a
+// retired value fails outright rather than degrading. Producers are not all
+// under our rollout control — an un-rolled pod mid-deploy, or an on-prem
+// runbook-server on an older tag, keeps emitting the old string long after the
+// migration that retired it has run. That is exactly how V706's rename of
+// 'workflow' -> 'automation' took event ingestion down (inc-cbb58afb8f): the
+// migration Job deleted the lookup row while producers still sent 'workflow'.
+//
+// Normalizing at ingestion makes the rename survivable in both directions: old
+// producers keep working against the new schema, and the retired value never
+// has to be kept alive in the lookup table.
+var legacyEventSources = map[string]string{
+	"workflow": "automation",
+}
+
+// normalizeEventSource maps a retired event source onto its canonical value.
+// Unknown values pass through untouched — this is a rename shim, not an
+// allowlist; the FK remains the authority on what is valid.
+func normalizeEventSource(source string) string {
+	if canonical, ok := legacyEventSources[source]; ok {
+		return canonical
+	}
+	return source
+}
+
 func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 	var cfg insertConfig
 	for _, o := range opts {
@@ -1883,6 +1911,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		return "", fmt.Errorf("event: account_id is not a valid UUID: %s", event.AccountId)
 	}
 
+	event.Source = normalizeEventSource(event.Source)
 	event.SubjectType = strings.ToLower(event.SubjectType)
 	event.SubjectName = truncateStringToMaxBytes(event.SubjectName, maxSubjectNameBytes)
 
@@ -2091,6 +2120,10 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	start := time.Now().UTC()
 	tenantId := sc.GetSecurityContext().GetTenantId()
 	accountId := webhookEvent.AccountId
+	// Normalize here as well as in InsertEvent: everything below this line
+	// (structured logs, processing metrics, event-rule matching) reads the
+	// source, and must see the canonical value rather than a retired alias.
+	webhookEvent.Source = normalizeEventSource(webhookEvent.Source)
 	eventSource := webhookEvent.Source
 	aggregationKey := webhookEvent.AggregationKey
 
