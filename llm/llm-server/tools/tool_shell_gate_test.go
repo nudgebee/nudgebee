@@ -320,6 +320,13 @@ func TestShellTool_InferToolRequestType_AzureAndGcpMutationsFailClosed(t *testin
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			if strings.Contains(name, "compound") {
+				got, err := tool.InferToolRequestType(nil, "shell_execute", tc.input)
+				require.NoError(t, err)
+				assert.Equal(t, tc.expected, got,
+					"the wrapped cloud classifier's deterministic mutation should avoid prompt classification")
+				return
+			}
 			got, err := tool.InferToolRequestType(nil, "shell_execute", tc.input)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, got)
