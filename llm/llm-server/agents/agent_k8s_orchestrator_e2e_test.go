@@ -1531,3 +1531,27 @@ func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
 	}
 	runTestMinimal(t, agent, tc)
 }
+
+func TestK8sAgent_Grounding(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	originalGrounding := config.Config.OrchestratorGroundingEnabled
+	originalPremise := config.Config.PremiseVerificationEnabled
+	t.Cleanup(func() {
+		config.Config.OrchestratorGroundingEnabled = originalGrounding
+		config.Config.PremiseVerificationEnabled = originalPremise
+	})
+	config.Config.OrchestratorGroundingEnabled = true
+	config.Config.PremiseVerificationEnabled = true
+
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	tc := k8sTestCase{
+		Name:              "grounding_test_7",
+		SessionId:         "ut-grounding-7",
+		AccountId:         os.Getenv("TEST_ACCOUNT"),
+		UserId:            os.Getenv("TEST_USER"),
+		Query:             "show me current CPU of app-dev",
+		ApprovalResponses: []string{},
+	}
+	runTestMinimal(t, agent, tc)
+}

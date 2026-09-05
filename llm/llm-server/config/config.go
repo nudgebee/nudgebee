@@ -629,16 +629,15 @@ type appConfig struct {
 	// Unknown/empty falls back to "lean". The AWS/GCP/Azure orchestrators are
 	// lean-only after the collapse and no longer read a per-cloud mode setting.
 	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
-	// K8sGroundingEnabled appends a "ground before you fan out" discipline to the
-	// lean k8s orchestrator prompt: for a live symptom, probe with the cheap
-	// authoritative kubectl tools it already holds (and, for a hostname/URL symptom,
-	// resolve what serves that host) BEFORE delegating to heavy metrics/logs
-	// sub-agents. Dark/default-off flag for A/B; scopes but never replaces the deep
-	// investigation. See agents/agent_k8s_orchestrator.go k8sGroundingIfEnabled.
-	K8sGroundingEnabled bool `mapstructure:"llm_k8s_grounding_enabled"`
+	// OrchestratorGroundingEnabled adds a soft grounding discipline to top-level
+	// orchestrators: establish the subject/scope/symptom from existing context,
+	// clarify genuinely ambiguous requests, prefer bounded discovery, and treat an
+	// asserted symptom as a claim rather than a fact. Each orchestrator keeps its
+	// own provider-specific evidence recipe. Dark/default-off global deploy flag.
+	OrchestratorGroundingEnabled bool `mapstructure:"llm_orchestrator_grounding_enabled"`
 	// PremiseVerificationEnabled gates the "confirm the symptom before diagnosing it"
-	// discipline: a proactive nudge on the lean k8s orchestrator prompt plus an answer-
-	// critiquer gate. When on, the agent must treat a user-asserted symptom ("X is down",
+	// discipline in the answer critiquer. When on, the top-level investigation must
+	// treat a user-asserted symptom ("X is down",
 	// "there's a surge") as a claim to VERIFY; if behavioural evidence disproves it, the
 	// honest "not occurring" answer is accepted (not forced into a root cause), and if the
 	// confirming tool FAILS/returns nothing the agent must say "cannot confirm" rather than
@@ -1391,7 +1390,7 @@ func init() {
 	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are
 	// lean-only after the #32503 Phase 1 collapse — no per-cloud mode setting.
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
-	viper.SetDefault("llm_k8s_grounding_enabled", false)
+	viper.SetDefault("llm_orchestrator_grounding_enabled", false)
 	viper.SetDefault("llm_premise_verification_enabled", false)
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "")   // e.g. http://localhost:8080 for local dev

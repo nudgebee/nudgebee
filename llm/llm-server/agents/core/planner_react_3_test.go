@@ -25,12 +25,17 @@ import (
 // template variable that was never declared (both would fail Format).
 func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool) string {
 	t.Helper()
-	return renderReact3BaseWithRoles(t, notebookEnabled, hypothesisModeEnabled, false, false)
+	return renderReact3BaseWithRolesAndGrounding(t, notebookEnabled, hypothesisModeEnabled, false, false, false)
 }
 
 // renderReact3BaseWithRoles is renderReact3Base with the orchestrator/executor
 // role-overlay gates exposed, mirroring resolveOrchestratorRoleModes outputs.
 func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode bool) string {
+	t.Helper()
+	return renderReact3BaseWithRolesAndGrounding(t, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode, false)
+}
+
+func renderReact3BaseWithRolesAndGrounding(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode, groundingEnabled bool) string {
 	t.Helper()
 	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
@@ -38,7 +43,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 	vars := []string{
 		"tool_names", "tool_descriptions",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
-		"is_top_level", "orchestrator_mode", "executor_mode", "is_investigation",
+		"is_top_level", "orchestrator_mode", "executor_mode", "grounding_enabled", "is_investigation",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
 		"memory_consumption_rules", "async_completion_rules",
@@ -53,6 +58,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 		"is_top_level":                 true,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"grounding_enabled":            groundingEnabled,
 		"is_investigation":             true, // keep the full (investigation) prompt for these role/hypothesis fences
 		"conversation_context_enabled": false,
 		"context_management_rules":     "",
@@ -107,6 +113,50 @@ func TestReAct3CustomAgentQueryOmitsInvestigationPolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, out, "INVESTIGATION PATTERN")
 	assert.NotContains(t, out, "plausible failure domains")
+}
+
+func TestReAct3GroundingPromptFence(t *testing.T) {
+	const groundingHeader = "GROUND THE REQUEST BEFORE COMMITTING TO AN INVESTIGATION PATH"
+	const softOrdering = "Prefer an early, inexpensive authoritative check"
+
+	t.Run("enabled: shared soft contract renders", func(t *testing.T) {
+		out := renderReact3BaseWithRolesAndGrounding(t, false, false, false, false, true)
+		assert.Contains(t, out, groundingHeader)
+		assert.Contains(t, out, softOrdering)
+		assert.Contains(t, out, "ask one focused clarification")
+	})
+
+	t.Run("disabled: contract is absent", func(t *testing.T) {
+		out := renderReact3BaseWithRolesAndGrounding(t, false, false, false, false, false)
+		assert.NotContains(t, out, groundingHeader)
+		assert.NotContains(t, out, softOrdering)
+	})
+}
+
+func TestResolveOrchestratorGroundingScope(t *testing.T) {
+	originalGrounding := config.Config.OrchestratorGroundingEnabled
+	originalPremise := config.Config.PremiseVerificationEnabled
+	t.Cleanup(func() {
+		config.Config.OrchestratorGroundingEnabled = originalGrounding
+		config.Config.PremiseVerificationEnabled = originalPremise
+	})
+
+	orchestrator := &MockAgent{}
+	regularReAct := notebookOptOutAgent{}
+	top := NBAgentRequest{AgentId: "top", Query: "why is the api failing?"}
+	child := NBAgentRequest{AgentId: "child", ParentAgentId: "top", Query: top.Query}
+
+	config.Config.OrchestratorGroundingEnabled = true
+	assert.True(t, resolveOrchestratorGroundingEnabled(top, orchestrator))
+	assert.False(t, resolveOrchestratorGroundingEnabled(child, orchestrator))
+	assert.False(t, resolveOrchestratorGroundingEnabled(top, regularReAct))
+
+	config.Config.PremiseVerificationEnabled = true
+	assert.True(t, resolvePremiseVerificationEnabled(top, orchestrator))
+	assert.False(t, resolvePremiseVerificationEnabled(child, orchestrator))
+	assert.False(t, resolvePremiseVerificationEnabled(top, regularReAct))
+	top.Query = "list the pods"
+	assert.False(t, resolvePremiseVerificationEnabled(top, orchestrator))
 }
 
 // TestReAct3HypothesisModeFence verifies the hypothesis-driven investigation
@@ -551,9 +601,9 @@ func TestReAct3CritiquerPremiseGateFence(t *testing.T) {
 		assert.NotContains(t, out, unconfirmable)
 	})
 
-	t.Run("premise_verification is question-type agnostic (also renders for plain query)", func(t *testing.T) {
+	t.Run("render helper follows the caller-provided gate", func(t *testing.T) {
 		out := renderReactCritiquer(t, "query", false, false, true)
-		assert.Contains(t, out, gateHeader, "gate is not gated on question_type — a false premise is just as wrong in a query")
+		assert.Contains(t, out, gateHeader)
 	})
 }
 

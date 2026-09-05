@@ -2264,7 +2264,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 		"tools_invoked":                extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled":      o.hypothesisModeEnabled,
 		"sdg_grounding_enabled":        config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
-		"premise_verification_enabled": config.Config.PremiseVerificationEnabled,
+		"premise_verification_enabled": resolvePremiseVerificationEnabled(o.request, o.nbAgent),
 	})
 	if promptErr != nil {
 		logger.Error("reactagent3: failed to format critique prompt, accepting answer", "error", promptErr)
@@ -2395,6 +2395,30 @@ func resolveHypothesisModeEnabled(request NBAgentRequest, agent NBAgent) bool {
 	return ResolveAgentNotebookEnabled(agent) && isTopLevel
 }
 
+// resolveOrchestratorGroundingEnabled independently fences the shared grounding
+// contract to top-level agents that declare orchestrating intent. It deliberately
+// does not reuse orchestrator_mode: that overlay has its own rollout flag, while
+// grounding must be controlled solely by llm_orchestrator_grounding_enabled.
+func resolveOrchestratorGroundingEnabled(request NBAgentRequest, agent NBAgent) bool {
+	return config.Config.OrchestratorGroundingEnabled && resolveOrchestratorGroundingScope(request, agent)
+}
+
+// resolvePremiseVerificationEnabled keeps the strict critiquer gate narrower
+// than the soft grounding contract: only top-level orchestrator investigations
+// get it. Plain queries and child specialists remain free of RCA enforcement.
+func resolvePremiseVerificationEnabled(request NBAgentRequest, agent NBAgent) bool {
+	return config.Config.PremiseVerificationEnabled &&
+		resolveOrchestratorGroundingScope(request, agent) &&
+		IsInvestigationRequestTask(request.Query)
+}
+
+func resolveOrchestratorGroundingScope(request NBAgentRequest, agent NBAgent) bool {
+	if agent == nil || agent.GetPlannerType() != AgentPlannerTypeOrchestrating {
+		return false
+	}
+	return request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+}
+
 // resolveOrchestratorRoleModes returns the shared role prompt-overlay modes for
 // ReAct3 and ReAct4. The planners serve two opposite jobs: the
 // top-level orchestrator, which owns the completeness of the final answer, and
@@ -2430,6 +2454,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	notebookEnabled := ResolveAgentNotebookEnabled(agent)
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
 	orchestratorMode, executorMode := resolveOrchestratorRoleModes(request)
+	groundingEnabled := resolveOrchestratorGroundingEnabled(request, agent)
 
 	// Lean prompt variant: on a top-level plain-retrieval turn (stamped by
 	// applyPromptVariant), drop the heavy investigation
@@ -2472,6 +2497,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"is_top_level",
 				"orchestrator_mode",
 				"executor_mode",
+				"grounding_enabled",
 				"is_investigation",
 				"conversation_context_enabled",
 				"context_management_rules",
@@ -2658,6 +2684,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"is_top_level":                 isTopLevel,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"grounding_enabled":            groundingEnabled,
 		"is_investigation":             isInvestigation,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
 		"context_management_rules":     contextContinuity,

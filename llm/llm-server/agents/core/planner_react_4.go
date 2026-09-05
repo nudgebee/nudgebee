@@ -313,12 +313,13 @@ func renderReact4Base(ctx *security.RequestContext, request NBAgentRequest, agen
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	vars := []string{
 		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
-		"delegate_agent_enabled", "is_investigation",
+		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
+		"grounding_enabled":       resolveOrchestratorGroundingEnabled(request, agent),
 		"notebook_enabled":        notebookEnabled,
 		"hypothesis_mode_enabled": hypothesisModeEnabled,
 		"is_investigation":        isInvestigation,
@@ -1671,7 +1672,7 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 		"tools_invoked":                extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled":      resolveHypothesisModeEnabled(o.request, o.nbAgent),
 		"sdg_grounding_enabled":        config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
-		"premise_verification_enabled": config.Config.PremiseVerificationEnabled,
+		"premise_verification_enabled": resolvePremiseVerificationEnabled(o.request, o.nbAgent),
 	})
 	if promptErr != nil {
 		logger.Error("react4: failed to format critique prompt, accepting answer", "error", promptErr)

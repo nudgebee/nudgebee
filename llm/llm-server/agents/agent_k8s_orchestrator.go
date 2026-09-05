@@ -127,11 +127,8 @@ func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 	if nudge := memoryNudgeIfEnabled(); nudge != "" {
 		promptText += "\n\n" + nudge
 	}
-	if grounding := k8sGroundingIfEnabled(); grounding != "" {
+	if grounding := k8sGroundingIfEnabled(query); grounding != "" {
 		promptText += "\n\n" + grounding
-	}
-	if premise := k8sPremiseIfEnabled(); premise != "" {
-		promptText += "\n\n" + premise
 	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }
@@ -274,30 +271,15 @@ func memoryNudgeIfEnabled() string {
 // say so honestly when nothing in-cluster serves it (rather than diagnosing a
 // similarly-named workload — the observed "external marketing host → similarly-named
 // in-cluster dev host" subject swap). It scopes the investigation, never replaces it. Appended (not baked into k8s_lean.yaml)
-// so it stays behind K8sGroundingEnabled for a clean A/B and cannot regress the shared
+// so it stays behind OrchestratorGroundingEnabled for a clean A/B and cannot regress the shared
 // prompt when the flag is off.
 const k8sGroundingNudge = "**Ground before scoped investigation when the target is unknown.** For a live symptom — a CPU/memory surge, restarts, pending pods, a workload erroring right now — use the cheap authoritative tools you already hold: `kubectl top`/`get`/`describe` on the named workload and its recent `events`, issued together in one parallel batch. If the workload, namespace, symptom, and time window are already known, issue independent historical evidence calls (`metrics`, `logs`, or `traces`) alongside that live batch instead of waiting. If their inputs depend on what the live snapshot reveals, observe it first and then delegate with the resolved scope. When the symptom is a hostname or URL (e.g. an uptime/downtime alert), first resolve WHAT SERVES IT — `kubectl get ingress -A` (or the Service) for that host — before assuming a workload; if no in-cluster ingress serves that host, say so plainly (\"not served by this cluster\") rather than diagnosing a similarly-named workload. Grounding SCOPES the investigation; it never replaces it — a healthy live snapshot doesn't close a \"why did it happen\" question, so carry it through to the mechanism."
 
 // k8sGroundingIfEnabled returns the grounding discipline when the flag is on, else "".
-func k8sGroundingIfEnabled() string {
-	if config.Config.K8sGroundingEnabled {
+func k8sGroundingIfEnabled(query core.NBAgentRequest) string {
+	isTopLevel := query.ParentAgentId == "" || query.ParentAgentId == query.AgentId
+	if config.Config.OrchestratorGroundingEnabled && isTopLevel {
 		return k8sGroundingNudge
-	}
-	return ""
-}
-
-// k8sPremiseNudge is the proactive half of premise verification (the answer critiquer
-// carries the hard guarantee). A user's wording often ASSERTS a symptom ("X is down",
-// "there's a surge") that isn't actually happening, or the confirming tool fails and the
-// agent fabricates a confident root cause anyway. This nudge makes the agent treat the
-// symptom as a claim to verify first, accept an honest "not occurring" / "cannot confirm"
-// outcome, and never read a tool failure or empty result as proof the symptom is real.
-const k8sPremiseNudge = "**Confirm the symptom before you diagnose it.** The user's wording often ASSERTS a problem (\"X is down\", \"there's a surge on Y\") — treat that as a claim to verify FIRST, not a fact. Your cheap probe also answers \"is this actually happening?\": if the endpoint they say is unreachable returns a success, or the metric they say is surging reads normal, say so plainly — \"the reported <symptom> is not occurring\" with the evidence — and do NOT manufacture a root cause for a problem you didn't confirm (you may note incidental findings and offer to look into them). If the first tool that would confirm it FAILS or returns nothing (connection refused, relay unavailable, empty), try an available independent confirmation path. If no alternative can establish the premise, say \"cannot confirm <symptom> — <evidence source> unavailable\" and stop, or label any suspected cause as UNVERIFIED. A failed or empty measurement is never evidence the symptom is real."
-
-// k8sPremiseIfEnabled returns the premise-verification nudge when the flag is on, else "".
-func k8sPremiseIfEnabled() string {
-	if config.Config.PremiseVerificationEnabled {
-		return k8sPremiseNudge
 	}
 	return ""
 }
