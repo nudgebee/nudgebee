@@ -786,16 +786,17 @@ type appConfig struct {
 	// PR deletes the tool + all injection sites entirely.
 	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
 	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
-	// LlmServerReact3QueryModelDownshiftEnabled downshifts the MODEL TIER for a
-	// TOP-LEVEL plain-retrieval turn ("list pods") on a Reasoning-tier orchestrator
-	// from Reasoning (pro) to Summary (a cheaper/faster model): a query doesn't need
+	// LlmServerOrchestratorQueryModelDownshiftEnabled applies in the shared executor before
+	// ReAct3/ReAct4 engine selection. It downshifts the MODEL TIER for a TOP-LEVEL
+	// plain-retrieval turn ("list pods") on a Reasoning-tier orchestrator from
+	// Reasoning (pro) to Summary (a cheaper/faster model): a query doesn't need
 	// deep causal reasoning, only tool orchestration + formatting. It keys off the
 	// SAME signal as the lean-prompt variant (promptVariantForRequest → non-investigation
 	// top-level), so tier, prompt variant, and cache slot stay consistent — and the
 	// LLM cache already keys on model, so it is cache-correct. Investigations and
 	// sub-agents are unaffected. Off (default) = no-op, tier byte-identical to today.
 	// Ship dark; enable after cheap-vs-pro validation on query answers.
-	LlmServerReact3QueryModelDownshiftEnabled bool `mapstructure:"llm_server_react3_query_model_downshift_enabled"`
+	LlmServerOrchestratorQueryModelDownshiftEnabled bool `mapstructure:"llm_server_orchestrator_query_model_downshift_enabled"`
 	// LlmServerOrchestratorThinkingLevel is the thinking level applied to ReAct3
 	// and ReAct4 direction-setting calls (first plan call of a turn and
 	// post-critique refinement passes). Elevate-only: thinking level is
@@ -1467,7 +1468,7 @@ func init() {
 	viper.SetDefault("llm_server_sdg_grounding_contract_enabled", false)
 	// ReAct4 is the default planner; an explicit false override remains the rollback path.
 	viper.SetDefault("llm_server_react4_enabled", true)
-	viper.SetDefault("llm_server_react3_query_model_downshift_enabled", false)
+	viper.SetDefault("llm_server_orchestrator_query_model_downshift_enabled", false)
 	viper.SetDefault("llm_server_orchestrator_thinking_level", "")
 	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.

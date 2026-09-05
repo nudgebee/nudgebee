@@ -156,9 +156,11 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 // never downshifted: the flag optimizes the default resolution path only, and a
 // user-chosen provider/model, per-tier pick, or config pin must resolve exactly as
 // chosen — same principle as tierPinFor (llm_config.go).
+// This shared executor policy runs before engine selection, so ReAct3 and ReAct4
+// resolve their models (and ReAct4 native-tool capability) using the same tier.
 func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) ModelTier {
 	base := agentModelCategory(agent)
-	if config.Config.LlmServerReact3QueryModelDownshiftEnabled &&
+	if config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled &&
 		base == ModelTierReasoning &&
 		isTopLevelPlainRetrievalTurn(request) &&
 		!hasExplicitModelConfig(ctx) {

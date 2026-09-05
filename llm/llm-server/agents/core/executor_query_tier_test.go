@@ -8,13 +8,55 @@ import (
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setDownshift toggles the query model-downshift flag and returns a restore func.
 func setDownshift(v bool) func() {
-	prev := config.Config.LlmServerReact3QueryModelDownshiftEnabled
-	config.Config.LlmServerReact3QueryModelDownshiftEnabled = v
-	return func() { config.Config.LlmServerReact3QueryModelDownshiftEnabled = prev }
+	prev := config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled
+	config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled = v
+	return func() { config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled = prev }
+}
+
+// Exercise the shared executor's tier stamp, model resolution, and engine
+// selection together: either engine must use the same downshift policy.
+func TestQueryModelDownshift_BothEngines(t *testing.T) {
+	pinGlobalModel(t, "googleai", "gemini-3-flash-preview")
+	setEnvKey(t, "llm_tier_provider_reasoning", "googleai")
+	setEnvKey(t, "llm_tier_model_reasoning", "gemini-3.1-pro-preview")
+	setEnvKey(t, "llm_tier_provider_summary", "googleai")
+	setEnvKey(t, "llm_tier_model_summary", "gemini-3-flash-preview")
+	previous := config.Config.LlmServerReAct4Enabled
+	t.Cleanup(func() { config.Config.LlmServerReAct4Enabled = previous })
+	agent := catTestCategorisedAgent{category: ModelTierReasoning}
+	for _, engine := range []struct {
+		name   string
+		native bool
+	}{{"react3", false}, {"react4", true}} {
+		t.Run(engine.name, func(t *testing.T) {
+			config.Config.LlmServerReAct4Enabled = engine.native
+			for _, tc := range []struct {
+				name    string
+				enabled bool
+				request NBAgentRequest
+				want    ModelTier
+				model   string
+			}{
+				{"disabled query", false, NBAgentRequest{OriginalQuery: "list pods"}, ModelTierReasoning, "gemini-3.1-pro-preview"},
+				{"enabled query", true, NBAgentRequest{OriginalQuery: "list pods"}, ModelTierSummary, "gemini-3-flash-preview"},
+				{"investigation", true, NBAgentRequest{OriginalQuery: "why is the api pod crashlooping"}, ModelTierReasoning, "gemini-3.1-pro-preview"},
+				{"sub-agent", true, NBAgentRequest{OriginalQuery: "list pods", AgentId: "child", ParentAgentId: "parent"}, ModelTierReasoning, "gemini-3.1-pro-preview"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					defer setDownshift(tc.enabled)()
+					ctx := applyAgentModelTier(security.NewRequestContextForSuperAdmin(), agent, tc.request)
+					require.Equal(t, tc.want, modelTierFromContext(ctx))
+					require.Equal(t, tc.model, GetLLMModelName(ctx, "", "googleai", agent.GetName(), true, ""))
+					require.Equal(t, engine.native, useReAct4Engine(ctx, agent, tc.request))
+				})
+			}
+		})
+	}
 }
 
 // TestIsTopLevelPlainRetrievalTurn covers the single classification that drives both

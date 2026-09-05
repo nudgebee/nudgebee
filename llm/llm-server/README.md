@@ -137,6 +137,7 @@ Key configuration areas to pay attention to:
     *   `CLOUD_COLLECTOR_SERVER_URL`
 *   **Agent & Tool Behavior:**
     *   `LLM_SERVER_AGENT_REACT_MAX_ITERATIONS`, `LLM_SERVER_AGENT_MAX_LOGLINES`, etc.
+    *   `LLM_SERVER_ORCHESTRATOR_QUERY_MODEL_DOWNSHIFT_ENABLED` (default `false`): shared ReAct3/ReAct4 policy that switches top-level plain-retrieval turns on Reasoning-tier agents to the Summary tier. Investigations, sub-agent turns, and explicit model configurations retain their usual tier. Replaces `LLM_SERVER_REACT3_QUERY_MODEL_DOWNSHIFT_ENABLED`; migrate any explicit override to the new name (the old name is no longer read).
 
 Create a `.env` file with your specific settings:
 ```env
