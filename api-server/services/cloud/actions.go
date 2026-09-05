@@ -1094,24 +1094,40 @@ type cloudServiceMapActionParams struct {
 	ResourceId  string `json:"resource_id" validate:"required"`
 }
 
+// CanAutoExecute always returns false: the cloud provider's service map is no
+// longer attached to events. The knowledge graph is the single source of
+// dependency topology, and this map does not add to it — it contradicts it.
+//
+// What it returns for an EC2 instance, as "Downstreams": the AMI it booted
+// from, its VPC, its subnet, its security group, its instance profile and its
+// EBS volume. Those are attributes of the resource, not things it depends on —
+// nothing downstream of an instance is its own AMI. The payload carries no
+// relationship type, only Upstreams/Downstreams, so containment cannot be
+// filtered out of it.
+//
+// Beside the knowledge-graph card it is worse than redundant: it is labelled
+// like topology, so an operator reads six downstream dependencies where there
+// are none, while the real ones — from VPC flow logs, eBPF or traces — sit in
+// the card below.
+//
+// An earlier attempt suppressed only maps where nothing had any upstream or
+// downstream (see Execute). That tested whether links were present, not whether
+// they meant anything, so a VPC/subnet/AMI map passed it and still rendered.
+//
+// Refused for every provider, not just AWS: Azure returns the same shape, and a
+// per-provider carve-out would leave the contradiction wherever it was not
+// applied. (GCP was already skipped here — unimplemented in cloud-collector.)
+//
+// Declining at the gate rather than in Execute means existing deployments,
+// whose agent_playbook_action rows the template upsert never deletes, stop
+// scheduling the action instead of running a provider query per cloud event
+// and discarding the result.
+//
+// Execute is left intact, so a playbook naming this action explicitly still
+// gets an answer. The direct API path never reached it anyway —
+// handleCloudServiceMap calls cloud.QueryServiceMap itself — so the RPC is
+// unaffected.
 func (a *cloudServiceMapAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
-	labels := ctx.GetEvent().Labels
-
-	// AWS
-	if labels["aws_region"] != "" && labels["aws_event_instance"] != "" && labels["aws_service_name"] != "" {
-		return true
-	}
-
-	// GCP — service map is not implemented in cloud-collector (returns ErrUnsupported),
-	// so skip auto-execution to avoid producing an empty card.
-
-	// Azure Monitor Alert (polling-based or webhook)
-	if isAzureAlertSource(ctx.GetEvent().Source) && labels["azure_alert_target_resource"] != "" {
-		if isAzureResourceID(labels["azure_alert_target_resource"]) {
-			return true
-		}
-	}
-
 	return false
 }
 
