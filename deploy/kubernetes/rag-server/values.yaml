@@ -136,6 +136,67 @@ env:
   # inference: 28 arenas held ~1.8GB of freed activations and the pod OOMKilled.
   MALLOC_ARENA_MAX: 2
 
+  # Reranker. Measured against 76 real user questions on dev, with every
+  # returned document graded by whether it actually answers the question:
+  #
+  #   ms-marco-MiniLM-L-6-v2 vs the previous BAAI/bge-reranker-v2-m3
+  #     4.8x faster, same answers, 1.1GB less resident memory.
+  #   max_length 128 vs 256
+  #     reranking 186ms -> 92ms, precision 35% -> 36%. Reading more of each
+  #     document scored WORSE, not better: this model was trained on short
+  #     MS MARCO passages, and the ingest pipeline already chunks documents to
+  #     roughly that size, so a wider window mostly reads past the chunk. 512
+  #     was measured too - 4.6x the CPU of 128 for fewer good documents.
+  #   threshold 0.85
+  #     unchanged. Swept 0.01/0.05/0.30/0.85 against the live server: 0.85
+  #     answers 7 of 15 answerable questions with 4 of 61 unanswerable ones
+  #     getting noise; 0.05 answers 13 but noises 19. 0.85 is the better trade
+  #     unless a missed answer is judged >2x worse than a misleading one.
+  RAG_RERANKER_MODEL: cross-encoder/ms-marco-MiniLM-L-6-v2
+  RAG_RERANKER_THRESHOLD: '0.85'
+  RAG_RERANKER_MAX_LENGTH: 128
+  RAG_RERANKER_MAX_DOC_CHARS: 500
+
+# ---------------------------------------------------------------------------
+# Running embeddings on the pod instead of calling a provider API
+#
+# Deliberately NOT enabled by default. It is a one-way data migration, not a
+# config change: vectors are only comparable within one model, so switching
+# rebuilds every collection and cannot be rolled back by flipping the flag.
+#
+# What it buys (measured on dev): query embedding 13ms instead of a network
+# round trip, no per-API-key rate limit (retrieval flatlined at ~15 searches/sec
+# on the API), and 8x smaller vectors (3072 -> 384 dimensions), which matters
+# because Qdrant runs on 500m CPU / 1Gi. Retrieval quality measured equivalent:
+# 82% vs 84% recall@10 on the knowledge base, and no regression on prometheus
+# or the memory collections. kubectl was the one weak spot: 87% vs 96%.
+#
+# To enable, per environment and in this order:
+#   1. EMBEDDINGS_PROVIDER: ondevice
+#      EMBEDDINGS_MODEL_NAME: BAAI/bge-small-en-v1.5
+#   2. RAG_EMBEDDING_MIGRATION_ENABLED: 'true'
+#      On the next start the service registers every collection whose recorded
+#      embedding model differs from the configured one, then rebuilds them on a
+#      background thread -- startup is not held up, and a collection still in
+#      the queue keeps behaving as it did until its turn comes. Each rebuild
+#      stages a full copy before dropping the original, so an interrupted run
+#      resumes rather than losing data, and each account is rebuilt with that
+#      account's own configured model.
+#
+#      Collections record the model that produced their vectors, because
+#      dimension alone cannot tell you whether they match: bge-small-en-v1.5
+#      and all-MiniLM-L6-v2 are both 384. Collections created before that stamp
+#      existed are treated as current when their dimension already matches.
+#
+#      Budget roughly an hour per 35k vectors. Watch for
+#      "embedding_migration: done" in the log and turn the flag back off once
+#      it reports registered=0.
+#
+# Do NOT set EMBEDDINGS_PROVIDER without the migration flag: queries land in
+# the new space while the stored vectors are still in the old one, and every
+# search returns nothing.
+# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # CPU requirements for the knowledge-base reranker
 #

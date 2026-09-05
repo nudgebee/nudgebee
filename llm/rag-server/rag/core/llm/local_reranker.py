@@ -128,7 +128,16 @@ def _load_model():
     from sentence_transformers import CrossEncoder
 
     torch.set_num_threads(Config.ondevice_num_threads)
-    torch.set_num_interop_threads(Config.ondevice_interop_threads)
+    try:
+        torch.set_num_interop_threads(Config.ondevice_interop_threads)
+    except RuntimeError:
+        # Torch only accepts this before any parallel work has run. With
+        # EMBEDDINGS_PROVIDER=ondevice the embedding model has always run
+        # first, so this raised and aborted the reranker load - and the
+        # caller turns a failed rerank into an empty result, so every search
+        # silently returned zero documents. The interop setting is a tuning
+        # preference; losing it is not a reason to lose reranking.
+        logger.debug("Interop thread count already fixed by earlier work; keeping the existing value")
     dtype = _resolve_dtype(Config.reranker_dtype, torch)
     if dtype is torch.bfloat16:
         fast, named = _bf16_is_fast(torch), _bf16_acceleration(torch)
