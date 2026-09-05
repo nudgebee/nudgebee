@@ -158,7 +158,11 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
 
   useEffect(() => {
     if (supportsFeature === false) return;
-    handleSubmit();
+    let cancelled = false;
+    handleSubmit(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload, selectedIndex]);
 
   // Load the available Elasticsearch indices for the freeSolo Index picker.
@@ -296,7 +300,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     });
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = (isCancelled: () => boolean = () => false) => {
     setGroupingLogLoading(true);
     setGroupingLogErrorMsg('');
     apiKubernetes1
@@ -311,7 +315,10 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         },
       })
       .then((res) => {
-        const evidence = res?.data?.data?.log_group?.groups || [];
+        if (isCancelled()) {
+          return;
+        }
+        const evidence = Array.isArray(res?.data?.data?.log_group?.groups) ? res.data.data.log_group.groups : [];
         if (evidence.length > 0) {
           const uniqueReferenceIds = new Set<string>();
           evidence?.forEach((item: any) => {
@@ -319,8 +326,12 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
           });
           const references = Array.from(uniqueReferenceIds);
           return ticketsApi.listTicketsSummary({ reference_id: references }).then((res: any) => {
+            if (isCancelled()) {
+              return;
+            }
             const ticketReferenceMap = new Map<string, any>();
-            res?.data?.tickets?.forEach((element: any) => {
+            const tickets = Array.isArray(res?.data?.tickets) ? res.data.tickets : [];
+            tickets.forEach((element: any) => {
               ticketReferenceMap.set(element.reference_id, element);
             });
             let data = evidence;
@@ -426,11 +437,16 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         }
       })
       .catch((_error) => {
+        if (isCancelled()) {
+          return;
+        }
         setGroupingLogData([]);
         setGroupingLogErrorMsg(`Failed to fetch the Log Group`);
       })
       .finally(() => {
-        setGroupingLogLoading(false);
+        if (!isCancelled()) {
+          setGroupingLogLoading(false);
+        }
       });
   };
 

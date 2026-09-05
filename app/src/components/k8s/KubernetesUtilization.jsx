@@ -44,10 +44,14 @@ const KubernetesUtilizationCharts = ({ accountId, podName, workloadName, namespa
     if (query.podName) {
       groupBy.push('pod_name');
     }
+    let cancelled = false;
     setIsDataLoading(true);
     k8sApi
       .getK8sPodGroupings2(10, query, groupBy, datasource)
       .then((res) => {
+        if (cancelled) {
+          return;
+        }
         let cpuDataL = {
           data: [[], [], []],
           labels: [],
@@ -98,8 +102,13 @@ const KubernetesUtilizationCharts = ({ accountId, podName, workloadName, namespa
         setMemoryQueries(memQ);
       })
       .finally(() => {
-        setIsDataLoading(false);
+        if (!cancelled) {
+          setIsDataLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, podName, workloadName, selectedDateTime]);
 
   const handleDateTimeChange = ({ selection }) => {

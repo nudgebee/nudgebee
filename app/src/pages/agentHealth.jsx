@@ -130,11 +130,12 @@ const AgentHealth = () => {
       accountId: router.query.accountId,
       type: accountType,
     };
+    let cancelled = false;
     setLoading(true);
     k8sApi
       .getAgentHealth(query)
       .then((res) => {
-        if (res?.error) {
+        if (cancelled || res?.error) {
           return;
         }
         const rawData = Array.isArray(res?.data) ? res.data : [];
@@ -273,26 +274,37 @@ const AgentHealth = () => {
         setDisconnectedService(disconnectedService);
       })
       .finally(() => {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [router.query.accountId, selectedCluster]);
 
   // Fetch proxy agent data
   useEffect(() => {
     if (!router.query.accountId) return;
 
+    let cancelled = false;
     setProxyLoading(true);
     k8sApi
       .getAgentHealth({ accountId: router.query.accountId, type: 'proxy' })
       .then((res) => {
-        if (res?.error) {
+        if (cancelled || res?.error) {
           return;
         }
         setProxyData(Array.isArray(res?.data) ? res.data : []);
       })
       .finally(() => {
-        setProxyLoading(false);
+        if (!cancelled) {
+          setProxyLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [router.query.accountId]);
 
   // Build proxy table data — re-runs when proxyData changes

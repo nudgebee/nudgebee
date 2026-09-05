@@ -71,7 +71,11 @@ const KubernetesNamespaceTable = ({ accountId }) => {
   const [recordsPerPage, setRecordsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
 
   useEffect(() => {
-    listNamespaces();
+    let cancelled = false;
+    listNamespaces(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, currentPage, recordsPerPage, selectedName]);
 
   useEffect(() => {
@@ -79,6 +83,7 @@ const KubernetesNamespaceTable = ({ accountId }) => {
       return;
     }
 
+    let cancelled = false;
     k8sApi
       .getK8sMetrices({
         accountId: accountId,
@@ -87,8 +92,12 @@ const KubernetesNamespaceTable = ({ accountId }) => {
         endDate: new Date(selectedDateRange.endDate),
       })
       .then((res) => {
+        if (cancelled) {
+          return;
+        }
+        const groupings = Array.isArray(res.data?.k8s_pod_groupings) ? res.data.k8s_pod_groupings : [];
         for (let i = 0; i < data.length; i++) {
-          let item = res.data?.k8s_pod_groupings?.find((item) => item.namespace_name === data[i][0].drilldownQuery.namespaceName);
+          let item = groupings.find((item) => item.namespace_name === data[i][0].drilldownQuery.namespaceName);
           if (item) {
             data[i][2] = {
               component: (
@@ -131,9 +140,12 @@ const KubernetesNamespaceTable = ({ accountId }) => {
         }
         setData([...data]);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, namespaces, selectedDateRange.startDate, selectedDateRange.endDate]);
 
-  const listNamespaces = () => {
+  const listNamespaces = (isCancelled = () => false) => {
     if (!accountId) {
       return;
     }
@@ -147,9 +159,13 @@ const KubernetesNamespaceTable = ({ accountId }) => {
     k8sApi
       .getK8sNamespaces(recordsPerPage, currentPage * recordsPerPage, query)
       .then((res) => {
+        if (isCancelled()) {
+          return;
+        }
         setLoading(false);
         let namespaces = [];
-        let data = res.data?.k8s_namespaces?.map((item) => {
+        const rawNamespaces = Array.isArray(res.data?.k8s_namespaces) ? res.data.k8s_namespaces : [];
+        let data = rawNamespaces.map((item) => {
           namespaces.push(item.name);
           return [
             {
@@ -177,7 +193,9 @@ const KubernetesNamespaceTable = ({ accountId }) => {
         setTotalCount(totalCount);
       })
       .finally(() => {
-        setLoading(false);
+        if (!isCancelled()) {
+          setLoading(false);
+        }
       });
   };
 

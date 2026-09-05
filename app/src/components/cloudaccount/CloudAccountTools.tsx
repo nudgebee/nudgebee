@@ -85,6 +85,7 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
     if (!props?.accountId) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .listEvents(
@@ -96,9 +97,13 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
         page * ROWS_PER_PAGE
       )
       .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
         const ticketReferenceMap = new Map();
-        const eventsData = res.data?.events?.map((item: any) => {
+        const rawEvents = Array.isArray(res.data?.events) ? res.data.events : [];
+        const eventsData = rawEvents.map((item: any) => {
           const data: ICustomTableRow[] = [];
           const MENU_ITEMS = [
             {
@@ -177,8 +182,13 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
         setEventsCount(res.data?.events_aggregate?.aggregate?.count ?? 0);
       })
       .catch(() => {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [props?.accountId, page, selectedEventName, selectedServiceName, selectedSeverity]);
 
   return (
