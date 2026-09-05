@@ -3,6 +3,7 @@
 package agents
 
 import (
+	agentasserts "nudgebee/llm/agents/asserts"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"os"
@@ -33,8 +34,11 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 			UserId                       string
 			ExpectedToolCalls            []expectedNudgebeeToolCall
 			MaxToolCalls                 int
+			EnforceToolOrder             bool
 			RequireExternalReference     bool
 			ExpectedFinalAnswerFragments []string
+			ForbiddenFinalFragments      []string
+			ExpectedLLMClaims            []string
 		}{
 			{
 				SessionId:                    "ut-nudgebee-chain-11",
@@ -105,7 +109,21 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 					{Name: "nudgebee_integration_diagnose", ResponseFragment: `"reason_code"`},
 				},
 				MaxToolCalls:                 2,
+				EnforceToolOrder:             true,
 				ExpectedFinalAnswerFragments: []string{"datadog-dev-alert", "integration"},
+				ForbiddenFinalFragments:      []string{"was disabled on", "has remained disabled"},
+				ExpectedLLMClaims: []string{
+					"The answer does not use an integration record's updated_at value as evidence of when the integration entered its current status.",
+				},
+			},
+			{
+				SessionId:                    "ut-nudgebee-chain-68",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Check Nudgebee agent health",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_agent_health_get"}},
+				MaxToolCalls:                 1,
+				ExpectedFinalAnswerFragments: []string{"agent"},
 			},
 		}
 	for _, tc := range testCases {
@@ -133,6 +151,12 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 			for _, fragment := range tc.ExpectedFinalAnswerFragments {
 				assert.Contains(t, responseLower, fragment)
 			}
+			for _, fragment := range tc.ForbiddenFinalFragments {
+				assert.NotContains(t, responseLower, strings.ToLower(fragment))
+			}
+			if len(tc.ExpectedLLMClaims) > 0 {
+				agentasserts.LLMClaims(t, sc, tc.ExpectedLLMClaims, strings.Join(resp.Response, "\n"))
+			}
 			if tc.RequireExternalReference {
 				require.NotEmpty(t, resp.References, "documentation answers must propagate source references")
 				assert.NotEmpty(t, resp.References[0].Url)
@@ -148,6 +172,7 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 			for _, expected := range tc.ExpectedToolCalls {
 				allowedToolNames[expected.Name] = true
 			}
+			lastExpectedIndex := -1
 			for _, toolCall := range detail.ToolCalls {
 				assert.True(t, strings.HasPrefix(toolCall.ToolName, "nudgebee_"), "unexpected tool: %s", toolCall.ToolName)
 				assert.True(t, allowedToolNames[toolCall.ToolName], "unexpected Nudgebee tool for query: %s", toolCall.ToolName)
@@ -166,6 +191,10 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 						continue
 					}
 					matchedExpectedCalls[i]++
+					if tc.EnforceToolOrder && matchedExpectedCalls[i] == 1 {
+						assert.Greater(t, i, lastExpectedIndex, "expected dependent Nudgebee tools in declared order")
+						lastExpectedIndex = i
+					}
 				}
 			}
 			for i, expected := range tc.ExpectedToolCalls {

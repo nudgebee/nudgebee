@@ -129,6 +129,10 @@ type k8sTestCase struct {
 	// WantToolInvoked asserts a specific tool name appears in the invocation log.
 	WantToolInvoked string
 
+	// WantFirstTool asserts the first investigation action uses this exact tool.
+	// Use for authoritative prerequisite checks that establish downstream scope.
+	WantFirstTool string
+
 	// WantAnyToolMatching asserts at least one tool whose name contains any of
 	// these substrings was invoked. Use for tool-family checks ("any
 	// prometheus tool").
@@ -234,6 +238,9 @@ func assertExpectations(t *testing.T, tc k8sTestCase, resp core.NBAgentResponse)
 	// Specific tool invocation
 	if tc.WantToolInvoked != "" {
 		asserts.ToolUsed(t, resp, tc.WantToolInvoked)
+	}
+	if tc.WantFirstTool != "" {
+		asserts.FirstToolIs(t, resp, tc.WantFirstTool)
 	}
 
 	// Tool-family OR check
@@ -1554,4 +1561,66 @@ func TestK8sAgent_Grounding(t *testing.T) {
 		ApprovalResponses: []string{},
 	}
 	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_NudgebeeHealthGate(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	for _, tc := range []k8sTestCase{
+		{
+			Name:          "nudgebee_prometheus_health_gate",
+			SessionId:     "ut-nudgebee-health-gate-prometheus-1",
+			AccountId:     os.Getenv("TEST_ACCOUNT"),
+			UserId:        os.Getenv("TEST_USER"),
+			Query:         "Why is Prometheus disconnected in Nudgebee?",
+			WantFirstTool: NudgebeeAgentName,
+			WantLLMClaims: []string{
+				"The answer states whether current Nudgebee health evidence confirms or contradicts the user's disconnected premise before offering troubleshooting guidance.",
+			},
+		},
+		{
+			Name:          "nudgebee_agent_health_gate",
+			SessionId:     "ut-nudgebee-health-gate-agent-1",
+			AccountId:     os.Getenv("TEST_ACCOUNT"),
+			UserId:        os.Getenv("TEST_USER"),
+			Query:         "Why is my Nudgebee agent disconnected?",
+			WantFirstTool: NudgebeeAgentName,
+			WantLLMClaims: []string{
+				"The answer begins from Nudgebee-recorded agent health and does not diagnose a guessed Kubernetes namespace.",
+			},
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			runTest(t, agent, tc)
+		})
+	}
+}
+
+func TestCloudOrchestrators_NudgebeeHealthGate(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	accountID := os.Getenv("TEST_ACCOUNT")
+	for _, tc := range []struct {
+		name  string
+		agent core.NBAgent
+	}{
+		{name: "aws", agent: newAwsOrchestratorAgent(accountID)},
+		{name: "gcp", agent: newGcpOrchestratorAgent(accountID)},
+		{name: "azure", agent: newAzureOrchestratorAgent(accountID)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runTest(t, tc.agent, k8sTestCase{
+				Name:             "nudgebee_agent_health_gate_" + tc.name,
+				SessionId:        "ut-nudgebee-cloud-health-gate-" + tc.name + "-1",
+				AccountId:        accountID,
+				UserId:           os.Getenv("TEST_USER"),
+				Query:            "Why is my Nudgebee agent disconnected?",
+				WantFirstTool:    NudgebeeAgentName,
+				WantMaxToolCalls: 1,
+				WantLLMClaims: []string{
+					"The answer begins from Nudgebee-recorded health and does not invent Kubernetes, project, subscription, region, or resource scope that the health result did not provide.",
+				},
+			})
+		})
+	}
 }

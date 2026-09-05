@@ -71,6 +71,19 @@ func ToolUsed(t *testing.T, resp core.NBAgentResponse, name string) bool {
 	return false
 }
 
+// FirstToolIs asserts the first investigation action uses the named tool.
+// Use when a prerequisite lookup must establish authoritative scope before
+// any environment or telemetry action can run.
+func FirstToolIs(t *testing.T, resp core.NBAgentResponse, name string) bool {
+	t.Helper()
+	invs := investigationTools(resp)
+	if !assert.NotEmpty(t, invs, "expected first tool %q, but no investigation tools were invoked", name) {
+		return false
+	}
+	return assert.Equal(t, name, toolName(invs[0]),
+		"expected first investigation tool %q; got tools=%v", name, investigationToolNames(resp))
+}
+
 // ToolNotUsed asserts the named tool was NOT invoked. Use for forbidden
 // fallbacks like "must use prometheus_execute, not shell_execute".
 func ToolNotUsed(t *testing.T, resp core.NBAgentResponse, name string) bool {

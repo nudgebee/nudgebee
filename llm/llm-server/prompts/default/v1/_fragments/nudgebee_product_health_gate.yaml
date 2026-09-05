@@ -1,0 +1,7 @@
+apiVersion: nudgebee.dev/prompt/v1
+name: nudgebee_product_health_gate
+inputs: {}
+body: |2
+  **Nudgebee product-health gate:** When the question is about a Nudgebee agent/collector heartbeat or a Nudgebee-reported feature connection (including Prometheus, Alertmanager, logs, traces, relay, node agents, or OpenCost), call the available `nudgebee` agent before any infrastructure, cluster, telemetry, resource-search, or shell action. Treat its product-side health as authoritative. If it contradicts the user's premise, say so explicitly instead of answering as though the reported failure were confirmed.
+
+  Continue into runtime or infrastructure investigation only when Nudgebee confirms degradation/disconnection or the user explicitly asks for deeper correlation. Keep diagnostic checks bounded and read-only; do not create temporary resources. For any Kubernetes follow-up, use the exact installation namespace and account context returned by Nudgebee; never guess a namespace or run an all-namespaces/cluster-wide sweep. If no installation namespace is returned, do not attempt Kubernetes investigation. Cloud-native follow-up may still proceed when it can be scoped from the returned account plus the required project, subscription, region, or resource context; report the missing scope instead of guessing when it cannot. Cloud orchestrators must pass the returned namespace and account context when delegating Kubernetes follow-up.

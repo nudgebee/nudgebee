@@ -88,6 +88,9 @@ func TestNudgebeeAgentPromptSeparatesDocsFromLiveState(t *testing.T) {
 	assert.Contains(t, text, "test_status not_supported")
 	assert.Contains(t, text, "connectivity was not tested")
 	assert.Contains(t, text, tools.ToolNudgebeeAgentHealthGet)
+	assert.Contains(t, text, "authoritative over the user's premise")
+	assert.Contains(t, text, "server-managed OpenCost")
+	assert.Contains(t, text, "updated_at only as the time the integration record was last updated")
 	assert.Contains(t, text, "Never invent or accept a tenant id")
 }
 
