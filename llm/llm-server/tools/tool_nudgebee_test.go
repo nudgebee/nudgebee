@@ -69,6 +69,9 @@ func TestNudgebeeToolsRequireRequestingUser(t *testing.T) {
 		func() (core.NBToolResponse, error) {
 			return NudgebeeIntegrationDiagnoseTool{}.Call(nudgebeeContextWithoutUser(), core.NBToolCallRequest{Arguments: map[string]any{"id": "integration-1"}})
 		},
+		func() (core.NBToolResponse, error) {
+			return NudgebeeAgentHealthGetTool{}.Call(nudgebeeContextWithoutUser(), core.NBToolCallRequest{})
+		},
 	}
 	for _, call := range calls {
 		resp, err := call()
@@ -184,6 +187,7 @@ func TestNudgebeeToolsAreReadOnly(t *testing.T) {
 		NudgebeeAccountsListTool{}, NudgebeeAccountsCountTool{}, NudgebeeAccountGetTool{},
 		NudgebeeIntegrationsListTool{}, NudgebeeIntegrationsCountTool{}, NudgebeeIntegrationGetStatusTool{},
 		NudgebeeIntegrationDiagnoseTool{},
+		NudgebeeAgentHealthGetTool{},
 		NudgebeeDocsSearchTool{},
 	}
 	for _, tool := range tools {
@@ -191,6 +195,26 @@ func TestNudgebeeToolsAreReadOnly(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, core.ToolRequestTypeRead, requestType)
 	}
+}
+
+func TestNudgebeeAgentHealthGetSanitizesConnectionStatus(t *testing.T) {
+	cleanup := startNudgebeeQueryStub(t, func(action string, input map[string]any) (int, string) {
+		assert.Equal(t, "agents_list_health", action)
+		where := input["where"].(map[string]any)
+		assert.Equal(t, "acc-1", where["cloud_account_id"].(map[string]any)["_eq"])
+		return http.StatusOK, `{"rows":[{"cloud_account_id":"acc-1","type":"k8s","status":"CONNECTED","connection_status":{"prometheusConnection":false,"logsConnection":true,"nodeAgentCount":3,"prometheusUrl":"http://secret.internal","logProviderConfig":{"token":"secret"},"schedule_jobs":[{"id":"internal"}]}}]}`
+	})
+	defer cleanup()
+
+	resp, err := NudgebeeAgentHealthGetTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.Contains(t, resp.Data, `"prometheusConnection":false`)
+	assert.Contains(t, resp.Data, `"nodeAgentCount":3`)
+	assert.NotContains(t, resp.Data, "prometheusUrl")
+	assert.NotContains(t, resp.Data, "logProviderConfig")
+	assert.NotContains(t, resp.Data, "schedule_jobs")
+	assert.NotContains(t, resp.Data, "secret")
 }
 
 func TestNudgebeeIntegrationDiagnoseTool(t *testing.T) {
@@ -206,6 +230,7 @@ func TestNudgebeeIntegrationDiagnoseTool(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
 	assert.Contains(t, resp.Data, `"reason_code":"AUTHENTICATION_FAILED"`)
+	assert.Contains(t, NudgebeeIntegrationDiagnoseTool{}.Description(), "unsupported")
 }
 
 func TestNudgebeeIntegrationDiagnoseToolRequiresID(t *testing.T) {

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -36,6 +37,7 @@ const (
 	ToolNudgebeeIntegrationsCount    = "nudgebee_integrations_count"
 	ToolNudgebeeIntegrationGetStatus = "nudgebee_integration_get_status"
 	ToolNudgebeeIntegrationDiagnose  = "nudgebee_integration_diagnose"
+	ToolNudgebeeAgentHealthGet       = "nudgebee_agent_health_get"
 	ToolNudgebeeDocsSearch           = "nudgebee_docs_search"
 )
 
@@ -61,7 +63,77 @@ func init() {
 	register(ToolNudgebeeIntegrationsCount, func() core.NBTool { return NudgebeeIntegrationsCountTool{} })
 	register(ToolNudgebeeIntegrationGetStatus, func() core.NBTool { return NudgebeeIntegrationGetStatusTool{} })
 	register(ToolNudgebeeIntegrationDiagnose, func() core.NBTool { return NudgebeeIntegrationDiagnoseTool{} })
+	register(ToolNudgebeeAgentHealthGet, func() core.NBTool { return NudgebeeAgentHealthGetTool{} })
 	register(ToolNudgebeeDocsSearch, func() core.NBTool { return NudgebeeDocsSearchTool{} })
+}
+
+var nudgebeeAgentFeatureKeys = map[string]bool{
+	"relayConnection": true, "prometheusConnection": true, "alertManagerConnection": true,
+	"logsConnection": true, "nodeAgentConnection": true, "opencostConnection": true,
+	"opencostServerSide": true, "tracesEnabled": true, "grafanaEnabled": true,
+	"autoScalerEnabled": true, "nodeAgentCount": true, "logsConnectionProvider": true,
+	"traceProvider": true, "prometheusRetentionTime": true, "installationNamespace": true,
+}
+
+// NudgebeeAgentHealthGetTool returns the platform-recorded collector heartbeat
+// and a narrow feature-health allowlist. Raw connection_status includes URLs,
+// provider configuration and schedules, so it must never be passed through.
+type NudgebeeAgentHealthGetTool struct{}
+
+func (NudgebeeAgentHealthGetTool) Name() string             { return ToolNudgebeeAgentHealthGet }
+func (NudgebeeAgentHealthGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
+func (NudgebeeAgentHealthGetTool) InferToolRequestType(ctx *security.RequestContext, input, conversation string) (core.ToolRequestType, error) {
+	return nudgebeeReadRequestType(ctx, input, conversation)
+}
+func (NudgebeeAgentHealthGetTool) Description() string {
+	return "Get Nudgebee-recorded agent or collector health for one visible account: heartbeat, status, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
+}
+func (NudgebeeAgentHealthGetTool) InputSchema() core.ToolSchema {
+	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
+		"account_id": nudgebeeStringProperty("Optional exact visible account id; defaults to the current account."),
+	}, Required: []string{}}
+}
+func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	accountID := nudgebeeStringArg(input, "account_id")
+	if accountID == "" {
+		accountID = strings.TrimSpace(nbCtx.AccountId)
+	}
+	if accountID == "" {
+		return triageErrorResponse(errors.New("nudgebee_agent_health_get requires an account id")), nil
+	}
+	data, err := doNudgebeeQueryRequest(nbCtx, "agents_list_health", map[string]any{
+		"columns": []string{"id", "cloud_account_id", "type", "version", "status_message", "status", "last_connected_at", "created_at", "k8s_version", "k8s_provider", "connection_status"},
+		"where":   map[string]any{"cloud_account_id": map[string]any{"_eq": accountID}},
+		"limit":   20,
+	})
+	if err != nil {
+		return triageErrorResponse(err), nil
+	}
+	var result struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(data), &result); err != nil {
+		return triageErrorResponse(errors.New("nudgebee: agent health returned an invalid response")), nil
+	}
+	for _, row := range result.Rows {
+		features := map[string]any{}
+		connectionStatus, _ := row["connection_status"].(map[string]any)
+		if encoded, ok := row["connection_status"].(string); ok {
+			_ = json.Unmarshal([]byte(encoded), &connectionStatus)
+		}
+		for key, value := range connectionStatus {
+			if nudgebeeAgentFeatureKeys[key] {
+				features[key] = value
+			}
+		}
+		row["features"] = features
+		delete(row, "connection_status")
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return triageErrorResponse(errors.New("nudgebee: could not format agent health")), nil
+	}
+	return triageResponse(string(encoded)), nil
 }
 
 func nudgebeeStringProperty(description string) core.ToolSchemaProperty {
@@ -356,7 +428,7 @@ func (NudgebeeIntegrationDiagnoseTool) InferToolRequestType(ctx *security.Reques
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeIntegrationDiagnoseTool) Description() string {
-	return "Actively test and safely diagnose one configured Nudgebee integration by exact id. Use only when the user explicitly asks why an integration is not working or connected. First resolve a name to an id with nudgebee_integration_get_status. Returns normalized health, failure stage, reason code, and sanitized summary; it never returns credentials or raw provider errors."
+	return "Safely diagnose one configured Nudgebee integration by exact id. Use only when the user explicitly asks why an integration is not working or connected. First resolve a name to an id with nudgebee_integration_get_status. Returns whether an active test passed, failed, or is unsupported, plus normalized health, failure stage, reason code, and sanitized summary; it never returns credentials or raw provider errors."
 }
 func (NudgebeeIntegrationDiagnoseTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{

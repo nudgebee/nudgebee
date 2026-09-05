@@ -13,12 +13,12 @@ func init() {
 	core.RegisterNBAgentFactoryAndToolWithAliases(NudgebeeAgentName, func(accountId string) (core.NBAgent, error) {
 		return newNudgebeeAgent(accountId), nil
 	}, nudgebeeAgentDescription,
-		"A question about Nudgebee product knowledge or the requesting user's authorized Nudgebee account/integration configuration.",
-		"A concise, permission-scoped answer grounded in Nudgebee documentation or live configuration data.",
+		"A question about Nudgebee product knowledge, authorized configuration, integration diagnosis, or Nudgebee-recorded agent and feature health.",
+		"A concise, permission-scoped answer grounded in Nudgebee documentation, live configuration, or platform-recorded health data.",
 		"nubi")
 }
 
-const nudgebeeAgentDescription = "Nubi, Nudgebee's self-aware product assistant. Use for Nudgebee product concepts and docs, the requesting user's authorized configuration including account inventory and configured integrations, or diagnosing why a configured Nudgebee integration is not connected. Do not use for workloads, Kubernetes, logs, metrics, traces, cloud resources, incidents, or general operational troubleshooting."
+const nudgebeeAgentDescription = "Nubi, Nudgebee's self-aware product assistant. Use for Nudgebee product concepts and docs; authorized account inventory and configured integrations; integration diagnosis; and Nudgebee-recorded collector, agent, Prometheus, Alertmanager, logs, traces, relay, or OpenCost health. It reports the product control-plane view and may be combined with environment tools for deeper investigation. Do not use it alone for arbitrary workloads, Kubernetes resources, raw telemetry, cloud resources, incidents, or general operational troubleshooting."
 
 type NudgebeeAgent struct {
 	accountId string
@@ -67,6 +67,7 @@ func (a *NudgebeeAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 		tools.ToolNudgebeeIntegrationsCount,
 		tools.ToolNudgebeeIntegrationGetStatus,
 		tools.ToolNudgebeeIntegrationDiagnose,
+		tools.ToolNudgebeeAgentHealthGet,
 	}
 	result := make([]toolcore.NBTool, 0, len(names))
 	for _, name := range names {
@@ -84,13 +85,17 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 			"Classify each part of the question as product knowledge or current Nudgebee state.",
 			"For product concepts, definitions, setup and how-to questions, call nudgebee_docs_search once and ground the answer in the returned documentation. If it returns relevant evidence, answer directly without synonym, refinement, or follow-up searches. Retry at most once, and only when the tool explicitly reports no matching documentation.",
 			"For current counts, configuration, status, names, providers or synchronization state, call the matching nudgebee_* live-data tool. Never answer current state from documentation, memory, conversation history or examples.",
+			"Describe Kubernetes and VM/proxy rows as installed agents or collectors. For AWS, Azure, and GCP accounts without an installed collector, describe synchronization as agentless collection even if backend health is represented by an agent record.",
 			"For a single live-state question, make exactly one purpose-built call: use a *_count tool for how-many questions and a *_list tool for show/list questions. Put every explicit status, provider, type or name constraint into that first call; never make a broad discovery call first.",
 			"Use group_by only when the user asks for a breakdown across groups. When the user asks about one provider or integration type, filter by cloud_provider or type instead.",
 			"For mixed questions, call documentation and live-data tools as independent actions, then combine the evidence into one concise answer.",
 			"A recorded integration status means configured state, not runtime health. Never call an active integration healthy from status alone.",
+			"For Nudgebee agent, collector, heartbeat, or feature connectivity questions, call nudgebee_agent_health_get. Treat Kubernetes workload readiness as supporting runtime evidence, not proof of Nudgebee-recorded health.",
+			"Report agent status and last_connected_at separately from feature flags. Connected does not prove every feature is connected, and a missing health row means unknown rather than healthy.",
 			"When the user explicitly asks why an integration is not working or connected, first resolve the visible integration and its exact id with nudgebee_integration_get_status, then call nudgebee_integration_diagnose once. Do not diagnose multiple ambiguous matches.",
 			"If an integration status lookup returns multiple matches, stop after that lookup: do not search documentation, do not diagnose, and do not infer that a disabled match is the one the user meant. List the matching names, types, and recorded statuses, then ask the user to choose the exact integration.",
 			"If nudgebee_integration_diagnose returns an error, stop: do not search documentation and do not infer the connection failure from configured status. State that the active diagnosis could not be completed, include the safe tool error, and keep configured status separate from runtime health.",
+			"If nudgebee_integration_diagnose reports test_status not_supported, state that connectivity was not tested and runtime health is unknown. Never describe configuration validation as endpoint reachability or a successful connection test.",
 			"Treat an empty result as no visible matching resource, not proof that the resource does not exist outside the requesting user's permissions.",
 			"If any tool reports that the operation is not permitted or that a requesting user is required, stop immediately and report that error. Do not try another tool, broaden the query, or suggest bypassing permissions.",
 		},
@@ -125,6 +130,9 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 			},
 			tools.ToolNudgebeeIntegrationDiagnose: {
 				"Actively investigate one exact integration id after an explicit not-working/not-connected request and a successful status lookup.",
+			},
+			tools.ToolNudgebeeAgentHealthGet: {
+				"Nudgebee-recorded agent or collector heartbeat and sanitized feature connectivity for one account.",
 			},
 		},
 		OutputFormat: "Lead with the direct answer. Clearly distinguish facts from documentation from current tenant data. Keep lists concise and state when results are limited by the requesting user's permissions.",

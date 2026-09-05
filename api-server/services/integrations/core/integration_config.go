@@ -1984,7 +1984,7 @@ func TestIntegrationConnectionByConfig(
 // It fetches the integration config, decrypts encrypted values, and runs the
 // integration's ValidateConfig (for K8s mode) or proxy connectivity test (for vm_agent mode).
 func TestIntegrationConnection(ctx *security.RequestContext, integrationID string) error {
-	return testIntegrationConnection(ctx, integrationID, "")
+	return testIntegrationConnection(ctx, integrationID, "", false)
 }
 
 // TestIntegrationConnectionForAccount tests a saved integration through one
@@ -1998,10 +1998,27 @@ func TestIntegrationConnectionForAccount(ctx *security.RequestContext, integrati
 	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
 		return errors.New("integrations: connection test is not permitted")
 	}
-	return testIntegrationConnection(ctx, integrationID, accountID)
+	return testIntegrationConnection(ctx, integrationID, accountID, false)
 }
 
-func testIntegrationConnection(ctx *security.RequestContext, integrationID, requestedAccountID string) error {
+// ErrConnectionTestNotSupported means structural configuration validation passed,
+// but the integration has no active provider or proxy connectivity probe.
+var ErrConnectionTestNotSupported = errors.New("integration connection test is not supported")
+
+// DiagnoseIntegrationConnectionForAccount requires an active connectivity probe.
+// Unlike the UI compatibility path above, validation alone is not reported as a
+// successful connection test.
+func DiagnoseIntegrationConnectionForAccount(ctx *security.RequestContext, integrationID, accountID string) error {
+	if accountID == "" {
+		return errors.New("integrations: account_id is required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		return errors.New("integrations: connection test is not permitted")
+	}
+	return testIntegrationConnection(ctx, integrationID, accountID, true)
+}
+
+func testIntegrationConnection(ctx *security.RequestContext, integrationID, requestedAccountID string, requireActiveProbe bool) error {
 	if integrationID == "" {
 		return errors.New("integrations: integration_id is required")
 	}
@@ -2139,6 +2156,10 @@ func testIntegrationConnection(ctx *security.RequestContext, integrationID, requ
 		if testErr := testable.TestConnection(ctx, configValues, testAccountID); testErr != nil {
 			return testErr
 		}
+		return nil
+	}
+	if requireActiveProbe {
+		return ErrConnectionTestNotSupported
 	}
 
 	return nil

@@ -31,6 +31,7 @@ func TestNudgebeeDescriptionProvidesOrchestratorRoutingBoundary(t *testing.T) {
 	description := newNudgebeeAgent("account-1").GetDescription()
 	assert.Contains(t, description, "account inventory")
 	assert.Contains(t, description, "configured integrations")
-	assert.Contains(t, description, "Do not use for workloads")
+	assert.Contains(t, description, "Nudgebee-recorded collector")
+	assert.Contains(t, description, "Do not use it alone for arbitrary workloads")
 	assert.Contains(t, description, "troubleshooting")
 }

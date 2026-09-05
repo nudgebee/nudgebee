@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
 
 	"github.com/stretchr/testify/assert"
@@ -94,6 +95,7 @@ func TestDiagnoseIntegrationConnectionSanitizesProviderFailure(t *testing.T) {
 	diagnosis, err := diagnoseIntegrationConnection(diagnosisRequestContext(t, "account-A"), "integration-1")
 	require.NoError(t, err)
 	assert.False(t, diagnosis.Success)
+	assert.Equal(t, "failed", diagnosis.TestStatus)
 	assert.Equal(t, "unhealthy", diagnosis.Health)
 	assert.Equal(t, "authentication", diagnosis.Stage)
 	assert.Equal(t, "AUTHENTICATION_FAILED", diagnosis.ReasonCode)
@@ -123,8 +125,32 @@ func TestDiagnoseIntegrationConnectionSuccess(t *testing.T) {
 	diagnosis, err := diagnoseIntegrationConnection(diagnosisRequestContext(t, "account-A"), "integration-1")
 	require.NoError(t, err)
 	assert.True(t, diagnosis.Success)
+	assert.Equal(t, "passed", diagnosis.TestStatus)
 	assert.Equal(t, "healthy", diagnosis.Health)
 	assert.Equal(t, "CONNECTION_SUCCEEDED", diagnosis.ReasonCode)
+}
+
+func TestDiagnoseIntegrationConnectionReportsUnsupportedProbeAsUnknown(t *testing.T) {
+	previousList := listDiagnosisIntegrationAccountIDs
+	previousTest := testDiagnosisIntegrationConnection
+	t.Cleanup(func() {
+		listDiagnosisIntegrationAccountIDs = previousList
+		testDiagnosisIntegrationConnection = previousTest
+	})
+	listDiagnosisIntegrationAccountIDs = func(_ *security.RequestContext, _ string) ([]string, error) {
+		return []string{"account-A"}, nil
+	}
+	testDiagnosisIntegrationConnection = func(_ *security.RequestContext, _, _ string) error {
+		return core.ErrConnectionTestNotSupported
+	}
+
+	diagnosis, err := diagnoseIntegrationConnection(diagnosisRequestContext(t, "account-A"), "integration-1")
+	require.NoError(t, err)
+	assert.False(t, diagnosis.Success)
+	assert.Equal(t, "not_supported", diagnosis.TestStatus)
+	assert.Equal(t, "unknown", diagnosis.Health)
+	assert.Equal(t, "CONNECTION_TEST_NOT_SUPPORTED", diagnosis.ReasonCode)
+	assert.NotContains(t, diagnosis.Summary, "healthy")
 }
 
 func TestClassifyIntegrationDiagnosisError(t *testing.T) {

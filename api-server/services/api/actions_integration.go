@@ -48,6 +48,7 @@ type ValidationResponse struct {
 
 type IntegrationDiagnosisResponse struct {
 	Success           bool      `json:"success"`
+	TestStatus        string    `json:"test_status"`
 	Health            string    `json:"health"`
 	Stage             string    `json:"stage"`
 	ReasonCode        string    `json:"reason_code"`
@@ -58,7 +59,7 @@ type IntegrationDiagnosisResponse struct {
 
 var (
 	listDiagnosisIntegrationAccountIDs = core.ListLinkedCloudAccountIDsByIntegrationID
-	testDiagnosisIntegrationConnection = core.TestIntegrationConnectionForAccount
+	testDiagnosisIntegrationConnection = core.DiagnoseIntegrationConnectionForAccount
 )
 
 var errIntegrationNotFound = errors.New("integration not found")
@@ -637,6 +638,14 @@ func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID s
 
 	checkedAt := time.Now().UTC()
 	if testErr := testDiagnosisIntegrationConnection(ctx, integrationID, authorizedAccountID); testErr != nil {
+		if errors.Is(testErr, core.ErrConnectionTestNotSupported) {
+			return IntegrationDiagnosisResponse{
+				Success: false, TestStatus: "not_supported", Health: "unknown", Stage: "connection",
+				ReasonCode:        "CONNECTION_TEST_NOT_SUPPORTED",
+				Summary:           "This integration does not provide an active connection test.",
+				RecommendedAction: "Verify that expected data or events are arriving after the integration is enabled.", CheckedAt: checkedAt,
+			}, nil
+		}
 		stage, reasonCode, summary, recommendedAction := classifyIntegrationDiagnosisError(testErr)
 		ctx.GetLogger().Warn("integrations: connection diagnosis test failed",
 			"integration_id", integrationID,
@@ -644,13 +653,13 @@ func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID s
 			"reason_code", reasonCode,
 		)
 		return IntegrationDiagnosisResponse{
-			Success: false, Health: "unhealthy", Stage: stage,
+			Success: false, TestStatus: "failed", Health: "unhealthy", Stage: stage,
 			ReasonCode: reasonCode, Summary: summary,
 			RecommendedAction: recommendedAction, CheckedAt: checkedAt,
 		}, nil
 	}
 	return IntegrationDiagnosisResponse{
-		Success: true, Health: "healthy", Stage: "connection",
+		Success: true, TestStatus: "passed", Health: "healthy", Stage: "connection",
 		ReasonCode: "CONNECTION_SUCCEEDED", Summary: "The integration connection test succeeded.",
 		RecommendedAction: "No connection remediation is required.", CheckedAt: checkedAt,
 	}, nil
