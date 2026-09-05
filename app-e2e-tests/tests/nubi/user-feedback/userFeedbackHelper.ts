@@ -54,6 +54,32 @@ export async function nextFeedbackQuery(log: FeedbackQueryLog, countBefore: numb
   return log.queries[log.queries.length - 1];
 }
 
+// Waits for a listing query that actually carries the filter the action was
+// meant to commit, rather than for "the next query to arrive".
+//
+// chooseFilter returns as soon as the trigger shows its new value, which is one
+// render after the click and well before the refetch it started comes back. A
+// plain nextFeedbackQuery taken after the FOLLOWING action therefore settles on
+// that still-in-flight response and reads back the previous filter — which is
+// exactly how the two-filter, clear-filter and remount cases failed while the
+// tab behaved correctly. Use this to settle a filter before recording the next
+// baseline, and to read the query an action committed.
+//
+// Only safe for a positive predicate: a negative one ("carries no module
+// filter") is satisfied by the tab's own unfiltered mount request, so those
+// keep using nextFeedbackQuery — after settling the pending query with this.
+export async function nextFeedbackQueryMatching(
+  log: FeedbackQueryLog,
+  countBefore: number,
+  predicate: (query: string) => boolean,
+  description: string
+): Promise<string> {
+  await expect
+    .poll(() => log.queries.slice(countBefore).some(predicate), { timeout: 45000, message: `no ${OP_LIST_FEEDBACK} query matched ${description}` })
+    .toBe(true);
+  return log.queries.slice(countBefore).find(predicate) as string;
+}
+
 // Pulls the created_at window out of a captured query. The tab always sends
 // both bounds, so a missing one is a real failure rather than a shape to absorb.
 export function windowOf(query: string): { startMs: number; endMs: number; spanMs: number } {
@@ -89,8 +115,7 @@ export async function openUserFeedbackTab(page: Page): Promise<{ locators: UserF
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.bcortexBtn.click();
-  await locators.insightsGroupTab.waitFor({ state: "visible", timeout: 20000 });
+  await nubi.openBCortex(locators.insightsGroupTab);
   await locators.insightsGroupTab.click();
   await locators.feedbackTab.waitFor({ state: "visible", timeout: 20000 });
 

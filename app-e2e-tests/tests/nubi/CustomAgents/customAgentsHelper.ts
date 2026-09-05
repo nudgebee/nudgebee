@@ -32,17 +32,7 @@ export async function openAgentsTab(page: Page): Promise<AgentsView> {
   await new LoginPage(page).doFullLogin();
   await nubi.openPanel();
 
-  // AIToolsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
-  // round trip, and an AI & Tools click landing while the panel is still animating in
-  // opens nothing at all. Retry the pair until the tabs are actually there.
-  await expect(async () => {
-    // Probe: "the tabs are not up yet" is the normal state on the first pass and
-    // must come back as false rather than throw, since that is what drives the retry.
-    if (!(await nubi.customAgentTab.isVisible().catch(() => false))) {
-      await nubi.aiToolsBtn.click();
-    }
-    await nubi.customAgentTab.waitFor({ state: "visible", timeout: 5000 });
-  }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
+  await nubi.openAITools(nubi.customAgentTab);
 
   await nubi.customAgentTab.click();
   // AgentsAdminTab defaults to tenant-wide (accountId=''), and ListAgents hides
@@ -99,11 +89,28 @@ export async function pickAgentType(agents: CustomAgentsLocators, optionLabel: R
   await expectListingSettled(agents);
 }
 
-// Every agent name currently listed. Read through expect.poll at the call sites so
-// a re-render in flight is retried rather than snapshotted.
+// Every agent name currently listed.
+//
+// Polled rather than read once: CustomTable swaps its whole tbody out for a
+// skeleton on each fetch and renders no empty state while it is loading
+// (renderEmptyState returns null on `loading`), and this listing fetches again
+// right after the account filter is set. A single read landing in that window
+// comes back with no rows against a table that is full a moment later — which
+// is how the search and Edit-Agent cases failed on a screenshot showing every
+// row. "Rows, or a real no-data state" is the settled condition; anything else
+// is a fetch still in flight.
 export async function listedAgentNames(agents: CustomAgentsLocators): Promise<string[]> {
-  const cells = await agents.nameCells.allInnerTexts();
-  return cells.map(agentNameFromCell).filter((name) => name.length > 0);
+  let names: string[] = [];
+  await expect
+    .poll(
+      async () => {
+        names = (await agents.nameCells.allInnerTexts()).map(agentNameFromCell).filter((name) => name.length > 0);
+        return names.length > 0 || (await agents.emptyState.isVisible().catch(() => false));
+      },
+      { timeout: 30000, message: "the agents listing never settled on rows or the no-data state" }
+    )
+    .toBe(true);
+  return names;
 }
 
 // The agent's own name out of one Name cell.

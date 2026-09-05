@@ -20,7 +20,7 @@ import {
   uniquePatternRegex,
 } from "./egressFilterHelper";
 
-// Nubi > Settings > Egress Filter (app/src/ee/components/egress-filter/EgressFilterTab.tsx).
+// Nubi > AI & Tools > Egress Filter (app/src/ee/components/egress-filter/EgressFilterTab.tsx).
 // Mode, the enable flag, the excluded-agent list and the PII block are all
 // tenant-wide policy on a shared dev tenant, so this suite dirties them to prove
 // the form gates on them and then discards the edit by remounting the tab. Only
@@ -30,7 +30,7 @@ import {
 
 test.describe("Nubi Egress Filter Tab", () => {
   test(
-    "Egress Filter sanity - open Nubi Settings, select the Egress Filter tab, verify the secret filter controls, the custom pattern section and the PII block render with Save changes disabled",
+    "Egress Filter sanity - open Nubi AI & Tools, select the Egress Filter tab, verify the secret filter controls, the custom pattern section and the PII block render with Save changes disabled",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);

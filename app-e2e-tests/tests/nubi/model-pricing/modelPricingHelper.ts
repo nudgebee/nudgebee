@@ -27,8 +27,7 @@ export async function openModelPricingTab(page: Page): Promise<ModelPricingLocat
 
   await loginPage.doFullLogin();
   await nubi.openPanel();
-  await nubi.aiToolsBtn.click();
-  await locators.budgetsLimitsTab.waitFor({ state: "visible", timeout: 20000 });
+  await nubi.openAITools(locators.budgetsLimitsTab);
   await locators.budgetsLimitsTab.click();
   await locators.modelPricingToggle.waitFor({ state: "visible", timeout: 15000 });
   await locators.modelPricingToggle.click();

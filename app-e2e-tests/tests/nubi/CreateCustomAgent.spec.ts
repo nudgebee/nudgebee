@@ -15,17 +15,8 @@ test("CRUD Custom Agent", { tag: ["@dev", "@test", "@regression", "@functional",
   console.log(`Creating Agent with Name: ${agentName}`);
 
   await loginPage.doFullLogin();
-  await locators.askNudgebeeBtn.click();
-  // AIToolsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
-  // round trip, and an AI & Tools click that lands while the nubi panel is still
-  // animating in opens nothing at all — leaving the panel on screen with no tabs to
-  // click. Retry the pair until the tabs are actually there.
-  await expect(async () => {
-    if (!(await locators.customAgentTab.isVisible().catch(() => false))) {
-      await locators.aiToolsBtn.click();
-    }
-    await locators.customAgentTab.waitFor({ state: "visible", timeout: 5000 });
-  }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
+  await locators.openPanel();
+  await locators.openAITools(locators.customAgentTab);
   console.log("Navigated to AI & Tools");
 
   await locators.customAgentTab.click();

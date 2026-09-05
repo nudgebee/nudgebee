@@ -21,7 +21,7 @@ import {
 
 test.describe("Nubi Model Pricing Tab", () => {
   test(
-    "Model Pricing sanity - open Nubi Settings, select the Model Pricing tab, verify the rate table lists built-in models and offers the Add price control",
+    "Model Pricing sanity - open Nubi AI & Tools, select the Model Pricing tab, verify the rate table lists built-in models and offers the Add price control",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
@@ -34,7 +34,10 @@ test.describe("Nubi Model Pricing Tab", () => {
       await expect(locators.sourceFilterTrigger).toBeVisible({ timeout: 15000 });
 
       // The rates we ship are the tab's baseline content, so an empty table here
-      // is a real failure rather than an empty tenant.
+      // is a real failure rather than an empty tenant. count() does not retry,
+      // so the first chip has to be on screen before it is read — the card
+      // renders before ListModelPricing comes back.
+      await expect(locators.builtInSourceChips().first()).toBeVisible({ timeout: 30000 });
       expect(await locators.builtInSourceChips().count()).toBeGreaterThan(0);
 
       // Writing a rate is tenant-admin only, so this is also the precondition

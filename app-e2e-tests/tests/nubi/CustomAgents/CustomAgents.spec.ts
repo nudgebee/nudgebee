@@ -33,7 +33,7 @@ const SYSTEM_AGENT_OPTION = /System Agent$/;
 const USER_AGENT_OPTION = /^User Created Agent$/;
 
 test(
-  "Custom Agents sanity - open Nubi Settings, land on the Agents tab, verify the search box, the Agent Type filter, the Create Custom Agent button and the agents table render",
+  "Custom Agents sanity - open Nubi AI & Tools, land on the Agents tab, verify the search box, the Agent Type filter, the Create Custom Agent button and the agents table render",
   { tag: ["@dev", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
@@ -91,7 +91,11 @@ test(
     });
 
     await test.step("The search narrowed to a real set rather than emptying the table", async () => {
-      await expect.poll(async () => countNamed(agents, listed[0]), { timeout: 30000 }).toBe(1);
+      // At least one, not exactly one: agent names are not unique across the
+      // tenant (a shipped system agent and an account's own copy can carry the
+      // same name), and this step is about the row surviving the filter, not
+      // about how many rows the dev tenant happens to hold under that name.
+      await expect.poll(async () => countNamed(agents, listed[0]), { timeout: 30000 }).toBeGreaterThanOrEqual(1);
     });
   }
 );
@@ -212,34 +216,63 @@ test(
 
     const { nubi, agents } = await openAgentsTab(page);
 
-    const listed = await listedAgentNames(agents);
-    expect(listed.length, "the Agents tab listed no agent whose name could be reused").toBeGreaterThan(0);
-    const takenName = listed[0];
+    // The clashing name is one this test creates, not one read off the listing.
+    // The Name cell renders `agent.aliases[0] ?? agent.name` (ListAgents.jsx),
+    // so a shipped agent shows a human title ("GitHub Operations") while the
+    // duplicate check compares against its identifier — typing what the table
+    // shows fails the FORMAT check first ("Name can only contain letters,
+    // numbers, and underscores.") and never reaches the clash. A user-created
+    // agent has no alias, so its listed name IS its identifier.
+    const takenName = uniqueAgentName();
 
-    await nubi.createCustomAgentBtn.click();
-    await expect(agents.createAgentModal).toBeVisible({ timeout: 30000 });
+    try {
+      await test.step("Create the agent whose name the second create will clash with", async () => {
+        await nubi.createCustomAgentBtn.click();
+        await expect(agents.createAgentModal).toBeVisible({ timeout: 30000 });
+        await fillAgentForm(nubi, takenName);
+        await nubi.submitCreateAgentBtn.click();
+        await expect(nubi.successMessage).toBeVisible({ timeout: 30000 });
+        await expect(agents.createAgentModal).toBeHidden({ timeout: 30000 });
+      });
 
-    await nubi.agentNameInput.waitFor({ state: "visible", timeout: 30000 });
-    await nubi.agentNameInput.fill(takenName);
-
-    await test.step("The Name field names the clash as the reason", async () => {
-      // nameValidation runs on every change, so the message is up before submit.
-      await expect(agents.nameFieldError).toContainText("Agent name already exists", { timeout: 15000 });
-    });
-
-    await test.step("Submitting leaves the form open and adds no second agent by that name", async () => {
-      await nubi.submitCreateAgentBtn.click();
-      await expect(agents.createAgentModal).toBeVisible({ timeout: 15000 });
-      await expect(nubi.successMessage).toHaveCount(0, { timeout: 15000 });
-    });
-
-    await agents.agentModalCancelBtn.click();
-    await expect(agents.createAgentModal).toBeHidden({ timeout: 30000 });
-
-    await test.step("The listing still holds exactly one agent under that name", async () => {
+      // The form's duplicate check reads ListAgents' own `allAgentNames`, which
+      // is rebuilt from the listing's data — so the clash below only registers
+      // once the created agent is actually in that listing. Searching for it is
+      // both the proof it persisted and the refetch that puts it there.
       await searchAgents(agents, nubi, takenName);
       await expect.poll(async () => countNamed(agents, takenName), { timeout: 30000 }).toBe(1);
-    });
+      await clearAgentSearch(agents, nubi);
+
+      await nubi.createCustomAgentBtn.click();
+      await expect(agents.createAgentModal).toBeVisible({ timeout: 30000 });
+
+      await nubi.agentNameInput.waitFor({ state: "visible", timeout: 30000 });
+      await nubi.agentNameInput.fill(takenName);
+
+      await test.step("The Name field names the clash as the reason", async () => {
+        // nameValidation runs on every change, so the message is up before submit.
+        await expect(agents.nameFieldError).toContainText("Agent name already exists", { timeout: 15000 });
+      });
+
+      await test.step("Submitting leaves the form open and adds no second agent by that name", async () => {
+        await nubi.submitCreateAgentBtn.click();
+        await expect(agents.createAgentModal).toBeVisible({ timeout: 15000 });
+        // No "did a success toast appear" check here: this test created the
+        // first agent itself, so one is already on screen. The form staying
+        // open and the count below are what prove the second create was
+        // refused.
+      });
+
+      await agents.agentModalCancelBtn.click();
+      await expect(agents.createAgentModal).toBeHidden({ timeout: 30000 });
+
+      await test.step("The listing still holds exactly one agent under that name", async () => {
+        await searchAgents(agents, nubi, takenName);
+        await expect.poll(async () => countNamed(agents, takenName), { timeout: 30000 }).toBe(1);
+      });
+    } finally {
+      await removeAgentIfPresent(agents, nubi, takenName).catch(() => {});
+    }
   }
 );
 

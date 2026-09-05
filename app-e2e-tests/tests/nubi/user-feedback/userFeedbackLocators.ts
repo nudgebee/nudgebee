@@ -34,10 +34,18 @@ export class UserFeedbackLocators extends CommonLocators {
     // top-level group tab and its sub-tabs render through shared/navigation/Tabs
     // (MUI Tabs), so every one of them is a real role=tab even while scrolled out
     // of view. exact:true on the group tab: without it "Insights" would also match
-    // nothing else here, but every sub-tab locator below stays exact for the same
-    // reason the Knowledge group tab does (knowledgeBaseLocators.ts).
+    // nothing else here, but it stays exact for the same reason the Knowledge
+    // group tab does (knowledgeBaseLocators.ts) — and so does every sub-tab
+    // below whose accessible name is not doubled (see Feedback).
     this.insightsGroupTab = page.getByRole("tab", { name: "Insights", exact: true });
-    this.feedbackTab = page.getByRole("tab", { name: "Feedback", exact: true });
+    // Not exact, unlike its two siblings: Tabs.jsx passes the tab's own text as
+    // the icon's `alt`, and Feedback is the one sub-tab here whose icon is an
+    // image asset rather than an MUI icon component (FeedbackBlueIcon in
+    // BCortexModal's INSIGHTS_SUB_TABS_CONFIG) — so its accessible name is
+    // "Feedback Feedback" and an exact match resolves to nothing. The text
+    // filter is what keeps the loose name off "My Usage" or any later sibling
+    // that merely contains the word.
+    this.feedbackTab = page.getByRole("tab", { name: "Feedback" }).filter({ hasText: /^Feedback$/ });
     this.digestsTab = page.getByRole("tab", { name: "Digests", exact: true });
 
     // ListingLayout puts its `id` on the wrapping DS Card, so this is the whole

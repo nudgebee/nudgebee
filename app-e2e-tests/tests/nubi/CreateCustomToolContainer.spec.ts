@@ -11,7 +11,6 @@ const TOOL_DESCRIPTION = "Container-- This is a test tool created for Automation
 const TOOL_DESCRIPTION_UPDATED = "Container-- Updated description by automation.";
 const CONTAINER_IMAGE = "alpine:latest";
 const CONTAINER_COMMAND = "/bin/sh";
-const CONTAINER_ARGS = '-c "echo hello-world"';
 
 test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(180000);
@@ -23,11 +22,10 @@ test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "
   console.log(`Creating Tool with Name: ${dynamicToolName}`);
 
   await loginPage.doFullLogin();
-  await locators.askNudgebeeBtn.click();
-  await locators.aiToolsBtn.click();
+  await locators.openPanel();
+  await locators.openAITools(locators.ToolButton);
   console.log("Navigated to AI & Tools");
 
-  await locators.ToolButton.waitFor({ state: "visible", timeout: 15000 });
   await locators.ToolButton.click();
   console.log("Clicked Tools tab");
 
@@ -45,7 +43,6 @@ test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "
   await locators.ToolDescription.fill(TOOL_DESCRIPTION);
   await locators.ContainerImage.fill(CONTAINER_IMAGE);
   await locators.ContainerCommand.fill(CONTAINER_COMMAND);
-  await locators.ContainerArguments.fill(CONTAINER_ARGS);
 
   await waitForGraphQLAndValidate(
     page,

@@ -2,7 +2,7 @@
 import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 
-// Nubi > Settings > Egress Filter (app/src/ee/components/egress-filter/EgressFilterTab.tsx).
+// Nubi > AI & Tools > Egress Filter (app/src/ee/components/egress-filter/EgressFilterTab.tsx).
 // The tab renders six data-testids — the excluded-agents empty note, the PII
 // category chips, the per-row pattern edit/delete pair and the pattern dialog's
 // save button — so those are the primary wherever they apply. Everything else is
@@ -45,14 +45,16 @@ export class EgressFilterLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // The Nubi panel entry point and its Settings button are not redeclared —
+    // The Nubi panel entry point and its "AI & Tools" button are not redeclared —
     // tests/nubi/nubiLocators.ts owns them and openEgressFilterTab() drives that
-    // class to reach the modal.
+    // class to reach the modal. Egress Filter is one of AI & Tools' sub-tabs
+    // now (aiToolsConfig.js), and Agents is the sibling
+    // remountEgressFilterTab() switches away to.
     this.egressFilterTab = page.getByRole("tab", { name: "Egress Filter" });
     this.agentsTab = page.getByRole("tab", { name: "Agents" });
 
-    // The tab body carries no id, so the Settings dialog's own MUI paper is the
-    // container every scoped fallback below hangs off. Matched by class + text
+    // The tab body carries no id, so the AI & Tools dialog's own MUI paper is
+    // the container every scoped fallback below hangs off. Matched by class + text
     // rather than getByRole("dialog") because MUI marks a background dialog
     // aria-hidden the moment the pattern dialog opens, which drops it out of
     // every role-based query while it is still perfectly present in the DOM.
@@ -101,7 +103,7 @@ export class EgressFilterLocators extends CommonLocators {
       .first();
 
     // ds/Modal portals to <body>, so the pattern dialog is a DOM sibling of the
-    // Settings dialog rather than a descendant, and both stamp the same
+    // AI & Tools dialog rather than a descendant, and both stamp the same
     // #alert-dialog-title id — hence the filter on the title text.
     this.patternDialog = page.getByRole("dialog").filter({ hasText: /(New|Edit) custom pattern/ }).first();
     this.newPatternDialog = page.getByRole("dialog").filter({ hasText: "New custom pattern" }).first();

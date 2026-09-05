@@ -9,6 +9,7 @@ import {
   hasModuleFilter,
   hasUsefulFilter,
   nextFeedbackQuery,
+  nextFeedbackQueryMatching,
   openUserFeedbackTab,
   remountUserFeedbackTab,
   windowOf,
@@ -25,7 +26,7 @@ const DAY_MS = 24 * HOUR_MS;
 
 test.describe("Nubi User Feedback Tab", () => {
   test(
-    "User Feedback sanity - open Nubi Settings, select the User Feedback tab, verify the listing renders the feedback columns, both filters and the date range control",
+    "User Feedback sanity - open Nubi b-Cortex, select the Insights Feedback tab, verify the listing renders the feedback columns, both filters and the date range control",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
@@ -149,15 +150,19 @@ test.describe("Nubi User Feedback Tab", () => {
       test.setTimeout(180000);
       const { locators, log } = await openUserFeedbackTab(page);
 
+      const beforeModule = log.queries.length;
       await locators.chooseFilter(locators.moduleFilterTrigger, MODULE_LOKI.label);
+      // Settle the module refetch before the second filter is applied, so the
+      // read below cannot land on it instead of the two-condition query.
+      await nextFeedbackQueryMatching(log, beforeModule, (q) => hasModuleFilter(q, MODULE_LOKI.value), `the ${MODULE_LOKI.label} module filter`);
+
       const afterModule = log.queries.length;
       await locators.chooseFilter(locators.usefulFilterTrigger, "Yes");
-      const query = await nextFeedbackQuery(log, afterModule);
+      const query = await nextFeedbackQueryMatching(log, afterModule, (q) => hasUsefulFilter(q, true), "the committed useful=yes filter");
 
       // Both triggers keep their selection, so the second filter must narrow the
       // first rather than replace it.
       expect(hasModuleFilter(query, MODULE_LOKI.value)).toBe(true);
-      expect(hasUsefulFilter(query, true)).toBe(true);
       await expect(locators.moduleFilterTrigger).toContainText(MODULE_LOKI.label);
       await expect(locators.usefulFilterTrigger).toContainText("Yes");
     }
@@ -170,7 +175,12 @@ test.describe("Nubi User Feedback Tab", () => {
       test.setTimeout(180000);
       const { locators, log } = await openUserFeedbackTab(page);
 
+      const beforeModule = log.queries.length;
       await locators.chooseFilter(locators.moduleFilterTrigger, MODULE_PROMETHEUS.label);
+      // Settle the module refetch first: the clear-filter assertion is a
+      // negative one, and a still-in-flight filtered response would satisfy
+      // "the next query" and fail it.
+      await nextFeedbackQueryMatching(log, beforeModule, (q) => hasModuleFilter(q, MODULE_PROMETHEUS.value), `the ${MODULE_PROMETHEUS.label} module filter`);
       const afterModule = log.queries.length;
 
       await locators.clearControl(locators.moduleFilterTrigger).click();
@@ -213,7 +223,11 @@ test.describe("Nubi User Feedback Tab", () => {
       test.setTimeout(180000);
       const { locators, log } = await openUserFeedbackTab(page);
 
+      const beforeModule = log.queries.length;
       await locators.chooseFilter(locators.moduleFilterTrigger, MODULE_ELASTICSEARCH.label);
+      // Settle the module refetch first, for the same reason as the clear case:
+      // the assertion after the remount is a negative one.
+      await nextFeedbackQueryMatching(log, beforeModule, (q) => hasModuleFilter(q, MODULE_ELASTICSEARCH.value), `the ${MODULE_ELASTICSEARCH.label} module filter`);
       const afterModule = log.queries.length;
 
       await remountUserFeedbackTab(locators);
