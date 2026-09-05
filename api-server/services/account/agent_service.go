@@ -138,7 +138,14 @@ type AgentDetailsFeatures struct {
 	// (spend.setOpenCostServerSide). It is true when OpenCost is collected
 	// server-side for this cluster (the migrated default, agent OpenCost off);
 	// not reported by the agent itself.
-	OpencostServerSide      *bool          `json:"opencostServerSide" mapstructure:"opencostServerSide"`
+	OpencostServerSide *bool `json:"opencostServerSide" mapstructure:"opencostServerSide"`
+	// ProviderStatus is a server-managed record of which provider actually serves
+	// each signal (logs / metrics / traces) and, for the ones served by a non-agent
+	// integration, whether that integration passed its own validation probe. Written
+	// by observability.RefreshProviderStatus on a cron, never by the agent. Kept as
+	// pass-through JSONB: the Agent Details page reads it straight from
+	// connection_status, and typing it here would duplicate that contract.
+	ProviderStatus          map[string]any `json:"providerStatus" mapstructure:"providerStatus"`
 	OpencostUrl             *string        `json:"opencostUrl" mapstructure:"opencostUrl"`
 	PrometheusConnection    *bool          `json:"prometheusConnection" mapstructure:"prometheusConnection"`
 	PrometheusRetentionTime *string        `json:"prometheusRetentionTime" mapstructure:"prometheusRetentionTime"`
@@ -164,6 +171,13 @@ func init() {
 }
 
 var inFlightUpdates sync.Map // key: accountId, value: struct{}
+
+// InvalidateAgentCache drops the cached AgentDetails for one account, so a writer
+// that changed the agent row (e.g. observability's provider-status stamp) is not
+// shadowed by this package's 15-minute cache until it expires.
+func InvalidateAgentCache(accountId string) error {
+	return common.CacheDelete(agentCacheNamespace, accountId)
+}
 
 func GetAgentConnectionDetails(accountId string) (AgentDetails, error) {
 	if accountId == "" {

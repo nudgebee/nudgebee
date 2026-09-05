@@ -215,6 +215,7 @@ export interface AccountScopedSearchFragment {
 
 export const accountScopedSearchFragments: AccountScopedSearchFragment[] = [
   { label: 'Agent', slug: 'agent-health/agent', fragment: 'agent', basePath: '/agentHealth', group: 'Agent Health' },
+  { label: 'Observability', slug: 'agent-health/observability', fragment: 'observability', basePath: '/agentHealth', group: 'Agent Health' },
   { label: 'Proxy Agent', slug: 'agent-health/proxy-agent', fragment: 'proxy-agent', basePath: '/agentHealth', group: 'Agent Health' },
 ];
 

@@ -48,6 +48,7 @@ import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
 import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
+import { checkConnections } from '@shared/widgets/ClusterStatusIndicator';
 import { AgentIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
 import {
   navSearchPages,
@@ -406,43 +407,10 @@ const MENTION_PROVIDER_ORDER = (provider) => {
   return 999;
 };
 
-const isConnectedUsingDate = (lastConnectedDateStr) => {
-  if (!lastConnectedDateStr) {
-    return false;
-  }
-  const lastConnectedDate = new Date(lastConnectedDateStr);
-  return new Date().getTime() - lastConnectedDate.getTime() < 2 * 24 * 3600 * 1000;
-};
-
-const checkAccountConnections = (account) => {
-  if (account.cloud_provider?.toLowerCase() != 'k8s') {
-    const connectionStatus = account.agent?.connection_status;
-    if (!connectionStatus) {
-      return account.agent?.status === 'CONNECTED';
-    }
-    const servicesStatus = {
-      events: isConnectedUsingDate(connectionStatus?.events?.end),
-      resources: isConnectedUsingDate(connectionStatus?.resources?.updated_at),
-      recommendations: isConnectedUsingDate(connectionStatus?.recommendations?.updated_at),
-      spends: isConnectedUsingDate(connectionStatus?.spends?.updated_at),
-    };
-    return Object.values(servicesStatus).every((status) => status === true);
-  }
-  const connectionStatus = account.agent?.connection_status;
-  if (!connectionStatus) {
-    return false;
-  }
-  const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
-  for (const prop of requiredProps) {
-    if (!connectionStatus[prop]) {
-      return false;
-    }
-  }
-  if (!connectionStatus.opencostConnection && !connectionStatus.opencostServerSide) {
-    return false;
-  }
-  return true;
-};
+// Ranking uses the same verdict the status dot renders. It lived here as a copy and drifted
+// — the copy never learned about opencostServerSide or self-hosted fleets, and would not
+// have learned about integration-served signals either.
+const checkAccountConnections = (account) => checkConnections(account);
 
 const getAccountConnectionPriority = (account) => {
   if (account.agent?.status === 'CONNECTED') {

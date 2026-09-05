@@ -4,6 +4,7 @@ import apiKubernetes from '@api1/kubernetes';
 import apiHome from '@api1/home';
 import apiOverview from '@api1/overview';
 import ClusterViewCard from '@components/k8s/common/ClusterViewCard';
+import { checkConnections } from '@shared/widgets/ClusterStatusIndicator';
 import KubernetesMemoryCpuOverView, { CpuMemorySkeleton } from '@components/k8s/common/KubernetesMemoryCpuOverView';
 import KubernetesIssuesOverView from '@components/k8s/common/KubernetesIssuesOverView';
 import KubernetesSaving from '@components/k8s/common/KubernetesSaving';
@@ -104,15 +105,6 @@ const AccountOverview = () => {
 
   const sortedClusters = useMemo(() => {
     if (!k8sClusters?.length) return k8sClusters || [];
-
-    const checkConnections = (clusterEntry) => {
-      const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
-      for (const prop of requiredProps) {
-        if (!clusterEntry?.agent?.connection_status?.[prop]) return false;
-      }
-      const connectionStatus = clusterEntry?.agent?.connection_status;
-      return !!(connectionStatus?.opencostConnection || connectionStatus?.opencostServerSide);
-    };
 
     const getConnectionPriority = (clusterEntry) => {
       if (clusterEntry?.agent?.status === 'CONNECTED') {

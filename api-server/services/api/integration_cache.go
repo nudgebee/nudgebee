@@ -1,10 +1,61 @@
 package api
 
 import (
+	"context"
 	"nudgebee/services/llm"
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
+	"time"
 )
+
+// providerStatusRefreshTimeout bounds the post-save provider re-check. It probes at
+// most three backends, each capped by its own integration timeout (15s for Loki),
+// so this is a backstop against a hung probe leaking the goroutine, not a budget.
+const providerStatusRefreshTimeout = 2 * time.Minute
+
+// onIntegrationConfigChanged is the single hook for everything that must happen after
+// an integration mutation lands. Handlers call this, not the individual steps below —
+// see the invalidateIntegrationCaches comment for what hand-maintained call sites
+// cost us the last four times.
+//
+// Empty accountIds is a no-op, and ctx is only dereferenced past that check: a
+// tenant-scoped integration (llm_gateway, ticketing) legitimately has no accounts.
+func onIntegrationConfigChanged(ctx *security.RequestContext, accountIds []string) {
+	if len(accountIds) == 0 {
+		return
+	}
+	invalidateIntegrationCaches(ctx, accountIds)
+	refreshProviderStatusAsync(ctx, accountIds)
+}
+
+// refreshProviderStatusAsync re-checks which provider serves each signal for these
+// accounts, and probes the non-agent ones, so the Agent Details page reflects a
+// just-connected (or just-removed) backend instead of waiting up to a cron interval.
+//
+// Detached and best-effort: it runs external HTTP probes, so it must not sit in the
+// request path, and the caller has already responded. The request context is
+// cancelled the moment that response completes, hence WithoutCancel.
+func refreshProviderStatusAsync(ctx *security.RequestContext, accountIds []string) {
+	if len(accountIds) == 0 {
+		return
+	}
+	detached, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx.GetContext()),
+		providerStatusRefreshTimeout,
+	)
+	bgCtx := security.NewRequestContext(detached, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				bgCtx.GetLogger().Error("integrations: provider status refresh panicked", "panic", r)
+			}
+		}()
+		if err := observability.RefreshProviderStatus(bgCtx, accountIds); err != nil {
+			bgCtx.GetLogger().Warn("integrations: provider status refresh failed (best-effort)", "error", err)
+		}
+	}()
+}
 
 // invalidateIntegrationCaches drops every integration-derived cache for the given
 // accounts. It is the single place that list lives: an integration mutation changes

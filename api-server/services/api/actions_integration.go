@@ -9,7 +9,6 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
-	"nudgebee/services/llm"
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/user"
@@ -125,6 +124,26 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		// Capture the accounts linked BEFORE the save. CreateIntegrationConfig doubles
+		// as the update path and unlinks every account absent from request.AccountIds,
+		// so those accounts' cached provider/tool state goes stale — and they are, by
+		// definition, the accounts the request does not name. Post-mutation their link
+		// rows are gone, so this has to run first. Looked up by id, not name, because
+		// the same call can rename the integration. Mirrors the pre-mutation lookup in
+		// integrations_delete_config.
+		var preSaveAccountIds []string
+		if ids, lerr := core.ListLinkedCloudAccountIDsByIntegrationID(ctx, request.IntegrationId); lerr != nil {
+			// Error level (not Warn): see integrations_delete_config rationale —
+			// silent staleness is the failure mode this lookup exists to prevent.
+			ctx.GetLogger().Error("integrations: failed to list linked accounts before save (best-effort, cache will stay stale until TTL)",
+				"error", lerr,
+				"tenant_id", ctx.GetSecurityContext().GetTenantId(),
+				"integration_id", request.IntegrationId,
+				"integration_name", request.IntegrationName)
+		} else {
+			preSaveAccountIds = ids
+		}
+
 		resp, err := core.CreateIntegrationConfig(ctx, request.IntegrationId, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigValues, request.Tags, request.AccountIds, request.SkipValidation, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -134,10 +153,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, resp)
 		// Audit is persisted by core.CreateIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		llm.InvalidateLLMServerCacheForAccounts(ctx, request.AccountIds)
-		for _, accId := range request.AccountIds {
-			observability.InvalidateDefaultLogFiltersCache(accId)
-		}
+		onIntegrationConfigChanged(ctx, mergeAccountIds(request.AccountIds, preSaveAccountIds))
 		// Only announce on a genuine new binding (create). A config update of an
 		// existing space (e.g. toggling is_default) carries an IntegrationId and
 		// must not re-post the "now connected" card into the space.
@@ -194,10 +210,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, map[string]string{"status": "success"})
 		// Audit is persisted by core.DeleteIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		llm.InvalidateLLMServerCacheForAccounts(ctx, affectedAccountIds)
-		for _, accId := range affectedAccountIds {
-			observability.InvalidateDefaultLogFiltersCache(accId)
-		}
+		onIntegrationConfigChanged(ctx, affectedAccountIds)
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "unbound")
 		}
@@ -311,7 +324,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 				"integration_name", request.IntegrationName,
 				"integration_config_name", request.IntegrationConfigName)
 		} else {
-			llm.InvalidateLLMServerCacheForAccounts(ctx, ids)
+			onIntegrationConfigChanged(ctx, ids)
 		}
 		return
 

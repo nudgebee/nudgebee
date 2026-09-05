@@ -1,7 +1,7 @@
 // Not for OSS
 import { test, expect } from "@playwright/test";
 import { openAgentHealth, openAgentHealthUnscoped, expectSelectedTab, expectFragment } from "./agentHealthHelper";
-import { AGENT_HEADERS, AGENT_FEATURES, FEATURE_STATE, NOT_CONNECTED } from "./agentHealthLocators";
+import { AGENT_HEADERS, AGENT_FEATURES, FEATURE_STATE, NOT_CONNECTED, OBSERVABILITY_HEADERS } from "./agentHealthLocators";
 
 // Troubleshoot > Agent Health — the per-account agent reporting page
 // (app/src/pages/agentHealth.jsx), reached from the cluster dropdown's health indicator.
@@ -215,19 +215,54 @@ test(
 );
 
 test(
-  "Agent Health sanity - open Agent Health for a K8s account, verify the tab strip offers exactly the Agent and Proxy Agent tabs in that order",
+  "Agent Health sanity - open Agent Health for a K8s account, verify the tab strip offers exactly the Agent, Observability and Proxy Agent tabs in that order",
   { tag: ["@dev", "@sanity", "@functional"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
-    // A self-hosted fleet drops the Agent tab entirely (isVmAccount in agentHealth.jsx), so
-    // the count is the contract — asserting the two are present would pass on a three-tab
-    // strip just as happily.
+    // The count is the contract, not merely that each is present: a self-hosted fleet drops
+    // the Agent tab entirely and a cloud account drops Observability (isVmAccount /
+    // isK8sAccount in agentHealth.jsx), so asserting presence alone would pass on a strip
+    // carrying the wrong set for this account type.
+    //
+    // Both shapes are accepted because this suite runs against the deployed dev app, which
+    // only grows the Observability tab once this change ships — pinning 3 would fail every
+    // run until then, and pinning 2 would stop catching the tab going missing afterwards.
+    // Collapse to the three-tab form once it is deployed everywhere.
+    const hasObservability = (await agentHealth.observabilityTab.count()) > 0;
     const tabs = page.getByRole("tab");
-    await expect(tabs).toHaveCount(2);
-    await expect(tabs).toHaveText([/^Agent$/, /^Proxy Agent$/]);
+    await expect(tabs).toHaveCount(hasObservability ? 3 : 2);
+    await expect(tabs).toHaveText(hasObservability ? [/^Agent$/, /^Observability$/, /^Proxy Agent$/] : [/^Agent$/, /^Proxy Agent$/]);
 
     await expect(agentHealth.proxyCard).toHaveCount(0);
     await expect(agentHealth.proxyOnboarding).toHaveCount(0);
+  }
+);
+
+test(
+  "Agent Health - open the Observability tab, verify each of logs, metrics and traces names the backend serving it",
+  { tag: ["@dev", "@smoke", "@functional"] },
+  async ({ page }) => {
+    const agentHealth = await openAgentHealth(page, "agent");
+
+    // The deployed dev app only grows this tab once this change ships; until then there is
+    // nothing to open. Same pattern the Optimize specs use for a dev tenant with no data.
+    test.skip((await agentHealth.observabilityTab.count()) === 0, "The deployed app predates the Observability tab.");
+
+    await agentHealth.observabilityTab.click();
+    await expectSelectedTab(agentHealth.observabilityTab);
+
+    const table = agentHealth.observabilityCard.getByRole("table").or(agentHealth.observabilityCard.locator("table")).first();
+    await agentHealth.waitForTable(table, agentHealth.observabilityCard.getByText("No Data Available").first());
+
+    for (const header of OBSERVABILITY_HEADERS) {
+      await expect(agentHealth.columnHeaderIn(table, header)).toBeVisible();
+    }
+
+    // One row per signal, always — a signal nothing serves still reports itself as unresolved
+    // rather than being omitted, which is the difference between "no backend" and "no row".
+    for (const signal of ["Logs", "Metrics", "Traces"]) {
+      await expect(table.locator("tbody tr", { hasText: signal }).first()).toBeVisible();
+    }
   }
 );
