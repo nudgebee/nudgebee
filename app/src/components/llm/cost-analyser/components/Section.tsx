@@ -6,6 +6,7 @@
 import * as React from 'react';
 import { Box } from '@mui/material';
 import { Card } from '@ui/Card';
+import { ds } from '@utils/colors';
 
 interface SectionHeaderProps {
   title: React.ReactNode;
@@ -51,7 +52,7 @@ export function SectionHeader({ title, subtitle, icon, right, dense }: SectionHe
           >
             {title}
           </Box>
-          {subtitle && <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: '2px' }}>{subtitle}</Box>}
+          {subtitle && <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', mt: ds.space[0] }}>{subtitle}</Box>}
         </Box>
       </Box>
       {right && <Box sx={{ flexShrink: 0 }}>{right}</Box>}

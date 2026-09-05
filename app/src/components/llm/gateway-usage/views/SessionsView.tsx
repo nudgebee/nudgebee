@@ -11,6 +11,7 @@
  */
 import * as React from 'react';
 import { Box, CircularProgress } from '@mui/material';
+import { ds } from '@utils/colors';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
@@ -112,7 +113,7 @@ function SessionCell({ s, onDrill }: { s: GatewaySession; onDrill: (id: string) 
   const exact = s.session_source === 'header' || s.session_source === 'metadata.session_id' || s.session_source === 'metadata.user_id';
   const short = s.session_id.length > 12 ? s.session_id.slice(0, 12) + '…' : s.session_id;
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: '2px' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: ds.space[0] }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', minWidth: 0 }}>
         <Box
           component='button'

@@ -688,7 +688,7 @@ const KnowledgeBaseFormModal = ({
                     bottom: ds.space[2],
                     right: ds.space[3],
                     px: ds.space[2],
-                    py: '2px',
+                    py: ds.space[0],
                     borderRadius: ds.radius.sm,
                     backgroundColor: 'var(--ds-red-500)',
                     color: 'var(--ds-background-100)',

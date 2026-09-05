@@ -49,7 +49,7 @@ function InfoRow({ icon, label, children }: { icon: React.ReactNode; label: stri
       {/* Box, not Typography: the "Where it goes" row nests its own Typography/Chip
           (WhereItGoes) for the live channel-status line, and Typography-in-Typography
           renders a <p> inside a <p> — invalid HTML and a React DOM-nesting warning. */}
-      <Box sx={{ ...BODY_SX, mt: '4px' }}>{children}</Box>
+      <Box sx={{ ...BODY_SX, mt: ds.space[1] }}>{children}</Box>
     </Box>
   );
 }

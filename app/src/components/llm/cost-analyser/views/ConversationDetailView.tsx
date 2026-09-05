@@ -7,6 +7,7 @@
  */
 import * as React from 'react';
 import { Box, CircularProgress, Collapse, Drawer } from '@mui/material';
+import { ds } from '@utils/colors';
 import CloseIcon from '@mui/icons-material/Close';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
@@ -96,7 +97,7 @@ const STATUS_TONE: Record<RunStatus, 'success' | 'critical' | 'warning' | 'neutr
 
 function SummaryStat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 110 }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[0], minWidth: 110 }}>
       <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>{label}</Box>
       <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-medium)' }}>{children}</Box>
     </Box>
@@ -286,7 +287,7 @@ const fmtBytes = (b: number): string => (b >= 1024 ? `${(b / 1024).toFixed(1)} K
 /** Compact "label value" metadata pair for the trace header strip. */
 function MetaChip({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: '4px', fontSize: 'var(--ds-text-caption)' }}>
+    <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1], fontSize: 'var(--ds-text-caption)' }}>
       <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>
         {label}
       </Box>
@@ -681,7 +682,7 @@ const ComponentNode = React.memo(function ComponentNode({
         sx={{
           display: 'flex',
           flexDirection: 'column',
-          gap: '4px',
+          gap: ds.space[1],
           py: 'var(--ds-space-2)',
           pl: `calc(${depth} * var(--ds-space-4))`,
           cursor: 'pointer',
@@ -1268,7 +1269,7 @@ function PromptTraceModal({
                     background: 'transparent',
                     cursor: 'pointer',
                     color: 'var(--ds-gray-500)',
-                    padding: '2px',
+                    padding: ds.space[0],
                     '&:hover': { color: 'var(--ds-gray-700)' },
                   }}
                 >
@@ -1501,7 +1502,7 @@ function ToolCallsTable({ tools }: { tools: StepToolCall[] }) {
 function ExecBlock({ label, text }: { label: string; text: string }) {
   if (!text) return null;
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[0] }}>
       <Box sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-600)' }}>{label}</Box>
       <Box
         sx={{
@@ -1852,7 +1853,7 @@ const AGENT_DETAIL_TABS = (['detail', 'models', 'tools'] as const).map((mode, i)
 function TaskCell({ step }: { step: Step }) {
   const lineage = step.parentAgentName ? `from ${step.parentAgentName}` : '';
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[0], minWidth: 0 }}>
       <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
         <Box component='span' sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-medium)' }}>
           {step.agent}
@@ -1982,7 +1983,7 @@ function StepBreakdown({ run, conversationId, accountId }: { run: Run; conversat
       { component: <StepModels models={models === 0 ? [] : agentModels.get(step.stepId)} loading={modelsResolving} /> },
       {
         component: (
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[0] }}>
             <Box sx={cellNum}>{models + toolCalls}</Box>
             <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
               Model: {models} · Tool: {toolCalls}

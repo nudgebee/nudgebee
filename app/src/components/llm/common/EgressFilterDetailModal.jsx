@@ -26,6 +26,7 @@
  */
 import * as React from 'react';
 import { Box } from '@mui/material';
+import { ds } from '@utils/colors';
 import PropTypes from 'prop-types';
 import { Modal } from '@ui/Modal';
 import { Chip } from '@ui/Chip';
@@ -263,7 +264,7 @@ const valueBoxSx = {
   bgcolor: 'var(--ds-gray-100)',
   borderRadius: 'var(--ds-radius-sm, 4px)',
   px: 'var(--ds-space-1)',
-  py: '2px',
+  py: ds.space[0],
 };
 
 /**
@@ -289,7 +290,7 @@ const ValueRow = ({ detail }) => {
         )}
         {Number(length) > 0 && <Box sx={descSx}>{length} chars</Box>}
       </Box>
-      <Box sx={{ ...descSx, mt: '2px' }}>
+      <Box sx={{ ...descSx, mt: ds.space[0] }}>
         {[
           'from ' + (SOURCE_HINTS[source] || source || 'unknown source'),
           agent && 'agent: ' + agent,
