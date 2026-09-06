@@ -1,8 +1,7 @@
 # Large knowledge documents: workspace-backed selective reading
 
 Part of #36421 and draft PR #37785. Status: implemented behind
-`LLM_SERVER_KNOWLEDGE_WORKSPACE_ENABLED=false` (default). Deploy compatible
-RAG and workspace images before enabling the LLM-server flag.
+`LLM_SERVER_KNOWLEDGE_WORKSPACE_ENABLED=false` (default). Deploy a compatible RAG image before enabling the LLM-server flag. Existing workspace file APIs are used; no knowledge-specific workspace endpoint is required.
 
 ## Retrieval contract
 
@@ -17,11 +16,9 @@ name. Integration names return scoped document candidates; the next selection
 fetches that exact indexed point, without another semantic search. Manual
 selection reads the active account row in version-checked SQL chunks.
 
-Documents up to 4 KiB remain inline. Larger documents stream through a temporary
-file into the conversation workspace using a raw upload, with SHA256 verification
-and atomic publication. The temporary file is deleted on success and failure.
+Documents up to 4 KiB remain inline. Larger documents are fetched into a bounded temporary file, then saved through the existing JSON file API. Source content and selective reads are SHA256-verified. JSON upload buffers the body; two concurrent materializations per llm-server process bound memory pressure. The existing file API does not provide atomic publication or a knowledge-specific storage quota. The temporary file is deleted on success and failure.
 The candidate cache retains the workspace handle, not the document body.
-Identical workspace uploads reuse an intact file; changed files are rejected.
+Filenames include source identity and content hash. Cached selective reads reject changed files. Shell-enabled agents can use grep/tail on the returned path; restricted agents retain load_skills reads.
 
 `load_skills(skill_name=<handle>, keyword=<literal>)` performs a case-insensitive
 search. `start_line` selects a 1-based line range; it can also narrow keyword
@@ -37,8 +34,7 @@ knowledge-specific recall instructions label them reference documentation.
 - Serialized candidate: 32 KiB, 30-minute TTL, account/conversation/turn scope.
 - Knowledge discovery HTTP response: 1 MiB maximum, including old servers.
 - Indexed/manual document transfer and workspace read: 32 MiB maximum.
-- Workspace knowledge storage: 128 MiB per conversation; uploads serialize quota
-  checks and atomic publication. Files follow existing workspace cleanup.
+- Workspace files follow existing storage and cleanup rules. There is no separate knowledge quota with the general save API.
 - Selection/read deadline: 90 seconds, including lazy workspace provisioning.
 - Read results: 8 KiB / 100 fragments, plus bounded title/handle instructions.
 
