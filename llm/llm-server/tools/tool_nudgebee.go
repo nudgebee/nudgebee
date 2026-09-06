@@ -24,9 +24,27 @@ const (
 	nudgebeeDocsNoResult        = "No matching Nudgebee product documentation was found for this query."
 )
 
+type nudgebeeProviderErrorClassification struct {
+	reasonCode string
+	summary    string
+	patterns   []string
+}
+
 var (
-	queryNudgebeeDocs = core.QueryRAG
-	nudgebeeHTMLTags  = regexp.MustCompile(`(?i)</?[a-z](?:[^'">]|"[^"]*"|'[^']*')*?>`)
+	queryNudgebeeDocs                    = core.QueryRAG
+	nudgebeeHTMLTags                     = regexp.MustCompile(`(?i)</?[a-z](?:[^'">]|"[^"]*"|'[^']*')*?>`)
+	nudgebeeHTTPStatusCode               = regexp.MustCompile(`(?i)\b(?:http(?: status)?|status(?: code)?|response|returned|googleapi: error)\s*[:=]?\s*(401|403|502|503)\b`)
+	nudgebeeProviderErrorClassifications = []nudgebeeProviderErrorClassification{
+		{reasonCode: "AUTHENTICATION_FAILED", summary: "The provider rejected authentication.", patterns: []string{"authentication failed", "authenticationfailed", "invalid client secret", "invalidclientsecret", "invalid_client", "invalid credentials", "unauthenticated", "authfailure", "invalidclienttokenid", "signaturedoesnotmatch", "expiredtoken", "tokenexpired", "invalidaccesskeyid", "unrecognizedclientexception"}},
+		{reasonCode: "AUTHORIZATION_FAILED", summary: "The provider denied permission.", patterns: []string{"authorization failed", "authorizationfailed", "authorizationpermissiondenied", "linkedauthorizationfailed", "permission denied", "permissiondenied", "access denied", "accessdenied", "forbidden", "insufficient permission", "not authorized", "unauthorizedoperation"}},
+		{reasonCode: "DNS_FAILED", summary: "The provider endpoint could not be resolved.", patterns: []string{"no such host", "name resolution", "nxdomain", "servfail", "dns lookup"}},
+		{reasonCode: "TLS_FAILED", summary: "TLS or certificate validation failed.", patterns: []string{"tls handshake", "x509", "certificate signed", "certificate verify", "certificate validation", "certificate has expired", "ssl certificate"}},
+		{reasonCode: "TIMEOUT", summary: "The provider request timed out.", patterns: []string{"context deadline exceeded", "deadline exceeded", "i/o timeout", "request timeout", "request timed out", "connection timed out"}},
+		{reasonCode: "ENDPOINT_UNREACHABLE", summary: "The provider endpoint could not be reached.", patterns: []string{"connection refused", "no route to host", "network unreachable", "endpoint unreachable"}},
+		{reasonCode: "INVALID_CONFIGURATION", summary: "The provider configuration is invalid or incomplete.", patterns: []string{"invalid configuration", "invalid config", "missing required", "malformed configuration", "invalid endpoint", "invalid subscription", "invalid project"}},
+		{reasonCode: "PROVIDER_UNAVAILABLE", summary: "The provider service was unavailable.", patterns: []string{"service unavailable", "provider unavailable", "temporarily unavailable", "bad gateway"}},
+		{reasonCode: "NO_RECENT_DATA", summary: "No recent provider data was received.", patterns: []string{"no recent data", "stale data", "no data received"}},
+	}
 )
 
 const (
@@ -86,7 +104,7 @@ func (NudgebeeAgentHealthGetTool) InferToolRequestType(ctx *security.RequestCont
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeAgentHealthGetTool) Description() string {
-	return "Get Nudgebee-recorded agent or collector health for one visible account: normalized deployment model and health verdicts, heartbeat or synchronization status, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
+	return "Get Nudgebee-recorded agent or collector health for one visible account: normalized deployment model and health verdicts, heartbeat or synchronization status, bounded provider failure reason, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
 }
 func (NudgebeeAgentHealthGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
@@ -142,6 +160,12 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		featureHealth := nudgebeeFeatureHealth(features)
 		row["feature_health"] = featureHealth
 		row["overall_health"] = nudgebeeRowHealth(row["type"], row["status"], featureHealth)
+		if row["deployment_model"] == "agentless_cloud" {
+			if healthError, ok := nudgebeeHealthError(row["status_message"]); ok {
+				row["health_error"] = healthError
+				row["status_message"] = healthError["summary"]
+			}
+		}
 		delete(row, "connection_status")
 		normalizedRows = append(normalizedRows, row)
 	}
@@ -152,6 +176,36 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		return triageErrorResponse(errors.New("nudgebee: could not format agent health")), nil
 	}
 	return triageResponse(string(encoded)), nil
+}
+
+func nudgebeeHealthError(value any) (map[string]string, bool) {
+	rawMessage, ok := value.(string)
+	if !ok {
+		return nil, false
+	}
+	message := strings.ToLower(strings.TrimSpace(rawMessage))
+	if message == "" {
+		return nil, false
+	}
+
+	for _, candidate := range nudgebeeProviderErrorClassifications {
+		for _, pattern := range candidate.patterns {
+			if strings.Contains(message, pattern) {
+				return map[string]string{"reason_code": candidate.reasonCode, "summary": candidate.summary}, true
+			}
+		}
+	}
+	if matches := nudgebeeHTTPStatusCode.FindStringSubmatch(message); len(matches) == 2 {
+		switch matches[1] {
+		case "401":
+			return map[string]string{"reason_code": "AUTHENTICATION_FAILED", "summary": "The provider rejected authentication."}, true
+		case "403":
+			return map[string]string{"reason_code": "AUTHORIZATION_FAILED", "summary": "The provider denied permission."}, true
+		case "502", "503":
+			return map[string]string{"reason_code": "PROVIDER_UNAVAILABLE", "summary": "The provider service was unavailable."}, true
+		}
+	}
+	return map[string]string{"reason_code": "UNKNOWN_FAILURE", "summary": "The provider health check failed."}, true
 }
 
 func nudgebeeDeploymentModel(value any) string {

@@ -289,6 +289,99 @@ func TestNudgebeeHealthNormalization(t *testing.T) {
 	assert.Equal(t, overall, reversedOverall)
 }
 
+func TestNudgebeeHealthErrorClassification(t *testing.T) {
+	tests := []struct {
+		message string
+		want    string
+	}{
+		{message: "ClientSecretCredential authentication failed: RESPONSE 401 Unauthorized; permission denied", want: "AUTHENTICATION_FAILED"},
+		{message: "operation error STS: InvalidClientTokenId", want: "AUTHENTICATION_FAILED"},
+		{message: "ExpiredTokenException: the security token expired", want: "AUTHENTICATION_FAILED"},
+		{message: "request failed: HTTP 403 Forbidden", want: "AUTHORIZATION_FAILED"},
+		{message: "AccessDeniedException on the CUR bucket", want: "AUTHORIZATION_FAILED"},
+		{message: "rpc error: code = PermissionDenied", want: "AUTHORIZATION_FAILED"},
+		{message: "AuthorizationFailed for subscription", want: "AUTHORIZATION_FAILED"},
+		{message: "dial tcp: DNS lookup: no such host", want: "DNS_FAILED"},
+		{message: "x509: certificate signed by unknown authority", want: "TLS_FAILED"},
+		{message: "context deadline exceeded", want: "TIMEOUT"},
+		{message: "dial tcp: connection refused", want: "ENDPOINT_UNREACHABLE"},
+		{message: "invalid configuration: missing required region", want: "INVALID_CONFIGURATION"},
+		{message: "503 Service Unavailable", want: "PROVIDER_UNAVAILABLE"},
+		{message: "no recent data was received", want: "NO_RECENT_DATA"},
+		{message: "provider returned an unfamiliar failure", want: "UNKNOWN_FAILURE"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			got, ok := nudgebeeHealthError(tc.message)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, got["reason_code"])
+			assert.NotEmpty(t, got["summary"])
+		})
+	}
+	for _, empty := range []any{nil, "", "   ", float64(403)} {
+		_, ok := nudgebeeHealthError(empty)
+		assert.False(t, ok)
+	}
+
+	for _, nearMiss := range []string{
+		"provider connected through port 5030",
+		"request id 403abc completed",
+		"certificate rotation is scheduled",
+		"using timeout-service.example.com",
+	} {
+		got, ok := nudgebeeHealthError(nearMiss)
+		require.True(t, ok)
+		assert.Equal(t, "UNKNOWN_FAILURE", got["reason_code"])
+	}
+}
+
+func TestNudgebeeAgentHealthGetSanitizesProviderError(t *testing.T) {
+	rawError := "ClientSecretCredential authentication failed at https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token: 401 Unauthorized: invalid_client, invalid client secret; trace ID secret-trace-id"
+	cleanup := startNudgebeeQueryStub(t, func(action string, input map[string]any) (int, string) {
+		assert.Equal(t, "agents_list_health", action)
+		body, err := json.Marshal(map[string]any{"rows": []map[string]any{
+			{
+				"cloud_account_id": "acc-1", "type": "Azure", "status": "CONNECTED",
+				"last_connected_at": "2026-09-06T00:00:00Z", "status_message": rawError,
+			},
+			{
+				"cloud_account_id": "acc-1", "type": "k8s", "status": "CONNECTED",
+				"status_message": "certificate rotation is scheduled",
+			},
+		}})
+		require.NoError(t, err)
+		return http.StatusOK, string(body)
+	})
+	defer cleanup()
+
+	resp, err := NudgebeeAgentHealthGetTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.NotContains(t, resp.Data, "login.microsoftonline.com")
+	assert.NotContains(t, resp.Data, "tenant-id")
+	assert.NotContains(t, resp.Data, "secret-trace-id")
+
+	var normalized struct {
+		Rows []struct {
+			StatusMessage string            `json:"status_message"`
+			HealthError   map[string]string `json:"health_error"`
+			HealthSignal  map[string]any    `json:"health_signal"`
+			OverallHealth string            `json:"overall_health"`
+		} `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Data), &normalized))
+	require.Len(t, normalized.Rows, 2)
+	row := normalized.Rows[0]
+	assert.Equal(t, "AUTHENTICATION_FAILED", row.HealthError["reason_code"])
+	assert.Equal(t, "The provider rejected authentication.", row.HealthError["summary"])
+	assert.Equal(t, row.HealthError["summary"], row.StatusMessage)
+	assert.Equal(t, "unknown", row.HealthSignal["status"])
+	assert.Nil(t, row.HealthSignal["observed_at"])
+	assert.Equal(t, "unknown", row.OverallHealth)
+	assert.Equal(t, "certificate rotation is scheduled", normalized.Rows[1].StatusMessage)
+	assert.Empty(t, normalized.Rows[1].HealthError)
+}
+
 func TestNudgebeeIntegrationDiagnoseTool(t *testing.T) {
 	cleanup := startRPCStub(t, "/rpc/integration", func(action string, input map[string]any) (int, string) {
 		assert.Equal(t, "integrations_diagnose_connection", action)

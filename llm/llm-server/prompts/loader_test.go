@@ -53,7 +53,8 @@ func TestAgentPromptsIncludeScopedNudgebeeHealthGate(t *testing.T) {
 			assert.Contains(t, resp.Content, "inspect the current account only")
 			assert.Contains(t, resp.Content, "Cross-account comparison is allowed only when the user explicitly asks")
 			assert.Contains(t, resp.Content, "Preserve the selected account identity through every delegated prompt and tool call")
-			assert.Contains(t, resp.Content, "Do not turn `unknown` into connected, disconnected, stale, or a confirmed cause")
+			assert.Contains(t, resp.Content, "does not change an `unknown` synchronization verdict or prove a broader causal chain")
+			assert.Contains(t, resp.Content, "health_error.reason_code")
 			assert.Contains(t, resp.Content, "Documentation can explain procedures and possible causes, but cannot prove current tenant state")
 		})
 	}
