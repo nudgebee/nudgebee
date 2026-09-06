@@ -405,8 +405,8 @@ def get_live_kb_collection_names(account_id, tenant_id):
     the same integration on. See ``_live_kb_names_from_rows``.
 
     Returns ``None`` when the scope can't be resolved (neither identifier is a
-    UUID) or the query fails. Callers treat ``None`` as "don't filter", so a
-    database blip degrades to today's behaviour instead of emptying search.
+    UUID) or the query fails. Search excludes KB-backed collections in that case;
+    exact document reads reject access rather than assuming eligibility.
     """
     account_uuid = _as_uuid_str(account_id)
     tenant_uuid = _as_uuid_str(tenant_id)
