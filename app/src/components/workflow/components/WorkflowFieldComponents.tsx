@@ -20,6 +20,7 @@ import { javascript } from '@codemirror/lang-javascript';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { StreamLanguage } from '@codemirror/language';
 import { Button } from '@ui/Button';
+import { CodeEditor } from '@ui/CodeEditor';
 import { FormField } from '@shared/forms/FormComponents';
 import FilterDropdown from '@ui/FilterDropdown';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -129,34 +130,16 @@ export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, error }
   };
 
   return (
-    <Box>
-      <CodeMirror
+    <Box sx={{ maxWidth: '500px' }}>
+      <CodeEditor
         value={jsonString}
-        height='120px'
-        extensions={[json()]}
         onChange={handleChange}
-        theme={undefined}
-        basicSetup={{
-          lineNumbers: true,
-          foldGutter: false,
-          dropCursor: false,
-          allowMultipleSelections: false,
-          indentOnInput: true,
-          bracketMatching: true,
-          closeBrackets: true,
-        }}
-        style={{
-          maxWidth: '500px',
-          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
-          borderRadius: 'var(--ds-radius-md)',
-          fontSize: 'var(--ds-text-body)',
-        }}
+        language='json'
+        height='120px'
+        foldGutter={false}
+        showLanguageLabel={false}
+        error={error}
       />
-      {error && (
-        <Typography variant='body2' sx={{ color: 'var(--ds-red-500)', fontSize: 'var(--ds-text-small)', mt: 0.5 }}>
-          {error}
-        </Typography>
-      )}
     </Box>
   );
 };

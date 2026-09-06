@@ -8,8 +8,7 @@ import { Modal } from '@ui/Modal';
 import { FormCard, FormField } from '@shared/forms/FormComponents';
 import { Label } from '@ui/Label';
 import { ds } from 'src/utils/colors';
-import CodeMirror from '@uiw/react-codemirror';
-import { json } from '@codemirror/lang-json';
+import { CodeEditor } from '@ui/CodeEditor';
 import type { WorkflowSettings, WorkflowInput } from '@components/workflow/types';
 import { parseDurationToSeconds } from '@components/workflow/utils/taskUtils';
 import { DeleteIconRed } from '@assets';
@@ -139,32 +138,15 @@ const JsonEditor: React.FC<{
 
   return (
     <Box>
-      <CodeMirror
+      <CodeEditor
         value={jsonString}
-        height='120px'
-        extensions={[json()]}
         onChange={handleChange}
-        theme={undefined}
-        basicSetup={{
-          lineNumbers: true,
-          foldGutter: false,
-          dropCursor: false,
-          allowMultipleSelections: false,
-          indentOnInput: true,
-          bracketMatching: true,
-          closeBrackets: true,
-        }}
-        style={{
-          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
-          borderRadius: 'var(--ds-radius-md)',
-          fontSize: 'var(--ds-text-body)',
-        }}
+        language='json'
+        height='120px'
+        foldGutter={false}
+        showLanguageLabel={false}
+        error={error}
       />
-      {error && (
-        <Typography variant='body2' sx={{ color: 'var(--ds-red-500)', fontSize: 'var(--ds-text-small)', mt: 0.5 }}>
-          {error}
-        </Typography>
-      )}
     </Box>
   );
 };
