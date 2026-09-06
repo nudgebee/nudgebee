@@ -90,6 +90,8 @@ func TestNudgebeeAgentPromptSeparatesDocsFromLiveState(t *testing.T) {
 	assert.Contains(t, text, tools.ToolNudgebeeAgentHealthGet)
 	assert.Contains(t, text, "authoritative over the user's premise")
 	assert.Contains(t, text, "deployment_model, overall_health, health_signal, and feature_health")
+	assert.Contains(t, text, "do not enumerate Kubernetes feature names as missing")
+	assert.Contains(t, text, "only when the relevant row, synchronization feature, or datasource returns health_error.reason_code")
 	assert.Contains(t, text, "report synchronization_health per feature")
 	assert.Contains(t, text, "report the heartbeat separately from datasource_health")
 	assert.Contains(t, text, "Call nudgebee_agent_health_get exactly once without account_id")

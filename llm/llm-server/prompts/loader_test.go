@@ -57,6 +57,8 @@ func TestAgentPromptsIncludeScopedNudgebeeHealthGate(t *testing.T) {
 			assert.Contains(t, resp.Content, "keep heartbeat and datasource health separate")
 			assert.Contains(t, resp.Content, "does not prove a broader causal chain")
 			assert.Contains(t, resp.Content, "health_error.reason_code")
+			assert.Contains(t, resp.Content, "Do not enumerate Kubernetes feature names as missing")
+			assert.Contains(t, resp.Content, "not as an error category or confirmed cause")
 			assert.Contains(t, resp.Content, "Documentation can explain procedures and possible causes, but cannot prove current tenant state")
 		})
 	}

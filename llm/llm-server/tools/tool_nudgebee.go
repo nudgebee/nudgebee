@@ -157,7 +157,8 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 			}
 		}
 		row["features"] = features
-		row["deployment_model"] = nudgebeeDeploymentModel(row["type"])
+		deploymentModel := nudgebeeDeploymentModel(row["type"])
+		row["deployment_model"] = deploymentModel
 		now := nudgebeeNow()
 		datasourceHealth := nudgebeeDatasourceHealth(connectionStatus, now)
 		synchronizationHealth := nudgebeeSynchronizationHealth(connectionStatus, now)
@@ -166,7 +167,7 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 			"status":      nudgebeeHealthSignalStatus(row["type"], row["status"], synchronizationHealth),
 			"observed_at": nudgebeeHealthSignalObservedAt(row["type"], row["last_connected_at"], row["last_synced_at"]),
 		}
-		featureHealth := nudgebeeFeatureHealth(features)
+		featureHealth := nudgebeeFeatureHealthForModel(features, deploymentModel)
 		row["feature_health"] = featureHealth
 		if len(datasourceHealth) > 0 {
 			row["datasource_health"] = datasourceHealth
@@ -291,24 +292,34 @@ func nudgebeeFeatureHealth(features map[string]any) map[string]string {
 		"nodeAgentConnection": "node_agents", "opencostConnection": "opencost",
 	}
 	for key, name := range connections {
-		value, present := features[key]
-		if !present {
-			result[name] = "unknown"
-			continue
-		}
-		connected, ok := value.(bool)
-		if !ok {
-			result[name] = "unknown"
-		} else if connected {
-			result[name] = "healthy"
-		} else {
-			result[name] = "disconnected"
-		}
+		result[name] = nudgebeeConnectionVerdict(features[key])
 	}
 	if serverManaged, _ := features["opencostServerSide"].(bool); serverManaged {
 		result["opencost"] = "server_managed"
 	}
 	return result
+}
+
+func nudgebeeFeatureHealthForModel(features map[string]any, deploymentModel string) map[string]string {
+	switch deploymentModel {
+	case "kubernetes_agent":
+		return nudgebeeFeatureHealth(features)
+	case "vm_proxy":
+		return map[string]string{"relay": nudgebeeConnectionVerdict(features["relayConnection"])}
+	default:
+		return map[string]string{}
+	}
+}
+
+func nudgebeeConnectionVerdict(value any) string {
+	connected, ok := value.(bool)
+	if !ok {
+		return "unknown"
+	}
+	if connected {
+		return "healthy"
+	}
+	return "disconnected"
 }
 
 func nudgebeeRowHealth(agentType, status any, features map[string]string, datasourceHealth []map[string]any, synchronizationHealth map[string]any) string {

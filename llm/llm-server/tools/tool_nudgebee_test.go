@@ -290,6 +290,30 @@ func TestNudgebeeHealthNormalization(t *testing.T) {
 	assert.Equal(t, overall, reversedOverall)
 }
 
+func TestNudgebeeFeatureHealthForModelFiltersIrrelevantFeatures(t *testing.T) {
+	features := map[string]any{
+		"relayConnection":        true,
+		"prometheusConnection":   false,
+		"alertManagerConnection": true,
+		"logsConnection":         false,
+		"nodeAgentConnection":    true,
+		"opencostConnection":     false,
+		"opencostServerSide":     true,
+	}
+
+	assert.Empty(t, nudgebeeFeatureHealthForModel(features, "agentless_cloud"))
+	assert.Equal(t, map[string]string{"relay": "healthy"}, nudgebeeFeatureHealthForModel(features, "vm_proxy"))
+	assert.Equal(t, map[string]string{
+		"relay":        "healthy",
+		"prometheus":   "disconnected",
+		"alertmanager": "healthy",
+		"logs":         "disconnected",
+		"node_agents":  "healthy",
+		"opencost":     "server_managed",
+	}, nudgebeeFeatureHealthForModel(features, "kubernetes_agent"))
+	assert.Empty(t, nudgebeeFeatureHealthForModel(features, "unknown"))
+}
+
 func TestNudgebeeHealthErrorClassification(t *testing.T) {
 	tests := []struct {
 		message string
@@ -406,6 +430,7 @@ func TestNudgebeeAgentHealthGetNormalizesAgentlessSynchronization(t *testing.T) 
 		Rows []struct {
 			OverallHealth         string                    `json:"overall_health"`
 			HealthSignal          map[string]any            `json:"health_signal"`
+			FeatureHealth         map[string]string         `json:"feature_health"`
 			SynchronizationHealth map[string]map[string]any `json:"synchronization_health"`
 		} `json:"rows"`
 	}
@@ -413,6 +438,7 @@ func TestNudgebeeAgentHealthGetNormalizesAgentlessSynchronization(t *testing.T) 
 	require.Len(t, normalized.Rows, 1)
 	row := normalized.Rows[0]
 	assert.Equal(t, "degraded", row.OverallHealth)
+	assert.Empty(t, row.FeatureHealth)
 	assert.Equal(t, "degraded", row.HealthSignal["status"])
 	assert.Equal(t, "2026-09-06T10:00:00Z", row.HealthSignal["observed_at"])
 	assert.Equal(t, "healthy", row.SynchronizationHealth["events"]["status"])
@@ -460,13 +486,15 @@ func TestNudgebeeAgentHealthGetNormalizesProxyDatasources(t *testing.T) {
 
 	var normalized struct {
 		Rows []struct {
-			OverallHealth    string           `json:"overall_health"`
-			DatasourceHealth []map[string]any `json:"datasource_health"`
+			OverallHealth    string            `json:"overall_health"`
+			FeatureHealth    map[string]string `json:"feature_health"`
+			DatasourceHealth []map[string]any  `json:"datasource_health"`
 		} `json:"rows"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(resp.Data), &normalized))
 	require.Len(t, normalized.Rows, 1)
 	assert.Equal(t, "degraded", normalized.Rows[0].OverallHealth)
+	assert.Equal(t, map[string]string{"relay": "unknown"}, normalized.Rows[0].FeatureHealth)
 	require.Len(t, normalized.Rows[0].DatasourceHealth, 2)
 	assert.Equal(t, "cache", normalized.Rows[0].DatasourceHealth[0]["name"])
 	assert.Equal(t, "orders", normalized.Rows[0].DatasourceHealth[1]["name"])
