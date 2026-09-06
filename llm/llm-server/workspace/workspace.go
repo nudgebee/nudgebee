@@ -1361,9 +1361,13 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 		reqProxy.Param(k, v)
 	}
 
-	if bodyBytes != nil {
-		reqProxy.Body(bodyBytes)
-		reqProxy.SetHeader("Content-Type", "application/json")
+	if bodyReader != nil {
+		reader, err := rewind()
+		if err != nil {
+			return nil, err
+		}
+		reqProxy.Body(reader)
+		reqProxy.SetHeader("Content-Type", contentType)
 	}
 	reqProxy.SetHeader("X-Workspace-Token", workspaceToken)
 
@@ -1387,13 +1391,29 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 	logger := ctx.GetLogger()
 	logger.Debug("workspace: calling API with custom client", "method", method, "endpoint", endpoint, "account_id", accountId)
 
-	var bodyBytes []byte
-	if body != nil {
-		var err error
-		bodyBytes, err = json.Marshal(body)
+	var bodyReader io.ReadSeeker
+	contentType := "application/json"
+	if stream, ok := body.(io.ReadSeeker); ok {
+		bodyReader = stream
+		contentType = "application/octet-stream"
+	} else if body != nil {
+		bodyBytes, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal body: %w", err)
 		}
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+	rewind := func() (io.Reader, error) {
+		if bodyReader == nil {
+			return nil, nil
+		}
+		if _, err := bodyReader.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("rewind workspace upload: %w", err)
+		}
+		if contentType == "application/json" {
+			return bodyReader, nil
+		}
+		return io.NopCloser(bodyReader), nil
 	}
 
 	buildURL := func(baseURL string) string {
@@ -1432,11 +1452,15 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 	if localURL := config.Config.LlmServerWorkspaceLocalUrl; localURL != "" {
 		directUrl := buildURL(fmt.Sprintf("%s%s", strings.TrimRight(localURL, "/"), endpoint))
 		logger.Debug("workspace: using local URL", "url", directUrl)
-		req, reqErr := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, bytes.NewBuffer(bodyBytes))
+		reader, rewindErr := rewind()
+		if rewindErr != nil {
+			return nil, rewindErr
+		}
+		req, reqErr := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, reader)
 		if reqErr != nil {
 			return nil, fmt.Errorf("failed to build local request: %w", reqErr)
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 		if localToken := config.Config.LlmServerWorkspaceLocalToken; localToken != "" {
 			req.Header.Set("X-Workspace-Token", localToken)
 		}
@@ -1496,9 +1520,13 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 
 	if !isTestMode {
 		directUrl := buildURL(fmt.Sprintf("http://%s:%d%s", podIP, config.Config.LlmServerWorkspacePort, endpoint))
-		req, reqErr := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, bytes.NewBuffer(bodyBytes))
+		reader, rewindErr := rewind()
+		if rewindErr != nil {
+			return nil, rewindErr
+		}
+		req, reqErr := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, reader)
 		if reqErr == nil {
-			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Type", contentType)
 			if workspaceToken != "" {
 				req.Header.Set("X-Workspace-Token", workspaceToken)
 			}

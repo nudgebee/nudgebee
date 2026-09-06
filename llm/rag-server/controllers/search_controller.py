@@ -8,7 +8,9 @@ import logging
 from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from controllers.knowledge_document import discovery_document, router as knowledge_router
 
 from rag.core.llm.rag import get_matching_documents
 from rag.core.monitoring.audit import save_audit_async
@@ -16,6 +18,7 @@ from rag.core.monitoring.token_tracker import persist_llm_token_usage
 from utils.config import Config
 
 router = APIRouter()
+router.include_router(knowledge_router)
 logger = logging.getLogger(__name__)
 
 TokenUsage = dict[str, Any]
@@ -24,6 +27,7 @@ TokenUsage = dict[str, Any]
 # Pydantic models
 class GetMatchingDocRequest(BaseModel):
     query: str
+    knowledge_excerpt_bytes: Optional[int] = Field(default=None, ge=256, le=4096)
     k: int = 1
     account_id: str
     module: Optional[str] = None
@@ -172,10 +176,13 @@ async def get_matching_doc(request: GetMatchingDocRequest):
         )
 
         for doc, score in documents:
+            content, metadata = doc.page_content, doc.metadata
+            if request.module == "knowledge_base" and request.knowledge_excerpt_bytes:
+                content, metadata = discovery_document(content, metadata, request.knowledge_excerpt_bytes)
             doc_response.append(
                 {
-                    "document": doc.page_content,
-                    "metadata": doc.metadata,
+                    "document": content,
+                    "metadata": metadata,
                     "similarity_score": score,
                 }
             )
