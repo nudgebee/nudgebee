@@ -733,57 +733,66 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
   }, [accountId]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function applicationSummaryData() {
-      let applicationSummary = {};
-      const workloadResponse = await apiKubernetes1.listK8sWorkloadKindCount(accountId, selectedNamespace, resource_ids);
-      const k8sWorkloadCountData = workloadResponse?.data?.data?.workload_counts?.rows?.[0] ?? {};
-      if (k8sWorkloadCountData && Object.keys(k8sWorkloadCountData).length > 0) {
-        applicationSummary = k8sWorkloadCountData;
-      }
-
-      const recommendationResponse = await recommendationApi.getK8sRecommendationSummary({
-        accountId: accountId,
-        category: 'RightSizing',
-        ruleName: ['pod_right_sizing', 'replica_right_sizing', 'abandoned_resource'],
-        status: ['Open', 'InProgress'],
-        resourceNamespace: selectedNamespace,
-        resource_ids: resource_ids,
-      });
-      const estimatedSaving = recommendationResponse?.data?.recommendation_aggregate.aggregate.sum.estimated_savings * 12 || '-';
-      applicationSummary.estimatedSaving = estimatedSaving;
-
-      const recommendationAggregate = await recommendationApi.getK8sRecommendationAggregate({
-        accountId: accountId,
-        category: 'RightSizing',
-        ruleName: ['pod_right_sizing', 'replica_right_sizing', 'abandoned_resource'],
-        resourceNamespace: selectedNamespace,
-        status: ['Open', 'InProgress'],
-        resource_ids: resource_ids,
-      });
-      const recommendationCount = recommendationAggregate?.data?.recommendation_aggregate?.aggregate?.count ?? '-';
-      applicationSummary.recommendation_count = recommendationCount;
-
-      const eventAggregate = await apiKubernetes1.getEventAggregate(
-        {
+      const [workloadResponse, recommendationResponse, recommendationAggregate, eventAggregate, mtdAggregate] = await Promise.all([
+        apiKubernetes1.listK8sWorkloadKindCount(accountId, selectedNamespace, resource_ids),
+        recommendationApi.getK8sRecommendationSummary({
+          accountId: accountId,
+          category: 'RightSizing',
+          ruleName: ['pod_right_sizing', 'replica_right_sizing', 'abandoned_resource'],
+          status: ['Open', 'InProgress'],
+          resourceNamespace: selectedNamespace,
+          resource_ids: resource_ids,
+        }),
+        recommendationApi.getK8sRecommendationAggregate({
+          accountId: accountId,
+          category: 'RightSizing',
+          ruleName: ['pod_right_sizing', 'replica_right_sizing', 'abandoned_resource'],
+          resourceNamespace: selectedNamespace,
+          status: ['Open', 'InProgress'],
+          resource_ids: resource_ids,
+        }),
+        apiKubernetes1.getEventAggregate(
+          {
+            account_id: accountId,
+            namespace: selectedNamespace,
+            startDate: new Date(selectedDateRange.startDate),
+            endDate: new Date(selectedDateRange.endDate),
+            resource_ids: resource_ids,
+          },
+          ['count_application_issues', 'event_count']
+        ),
+        apiKubernetes1.getWorkloadMTDAggregate({
           account_id: accountId,
           namespace: selectedNamespace,
           startDate: new Date(selectedDateRange.startDate),
           endDate: new Date(selectedDateRange.endDate),
           resource_ids: resource_ids,
-        },
-        ['count_application_issues', 'event_count']
-      );
+        }),
+      ]);
+
+      if (cancelled) {
+        return;
+      }
+
+      let applicationSummary = {};
+      const k8sWorkloadCountData = workloadResponse?.data?.data?.workload_counts?.rows?.[0] ?? {};
+      if (k8sWorkloadCountData && Object.keys(k8sWorkloadCountData).length > 0) {
+        applicationSummary = k8sWorkloadCountData;
+      }
+
+      const estimatedSaving = recommendationResponse?.data?.recommendation_aggregate.aggregate.sum.estimated_savings * 12 || '-';
+      applicationSummary.estimatedSaving = estimatedSaving;
+
+      const recommendationCount = recommendationAggregate?.data?.recommendation_aggregate?.aggregate?.count ?? '-';
+      applicationSummary.recommendation_count = recommendationCount;
+
       const eventAndErrorAggregate = eventAggregate?.data?.data?.event_groupings_v2 ?? '-';
       applicationSummary.event_count = eventAndErrorAggregate?.rows?.[0]?.event_count ?? '-';
       applicationSummary.error_count = eventAndErrorAggregate?.rows?.[0]?.count_application_issues ?? '-';
 
-      const mtdAggregate = await apiKubernetes1.getWorkloadMTDAggregate({
-        account_id: accountId,
-        namespace: selectedNamespace,
-        startDate: new Date(selectedDateRange.startDate),
-        endDate: new Date(selectedDateRange.endDate),
-        resource_ids: resource_ids,
-      });
       const mtdCost = mtdAggregate?.data?.data?.k8s_metrics_groupings_v2?.rows[0]?.cost?.toFixed() ?? '-';
       applicationSummary.mtd_cost = mtdCost;
 
@@ -791,6 +800,10 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     }
     setApplicationSummary({});
     applicationSummaryData();
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedNamespace, selectedWorkloadType, JSON.stringify(resource_ids)]);
 
   useEffect(() => {

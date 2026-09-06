@@ -406,32 +406,46 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   const getChannelsListSlackMsTeams = async () => {
     const platforms = ['slack', 'ms_teams', 'google_chat'];
 
-    setIsMsTeamsLoading(true);
-    try {
-      const resMsTeams = await apiAccount.getNotificationChannelList(platforms[1]);
-      const teamOptionsMsTeams =
-        resMsTeams?.data?.data?.map((item) => ({
-          label: item.name,
-          value: item.id,
-          channels: item.channels,
-        })) || [];
-      setMsTeamsData(teamOptionsMsTeams);
-    } finally {
-      setIsMsTeamsLoading(false);
-    }
+    const fetchMsTeamsChannels = async () => {
+      setIsMsTeamsLoading(true);
+      try {
+        const resMsTeams = await apiAccount.getNotificationChannelList(platforms[1]);
+        const msTeamsRows = resMsTeams?.data?.data;
+        const teamOptionsMsTeams = Array.isArray(msTeamsRows)
+          ? msTeamsRows.map((item) => ({
+              label: item.name,
+              value: item.id,
+              channels: item.channels,
+            }))
+          : [];
+        setMsTeamsData(teamOptionsMsTeams);
+      } catch (error) {
+        console.error('Failed to fetch MS Teams channels:', error);
+      } finally {
+        setIsMsTeamsLoading(false);
+      }
+    };
 
-    setIsGoogleChannelsLoading(true);
-    try {
-      const resGoogle = await apiAccount.getNotificationChannelList(platforms[2]);
-      const googleOptions =
-        resGoogle?.data?.data?.map((item) => ({
-          label: item.name,
-          value: item.id,
-        })) || [];
-      setGoogleChannelList(googleOptions);
-    } finally {
-      setIsGoogleChannelsLoading(false);
-    }
+    const fetchGoogleChatChannels = async () => {
+      setIsGoogleChannelsLoading(true);
+      try {
+        const resGoogle = await apiAccount.getNotificationChannelList(platforms[2]);
+        const googleRows = resGoogle?.data?.data;
+        const googleOptions = Array.isArray(googleRows)
+          ? googleRows.map((item) => ({
+              label: item.name,
+              value: item.id,
+            }))
+          : [];
+        setGoogleChannelList(googleOptions);
+      } catch (error) {
+        console.error('Failed to fetch Google Chat channels:', error);
+      } finally {
+        setIsGoogleChannelsLoading(false);
+      }
+    };
+
+    await Promise.all([fetchMsTeamsChannels(), fetchGoogleChatChannels()]);
   };
 
   const addHorizontalAutoPilot = () => {
