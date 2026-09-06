@@ -17,7 +17,7 @@ const FILTERED_SEVERITIES = ["Critical", "High"] as const;
 
 test(
   "Cloud Vulnerabilities sanity - open a cloud account, click the Vulnerabilities tab, verify the tab is selected and the URL carries the vulnerabilities fragment",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const vuln = await openVulnerabilitiesTab(page);
 
@@ -30,7 +30,7 @@ test(
 
 test(
   "Cloud Vulnerabilities sanity - open the Vulnerabilities tab, verify the severity filter, the download action and the open-findings-only note render",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const vuln = await openVulnerabilitiesTab(page);
 
@@ -44,7 +44,7 @@ test(
 
 test(
   "Cloud Vulnerabilities sanity - open the Vulnerabilities tab, verify the findings table renders its eight columns, or the empty panel when the account has no findings",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const vuln = await openVulnerabilitiesTab(page);
 
@@ -64,7 +64,7 @@ test(
 
 test(
   "Cloud Vulnerabilities - open the severity filter, verify it offers all five severity levels from Critical to Info",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
   async ({ page }) => {
     const vuln = await openVulnerabilitiesTab(page);
 
@@ -81,7 +81,7 @@ test(
 for (const severity of FILTERED_SEVERITIES) {
   test(
     `Cloud Vulnerabilities - open the Vulnerabilities tab, filter the findings by ${severity} severity, verify every listed finding is ${severity}`,
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
     async ({ page }) => {
       const vuln = await openVulnerabilitiesTab(page);
 
@@ -106,7 +106,7 @@ for (const severity of FILTERED_SEVERITIES) {
 
 test(
   "Cloud Vulnerabilities - filter the findings by Critical, switch the filter to Low, verify the listing reflects Low and no Critical finding survives",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
   async ({ page }) => {
     const vuln = await openVulnerabilitiesTab(page);
 
@@ -137,7 +137,7 @@ test(
 
 test(
   "Cloud Vulnerabilities - switch to the Summary tab and back to Vulnerabilities, verify the findings listing is restored",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const vuln = await openVulnerabilitiesTab(page);
 

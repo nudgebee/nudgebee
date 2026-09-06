@@ -90,7 +90,7 @@ test(
 
 test(
   "Cloud Optimize - filter Right Sizing by a rule name the account holds, verify every remaining row belongs to that one rule",
-  { tag: ["@dev", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -137,7 +137,7 @@ test(
 
 test(
   "Cloud Optimize - filter Right Sizing by a severity the account holds, verify every remaining row reports that severity",
-  { tag: ["@dev", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");

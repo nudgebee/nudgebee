@@ -82,7 +82,7 @@ test(
 
 test(
   "Tenant Settings - open General, save the form unmodified, verify the saved-successfully toast and that the tenant name and log label mappings still hold their values after a reload",
-  { tag: ["@dev", "@regression", "@functional", "@snackbar"] },
+  { tag: ["@dev", "@regression", "@functional", "@snackbar", "@crud"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 

@@ -81,7 +81,7 @@ test(
 
 test(
   "Automation AI/LLM sanity - open the node palette, search \"summary\", verify only matching actions remain listed",
-  { tag: ["@dev", "@sanity", "@search"] },
+  { tag: ["@dev", "@regression", "@search", "@functional"] },
   async ({ page }) => {
     const locators = new AiLlmBuilderLocators(page);
     await loginAndNavigateToNewWorkflow(page, locators);

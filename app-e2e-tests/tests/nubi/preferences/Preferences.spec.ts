@@ -61,7 +61,7 @@ test.describe("Nubi Preferences Tab", () => {
 
   test(
     "Nubi Preferences - open the Preferences tab, type into manual inputs, verify Save and Reset are disabled until the edit and enabled after it",
-    { tag: ["@dev", "@regression", "@validation"] },
+    { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openPreferencesTab(page);

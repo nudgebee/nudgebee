@@ -218,7 +218,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - add a custom rate, filter the table by model name and then by the Custom rate source, verify only tenant rates are listed",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@regression", "@search", "@crud"] },
     async ({ page }) => {
       test.setTimeout(210000);
       const locators = await openModelPricingTab(page);

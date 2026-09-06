@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { SignInLocators } from "./signInLocators";
 import {
@@ -31,7 +30,7 @@ test.describe.configure({ timeout: 90000 });
 
 test(
   "Sign in sanity - open the sign in page, verify the welcome heading and the LDAP and Magic Link options render",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
 
@@ -47,7 +46,7 @@ test(
 
 test(
   "Sign in sanity - open the sign in page, verify the browser tab title ends in Login",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     await openSignInPage(page);
 
@@ -59,7 +58,7 @@ test(
 
 test(
   "Sign in - open the sign in page, choose Login via LDAP, verify the LDAP heading, the username and password fields and the Sign in button render",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -76,7 +75,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, submit with both fields empty, verify the LDAP username required and LDAP password required errors",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@validation"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -93,7 +92,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, enter a username only, submit, verify only the LDAP password required error is raised",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@validation"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -108,7 +107,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, submit empty to raise the username error, type a username, verify the LDAP username required error clears",
-  { tag: ["@dev", "@regression", "@validation"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@validation"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -126,7 +125,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, enter an unknown username and password, submit, verify the invalid credentials error and that the browser stays on the sign in page",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@negative"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -144,7 +143,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, type a password, verify the field masks the value",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -159,7 +158,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, go back to sign in options, verify the LDAP fields close and the LDAP and Magic Link options return",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -176,7 +175,7 @@ test(
 
 test(
   "Sign in - open the LDAP form, enter a username and submit to raise the password error, go back and reopen the form, verify the error is cleared and the username is retained",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openLdapForm(signIn);
@@ -199,7 +198,7 @@ test(
 
 test(
   "Sign in - open the Magic Link form, enter an address with no domain, request the link, verify the invalid email address error",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@validation"] },
   async ({ page }) => {
     const signIn = await openSignInPage(page);
     await openMagicLinkForm(signIn);
@@ -217,7 +216,7 @@ test(
 
 test(
   "Sign in - open the sign in page with a NO_TENANT_ACCESS error, verify it redirects to the access denied page naming the missing tenant",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@negative"] },
   async ({ page }) => {
     const signIn = new SignInLocators(page);
 
@@ -234,7 +233,7 @@ test(
 
 test(
   "Access Denied sanity - open the access denied page directly, choose Try Again, verify it returns to the sign in page",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     const signIn = new SignInLocators(page);
     await page.goto(NO_TENANT_ACCESS_PATH);

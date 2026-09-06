@@ -337,7 +337,7 @@ test(
 
 test(
   "Custom Agents - create a custom agent, open Edit Agent from its row menu, verify the form opens pre-filled with that agent's name, close it and delete the agent",
-  { tag: ["@dev", "@smoke", "@crud", "@functional"] },
+  { tag: ["@dev", "@regression", "@crud", "@functional"] },
   async ({ page }) => {
     test.setTimeout(300000);
 

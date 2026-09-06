@@ -50,7 +50,7 @@ test.describe("Nubi User Feedback Tab", () => {
 
   test(
     "User Feedback sanity - open the tab, verify the first listing query asks for the last 7 days and that its account scope matches the columns rendered",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const { locators, log } = await openUserFeedbackTab(page);
@@ -170,7 +170,7 @@ test.describe("Nubi User Feedback Tab", () => {
 
   test(
     "User Feedback - filter by the Prometheus Query module then clear the filter, verify the trigger returns to its unset label and the listing query drops the module condition",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators, log } = await openUserFeedbackTab(page);
@@ -193,7 +193,7 @@ test.describe("Nubi User Feedback Tab", () => {
 
   test(
     "User Feedback - open the date range and pick the Last 24 Hours shortcut, verify the trigger shows the shortcut and the listing query window narrows from 7 days to 24 hours",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators, log } = await openUserFeedbackTab(page);

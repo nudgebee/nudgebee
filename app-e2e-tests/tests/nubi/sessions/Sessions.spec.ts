@@ -144,7 +144,7 @@ test.describe("Nubi Sessions Tab", () => {
 
   test(
     "Nubi Sessions - select the Investigation type filter, verify Investigation is the only checked option and All, General and Automation read unchecked",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@search"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openSessionsTab(page);

@@ -40,7 +40,7 @@ const NO_MATCH_TERM = `zz-no-such-record-${Date.now()}`;
 
 test(
   "Cloud Troubleshoot sanity - open AWS Troubleshoot, verify the Events listing renders its search, six filters and column headers",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "events");
@@ -68,7 +68,7 @@ test(
 
 test(
   "Cloud Troubleshoot - search AWS events for a message no event carries, verify the listing reports no data",
-  { tag: ["@dev", "@regression", "@search", "@negative"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@search", "@negative"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "events");
@@ -92,7 +92,7 @@ test(
 
 test(
   "Cloud Troubleshoot - move from Events to Triage Rules and back to Events, verify each sub-tab replaces the other",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "events");
@@ -114,7 +114,7 @@ test(
 
 test(
   "Cloud Troubleshoot sanity - open Triage Rules, verify the listing renders its name search, Rule Type and Status filters, System Rules toggle and column headers",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -147,7 +147,7 @@ test(
 
 test(
   "Cloud Troubleshoot - search Triage Rules by an existing rule name, verify only rules matching that name are listed",
-  { tag: ["@dev", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@search"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -185,7 +185,7 @@ test(
 
 test(
   "Cloud Troubleshoot - filter Triage Rules by Status Enabled, verify every listed rule reports Enabled",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -219,7 +219,7 @@ test(
 
 test(
   "Cloud Troubleshoot - filter Triage Rules by Rule Type Suppression, verify every listed rule reports Suppression",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -249,7 +249,7 @@ test(
 
 test(
   "Cloud Troubleshoot - turn the System Rules toggle off, verify no listed rule is tagged System and that turning it back on restores them",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -288,7 +288,7 @@ test(
 
 test(
   "Cloud Troubleshoot - open Create Rule and submit with no match criterion, verify the match criterion error and that cancelling adds no rule",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@validation"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -322,7 +322,7 @@ test(
 
 test(
   "Cloud Troubleshoot - create a suppression rule with a unique name and an alert-name pattern, verify it persists in the listing, then delete it and verify the row is gone",
-  { tag: ["@dev", "@regression", "@crud"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@crud"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "triage-rules");
@@ -389,7 +389,7 @@ test(
 
 test(
   "Cloud Troubleshoot sanity - open Alert Tuning, verify the listing renders its Source and Confidence filters and column headers",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "threshold-suggestions");
@@ -417,7 +417,7 @@ test(
 
 test(
   "Cloud Troubleshoot - filter Alert Tuning by Confidence High, verify every listed suggestion reports High",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(TROUBLESHOOT_TIMEOUT_MS);
     const t = await openTroubleshootSubTab(page, "threshold-suggestions");

@@ -54,7 +54,7 @@ test.describe("Nubi Privacy Tab", () => {
 
   test(
     "Nubi Privacy - turn the Patterns layer off, verify the layer-disabled snackbar and that the Patterns switch reads off",
-    { tag: ["@dev", "@regression", "@snackbar"] },
+    { tag: ["@dev", "@regression", "@snackbar", "@crud"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const locators = await openPrivacyTab(page);
@@ -118,7 +118,7 @@ test.describe("Nubi Privacy Tab", () => {
 
   test(
     "Nubi Privacy - turn the master memory switch off, verify every memory layer switch becomes non-interactive",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@crud"] },
     async ({ page }) => {
       test.setTimeout(210000);
       const locators = await openPrivacyTab(page);
@@ -145,7 +145,7 @@ test.describe("Nubi Privacy Tab", () => {
 
   test(
     "Nubi Privacy - turn the master memory switch off and back on, verify the layer switches become interactive again and keep the values they had",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@crud"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const locators = await openPrivacyTab(page);

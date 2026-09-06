@@ -127,7 +127,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - search LLM Providers for a generated name no provider carries, verify the request carries that name filter and the listing falls back to the no-data state",
-    { tag: ["@dev", "@regression", "@negative"] },
+    { tag: ["@dev", "@regression", "@negative", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -147,7 +147,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - filter LLM Providers to a name with no match then clear the search box with its X control, verify the name filter is dropped from the request and the full listing returns",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@regression", "@search", "@negative"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -171,7 +171,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - set the LLM Providers status filter to Disabled, verify the request carries the disabled status filter and no enabled provider stays listed",
-    { tag: ["@dev", "@regression", "@validation"] },
+    { tag: ["@dev", "@regression", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -200,7 +200,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - open the MCP Servers sub-tab and search it for a generated name no server carries, verify the request switches to the mcp type and keeps the preset enabled status filter",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@regression", "@search", "@negative"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);

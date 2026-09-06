@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { EventSubTabs } from "../troubleshootEventsLocators";
 import { openEventSubTab, expectSelectedSubTab } from "../troubleshootEventsHelper";
@@ -35,7 +34,7 @@ const RECENT_EVENTS_PANEL = 1;
 
 test(
   "Alert Tuning sanity - open Troubleshoot, open the Alert Tuning sub-tab, verify the listing renders with its Account, Source and Confidence filters, the CSV download control and all six columns",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -66,7 +65,7 @@ test(
 
 test(
   "Alert Tuning - open /troubleshoot straight at the all-events/threshold-suggestions hash, verify the Alert Tuning sub-tab is the selected one and the suggestions listing mounts rather than Triage Rules",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -85,7 +84,7 @@ test(
 
 test(
   "Alert Tuning - open the Source filter, verify it offers exactly the five alert sources the module supports while no account narrows the list",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -105,7 +104,7 @@ test(
 
 test(
   "Alert Tuning - filter by High confidence, then switch the same filter to Low, verify the trigger reports each choice in turn and the listing re-resolves under both",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -127,7 +126,7 @@ test(
 
 test(
   "Alert Tuning - pick the first account in the Account filter, verify the accountIds query param is written to the URL, then clear it and verify the param is dropped",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -165,7 +164,7 @@ test(
 
 test(
   "Alert Tuning - narrow the listing by both Source and Confidence, verify it settles into either matching rows or the Alert Tuning empty-state hint and never shows both at once",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -186,7 +185,7 @@ test(
 
 test(
   "Alert Tuning - expand the first suggestion, verify the row opens onto the Evidence and Recent Events drilldown tabs with the Evidence panel showing, or that an empty listing offers no row to expand",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -222,7 +221,7 @@ test(
 
 test(
   "Alert Tuning - expand a suggestion and switch its drilldown to Recent Events, verify that panel opens and the Evidence panel closes behind it, or that an empty listing offers no row to expand",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -250,7 +249,7 @@ test(
 
 test(
   "Alert Tuning - set the confidence filter, leave for Triage Rules and come back, verify the suggestions listing remounts with the confidence filter reset to unselected",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 

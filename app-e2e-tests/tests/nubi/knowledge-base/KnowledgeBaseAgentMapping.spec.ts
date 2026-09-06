@@ -84,7 +84,7 @@ test.describe("Knowledge Base agent mapping", () => {
   // which agent Nubi routes the question to.
   test(
     "Knowledge Base - ask Nubi a question only this KB can answer, verify the answer carries the runbook value and the KB is listed under Additional Contexts as a User KB",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@crud"] },
     async ({ page }) => {
       test.setTimeout(300000);
       const loginPage = new LoginPage(page);

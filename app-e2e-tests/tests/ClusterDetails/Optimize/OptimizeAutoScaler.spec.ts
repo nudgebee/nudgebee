@@ -3,9 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { OptimizeTabLocator, OptimizeSections } from "./OptimizeTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-test.describe.configure({ mode: "serial" });
-
-test("Optimize Auto Scaler -> Summary", async ({ page }, testInfo) => {
+test("Optimize Auto Scaler -> Summary", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
   const loginPage = new LoginPage(page);
   const locators = new OptimizeTabLocator(page);
@@ -25,7 +23,7 @@ test("Optimize Auto Scaler -> Summary", async ({ page }, testInfo) => {
   await locators.Summary.click();
 });
 
-test("Optimize Auto Scaler -> Logs", async ({ page }, testInfo) => {
+test("Optimize Auto Scaler -> Logs", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
   const loginPage = new LoginPage(page);
   const locators = new OptimizeTabLocator(page);
