@@ -1,5 +1,6 @@
-import { Box, Typography, Link } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Card } from '@ui/Card';
+import { Link } from '@ui/Link';
 import { ds } from 'src/utils/colors';
 import { Label } from '@ui/Label';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
@@ -111,7 +112,7 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
                 {item.References && Array.isArray(item.References) && item.References.length > 0 && (
                   <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), mt: ds.space[1], flexWrap: 'wrap' }}>
                     {item.References.slice(0, 3).map((ref: string, refIdx: number) => (
-                      <Link key={ref} href={ref} target='_blank' rel='noopener noreferrer' sx={{ fontSize: ds.text.caption, color: ds.blue[600] }}>
+                      <Link key={ref} href={ref} openInNew secondaryText>
                         Reference {refIdx + 1}
                       </Link>
                     ))}
@@ -126,13 +127,8 @@ const CISSecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSav
       {/* CIS benchmark link */}
       {ruleId && (
         <Box sx={{ mt: ds.space[3] }}>
-          <Link
-            href={`https://www.cisecurity.org/benchmark/kubernetes`}
-            target='_blank'
-            rel='noopener noreferrer'
-            sx={{ fontSize: ds.text.small, color: ds.blue[600] }}
-          >
-            View CIS Kubernetes Benchmark →
+          <Link href={`https://www.cisecurity.org/benchmark/kubernetes`} openInNew>
+            View CIS Kubernetes Benchmark
           </Link>
         </Box>
       )}

@@ -1,5 +1,6 @@
-import { Box, Typography, Link } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Card } from '@ui/Card';
+import { Link } from '@ui/Link';
 import { ds } from 'src/utils/colors';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import ShieldIcon from '@mui/icons-material/Shield';
@@ -53,13 +54,8 @@ const SecurityEvidence = ({ recommendation, ruleName: _ruleName, estimatedSaving
                 </Typography>
               )}
               {remediationUrl && (
-                <Link
-                  href={remediationUrl}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  sx={{ fontSize: ds.text.small, color: ds.blue[600], display: 'block' }}
-                >
-                  View remediation guide →
+                <Link href={remediationUrl} openInNew>
+                  View remediation guide
                 </Link>
               )}
             </Card>

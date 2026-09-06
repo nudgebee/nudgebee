@@ -1,4 +1,5 @@
-import { Grid, Typography, Box, Alert, CircularProgress, Link } from '@mui/material';
+import { Grid, Typography, Box, Alert, CircularProgress } from '@mui/material';
+import { Link } from '@ui/Link';
 import { Input } from '@ui/Input';
 import { CollapsableCard } from '@ui/CollapsableCard';
 import { Stepper } from '@ui/Stepper';
@@ -347,13 +348,8 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                       <Typography sx={{ fontSize: ds.text.body, color: ds.brand[500], mb: ds.space[2] }}>
                         Grant the <strong>Monitoring Editor</strong> role to the service account, then click <strong>Re-check</strong>.
                       </Typography>
-                      <Link
-                        href={`https://console.cloud.google.com/iam-admin/iam?project=${projectId}`}
-                        target='_blank'
-                        rel='noopener noreferrer'
-                        sx={{ fontSize: ds.text.body }}
-                      >
-                        Open GCP IAM Console →
+                      <Link href={`https://console.cloud.google.com/iam-admin/iam?project=${projectId}`} openInNew>
+                        Open GCP IAM Console
                       </Link>
                     </Box>
                   </>
