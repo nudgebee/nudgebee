@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -261,15 +262,15 @@ func TestNudgebeeHealthNormalization(t *testing.T) {
 			featureHealth := nudgebeeFeatureHealth(tc.features)
 			assert.Equal(t, tc.model, nudgebeeDeploymentModel(tc.agentType))
 			assert.Equal(t, tc.signal, nudgebeeHealthSignalKind(tc.agentType))
-			assert.Equal(t, tc.overall, nudgebeeRowHealth(tc.agentType, tc.status, featureHealth))
+			assert.Equal(t, tc.overall, nudgebeeRowHealth(tc.agentType, tc.status, featureHealth, nil, nil))
 			assert.Equal(t, tc.opencost, featureHealth["opencost"])
 		})
 	}
-	assert.Equal(t, "unknown", nudgebeeHealthSignalStatus("AWS", "CONNECTED"))
-	assert.Nil(t, nudgebeeHealthSignalObservedAt("AWS", "2026-09-06T00:00:00Z"))
+	assert.Equal(t, "unknown", nudgebeeHealthSignalStatus("AWS", "CONNECTED", nil))
+	assert.Equal(t, "2026-09-06T00:00:00Z", nudgebeeHealthSignalObservedAt("AWS", nil, "2026-09-06T00:00:00Z"))
 	for _, status := range []string{"CONNECTED", "NOT_CONNECTED"} {
-		assert.Equal(t, "unknown", nudgebeeHealthSignalStatus("future_agent", status))
-		assert.Nil(t, nudgebeeHealthSignalObservedAt("future_agent", "2026-09-06T00:00:00Z"))
+		assert.Equal(t, "unknown", nudgebeeHealthSignalStatus("future_agent", status, nil))
+		assert.Nil(t, nudgebeeHealthSignalObservedAt("future_agent", "2026-09-06T00:00:00Z", "2026-09-06T01:00:00Z"))
 	}
 	model, overall := nudgebeeAggregateHealth(nil)
 	assert.Equal(t, "unknown", model)
@@ -380,6 +381,122 @@ func TestNudgebeeAgentHealthGetSanitizesProviderError(t *testing.T) {
 	assert.Equal(t, "unknown", row.OverallHealth)
 	assert.Equal(t, "certificate rotation is scheduled", normalized.Rows[1].StatusMessage)
 	assert.Empty(t, normalized.Rows[1].HealthError)
+}
+
+func TestNudgebeeAgentHealthGetNormalizesAgentlessSynchronization(t *testing.T) {
+	previousNow := nudgebeeNow
+	t.Cleanup(func() { nudgebeeNow = previousNow })
+	nudgebeeNow = func() time.Time { return time.Date(2026, 9, 6, 10, 5, 0, 0, time.UTC) }
+	rawError := "AccessDeniedException for https://provider.example/account/secret-id"
+	cleanup := startNudgebeeQueryStub(t, func(action string, input map[string]any) (int, string) {
+		assert.Equal(t, "agents_list_health", action)
+		assert.Contains(t, input["columns"], "last_synced_at")
+		return http.StatusOK, `{"rows":[{"cloud_account_id":"acc-1","type":"AWS","status":"CONNECTED","last_synced_at":"2026-09-06T10:00:00Z","connection_status":{"events":{"end":"2026-09-06T09:59:00Z","err":""},"resources":{"updated_at":"2026-09-06T09:58:00Z","err":"` + rawError + `"},"recommendations":{"updated_at":"2026-09-06T09:57:00Z","err":""},"spends":{"updated_at":"2026-09-06T09:56:00Z","err":""},"account_number":"123456789012","cf_stack":{"stack_name":"secret"}}}]} `
+	})
+	defer cleanup()
+
+	resp, err := NudgebeeAgentHealthGetTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.NotContains(t, resp.Data, "provider.example")
+	assert.NotContains(t, resp.Data, "123456789012")
+	assert.NotContains(t, resp.Data, "cf_stack")
+
+	var normalized struct {
+		Rows []struct {
+			OverallHealth         string                    `json:"overall_health"`
+			HealthSignal          map[string]any            `json:"health_signal"`
+			SynchronizationHealth map[string]map[string]any `json:"synchronization_health"`
+		} `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Data), &normalized))
+	require.Len(t, normalized.Rows, 1)
+	row := normalized.Rows[0]
+	assert.Equal(t, "degraded", row.OverallHealth)
+	assert.Equal(t, "degraded", row.HealthSignal["status"])
+	assert.Equal(t, "2026-09-06T10:00:00Z", row.HealthSignal["observed_at"])
+	assert.Equal(t, "healthy", row.SynchronizationHealth["events"]["status"])
+	assert.Equal(t, "2026-09-06T09:59:00Z", row.SynchronizationHealth["events"]["observed_at"])
+	assert.Equal(t, "disconnected", row.SynchronizationHealth["resources"]["status"])
+	resourceError := row.SynchronizationHealth["resources"]["health_error"].(map[string]any)
+	assert.Equal(t, "AUTHORIZATION_FAILED", resourceError["reason_code"])
+}
+
+func TestNudgebeeAgentHealthGetKeepsIncompleteSynchronizationUnknown(t *testing.T) {
+	previousNow := nudgebeeNow
+	t.Cleanup(func() { nudgebeeNow = previousNow })
+	nudgebeeNow = func() time.Time { return time.Date(2026, 9, 6, 10, 5, 0, 0, time.UTC) }
+	cleanup := startNudgebeeQueryStub(t, func(string, map[string]any) (int, string) {
+		return http.StatusOK, `{"rows":[{"cloud_account_id":"acc-1","type":"GCP","status":"CONNECTED","last_synced_at":"2026-09-06T10:00:00Z","connection_status":{"events":{"end":"2026-09-06T09:59:00Z","err":""},"resources":{"updated_at":"timestamp-secret","err":""},"recommendations":{"updated_at":{"token":"object-secret"},"err":""},"spends":{"end":["list-secret"],"err":""}}}]}`
+	})
+	defer cleanup()
+
+	resp, err := NudgebeeAgentHealthGetTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Data, `"overall_health":"unknown"`)
+	assert.Contains(t, resp.Data, `"status":"unknown"`)
+	assert.NotContains(t, resp.Data, "timestamp-secret")
+	assert.NotContains(t, resp.Data, "object-secret")
+	assert.NotContains(t, resp.Data, "list-secret")
+}
+
+func TestNudgebeeAgentHealthGetNormalizesProxyDatasources(t *testing.T) {
+	previousNow := nudgebeeNow
+	t.Cleanup(func() { nudgebeeNow = previousNow })
+	nudgebeeNow = func() time.Time { return time.Date(2026, 9, 6, 10, 5, 0, 0, time.UTC) }
+	rawError := "dial tcp database.internal:5432: connection refused; password=secret"
+	cleanup := startNudgebeeQueryStub(t, func(string, map[string]any) (int, string) {
+		return http.StatusOK, `{"rows":[{"cloud_account_id":"acc-1","type":"proxy","status":"CONNECTED","connection_status":{"datasources":{"ds-secret-id":{"name":"orders","type":"postgresql","proxy_type":"database","status":"unhealthy","last_check":"timestamp-secret","error":"` + rawError + `","token":"secret"},"ds-2":{"name":"cache","type":"redis","status":"healthy","last_check":"2026-09-06T09:59:00Z"}}}}]}`
+	})
+	defer cleanup()
+
+	resp, err := NudgebeeAgentHealthGetTool{}.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{})
+	require.NoError(t, err)
+	assert.NotContains(t, resp.Data, "database.internal")
+	assert.NotContains(t, resp.Data, "password")
+	assert.NotContains(t, resp.Data, "ds-secret-id")
+	assert.NotContains(t, resp.Data, `"token"`)
+	assert.NotContains(t, resp.Data, "timestamp-secret")
+
+	var normalized struct {
+		Rows []struct {
+			OverallHealth    string           `json:"overall_health"`
+			DatasourceHealth []map[string]any `json:"datasource_health"`
+		} `json:"rows"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Data), &normalized))
+	require.Len(t, normalized.Rows, 1)
+	assert.Equal(t, "degraded", normalized.Rows[0].OverallHealth)
+	require.Len(t, normalized.Rows[0].DatasourceHealth, 2)
+	assert.Equal(t, "cache", normalized.Rows[0].DatasourceHealth[0]["name"])
+	assert.Equal(t, "orders", normalized.Rows[0].DatasourceHealth[1]["name"])
+	assert.Equal(t, "disconnected", normalized.Rows[0].DatasourceHealth[1]["status"])
+	healthError := normalized.Rows[0].DatasourceHealth[1]["health_error"].(map[string]any)
+	assert.Equal(t, "ENDPOINT_UNREACHABLE", healthError["reason_code"])
+}
+
+func TestNudgebeeHealthFreshnessRejectsMissingMalformedAndExpiredTimestamps(t *testing.T) {
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, "unknown", nudgebeeFreshnessVerdict(nil, time.Hour, now))
+	assert.Equal(t, "unknown", nudgebeeFreshnessVerdict("not-a-time", time.Hour, now))
+	assert.Equal(t, "unknown", nudgebeeFreshnessVerdict("2026-09-06T12:06:00Z", time.Hour, now))
+	assert.Equal(t, "stale", nudgebeeFreshnessVerdict("2026-09-06T10:59:59Z", time.Hour, now))
+	assert.Equal(t, "healthy", nudgebeeFreshnessVerdict("2026-09-06T11:00:00Z", time.Hour, now))
+
+	missingTimestamps := map[string]any{
+		"events":          map[string]any{"err": ""},
+		"resources":       map[string]any{"err": ""},
+		"recommendations": map[string]any{"err": ""},
+		"spends":          map[string]any{"err": ""},
+	}
+	assert.Equal(t, "unknown", nudgebeeEvidenceHealth(nudgebeeSynchronizationHealth(missingTimestamps, now)))
+
+	staleDatasource := nudgebeeDatasourceHealth(map[string]any{"datasources": map[string]any{
+		"ds-1": map[string]any{"name": "orders", "status": "healthy", "last_check": "2026-09-06T11:29:59Z"},
+	}}, now)
+	require.Len(t, staleDatasource, 1)
+	assert.Equal(t, "stale", staleDatasource[0]["status"])
+	assert.Equal(t, "stale", nudgebeeDatasourceOverallHealth(staleDatasource))
 }
 
 func TestNudgebeeIntegrationDiagnoseTool(t *testing.T) {

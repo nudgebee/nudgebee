@@ -7775,6 +7775,7 @@ var table_metadata = map[string]TableDefinition{
 				status_message,
 				status,
 				last_connected_at,
+				last_synced_at,
 				created_at,
 				k8s_version,
 				k8s_provider,
@@ -7813,6 +7814,10 @@ var table_metadata = map[string]TableDefinition{
 			"last_connected_at": {
 				Type: ColumnDefinitionTypeDatetime,
 				Def:  "last_connected_at",
+			},
+			"last_synced_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "last_synced_at",
 			},
 			"k8s_version": {
 				Type: ColumnDefinitionTypeString,

@@ -13,6 +13,12 @@ import (
 	"github.com/google/uuid"
 )
 
+type storeRecommendationsDeps struct {
+	getDB  func(common.DatabaseManagerType) (*common.DatabaseManager, error)
+	fetch  func(*security.RequestContext, string, providers.ListRecommendationsRequest) (providers.ListRecommendationsResponse, providers.Account, error)
+	update func(*security.RequestContext, string, AgentStatus, string, bool, map[string]any) error
+}
+
 func StoreRecommendationsAll(ctx *security.RequestContext, accountId string) (StoreRecommendationResponse, error) {
 	t0 := time.Now()
 	availableServices, err := getAllServices(ctx, accountId)
@@ -105,9 +111,17 @@ func sweepOrphanedRecommendations(ctx *security.RequestContext, accountId string
 }
 
 func StoreRecommendations(ctx *security.RequestContext, accountId string, filter providers.ListRecommendationsRequest) (StoreRecommendationResponse, error) {
+	return storeRecommendations(ctx, accountId, filter, storeRecommendationsDeps{
+		getDB:  common.GetDatabaseManager,
+		fetch:  getRecommendationsInternal,
+		update: updateOrCreateAgentStatus,
+	})
+}
+
+func storeRecommendations(ctx *security.RequestContext, accountId string, filter providers.ListRecommendationsRequest, deps storeRecommendationsDeps) (StoreRecommendationResponse, error) {
 	t0 := time.Now()
 
-	dbms, err := common.GetDatabaseManager(common.Metastore)
+	dbms, err := deps.getDB(common.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("unable to get dbms", "error", err)
 		return StoreRecommendationResponse{
@@ -116,25 +130,17 @@ func StoreRecommendations(ctx *security.RequestContext, accountId string, filter
 		}, err
 	}
 
-	recommendations, account, err := getRecommendationsInternal(ctx, accountId, filter)
-	if err != nil {
-		if errors.Is(err, errors.ErrUnsupported) {
-			ctx.GetLogger().Debug("service does not support recommendations", "serviceName", filter.ServiceName)
-		} else {
-			ctx.GetLogger().Error("unable to fetch recommendations", "error", err)
-		}
-		return StoreRecommendationResponse{
-			Duration: time.Since(t0),
-		}, err
-	}
-
+	recommendations, account, err := deps.fetch(ctx, accountId, filter)
 	defer func() {
+		if errors.Is(err, errors.ErrUnsupported) {
+			return
+		}
 		ctx.GetLogger().Info("stored recommendation sync completed", "time", time.Since(t0).String(), "data", slog.AnyValue(filter))
 		msg := ""
 		if err != nil {
 			msg = err.Error()
 		}
-		err := updateOrCreateAgentStatus(ctx, accountId, AgentStatusConnected, msg, true, map[string]any{
+		err := deps.update(ctx, accountId, AgentStatusConnected, msg, true, map[string]any{
 			"account_number": account.AccountNumber,
 			"recommendations": map[string]any{
 				"updated_at": time.Now().UTC().Format(time.RFC3339),
@@ -146,6 +152,16 @@ func StoreRecommendations(ctx *security.RequestContext, accountId string, filter
 			ctx.GetLogger().Error("Failed to update agent status", "error", err.Error())
 		}
 	}()
+	if err != nil {
+		if errors.Is(err, errors.ErrUnsupported) {
+			ctx.GetLogger().Debug("service does not support recommendations", "serviceName", filter.ServiceName)
+		} else {
+			ctx.GetLogger().Error("unable to fetch recommendations", "error", err)
+		}
+		return StoreRecommendationResponse{
+			Duration: time.Since(t0),
+		}, err
+	}
 
 	if len(recommendations.Items) == 0 {
 		// Only Open recommendations are this sync's to archive. Anything a user

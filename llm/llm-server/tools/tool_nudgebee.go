@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,6 +23,10 @@ const (
 	nudgebeeDocsExcerptMaxRunes = 1600
 	nudgebeeDocsOutputMaxRunes  = 6000
 	nudgebeeDocsNoResult        = "No matching Nudgebee product documentation was found for this query."
+	nudgebeeEventFreshness      = 45 * time.Minute
+	nudgebeeDailySyncFreshness  = 36 * time.Hour
+	nudgebeeDatasourceFreshness = 30 * time.Minute
+	nudgebeeFutureClockSkew     = 5 * time.Minute
 )
 
 type nudgebeeProviderErrorClassification struct {
@@ -32,6 +37,7 @@ type nudgebeeProviderErrorClassification struct {
 
 var (
 	queryNudgebeeDocs                    = core.QueryRAG
+	nudgebeeNow                          = time.Now
 	nudgebeeHTMLTags                     = regexp.MustCompile(`(?i)</?[a-z](?:[^'">]|"[^"]*"|'[^']*')*?>`)
 	nudgebeeHTTPStatusCode               = regexp.MustCompile(`(?i)\b(?:http(?: status)?|status(?: code)?|response|returned|googleapi: error)\s*[:=]?\s*(401|403|502|503)\b`)
 	nudgebeeProviderErrorClassifications = []nudgebeeProviderErrorClassification{
@@ -104,7 +110,7 @@ func (NudgebeeAgentHealthGetTool) InferToolRequestType(ctx *security.RequestCont
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeAgentHealthGetTool) Description() string {
-	return "Get Nudgebee-recorded agent or collector health for one visible account: normalized deployment model and health verdicts, heartbeat or synchronization status, bounded provider failure reason, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
+	return "Get Nudgebee-recorded agent or collector health for one visible account: normalized deployment model and health verdicts, heartbeat or synchronization status, bounded provider failure reason, VM/proxy datasource health, version, Kubernetes metadata, and sanitized feature connectivity. Use for Nudgebee agent disconnected, Prometheus disconnected, datasource, synchronization, or collector health questions. Ready Kubernetes workloads alone do not prove this health. Read-only."
 }
 func (NudgebeeAgentHealthGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
@@ -120,7 +126,7 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		return triageErrorResponse(errors.New("nudgebee_agent_health_get requires an account id")), nil
 	}
 	data, err := doNudgebeeQueryRequest(nbCtx, "agents_list_health", map[string]any{
-		"columns": []string{"id", "cloud_account_id", "type", "version", "status_message", "status", "last_connected_at", "created_at", "k8s_version", "k8s_provider", "connection_status"},
+		"columns": []string{"id", "cloud_account_id", "type", "version", "status_message", "status", "last_connected_at", "last_synced_at", "created_at", "k8s_version", "k8s_provider", "connection_status"},
 		"where":   map[string]any{"cloud_account_id": map[string]any{"_eq": accountID}},
 		"limit":   20,
 	})
@@ -152,14 +158,23 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		}
 		row["features"] = features
 		row["deployment_model"] = nudgebeeDeploymentModel(row["type"])
+		now := nudgebeeNow()
+		datasourceHealth := nudgebeeDatasourceHealth(connectionStatus, now)
+		synchronizationHealth := nudgebeeSynchronizationHealth(connectionStatus, now)
 		row["health_signal"] = map[string]any{
 			"kind":        nudgebeeHealthSignalKind(row["type"]),
-			"status":      nudgebeeHealthSignalStatus(row["type"], row["status"]),
-			"observed_at": nudgebeeHealthSignalObservedAt(row["type"], row["last_connected_at"]),
+			"status":      nudgebeeHealthSignalStatus(row["type"], row["status"], synchronizationHealth),
+			"observed_at": nudgebeeHealthSignalObservedAt(row["type"], row["last_connected_at"], row["last_synced_at"]),
 		}
 		featureHealth := nudgebeeFeatureHealth(features)
 		row["feature_health"] = featureHealth
-		row["overall_health"] = nudgebeeRowHealth(row["type"], row["status"], featureHealth)
+		if len(datasourceHealth) > 0 {
+			row["datasource_health"] = datasourceHealth
+		}
+		if len(synchronizationHealth) > 0 {
+			row["synchronization_health"] = synchronizationHealth
+		}
+		row["overall_health"] = nudgebeeRowHealth(row["type"], row["status"], featureHealth, datasourceHealth, synchronizationHealth)
 		if row["deployment_model"] == "agentless_cloud" {
 			if healthError, ok := nudgebeeHealthError(row["status_message"]); ok {
 				row["health_error"] = healthError
@@ -167,6 +182,7 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 			}
 		}
 		delete(row, "connection_status")
+		delete(row, "last_synced_at")
 		normalizedRows = append(normalizedRows, row)
 	}
 	result.Rows = normalizedRows
@@ -232,17 +248,23 @@ func nudgebeeHealthSignalKind(value any) string {
 	}
 }
 
-func nudgebeeHealthSignalStatus(agentType, status any) string {
+func nudgebeeHealthSignalStatus(agentType, status any, synchronizationHealth map[string]any) string {
 	model := nudgebeeDeploymentModel(agentType)
-	if model == "agentless_cloud" || model == "unknown" {
+	if model == "agentless_cloud" {
+		return nudgebeeEvidenceHealth(synchronizationHealth)
+	}
+	if model == "unknown" {
 		return "unknown"
 	}
 	return nudgebeeStatusVerdict(status)
 }
 
-func nudgebeeHealthSignalObservedAt(agentType, lastConnectedAt any) any {
+func nudgebeeHealthSignalObservedAt(agentType, lastConnectedAt, lastSyncedAt any) any {
 	model := nudgebeeDeploymentModel(agentType)
-	if model == "agentless_cloud" || model == "unknown" {
+	if model == "agentless_cloud" {
+		return lastSyncedAt
+	}
+	if model == "unknown" {
 		return nil
 	}
 	return lastConnectedAt
@@ -252,7 +274,7 @@ func nudgebeeStatusVerdict(value any) string {
 	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
 	case "connected", "healthy", "success", "succeeded":
 		return "healthy"
-	case "not_connected", "disconnected", "unhealthy", "failed", "failure":
+	case "not_connected", "disconnected", "unhealthy", "failed", "failure", "error":
 		return "disconnected"
 	case "stale":
 		return "stale"
@@ -289,17 +311,20 @@ func nudgebeeFeatureHealth(features map[string]any) map[string]string {
 	return result
 }
 
-func nudgebeeRowHealth(agentType, status any, features map[string]string) string {
+func nudgebeeRowHealth(agentType, status any, features map[string]string, datasourceHealth []map[string]any, synchronizationHealth map[string]any) string {
 	model := nudgebeeDeploymentModel(agentType)
-	if model == "agentless_cloud" || model == "unknown" {
+	if model == "agentless_cloud" {
+		return nudgebeeEvidenceHealth(synchronizationHealth)
+	}
+	if model == "unknown" {
 		return "unknown"
 	}
 	heartbeat := nudgebeeStatusVerdict(status)
 	if heartbeat != "healthy" {
 		return heartbeat
 	}
-	if model != "kubernetes_agent" {
-		return "unknown"
+	if model == "vm_proxy" {
+		return nudgebeeDatasourceOverallHealth(datasourceHealth)
 	}
 	hasUnknown := false
 	for _, verdict := range features {
@@ -314,6 +339,168 @@ func nudgebeeRowHealth(agentType, status any, features map[string]string) string
 		return "unknown"
 	}
 	return "healthy"
+}
+
+func nudgebeeDatasourceHealth(connectionStatus map[string]any, now time.Time) []map[string]any {
+	rawDatasources, ok := connectionStatus["datasources"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(rawDatasources))
+	for _, raw := range rawDatasources {
+		datasource, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		observedAt, observed := nudgebeeCanonicalObservedAt(datasource["last_check"], now)
+		status := nudgebeeStatusVerdict(datasource["status"])
+		if status == "healthy" {
+			status = nudgebeeFreshnessVerdict(observedAt, nudgebeeDatasourceFreshness, now)
+		}
+		normalized := map[string]any{
+			"name":       safeString(datasource["name"]),
+			"type":       safeString(datasource["type"]),
+			"proxy_type": safeString(datasource["proxy_type"]),
+			"status":     status,
+		}
+		if observed {
+			normalized["observed_at"] = observedAt
+		}
+		if healthError, found := nudgebeeHealthError(datasource["error"]); found {
+			normalized["status"] = "disconnected"
+			normalized["health_error"] = healthError
+		}
+		result = append(result, normalized)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftName, _ := result[i]["name"].(string)
+		rightName, _ := result[j]["name"].(string)
+		if leftName != rightName {
+			return leftName < rightName
+		}
+		leftType, _ := result[i]["type"].(string)
+		rightType, _ := result[j]["type"].(string)
+		return leftType < rightType
+	})
+	return result
+}
+
+func nudgebeeDatasourceOverallHealth(datasources []map[string]any) string {
+	if len(datasources) == 0 {
+		return "unknown"
+	}
+	overall := "healthy"
+	for _, datasource := range datasources {
+		status := fmt.Sprint(datasource["status"])
+		if status == "disconnected" {
+			return "degraded"
+		}
+		if status == "stale" {
+			overall = "stale"
+		} else if status == "unknown" && overall != "stale" {
+			overall = "unknown"
+		}
+	}
+	return overall
+}
+
+func nudgebeeSynchronizationHealth(connectionStatus map[string]any, now time.Time) map[string]any {
+	result := map[string]any{}
+	for _, feature := range []string{"events", "resources", "recommendations", "spends"} {
+		raw, ok := connectionStatus[feature].(map[string]any)
+		if !ok {
+			continue
+		}
+		observedAt, observed := nudgebeeFirstObservedAt(now, raw["updated_at"], raw["end"])
+		freshness := nudgebeeDailySyncFreshness
+		if feature == "events" {
+			freshness = nudgebeeEventFreshness
+		}
+		entry := map[string]any{"status": nudgebeeFreshnessVerdict(observedAt, freshness, now)}
+		if observed {
+			entry["observed_at"] = observedAt
+		}
+		if healthError, found := nudgebeeHealthError(raw["err"]); found {
+			entry["status"] = "disconnected"
+			entry["health_error"] = healthError
+		}
+		result[feature] = entry
+	}
+	return result
+}
+
+func nudgebeeEvidenceHealth(evidence map[string]any) string {
+	if len(evidence) == 0 {
+		return "unknown"
+	}
+	overall := "healthy"
+	for _, raw := range evidence {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return "unknown"
+		}
+		switch fmt.Sprint(entry["status"]) {
+		case "disconnected":
+			return "degraded"
+		case "stale":
+			overall = "stale"
+		case "healthy":
+		default:
+			return "unknown"
+		}
+	}
+	if overall == "stale" {
+		return "stale"
+	}
+	if len(evidence) < 4 {
+		return "unknown"
+	}
+	return overall
+}
+
+func nudgebeeFreshnessVerdict(observedAt any, maxAge time.Duration, now time.Time) string {
+	value, ok := observedAt.(string)
+	if !ok {
+		return "unknown"
+	}
+	observed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return "unknown"
+	}
+	age := now.Sub(observed)
+	if age < -nudgebeeFutureClockSkew {
+		return "unknown"
+	}
+	if age > maxAge {
+		return "stale"
+	}
+	return "healthy"
+}
+
+func nudgebeeCanonicalObservedAt(value any, now time.Time) (string, bool) {
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	observed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || now.Sub(observed) < -nudgebeeFutureClockSkew {
+		return "", false
+	}
+	return observed.UTC().Format(time.RFC3339Nano), true
+}
+
+func nudgebeeFirstObservedAt(now time.Time, values ...any) (string, bool) {
+	for _, value := range values {
+		if observedAt, ok := nudgebeeCanonicalObservedAt(value, now); ok {
+			return observedAt, true
+		}
+	}
+	return "", false
+}
+
+func safeString(value any) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
 }
 
 func nudgebeeAggregateHealth(rows []map[string]any) (string, string) {
