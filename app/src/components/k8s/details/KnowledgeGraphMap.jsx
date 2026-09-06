@@ -12,6 +12,47 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Box, Typography } from '@mui/material';
+import MemoryOutlined from '@mui/icons-material/MemoryOutlined';
+import FolderOutlined from '@mui/icons-material/FolderOutlined';
+import StorageOutlined from '@mui/icons-material/StorageOutlined';
+import LanOutlined from '@mui/icons-material/LanOutlined';
+import LayersOutlined from '@mui/icons-material/LayersOutlined';
+import CloudOutlined from '@mui/icons-material/CloudOutlined';
+import SwapHorizOutlined from '@mui/icons-material/SwapHorizOutlined';
+import CachedOutlined from '@mui/icons-material/CachedOutlined';
+import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
+import BoltOutlined from '@mui/icons-material/BoltOutlined';
+import HubOutlined from '@mui/icons-material/HubOutlined';
+import DnsOutlined from '@mui/icons-material/DnsOutlined';
+import ViewInArOutlined from '@mui/icons-material/ViewInArOutlined';
+import WidgetsOutlined from '@mui/icons-material/WidgetsOutlined';
+import PublicOutlined from '@mui/icons-material/PublicOutlined';
+import SecurityOutlined from '@mui/icons-material/SecurityOutlined';
+import RouterOutlined from '@mui/icons-material/RouterOutlined';
+import VpnKeyOutlined from '@mui/icons-material/VpnKeyOutlined';
+import LockOutlined from '@mui/icons-material/LockOutlined';
+import MonitorHeartOutlined from '@mui/icons-material/MonitorHeartOutlined';
+import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
+import ArticleOutlined from '@mui/icons-material/ArticleOutlined';
+import SettingsEthernetOutlined from '@mui/icons-material/SettingsEthernetOutlined';
+import BackupOutlined from '@mui/icons-material/BackupOutlined';
+import SourceOutlined from '@mui/icons-material/SourceOutlined';
+import PersonOutlined from '@mui/icons-material/PersonOutlined';
+import GroupOutlined from '@mui/icons-material/GroupOutlined';
+import NotificationsActiveOutlined from '@mui/icons-material/NotificationsActiveOutlined';
+import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
+import MailOutlined from '@mui/icons-material/MailOutlined';
+import AltRouteOutlined from '@mui/icons-material/AltRouteOutlined';
+import InventoryOutlined from '@mui/icons-material/InventoryOutlined';
+import ImageOutlined from '@mui/icons-material/ImageOutlined';
+import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
+import BadgeOutlined from '@mui/icons-material/BadgeOutlined';
+import LanguageOutlined from '@mui/icons-material/LanguageOutlined';
+import ScheduleOutlined from '@mui/icons-material/ScheduleOutlined';
+import GridViewOutlined from '@mui/icons-material/GridViewOutlined';
+import ShieldOutlined from '@mui/icons-material/ShieldOutlined';
+import TerminalOutlined from '@mui/icons-material/TerminalOutlined';
+import WorkOutlineOutlined from '@mui/icons-material/WorkOutlineOutlined';
 import { ds } from 'src/utils/colors';
 
 const ELK_OPTIONS = {
@@ -37,6 +78,91 @@ const NODE_TYPE_COLORS = {
   Topic: 'var(--ds-purple-400)',
   LoadBalancer: 'var(--ds-teal-400)',
   ServerlessFunction: 'var(--ds-pink-400)',
+  ComputeInstance: 'var(--ds-green-500)',
+  Storage: 'var(--ds-amber-400)',
+};
+
+// A node's badge carries an icon rather than a 3-letter abbreviation of its
+// node_type: 'COM' and 'STO' say nothing, while a chip and a folder read as
+// "compute instance" and "storage" at a glance. Keyed on node_type — the
+// cloud-agnostic ontology type the backend sets (core/types.go) — so an EC2
+// instance, a GCE instance and an Azure VM all arrive as ComputeInstance and
+// share one icon; specific_type (EC2Instance / GCEInstance / AzureVirtualMachine)
+// stays the tooltip and the subtitle. Types with no icon here fall back to the
+// NODE_TYPE_LABELS text badge below.
+const NODE_TYPE_ICONS = {
+  // Application / workload
+  Service: LanOutlined,
+  Workload: LayersOutlined,
+  Database: StorageOutlined,
+  MessageQueue: SwapHorizOutlined,
+  Queue: SwapHorizOutlined,
+  Topic: AccountTreeOutlined,
+  Cache: CachedOutlined,
+  ExternalService: CloudOutlined,
+  ComputeInstance: MemoryOutlined,
+  ComputeInstancePool: MemoryOutlined,
+  // Kubernetes core
+  Cluster: HubOutlined,
+  ManagedCluster: HubOutlined,
+  Namespace: GridViewOutlined,
+  Pod: ViewInArOutlined,
+  Node: DnsOutlined,
+  Job: WorkOutlineOutlined,
+  CronJob: ScheduleOutlined,
+  CustomResource: WidgetsOutlined,
+  // Cloud infrastructure
+  LoadBalancer: AltRouteOutlined,
+  BackendPool: AltRouteOutlined,
+  Storage: FolderOutlined,
+  VPC: LanOutlined,
+  SecurityGroup: SecurityOutlined,
+  Subnet: SettingsEthernetOutlined,
+  NetworkInterface: SettingsEthernetOutlined,
+  RouteTable: RouterOutlined,
+  CloudResource: CloudOutlined,
+  InfraStack: LayersOutlined,
+  // Cloud services
+  ContainerRegistry: InventoryOutlined,
+  ContainerImage: ImageOutlined,
+  Artifact: InventoryOutlined,
+  DNSZone: LanguageOutlined,
+  DNSRecord: LanguageOutlined,
+  CDN: PublicOutlined,
+  NetworkGateway: RouterOutlined,
+  PrivateEndpoint: LockOutlined,
+  APIGateway: HubOutlined,
+  SecretVault: LockOutlined,
+  EncryptionKey: VpnKeyOutlined,
+  MonitoringService: MonitorHeartOutlined,
+  LogAggregator: ArticleOutlined,
+  ServerlessFunction: BoltOutlined,
+  BackupVault: BackupOutlined,
+  BackupPolicy: BackupOutlined,
+  PublicIP: PublicOutlined,
+  SecurityService: ShieldOutlined,
+  EmailService: MailOutlined,
+  AIService: SmartToyOutlined,
+  ServiceIdentity: BadgeOutlined,
+  // Kubernetes objects
+  K8sService: LanOutlined,
+  Ingress: AltRouteOutlined,
+  NetworkPolicy: SecurityOutlined,
+  ConfigMap: SettingsOutlined,
+  K8sSecret: LockOutlined,
+  K8sServiceAccount: BadgeOutlined,
+  PersistentVolumeClaim: FolderOutlined,
+  PersistentVolume: FolderOutlined,
+  // Deploy / source
+  HelmChart: InventoryOutlined,
+  HelmRelease: TerminalOutlined,
+  Configuration: DescriptionOutlined,
+  Repository: SourceOutlined,
+  // Identity / on-call
+  SourceControlOrg: SourceOutlined,
+  UserAccount: PersonOutlined,
+  UserGroup: GroupOutlined,
+  OnCallService: NotificationsActiveOutlined,
 };
 
 const NODE_TYPE_LABELS = {
@@ -50,6 +176,8 @@ const NODE_TYPE_LABELS = {
   Topic: 'TOPIC',
   LoadBalancer: 'LB',
   ServerlessFunction: 'FN',
+  ComputeInstance: 'VM',
+  Storage: 'STORE',
 };
 
 // Cached promise of the dynamically-loaded ELK instance. The constructor spawns
@@ -102,6 +230,7 @@ const getLayoutedElements = async (nodes, edges) => {
 const KGNode = memo(({ data }) => {
   const color = data.color || ds.gray[500];
   const isTarget = data.isTarget;
+  const TypeIcon = NODE_TYPE_ICONS[data.nodeType];
 
   return (
     <Box
@@ -129,10 +258,15 @@ const KGNode = memo(({ data }) => {
           justifyContent: 'center',
           flexShrink: 0,
         }}
+        title={data.specificType || data.typeLabel}
       >
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', color: color, lineHeight: 1 }}>
-          {data.typeLabel}
-        </Typography>
+        {TypeIcon ? (
+          <TypeIcon sx={{ fontSize: 'var(--ds-text-body)', color: color }} />
+        ) : (
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', color: color, lineHeight: 1 }}>
+            {data.typeLabel}
+          </Typography>
+        )}
       </Box>
       <Box sx={{ overflow: 'hidden' }}>
         <Typography
@@ -189,7 +323,7 @@ function transformKGData(kgNodes, kgEdges, targetService) {
       id: node.id,
       type: 'kg-node',
       position: { x: 0, y: 0 },
-      data: { name, namespace, color, typeLabel, isTarget, nodeType },
+      data: { name, namespace, color, typeLabel, isTarget, nodeType, specificType: node.specific_type || '' },
     };
   });
 
