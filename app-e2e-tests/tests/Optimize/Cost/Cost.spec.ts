@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import { parkCursor, expectSelectedTab } from "../optimizeModuleHelper";
 import { CATEGORY_CARDS, COST_HEADERS, SAVINGS_BUCKET, SORT_HIGHEST_SAVINGS, SORT_SEVERE, noMatchRule } from "./costConstants";
@@ -36,7 +37,7 @@ test.beforeEach(() => {
 test.describe("Optimize Cost", () => {
   test(
     "Optimize Cost sanity - open the Cost tab, verify the summary strip renders the Total Savings card alongside clickable All Recommendations, Right Sizing, Infra Upgrade and Spot Instance cards with All selected",
-    { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
       await waitForCategoryCards(locators);
@@ -78,7 +79,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     "Optimize Cost - click the first category card that has recommendations, verify the card reports itself selected, the chosen category reaches the URL and the list re-settles under that one category",
-    { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
 
@@ -109,7 +110,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     "Optimize Cost - select a category card then click All Recommendations, verify the category leaves the URL, every category card returns to unselected and the full list comes back",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
 
@@ -144,7 +145,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     `Optimize Cost - open the Savings filter and pick the ${SAVINGS_BUCKET.label} bucket, verify the trigger shows the bucket, its key reaches the URL and the list re-settles under the narrower filter`,
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
       await expectListSettled(locators);
@@ -171,7 +172,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     `Optimize Cost - open Sort by and pick ${SORT_HIGHEST_SAVINGS.label}, verify the trigger relabels from ${SORT_SEVERE.label} and the list re-settles under the new order`,
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
       await expectListSettled(locators);
@@ -203,7 +204,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     "Optimize Cost - click the first safety chip that has findings, verify it reports itself selected and its band reaches the URL, then click it again and verify the band leaves the URL",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
       await expect(locators.severityBar).toBeVisible({ timeout: 60000 });
@@ -243,7 +244,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     "Optimize Cost - click a recommendation row, verify the detail panel opens naming that row's resource, then close it and verify the list comes back with the same row still listed",
-    { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
 
@@ -278,7 +279,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     "Optimize Cost - page the recommendations list to its second page, verify the Showing range advances and page 2 reads as current, then page back and verify the first range returns",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
 
@@ -317,7 +318,7 @@ test.describe("Optimize Cost", () => {
 
   test(
     "Optimize Cost - open the Rules filter and search its options for a rule name that cannot exist, verify the panel reports No results found and offers no option to select",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@search"] },
     async ({ page }) => {
       const locators = await openCostTab(page);
       await expectListSettled(locators);

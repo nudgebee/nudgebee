@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import { openClusterSummary, expectSelectedTab, accountIdFromUrl, settleSummaryTab, filterText, clickSubTab } from "./clusterSummaryHelper";
 
@@ -15,7 +16,7 @@ import { openClusterSummary, expectSelectedTab, accountIdFromUrl, settleSummaryT
 
 test(
   "Cluster Summary sanity - open Infra > K8s from the sidenav, land on the cluster detail page, verify the Summary tab is the tab that opens by default",
-  { tag: ["@dev", "@oss", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -40,7 +41,7 @@ test(
 
 test(
   "Cluster Summary sanity - open the Summary tab, verify the Nodes, Applications and Pods stats render counts and the Insights, Utilization & Health and Quick Links cards are present",
-  { tag: ["@dev", "@oss", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -74,7 +75,7 @@ test(
 
 test(
   "Cluster Summary - open the Summary tab, click the Cost Summary jump-nav button then the Utilization one, verify each click scrolls its own section into the viewport",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -106,7 +107,7 @@ test(
 
 test(
   "Cluster Summary - open the Cost Summary toolbar, set the frequency filter to Day, switch the chart to Line, verify the filter reads Day and Line becomes the checked chart type",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -143,7 +144,7 @@ test(
 
 test(
   "Cluster Summary - open the Cost Summary frequency filter, dismiss it with Escape, verify the panel closes and the frequency stays on Month",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -173,7 +174,7 @@ test(
 
 test(
   "Cluster Summary - click the View Pods quick link, reload the browser on the resulting URL, verify the Pods sub-tab is still the open tab after the reload",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -199,7 +200,7 @@ test(
 
 test(
   "Cluster Summary - open the cluster detail page at a summary fragment that does not exist, verify the Summary tab still opens instead of an empty body",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -225,7 +226,7 @@ test(
 
 test(
   "Cluster Summary - click the Nodes stat to open the Apps & Infra Nodes sub-tab, return through the Summary tab, verify the summary stats and Cost Summary section are back on screen",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 

@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   expectScreenNotSelected,
@@ -42,7 +43,7 @@ test.beforeEach(() => {
 test.describe("AI Gateway", () => {
   test(
     "AI Gateway sanity - open Optimise on the AI Gateway tab with no sub-fragment, verify the screen strip lists Connect, Overview, Models, Users, Requests, Sessions, Tools and Governance and opens on Overview",
-    { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page);
 
@@ -74,7 +75,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway sanity - open the Overview screen, verify the KPI row, the usage-over-time chart and the provider, model and user breakdown tables all render",
-    { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
 
@@ -91,7 +92,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - open Overview, click through to Models and then Sessions, click back to Overview, verify each screen becomes the selected one and the URL sub-fragment follows it",
-    { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
       await parkCursor(page);
@@ -113,7 +114,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - open the Tools screen from the strip, reload the page, verify the reader lands back on Tools rather than on the default Overview screen",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
       await parkCursor(page);
@@ -134,7 +135,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - deep link straight to #ai-gateway/requests, verify the Requests screen opens without passing through Overview",
-    { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "requests");
 
@@ -151,7 +152,7 @@ test.describe("AI Gateway", () => {
 
   test(
     `AI Gateway - deep link to #ai-gateway/${UNKNOWN_SCREEN_FRAGMENT}, verify the unknown sub-fragment is rejected and the Overview screen opens instead of an empty body`,
-    { tag: ["@dev", "@test", "@oss", "@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const locators = await openGatewayWithFragment(page, UNKNOWN_SCREEN_FRAGMENT);
 
@@ -164,7 +165,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - open Overview, switch the chart metric from Cost to Requests, verify Requests becomes the checked option, Cost is released and the chart heading reads Requests over time",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
 
@@ -188,7 +189,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - set the chart granularity to Hour on Overview, open the Governance screen, verify the Hour selection carries across the screen switch",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
       await parkCursor(page);
@@ -212,7 +213,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - open the Connect screen, verify the shared date and granularity bar is withheld and the token controls take its place, then return to Overview and verify the bar comes back",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
       await parkCursor(page);
@@ -236,7 +237,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - open the Sessions screen, search for a session id that no request can carry, verify the list resolves to the No sessions empty state",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@search"] },
     async ({ page }) => {
       const locators = await openGateway(page, "sessions");
 
@@ -254,7 +255,7 @@ test.describe("AI Gateway", () => {
 
   test(
     "AI Gateway - open the Requests screen, set the Status filter to Error, verify the trigger reports Error and the list settles with no 2xx request left in it",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@search"] },
     async ({ page }) => {
       const locators = await openGateway(page, "requests");
 

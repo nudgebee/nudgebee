@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   openTraceGroup,
@@ -26,7 +27,7 @@ import {
 
 test(
   "Trace Group sanity - open Infra > K8s, open the Monitoring section, click the Trace Group tab, verify the URL moves to the grouping fragment and the listing renders its toolbar and table",
-  { tag: ["@dev", "@oss", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -49,7 +50,7 @@ test(
 
 test(
   "Trace Group sanity - open the Trace Group tab, verify the listing renders the Total Request, Error Count, Source, Span, Target, Resource, Duration, P99, P95 and Max columns",
-  { tag: ["@dev", "@oss", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -65,7 +66,7 @@ test(
 
 test(
   "Trace Group - open the Trace Group tab, search for a resource string no span can carry, verify the listing reports No Data Available and no results",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@search", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@negative"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -84,7 +85,7 @@ test(
 
 test(
   "Trace Group - search for a resource string no span can carry, clear the search with the X, verify the listing returns to the result count it showed before the search",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -119,7 +120,7 @@ test(
 
 test(
   "Trace Group - open the Span Type filter, switch from http to query, verify the trigger reads query and the listing refetches for the query span type",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -141,7 +142,7 @@ test(
 
 test(
   "Trace Group - sort the listing by Duration, verify the trace grouping request is re-issued ordered by duration_ns instead of the default error_count",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -158,7 +159,7 @@ test(
 
 test(
   "Trace Group - open the Destination Namespace filter, dismiss it with Escape, verify the panel closes and no destination namespace is applied",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -180,7 +181,7 @@ test(
 
 test(
   "Trace Group - move from Trace Group to the Traces sub-tab and back, verify the trace group listing is restored",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -204,7 +205,7 @@ test(
 
 test(
   "Trace Group - reload the browser on the Trace Group URL, verify the Trace Group tab is still the open sub-tab after the reload",
-  { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(240000);
 

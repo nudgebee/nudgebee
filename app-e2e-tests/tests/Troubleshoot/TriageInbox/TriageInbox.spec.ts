@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import { openEventSubTab } from "../troubleshootEventsHelper";
 import { EventSubTabs } from "../troubleshootEventsLocators";
@@ -15,7 +16,7 @@ import {
 
 test(
   "Triage Inbox sanity - open Troubleshoot from the sidebar, verify Triage Inbox is the selected sub-tab and its Severity, Status, Triage Priority, Issue Type, Sort By and Triage Status filters and download control render",
-  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -45,7 +46,7 @@ test(
 
 test(
   "Triage Inbox sanity - open the tab, verify the table exposes the Severity, Application, Event Type, Count, Triage Score, Triage Status, Alert Status and Action columns",
-  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -61,7 +62,7 @@ test(
 
 test(
   "Triage Inbox - filter Issue Type by New Issues, verify the issueType=new query param is added while the Triage Inbox sub-tab stays selected and every listed row carries the NEW chip",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -92,7 +93,7 @@ test(
 
 test(
   "Triage Inbox - filter Issue Type by Recurring Issues, verify no listed row carries the NEW chip, reset to All Issues, verify the issueType param is dropped and the original row count returns",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -122,7 +123,7 @@ test(
 
 test(
   "Triage Inbox - filter Severity by High, verify every listed row's severity marker reads HIGH, reload the page, verify the unfiltered listing returns",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -152,7 +153,7 @@ test(
 
 test(
   "Triage Inbox - sort by Event Count, verify the Count column comes back in descending order",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -191,7 +192,7 @@ test(
 
 test(
   "Triage Inbox - open the first row's Classify menu, verify it offers True Positive and False Positive, press Escape, verify the menu closes and the row's Triage Status is unchanged",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -222,7 +223,7 @@ test(
 
 test(
   "Triage Inbox - switch to the Triage Rules sub-tab and back to Triage Inbox, verify the inbox table unmounts and then reloads with its original row count",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -243,7 +244,7 @@ test(
 
 test(
   "Triage Inbox - open the first row's Investigate action, verify the investigate page opens for that row's event, go back, verify the Triage Inbox listing is restored",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 

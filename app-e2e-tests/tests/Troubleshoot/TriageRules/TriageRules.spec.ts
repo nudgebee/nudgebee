@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   deleteRuleByName,
@@ -46,7 +47,7 @@ test.beforeEach(() => {
 
 test(
   "Triage Rules sanity - open the cluster's Triage Rules tab, verify the toolbar offers the name search, the Rule Type and Status filters and the System Rules toggle",
-  { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -70,7 +71,7 @@ test(
 
 test(
   "Triage Rules - open the cluster's Triage Rules tab, filter Rule Type by Suppression, verify every listed rule's Type cell reads Suppression",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -107,7 +108,7 @@ test(
 
 test(
   "Triage Rules - open the cluster's Triage Rules tab, search for a listed rule by its own name, verify that rule is still listed and the rows narrow to it",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -138,7 +139,7 @@ test(
 
 test(
   "Triage Rules - open the cluster's Triage Rules tab, search a name no rule holds, verify the No Data Available empty state replaces the table",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@negative", "@search"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -154,7 +155,7 @@ test(
 
 test(
   "Triage Rules - open the cluster's Triage Rules tab, turn the System Rules toggle off, verify no listed rule still carries the System chip",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -184,7 +185,7 @@ test(
 
 test(
   "Triage Rules - open Create Rule, enter a unique name and an alert-name pattern, create the rule, verify it is listed afterwards, then delete it and verify it is gone",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@crud"] },
+  { tag: ["@dev", "@test", "@regression", "@crud"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
     const name = uniqueRuleName();
@@ -223,7 +224,7 @@ test(
 
 test(
   "Triage Rules - open Create Rule, enter a name but leave every match criterion empty, submit, verify the at-least-one-criterion error and that the modal stays open",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@validation", "@negative"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -246,7 +247,7 @@ test(
 
 test(
   "Triage Rules - open Create Rule, enter a name, cancel, verify the modal closes and no rule under that name was created",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
     const name = uniqueRuleName();
@@ -269,7 +270,7 @@ test(
 
 test(
   "Triage Rules - open the cluster's Triage Rules tab, switch to the Triage Inbox sub-tab and back, verify the hash returns to triage-rules and the listing re-renders",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
 
@@ -291,7 +292,7 @@ test(
 
 test(
   "Triage Rules - open the module from Troubleshoot instead of a cluster, verify the unscoped view offers the Account filter and withholds Create Rule",
-  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openTriageRulesGlobal(page);
 

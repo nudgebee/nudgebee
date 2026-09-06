@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   ACCOUNT_QUERY_PARAM,
@@ -54,7 +55,7 @@ test.beforeEach(() => {
 test.describe("Troubleshoot Event Resolutions", () => {
   test(
     "Event Resolutions sanity - open the Troubleshoot Event Resolutions tab, verify the Account, Status, Type and Resolver filters and the Download action render above the listing",
-    { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
 
@@ -78,7 +79,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions sanity - open the Event Resolutions tab, verify the populated listing declares all eight columns, or that an empty one shows No Data Available instead",
-    { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
       await expectListingSettled(locators);
@@ -99,7 +100,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, read the pagination summary, verify its stated range accounts for exactly the rows on screen",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
       await expectListingSettled(locators);
@@ -122,7 +123,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, pick a Status the listing already holds, verify every Status cell reads that status",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
       const status = await pickPopulatedOption(locators, STATUS_COLUMN, STATUS_OPTIONS);
@@ -144,7 +145,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, pick a Type the listing already holds, verify every Resolution cell reads that resolution type",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
       const type = await pickPopulatedOption(locators, RESOLUTION_COLUMN, TYPE_OPTIONS, typeOptionFromCell);
@@ -169,7 +170,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, pick a Resolver the listing already holds, verify every Resolver cell reads that resolver",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
       const resolver = await pickPopulatedOption(locators, RESOLVER_COLUMN, RESOLVER_OPTIONS);
@@ -191,7 +192,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, select the first account in the Account filter, reload the page, verify the accountIds query parameter persisted and the account is still selected",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
 
@@ -226,7 +227,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - deep-link the Event Resolutions tab with an accountIds value no account can match, verify the listing renders no rows and shows the No Data Available empty state",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page, `?${ACCOUNT_QUERY_PARAM}=${noMatchAccountId()}`);
 
@@ -240,7 +241,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, page through the listing, verify the summary advances to the next range when a second page exists and covers the whole set when it does not",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
       await expectListingSettled(locators);
@@ -277,7 +278,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
   test(
     "Event Resolutions - open the Event Resolutions tab, switch to All Events and back, verify the Event Resolutions listing comes back as the selected tab",
-    { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
 

@@ -1,3 +1,4 @@
+// Not for OSS
 import { test, expect } from "@playwright/test";
 import { openServiceCriticalityTab, noMatchTerm } from "./serviceCriticalityHelper";
 import { CRITICALITY_LEVELS, DEFAULT_TIER } from "./serviceCriticalityLocators";
@@ -12,7 +13,7 @@ import { CRITICALITY_LEVELS, DEFAULT_TIER } from "./serviceCriticalityLocators";
 // rather than committed; see "Follow-ups" in the PR.
 const TEST_TIMEOUT = 180000;
 
-test("Service Criticality sanity - open the cluster Events tab, select Service Criticality, verify the info banner, toolbar controls and workload listing render", { tag: ["@dev", "@oss", "@test", "@sanity", "@functional"] }, async ({ page }) => {
+test("Service Criticality sanity - open the cluster Events tab, select Service Criticality, verify the info banner, toolbar controls and workload listing render", { tag: ["@dev", "@test", "@sanity", "@functional"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -39,7 +40,7 @@ test("Service Criticality sanity - open the cluster Events tab, select Service C
   });
 });
 
-test("Service Criticality sanity - open the tab, verify the table exposes the Namespace, Workload, Kind, Criticality, Source and Why columns", { tag: ["@dev", "@oss", "@test", "@sanity", "@functional"] }, async ({ page }) => {
+test("Service Criticality sanity - open the tab, verify the table exposes the Namespace, Workload, Kind, Criticality, Source and Why columns", { tag: ["@dev", "@test", "@sanity", "@functional"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -65,7 +66,7 @@ test("Service Criticality sanity - open the tab, verify the table exposes the Na
   expect(tiers.every((tier) => CRITICALITY_LEVELS.includes(tier.toLowerCase() as (typeof CRITICALITY_LEVELS)[number]))).toBe(true);
 });
 
-test("Service Criticality - read the first workload name, search for it, verify only matching workloads stay listed and the full list returns when the search is cleared", { tag: ["@dev", "@oss", "@test", "@regression", "@search"] }, async ({ page }) => {
+test("Service Criticality - read the first workload name, search for it, verify only matching workloads stay listed and the full list returns when the search is cleared", { tag: ["@dev", "@test", "@regression", "@search"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -95,7 +96,7 @@ test("Service Criticality - read the first workload name, search for it, verify 
   await expect(sc.rows).toHaveCount(baseline);
 });
 
-test("Service Criticality - search for a workload name that cannot exist, verify the No Data Available panel replaces the table, clear the search, verify the full listing returns", { tag: ["@dev", "@oss", "@test", "@regression", "@search", "@negative"] }, async ({ page }) => {
+test("Service Criticality - search for a workload name that cannot exist, verify the No Data Available panel replaces the table, clear the search, verify the full listing returns", { tag: ["@dev", "@test", "@regression", "@search", "@negative"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -111,7 +112,7 @@ test("Service Criticality - search for a workload name that cannot exist, verify
   await expect(sc.rows).toHaveCount(baseline);
 });
 
-test("Service Criticality - filter by the first row's namespace, verify every listed workload belongs to that namespace, clear the filter, verify the full listing returns", { tag: ["@dev", "@oss", "@test", "@regression", "@functional", "@search"] }, async ({ page }) => {
+test("Service Criticality - filter by the first row's namespace, verify every listed workload belongs to that namespace, clear the filter, verify the full listing returns", { tag: ["@dev", "@test", "@regression", "@functional", "@search"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -141,7 +142,7 @@ test("Service Criticality - filter by the first row's namespace, verify every li
   await expect(sc.rows).toHaveCount(baseline);
 });
 
-test("Service Criticality - filter by the first row's criticality tier, verify every listed workload carries that tier, clear the filter, verify the full listing returns", { tag: ["@dev", "@oss", "@test", "@regression", "@functional", "@search"] }, async ({ page }) => {
+test("Service Criticality - filter by the first row's criticality tier, verify every listed workload carries that tier, clear the filter, verify the full listing returns", { tag: ["@dev", "@test", "@regression", "@functional", "@search"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -168,7 +169,7 @@ test("Service Criticality - filter by the first row's criticality tier, verify e
   await expect(sc.rows).toHaveCount(baseline);
 });
 
-test("Service Criticality - turn on Only classified, verify the listing refetches without the default medium tier, turn it off, verify the full listing returns", { tag: ["@dev", "@oss", "@test", "@regression", "@functional", "@search"] }, async ({ page }) => {
+test("Service Criticality - turn on Only classified, verify the listing refetches without the default medium tier, turn it off, verify the full listing returns", { tag: ["@dev", "@test", "@regression", "@functional", "@search"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -200,7 +201,7 @@ test("Service Criticality - turn on Only classified, verify the listing refetche
   await expect(sc.rows).toHaveCount(baseline);
 });
 
-test("Service Criticality - dismiss the info banner, verify it is removed and the workload listing stays on screen", { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] }, async ({ page }) => {
+test("Service Criticality - dismiss the info banner, verify it is removed and the workload listing stays on screen", { tag: ["@dev", "@test", "@regression", "@functional"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -214,7 +215,7 @@ test("Service Criticality - dismiss the info banner, verify it is removed and th
   await expect(sc.rows).toHaveCount(baseline);
 });
 
-test("Service Criticality - open the first workload's criticality menu, verify it offers the tiers the row is not on, press Escape, verify the row keeps its original tier", { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] }, async ({ page }) => {
+test("Service Criticality - open the first workload's criticality menu, verify it offers the tiers the row is not on, press Escape, verify the row keeps its original tier", { tag: ["@dev", "@test", "@regression", "@functional"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
@@ -250,7 +251,7 @@ test("Service Criticality - open the first workload's criticality menu, verify i
   await expect(sc.loadFailureToast).toHaveCount(0);
 });
 
-test("Service Criticality - switch to the Triage Rules sub-tab and back to Service Criticality, verify the workload listing reloads", { tag: ["@dev", "@oss", "@test", "@regression", "@functional"] }, async ({ page }) => {
+test("Service Criticality - switch to the Triage Rules sub-tab and back to Service Criticality, verify the workload listing reloads", { tag: ["@dev", "@test", "@regression", "@functional"] }, async ({ page }) => {
   test.setTimeout(TEST_TIMEOUT);
   const sc = await openServiceCriticalityTab(page);
 
