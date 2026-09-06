@@ -2520,6 +2520,12 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 		return AccountAttrUpsertResponse{}, fmt.Errorf("unauthorized: missing tenant")
 	}
 
+	for _, attr := range request.Objects {
+		if err := validateKnowledgePolicyAttribute(context.GetSecurityContext(), attr); err != nil {
+			return AccountAttrUpsertResponse{}, err
+		}
+	}
+
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return AccountAttrUpsertResponse{}, fmt.Errorf("failed to get database: %w", err)

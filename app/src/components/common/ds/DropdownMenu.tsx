@@ -100,6 +100,10 @@ export type DropdownMenuItem = DropdownMenuItemAction | DropdownMenuSeparator | 
 export interface DropdownMenuProps {
   trigger: React.ReactElement;
   items: DropdownMenuItem[];
+  /** Keep the menu open for staged selection; existing action menus close by default. */
+  closeOnSelect?: boolean;
+  /** Optional confirmation area outside the scrolling options. */
+  footer?: (close: () => void) => React.ReactNode;
   align?: DropdownMenuAlign;
   side?: DropdownMenuSide;
   size?: DropdownMenuSize;
@@ -138,7 +142,7 @@ export interface DropdownMenuProps {
    * Use for small icon-only actions that belong to the menu surface itself.
    */
   headerActions?: React.ReactNode;
-  /** Called after any item.onSelect (or after dismissal) */
+  /** Called when the menu closes */
   onClose?: () => void;
   /**
    * Class applied to the overlay root (portaled Menu/Modal root). Use for host
@@ -196,6 +200,8 @@ const SubmenuChevron: React.FC<{ expanded: boolean }> = ({ expanded }) => (
 export function DropdownMenu({
   trigger,
   items,
+  closeOnSelect = true,
+  footer,
   align = 'start',
   side = 'bottom',
   size = 'md',
@@ -228,7 +234,7 @@ export function DropdownMenu({
   const handleSelect = (item: DropdownMenuItemAction) => {
     if (item.disabled) return;
     item.onSelect?.();
-    close();
+    if (closeOnSelect) close();
   };
 
   const enhancedTrigger = React.cloneElement(trigger, {
@@ -422,6 +428,7 @@ export function DropdownMenu({
             })
           )}
         </OverlayScrollBox>
+        {footer?.(close)}
       </OverlaySurface>
     </>
   );

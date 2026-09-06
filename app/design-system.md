@@ -1595,3 +1595,12 @@ These live under `@shared/*` and are kept here because §1–§3 reference them.
 ---
 
 _End of guide._
+
+### DropdownMenu: staged selection
+
+`closeOnSelect` defaults to `true`; ordinary action menus are unchanged. Set it to
+`false` for a single staged setting and provide `footer={(close) => ...}` with
+explicit Save/Cancel controls. Cancel calls `close`; the caller owns draft state
+and resets it from the saved value on the next trigger click. Dismissal must not
+persist the draft. The footer is outside the options scroll region. Use wrapped
+React-node descriptions for long text; keep menus to a few choices.
