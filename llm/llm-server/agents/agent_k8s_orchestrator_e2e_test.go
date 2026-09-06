@@ -1619,8 +1619,46 @@ func TestCloudOrchestrators_NudgebeeHealthGate(t *testing.T) {
 				WantMaxToolCalls: 1,
 				WantLLMClaims: []string{
 					"The answer begins from Nudgebee-recorded health and does not invent Kubernetes, project, subscription, region, or resource scope that the health result did not provide.",
+					"If normalized Nudgebee health is unknown, the answer preserves unknown and does not infer synchronization state or a root cause from raw status, timestamps, or generic documentation.",
 				},
 			})
 		})
 	}
+}
+
+// TEST_AGENTLESS_ACCOUNT must identify an AWS, Azure, or GCP account whose
+// normalized health is unknown while its compatibility status is CONNECTED and
+// last_connected_at is populated. The direct Nudgebee E2E asserts that payload;
+// this test verifies the outer provider orchestrator preserves its meaning.
+func TestCloudOrchestrator_AgentlessHealthPrecedence(t *testing.T) {
+	accountID := os.Getenv("TEST_AGENTLESS_ACCOUNT")
+	provider := strings.ToLower(os.Getenv("TEST_AGENTLESS_PROVIDER"))
+	if os.Getenv("TEST_TENANT") == "" || os.Getenv("TEST_USER") == "" || accountID == "" || provider == "" {
+		t.Skip("requires TEST_TENANT, TEST_USER, TEST_AGENTLESS_ACCOUNT, and TEST_AGENTLESS_PROVIDER=aws|azure|gcp")
+	}
+
+	var agent core.NBAgent
+	switch provider {
+	case "aws":
+		agent = newAwsOrchestratorAgent(accountID)
+	case "azure":
+		agent = newAzureOrchestratorAgent(accountID)
+	case "gcp":
+		agent = newGcpOrchestratorAgent(accountID)
+	default:
+		t.Fatalf("TEST_AGENTLESS_PROVIDER must be aws, azure, or gcp; got %q", provider)
+	}
+
+	runTest(t, agent, k8sTestCase{
+		Name:             "nudgebee_agentless_health_precedence_" + provider,
+		SessionId:        "ut-nudgebee-agentless-health-precedence-1",
+		AccountId:        accountID,
+		UserId:           os.Getenv("TEST_USER"),
+		Query:            "Troubleshoot this selected account health. Stay within this account.",
+		WantFirstTool:    NudgebeeAgentName,
+		WantMaxToolCalls: 1,
+		WantLLMClaims: []string{
+			"The answer reports agentless synchronization health as unknown despite raw connected status and last_connected_at compatibility fields, and it does not invent a root cause.",
+		},
+	})
 }

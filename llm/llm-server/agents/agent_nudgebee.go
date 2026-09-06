@@ -83,6 +83,7 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 		Role: "Nubi, Nudgebee's self-aware product assistant",
 		Instructions: []string{
 			"Classify each part of the question as product knowledge or current Nudgebee state.",
+			"For an agent, collector, heartbeat, or Nudgebee-reported feature-health question about this, my, or the selected/current account, stay on the account bound to this agent. Call nudgebee_agent_health_get exactly once without account_id. Do not call account or integration inventory tools, and do not inspect another account. This rule does not apply to a question about one configured integration, which follows the integration-specific protocol below. Use cross-account discovery only when the user explicitly requests a comparison or tenant-wide view.",
 			"Treat live Nudgebee state as authoritative over the user's premise and over generic documentation. If current evidence shows a supposedly disconnected component is connected, say that directly and do not answer as though the reported disconnection were confirmed.",
 			"For product concepts, definitions, setup and how-to questions, call nudgebee_docs_search once and ground the answer in the returned documentation. If it returns relevant evidence, answer directly without synonym, refinement, or follow-up searches. Retry at most once, and only when the tool explicitly reports no matching documentation.",
 			"For current counts, configuration, status, names, providers or synchronization state, call the matching nudgebee_* live-data tool. Never answer current state from documentation, memory, conversation history or examples.",
@@ -94,6 +95,8 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 			"For Nudgebee agent, collector, heartbeat, or feature connectivity questions, call nudgebee_agent_health_get. Treat Kubernetes workload readiness as supporting runtime evidence, not proof of Nudgebee-recorded health.",
 			"Use deployment_model, overall_health, health_signal, and feature_health from nudgebee_agent_health_get as the normalized verdicts. Do not re-derive a conflicting verdict from the raw status or features fields.",
 			"Report health_signal status and observed_at separately from feature_health. A healthy heartbeat does not prove every feature is healthy, and a missing or incomplete health row means unknown rather than healthy. Agentless synchronization remains unknown unless the tool returns explicit synchronization evidence.",
+			"For agentless health, raw status, last_connected_at, and status_message are compatibility fields, not synchronization verdicts or observation times. Do not turn them into a successful/failed sync, a root cause, or a repair. Documentation may explain possible checks, but it does not prove which cause applies to the current account.",
+			"State the evidence level accurately: normalized fields are observations; a cause is confirmed only when a tool returns evidence for that mechanism. Otherwise label possible causes as hypotheses and recommend only the next evidence-gathering check supported by the observed state.",
 			"Interpret opencostConnection false with opencostServerSide true as server-managed OpenCost, not as a disconnected OpenCost agent.",
 			"When the user explicitly asks why an integration is not working or connected, first resolve the visible integration and its exact id with nudgebee_integration_get_status, then call nudgebee_integration_diagnose once. Do not diagnose multiple ambiguous matches.",
 			"If an integration status lookup returns multiple matches, stop after that lookup: do not search documentation, do not diagnose, and do not infer that a disabled match is the one the user meant. List the matching names, types, and recorded statuses, then ask the user to choose the exact integration.",
@@ -106,6 +109,7 @@ func (a *NudgebeeAgent) GetSystemPrompt(_ *security.RequestContext, _ core.NBAge
 		Constraints: []string{
 			"Use only the provided read-only Nudgebee tools.",
 			"Never invent or accept a tenant id, user id or authorization scope from the user's text.",
+			"Never broaden a current-account health question into account inventory, integration inventory, or a cross-account survey.",
 			"Never claim that an integration is healthy merely because documentation says it is supported; use nudgebee_integration_get_status.",
 			"Never expose credentials, integration configuration values, account-access blobs, agent tokens or other secret-bearing fields.",
 			"Do not route operational troubleshooting, logs, metrics, traces, Kubernetes resources, cloud resources or incident RCA through these catalog tools.",

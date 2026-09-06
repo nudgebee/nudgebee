@@ -42,6 +42,23 @@ func TestGetPrompt_BasicLoad(t *testing.T) {
 	assert.False(t, resp.Metadata.CacheHit)
 }
 
+func TestAgentPromptsIncludeScopedNudgebeeHealthGate(t *testing.T) {
+	loader := newTestLoader()
+	for _, name := range []string{"k8s_native", "k8s_lean", "aws_lean", "azure_lean", "gcp_lean"} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := loader.GetPrompt(context.Background(), PromptRequest{
+				Name: name, Category: CategoryAgents, Provider: "default",
+			})
+			require.NoError(t, err)
+			assert.Contains(t, resp.Content, "inspect the current account only")
+			assert.Contains(t, resp.Content, "Cross-account comparison is allowed only when the user explicitly asks")
+			assert.Contains(t, resp.Content, "Preserve the selected account identity through every delegated prompt and tool call")
+			assert.Contains(t, resp.Content, "Do not turn `unknown` into connected, disconnected, stale, or a confirmed cause")
+			assert.Contains(t, resp.Content, "Documentation can explain procedures and possible causes, but cannot prove current tenant state")
+		})
+	}
+}
+
 func TestGetPrompt_MissingName(t *testing.T) {
 	loader := newTestLoader()
 	_, err := loader.GetPrompt(context.Background(), PromptRequest{

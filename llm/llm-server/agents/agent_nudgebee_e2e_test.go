@@ -103,7 +103,7 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				SessionId: "ut-nudgebee-chain-67",
 				AccountId: os.Getenv("TEST_ACCOUNT"),
 				UserId:    os.Getenv("TEST_USER"),
-				Query:     "Why is my datadog-dev-alert integration not connected?",
+				Query:     "Why is my current account's datadog-dev-alert integration not connected?",
 				ExpectedToolCalls: []expectedNudgebeeToolCall{
 					{Name: "nudgebee_integration_get_status", ParameterFragment: `"name":"datadog-dev-alert"`},
 					{Name: "nudgebee_integration_diagnose", ResponseFragment: `"reason_code"`},
@@ -207,6 +207,43 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TEST_AGENTLESS_ACCOUNT must identify an agentless account whose normalized
+// health is unknown while raw compatibility fields report CONNECTED and a
+// last_connected_at value. This fixture reproduces the deployed precedence bug.
+func TestNudgebeeAgent_AgentlessHealthPrecedence(t *testing.T) {
+	accountID := os.Getenv("TEST_AGENTLESS_ACCOUNT")
+	userID := os.Getenv("TEST_USER")
+	if os.Getenv("TEST_TENANT") == "" || accountID == "" || userID == "" {
+		t.Skip("requires TEST_TENANT, TEST_USER, and TEST_AGENTLESS_ACCOUNT")
+	}
+
+	const sessionID = "ut-nudgebee-agentless-precedence-1"
+	query := "Troubleshoot this selected account health. Stay within this account."
+	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), userID, []string{accountID})
+	agent := &NudgebeeAgent{accountId: accountID}
+	require.NoError(t, core.DeleteConversationBySession(sessionID, accountID, userID))
+
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userID, accountID, sessionID, query)
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Response)
+
+	detail, err := core.GetConversationDao().GetConversationAgentDetail(sessionID, accountID, resp.AgentId, "")
+	require.NoError(t, err)
+	require.Len(t, detail.ToolCalls, 1)
+	call := detail.ToolCalls[0]
+	assert.Equal(t, "nudgebee_agent_health_get", call.ToolName)
+	assert.JSONEq(t, `{}`, call.Parameters)
+	for _, fragment := range []string{
+		`"deployment_model":"agentless_cloud"`, `"overall_health":"unknown"`,
+		`"status":"CONNECTED"`, `"last_connected_at":`,
+	} {
+		assert.Contains(t, call.Response, fragment)
+	}
+	agentasserts.LLMClaims(t, sc, []string{
+		"The answer reports agentless synchronization health as unknown despite the raw connected status and last_connected_at compatibility fields, and it does not invent a root cause.",
+	}, strings.Join(resp.Response, "\n"))
 }
 
 func matchingExpectedNudgebeeToolCalls(expectedCalls []expectedNudgebeeToolCall, name, parameters, response string) []int {

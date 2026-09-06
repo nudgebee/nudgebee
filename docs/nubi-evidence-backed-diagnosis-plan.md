@@ -5,13 +5,13 @@ Prerequisite: https://github.com/nudgebee/nudgebee-enterprise/pull/37735
 
 ## Progress tracker — updated 2026-09-06
 
-PR #37735 merged as `055fb974291a27638ea65a903a87844c1516f489` and was reported deployed to dev. PR #37762 fixed the two baseline regressions and merged as `623bd381ad4077ccaed5abf9ec6ac0fc57c6f6f3`. After deployment, the same four-case `nbctl` matrix passed. Phase 2 now starts by normalizing the existing agent-health response; it does not add another tool or begin runtime investigation.
+PR #37735 merged as `055fb974291a27638ea65a903a87844c1516f489` and was reported deployed to dev. PR #37762 fixed the two baseline regressions and merged as `623bd381ad4077ccaed5abf9ec6ac0fc57c6f6f3`. PR #37774 added normalized health fields and merged as `65e22d12d5e5b965fd70be21d2e37078ee7199d7`. Deployed Phase 2 testing confirmed the normalized contract for Kubernetes, VM/proxy, and OpenCost, then exposed remaining planner scope and agentless evidence-precedence failures. The current follow-up keeps the existing tool surface and tightens how every orchestrator consumes it.
 
 - [x] Foundation: epic #37223 records #37222 as complete (existing issue status; not revalidated here).
 - [x] Follow-up plan captured; dedicated worktree prepared.
 - [x] PR #37735 merged and deployed to dev — merge verified; deployment reported by the user and exercised successfully through live tools.
 - [x] Phase 1: all four baseline cases passed after #37762 was deployed.
-- [ ] Phase 2: Kubernetes and VM/proxy normalization is in progress in #37774. Agentless accounts without an agent-health row and safe error categorization remain pending.
+- [ ] Phase 2: #37774 normalized Kubernetes and VM/proxy health. Current follow-up covers selected-account scope and normalized-field precedence. Authoritative agentless sync/freshness, VM datasource health, and safe error categorization remain pending.
 - [ ] Phase 3: implement bounded product-to-environment handoff, scoped runtime investigation, and version-aware Helm guidance.
 - [ ] Phase 4: trace missing alerts/notifications through the delivery pipeline, stopping where evidence ends.
 - [ ] Phase 5: audit and complete installation, health, alerts, automation, and integration docs; verify retrieval and citations. Coordinate with #37299.
@@ -32,6 +32,7 @@ PR #37735 merged as `055fb974291a27638ea65a903a87844c1516f489` and was reported 
 | Plan captured, 2026-09-05 | Planning only | Full supplied plan preserved below | All post-merge phases remain pending |
 | PR #37735 merged and dev endpoint exercised, 2026-09-05 | `055fb974291a27638ea65a903a87844c1516f489` | Live Nudgebee tools introduced by the PR returned account-scoped integration and agent health | Deployment SHA was not independently exposed by `nbctl`; attribution combines the verified merge with the user's deployment report |
 | Phase 1 routing and grounding fixed, 2026-09-06 | PR #37762, `623bd381ad4077ccaed5abf9ec6ac0fc57c6f6f3` | Post-deploy conversations: Datadog `b38592c0-3c9e-4d90-b318-f1e141ade4e2`; health `4701ff67-ec4a-4b1a-a398-7864bc056b8c`; Prometheus premise `788b552a-3a2a-4022-8cfc-45fc803b957a`; agent premise `5f8340e6-768c-480e-a575-dfd9564a44a4` | Phase 2 normalization and later diagnosis phases remain |
+| Phase 2 health normalization, 2026-09-06 | PR #37774, `65e22d12d5e5b965fd70be21d2e37078ee7199d7` | Deployed matrices recorded in epic comments [`5556767726`](https://github.com/nudgebee/nudgebee-enterprise/issues/37223#issuecomment-5556767726) and [`5556785922`](https://github.com/nudgebee/nudgebee-enterprise/issues/37223#issuecomment-5556785922) | Planner scope, agentless evidence precedence, safe errors, sync/freshness, and VM datasource health remain |
 | Baseline: exact Datadog integration | Conversation `63a21d03-d7be-4099-af6f-abf6193ee3c2` | Selected `k8s_orchestrator` -> `nudgebee`; exact-name lookup; diagnosis returned `disabled`, `not_supported`, `unknown`, and `CONNECTION_TEST_NOT_SUPPORTED` | Final answer treated `updated_at` as proof of when it was disabled; remove that unsupported temporal claim |
 | Baseline: explicit Nubi agent health | Conversation `bc0b8dec-0781-4d24-9a5b-da245db26caa` | Selected only `nudgebee`; called `nudgebee_agent_health_get`; reported heartbeat and individual feature fields | `opencostConnection=false` plus `opencostServerSide=true` was described as disconnected; Phase 2 should normalize this as server-managed |
 | Baseline: Prometheus disconnected | Conversation `0dd533f3-d37d-4c1c-9d65-f3160a6d19ab` | Delegated to `nudgebee` first; health evidence said the agent and Prometheus were connected | Final answer ignored the live connected state, presented generic disconnected causes, and suggested a mutating `kubectl run`; answer-grounding failed |
