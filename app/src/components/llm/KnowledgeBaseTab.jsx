@@ -30,6 +30,7 @@ import Tabs from '@shared/navigation/Tabs';
 import { MemoryTable } from '@components/llm/MemoryTable';
 import MentionContentInput from '@components/llm/MentionContentInput';
 import ScopeChip from '@components/llm/ScopeChip';
+import KnowledgePolicySettings from '@components/llm/KnowledgePolicySettings';
 import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/kbLoadHistoryFormat';
 
 const MAX_CONTENT_LENGTH = 5000;
@@ -1667,7 +1668,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
               : "Account-scoped document library with AI semantic search-upload docs, map to agents, and they'll automatically search when needed."}
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexShrink: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {!isTenantWide && accountId !== 'demo' && <KnowledgePolicySettings accountId={accountId} canEdit={hasAccess} />}
           {/* Read-only probe, so it stays available in tenant-wide mode too. */}
           <Button tone='secondary' size='sm' onClick={() => setRetrievalOpen((open) => !open)} aria-expanded={retrievalOpen}>
             Test retrieval
