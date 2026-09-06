@@ -319,6 +319,9 @@ func listK8sResources(accountId string, resourceType string) ([]string, error) {
 		}
 		allObjects = append(allObjects, object)
 	}
+	if err := rows.Err(); err != nil {
+		return []string{}, err
+	}
 
 	allObjectData, err := common.MarshalJson(allObjects)
 	if err == nil {
