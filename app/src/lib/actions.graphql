@@ -7381,7 +7381,6 @@ type RecommendationRowResponse {
   finops_band: String
   finops_score_breakdown: Json
   safety_band: String
-  severity_weight: Int
   vuln_id: String
   package_name: String
 }
