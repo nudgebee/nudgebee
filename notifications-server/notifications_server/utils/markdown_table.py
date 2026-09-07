@@ -116,6 +116,15 @@ _SLACK_LINK_SPAN_RE = re.compile(rf"<{_SLACK_URL_SCHEME}[^|<>]+(?<!\\)\|[^<>]+>"
 # so right-alignment actually fires on the tables it's meant for.
 _CURRENCY_PREFIX_RE = re.compile(r"^[$€£¥]")
 _UNIT_SUFFIX_RE = re.compile(r"[a-zA-Z%]+$")
+# LLM output routinely stacks several values into one table cell with an
+# HTML ``<br>`` (e.g. ``0 / 0<br>1 / 1``, ``redis-replicas<br>redis-master``).
+# Slack's table block has no such markup, so left alone it renders the
+# literal ``<br>`` characters in the cell. Collapse each ``<br>`` (and its
+# XHTML spellings, any case) together with the whitespace hugging it into a
+# newline - both the ``raw_text`` and ``rich_text`` cell tiers render ``\n``
+# as a line break. Mirrors mermaid_graph.py's handling of ``<br>`` in node
+# labels.
+_CELL_BR_RE = re.compile(r"\s*<br\s*/?>\s*", re.IGNORECASE)
 # A generic ``` fence (any language, or none) still present by the time this
 # module runs - real Mermaid/nb-chart fences were already extracted by their
 # own splitters (see module docstring) - must be treated as opaque. Without
@@ -335,6 +344,11 @@ def _truncate_elements(elements: List[Dict[str, Any]], max_chars: int = _MAX_CEL
 
 
 def _build_cell(text: str) -> Dict[str, Any]:
+    # .strip() drops the edge newline a leading/trailing <br> would leave
+    # (which would otherwise show as a blank first/last line in the cell);
+    # a cell that was *only* a <br> becomes "" and picks up the blank-cell
+    # placeholder below.
+    text = _CELL_BR_RE.sub("\n", text).strip()
     # Tokenize first, truncate the parsed elements after - truncating the
     # raw string first could cut a long URL mid-pattern and break link
     # detection, turning a clean link into garbled raw text.
