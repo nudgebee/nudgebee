@@ -8,7 +8,7 @@ import {
 } from "./notificationHelper";
 import { users } from "../Users/usersConstants";
 
-test("Add Daily High notification rule", async ({ page }, testInfo) => {
+test("Add Daily High notification rule", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const locators = await navigateToNewNotificationRule(page);

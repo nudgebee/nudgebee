@@ -27,7 +27,7 @@ const NO_MATCH_RULE_NAME = `zz-no-such-rule-${Date.now()}`;
 
 test(
   "Troubleshoot sanity - open Troubleshoot from the sidebar, verify all seven All Events sub-tabs render and Triage Inbox is the one selected",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -49,7 +49,7 @@ test(
 
 test(
   "Troubleshoot - open the Triage Rules sub-tab, verify the rules toolbar renders and the URL carries the all-events/triage-rules hash",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -65,7 +65,7 @@ test(
 
 test(
   "Troubleshoot - open Triage Rules, search for a rule name that cannot exist, verify the listing drops every row and shows the No Data Available empty state",
-  { tag: ["@dev", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@negative"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -87,7 +87,7 @@ test(
 
 test(
   "Troubleshoot - open Triage Rules, search for a rule name that cannot exist, clear the search, verify the listing returns to the row count it had before the search",
-  { tag: ["@dev", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -113,7 +113,7 @@ test(
 
 test(
   "Troubleshoot - open the Alert Tuning sub-tab, verify the threshold suggestions toolbar renders with its Source and Confidence filters",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -129,7 +129,7 @@ test(
 
 test(
   "Troubleshoot - open the Event Resolutions sub-tab, verify the resolutions listing renders with its CSV download control",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -144,7 +144,7 @@ test(
 
 test(
   "Troubleshoot - open the Investigations tab, switch to Manual Investigated, verify that sub-tab is selected and the URL carries the investigations/manual-investigated hash",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -161,7 +161,7 @@ test(
 
 test(
   "Troubleshoot - deep-link an unknown top-level hash, verify the page rejects it and rewrites the URL to all-events/fingerprint",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -176,7 +176,7 @@ test(
 
 test(
   "Troubleshoot - deep-link the Investigations tab with an unknown sub-tab hash, verify the page rewrites the URL to investigations/auto-investigated",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -191,7 +191,7 @@ test(
 
 test(
   "Troubleshoot - open the Triage Rules sub-tab then go back in the browser, verify Triage Inbox is restored and the triage-rules hash is gone",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 

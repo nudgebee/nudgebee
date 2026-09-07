@@ -40,7 +40,7 @@ test.beforeEach(() => {
 test.describe("Optimize Resolutions", () => {
   test(
     "Optimize Resolutions sanity - open the Resolutions tab, verify the All Resolutions, Success, In Progress and Failed status cards render above the Account, Severity, Type and Resolver filters",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
 
@@ -67,7 +67,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - open the Resolutions tab, verify All Resolutions is the pressed card on mount and its count equals the Success, In Progress and Failed counts added together",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       await waitForCards(locators);
@@ -97,7 +97,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - open the Resolutions tab, click the first status card that carries a non-zero count, verify it becomes the pressed card and every listed row reports that status",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       await waitForResolutions(locators);
@@ -142,7 +142,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - apply a status card filter then click the same card again, verify the second click unpresses it and hands the pressed state back to All Resolutions",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       await waitForResolutions(locators);
@@ -183,7 +183,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - apply a status card filter then click All Resolutions, verify the status card unpresses and the listing returns to the full set",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       await waitForResolutions(locators);
@@ -217,7 +217,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - open the Severity filter, select Critical, verify the trigger keeps the selection and the listing settles to matching rows or its no-data state",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@search"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       await waitForResolutions(locators);
@@ -237,7 +237,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - click a resolution row, verify the detail panel opens carrying the row's status message or applied changes, close it, verify the panel is gone and the listing is still on screen",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       // Settle on rows OR the empty state before counting: waitForResolutions only waits for
@@ -273,7 +273,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - deep-link a recommendation id that cannot exist, verify the scoped-to-a-notification banner and its View all resolutions link render and the table falls to its no-data state",
-    { tag: ["@dev", "@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const recommendationId = noMatchRecommendationId();
       const locators = await openResolutionsTab(page, `?id=${recommendationId}`);
@@ -297,7 +297,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - deep-link a recommendation id that cannot exist, click View all resolutions, verify the banner clears and the unscoped listing comes back",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page, `?id=${noMatchRecommendationId()}`);
       await expect(locators.deepLinkBanner).toBeVisible({ timeout: 60000 });
@@ -319,7 +319,7 @@ test.describe("Optimize Resolutions", () => {
 
   test(
     "Optimize Resolutions - open the Resolutions tab, reload the page, verify the Resolutions tab is still the open one rather than falling back to Summary",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openResolutionsTab(page);
       await expectListingSettled(locators);

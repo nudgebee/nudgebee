@@ -7,7 +7,7 @@ function generateRandomAgentName(): string {
   return `Agent_${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
-test("CRUD Custom Agent", { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] }, async ({ page }) => {
+test("CRUD Custom Agent", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(180000);
   const loginPage = new LoginPage(page);
   const locators = new NubiLocators(page);

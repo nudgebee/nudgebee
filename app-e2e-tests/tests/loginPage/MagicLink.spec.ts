@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { LoginPageLocators } from './LoginpageLocators';
 import { users } from '../admin/Users/usersConstants';
 
-test('Magic link testing', async ({ page }) => {
+test('Magic link testing', { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }) => {
   const locators = new LoginPageLocators(page);
   const email = users[0].email;
 

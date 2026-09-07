@@ -16,7 +16,7 @@ import {
   GROUP_TOASTS,
 } from "./groupLocatorsConstants";
 
-test("Add User Groups", async ({ page }) => {
+test("Add User Groups", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);
@@ -148,7 +148,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups sanity - search a name that cannot exist, verify the empty state, clear the search, verify the listing returns",
-    { tag: ["@oss", "@dev", "@regression", "@search"] },
+    { tag: ["@oss", "@dev", "@regression", "@search", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -164,7 +164,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups sanity - expand a group row, verify the members sub-table opens",
-    { tag: ["@oss", "@dev", "@regression"] },
+    { tag: ["@oss", "@dev", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -405,7 +405,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - add a member, switch the member filter across Active, Inactive and Suspended, verify only matching members are listed",
-    { tag: ["@oss", "@dev", "@regression"] },
+    { tag: ["@oss", "@dev", "@regression", "@search"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -463,7 +463,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - add a member, reopen the picker, verify that user is no longer offered",
-    { tag: ["@oss", "@dev", "@regression"] },
+    { tag: ["@oss", "@dev", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -592,7 +592,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - enter a four-character name, verify the minimum-length error, then enter five characters, verify the error clears",
-    { tag: ["@oss", "@dev", "@regression", "@validation"] },
+    { tag: ["@oss", "@dev", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
       await locators.newUserGroupIdentifier.click();
@@ -687,7 +687,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - fill the add-group form, cancel, verify no group is created and the form is blank on reopen",
-    { tag: ["@oss", "@dev", "@regression", "@crud"] },
+    { tag: ["@oss", "@dev", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -713,7 +713,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - fill the add-group form, close with the X, verify no group is created",
-    { tag: ["@oss", "@dev", "@regression"] },
+    { tag: ["@oss", "@dev", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -735,7 +735,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - edit a description, close without saving, discard the guard, verify the edit is discarded",
-    { tag: ["@oss", "@dev", "@regression", "@crud"] },
+    { tag: ["@oss", "@dev", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -765,7 +765,7 @@ test.describe("Groups - CRUD & edge cases", () => {
 
   test(
     "User Groups - edit a description, close without saving, choose Continue Editing, verify the form returns with the edit intact",
-    { tag: ["@oss", "@dev", "@regression", "@crud"] },
+    { tag: ["@oss", "@dev", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 

@@ -174,7 +174,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra - move through the Namespace, Services, PVC and PV listings, verify each one mounts its own table and renders its own column headers",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -190,7 +190,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra - open the Databases and Queues listings, verify each mounts its own table with the Type, Name, Namespace and Status columns and offers a Status filter",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await setup(page);
 

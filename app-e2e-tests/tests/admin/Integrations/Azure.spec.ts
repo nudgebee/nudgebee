@@ -10,7 +10,7 @@ const requiredEnv = [
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
-test("Add Azure Integration", async ({ page }, testInfo) => {
+test("Add Azure Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }, testInfo) => {
   test.skip(
     true,
     "Temporarily disabled — AZURE_SUBSCRIPTION_ID does not match the subscription dev discovery returns",

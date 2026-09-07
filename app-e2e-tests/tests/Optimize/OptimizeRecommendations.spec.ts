@@ -3,7 +3,7 @@ import { LoginPage } from "../../pages/LoginPage";
 import { OptimizeLocators, OptimizeTabs } from "./OptimizeLocators";
 import { waitForGraphQLAndValidate } from "../utils/GraphQLNetworkWatcher";
 
-test("Graphql testing Optimize-> Recommendations", async ({ page }, testInfo) => {
+test("Graphql testing Optimize-> Recommendations", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

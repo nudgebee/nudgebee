@@ -3,7 +3,7 @@ import { LoginPage } from "../../../../pages/LoginPage";
 import { CloudAccountLocators } from "../../CloudAccountLocators";
 import { waitForGraphQLAndValidate } from "../../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cloud Account -> GCP Cloud Storage -> Events", async ({
+test("API testing Cloud Account -> GCP Cloud Storage -> Events", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);

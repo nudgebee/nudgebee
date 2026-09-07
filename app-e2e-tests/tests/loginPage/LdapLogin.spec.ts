@@ -6,7 +6,7 @@ import { LoginPage } from '../../pages/LoginPage';
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.describe('Authentication', () => {
-  test('should login with LDAP credentials and reach home page', async ({ page }) => {
+  test('should login with LDAP credentials and reach home page', { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     await loginPage.doFullLogin();
 
@@ -14,7 +14,7 @@ test.describe('Authentication', () => {
     await expect(page).toHaveURL(/.*\/home/, { timeout: 15000 });
   });
 
-  test('should not remain on signin page after valid credentials', async ({ page }) => {
+  test('should not remain on signin page after valid credentials', { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     await loginPage.doFullLogin();
 

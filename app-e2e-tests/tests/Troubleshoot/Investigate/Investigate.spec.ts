@@ -29,7 +29,7 @@ test.describe.configure({ timeout: INVESTIGATE_TIMEOUT_MS });
 
 test(
   "Investigate sanity - open Troubleshoot Events, follow an event's Investigate link, verify the investigation loads with its details sidebar and Tasks tab",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -51,7 +51,7 @@ test(
 
 test(
   "Investigate - follow an event's Investigate link, verify the url carries the event id and account id the listing row linked to",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const investigate = await openEventsListing(page);
 
@@ -75,7 +75,7 @@ test(
 
 test(
   "Investigate - open an investigation, select the Tasks tab, verify its panel becomes the visible one and the tab reports a task count",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -100,7 +100,7 @@ test(
 
 test(
   "Investigate - open an investigation, verify Investigation Analysis and RCA Report are offered only when the event produced them",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -136,7 +136,7 @@ test(
 
 test(
   "Investigate - open an investigation, collapse the details sidebar, expand it again, verify the Where row comes back",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -158,7 +158,7 @@ test(
 
 test(
   "Investigate - open an investigation, open the More actions menu, verify every entry it offers is one of the module's own actions",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -182,7 +182,7 @@ test(
 
 test(
   "Investigate - open the More actions menu, choose Event Trend, verify the Event Trend Chart dialog opens and closes again",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -210,7 +210,7 @@ test(
 
 test(
   "Investigate - open the More actions menu, choose Create Ticket, close the form without submitting, verify no ticket becomes linked to the event",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
 
@@ -242,7 +242,7 @@ test(
 
 test(
   "Investigate sanity - open the page with an event id that matches no event, verify no investigation is rendered for it",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     const investigate = await openEventsListing(page);
 
@@ -265,7 +265,7 @@ test(
 
 test(
   "Investigate - open an investigation, navigate back, verify the Troubleshoot Events listing is restored",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional"] },
   async ({ page }) => {
     const investigate = await openFirstInvestigation(page);
     await expect(page).toHaveURL(/\/investigate\?/);

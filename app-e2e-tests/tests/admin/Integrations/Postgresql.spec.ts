@@ -27,16 +27,16 @@ test.describe.serial("Postgresql Account Integration", () => {
     );
   });
 
-  test("Check if Postgresql integration exists", async ({ page }) => {
+  test("Check if Postgresql integration exists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
     integrationExists = await checkPostgresIntegrationExists(page, configName);
   });
 
-  test("Delete Postgresql integration if present", async ({ page }) => {
+  test("Delete Postgresql integration if present", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(!integrationExists, "Postgresql integration not present — nothing to delete");
     await deletePostgresIntegration(page, configName);
   });
 
-  test("Add Postgresql Account Integration", async ({ page }) => {
+  test("Add Postgresql Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     await addPostgresIntegration(page, {
       configName,
       secret: process.env.POSTGRES_SECRET ?? "",
@@ -44,11 +44,11 @@ test.describe.serial("Postgresql Account Integration", () => {
     });
   });
 
-  test("Disable Postgresql integration", async ({ page }) => {
+  test("Disable Postgresql integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     await disablePostgresIntegration(page, configName);
   });
 
-  test("Enable Postgresql integration", async ({ page }) => {
+  test("Enable Postgresql integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     await enablePostgresIntegration(page, configName);
   });
 });

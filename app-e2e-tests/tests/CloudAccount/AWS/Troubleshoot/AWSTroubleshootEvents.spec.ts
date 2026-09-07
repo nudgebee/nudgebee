@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { LoginPage } from "../../../../pages/LoginPage";
 import { AWSLocators } from "../AWSLocators";
 
-test("API testing Cloud Account -> AWS -> Troubleshoot -> Events", async ({
+test("API testing Cloud Account -> AWS -> Troubleshoot -> Events", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }) => {
   test.setTimeout(120000);

@@ -29,7 +29,7 @@ async function expandFirstServiceRow(page: Page, locators: AWSLocators) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-test("API testing Cloud Account -> AWS -> Services", async ({
+test("API testing Cloud Account -> AWS -> Services", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);
@@ -47,7 +47,7 @@ test("API testing Cloud Account -> AWS -> Services", async ({
   );
 });
 
-test("API testing Cloud Account -> AWS -> Services -> Resources tab", async ({
+test("API testing Cloud Account -> AWS -> Services -> Resources tab", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);
@@ -65,7 +65,7 @@ test("API testing Cloud Account -> AWS -> Services -> Resources tab", async ({
   );
 });
 
-test("API testing Cloud Account -> AWS -> Services -> Cost Trend tab", async ({
+test("API testing Cloud Account -> AWS -> Services -> Cost Trend tab", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);
@@ -82,7 +82,7 @@ test("API testing Cloud Account -> AWS -> Services -> Cost Trend tab", async ({
   );
 });
 
-test("API testing Cloud Account -> AWS -> Services -> Resources -> Details tab", async ({
+test("API testing Cloud Account -> AWS -> Services -> Resources -> Details tab", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional", "@quarantine"] }, async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -100,7 +100,7 @@ test("API testing Cloud Account -> AWS -> Services -> Resources -> Details tab",
   await page.waitForLoadState("networkidle");
 });
 
-test("API testing Cloud Account -> AWS -> Services -> Recommendations tab", async ({
+test("API testing Cloud Account -> AWS -> Services -> Recommendations tab", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);

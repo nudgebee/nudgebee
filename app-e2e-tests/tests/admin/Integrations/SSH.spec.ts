@@ -20,7 +20,7 @@ test.describe.serial("SSH Account Integration", () => {
 
   let integrationExists = false;
 
-  test("Check if SSH integration exists", async ({ page }) => {
+  test("Check if SSH integration exists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@quarantine"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -36,7 +36,7 @@ test.describe.serial("SSH Account Integration", () => {
     });
   });
 
-  test("Delete SSH integration if present", async ({ page }) => {
+  test("Delete SSH integration if present", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -53,7 +53,7 @@ test.describe.serial("SSH Account Integration", () => {
     });
   });
 
-  test("Add SSH Account Integration", async ({ page }) => {
+  test("Add SSH Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -92,7 +92,7 @@ test.describe.serial("SSH Account Integration", () => {
     });
   });
 
-  test("Disable SSH integration", async ({ page }) => {
+  test("Disable SSH integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -111,7 +111,7 @@ test.describe.serial("SSH Account Integration", () => {
     await disableIntegration(page, { configName, serviceName: "SSH" });
   });
 
-  test("Enable SSH integration", async ({ page }) => {
+  test("Enable SSH integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

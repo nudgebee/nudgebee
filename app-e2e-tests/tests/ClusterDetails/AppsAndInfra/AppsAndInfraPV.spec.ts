@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { AppsAndInfraLocators } from "./AppsAndInfraLocators";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher"; 
 
-test("API testing Cluster Details->Apps And Infra-> PV", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Apps And Infra-> PV", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
   const loginPage = new LoginPage(page);
   const locators = new AppsAndInfraLocators(page);

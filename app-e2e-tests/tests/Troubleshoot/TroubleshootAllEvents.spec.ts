@@ -3,7 +3,7 @@ import { LoginPage } from "../../pages/LoginPage";
 import { TroubleshootLocators, TroubleshootTabs } from "./TroubleshootLocators";
 import { waitForGraphQLAndValidate } from "../utils/GraphQLNetworkWatcher";
 
-test("Graphql testing Troubleshoot-> All Events", async ({ page }, testInfo) => {
+test("Graphql testing Troubleshoot-> All Events", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

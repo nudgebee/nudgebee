@@ -113,7 +113,7 @@ test.describe("Admin → Roles: enforcement", () => {
       expect(subjectId, `RBAC_TEST_USERNAME "${SUBJECT_USER}" must exist in this tenant`).toBeTruthy();
     });
 
-    test("Roles - sign in as a non-admin holding no grant, run the audits query, verify the gateway refuses it", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
+    test("Roles - sign in as a non-admin holding no grant, run the audits query, verify the gateway refuses it", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ browser }) => {
       const { context, page } = await loginAs(browser, SUBJECT_USER!, SUBJECT_PASS!);
       const res = await gql(page, PROBE.query, PROBE.opName, PROBE.vars);
       // Either a FORBIDDEN gateway rejection or the no-tenant-role variant —
@@ -124,7 +124,7 @@ test.describe("Admin → Roles: enforcement", () => {
       await context.close();
     });
 
-    test("Roles - grant audits to a non-admin and re-login, then revoke and re-login, verify the query is admitted then refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
+    test("Roles - grant audits to a non-admin and re-login, then revoke and re-login, verify the query is admitted then refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ browser }) => {
       const admin = await browser.newPage();
       roleId = await createRole(admin, roleName("enforce"), [{ module: PROBE.module, class: PROBE.cls }]);
       await assignRoleToUsers(admin, roleId, [subjectId]);
@@ -148,7 +148,7 @@ test.describe("Admin → Roles: enforcement", () => {
       await admin.close();
     });
 
-    test("Roles - grant a non-admin Read on user groups, create a group, verify the Write action is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
+    test("Roles - grant a non-admin Read on user groups, create a group, verify the Write action is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ browser }) => {
       const admin = await browser.newPage();
       const id = await createRole(admin, roleName("read-only"), [{ module: "usergroups", class: "Read" }]);
       await assignRoleToUsers(admin, id, [subjectId]);
@@ -168,7 +168,7 @@ test.describe("Admin → Roles: enforcement", () => {
       await admin.close();
     });
 
-    test("Roles - grant a non-admin users Write, sync tenant_admin onto themselves, verify the escalation is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ browser }) => {
+    test("Roles - grant a non-admin users Write, sync tenant_admin onto themselves, verify the escalation is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ browser }) => {
       const admin = await browser.newPage();
       // users:Write is the widest identity grant that IS delegable. It must still
       // not permit role assignment (userroles_* is non-grantable by module).

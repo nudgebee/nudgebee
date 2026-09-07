@@ -225,7 +225,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open Add rule, open the Owner picker, search a prefix of the first offered owner, verify only matching owners remain and an unmatchable query shows No results found",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@regression", "@search", "@negative"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
 
@@ -339,7 +339,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - toggle a seeded enabled rule off from the listing, verify the row reports disabled and the rules API returns enabled false",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@crud"] },
     async ({ page }) => {
       const name = ruleName("toggle");
       const id = await seedLabelRule(page, name, owner, { enabled: true });

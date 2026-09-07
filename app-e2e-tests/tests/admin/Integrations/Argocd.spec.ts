@@ -21,7 +21,7 @@ test.describe.serial("Argocd Account Integration", () => {
   // Shared across the serial tests: whether the config already existed on entry.
   let integrationExists = false;
 
-  test("Check if Argocd integration exists", async ({ page }) => {
+  test("Check if Argocd integration exists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -37,7 +37,7 @@ test.describe.serial("Argocd Account Integration", () => {
     });
   });
 
-  test("Delete Argocd integration if present", async ({ page }) => {
+  test("Delete Argocd integration if present", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -54,7 +54,7 @@ test.describe.serial("Argocd Account Integration", () => {
     });
   });
 
-  test("Add Argocd Account Integration", async ({ page }) => {
+  test("Add Argocd Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.setTimeout(180000);
     test.skip(
       missingEnv.length > 0,
@@ -92,7 +92,7 @@ test.describe.serial("Argocd Account Integration", () => {
     });
   });
 
-  test("Disable Argocd integration", async ({ page }) => {
+  test("Disable Argocd integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -102,7 +102,7 @@ test.describe.serial("Argocd Account Integration", () => {
     await disableIntegration(page, { configName, serviceName: "Argocd" });
   });
 
-  test("Enable Argocd integration", async ({ page }) => {
+  test("Enable Argocd integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

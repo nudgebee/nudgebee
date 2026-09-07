@@ -81,7 +81,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     }
   });
 
-  test("Roles sanity - open Admin > Roles, verify the custom-role table, the built-in-role table and the New role button render", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles sanity - open Admin > Roles, verify the custom-role table, the built-in-role table and the New role button render", { tag: ["@dev", "@test", "@sanity", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     await roles.open();
 
@@ -177,7 +177,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     await expect(roles.permCheckbox(tenantMod, "Read")).toBeChecked();
   });
 
-  test("Roles - save the editor with an empty name, then save the same name twice, verify the modal stays open and the duplicate is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - save the editor with an empty name, then save the same name twice, verify the modal stays open and the duplicate is refused", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     await roles.open();
     await roles.newRoleBtn.click();
@@ -196,7 +196,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(graphQLErrorMessage(second.body) ?? "", "duplicate name must be refused").toMatch(/already exists/i);
   });
 
-  test("Roles - create a role carrying an account-scoped grant, verify the API refuses grant-level scope", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - create a role carrying an account-scoped grant, verify the API refuses grant-level scope", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ page }) => {
     // Scope belongs to the ASSIGNMENT ("group G holds R on account A"), never to
     // the grant. The old scope-on-grant shape must fail loudly rather than have
     // its scope silently dropped.
@@ -206,7 +206,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(graphQLErrorMessage(res.body) ?? "", "grant-level scope must be rejected").toMatch(/unscoped|bind the role/i);
   });
 
-  test("Roles - create a role with the class Admin, verify the API refuses anything but Read, Write or Execute", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - create a role with the class Admin, verify the API refuses anything but Read, Write or Execute", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ page }) => {
     const res = await tryCreateRole(page, roleName("bad-class"), [{ module: "events", class: "Admin" }]);
     expect(graphQLErrorMessage(res.body) ?? "").toMatch(/Read\|Write\|Execute|invalid permission/i);
   });
@@ -337,7 +337,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     }
   });
 
-  test("Roles - update a role id that belongs to another tenant, verify the API refuses it as not found", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - update a role id that belongs to another tenant, verify the API refuses it as not found", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ page }) => {
     // System roles live in the same table with is_system=true. They must be
     // rejected by an explicit guard, not merely be absent from tenant queries.
     const { systemRoles } = await fetchCatalog(page);
@@ -347,7 +347,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     const res = await updateRole(page, "00000000-0000-0000-0000-000000000000", roleName("hijack"), []);
     expect(graphQLErrorMessage(res.body) ?? "").toMatch(/not found|read-only|Not Allowed/i);
   });
-  test("Roles - open the role editor, filter the module list by module key then by label, verify only the matching module stays", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - open the role editor, filter the module list by module key then by label, verify only the matching module stays", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@search", "@negative"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     await roles.open();
     await roles.newRoleBtn.click();

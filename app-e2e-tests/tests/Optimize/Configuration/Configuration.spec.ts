@@ -26,7 +26,7 @@ test.beforeEach(() => {
 test.describe("Optimize Configuration", () => {
   test(
     "Optimize Configuration sanity - open the Configuration tab, verify the check rollup renders its Severity, Check, Accounts and Findings columns and the toolbar offers search with the Account, Rules, Last seen and Status filters",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -62,7 +62,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration sanity - open the Configuration tab, verify the Savings filter and the category summary cards are withheld because configuration findings carry no savings",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -90,7 +90,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration sanity - open the Configuration tab, verify the rollup withholds the Sort by and Download controls because it has no per-resource rows to order or export",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -107,7 +107,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - search the check rollup for a resource name, verify the rollup gives way to the per-resource list and its Sort by and Download controls return",
-    { tag: ["@dev", "@smoke", "@functional", "@search"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional", "@search"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -136,7 +136,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - search for a resource name that cannot exist, verify the per-resource list empties and reports that no recommendations match these filters",
-    { tag: ["@dev", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@search"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -166,7 +166,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - apply a no-match search, click Clear all, verify the search leaves the field and the URL and the check rollup takes the per-resource list's place again",
-    { tag: ["@dev", "@regression", "@functional", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -199,7 +199,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - apply a no-match search then reload the page, verify the tab, the search term and its filtered empty result all survive the reload",
-    { tag: ["@dev", "@regression", "@functional", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@functional", "@search"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -228,7 +228,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - expand the first check in the rollup, verify its findings drawer lists the failing resources under the Resource, Account and Last Seen columns",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
 
@@ -263,7 +263,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - expand a check, open one failing resource from its findings drawer, verify the recommendation detail panel opens and closing it returns to the still-expanded check",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
 
@@ -291,7 +291,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - clear the default Critical severity chip, verify it reports itself unpressed, leaves the URL severity list and the rollup re-settles on its remaining checks",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
       await waitForRollup(locators);
@@ -329,7 +329,7 @@ test.describe("Optimize Configuration", () => {
 
   test(
     "Optimize Configuration - open the overflow menu on one failing resource, verify it offers the Create ticket and Dismiss entries, then press Escape and verify the menu closes with nothing actioned",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openConfigurationTab(page);
 

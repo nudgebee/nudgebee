@@ -148,7 +148,7 @@ test.describe("Admin → Roles: assignment", () => {
     await deleteRole(page, id);
   });
 
-  test("Roles - bind a role to a group on an account outside the tenant, verify the API refuses it as not in this tenant", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - bind a role to a group on an account outside the tenant, verify the API refuses it as not in this tenant", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss", "@negative"] }, async ({ page }) => {
     const groups = await listGroups(page);
     test.skip(groups.length === 0, "needs at least one group");
     const id = await createRole(page, roleName("foreign-account"), [{ module: "k8s", class: "Read" }]);

@@ -4,6 +4,7 @@ import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
 test(
   "API testing Admin -> Integrations -> Messaging -> Google Chat -> Verify Integration",
+  { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
   async ({ page }, testInfo) => {
     test.setTimeout(120000);
 

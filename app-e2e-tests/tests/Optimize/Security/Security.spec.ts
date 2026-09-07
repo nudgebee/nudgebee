@@ -38,7 +38,7 @@ test.beforeEach(() => {
 test.describe("Optimize Security", () => {
   test(
     "Optimize Security sanity - open the Security tab with no sub-fragment, verify the sub-tab strip lists Image Scan, CIS Scan, VM Vulnerabilities and Cloud Posture and opens on Image Scan",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openSecurityTab(page);
 
@@ -64,7 +64,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - open the Image Scan sub-tab, verify the Apps view is the selected one and the Account, Severity and Status filters render above the apps table",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "imageScan");
 
@@ -90,7 +90,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - open Image Scan, switch the view toggle from Apps to Images, verify the Image search box appears and the images table replaces the apps table",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "imageScan");
 
@@ -121,7 +121,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - open Image Scan, switch to Images, search an image reference that cannot exist, verify the search term is kept and the images table falls to its no-data state",
-    { tag: ["@dev", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@search"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "imageScan");
 
@@ -156,7 +156,7 @@ test.describe("Optimize Security", () => {
   // one. Filed as a product bug in the PR, not worked around with a retry here.
   test(
     "Optimize Security - deep-link to the CIS Scan sub-tab, verify the Status filter renders and the CIS rules table reaches rows or its no-data state",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "cisScan");
 
@@ -176,7 +176,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - deep-link to the VM Vulnerabilities sub-tab, verify the grouping toggle and Severity filter render and the findings table reaches rows or its no-data state",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "vmVulnerabilities");
 
@@ -197,7 +197,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - deep-link to the Cloud Posture sub-tab, verify the Severity filter renders and the posture rules table reaches rows or its no-data state",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "cloudPosture");
 
@@ -217,7 +217,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - deep-link to the Cloud Posture sub-tab, reload the page, verify the Cloud Posture sub-tab is still the open one rather than falling back to Image Scan",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "cloudPosture");
       await expectSecurityBody(locators, locators.postureRoot, NO_ACCOUNTS_COPY.cloud);
@@ -238,7 +238,7 @@ test.describe("Optimize Security", () => {
 
   test(
     "Optimize Security - open Image Scan, click CIS Scan, click back to Image Scan, verify each click moves both the selected sub-tab and the URL fragment",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openSecuritySubTab(page, "imageScan");
       await expectSecurityBody(locators, locators.imageScanRoot, NO_ACCOUNTS_COPY.cluster);

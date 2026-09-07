@@ -17,7 +17,7 @@ test.describe.configure({ timeout: 180000 });
 
 test(
   "Knowledge Graph sanity - open the Troubleshoot Knowledge Graph tab, verify the filter panel, graph canvas and canvas toolbar all render",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -33,7 +33,7 @@ test(
 
 test(
   "Knowledge Graph sanity - open the filter panel, verify it offers the Account, Node Type, Node and Level filters with Apply disabled until something changes",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -50,7 +50,7 @@ test(
 
 test(
   "Knowledge Graph - collapse the filter panel, verify the panel is replaced by the expand rail, expand it again, verify the filters come back",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -72,7 +72,7 @@ test(
 
 test(
   "Knowledge Graph - open the Level filter, verify it offers all three traversal depths from direct neighbours to 3 hops",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -91,7 +91,7 @@ test(
 
 test(
   "Knowledge Graph - open the Level filter, pick 2 hops with no node selected, verify Apply Filters stays disabled because level only applies to selected nodes",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -111,7 +111,7 @@ test(
 
 test(
   "Knowledge Graph - change Level to 2 hops, click Clear All, verify Level resets to direct neighbours and the graph is still rendered",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -132,7 +132,7 @@ test(
 
 test(
   "Knowledge Graph - reload the page on the kg fragment, verify the module comes back on the Knowledge Graph tab rather than the default All Events",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
     await expect(kg.filterPanel).toBeVisible();
@@ -150,7 +150,7 @@ test(
 
 test(
   "Knowledge Graph - collapse the filter panel, reload the page, verify the panel returns expanded because the collapse is view-only state",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 
@@ -169,7 +169,7 @@ test(
 
 test(
   "Knowledge Graph - hover the Relationships control on the canvas toolbar, verify the legend lists the graph's relationship types",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const kg = await openKnowledgeGraph(page);
 

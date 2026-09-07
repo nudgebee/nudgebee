@@ -669,3 +669,182 @@ export async function saveAndHandleAlreadyExists(
   );
 }
 
+/**
+ * Ensures `accountName` has Loki set as its default log provider, turning it on
+ * if needed. Loki's Observability card opens a dedicated page
+ * (/accounts/account-form?cloudProvider=loki — AccountCard.handleClick in
+ * integration.jsx) listing every linked account with a per-account Logs/Traces/
+ * Metrics Switch (IntegrationDynamicFormModal's agentAccountProviders block,
+ * handleAgentProviderToggle) — there is no separate Save; each toggle saves itself.
+ *
+ * Returns a `restore()` that puts the switch back to what it was before this
+ * call, so a test that turns Loki on for itself doesn't leave that change behind
+ * for every other account/test that reads "the default log provider" afterward.
+ * Callers should invoke `restore()` in a `finally`/`test.afterAll` so it still
+ * runs when the rest of the test fails partway through.
+ */
+interface LokiLogsSwitch {
+  // The native <input type="checkbox"> — for reading .isChecked() only. MUI's
+  // Switch renders this visually hidden (opacity 0) under a styled track, which
+  // a live run proved directly: the accessibility snapshot at the moment of
+  // timeout showed checkbox "Enabled" [checked] sitting right there, but
+  // waitFor({state:"visible"}) on it never resolved — the note in a11y trees
+  // is unaffected by CSS opacity, Playwright's actionability check is not.
+  checkbox: Locator;
+  // The FormControlLabel wrapper around the switch AND its Enabled/Disabled
+  // text (rendered with cursor:pointer) — this is what's actually visible and
+  // clickable, and clicking anywhere in it toggles the switch it wraps.
+  clickTarget: Locator;
+}
+
+// Navigates fresh from wherever `page` currently is to accountName's "Default
+// Log Provider" checkbox inside the "Edit Loki Account" dialog, leaving the
+// dialog OPEN — callers read/toggle the checkbox, then close it themselves.
+// Split out so restore() can call this again on its own: the dialog is closed
+// after the initial check (see below), so its checkbox locator goes stale the
+// moment that happens, and by the time restore() runs the page may be
+// anywhere else in the test — it cannot assume the dialog is still open, or
+// even that it's still on this page at all.
+async function openLokiAccountLogsSwitch(page: Page, accountName: string): Promise<LokiLogsSwitch> {
+  const locators = await loginAndGoToIntegrations(page);
+  await locators.observabilityTab.waitFor({ state: "visible", timeout: 15000 });
+  await locators.observabilityTab.click();
+
+  await locators.lokiSectionCard.waitFor({ state: "visible", timeout: 15000 });
+  await locators.lokiSectionCard.click();
+  await page.waitForURL(/cloudProvider=loki/i, { timeout: 20000 });
+  // The URL commits before the account-form page's own data has loaded — a
+  // live run timed out here once with the page still showing this loader and
+  // no table at all yet. Same alt-text loader LoginPage.waitForLoaderToDisappear
+  // waits on; a generous timeout since this list has its own fetch to finish.
+  await page.getByAltText("Loading...").waitFor({ state: "hidden", timeout: 60000 }).catch(() => {});
+
+  // Confirmed against a live run: this lands on a TABLE of Loki config entries,
+  // not directly on a per-account toggle form. Loki can have more than one entry
+  // here — e.g. a direct "loki saas" connection alongside the K8s-collector-
+  // managed "loki" agent one, each its own row with its own Account column. K8s
+  // cluster logs come from the agent entry: exact Name "loki" (not "loki saas"),
+  // Account column listing accountName among a comma-separated list of clusters.
+  const row = page
+    .locator("tbody tr")
+    .filter({ has: page.getByRole("cell", { name: "loki", exact: true }) })
+    .filter({ hasText: accountName })
+    .first();
+  await row.waitFor({ state: "visible", timeout: 20000 });
+
+  // Edit opens "Edit Loki Account" (IntegrationDynamicFormModal's agent-account
+  // view) — one block per linked account, each showing the account name then a
+  // "Default Log Provider" field (confirmed against a live run — NOT the
+  // generic "Logs" label the source's providerKeyLabels map suggested) next to
+  // its Enabled/Disabled checkbox. clickRowMenuItem is the already-proven
+  // row-menu helper every other integration flow in this file uses.
+  const dialog = page.getByRole("dialog", { name: "Edit Loki Account" });
+  await clickRowMenuItem(page, row, "Edit");
+  await dialog.waitFor({ state: "visible", timeout: 15000 });
+
+  // The account name renders inside a Typography (a <p>, not a <div>) that is
+  // the FIRST child of its per-account <Box> — and that Box also holds the
+  // Default Log Provider row, so the Box's own full text is the name plus that
+  // row's label and Enabled/Disabled state concatenated together, not the name
+  // alone. Matching a <div> whose ENTIRE text is exactly the account name would
+  // therefore never hit — go to the exact-text leaf itself, then its direct
+  // parent (the Box), which is the same "leaf text -> immediate container"
+  // approach KnowledgeBaseLocators.getKBCardByName already relies on elsewhere
+  // in this suite, just via a direct parent instead of an ancestor filter.
+  //
+  // Scoped to `dialog`, NOT page-wide: the background list table (still in the
+  // DOM under the modal overlay) can carry its own exact-text "k8s-dev" cell —
+  // e.g. a "loki saas" row for the same account — and a MUI Dialog portals to
+  // the end of <body>, so an unscoped page-wide search can resolve .first() to
+  // that background cell instead of the dialog's own row. A live run hit
+  // exactly this: the checkbox lookup timed out because accountRow had silently
+  // resolved to the table cell's ancestor, which holds no "Default Log
+  // Provider" block at all.
+  const accountNameEl = dialog.getByText(accountName, { exact: true }).first();
+  await accountNameEl.waitFor({ state: "visible", timeout: 20000 });
+  const accountRow = accountNameEl.locator("xpath=..");
+
+  // accountRow (accountName's direct parent) holds exactly one "Default Log
+  // Provider" field for this integration type, so there is no need to first
+  // isolate that field's own wrapper the way earlier attempts did via
+  // `.locator("div").filter(...)` — repeated live-run failures traced back to
+  // that div-tag assumption: the accessibility snapshot used to confirm this
+  // structure reports every non-semantic wrapper as "generic" regardless of
+  // its real HTML tag, so a bare `.locator("div")` CSS-tag selector had no
+  // guarantee of ever matching it. Querying accountRow directly by role/text
+  // sidesteps the tag guess entirely and is scoped tightly enough on its own
+  // (one account's block only, confirmed by the accountNameEl parent above).
+  const stateLabel = accountRow.getByText(/^(Enabled|Disabled)$/, { exact: true }).first();
+  const clickTarget = stateLabel.locator("xpath=..");
+  // Role-based, not a raw input[type=checkbox] CSS guess: a live run's
+  // accessibility snapshot confirmed role=checkbox directly (`checkbox
+  // "Enabled" [checked]`), and getByRole matches on that semantic regardless
+  // of whether the underlying markup is a native <input> or an ARIA-only
+  // custom element — an attribute selector would only match the former.
+  const checkbox = accountRow.getByRole("checkbox").first();
+  await checkbox.waitFor({ state: "attached", timeout: 15000 });
+  await clickTarget.waitFor({ state: "visible", timeout: 15000 });
+
+  return { checkbox, clickTarget };
+}
+
+async function closeEditLokiAccountDialog(page: Page): Promise<void> {
+  const dialog = page.getByRole("dialog", { name: "Edit Loki Account" });
+  // Done only closes the dialog — handleAgentProviderToggle already saved
+  // each toggle itself — but left open it would sit over the page and
+  // intercept every click the caller makes right after this returns.
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 10000 });
+}
+
+export async function ensureLokiDefaultLogProvider(
+  page: Page,
+  { accountName }: { accountName: string },
+): Promise<{ wasAlreadyDefault: boolean; restore: () => Promise<void> }> {
+  const logsSwitch = await openLokiAccountLogsSwitch(page, accountName);
+  let wasAlreadyDefault = false;
+  try {
+    wasAlreadyDefault = await logsSwitch.checkbox.isChecked();
+
+    if (!wasAlreadyDefault) {
+      await logsSwitch.clickTarget.click();
+      await expect(logsSwitch.checkbox).toBeChecked({ timeout: 15000 });
+      console.log(`Turned Loki ON as the default log provider for "${accountName}"`);
+    } else {
+      console.log(`Loki was already the default log provider for "${accountName}"`);
+    }
+  } finally {
+    // Runs even if the checkbox read or the click above threw, so a failed
+    // setup never leaves this dialog open over whatever the test does next.
+    await closeEditLokiAccountDialog(page);
+  }
+
+  const restore = async (): Promise<void> => {
+    if (wasAlreadyDefault) return; // nothing to undo — it was already on before us
+    try {
+      // The dialog closed above, so its checkbox locator is stale — this must
+      // navigate to it again from whatever page the test finished on, not reuse it.
+      const freshSwitch = await openLokiAccountLogsSwitch(page, accountName);
+      const stillChecked = await freshSwitch.checkbox.isChecked().catch(() => null);
+      if (stillChecked === false) {
+        console.log(`Loki default-log-provider switch for "${accountName}" was already back off`);
+      } else {
+        // Log what actually happened, not what was attempted, then let the
+        // failure propagate — a swallowed error here just relocates the
+        // exact "nobody notices" bug this restore exists to prevent.
+        await freshSwitch.clickTarget.click().then(
+          () => console.log(`Restored Loki default-log-provider switch to OFF for "${accountName}"`),
+          (err) => {
+            console.log(`Failed to restore Loki default-log-provider switch to OFF for "${accountName}": ${err}`);
+            throw err;
+          }
+        );
+      }
+    } finally {
+      await closeEditLokiAccountDialog(page).catch(() => {});
+    }
+  };
+
+  return { wasAlreadyDefault, restore };
+}
+

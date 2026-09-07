@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { navigateToTicketingTab, saveAndHandleAlreadyExists } from "./util";
 
-test.skip("Add Zenduty Account Integration", async ({ page }) => {
+test.skip("Add Zenduty Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
   const locators = await navigateToTicketingTab(page);
 
   await locators.zendutyBtn.click();

@@ -39,7 +39,7 @@ test.beforeEach(() => {
 test.describe("LLM Analyser", () => {
   test(
     "LLM Analyser sanity - open Optimise on the LLM Analyser tab with no sub-fragment, verify the screen strip lists Overview, Conversations, Models, Agents, Tools and Users and opens on Overview",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page);
 
@@ -70,7 +70,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser sanity - open the Overview screen, verify the KPI row, the cost-over-time chart, the cost breakdown widgets and the top-conversations table all render",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "overview");
 
@@ -86,7 +86,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - open Overview, click through to Conversations and then Models, click back to Overview, verify each screen becomes the selected one and the URL sub-fragment follows it",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "overview");
       await parkCursor(page);
@@ -108,7 +108,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - move from Overview to Agents to Users to Critiques, verify the filter bar drops its Agent picker on Agents, drops its User picker on Users, and disappears entirely on Critiques",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "overview");
       await parkCursor(page);
@@ -142,7 +142,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - open Overview, switch the chart granularity from day to week, verify week becomes the checked option and day is released",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "overview");
 
@@ -161,7 +161,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - set the granularity to week on Overview, open the Models screen, verify the week selection carries across the screen switch",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "overview");
       await parkCursor(page);
@@ -185,7 +185,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - set the granularity to week on Overview, click Reset, verify the granularity returns to the default day and the reader stays on Overview",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "overview");
 
@@ -209,7 +209,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - open the Conversations screen, switch the preset from All to Top 5 by cost, verify the preset becomes the selected one, the caption names it, and the table lists no more than five conversations",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "conversations");
 
@@ -245,7 +245,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     "LLM Analyser - deep link straight to #cost-analyser/models, verify the Models screen opens without passing through Overview",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "models");
 
@@ -261,7 +261,7 @@ test.describe("LLM Analyser", () => {
 
   test(
     `LLM Analyser - deep link to #cost-analyser/${UNKNOWN_SCREEN_FRAGMENT}, verify the unknown sub-fragment is rejected and the Overview screen opens instead of an empty body`,
-    { tag: ["@dev", "@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const locators = await openAnalyserWithFragment(page, UNKNOWN_SCREEN_FRAGMENT);
 

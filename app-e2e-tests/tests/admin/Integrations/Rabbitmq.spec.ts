@@ -21,7 +21,7 @@ const configName = process.env.RABBITMQ_INTEGRATION_CONFIG_NAME!;
 test.describe.serial("RabbitMQ Account Integration", () => {
   let integrationExists = false;
 
-  test("Check if RabbitMQ integration exists", async ({ page }) => {
+  test("Check if RabbitMQ integration exists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -37,7 +37,7 @@ test.describe.serial("RabbitMQ Account Integration", () => {
     });
   });
 
-  test("Delete RabbitMQ integration if present", async ({ page }) => {
+  test("Delete RabbitMQ integration if present", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -54,7 +54,7 @@ test.describe.serial("RabbitMQ Account Integration", () => {
     });
   });
 
-  test("Add RabbitMQ Account Integration", async ({ page }) => {
+  test("Add RabbitMQ Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -86,7 +86,7 @@ test.describe.serial("RabbitMQ Account Integration", () => {
     });
   });
 
-  test("Disable RabbitMQ integration", async ({ page }) => {
+  test("Disable RabbitMQ integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -105,7 +105,7 @@ test.describe.serial("RabbitMQ Account Integration", () => {
     await disableIntegration(page, { configName, serviceName: "RabbitMQ" });
   });
 
-  test("Enable RabbitMQ integration", async ({ page }) => {
+  test("Enable RabbitMQ integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { SecurityAndToolsTabLocator } from "./SecurityAndToolsTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cluster Details->Security And Tools-> CIS Scan", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Security And Tools-> CIS Scan", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

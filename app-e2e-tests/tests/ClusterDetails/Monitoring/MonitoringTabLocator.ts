@@ -2,6 +2,10 @@ import { Page, Locator, expect } from "@playwright/test";
 import { ClusterDetailsLocators } from "../ClusterDetailsLocators";
 import { LoginPage } from "../../../pages/LoginPage";
 
+// KubernetesLogs.tsx: id={k8sLogs} = 'k8sLogs'. CustomTable puts this on the
+// <table> and `${id}-body` on the <tbody>.
+export const K8S_LOGS_TABLE = "k8sLogs";
+
 export class MonitoringTabLocator extends ClusterDetailsLocators {
 
     // Child sub-tab ids under the "Monitoring" section. For each tab the
@@ -58,6 +62,21 @@ export class MonitoringTabLocator extends ClusterDetailsLocators {
     readonly DownloadLogsBtn: Locator;
     readonly LogFilterRequiredToast: Locator;
 
+    // Query Logs results table. CustomTable puts the id on the <table> and
+    // `${id}-body` on the <tbody> (KubernetesLogs.tsx: id={k8sLogs} = 'k8sLogs'),
+    // and — because showExpandable is true — emits a second <tr> per data row to
+    // hold the collapsed drill-down (same shape as PodDetailsLocators' DATA_ROW).
+    // Requiring a second cell is what keeps the drill-down row from doubling the count.
+    readonly LogResultRows: Locator;
+    readonly LogResultsNoData: Locator;
+
+    // CustomDateTimeRangePicker's trigger carries no id/testid (confirmed: no
+    // fallback exists for it anywhere in the component). The proven workaround
+    // already used elsewhere in this suite (userFeedbackLocators.dateRangeTrigger)
+    // is matching its displayed text shape instead — always "Last ...", "Current
+    // ...", or a formatted "Mon DD - Mon DD" range.
+    readonly LogDateRangeTrigger: Locator;
+
     constructor(page: Page) {
         super(page);
 
@@ -101,6 +120,14 @@ export class MonitoringTabLocator extends ClusterDetailsLocators {
         // KubernetesLogs.handleSubmit raises this instead of building a request when the
         // Builder holds no chips, so it is the visible half of "Run Query did nothing".
         this.LogFilterRequiredToast = page.getByText('Please select at least one label filter', { exact: true });
+
+        this.LogResultRows = page.locator(`#${K8S_LOGS_TABLE}-body tr:has(td:nth-child(2))`);
+        this.LogResultsNoData = page.locator(`#${K8S_LOGS_TABLE}-no-data`);
+
+        this.LogDateRangeTrigger = this.QueryLogsRoot
+            .locator("button")
+            .filter({ hasText: /^(Last\s|Current\s|\w{3}\s\d{1,2}\s-\s\w{3}\s\d{1,2})/ })
+            .first();
 
         this.AddSLOConfigBtn = page.locator('#add-slo-config-btn');
         this.SloNamespaceDropdownBtn = page.locator('[role="dialog"] #slo-namespace');

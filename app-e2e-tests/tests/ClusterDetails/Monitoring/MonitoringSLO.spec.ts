@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
   await locators.setupMonitoringPage();
 });
 
-test("API testing Cluster Details->Monitoring-> SLO", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Monitoring-> SLO", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   await waitForGraphQLAndValidate(
@@ -25,7 +25,7 @@ test("API testing Cluster Details->Monitoring-> SLO", async ({ page }, testInfo)
   );
 });
 
-test("API testing Cluster Details->Monitoring-> Configure SLO", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Monitoring-> Configure SLO", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   await locators.clickTab(locators.MonitoringDropdownSLo);

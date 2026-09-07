@@ -61,7 +61,7 @@ const WORKFLOW_JSON_TEMPLATE = {
   status: "ACTIVE",
 };
 
-test("Automation workflow MCP Integration", async ({ page }) => {
+test("Automation workflow MCP Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
   test.setTimeout(300000);
 
   const locators = new WorkflowLocators(page);
