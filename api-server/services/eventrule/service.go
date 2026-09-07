@@ -614,6 +614,95 @@ func UpdateEventRule(context *security.RequestContext, eventRequest EventConfig)
 	return data, nil
 }
 
+// toggledRule is an event_rules row as DisableEventRule needs it: the source that
+// decides where the rule lives, and enough of the definition to put it back when
+// the rule is switched on again.
+type toggledRule struct {
+	Alert          string
+	Source         string
+	Expr           string
+	Duration       string
+	Severity       string
+	AlertType      string
+	ExternalRuleID *string
+	Annotations    map[string]string
+	Labels         map[string]string
+	ProviderConfig map[string]any
+}
+
+// toAlertRuleConfig rebuilds the provider-facing rule definition from the stored
+// row, so re-creating on enable produces the same rule the user last saved.
+func (r toggledRule) toAlertRuleConfig(accountID string) alertrule.AlertRuleConfig {
+	return alertrule.AlertRuleConfig{
+		AccountId:      accountID,
+		Name:           r.Alert,
+		AlertType:      r.AlertType,
+		Query:          r.Expr,
+		Severity:       r.Severity,
+		Duration:       r.Duration,
+		Annotations:    r.Annotations,
+		Labels:         r.Labels,
+		Enabled:        true,
+		ProviderConfig: r.ProviderConfig,
+	}
+}
+
+func loadRuleForToggle(dbms *database.DatabaseManager, id string) (toggledRule, error) {
+	var (
+		rule                        toggledRule
+		expr, duration, severity    *string
+		alertType                   *string
+		annotationsJSON, labelsJSON *string
+		providerConfigJSON          *string
+	)
+	err := dbms.Db.QueryRow(`
+		SELECT alert, source, expr, duration, severity, alert_type, external_rule_id,
+		       annotations::text, labels::text, provider_config::text
+		FROM event_rules WHERE id = $1`, id).
+		Scan(&rule.Alert, &rule.Source, &expr, &duration, &severity, &alertType,
+			&rule.ExternalRuleID, &annotationsJSON, &labelsJSON, &providerConfigJSON)
+	if err != nil {
+		return rule, err
+	}
+	rule.Expr = derefString(expr)
+	rule.Duration = derefString(duration)
+	rule.Severity = derefString(severity)
+	rule.AlertType = derefString(alertType)
+	rule.Annotations = unmarshalStringMap(annotationsJSON)
+	rule.Labels = unmarshalStringMap(labelsJSON)
+	if providerConfigJSON != nil && *providerConfigJSON != "" {
+		_ = json.Unmarshal([]byte(*providerConfigJSON), &rule.ProviderConfig)
+	}
+	return rule, nil
+}
+
+func derefString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// unmarshalStringMap reads a jsonb column of string values. Non-string members are
+// dropped rather than failing the toggle: annotations and labels are written from
+// typed structs, so anything else is data someone put there by hand.
+func unmarshalStringMap(raw *string) map[string]string {
+	out := map[string]string{}
+	if raw == nil || *raw == "" {
+		return out
+	}
+	var generic map[string]any
+	if err := json.Unmarshal([]byte(*raw), &generic); err != nil {
+		return out
+	}
+	for k, v := range generic {
+		if str, ok := v.(string); ok {
+			out[k] = str
+		}
+	}
+	return out
+}
+
 func DisableEventRule(context *security.RequestContext, eventRequest DisableEventConfig) (map[string]bool, error) {
 	data := make(map[string]bool)
 
@@ -633,14 +722,17 @@ func DisableEventRule(context *security.RequestContext, eventRequest DisableEven
 		return data, err
 	}
 
-	var eventSource string
-	var externalRuleId *string
-	err = dbms.Db.QueryRow("SELECT source, external_rule_id FROM event_rules WHERE id = $1", eventRequest.Id).Scan(&eventSource, &externalRuleId)
+	rule, err := loadRuleForToggle(dbms, eventRequest.Id)
 	if err != nil {
 		context.GetLogger().Error("eventrule: unable to find source of event rule", "error", err, "id", eventRequest.Id)
 		return data, errors.New("unable to find source of event rule")
 	}
+	eventSource := rule.Source
+	externalRuleId := rule.ExternalRuleID
 
+	// The rule has to exist again wherever it is evaluated, not just be flagged
+	// enabled here. Disabling deletes it from that system, so enabling must put it
+	// back — otherwise the rule reads as on and never fires.
 	if eventSource == agentEventSourceName {
 		relayRequest := relay.RelayExecuteRequest{
 			NoSinks: true,
@@ -655,6 +747,18 @@ func DisableEventRule(context *security.RequestContext, eventRequest DisableEven
 				},
 			},
 		}
+		if eventRequest.Enable {
+			// Without this the enable branch fell through to delete_alert_rule and
+			// removed the PrometheusRule a second time.
+			relayRequest.Body.ActionName = "create_or_replace_alert_rule"
+			relayRequest.Body.ActionParams = map[string]any{
+				"alert":       rule.Alert,
+				"expr":        rule.Expr,
+				"duration":    rule.Duration,
+				"annotations": rule.Annotations,
+				"labels":      rule.Labels,
+			}
+		}
 
 		_, err2 := relay.Execute(relayRequest)
 		if err2 != nil {
@@ -662,22 +766,38 @@ func DisableEventRule(context *security.RequestContext, eventRequest DisableEven
 		}
 	}
 
-	// For external providers: delete rule in external system when disabling
-	if isExternalProviderSource(eventSource) && externalRuleId != nil && *externalRuleId != "" && !eventRequest.Enable {
+	// External providers own the rule; keep their copy in step with the toggle.
+	if isExternalProviderSource(eventSource) {
 		provider, providerSource := resolveProviderFromSource(eventSource)
-		err := alertrule.DeleteAlertRule(context, provider, providerSource, eventRequest.AccountID, *externalRuleId)
-		if err != nil {
-			context.GetLogger().Error("DisableEventRule: failed to delete external rule", "provider", provider, "external_rule_id", *externalRuleId, "error", err)
-			// Continue with local disable even if external delete fails
+		switch {
+		case eventRequest.Enable:
+			result, createErr := alertrule.CreateAlertRule(context, provider, providerSource, rule.toAlertRuleConfig(eventRequest.AccountID))
+			if createErr != nil {
+				// Deliberately NOT the log-and-continue the delete path uses: a rule
+				// left enabled but absent upstream is exactly the silent no-op this
+				// guards against, so the toggle fails and stays off.
+				return data, fmt.Errorf("failed to re-create alert rule in %s: %w", provider, createErr)
+			}
+			// The id can legitimately change (the Cortex ruler keys on the group name,
+			// Datadog mints a new monitor id), so store what the provider returned.
+			newID := result.ExternalRuleId
+			externalRuleId = &newID
+			context.GetLogger().Info("DisableEventRule: external rule re-created", "provider", provider, "external_rule_id", newID)
+		case externalRuleId != nil && *externalRuleId != "":
+			err := alertrule.DeleteAlertRule(context, provider, providerSource, eventRequest.AccountID, *externalRuleId)
+			if err != nil {
+				context.GetLogger().Error("DisableEventRule: failed to delete external rule", "provider", provider, "external_rule_id", *externalRuleId, "error", err)
+				// Continue with local disable even if external delete fails
+			}
 		}
 	}
 
 	var updatedId string
 	err = dbms.QueryRowAndScan(&updatedId, `
-		UPDATE event_rules SET enabled = $4, updated_at = now()
+		UPDATE event_rules SET enabled = $4, external_rule_id = COALESCE($5, external_rule_id), updated_at = now()
 		WHERE tenant_id = $1 AND id = $2 AND account_id = $3
 		RETURNING id`,
-		context.GetSecurityContext().GetTenantId(), eventRequest.Id, eventRequest.AccountID, eventRequest.Enable,
+		context.GetSecurityContext().GetTenantId(), eventRequest.Id, eventRequest.AccountID, eventRequest.Enable, externalRuleId,
 	)
 	if err != nil {
 		return data, err
