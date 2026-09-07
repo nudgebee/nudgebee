@@ -478,3 +478,37 @@ func TestLogsV3DelegatedContextReachesTranslator(t *testing.T) {
 	require.Empty(t, request.KBPrestepContent)
 	require.Empty(t, request.SkillsContext)
 }
+
+// The parent owns knowledge loading. Its chosen constraints must reach the leaf
+// unchanged, whether it authors canonical JSON or asks the translator to do so.
+// This does not assert that a live model selects the right knowledge guidance.
+func TestLogsV3KnowledgeDerivedCommandHandoff(t *testing.T) {
+	for _, command := range []string{
+		"Read index checkout-preprod for host preprod-01 from 2026-09-06T10:00:00Z to 2026-09-06T10:15:00Z; filter service=checkout",
+		`{"where":{"host":{"eq":"preprod-01"}},"index":"checkout-preprod","start_time":"2026-09-06T10:00:00Z","end_time":"2026-09-06T10:15:00Z","limit":200}`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			ctx := toolcore.NbToolContext{AccountId: "preprod-account", OriginalQuery: "Investigate checkout in PreProd", QueryContext: "environment=PreProd"}
+			request := buildFetchLogsV3Request(ctx, toolcore.NBToolCallRequest{Command: command})
+			require.Equal(t, command, request.Query)
+			require.Equal(t, ctx.AccountId, request.AccountId)
+			require.Equal(t, ctx.QueryContext, request.QueryContext)
+			canonical, fast := preBuiltCanonicalQuery(request.Query)
+			if strings.HasPrefix(command, "{") {
+				require.True(t, fast)
+				require.Equal(t, command, canonical)
+			} else {
+				require.False(t, fast)
+				messages := buildLogIntentMessages("translator", request)
+				var text strings.Builder
+				for _, part := range messages[len(messages)-1].Parts {
+					if content, ok := part.(llms.TextContent); ok {
+						text.WriteString(content.Text)
+					}
+				}
+				require.Contains(t, text.String(), command)
+				require.Contains(t, text.String(), ctx.OriginalQuery)
+			}
+		})
+	}
+}

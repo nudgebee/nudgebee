@@ -1,7 +1,7 @@
 # Large knowledge documents: workspace-backed selective reading
 
-Part of #36421 and draft PR #37785. Status: implemented behind
-`LLM_SERVER_KNOWLEDGE_WORKSPACE_ENABLED=false` (default). Deploy a compatible RAG image before enabling the LLM-server flag. Existing workspace file APIs are used; no knowledge-specific workspace endpoint is required.
+Part of #36421; introduced in merged PR #37785.
+`LLM_SERVER_KNOWLEDGE_WORKSPACE_ENABLED` now defaults to `true`. An explicit `false` retains the legacy excerpt-only path. Deploy a compatible RAG image before upgrading to this default. Existing workspace file APIs are used; no knowledge-specific workspace endpoint is required.
 
 ## Retrieval contract
 
