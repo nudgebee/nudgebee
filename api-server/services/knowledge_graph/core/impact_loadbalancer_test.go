@@ -108,7 +108,7 @@ func TestSummarizeDownstream_NamesLoadBalancerBackendInstance(t *testing.T) {
 			ContributingSources: []EdgeContributingSource{{Source: "aws"}}},
 	}
 
-	got := summarizeDownstream(seedID, nodes, edges, depth, map[string]string{})
+	got := summarizeDownstream(seedID, nodes, edges, depth, map[string]string{}, map[string]string{})
 
 	if len(got) != 1 {
 		t.Fatalf("expected the routed-to instance only (the security group is plumbing), got %d: %+v", len(got), got)

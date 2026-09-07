@@ -1,6 +1,15 @@
 import { queryGraphQL } from '@lib/HttpService';
 
 export type Criticality = 'critical' | 'high' | 'medium' | 'low';
+
+// Chip tone per tier — the one mapping every surface that renders a criticality
+// pill shares (the criticality manager, and the blast-radius dependent rows).
+export const CRITICALITY_TONE: Record<Criticality, 'critical' | 'warning' | 'info' | 'neutral'> = {
+  critical: 'critical',
+  high: 'warning',
+  medium: 'info',
+  low: 'neutral',
+};
 export type CriticalitySource = 'user' | 'fact_signal' | 'llm_inferred' | 'default';
 
 export interface WorkloadCriticalityItem {

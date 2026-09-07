@@ -67,6 +67,12 @@ type ImpactedService struct {
 	// PodCount is set only on HostedWorkloads entries: how many of the
 	// workload's pods are scheduled on the seed instance/node right now.
 	PodCount int `json:"pod_count,omitempty"`
+	// Criticality is the workload's curated business-criticality tier
+	// (workload_criticality): 'critical', 'high' or 'low'. Empty means no tier
+	// is stated — an ordinary ('medium') workload, or a node that cannot carry
+	// one at all. Informational: it does not feed DependentCount or the safety
+	// band.
+	Criticality string `json:"criticality,omitempty"`
 }
 
 // ImpactSummary is the blast-radius rollup for a single resource node.
@@ -86,6 +92,12 @@ type ImpactSummary struct {
 	// account lookup failed — consumers must render those as "environment
 	// unknown", not as a verified zero.
 	EnvironmentResolved bool `json:"environment_resolved"`
+	// CriticalityResolved marks that the curated criticality tiers were read
+	// successfully, so an absent tier on a dependent means "not stated" rather
+	// than "not looked up". True even when no workload carries a tier — the
+	// common case, since only non-medium tiers are stored. False on summaries
+	// persisted before criticality existed, and when the lookup failed.
+	CriticalityResolved bool `json:"criticality_resolved,omitempty"`
 	// DownstreamDependencies is the reverse direction: what the seed itself
 	// calls, publishes to, or subscribes to (one hop). Operator context —
 	// deliberately excluded from DependentCount and the safety band, which
@@ -429,6 +441,22 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		accountEnv = map[string]string{}
 	}
 
+	// Curated criticality tiers for the same accounts. Fails open like the
+	// environment lookup: an enrichment miss must not cost the caller its blast
+	// radius, and criticalityResolved records whether the tiers were actually
+	// read so an absent tier is never mistaken for a curated "ordinary".
+	accountIDs := make([]string, 0, len(accountEnv))
+	for id := range accountEnv {
+		accountIDs = append(accountIDs, id)
+	}
+	criticality, err := s.loadWorkloadCriticality(accountIDs)
+	criticalityResolved := err == nil
+	if err != nil {
+		s.logger.Warn("workload criticality lookup failed; blast radius proceeds without criticality",
+			"tenant_id", tenantID, "error", err)
+		criticality = map[string]string{}
+	}
+
 	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
 		Direction:         TraverseDirectionUpstream,
 		Levels:            maxDepth,
@@ -458,12 +486,13 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		return nil, fmt.Errorf("fetch impact edges: %w", err)
 	}
 
-	summary := summarizeImpact(nodeID, seed.NodeType, nodes, edges, nodeMinDepth, accountEnv)
+	summary := summarizeImpact(nodeID, seed.NodeType, nodes, edges, nodeMinDepth, accountEnv, criticality)
 	summary.Truncated = truncated
 	summary.EnvironmentResolved = len(accountEnv) > 0
+	summary.CriticalityResolved = criticalityResolved
 
 	if downRels := downstreamRelationshipStrings(seed.NodeType); len(downRels) > 0 {
-		downstream, err := s.traverseDownstreamDependencies(tenantID, nodeID, downRels, maxDepth, accountEnv)
+		downstream, err := s.traverseDownstreamDependencies(tenantID, nodeID, downRels, maxDepth, accountEnv, criticality)
 		if err != nil {
 			return nil, err
 		}
@@ -487,7 +516,7 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 	// a non-selective legacy type (instances are HOSTED_ON subnets/VPCs too),
 	// so one more hop would drag networking plumbing into the report.
 	if seed.NodeType == NodeTypeStorage {
-		attached, err := s.attachedInstanceDependents(tenantID, nodeID, accountEnv)
+		attached, err := s.attachedInstanceDependents(tenantID, nodeID, accountEnv, criticality)
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +532,7 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 	// a hosted workload reschedules rather than breaks, so it must not inflate
 	// DependentCount (see the HostedWorkloads field comment).
 	if seed.NodeType == NodeTypeComputeInstance || seed.NodeType == NodeTypeNode {
-		hosted, err := s.hostedWorkloadDependents(seed, nodes, nodeMinDepth, accountEnv)
+		hosted, err := s.hostedWorkloadDependents(seed, nodes, nodeMinDepth, accountEnv, criticality)
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +667,7 @@ func (s *Service) accountHasFlowObservedEdges(tenantID, accountID string) (bool,
 // fetched here, not through the BFS attribution layer) and these edges are
 // deliberately kept out of coverage grading: attachment is static metadata and
 // must not mint "well-observed".
-func (s *Service) attachedInstanceDependents(tenantID, seedID string, accountEnv map[string]string) ([]ImpactedService, error) {
+func (s *Service) attachedInstanceDependents(tenantID, seedID string, accountEnv, criticality map[string]string) ([]ImpactedService, error) {
 	relTypes := []string{string(RelationshipHostedOn)}
 	discoveredIDs, _, depths, err := s.discoverBFS([]string{seedID}, traverseOptions{
 		Direction:         TraverseDirectionDownstream,
@@ -671,6 +700,7 @@ func (s *Service) attachedInstanceDependents(tenantID, seedID string, accountEnv
 			ResourceID:   impactNodeAttr(n, "resource_id"),
 			NodeType:     n.NodeType,
 			Environment:  resolveNodeEnvironment(n, accountEnv),
+			Criticality:  resolveNodeCriticality(n, criticality),
 			HopsAway:     1,
 			Relationship: att.relationship,
 			Sources:      att.sources,
@@ -687,7 +717,7 @@ func (s *Service) attachedInstanceDependents(tenantID, seedID string, accountEnv
 // in the graph (unsupported owner kinds) still surface by identity; standalone
 // pods (no owning workload) are not rolled up — they remain visible through
 // the regular traversal wherever they exist as graph nodes.
-func (s *Service) hostedWorkloadDependents(seed *DbNode, traversed []*DbNode, nodeMinDepth map[string]int, accountEnv map[string]string) ([]ImpactedService, error) {
+func (s *Service) hostedWorkloadDependents(seed *DbNode, traversed []*DbNode, nodeMinDepth map[string]int, accountEnv, criticality map[string]string) ([]ImpactedService, error) {
 	if s.podSynth == nil {
 		return nil, nil
 	}
@@ -767,6 +797,7 @@ func (s *Service) hostedWorkloadDependents(seed *DbNode, traversed []*DbNode, no
 				entry.Name = impactNodeName(wl)
 				entry.ResourceID = impactNodeAttr(wl, "resource_id")
 				entry.Environment = resolveNodeEnvironment(wl, accountEnv)
+				entry.Criticality = resolveNodeCriticality(wl, criticality)
 			}
 			out = append(out, entry)
 		}
@@ -783,7 +814,7 @@ func (s *Service) hostedWorkloadDependents(seed *DbNode, traversed []*DbNode, no
 // transitive dependency (frontend → product-catalog → postgres) breaks the
 // seed, and a depth-1 list hid exactly those roots from the incident cause
 // lane while the depth-2 dependents walk showed the seed from the root's side.
-func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTypes []string, maxDepth int, accountEnv map[string]string) ([]ImpactedService, error) {
+func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTypes []string, maxDepth int, accountEnv, criticality map[string]string) ([]ImpactedService, error) {
 	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
 		Direction:         TraverseDirectionDownstream,
 		Levels:            maxDepth,
@@ -804,7 +835,7 @@ func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTyp
 	if err != nil {
 		return nil, fmt.Errorf("fetch downstream edges: %w", err)
 	}
-	return summarizeDownstream(nodeID, nodes, edges, nodeMinDepth, accountEnv), nil
+	return summarizeDownstream(nodeID, nodes, edges, nodeMinDepth, accountEnv, criticality), nil
 }
 
 // summarizeImpact is the pure (DB-free) aggregation behind GetImpactedServices:
@@ -813,7 +844,7 @@ func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTyp
 // logic is unit-testable without a live graph. accountEnv is required (pass an
 // empty map for no fallback) so no caller can silently opt out of environment
 // resolution — the always-zero prod count this replaces came from exactly that.
-func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []*DbEdge, nodeMinDepth map[string]int, accountEnv map[string]string) ImpactSummary {
+func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []*DbEdge, nodeMinDepth map[string]int, accountEnv, criticality map[string]string) ImpactSummary {
 	summary := ImpactSummary{
 		SeedNodeID:       seedID,
 		SeedNodeType:     seedType,
@@ -836,6 +867,7 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 				NodeType:     n.NodeType,
 				Namespace:    impactNodeAttr(n, "namespace"),
 				Environment:  resolveNodeEnvironment(n, accountEnv),
+				Criticality:  resolveNodeCriticality(n, criticality),
 				HopsAway:     nodeMinDepth[n.ID],
 				Relationship: att.relationship,
 				Sources:      att.sources,
@@ -851,6 +883,7 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 			NodeType:     n.NodeType,
 			Namespace:    impactNodeAttr(n, "namespace"),
 			Environment:  env,
+			Criticality:  resolveNodeCriticality(n, criticality),
 			HopsAway:     nodeMinDepth[n.ID],
 			Relationship: att.relationship,
 			Sources:      att.sources,
@@ -872,7 +905,7 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 // one-hop nodes the seed depends on, with edge attribution. No coverage or
 // production rollup — downstream is context only. accountEnv follows the same
 // required-argument contract as summarizeImpact.
-func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMinDepth map[string]int, accountEnv map[string]string) []ImpactedService {
+func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMinDepth map[string]int, accountEnv, criticality map[string]string) []ImpactedService {
 	attribution := attributeConnectingEdges(edges, nodeMinDepth, TraverseDirectionDownstream)
 	deps := []ImpactedService{}
 	for _, n := range nodes {
@@ -890,6 +923,7 @@ func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMi
 			NodeType:     n.NodeType,
 			Namespace:    impactNodeAttr(n, "namespace"),
 			Environment:  resolveNodeEnvironment(n, accountEnv),
+			Criticality:  resolveNodeCriticality(n, criticality),
 			HopsAway:     nodeMinDepth[n.ID],
 			Relationship: att.relationship,
 			Sources:      att.sources,
@@ -1105,6 +1139,64 @@ func (s *Service) loadAccountEnvs(tenantID string) (map[string]string, error) {
 		return nil, fmt.Errorf("iterate account environments: %w", err)
 	}
 	return envs, nil
+}
+
+// resolveNodeCriticality returns a node's curated business-criticality tier
+// (workload_criticality — 'critical' / 'high' / 'low'; 'medium' is the implicit
+// default and is never stored). Empty means the node has no tier: either an
+// ordinary workload, or a node that cannot carry one at all — only k8s-sourced
+// workloads have the nb_resource_id the tier is keyed on, so a caller
+// contributed by traces or eBPF is never tierable. Consumers must read empty as
+// "not stated", never as "unimportant".
+func resolveNodeCriticality(n *DbNode, criticality map[string]string) string {
+	if n == nil {
+		return ""
+	}
+	resourceID := impactNodeAttr(n, "nb_resource_id")
+	if resourceID == "" {
+		return ""
+	}
+	return criticality[n.CloudAccountID+"|"+resourceID]
+}
+
+// loadWorkloadCriticality returns the curated criticality tiers for the given
+// cloud accounts, keyed "<account>|<cloud_resource_id>". Scoped by account
+// rather than tenant so it rides uq_workload_criticality_resource
+// (cloud_account_id, cloud_resource_id) — the same key every other reader uses;
+// tenant_id carries no index. Only 'active' rows count, matching triage's
+// reader: a 'proposed' tier is awaiting review and must not present as curated
+// fact. Rows are overwhelmingly non-medium (medium is the implicit default and
+// is only stored when an operator sets it explicitly), so the result is tens of
+// rows per account; a stored 'medium' resolves like an absent tier downstream.
+func (s *Service) loadWorkloadCriticality(accountIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(accountIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.dbManager.Query(`
+		SELECT cloud_account_id::text, cloud_resource_id::text, criticality
+		FROM workload_criticality
+		WHERE cloud_account_id = ANY($1::uuid[]) AND status = 'active'`,
+		pq.Array(accountIDs))
+	if err != nil {
+		return nil, fmt.Errorf("query workload criticality: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			s.logger.Warn("failed to close workload criticality rows", "error", closeErr)
+		}
+	}()
+	for rows.Next() {
+		var accountID, resourceID, tier string
+		if err := rows.Scan(&accountID, &resourceID, &tier); err != nil {
+			return nil, fmt.Errorf("scan workload criticality: %w", err)
+		}
+		out[accountID+"|"+resourceID] = tier
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workload criticality: %w", err)
+	}
+	return out, nil
 }
 
 // filterNodesByTenant drops any node not belonging to tenantID — a defensive

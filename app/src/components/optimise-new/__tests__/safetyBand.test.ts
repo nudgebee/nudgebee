@@ -15,6 +15,9 @@ import {
   changeClassLabel,
   changeClassTone,
   deriveVerdict,
+  criticalityTone,
+  criticalityLabel,
+  businessCriticalCount,
 } from '../safetyBand';
 
 describe('safetyBand dependent categorization helpers', () => {
@@ -204,5 +207,46 @@ describe('impactSignalSources', () => {
   it('is empty for pre-attribution summaries', () => {
     expect(impactSignalSources({ dependents: [{ name: 'a' }] })).toEqual([]);
     expect(impactSignalSources(null)).toEqual([]);
+  });
+});
+
+describe('criticality presentation', () => {
+  it('labels only the exceptional tiers — medium is the unstored default', () => {
+    expect(criticalityLabel('critical')).toBe('Critical');
+    expect(criticalityLabel('high')).toBe('High');
+    expect(criticalityLabel('low')).toBe('Low');
+    expect(criticalityLabel('medium')).toBeNull();
+    expect(criticalityLabel(undefined)).toBeNull();
+  });
+
+  it('reuses the criticality manager tones so the two surfaces cannot drift', () => {
+    expect(criticalityTone('critical')).toBe('critical');
+    expect(criticalityTone('high')).toBe('warning');
+    expect(criticalityTone('low')).toBe('neutral');
+    expect(criticalityTone(undefined)).toBe('neutral');
+  });
+
+  it('falls back to neutral for a tier the UI does not recognise', () => {
+    // The tier crosses a JSONB boundary from a text column, so a value outside
+    // the union can reach here regardless of the declared type.
+    expect(criticalityTone('urgent' as any)).toBe('neutral');
+  });
+});
+
+describe('businessCriticalCount', () => {
+  it('counts only critical and high tiers', () => {
+    const deps = [
+      { name: 'pay', criticality: 'critical' as const },
+      { name: 'ingress', criticality: 'high' as const },
+      { name: 'cron', criticality: 'low' as const },
+      { name: 'plain' },
+    ];
+    expect(businessCriticalCount(deps)).toBe(2);
+  });
+
+  it('is zero when nothing is tiered, and tolerates absence', () => {
+    expect(businessCriticalCount([{ name: 'a' }, { name: 'b' }])).toBe(0);
+    expect(businessCriticalCount([])).toBe(0);
+    expect(businessCriticalCount(undefined)).toBe(0);
   });
 });

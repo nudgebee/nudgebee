@@ -108,6 +108,9 @@ type dependentRef struct {
 	// PodCount carries the hosted-workload rollup annotation ("Deployment ·
 	// 12 pods here"); zero everywhere else and omitted from the JSON.
 	PodCount int `json:"pod_count,omitempty"`
+	// Criticality is the workload's curated tier, when it has one. Absent means
+	// no tier is stated, which includes every dependent that cannot carry one.
+	Criticality string `json:"criticality,omitempty"`
 }
 
 // compactDependents projects a knowledge-graph blast radius into the bounded list
@@ -132,6 +135,7 @@ func compactDependents(deps []core.ImpactedService) []dependentRef {
 			Relationship: string(d.Relationship),
 			Sources:      d.Sources,
 			PodCount:     d.PodCount,
+			Criticality:  d.Criticality,
 		}
 	}
 	return out
@@ -152,6 +156,7 @@ func buildImpactSummary(impact *core.ImpactSummary, reason string) map[string]an
 		// non-Open recommendations are excluded from the recompute cron, so
 		// pre-fix summaries survive indefinitely on resolved recs.
 		"environment_resolved":    impact.EnvironmentResolved,
+		"criticality_resolved":    impact.CriticalityResolved,
 		"coverage_confidence":     string(impact.CoverageConfidence),
 		"truncated":               impact.Truncated,
 		"safety_reason":           reason,

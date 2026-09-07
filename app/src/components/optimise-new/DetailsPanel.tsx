@@ -38,7 +38,11 @@ import {
   changeClassLabel,
   changeClassTone,
   deriveVerdict,
+  criticalityTone,
+  criticalityLabel,
+  businessCriticalCount,
   CHANGE_CLASS_HELP,
+  CRITICALITY_HELP,
   coverageTone,
   coverageSubtitle,
   coverageExplainer,
@@ -190,6 +194,13 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
           <Label size='sm' tone={isProdEnvironment(dep.environment) ? 'critical' : 'neutral'}>
             {formatEnvironment(dep.environment)}
           </Label>
+        )}
+        {criticalityLabel(dep.criticality) && (
+          <ChipTip title={CRITICALITY_HELP}>
+            <Label size='sm' tone={criticalityTone(dep.criticality)}>
+              {criticalityLabel(dep.criticality)}
+            </Label>
+          </ChipTip>
         )}
         {(dep.pod_count ?? 0) > 0 && (
           <Label size='sm' tone='neutral'>
@@ -390,7 +401,16 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         )}
         {impact?.dependents && impact.dependents.length > 0 && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
+              {businessCriticalCount(impact.dependents) > 0 && (
+                <ChipTip title={CRITICALITY_HELP}>
+                  <Label size='sm' tone='critical'>
+                    {`${businessCriticalCount(impact.dependents)} business-critical`}
+                  </Label>
+                </ChipTip>
+              )}
+            </Box>
             {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
               <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='upstream' />
             ))}

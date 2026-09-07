@@ -17,21 +17,13 @@ import EmptyData from '@shared/EmptyData';
 import { DataNotAvailable } from '@assets';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
-import apiCriticality, { type Criticality, type WorkloadCriticalityItem } from '@api1/criticality';
+import apiCriticality, { CRITICALITY_TONE, type Criticality, type WorkloadCriticalityItem } from '@api1/criticality';
 
 interface WorkloadCriticalityManagerProps {
   accountId?: string;
 }
 
 const LEVELS: Criticality[] = ['critical', 'high', 'medium', 'low'];
-
-// Map a criticality to a design-system Chip tone (for the per-row tier pill).
-const LEVEL_TONE: Record<Criticality, 'critical' | 'warning' | 'info' | 'neutral'> = {
-  critical: 'critical',
-  high: 'warning',
-  medium: 'info',
-  low: 'neutral',
-};
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'You',
@@ -204,7 +196,7 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
         { component: <Text value={item.kind} /> },
         {
           component: (
-            <Chip variant='tag' size='xs' tone={LEVEL_TONE[item.criticality]}>
+            <Chip variant='tag' size='xs' tone={CRITICALITY_TONE[item.criticality]}>
               {item.criticality}
             </Chip>
           ),

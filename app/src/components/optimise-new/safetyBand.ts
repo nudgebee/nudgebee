@@ -1,4 +1,5 @@
 import { type LabelTone } from '@ui/Label';
+import { CRITICALITY_TONE, type Criticality } from '@api1/criticality';
 import { safeJSONParse } from 'src/utils/common';
 
 // Blast-radius safety band on a recommendation, computed by the knowledge-graph
@@ -22,6 +23,11 @@ export interface DependentRef {
   sources?: string[];
   // Hosted-workload rollup annotation: pods of this workload on the seed node.
   pod_count?: number;
+  // Curated business-criticality tier, when the workload carries one. Absent
+  // means no tier is stated — an ordinary workload, or one that cannot carry a
+  // tier at all (only k8s-sourced workloads can). Never read absence as "not
+  // important".
+  criticality?: Criticality;
 }
 
 export interface ImpactSummary {
@@ -32,6 +38,10 @@ export interface ImpactSummary {
   // persisted before that existed lack the key — for those, a zero prod count
   // means "environment never resolved", not "verified no production impact".
   environment_resolved?: boolean;
+  // Marks that curated criticality tiers were read for this summary. Absent on
+  // summaries persisted before criticality existed, so no tier on a dependent
+  // there means "never looked up", not "ordinary".
+  criticality_resolved?: boolean;
   coverage_confidence?: 'none' | 'low' | 'observed' | 'high';
   truncated?: boolean;
   safety_reason?: string;
@@ -233,6 +243,30 @@ export const impactSignalSources = (impact?: ImpactSummary | null): string[] => 
     .map(formatSourceName)
     .sort((a, b) => a.localeCompare(b));
 };
+
+// criticalityTone maps a tier to its chip tone, reusing the one mapping the
+// criticality manager renders so the two surfaces cannot drift. The tier
+// arrives from persisted JSONB backed by a text column (validated in app code,
+// not a DB enum), so an unrecognised value is possible at runtime whatever the
+// type says: it falls back to neutral rather than rendering an undefined tone.
+export const criticalityTone = (tier?: Criticality): LabelTone => (tier && CRITICALITY_TONE[tier]) || 'neutral';
+
+// criticalityLabel — the chip text. 'medium' never appears (it is the unstored
+// default), so a chip marks only an exceptional tier.
+export const criticalityLabel = (tier?: Criticality): string | null => {
+  if (!tier || tier === 'medium') return null;
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+};
+
+// businessCriticalCount counts dependents carrying a critical/high tier. A
+// positive claim only: the denominator is deliberately not reported, because
+// dependents that cannot carry a tier are indistinguishable from untiered ones
+// and any "N of M" would overstate what was actually assessed.
+export const businessCriticalCount = (deps?: DependentRef[]): number =>
+  (deps || []).filter((d) => d.criticality === 'critical' || d.criticality === 'high').length;
+
+export const CRITICALITY_HELP =
+  'How business-critical this workload is, curated in Settings → Workload Criticality. Informational: it explains why a dependent matters, but it does not change the safety verdict.';
 
 // isProdEnvironment mirrors the backend's isProdEnv so prod dependents get the
 // critical treatment consistently.
