@@ -134,17 +134,27 @@ const getKbMenuItems = (knowledgeBase, hasAccess) => [
     : []),
 ];
 
-// Status pill (with error tooltip) — shared by the card and table views.
-const KbStatusLabel = ({ knowledgeBase }) =>
-  knowledgeBase.status === 'error' && knowledgeBase.error_message ? (
-    <Tooltip title={knowledgeBase.error_message} placement='top'>
+// Source lifecycle is separate from the user's permission to retrieve this KB.
+const KbStatusLabel = ({ knowledgeBase }) => {
+  const labels = { active: 'Ready', processing: 'Syncing', error: 'Sync failed', archived: 'Source unavailable' };
+  const explanation =
+    knowledgeBase.status === 'archived'
+      ? 'This source is no longer eligible for knowledge sync. Check the integration, account connection, and knowledge sync settings. Stored content is retained but cannot be retrieved, even when Use in answers is on.'
+      : knowledgeBase.status === 'error'
+      ? `${
+          knowledgeBase.error_message || 'The latest sync failed.'
+        } Previously indexed content may still appear in search; direct skill loading requires Ready.`
+      : knowledgeBase.status === 'processing'
+      ? 'Sync is in progress. Previously indexed content may still appear in search; direct skill loading requires Ready.'
+      : 'Content is ready. Use in answers, retrieval mode, and agent access determine whether it is retrieved.';
+  return (
+    <Tooltip title={explanation} placement='top'>
       <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
-        <Label text={knowledgeBase.status} tone='critical' />
+        <Label text={labels[knowledgeBase.status] || knowledgeBase.status} tone={getKbStatusTone(knowledgeBase.status)} />
       </Box>
     </Tooltip>
-  ) : (
-    <Label text={knowledgeBase.status} tone={getKbStatusTone(knowledgeBase.status)} />
   );
+};
 KbStatusLabel.propTypes = { knowledgeBase: PropTypes.object };
 
 // Edit button (manual KBs) + three-dots menu — shared by the card and table views.
@@ -841,6 +851,7 @@ const formatKBNameList = (kbs, cap = KB_NAME_LIST_CAP) => {
 // doesn't return sub-threshold documents. The only drop the pre-step performs
 // is fail-closed on documents no knowledge base in scope owns.
 const TestRetrievalPanel = ({
+  accountId,
   knowledgeBases = [],
   knowledgeBasesLoading = false,
   query,
@@ -852,22 +863,18 @@ const TestRetrievalPanel = ({
   result,
   error,
 }) => {
-  // Archived and switched-off knowledge bases are excluded: rag-server drops
-  // their collections before searching, so offering one would only ever return
-  // nothing. A KB in "error" or "processing" IS still searchable — those are
-  // transient load states over documents that were already indexed — so it
-  // stays selectable and is labelled with its status.
+  // Match retrieval eligibility: only active, enabled sources can contribute.
   const kbOptions = useMemo(
     () => [
       { value: '', label: 'All knowledge bases' },
       ...knowledgeBases
-        .filter((kb) => kb.status !== 'archived' && kb.enabled !== false)
+        .filter((kb) => kb.status === 'active' && kb.enabled !== false && (!accountId || kb.account_id === accountId))
         .map((kb) => ({
           value: kb.id,
-          label: kb.status === 'active' ? kb.name : `${kb.name} (${kb.status})`,
+          label: accountId ? kb.name : `${kb.name} — ${kb.account_name || kb.account_id || 'Unknown connection'}`,
         })),
     ],
-    [knowledgeBases]
+    [knowledgeBases, accountId]
   );
   const scopedKB = kbId ? knowledgeBases.find((kb) => kb.id === kbId) : null;
 
@@ -895,6 +902,10 @@ const TestRetrievalPanel = ({
       >
         Test retrieval
       </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mt: ds.space[1] }}>
+        <Typography sx={{ fontSize: 'var(--ds-text-small)' }}>Connection</Typography>
+        <ScopeChip accountId={accountId} />
+      </Box>
       <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mt: ds.space[1] }}>
         Ask a question the way an agent would receive it. This runs the real retrieval step and shows which documents would reach the agent — and
         which are dropped because no knowledge base in scope owns them. Pick a single knowledge base to ask whether that one answers the question.
@@ -1034,7 +1045,7 @@ const TestRetrievalPanel = ({
                   archivedCount > 0 || erroredCount > 0 || disabledCount > 0
                     ? ` (${[
                         erroredCount > 0 ? `${erroredCount} failed to load` : '',
-                        archivedCount > 0 ? `${archivedCount} archived` : '',
+                        archivedCount > 0 ? `${archivedCount} source unavailable` : '',
                         disabledCount > 0 ? `${disabledCount} switched off` : '',
                       ]
                         .filter(Boolean)
@@ -1051,6 +1062,7 @@ const TestRetrievalPanel = ({
 };
 
 TestRetrievalPanel.propTypes = {
+  accountId: PropTypes.string,
   knowledgeBases: PropTypes.array,
   knowledgeBasesLoading: PropTypes.bool,
   query: PropTypes.string,
@@ -1108,6 +1120,24 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [retrievalRunning, setRetrievalRunning] = useState(false);
   const [retrievalResult, setRetrievalResult] = useState(null);
   const [retrievalError, setRetrievalError] = useState(null);
+  const retrievalRequestRef = useRef(0);
+
+  useEffect(() => {
+    retrievalRequestRef.current += 1;
+    setRetrievalKbId('');
+    setRetrievalResult(null);
+    setRetrievalError(null);
+    setRetrievalRunning(false);
+  }, [accountId]);
+
+  useEffect(() => {
+    if (retrievalKbId && !knowledgeBases.some((kb) => kb.id === retrievalKbId && kb.status === 'active' && kb.enabled !== false)) {
+      retrievalRequestRef.current += 1;
+      setRetrievalKbId('');
+      setRetrievalResult(null);
+      setRetrievalRunning(false);
+    }
+  }, [knowledgeBases, retrievalKbId]);
 
   // In tenant-wide mode every write affordance is hidden — writes always
   // require the per-account context, so we never paint Create / Edit /
@@ -1312,7 +1342,11 @@ const KnowledgeBaseTab = ({ accountId }) => {
         return;
       }
       snackbar.success(
-        nextEnabled ? `"${knowledgeBase.name}" enabled — agents can use it again` : `"${knowledgeBase.name}" disabled — agents will no longer use it`
+        nextEnabled
+          ? knowledgeBase.status === 'archived'
+            ? `"${knowledgeBase.name}" use allowed — retrieval remains blocked until the source is available`
+            : `"${knowledgeBase.name}" use allowed — retrieval depends on source status and retrieval settings`
+          : `"${knowledgeBase.name}" excluded from new retrievals`
       );
     } catch (err) {
       applyLocally(!nextEnabled);
@@ -1375,12 +1409,12 @@ const KnowledgeBaseTab = ({ accountId }) => {
           );
         },
       },
-      { key: 'status', label: 'Status', type: 'status', render: (kb) => <KbStatusLabel knowledgeBase={kb} /> },
+      { key: 'status', label: 'Source status', type: 'status', render: (kb) => <KbStatusLabel knowledgeBase={kb} /> },
       {
         key: 'enabled',
-        label: 'Enabled',
+        label: 'Use in answers',
         type: 'status',
-        width: '90px',
+        width: '130px',
         render: (kb) =>
           // A tenant-wide grouped row covers several accounts' KB rows; when
           // they disagree there is no single switch position to show, so the
@@ -1392,14 +1426,25 @@ const KnowledgeBaseTab = ({ accountId }) => {
               </Box>
             </Tooltip>
           ) : (
-            <Switch
-              size='sm'
-              checked={kb.enabled !== false}
-              loading={togglingEnabledIds.includes(kb.id)}
-              disabled={!hasAccess}
-              onChange={(_event, checked) => handleToggleEnabled(kb, checked)}
-              aria-label={`${kb.enabled === false ? 'Enable' : 'Disable'} knowledge base ${kb.name}`}
-            />
+            <Tooltip
+              title={
+                kb.status === 'archived'
+                  ? 'Source unavailable: this KB cannot be retrieved. Your preference is retained for when the source returns.'
+                  : 'Allow this KB in new retrievals. Turning this off retains stored content and does not stop source sync.'
+              }
+              placement='top'
+            >
+              <Box component='span' sx={{ display: 'inline-flex' }}>
+                <Switch
+                  size='sm'
+                  checked={kb.enabled !== false}
+                  loading={togglingEnabledIds.includes(kb.id)}
+                  disabled={!hasAccess}
+                  onChange={(_event, checked) => handleToggleEnabled(kb, checked)}
+                  aria-label={`${kb.enabled === false ? 'Allow' : 'Exclude'} knowledge base ${kb.name} in answers`}
+                />
+              </Box>
+            </Tooltip>
           ),
       },
       {
@@ -1606,6 +1651,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const handleRunRetrieval = async () => {
     const query = retrievalQuery.trim();
     if (!query || retrievalRunning) return;
+    const requestId = ++retrievalRequestRef.current;
     setRetrievalRunning(true);
     setRetrievalError(null);
     // Clear the previous run's results: leaving them on screen while the new
@@ -1614,6 +1660,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
     setRetrievalResult(null);
     try {
       const response = await apiKnowledgeBase.testRetrieval(accountId, query, retrievalKbId);
+      if (requestId !== retrievalRequestRef.current) return;
       if (response.errors && response.errors.length > 0) {
         setRetrievalResult(null);
         setRetrievalError(response.errors[0]?.message || 'Failed to test retrieval');
@@ -1621,11 +1668,12 @@ const KnowledgeBaseTab = ({ accountId }) => {
       }
       setRetrievalResult(response.data);
     } catch (err) {
+      if (requestId !== retrievalRequestRef.current) return;
       console.error('Error testing retrieval:', err);
       setRetrievalResult(null);
       setRetrievalError('An error occurred while testing retrieval');
     } finally {
-      setRetrievalRunning(false);
+      if (requestId === retrievalRequestRef.current) setRetrievalRunning(false);
     }
   };
 
@@ -1684,12 +1732,19 @@ const KnowledgeBaseTab = ({ accountId }) => {
 
       {retrievalOpen && (
         <TestRetrievalPanel
+          accountId={accountId}
           knowledgeBases={knowledgeBases}
           knowledgeBasesLoading={loading}
           query={retrievalQuery}
           onQueryChange={setRetrievalQuery}
           kbId={retrievalKbId}
-          onKbChange={setRetrievalKbId}
+          onKbChange={(id) => {
+            retrievalRequestRef.current += 1;
+            setRetrievalKbId(id);
+            setRetrievalResult(null);
+            setRetrievalError(null);
+            setRetrievalRunning(false);
+          }}
           onRun={handleRunRetrieval}
           running={retrievalRunning}
           result={retrievalResult}
