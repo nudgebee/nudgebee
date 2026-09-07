@@ -202,6 +202,8 @@ func (f *fallbackTracesAgent) Execute(ctx *security.RequestContext, query core.N
 			InheritSkillsFromAgents: append(query.InheritSkillsFromAgents, f.GetName()),
 			OriginalQuery:           query.OriginalQuery,
 			SelectedSkillIds:        query.SelectedSkillIds,
+			KnowledgePolicy:         string(query.KnowledgePolicy),
+			KnowledgePolicyResolved: query.KnowledgePolicyResolved,
 		}
 
 		nbToolCallRequest := toolcore.NBToolCallRequest{}

@@ -71,6 +71,7 @@ func newMetricsAgent(ctx *security.RequestContext, accountId string, provider se
 type metricsAgent struct {
 	accountId string
 	agent     core.NBAgent
+	executor  agentExecutorFunc
 }
 
 func (f *metricsAgent) GetName() string {
@@ -117,6 +118,8 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 		InheritSkillsFromAgents: append(query.InheritSkillsFromAgents, f.GetName()),
 		OriginalQuery:           query.OriginalQuery,
 		SelectedSkillIds:        query.SelectedSkillIds,
+		KnowledgePolicy:         string(query.KnowledgePolicy),
+		KnowledgePolicyResolved: query.KnowledgePolicyResolved,
 	}
 
 	nbToolCallRequest := toolcore.NBToolCallRequest{}
@@ -124,7 +127,11 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 	nbToolCallRequest.Context = query.QueryContext
 	nbToolCallRequest.Arguments = map[string]any{}
 
-	return core.ExecuteAgentToolCall(nbRequestContext, f.agent, nbToolCallRequest)
+	executor := f.executor
+	if executor == nil {
+		executor = core.ExecuteAgentToolCall
+	}
+	return executor(nbRequestContext, f.agent, nbToolCallRequest)
 }
 
 func getMetricsAgent(ctx *security.RequestContext, accountId string) (core.NBAgent, error) {
