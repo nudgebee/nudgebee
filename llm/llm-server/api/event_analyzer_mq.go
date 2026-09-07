@@ -257,14 +257,14 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 		return nil
 	}
 
-	if strings.EqualFold(response.Status, string(core.ConversationStatusCompleted)) {
+	if strings.EqualFold(response.Status, string(events.AnalysisStatusCompleted)) {
 		ctx.GetLogger().Info("eventasync: event is already analyzed once", "relatedEventId", response.RelatedEventId)
 		// Cache hit — publish the cached result so the workflow can resume.
 		fillPublishStateFromResponse(&publishState, response, string(events.AnalysisStatusCompleted))
 		return nil
 	}
 
-	if strings.EqualFold(response.Status, string(core.ConversationStatusInProgress)) {
+	if strings.EqualFold(response.Status, string(events.AnalysisStatusInProgress)) {
 		ctx.GetLogger().Info("eventasync: event is already being analyzed", "relatedEventId", response.RelatedEventId)
 		// Multi-listener: another worker owns the in-progress analysis
 		// and will publish the eventual completion. If we have a token,
@@ -283,28 +283,23 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 			// our own token (so the eventual drain doesn't double-
 			// publish) and fall through to the normal defer publish
 			// path with the appropriate status.
-			updated, uerr := getOrCreateEventAnalysisStatus(ctx, eventAnalysisRequest, dbManager, false)
-			if uerr != nil {
-				// Re-read failed — fall through to skipPublish=true and
-				// rely on the eventual drain by whichever worker is
-				// running the pipeline. Logged but not fatal.
-				ctx.GetLogger().Warn("eventasync: race-guard re-read failed, falling through to skip",
-					"error", uerr, "event_id", eventAnalysisRequest.EventId)
-			} else if strings.EqualFold(updated.Status, string(core.ConversationStatusCompleted)) {
-				if popped, _ := common.RemovePendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); popped {
-					fillPublishStateFromResponse(&publishState, updated, string(events.AnalysisStatusCompleted))
-					return nil
+			if updated, ok := getConfirmedTerminalAnalysis(ctx, eventAnalysisRequest, dbManager); ok {
+				if strings.EqualFold(updated.Status, string(events.AnalysisStatusCompleted)) {
+					if popped, _ := common.RemovePendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); popped {
+						fillPublishStateFromResponse(&publishState, updated, string(events.AnalysisStatusCompleted))
+						return nil
+					}
+					// Lost the race — drain already grabbed our token; that
+					// other worker will publish for us. Skip our own publish.
+				} else if strings.EqualFold(updated.Status, string(events.AnalysisStatusFailed)) {
+					if popped, _ := common.RemovePendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); popped {
+						publishState.Status = string(events.AnalysisStatusFailed)
+						publishState.StatusReason = updated.StatusReason
+						publishState.Error = updated.StatusReason
+						return nil
+					}
+					// Same lost-race fallback as the COMPLETED branch.
 				}
-				// Lost the race — drain already grabbed our token; that
-				// other worker will publish for us. Skip our own publish.
-			} else if strings.EqualFold(updated.Status, string(events.AnalysisStatusFailed)) {
-				if popped, _ := common.RemovePendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); popped {
-					publishState.Status = string(events.AnalysisStatusFailed)
-					publishState.StatusReason = updated.StatusReason
-					publishState.Error = updated.StatusReason
-					return nil
-				}
-				// Same lost-race fallback as the COMPLETED branch.
 			}
 		}
 		skipPublish = true
@@ -381,6 +376,39 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 		markAllAnalysisFailed(ctx, events.NewEventAnalysisRepository(dbManager), eventAnalysisRequest.EventId, response.EventFingerprint, eventAnalysisRequest.AccountId, response.EventAggregationKey, err.Error())
 		publishState.Status = string(events.AnalysisStatusFailed)
 		publishState.Error = err.Error()
+	} else if strings.EqualFold(analysisResp.Status, string(events.AnalysisStatusInProgress)) {
+		skipPublish = true
+		ctx.GetLogger().Info("eventasync: analysis in progress or waiting for approval, skipping terminal publication",
+			"eventId", eventAnalysisRequest.EventId, "statusReason", analysisResp.StatusReason)
+		if taskToken != "" {
+			if rerr := common.RegisterPendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); rerr != nil {
+				ctx.GetLogger().Error("eventasync: failed to register pending token on in-progress return",
+					"error", rerr, "event_id", eventAnalysisRequest.EventId)
+				return rerr
+			}
+			// Race guard: another replica or recovery worker could have
+			// reached a terminal state (COMPLETED or FAILED) and drained
+			// tokens between the in-progress return and token registration.
+			// Re-read; if it has, pop our token and publish immediately.
+			if updated, ok := getConfirmedTerminalAnalysis(ctx, eventAnalysisRequest, dbManager); ok {
+				if strings.EqualFold(updated.Status, string(events.AnalysisStatusCompleted)) {
+					if popped, _ := common.RemovePendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); popped {
+						fillPublishStateFromResponse(&publishState, updated, string(events.AnalysisStatusCompleted))
+						skipPublish = false
+						return nil
+					}
+				} else if strings.EqualFold(updated.Status, string(events.AnalysisStatusFailed)) {
+					if popped, _ := common.RemovePendingToken(ctx.GetContext(), eventAnalysisRequest.EventId, taskToken); popped {
+						publishState.Status = string(events.AnalysisStatusFailed)
+						publishState.StatusReason = updated.StatusReason
+						publishState.Error = updated.StatusReason
+						skipPublish = false
+						return nil
+					}
+				}
+			}
+		}
+		return nil
 	} else {
 		common.MetricsEventAnalysisOperationsTotal("mq_investigation", "success", eventAnalysisRequest.AccountId)
 		fillPublishStateFromResponse(&publishState, analysisResp, string(events.AnalysisStatusCompleted))
@@ -388,6 +416,33 @@ func processTroubleshootingEventFromMq(msgCtx context.Context, data []byte) erro
 	common.MetricsEventAnalysisLatencySeconds("mq_investigation", eventAnalysisRequest.AccountId, time.Since(mqStart).Seconds())
 
 	return nil
+}
+
+// publishAnalysisCompletedTerminal drains pending tokens and emits completion envelopes
+// when an event analysis finishes asynchronously outside the original MQ worker (e.g. via recovery).
+func publishAnalysisCompletedTerminal(ctx context.Context, accountId, eventId string, resp EventAnalysisResponse, status string) {
+	if eventId == "" {
+		return
+	}
+	var env investigationCompletedEnvelope
+	env.EventID = eventId
+	env.AccountID = accountId
+	fillPublishStateFromResponse(&env, resp, status)
+
+	pending, derr := common.DrainPendingTokens(ctx, eventId)
+	if derr != nil {
+		slog.Error("eventasync: drain pending tokens failed in terminal publisher",
+			"error", derr, "event_id", eventId)
+	}
+	for _, t := range pending {
+		tokenEnv := env
+		tokenEnv.TaskToken = t
+		publishInvestigationCompleted(ctx, tokenEnv)
+	}
+
+	autoEnv := env
+	autoEnv.TaskToken = ""
+	publishCompletionUnconditional(ctx, autoEnv)
 }
 
 // fillPublishStateFromResponse copies the canonical investigation outputs

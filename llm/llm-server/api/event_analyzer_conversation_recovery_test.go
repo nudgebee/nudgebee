@@ -101,7 +101,7 @@ func TestLatestAgentGenerationResponsePreservesCompletedFindingsAfterApproval(t 
 				{AgentName: &otherAgent, MessageType: string(core.MessageTypeGeneration), Status: core.ConversationStatusWaiting, Response: "unrelated stage"},
 			}
 			got, found := latestAgentGenerationResponse(messages, agentName)
-			assert.True(t, found)
+			require.True(t, found)
 			assert.Equal(t, want, got, "preserve the generation text verbatim; approval wording is irrelevant")
 		})
 	}
