@@ -323,6 +323,7 @@ type IConversationDao interface {
 	ListToolUsage(filter UsageMetricsFilter, sortBy string, limit int) (ToolUsageList, error)
 	ListToolCalls(filter UsageMetricsFilter, toolName string, statuses []string, limit int) (ToolCallList, error)
 	InsertTokenUsage(record *TokenUsageRecord) error
+	SaveClaimCritiqueAudit(ctx context.Context, record *ClaimCritiqueAuditRecord) error
 	InsertCacheLifecycle(ctx context.Context, record *CacheLifecycleRecord) error
 	SetCacheLifecycleInvalidated(ctx context.Context, cacheName string) error
 	GetConversationWithMessages(conversationId string, accountId string) (*ConversationWithMessages, error)
@@ -440,6 +441,7 @@ type ConversationDao struct {
 
 // TokenUsageRecord represents a single LLM API call token usage
 type TokenUsageRecord struct {
+	ID                  string // Optional explicit ID for a single-call audit; other callers use the DB default.
 	ConversationID      string
 	MessageID           string
 	AgentID             *string // Nullable
@@ -3754,7 +3756,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
 			cost_usd,
 			model_tier, task_type,
-			llm_config_source
+			llm_config_source, id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8,
@@ -3768,7 +3770,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$27, $28, $29, $30,
 			$31,
 			$32, $33,
-			$34
+			$34, COALESCE($35::uuid, gen_random_uuid())
 		)
 	`
 
@@ -3786,7 +3788,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 		record.CostUsd,
 		record.ModelTier, record.TaskType,
-		record.LLMConfigSource,
+		record.LLMConfigSource, nullableUUID(record.ID),
 	)
 
 	if err != nil {
@@ -3809,7 +3811,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 				record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 				record.CostUsd,
 				record.ModelTier, record.TaskType,
-				record.LLMConfigSource,
+				record.LLMConfigSource, nullableUUID(record.ID),
 			)
 			if retryErr != nil {
 				return fmt.Errorf("failed to insert token usage (retry without agent_id): %w", retryErr)

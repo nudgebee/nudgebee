@@ -44,7 +44,7 @@ type CritiqueFilter struct {
 
 func (f CritiqueFilter) buildWhere() (string, []any) {
 	args := []any{f.StartDate, f.EndDate}
-	clauses := []string{"created_at >= $1", "created_at <= $2"}
+	clauses := []string{"created_at >= $1", "created_at <= $2", "critique_type IS DISTINCT FROM 'claim_shadow'"}
 	n := 3
 	if len(f.AgentNames) > 0 {
 		clauses = append(clauses, fmt.Sprintf("agent_name = ANY($%d)", n))

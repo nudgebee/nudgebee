@@ -2239,7 +2239,10 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	Warn(msg string, args ...any)
 	Error(msg string, args ...any)
 	Debug(msg string, args ...any)
-}) (string, string) {
+}) (resultDecision, resultFeedback string) {
+	defer func() {
+		runClaimCritiqueShadow(o.ctx, o.request, "react3", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps)
+	}()
 	// Same fail-safe as the format error below: critiquing under an empty instruction
 	// would reject or accept answers on no basis at all, so skip the gate and accept
 	// rather than let a missing prompt silently decide quality.

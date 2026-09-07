@@ -1640,7 +1640,10 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 // (saveCritique / saveCritiqueAsToolCall), which the seam map flagged as
 // optional (errors there are swallowed and never affect the decision). Wiring
 // analytics persistence for react_4 is a follow-up.
-func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep) (string, string) {
+func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep) (resultDecision, resultFeedback string) {
+	defer func() {
+		runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps)
+	}()
 	logger := o.ctx.GetLogger()
 
 	questionType := "query"

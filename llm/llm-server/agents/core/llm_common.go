@@ -235,7 +235,12 @@ const (
 	// audited — in post-run review, independent of any tier flag. Absent for
 	// sub-agent calls (not top-level, not classified).
 	ContextKeyTaskType LLMContextKey = "task_type"
+	// contextKeyPreserveInput forbids evidence truncation, summarization, fallback and continuation for audits.
+	contextKeyPreserveInput LLMContextKey = "preserve_input"
+	contextKeyClaimUsageID  LLMContextKey = "claim_usage_id"
 )
+
+var errPreservedPromptChanged = errors.New("complete evidence does not fit model input budget")
 
 // Top-level turn classifications stamped on ContextKeyTaskType. Kept short since
 // they land verbatim in the llm_conversation_token_usage.task_type column.
@@ -600,6 +605,15 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 		"maxOutputTokens", maxOutputTokens,
 		"agent", agentName)
 
+	preserveInput, _ := ctx.GetContext().Value(contextKeyPreserveInput).(bool)
+	var originalInput []byte
+	if preserveInput {
+		originalInput, err = json.Marshal(promptMessages)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot preserved prompt: %w", err)
+		}
+	}
+
 	// Step 3: Pre-flight per-message size guard.
 	// Truncate any individual message that exceeds the configurable byte cap before the first
 	// LLM call. This prevents token-limit errors caused by upstream agents injecting massive
@@ -610,6 +624,15 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	// Step 3b: bound the TOTAL prompt against the model window (per-message cap above
 	// only bounds individual messages).
 	promptMessages = applyPreflightContextWindowCap(ctx, promptMessages, provider, model, res, agentName)
+	if preserveInput {
+		boundedInput, encodeErr := json.Marshal(promptMessages)
+		if encodeErr != nil {
+			return nil, fmt.Errorf("check preserved prompt: %w", encodeErr)
+		}
+		if string(originalInput) != string(boundedInput) {
+			return nil, errPreservedPromptChanged
+		}
+	}
 
 	// Step 3c: guarantee a non-empty user turn (Qwen3/vLLM rejects a prompt with no user query).
 	// If the safety net fires, WARN with agent context — that's always a caller-side bug
@@ -632,7 +655,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	}
 
 	// Step 4: Generate content with retry logic
-	completion, callMetadata, err := generateLLMContentWithRetry(ctx, llm, promptMessages, options, agentName, agentId, accountId, conversationId, messageId, false, userId, res)
+	completion, callMetadata, err := generateLLMContentWithRetry(ctx, llm, promptMessages, options, agentName, agentId, accountId, conversationId, messageId, preserveInput, userId, res)
 
 	if err != nil {
 		ctx.GetLogger().Error("unable to generate content", "error", err, "agentName", agentName, "agentId", agentId)
@@ -662,7 +685,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	traceMessages := promptMessages
 
 	// Handle response truncation by attempting to continue generation
-	if len(completion.Choices) > 0 && isMaxTokensStop(completion.Choices[0].StopReason) {
+	if !preserveInput && len(completion.Choices) > 0 && isMaxTokensStop(completion.Choices[0].StopReason) {
 		ctx.GetLogger().Info("Response truncated (Chunk 1), starting continuation loop", "agentId", agentId, "agentName", agentName)
 
 		var fullContentBuilder strings.Builder
@@ -3503,6 +3526,7 @@ func recordTokenUsageFailure(
 
 	cacheTTL := config.Config.LlmCacheTTLMinutes
 	record := &TokenUsageRecord{
+		ID:                claimUsageID(ctx),
 		LLMConfigSource:   configSourceForRecord(callMetadata),
 		ConversationID:    conversationId,
 		MessageID:         messageId,
@@ -3685,6 +3709,7 @@ func trackTokenUsage(
 	// per-call cost (storage moved to llm_cache_lifecycle). Column will be
 	// dropped in a follow-up migration; new rows leave it NULL.
 	record := &TokenUsageRecord{
+		ID:                  claimUsageID(ctx),
 		LLMConfigSource:     configSource,
 		ConversationID:      conversationId,
 		MessageID:           messageId,
