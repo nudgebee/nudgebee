@@ -25,7 +25,24 @@ const (
 	AnnotationCIGitRepo     = "ci.nudgebee.com/git.repo"
 	AnnotationCIGitHash     = "ci.nudgebee.com/git.hash"
 	AnnotationArgoCDTracker = "argocd.argoproj.io/tracking-id"
+
+	// AnnotationCIHelmValuesPath is written by the CI flow: the Helm values file
+	// that controls a workload's resources. The event investigation reads it so
+	// a "limit is too low" conclusion can name the file it would change (#37005).
+	AnnotationCIHelmValuesPath = "ci.nudgebee.com/helm.values.filePath"
 )
+
+// eventCodeAnnotationKeys is the full set the event-investigation capability
+// resolution needs. GetSourceCodeAnnotations filters the workload's annotation
+// map down to these before returning.
+var eventCodeAnnotationKeys = map[string]struct{}{
+	AnnotationGitRepo:          {},
+	AnnotationGitHash:          {},
+	AnnotationArgoCDTracker:    {},
+	AnnotationCIGitRepo:        {},
+	AnnotationCIGitHash:        {},
+	AnnotationCIHelmValuesPath: {},
+}
 
 // HasKnownRepoAnnotation returns true if the given annotation map contains any
 // recognized repository source (Nudgebee git, CI git, or ArgoCD tracking).
@@ -36,6 +53,135 @@ func HasKnownRepoAnnotation(annotations map[string]string) bool {
 	return annotations[AnnotationGitRepo] != "" ||
 		annotations[AnnotationCIGitRepo] != "" ||
 		annotations[AnnotationArgoCDTracker] != ""
+}
+
+// SourceCapability names where a workload's application source code lives and
+// which commit is deployed. Empty Repo means the workload has no source
+// annotation.
+type SourceCapability struct {
+	Repo   string `json:"repo"`
+	Commit string `json:"commit"` // workloads.nudgebee.com/git.hash — the deployed commit
+}
+
+// DeploymentCapability names the Helm values file that controls a workload's
+// resources. Empty ValuesPath means the workload has no deployment-values
+// annotation.
+type DeploymentCapability struct {
+	Repo       string `json:"repo"`
+	Commit     string `json:"commit,omitempty"`
+	ValuesPath string `json:"values_path"`
+}
+
+// EventCodeCapabilities is what an event investigation can actually act on for
+// its workload: the source repo (for a code defect) and/or the deployment
+// values file (for a "limit too low" conclusion), resolved from workload
+// annotations before the investigation runs. Either half may be nil.
+type EventCodeCapabilities struct {
+	Source     *SourceCapability     `json:"source,omitempty"`
+	Deployment *DeploymentCapability `json:"deployment,omitempty"`
+}
+
+// HasAny reports whether at least one capability resolved.
+func (c *EventCodeCapabilities) HasAny() bool {
+	return c != nil && (c.Source != nil || c.Deployment != nil)
+}
+
+// ResolveEventCodeCapabilities reads the workload's annotations and splits them
+// into the source and deployment capabilities the event investigation prompt
+// and the later fix-validation both key on (#37005). Returns a non-nil struct
+// whose halves are nil when the corresponding annotations are absent; returns
+// nil only on a lookup error.
+func ResolveEventCodeCapabilities(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string, options SourceCodeAnnotationOptions) (*EventCodeCapabilities, error) {
+	annotations, err := GetSourceCodeAnnotations(ctx, dbManager, accountId, options)
+	if err != nil {
+		return nil, err
+	}
+
+	caps := &EventCodeCapabilities{}
+
+	if repo := annotations[AnnotationGitRepo]; repo != "" {
+		caps.Source = &SourceCapability{
+			Repo:   repo,
+			Commit: annotations[AnnotationGitHash],
+		}
+	} else if annotations[AnnotationArgoCDTracker] != "" || annotations[AnnotationCIGitRepo] != "" {
+		// Parity with HasKnownRepoAnnotation, the gate this resolver replaced: a
+		// workload mapped only through ArgoCD or the CI annotation still has a
+		// resolvable application-source repo. GetSourceCodeRepo merges the
+		// ArgoCD tracking-id into a real URL; the CI repo is the fallback when
+		// it can't. Without this, workloads that reach code only via ArgoCD are
+		// told "no source repository is mapped" and never get a code-fix stage.
+		//
+		// Cached: resolving an ArgoCD tracking-id runs `argocd app get` in a pod
+		// started through the relay server (60s timeout). This resolver sits on
+		// the investigation prompt-build path, which runs on every event, so an
+		// uncached call would pay that per investigation. A workload's repo
+		// mapping changes at deploy cadence, not event cadence.
+		caps.Source = resolveArgoCDSourceCapability(ctx, accountId, annotations, options)
+	}
+
+	if valuesPath := annotations[AnnotationCIHelmValuesPath]; valuesPath != "" && annotations[AnnotationCIGitRepo] != "" {
+		caps.Deployment = &DeploymentCapability{
+			Repo:       annotations[AnnotationCIGitRepo],
+			Commit:     annotations[AnnotationCIGitHash],
+			ValuesPath: valuesPath,
+		}
+	}
+
+	return caps, nil
+}
+
+const (
+	argoCDSourceCacheNS  = "event_code_argocd_source"
+	argoCDSourceCacheTTL = 6 * time.Hour
+)
+
+func init() {
+	common.CacheCreateNamespace(argoCDSourceCacheNS, common.CacheNamespaceWithExpiration(argoCDSourceCacheTTL))
+}
+
+// resolveArgoCDSourceCapability resolves the application-source repo for a
+// workload that carries only an ArgoCD tracking-id or a CI repo annotation.
+// The ArgoCD leg is expensive (a relay-run pod), so the result is cached per
+// account+workload — including the negative result, so a workload whose ArgoCD
+// app cannot be resolved does not re-run the pod on every event. Returns nil
+// when nothing resolves.
+func resolveArgoCDSourceCapability(ctx *security.RequestContext, accountId string, annotations map[string]string, options SourceCodeAnnotationOptions) *SourceCapability {
+	ciFallback := func() *SourceCapability {
+		if ci := annotations[AnnotationCIGitRepo]; ci != "" {
+			return &SourceCapability{Repo: ci, Commit: annotations[AnnotationCIGitHash]}
+		}
+		return nil
+	}
+
+	// No ArgoCD tracker: nothing to resolve, use the CI annotation directly.
+	if annotations[AnnotationArgoCDTracker] == "" {
+		return ciFallback()
+	}
+
+	cacheKey := accountId + "|" + options.Namespace + "|" + options.WorkloadName + "|" + annotations[AnnotationArgoCDTracker]
+	if raw, ok := common.CacheGet(argoCDSourceCacheNS, cacheKey); ok {
+		var cached SourceCapability
+		if err := json.Unmarshal(raw, &cached); err == nil {
+			if cached.Repo == "" {
+				// Cached negative: ArgoCD could not resolve a repo last time.
+				return ciFallback()
+			}
+			return &cached
+		}
+	}
+
+	resolved := GetSourceCodeRepo(ctx, accountId, options)
+	toCache := SourceCapability{Repo: resolved.CodeRepo, Commit: resolved.CodeRepoCommitHash}
+	if raw, err := json.Marshal(toCache); err == nil {
+		if cacheErr := common.CacheSet(argoCDSourceCacheNS, cacheKey, raw, common.CacheSetWithExpiration(argoCDSourceCacheTTL)); cacheErr != nil {
+			ctx.GetLogger().Warn("source_code: unable to cache argocd source resolution", "error", cacheErr, "workload", options.WorkloadName)
+		}
+	}
+	if toCache.Repo != "" {
+		return &toCache
+	}
+	return ciFallback()
 }
 
 // WorkloadKey represents a unique workload identifier.
@@ -293,8 +439,7 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 		}
 
 		for key, value := range annotation {
-			if key == "workloads.nudgebee.com/git.repo" || key == "workloads.nudgebee.com/git.hash" ||
-				key == "argocd.argoproj.io/tracking-id" || key == "ci.nudgebee.com/helm.values.filePath" || key == "ci.nudgebee.com/git.repo" || key == "ci.nudgebee.com/git.hash" {
+			if _, ok := eventCodeAnnotationKeys[key]; ok {
 				annotations[key] = fmt.Sprintf("%v", value)
 				ctx.GetLogger().Info("found annotation", "key", key, "value", value)
 			}

@@ -39,7 +39,7 @@ func TestUpsertEventAnalysisStatus(t *testing.T) {
 			WithArgs(fp, acct, aggKey, AnalysisTypeInvestigation).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}))
 		mock.ExpectQuery("INSERT INTO event_log_analysis").
-			WithArgs(eventID, fp, AnalysisStatusCompleted, reason, acct, aggKey, AnalysisTypeInvestigation).
+			WithArgs(eventID, fp, AnalysisStatusCompleted, reason, acct, aggKey, AnalysisTypeInvestigation, "").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("analysis-skipped"))
 		mock.ExpectExec("INSERT INTO event_analysis_mapping").
 			WithArgs(eventID, "analysis-skipped", AnalysisTypeInvestigation).
@@ -47,7 +47,7 @@ func TestUpsertEventAnalysisStatus(t *testing.T) {
 		mock.ExpectCommit()
 
 		err := repo.UpsertEventAnalysisStatus(ctx, eventID, fp, acct, aggKey,
-			string(AnalysisStatusCompleted), reason, AnalysisTypeInvestigation)
+			string(AnalysisStatusCompleted), reason, AnalysisTypeInvestigation, false)
 		require.NoError(t, err)
 		assert.NoError(t, mock.ExpectationsWereMet(),
 			"a skipped stage must leave a row behind, or the pipeline never completes")
@@ -60,16 +60,39 @@ func TestUpsertEventAnalysisStatus(t *testing.T) {
 		mock.ExpectQuery("SELECT id FROM event_log_analysis WHERE event_fingerprint = .* FOR UPDATE").
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("analysis-existing"))
-		mock.ExpectExec("UPDATE event_log_analysis SET status=.* WHERE id=").
-			WithArgs("analysis-existing", AnalysisStatusCompleted, "skipped - no logs").
+		// clearPayload resets analysis to a minimal valid result doc and blanks
+		// summary (#37005): a terminal-skip on an existing row must clear a stale
+		// plan/diff that would otherwise stay reachable behind "Raise PR".
+		mock.ExpectExec("UPDATE event_log_analysis SET analysis=.*summary=.*status=.* WHERE id=").
+			WithArgs("analysis-existing", AnalysisStatusCompleted, "skipped - no logs", `{"source_updates":{}}`).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
 
 		err := repo.UpsertEventAnalysisStatus(ctx, eventID, fp, acct, aggKey,
-			string(AnalysisStatusCompleted), "skipped - no logs", AnalysisTypeLog)
+			string(AnalysisStatusCompleted), "skipped - no logs", AnalysisTypeLog, true)
 		require.NoError(t, err)
 		assert.NoError(t, mock.ExpectationsWereMet(),
-			"an existing row keeps the previous update-in-place behaviour")
+			"an existing row is updated in place and its stale plan/diff cleared")
+	})
+
+	t.Run("existing row, clearPayload=false: status only, keeps analysis/summary", func(t *testing.T) {
+		repo, mock := newClaimTestRepo(t)
+
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT id FROM event_log_analysis WHERE event_fingerprint = .* FOR UPDATE").
+			WithArgs(fp, acct, aggKey, AnalysisTypeInvestigation).
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("analysis-existing"))
+		// The investigation debug-skip must not erase a previously stored
+		// investigation summary — the UPDATE touches status/status_reason only.
+		mock.ExpectExec("UPDATE event_log_analysis SET status=.* status_reason=.* WHERE id=").
+			WithArgs("analysis-existing", AnalysisStatusCompleted, "debug analysis disabled").
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		err := repo.UpsertEventAnalysisStatus(ctx, eventID, fp, acct, aggKey,
+			string(AnalysisStatusCompleted), "debug analysis disabled", AnalysisTypeInvestigation, false)
+		require.NoError(t, err)
+		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
 	t.Run("no event id: inserts with a null event and no mapping", func(t *testing.T) {
@@ -80,12 +103,12 @@ func TestUpsertEventAnalysisStatus(t *testing.T) {
 			WithArgs(fp, acct, aggKey, AnalysisTypeLog).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}))
 		mock.ExpectQuery("INSERT INTO event_log_analysis").
-			WithArgs(nil, fp, AnalysisStatusCompleted, reason, acct, aggKey, AnalysisTypeLog).
+			WithArgs(nil, fp, AnalysisStatusCompleted, reason, acct, aggKey, AnalysisTypeLog, `{"source_updates":{}}`).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("analysis-orphan"))
 		mock.ExpectCommit()
 
 		err := repo.UpsertEventAnalysisStatus(ctx, "", fp, acct, aggKey,
-			string(AnalysisStatusCompleted), reason, AnalysisTypeLog)
+			string(AnalysisStatusCompleted), reason, AnalysisTypeLog, true)
 		require.NoError(t, err)
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})

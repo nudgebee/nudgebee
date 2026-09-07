@@ -736,7 +736,37 @@ func (r *EventAnalysisRepository) UpdateEventAnalysisStatus(ctx *security.Reques
 // (a missing label, no logs), so it holds for every event sharing the
 // fingerprint; resolving through the mapping instead would insert a fresh row for
 // each unmapped event, which is the duplication this exists to stop.
-func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.RequestContext, eventId, eventFingerprint, cloudAccountId, aggregationKey, status, statusReason string, analysisType EventAnalysisType) error {
+//
+// ClearedAnalysisDoc is what a terminal-skip writes into a log_analysis row's
+// analysis column in place of a real result. It is a parseable empty result
+// rather than "" so the Raise-PR consumer (api-server ApplyEventResolution)
+// reports "no proposed code fix is stored" instead of failing to parse "".
+//
+// It carries no findings, so anything that treats a stored analysis as CONTENT
+// — notably the RCA and synthesis prompt builders — must test with
+// HasStoredAnalysisContent, not `!= ""`.
+const ClearedAnalysisDoc = `{"source_updates":{}}`
+
+// HasStoredAnalysisContent reports whether a stored analysis string holds a
+// real result, as opposed to being absent or the cleared placeholder above.
+// Prompt builders must use this: feeding the placeholder to an LLM under a
+// "## Log Analysis" heading presents `{"source_updates":{}}` as findings.
+func HasStoredAnalysisContent(analysis string) bool {
+	trimmed := strings.TrimSpace(analysis)
+	return trimmed != "" && trimmed != ClearedAnalysisDoc
+}
+
+// clearPayload controls whether a pre-existing row's stored analysis is reset.
+// The log stage passes true: a prior run may have stored a code-change plan or
+// diff, and a re-run concluding no change must clear it so a stale fix isn't
+// reachable behind "Raise PR" (#37005 §4). It is reset to a minimal valid result
+// doc ({"source_updates":{}}) rather than "" so the Raise-PR consumer parses it
+// and reports "no proposed code fix is stored" instead of an empty-string parse
+// error. The investigation debug-skip passes false: re-analysing after
+// EVENT_DEBUG_ANALYSIS_DISABLED is turned on (or a Datadog event re-firing
+// without a service label) must not erase a previously stored investigation
+// summary, which still feeds finalResponse.Investigation and the RCA input.
+func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.RequestContext, eventId, eventFingerprint, cloudAccountId, aggregationKey, status, statusReason string, analysisType EventAnalysisType, clearPayload bool) error {
 	ctx.GetLogger().Info("analyzer: recording event analysis stage status", "event_fingerprint", eventFingerprint, "account_id", cloudAccountId, "event_aggregation_key", aggregationKey, "analysis_type", analysisType, "status", status)
 
 	tx, err := r.dbManager.Db.Beginx()
@@ -752,11 +782,25 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.Reques
 		return err
 	}
 
+	// When clearPayload wipes a stored plan/diff, leave a minimal valid result
+	// document rather than "" so the Raise-PR consumer
+	// (api-server ApplyEventResolution) parses it and reports "no proposed code
+	// fix is stored" instead of failing on an empty-string JSON parse.
+	clearedAnalysis := ""
+	if clearPayload {
+		clearedAnalysis = ClearedAnalysisDoc
+	}
+
 	if existingId != "" {
-		if _, err = tx.Exec(
-			`UPDATE event_log_analysis SET status=$2, status_reason=$3, updated_at=NOW() WHERE id=$1`,
-			existingId, status, statusReason,
-		); err != nil {
+		updateQuery := `UPDATE event_log_analysis SET status=$2, status_reason=$3, updated_at=NOW() WHERE id=$1`
+		if clearPayload {
+			updateQuery = `UPDATE event_log_analysis SET analysis=$4, summary='', status=$2, status_reason=$3, updated_at=NOW() WHERE id=$1`
+		}
+		args := []any{existingId, status, statusReason}
+		if clearPayload {
+			args = append(args, clearedAnalysis)
+		}
+		if _, err = tx.Exec(updateQuery, args...); err != nil {
 			ctx.GetLogger().Warn("analyzer: failed to update analysis status in database", "error", err, "analysis_id", existingId)
 			return err
 		}
@@ -770,8 +814,8 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.Reques
 
 	var analysisId string
 	if err = tx.QueryRowx(
-		`INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, status_reason, cloud_account_id, event_aggregation_key, analysis_type) VALUES ($1, $2, '', '', $3, $4, $5, $6, $7) RETURNING id`,
-		dbEventId, eventFingerprint, status, statusReason, cloudAccountId, aggregationKey, analysisType,
+		`INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, status_reason, cloud_account_id, event_aggregation_key, analysis_type) VALUES ($1, $2, $8, '', $3, $4, $5, $6, $7) RETURNING id`,
+		dbEventId, eventFingerprint, status, statusReason, cloudAccountId, aggregationKey, analysisType, clearedAnalysis,
 	).Scan(&analysisId); err != nil {
 		ctx.GetLogger().Warn("analyzer: failed to insert skipped analysis stage", "error", err, "event_fingerprint", eventFingerprint, "analysis_type", analysisType)
 		return err
