@@ -32,11 +32,38 @@ import { getBrandTitle } from '@hooks/useTenantBranding';
 import EffectiveLabelMappingPanel from './EffectiveLabelMappingPanel';
 import { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 
-// The concepts the log pipeline actually builds filters from, and the default for
-// `canonicalOptions`. Suggestions only — every input is freeSolo, because a deployment
-// can legitimately need a concept we have not enumerated, and blocking that would send
-// people back to editing DB rows.
-export const CANONICAL_LOG_FIELDS = ['app', 'container', 'content', 'level', 'message', 'namespace', 'pod', 'timestamp', 'trace_id'];
+// The concepts the log pipeline actually builds filters from, with the name each one
+// reads by. Mirrors knownCanonicalLogFields in observability/log_labels.go — update the
+// two together.
+//
+// Ordered most-retuned first rather than alphabetically: pod / namespace / app are the
+// three the tenant and account Settings mappers expose, so they are the ones an operator
+// comes here to change. The server returns rows alphabetically; the panel reorders.
+//
+// Suggestions only — every input is freeSolo, because a deployment can legitimately need
+// a concept we have not enumerated, and blocking that would send people back to editing
+// DB rows. A provider key with no entry here (datadog logs publish `node` and `service`)
+// still renders, under its raw name, after the named concepts.
+export const CANONICAL_LOG_CONCEPTS = [
+  { field: 'pod', label: 'Pod' },
+  { field: 'namespace', label: 'Namespace' },
+  { field: 'app', label: 'App' },
+  { field: 'container', label: 'Container' },
+  { field: 'message', label: 'Message' },
+  { field: 'content', label: 'Log content' },
+  { field: 'level', label: 'Level' },
+  { field: 'timestamp', label: 'Timestamp' },
+  { field: 'trace_id', label: 'Trace ID' },
+];
+
+// The Concept dropdown's options. Sorted, because that list is a picker and alphabetical
+// is what someone scans; the PANEL uses the declared order above.
+export const CANONICAL_LOG_FIELDS = CANONICAL_LOG_CONCEPTS.map(({ field }) => field).sort();
+
+// canonical -> human name, and the panel's display order. Same shape the trace instance
+// passes, so one component serves both.
+export const LOG_CONCEPT_LABELS = Object.fromEntries(CANONICAL_LOG_CONCEPTS.map(({ field, label }) => [field, label]));
+export const LOG_CONCEPT_ORDER = CANONICAL_LOG_CONCEPTS.map(({ field }) => field);
 
 const emptyRow = () => ({ canonical: '', field: '' });
 const emptyCard = () => ({ accountId: '', rows: [emptyRow()] });
@@ -134,8 +161,10 @@ export default function LabelMappingCards({
   testIdPrefix = 'log-label-mapping',
   providerType = 'logs',
   signalNoun = 'log',
-  conceptLabels,
-  conceptOrder,
+  // Default to the log vocabulary: the log instance is the one that passes neither, and
+  // it is the same component the trace instance overrides these on.
+  conceptLabels = LOG_CONCEPT_LABELS,
+  conceptOrder = LOG_CONCEPT_ORDER,
   sx,
 }) {
   const updateCard = (cardIdx, patch) => setCards(cards.map((c, i) => (i === cardIdx ? { ...c, ...patch } : c)));

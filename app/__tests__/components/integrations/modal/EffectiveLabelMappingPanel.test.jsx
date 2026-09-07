@@ -143,7 +143,10 @@ describe('EffectiveLabelMappingPanel concepts', () => {
     expect(screen.getByText('span_name')).toBeInTheDocument();
   });
 
-  it('renders bare canonical names when no concept props are given — the log path', async () => {
+  // No longer the log path — LabelMappingCards now defaults both props to the log
+  // vocabulary. This pins the standalone contract: a caller that passes neither still
+  // gets the server's list, in the server's order, under raw names.
+  it('renders bare canonical names when no concept props are given', async () => {
     render(<EffectiveLabelMappingPanel {...baseProps} />);
 
     expect(await screen.findByText('service_name')).toBeInTheDocument();
