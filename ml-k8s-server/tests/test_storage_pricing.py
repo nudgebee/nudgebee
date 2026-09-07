@@ -78,3 +78,58 @@ def test_every_emittable_disk_type_has_a_rate():
             assert disk_type in sp.STORAGE_RATES_PER_GB_MONTH[provider], f"{provider}/{class_name}"
     for provider, disk_type in sp.PROVIDER_DEFAULT_DISK_TYPE.items():
         assert disk_type in sp.STORAGE_RATES_PER_GB_MONTH[provider], provider
+
+
+# Golden vectors for Azure tier pricing. The same cases are asserted in the
+# other three producers (api-server, ml-k8s-server / k8s-collector,
+# cost-server); if a rate moves in one copy and not the others, these diverge.
+AZURE_TIER_GOLDEN = [
+    ("premium_lrs", 100, "P10", 19.71),
+    ("premium_lrs", 128, "P10", 19.71),
+    ("premium_lrs", 129, "P15", 38.012142),
+    ("premium_lrs", 1024, "P30", 135.17),
+    ("premium_zrs", 100, "P10", 29.565),
+    ("standardssd_lrs", 100, "E10", 9.6),
+    ("standardssd_zrs", 512, "E20", 57.6),
+    ("standard_lrs", 10, "S4", 1.536),
+    ("standard_lrs", 40000, "S80", 953.55),  # above Azure's largest disk
+]
+
+
+def test_azure_tier_monthly_cost_golden():
+    for disk_type, size_gb, tier, monthly in AZURE_TIER_GOLDEN:
+        assert sp.azure_tier_monthly_cost(disk_type, size_gb) == (monthly, tier)
+
+
+def test_azure_per_gib_skus_are_not_tiered():
+    # Premium SSD v2 and Ultra bill per provisioned GiB with no size bands.
+    for disk_type in ("premiumv2_lrs", "ultrassd_lrs"):
+        assert sp.azure_tier_monthly_cost(disk_type, 100) is None
+    assert sp.azure_tier_monthly_cost("premium_lrs", 0) is None
+
+
+def test_azure_tier_effective_rate_yields_whole_disk_price():
+    # A 100 GiB Premium disk is billed as P10 ($19.71/mo), so its savings
+    # must be the whole tier price -- not 100 x a flat per-GB rate.
+    classes = {
+        "managed-premium": {
+            "provisioner": "disk.csi.azure.com",
+            "parameters": {"skuName": "Premium_LRS"},
+        }
+    }
+    pricing = sp.resolve_storage_pricing(_pv("managed-premium"), storage_classes=classes, size_gb=100)
+    assert pricing["tier"] == "P10"
+    assert pricing["tier_monthly_usd"] == 19.71
+    assert pricing["price_per_gb"] * 100 == 19.71
+
+
+def test_unsized_azure_disk_keeps_the_flat_rate():
+    classes = {
+        "managed-premium": {
+            "provisioner": "disk.csi.azure.com",
+            "parameters": {"skuName": "Premium_LRS"},
+        }
+    }
+    pricing = sp.resolve_storage_pricing(_pv("managed-premium"), storage_classes=classes)
+    assert "tier" not in pricing
+    assert pricing["price_per_gb"] == 0.15

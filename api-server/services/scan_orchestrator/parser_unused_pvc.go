@@ -138,7 +138,9 @@ func IdentifyUnusedPVs(pods, pvcs, pvs []map[string]any) []map[string]any {
 //
 // estimated_savings is the volume's full monthly cost (deleting an unused
 // disk saves the whole disk): capacity_gb × the storage-class-resolved
-// $/GB/month rate (resolveStoragePricing). storageClasses maps class name →
+// $/GB/month rate (resolveStoragePricing). For tiered Azure SKUs that rate
+// is the effective rate for the billed size band, so the product is the
+// disk's real monthly price. storageClasses maps class name →
 // StorageClass object and accountProvider is the agent-telemetry backstop;
 // zero values degrade the resolution toward the flat fallback.
 //
@@ -174,7 +176,7 @@ func ParseUnusedPVs(unused []map[string]any, storageClasses map[string]map[strin
 			}
 		}
 		capacityGB := parseSizeToGB(storage)
-		pricing := resolveStoragePricing(pv, storageClasses, accountProvider)
+		pricing := resolveStoragePricing(pv, storageClasses, accountProvider, capacityGB)
 		savings := pricing.PricePerGB * capacityGB
 
 		// The agent's kube handler snake_cases every key before returning

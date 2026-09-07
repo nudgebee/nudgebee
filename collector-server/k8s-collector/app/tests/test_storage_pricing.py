@@ -96,7 +96,7 @@ class TestResolveStoragePricing(unittest.TestCase):
         classes = {"fast": {"provisioner": "disk.csi.azure.com", "parameters": {"skuName": "Premium_LRS"}}}
         pricing = sp.resolve_storage_pricing(pv, storage_classes=classes)
         self.assertEqual(pricing["source"], "parameters")
-        self.assertEqual(pricing["price_per_gb"], 0.12)
+        self.assertEqual(pricing["price_per_gb"], 0.15)
 
     def test_account_provider_backstop(self):
         pricing = sp.resolve_storage_pricing({"spec": {}}, provider="gcp")
@@ -141,6 +141,61 @@ class TestGetK8sProvider(unittest.TestCase):
             self.assertEqual(sp.get_k8s_provider("acc-2"), "")
         with mock.patch.object(sp.database, "select_data", return_value=[("eks",)]):
             self.assertEqual(sp.get_k8s_provider("acc-2"), "aws")
+
+
+# Golden vectors for Azure tier pricing. The same cases are asserted in the
+# other three producers (api-server, ml-k8s-server / k8s-collector,
+# cost-server); if a rate moves in one copy and not the others, these diverge.
+AZURE_TIER_GOLDEN = [
+    ("premium_lrs", 100, "P10", 19.71),
+    ("premium_lrs", 128, "P10", 19.71),
+    ("premium_lrs", 129, "P15", 38.012142),
+    ("premium_lrs", 1024, "P30", 135.17),
+    ("premium_zrs", 100, "P10", 29.565),
+    ("standardssd_lrs", 100, "E10", 9.6),
+    ("standardssd_zrs", 512, "E20", 57.6),
+    ("standard_lrs", 10, "S4", 1.536),
+    ("standard_lrs", 40000, "S80", 953.55),  # above Azure's largest disk
+]
+
+
+class TestAzureTierPricing(unittest.TestCase):
+    def test_golden_vectors(self):
+        for disk_type, size_gb, tier, monthly in AZURE_TIER_GOLDEN:
+            self.assertEqual(sp.azure_tier_monthly_cost(disk_type, size_gb), (monthly, tier))
+
+    def test_per_gib_skus_are_not_tiered(self):
+        # Premium SSD v2 and Ultra bill per provisioned GiB, no size bands.
+        for disk_type in ("premiumv2_lrs", "ultrassd_lrs"):
+            self.assertIsNone(sp.azure_tier_monthly_cost(disk_type, 100))
+        self.assertIsNone(sp.azure_tier_monthly_cost("premium_lrs", 0))
+
+    def test_effective_rate_yields_whole_disk_price(self):
+        # A 100 GiB Premium disk is billed as P10 ($19.71/mo), so its
+        # savings must be the whole tier price, not 100 x a flat rate.
+        classes = {
+            "managed-premium": {
+                "provisioner": "disk.csi.azure.com",
+                "parameters": {"skuName": "Premium_LRS"},
+            }
+        }
+        pv = {"spec": {"storage_class_name": "managed-premium"}}
+        pricing = sp.resolve_storage_pricing(pv, storage_classes=classes, size_gb=100)
+        self.assertEqual(pricing["tier"], "P10")
+        self.assertEqual(pricing["tier_monthly_usd"], 19.71)
+        self.assertEqual(pricing["price_per_gb"] * 100, 19.71)
+
+    def test_unsized_azure_disk_keeps_the_flat_rate(self):
+        classes = {
+            "managed-premium": {
+                "provisioner": "disk.csi.azure.com",
+                "parameters": {"skuName": "Premium_LRS"},
+            }
+        }
+        pv = {"spec": {"storage_class_name": "managed-premium"}}
+        pricing = sp.resolve_storage_pricing(pv, storage_classes=classes)
+        self.assertNotIn("tier", pricing)
+        self.assertEqual(pricing["price_per_gb"], 0.15)
 
 
 if __name__ == "__main__":

@@ -62,6 +62,10 @@ type RetailPriceItem struct {
 	ArmSkuName           string  `json:"armSkuName"`
 }
 
+// hoursPerMonth is Azure's own convention for converting hourly meters to
+// a monthly figure.
+const hoursPerMonth = 730
+
 var (
 	globalPricingCache *PricingCache
 	once               sync.Once
@@ -174,72 +178,172 @@ func (pc *PricingCache) GetVMPrice(ctx providers.CloudProviderContext, vmSize, r
 	return monthlyPrice, nil
 }
 
-// GetDiskPrice fetches managed disk pricing
+// azureDiskTierSizes are the provisioned size bands Azure sells managed
+// disks in. The bands are shared by Premium (P), Standard SSD (E) and
+// Standard HDD (S); Azure rounds every disk up into the next band and bills
+// that band's fixed monthly price. Standard HDD starts at S4.
+var azureDiskTierSizes = []struct {
+	Suffix  string
+	SizeGiB float64
+}{
+	{"1", 4}, {"2", 8}, {"3", 16}, {"4", 32}, {"6", 64}, {"10", 128},
+	{"15", 256}, {"20", 512}, {"30", 1024}, {"40", 2048}, {"50", 4096},
+	{"60", 8192}, {"70", 16384}, {"80", 32767},
+}
+
+// normalizeDiskSKU folds a SKU for comparison only. ARM returns canonical
+// names ("Premium_LRS"), but callers also hand us values straight off a
+// resource payload, so match case- and whitespace-insensitively; the
+// original string is kept for the product-name lookup, which is
+// case-sensitive.
+func normalizeDiskSKU(diskSKU string) string {
+	return strings.ToUpper(strings.TrimSpace(diskSKU))
+}
+
+// diskRedundancy reads LRS vs ZRS off the SKU name. ZRS costs materially
+// more (P30 ZRS $202.73 vs LRS $135.17), so the two must not be conflated.
+func diskRedundancy(diskSKU string) string {
+	if strings.Contains(normalizeDiskSKU(diskSKU), "ZRS") {
+		return "ZRS"
+	}
+	return "LRS"
+}
+
+// azureDiskTierMeter returns the retail meter name Azure bills a disk of
+// sizeGB under — Premium_LRS at 100 GiB gives "P10 LRS Disk". Empty for the
+// per-GiB families (Premium SSD v2, Ultra), which have no size bands.
+func azureDiskTierMeter(diskSKU string, sizeGB float64) string {
+	var letter string
+	sku := normalizeDiskSKU(diskSKU)
+	switch {
+	case strings.Contains(sku, "PREMIUMV2"), strings.Contains(sku, "ULTRASSD"):
+		return ""
+	case strings.Contains(sku, "PREMIUM"):
+		letter = "P"
+	case strings.Contains(sku, "STANDARDSSD"):
+		letter = "E"
+	case strings.Contains(sku, "STANDARD"):
+		letter = "S"
+	default:
+		return ""
+	}
+
+	redundancy := diskRedundancy(diskSKU)
+	for _, band := range azureDiskTierSizes {
+		if letter == "S" && band.SizeGiB < 32 {
+			continue // Standard HDD has no S1/S2/S3
+		}
+		if sizeGB <= band.SizeGiB {
+			return fmt.Sprintf("%s%s %s Disk", letter, band.Suffix, redundancy)
+		}
+	}
+	last := azureDiskTierSizes[len(azureDiskTierSizes)-1]
+	return fmt.Sprintf("%s%s %s Disk", letter, last.Suffix, redundancy)
+}
+
+// azureDiskCapacityMeter returns the provisioned-capacity meter name for the
+// per-GiB families, which are billed per GiB/hour instead of per band.
+func azureDiskCapacityMeter(diskSKU string) string {
+	redundancy := diskRedundancy(diskSKU)
+	switch sku := normalizeDiskSKU(diskSKU); {
+	case strings.Contains(sku, "PREMIUMV2"):
+		return "Premium " + redundancy + " Provisioned Capacity"
+	case strings.Contains(sku, "ULTRASSD"):
+		return "Ultra " + redundancy + " Provisioned Capacity"
+	}
+	return ""
+}
+
+func retailPriceOf(item RetailPriceItem) float64 {
+	if item.RetailPrice != 0 {
+		return item.RetailPrice
+	}
+	return item.UnitPrice
+}
+
+// GetDiskPrice returns a managed disk's monthly cost. Azure bills the
+// tiered families (Premium, Standard SSD, Standard HDD) as a fixed price
+// per provisioned size band, so this resolves the band sizeGB falls into
+// and reads that band's whole-disk meter — deliberately by exact meter
+// name, because the item set also carries the much cheaper
+// "<tier> <redundancy> Disk Mount" shared-disk meter alongside the ZRS
+// variants and the Operations / Burst / Snapshot meters. Premium SSD v2
+// and Ultra have no bands and are priced from their provisioned-capacity
+// meter; their provisioned IOPS and throughput are billed separately and
+// are not included here.
 func (pc *PricingCache) GetDiskPrice(ctx providers.CloudProviderContext, diskSKU, region string, sizeGB float64) (float64, error) {
 	if !pc.IsEnabled() {
 		return 0, fmt.Errorf("dynamic pricing is disabled")
 	}
-
-	normalizedRegion := normalizeAzureRegion(region)
-	cacheKey := fmt.Sprintf("disk:%s:%s", diskSKU, normalizedRegion)
-
-	// Check cache first
-	if pricePerGB, found := pc.getCachedPrice(cacheKey); found {
-		return pricePerGB * sizeGB, nil
+	if sizeGB <= 0 {
+		return 0, fmt.Errorf("disk size is required to price SKU %s", diskSKU)
 	}
 
-	// Map disk SKU to product name
-	productName := mapDiskSKUToProductName(diskSKU)
+	normalizedRegion := normalizeAzureRegion(region)
+	tierMeter := azureDiskTierMeter(diskSKU, sizeGB)
+	capacityMeter := azureDiskCapacityMeter(diskSKU)
+	if tierMeter == "" && capacityMeter == "" {
+		return 0, fmt.Errorf("unknown disk SKU %s", diskSKU)
+	}
 
-	// Build filter query
+	// The billed band is part of the price's identity, so it is part of the
+	// cache key; the per-GiB families cache a $/GB/month rate instead.
+	cacheKey := fmt.Sprintf("disk:%s:%s:%s", diskSKU, normalizedRegion, tierMeter)
+	if price, found := pc.getCachedPrice(cacheKey); found {
+		if tierMeter == "" {
+			return price * sizeGB, nil
+		}
+		return price, nil
+	}
+
+	productName := mapDiskSKUToProductName(diskSKU)
 	filter := fmt.Sprintf("serviceName eq 'Storage' and armRegionName eq '%s' and contains(productName, '%s') and priceType eq 'Consumption'",
 		normalizedRegion, productName)
 
-	// Fetch from Azure API
 	items, err := pc.fetchPrices(ctx, filter)
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch disk pricing: %w", err)
 	}
-
 	if len(items) == 0 {
 		return 0, fmt.Errorf("no pricing found for disk SKU %s in region %s", diskSKU, normalizedRegion)
 	}
 
-	// Find the best matching tier based on size
-	var pricePerGBMonth float64
+	wanted := tierMeter
+	if wanted == "" {
+		wanted = capacityMeter
+	}
+	var price float64
 	for _, item := range items {
-		// Look for provisioned storage pricing
-		if strings.Contains(strings.ToLower(item.MeterName), "disk") &&
-			!strings.Contains(strings.ToLower(item.MeterName), "transaction") &&
-			!strings.Contains(strings.ToLower(item.MeterName), "snapshot") {
-
-			price := item.RetailPrice
-			if price == 0 {
-				price = item.UnitPrice
-			}
-
-			if pricePerGBMonth == 0 || price < pricePerGBMonth {
-				pricePerGBMonth = price
-			}
+		if item.MeterName == wanted {
+			price = retailPriceOf(item)
+			break
 		}
 	}
-
-	if pricePerGBMonth == 0 {
-		return 0, fmt.Errorf("no valid pricing found for disk SKU %s", diskSKU)
+	if price == 0 {
+		return 0, fmt.Errorf("no %q meter for disk SKU %s in region %s", wanted, diskSKU, normalizedRegion)
 	}
 
-	// Cache the result (price per GB/month)
+	unit := "1/Month"
+	if tierMeter == "" {
+		// Provisioned capacity is metered per GiB/hour.
+		price *= hoursPerMonth
+		unit = "1 GB/Month"
+	}
+
 	pc.setCachedPrice(cacheKey, PriceEntry{
 		ServiceName:   "Storage",
 		SKUName:       diskSKU,
 		Region:        normalizedRegion,
-		UnitPrice:     pricePerGBMonth,
+		UnitPrice:     price,
 		CurrencyCode:  "USD",
-		UnitOfMeasure: "1 GB/Month",
+		UnitOfMeasure: unit,
 		FetchedAt:     time.Now(),
 	})
 
-	return pricePerGBMonth * sizeGB, nil
+	if tierMeter == "" {
+		return price * sizeGB, nil
+	}
+	return price, nil
 }
 
 // fetchPrices fetches prices from Azure Retail Prices API with pagination support
