@@ -402,9 +402,11 @@ func syncStuckEventAnalyses() error {
 			continue
 		}
 
-		// If the analysis has been IN_PROGRESS for too long without a running conversation,
+		// If the analysis has been IN_PROGRESS for too long without a running or completed conversation,
 		// mark it as FAILED to stop the infinite retry loop.
-		if time.Since(a.UpdatedAt) > maxRecoveryAge {
+		// If the conversation reached COMPLETED, do not abandon it solely because of event-row age —
+		// reconcile the completed findings into the event report (#37865).
+		if conv.Status != core.ConversationStatusCompleted && time.Since(a.UpdatedAt) > maxRecoveryAge {
 			slog.Warn("sync: marking stale event analysis as failed — exceeded max recovery age",
 				"event_id", a.EventId, "session", parentSessionId, "conv_status", conv.Status,
 				"updated_at", a.UpdatedAt, "age", time.Since(a.UpdatedAt).Round(time.Minute))
@@ -412,6 +414,12 @@ func syncStuckEventAnalyses() error {
 			if updateErr := repo.UpdateEventAnalysisStatusById(failCtx, a.ID, string(events.AnalysisStatusFailed), "recovery abandoned: analysis stuck for over 24 hours"); updateErr != nil {
 				slog.Error("sync: failed to mark stale analysis as failed", "error", updateErr, "event_id", a.EventId)
 			}
+			failResp := EventAnalysisResponse{
+				EventId:      a.EventId,
+				Status:       string(events.AnalysisStatusFailed),
+				StatusReason: "recovery abandoned: analysis stuck for over 24 hours",
+			}
+			publishAnalysisCompletedTerminal(context.WithoutCancel(failCtx.GetContext()), a.AccountId, a.EventId, failResp, string(events.AnalysisStatusFailed))
 			continue
 		}
 
@@ -443,7 +451,40 @@ func syncStuckEventAnalyses() error {
 						AccountId: a.AccountId,
 						UserId:    security.GetSystemUserId(),
 					}
-					_, _ = analyzeEventUsingAgentsAndUpdateDb(newCtx, req)
+					recoveredResp, recErr := analyzeEventUsingAgentsAndUpdateDb(newCtx, req)
+					if recErr != nil {
+						slog.Error("sync: event analysis recovery failed", "error", recErr, "event_id", a.EventId)
+						// Check if failure is confirmed terminal in the database (or explicit terminal failure status returned)
+						// rather than a transient error (e.g. DB connection blip, rate limit, event fetch failure).
+						// Retryable transient errors preserve pending tokens for the next sync cycle.
+						isTerminalFailure := false
+						if strings.EqualFold(recoveredResp.Status, string(events.AnalysisStatusFailed)) {
+							isTerminalFailure = true
+						} else {
+							row, rerr := repo.GetEventAnalysis(newCtx, a.EventId, a.EventFingerprint, a.EventAggregationKey, a.AccountId, a.AnalysisType)
+							if rerr == nil && row != nil && strings.EqualFold(row.Status, string(events.AnalysisStatusFailed)) {
+								isTerminalFailure = true
+							}
+						}
+						if isTerminalFailure {
+							failResp := EventAnalysisResponse{
+								EventId:      a.EventId,
+								Status:       string(events.AnalysisStatusFailed),
+								StatusReason: recErr.Error(),
+							}
+							publishAnalysisCompletedTerminal(context.WithoutCancel(newCtx.GetContext()), a.AccountId, a.EventId, failResp, string(events.AnalysisStatusFailed))
+						} else {
+							slog.Warn("sync: recovery encountered retryable error, preserving pending tokens for next sync cycle",
+								"error", recErr, "event_id", a.EventId)
+						}
+					} else if strings.EqualFold(recoveredResp.Status, string(events.AnalysisStatusCompleted)) ||
+						strings.EqualFold(recoveredResp.Status, string(events.AnalysisStatusFailed)) {
+						terminalStatus := recoveredResp.Status
+						publishAnalysisCompletedTerminal(context.WithoutCancel(newCtx.GetContext()), a.AccountId, a.EventId, recoveredResp, terminalStatus)
+					} else {
+						slog.Info("sync: recovery returned non-terminal status, preserving pending tokens",
+							"event_id", a.EventId, "status", recoveredResp.Status)
+					}
 				}
 			})
 			if err != nil {
