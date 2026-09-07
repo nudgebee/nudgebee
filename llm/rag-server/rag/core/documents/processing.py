@@ -307,6 +307,12 @@ async def generate_embeddings_batch(
 
                 if token_limit_error:
                     logger.info("Too many input tokens in batch. Retrying by reducing document sizes...")
+                    # Imported locally: `loaders` imports this module back, so a
+                    # module-scope import here is a cycle that decides which test
+                    # files are collectable. The dependency only matters on the
+                    # oversize-batch retry path.
+                    from rag.core.documents.loaders.base import trim_text
+
                     # Trim all documents in batch
                     # Imported here, not at module scope: rag.core.documents.loaders
                     # imports process_documents from this module, so a top-level
