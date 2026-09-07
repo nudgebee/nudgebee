@@ -74,7 +74,7 @@ click==8.4.2
     #   uvicorn
 coloredlogs==15.0.1
     # via onnxruntime
-cryptography==48.0.1
+cryptography==50.0.1
     # via
     #   ragserver (pyproject.toml)
     #   google-auth
