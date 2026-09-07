@@ -1,5 +1,6 @@
 import {
   EMPTY_TRACE_LABEL_SETTINGS,
+  LOG_LABEL_FIELDS,
   TRACE_LABEL_ADVANCED_FIELDS,
   TRACE_LABEL_FIELDS,
   traceLabelsToSettings,
@@ -25,6 +26,16 @@ const CANONICAL_TRACE_FIELDS = [
 ];
 
 const allKeys = () => [...TRACE_LABEL_FIELDS, ...TRACE_LABEL_ADVANCED_FIELDS].map(({ field }) => field);
+
+// The log mapper maps label names onto pod / namespace / app and nothing else. It used to
+// carry a fourth "Default query" descriptor whose key no reader ever consumed (#37402);
+// always-apply log filters are configured on the log integration instead. Pinned so the
+// dead field cannot drift back in.
+describe('log label field descriptors', () => {
+  it('covers exactly the three mappable log labels', () => {
+    expect(LOG_LABEL_FIELDS.map(({ field }) => field)).toEqual(['logPodLabel', 'logNamespaceLabel', 'logAppLabel']);
+  });
+});
 
 describe('trace label field descriptors', () => {
   it('covers exactly the backend canonical trace vocabulary', () => {

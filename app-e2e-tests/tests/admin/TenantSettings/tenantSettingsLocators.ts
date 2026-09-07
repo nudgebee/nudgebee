@@ -6,7 +6,6 @@ import { registerWelcomeTourAutoDismiss } from "../../utils/helpers";
 import {
   FEATURES_TABLE_ID,
   FIELD_ALLOWED_DOMAINS,
-  FIELD_CLUSTER_LABEL,
   FIELD_DEFAULT_AUTH_ROLE,
   FIELD_TENANT_NAME,
   CHECKBOX_SELF_ONBOARDING,
@@ -69,7 +68,6 @@ export class TenantSettingsLocators extends CommonLocators {
   readonly logsSubTab: Locator;
   readonly tracesSubTab: Locator;
   readonly webhookSubTab: Locator;
-  readonly clusterLabelInput: Locator;
   readonly traceAdvancedToggle: Locator;
   readonly traceAdvancedPanel: Locator;
 
@@ -107,7 +105,6 @@ export class TenantSettingsLocators extends CommonLocators {
     this.tenantNameInput = page.getByRole("textbox", { name: FIELD_TENANT_NAME, exact: true });
     this.allowedDomainsInput = page.getByRole("textbox", { name: FIELD_ALLOWED_DOMAINS, exact: true });
     this.defaultAuthRoleInput = page.getByRole("textbox", { name: FIELD_DEFAULT_AUTH_ROLE, exact: true });
-    this.clusterLabelInput = page.getByRole("textbox", { name: FIELD_CLUSTER_LABEL, exact: true });
 
     // ds/Checkbox forwards aria-label onto its native input; the label text is
     // the accessible name.

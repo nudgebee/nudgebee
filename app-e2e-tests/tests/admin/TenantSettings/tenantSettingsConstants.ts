@@ -35,9 +35,10 @@ export const FIELD_DEFAULT_AUTH_ROLE = "Default Auth Role";
 export const CHECKBOX_SELF_ONBOARDING = "Allow self-onboarding via domain login";
 
 // Logs sub-tab: TenantAccountCommonSettings renders `log-label-<field>` as both
-// id and data-testid, from LOG_LABEL_FIELDS in labelMapperFields.jsx.
-export const LOG_LABEL_TESTIDS = ["log-label-logPodLabel", "log-label-logNamespaceLabel", "log-label-logAppLabel", "log-label-logDefaultQuery"];
-export const FIELD_CLUSTER_LABEL = "Cluster Label";
+// id and data-testid, from LOG_LABEL_FIELDS in labelMapperFields.js. Three fields
+// since #37402 removed the dead "Default query" box; always-apply log filters are
+// configured on the log integration (Advanced Settings -> Default Log Filters).
+export const LOG_LABEL_TESTIDS = ["log-label-logPodLabel", "log-label-logNamespaceLabel", "log-label-logAppLabel"];
 
 // Traces sub-tab: the five TRACE_LABEL_FIELDS, same `trace-label-<field>` shape.
 export const TRACE_LABEL_TESTIDS = [

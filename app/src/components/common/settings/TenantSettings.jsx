@@ -380,7 +380,6 @@ const TenantSettings = () => {
     logPodLabel: '',
     logNamespaceLabel: '',
     logAppLabel: '',
-    logDefaultQuery: '',
   });
   const [traceSettings, setTraceSettings] = useState({ ...EMPTY_TRACE_LABEL_SETTINGS });
   const [loading, setLoading] = useState(false);
@@ -398,7 +397,6 @@ const TenantSettings = () => {
   const [allowDomainValue, setAllowDomainValue] = useState('');
   const [defaultAuthRole, setDefaultAuthRole] = useState('');
   const [selectedObservabilityPlatform, setSelectedObservabilityPlatform] = useState('');
-  const [logClusterLabel, setLogClusterLabel] = useState('');
   const [webhookLabelMapping, setWebhookLabelMapping] = useState({
     subject_name_labels: DEFAULT_SUBJECT_NAME_LABELS,
     namespace_labels: DEFAULT_NAMESPACE_LABELS,
@@ -428,15 +426,12 @@ const TenantSettings = () => {
           const allowedDomains = tenantAttributes.find((attr) => attr.name === 'allowed_domains');
           const defaultLogProvider = tenantAttributes.find((attr) => attr.name === 'default_log_provider');
           setSelectedObservabilityPlatform(defaultLogProvider?.value || '');
-          const logClusterLabel = tenantAttributes.find((attr) => attr.name === 'log_cluster_label');
-          setLogClusterLabel(logClusterLabel?.value || '');
           if (logLabelValues && Object.keys(logLabelValues).length > 0) {
             const labels = safeJSONParse(logLabelValues.value) ?? logLabelValues.value;
             setLogSettings({
               logPodLabel: labels.pod || '',
               logNamespaceLabel: labels.namespace || '',
               logAppLabel: labels.app || '',
-              logDefaultQuery: labels.defaultQuery || '',
             });
           }
           // Guarded on the stored value, not on the row having keys the way the log
@@ -560,7 +555,6 @@ const TenantSettings = () => {
             pod: logSettings.logPodLabel,
             namespace: logSettings.logNamespaceLabel,
             app: logSettings.logAppLabel,
-            defaultQuery: logSettings.logDefaultQuery,
           }),
         },
         // Written unconditionally, like log_labels and unlike webhook_label_mapping:
@@ -569,7 +563,6 @@ const TenantSettings = () => {
         // would make clearing the last override a silent no-op.
         { name: 'trace_labels', value: traceSettingsToLabelsValue(traceSettings) },
         { name: 'default_log_provider', value: selectedObservabilityPlatform ? selectedObservabilityPlatform : '' },
-        { name: 'log_cluster_label', value: logClusterLabel ? logClusterLabel : '' },
       ];
       if (webhookMappingModified || webhookMappingSaved) {
         attrsToSave.push({
@@ -855,14 +848,15 @@ const TenantSettings = () => {
               >
                 <Box display='flex' flexDirection='column' gap={ds.space[3]}>
                   <TenantAccountCommonSettings idPrefix='log-label' settings={logSettings} setSettings={setLogSettings} disabled={!canEdit} />
-                  <Input
-                    size='sm'
-                    label='Cluster Label'
-                    value={logClusterLabel}
-                    onChange={setLogClusterLabel}
-                    placeholder='example: {cluster_name="k8s-cluster"}'
-                    disabled={!canEdit}
-                  />
+                  {/* This card maps label names only. Two boxes used to sit below the grid and
+                      both wrote keys no reader ever consumed: "Default query" (#37402) and
+                      "Cluster Label" (tenant_attrs.log_cluster_label, frontend-only since it
+                      shipped). The working setting is per-account on the log integration, so
+                      name it here rather than leave operators hunting for it. */}
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
+                    Looking for filters applied to every log query? Those are per-account on the log integration: Integrations &rarr; your log
+                    integration &rarr; Advanced Settings &rarr; Default Log Filters.
+                  </Typography>
                 </Box>
               </Card>
             )}

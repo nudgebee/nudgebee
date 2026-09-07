@@ -69,7 +69,6 @@ const K8sIntegrationTile = () => {
   const [logNamespaceLabel, setLogNamespaceLabel] = useState('');
   const [logAppLabel, setLogAppLabel] = useState('');
   const [cloudAccountAttributes, setCloudAccountAttributes] = useState({});
-  const [logDefaultQuery, setLogDefaultQuery] = useState('');
   const [traceSettings, setTraceSettings] = useState({ ...EMPTY_TRACE_LABEL_SETTINGS });
   const [certificateExpiry, setCertificateExpiry] = useState(0);
   const [networkThreshold, setNetworkThreshold] = useState(0);
@@ -326,9 +325,6 @@ const K8sIntegrationTile = () => {
             if (logLabelValues.namespace) {
               setLogNamespaceLabel(logLabelValues.namespace);
             }
-            if (logLabelValues.defaultQuery) {
-              setLogDefaultQuery(logLabelValues.defaultQuery);
-            }
           }
         }
         const certificateExpiryValue = cloudAccountAttributes[selectedAccountId].filter((l) => l.name == 'certificate_expiry_recommendation');
@@ -376,7 +372,6 @@ const K8sIntegrationTile = () => {
     setLogAppLabel('');
     setLogNamespaceLabel('');
     setLogPodLabel('');
-    setLogDefaultQuery('');
     setTraceSettings({ ...EMPTY_TRACE_LABEL_SETTINGS });
     setCertificateExpiry(0);
     setNetworkThreshold(0);
@@ -452,7 +447,6 @@ const K8sIntegrationTile = () => {
           pod: logPodLabel,
           namespace: logNamespaceLabel,
           app: logAppLabel,
-          defaultQuery: logDefaultQuery,
         }),
         cloud_account_id: selectedAccountId,
       },
@@ -691,12 +685,13 @@ const K8sIntegrationTile = () => {
               <Typography sx={styles.label}>App</Typography>
               <Input value={logAppLabel} placeholder='Log App label' onChange={(value) => setLogAppLabel(value)} />
             </Box>
-
-            <Box display='flex' flexDirection='column'>
-              <Typography sx={styles.label}>Default query</Typography>
-              <Input value={logDefaultQuery} placeholder='Default Query' onChange={(value) => setLogDefaultQuery(value)} />
-            </Box>
           </Box>
+          {/* The removed "Default query" box wrote a key nothing ever read (#37402). The working
+              setting lives on the log integration, so point there instead of leaving a gap. */}
+          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mt: ds.space[3] }}>
+            Looking for filters applied to every log query? Those are configured on the log integration: Integrations &rarr; your log integration
+            &rarr; Advanced Settings &rarr; Default Log Filters.
+          </Typography>
           <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
           {/* title={null} so this section carries the same accented <Heading> as the ones

@@ -14,7 +14,6 @@ export const LOG_LABEL_FIELDS = [
   { label: 'Pod', field: 'logPodLabel', placeholder: 'Log Pod label' },
   { label: 'Namespace', field: 'logNamespaceLabel', placeholder: 'Log Namespace label' },
   { label: 'App', field: 'logAppLabel', placeholder: 'Log App label' },
-  { label: 'Default query', field: 'logDefaultQuery', placeholder: 'Default Query' },
 ];
 
 // The five canonical fields an operator retunes on nearly every non-OTel trace backend.
@@ -48,8 +47,10 @@ export const TRACE_LABEL_ADVANCED_FIELDS = [
 const ALL_TRACE_LABEL_FIELDS = [...TRACE_LABEL_FIELDS, ...TRACE_LABEL_ADVANCED_FIELDS];
 
 // Confirmed dead across Go, Python and the frontend: both label readers strip it and
-// nothing consumes it (tracked as #37402). The trace mapper never renders an input for
-// it and never writes it back, even when a stored blob carries one.
+// nothing consumes it (#37402). Neither mapper renders an input for it or writes it back,
+// even when a stored blob carries one — the log mapper's "Default query" box was removed
+// for the same reason. Always-apply log filters live on the log integration instead
+// (Advanced Settings -> Default Log Filters, `integration_config_values.default_filters`).
 const DEAD_LABEL_KEY = 'defaultQuery';
 
 export const EMPTY_TRACE_LABEL_SETTINGS = Object.freeze(Object.fromEntries(ALL_TRACE_LABEL_FIELDS.map(({ field }) => [field, ''])));

@@ -31,7 +31,6 @@ describe('TenantAccountCommonSettings', () => {
     logPodLabel: 'pod',
     logNamespaceLabel: 'namespace',
     logAppLabel: 'app',
-    logDefaultQuery: '',
   };
 
   it('renders the Log Label Mapper heading', () => {
@@ -39,12 +38,21 @@ describe('TenantAccountCommonSettings', () => {
     expect(screen.getByText('Log Label Mapper')).toBeInTheDocument();
   });
 
-  it('renders all four field labels', () => {
+  it('renders all three field labels', () => {
     render(<TenantAccountCommonSettings settings={defaultLogSettings} setSettings={jest.fn()} />);
     expect(screen.getByText('Pod')).toBeInTheDocument();
     expect(screen.getByText('Namespace')).toBeInTheDocument();
     expect(screen.getByText('App')).toBeInTheDocument();
-    expect(screen.getByText('Default query')).toBeInTheDocument();
+  });
+
+  // The mapper maps label names only. "Default query" wrote a key no reader ever consumed
+  // (#37402) while the working setting lived on the log integration, so an operator who
+  // filled it in believed a filter was in force when it was not. Pinned negatively so it
+  // cannot reappear unnoticed.
+  it('renders no Default query input', () => {
+    render(<TenantAccountCommonSettings settings={defaultLogSettings} setSettings={jest.fn()} />);
+    expect(screen.queryByText('Default query')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Default Query')).not.toBeInTheDocument();
   });
 
   it('renders field inputs with correct values from settings', () => {
@@ -71,7 +79,6 @@ describe('TenantAccountCommonSettings', () => {
     expect(screen.getByPlaceholderText('Log Pod label')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Log Namespace label')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Log App label')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Default Query')).toBeInTheDocument();
   });
 
   it('uses empty string as fallback when a settings field is undefined', () => {

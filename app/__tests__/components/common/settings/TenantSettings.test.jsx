@@ -244,6 +244,55 @@ describe('TenantSettings', () => {
     });
   });
 
+  // The log mapper's inputs come from the real LOG_LABEL_FIELDS, which the component mock
+  // does not render, so these drive the save through the hydrate path instead. That is the
+  // path that matters: the risk in removing the "Default query" box (#37402) was mangling
+  // the log_labels JSON, not the input itself.
+  describe('log label mapping', () => {
+    const { getTenantAttributes, upsertTenantAttributes } = require('@lib/UserService');
+
+    const saveAndParseLogLabels = async () => {
+      fireEvent.click(screen.getByTestId('btn-Save'));
+      await waitFor(() => expect(upsertTenantAttributes).toHaveBeenCalled());
+      const attr = upsertTenantAttributes.mock.calls[0][0].find(({ name }) => name === 'log_labels');
+      expect(attr).toBeDefined();
+      return JSON.parse(attr.value);
+    };
+
+    it('round-trips the three label mappings through hydrate and save', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'log_labels', value: '{"pod":"pod_name","namespace":"ns_name","app":"app_name"}' }]);
+      await openTab('Label Mapping');
+      expect(await saveAndParseLogLabels()).toEqual({ pod: 'pod_name', namespace: 'ns_name', app: 'app_name' });
+    });
+
+    // A stored blob from before the box was removed still carries the key. Saving must drop
+    // it rather than write it back — nothing reads it, and keeping it alive is what made the
+    // setting look configured in the first place.
+    it('never writes the dead defaultQuery key, even from a stored blob that had one', async () => {
+      getTenantAttributes.mockResolvedValueOnce([
+        { name: 'log_labels', value: '{"pod":"pod_name","namespace":"ns_name","app":"app_name","defaultQuery":"level=error"}' },
+      ]);
+      await openTab('Label Mapping');
+      const saved = await saveAndParseLogLabels();
+      expect(saved).not.toHaveProperty('defaultQuery');
+      expect(saved.pod).toBe('pod_name');
+    });
+
+    // The Cluster Label box was the card's other write-only field: stored as the
+    // tenant_attrs row `log_cluster_label` and never referenced by any backend file, in
+    // any commit, since it shipped. Removed with the same reasoning as defaultQuery, and
+    // pinned here because a save is the only place its absence is observable.
+    it('no longer writes the dead log_cluster_label attribute', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'log_cluster_label', value: '{cluster_name="k8s-cluster"}' }]);
+      await openTab('Label Mapping');
+      fireEvent.click(screen.getByTestId('btn-Save'));
+      await waitFor(() => expect(upsertTenantAttributes).toHaveBeenCalled());
+      const names = upsertTenantAttributes.mock.calls[0][0].map(({ name }) => name);
+      expect(names).not.toContain('log_cluster_label');
+      expect(names).toContain('log_labels');
+    });
+  });
+
   describe('trace label mapping', () => {
     const { getTenantAttributes, upsertTenantAttributes } = require('@lib/UserService');
 

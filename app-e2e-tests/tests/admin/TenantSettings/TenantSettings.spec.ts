@@ -108,8 +108,8 @@ test(
     await expect(toast(page, SAVE_SUCCESS_TEXT)).toBeVisible({ timeout: 60000 });
 
     // The toast alone proves nothing persisted — handleSaveSettings writes
-    // log_labels, trace_labels, default_log_provider and log_cluster_label on
-    // every save, so a reload is what shows the round trip actually landed.
+    // log_labels, trace_labels and default_log_provider on every save, so a
+    // reload is what shows the round trip actually landed.
     const reloaded = await discardUnsavedEdits(page);
     await expect(reloaded.tenantNameInput).toHaveValue(nameBefore, { timeout: 60000 });
 
@@ -179,7 +179,7 @@ test(
 );
 
 test(
-  "Tenant Settings - open Label Mapping, verify the Logs sub-tab renders the four log mapper fields and Cluster Label, then return to General",
+  "Tenant Settings - open Label Mapping, verify the Logs sub-tab renders the three log mapper fields, then return to General",
   { tag: ["@dev", "@smoke", "@functional"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
@@ -190,13 +190,12 @@ test(
     for (const testId of LOG_LABEL_TESTIDS) {
       await expect(ts.mapperField(testId)).toBeVisible();
     }
-    await expect(ts.clusterLabelInput).toBeVisible();
 
     // Back to General: the strip is component state, so this proves the body
     // swaps back rather than that a URL changed.
     await ts.openTab(ts.generalTab);
     await expect(ts.tenantNameInput).toBeVisible();
-    await expect(ts.clusterLabelInput).toHaveCount(0);
+    await expect(ts.mapperField(LOG_LABEL_TESTIDS[0])).toHaveCount(0);
   },
 );
 
