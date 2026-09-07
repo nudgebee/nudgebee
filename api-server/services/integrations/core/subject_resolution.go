@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/lib/pq"
 	"github.com/prometheus/prometheus/promql/parser"
 )
 
@@ -431,6 +432,68 @@ func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels 
 	return false
 }
 
+// webhookSubjectMappingAttrKeys are the per-source attr_key values that
+// integrations.LearnSubjectMapping writes learned title→service mappings under.
+// They are re-declared here rather than imported because the consts live in the
+// parent integrations package, which imports this one. A key missing from this
+// list costs a short-circuit — the alert falls through to the agent — never a
+// wrong answer.
+var webhookSubjectMappingAttrKeys = []string{
+	"DATADOG_INCIDENT_TITLE_SERVICE_MAPPING",
+	"PAGERDUTY_INCIDENT_TITLE_SERVICE_MAPPING",
+	"ZENDUTY_INCIDENT_TITLE_SERVICE_MAPPING",
+}
+
+// lookupLearnedSubject returns the service that this exact alert title has
+// already resolved to across every webhook source, or "" when the title is
+// unknown or its learned mappings name more than one service. Matching is
+// case-insensitive on title, mirroring the unique index the mappings are
+// upserted against.
+func lookupLearnedSubject(sc *security.RequestContext, title string) string {
+	if strings.TrimSpace(title) == "" {
+		return ""
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		sc.GetLogger().Warn("subject_resolution: failed to get database manager for learned-mapping lookup", "error", err)
+		return ""
+	}
+	var serviceLists []string
+	if err := dbms.Db.Select(&serviceLists,
+		`SELECT services FROM webhook_subject_mappings
+		 WHERE tenant_id = $1 AND attr_key = ANY($2) AND lower(title) = lower($3)`,
+		sc.GetSecurityContext().GetTenantId(), pq.Array(webhookSubjectMappingAttrKeys), title,
+	); err != nil {
+		sc.GetLogger().Error("subject_resolution: learned-mapping lookup failed", "error", err)
+		return ""
+	}
+	return singleLearnedService(serviceLists)
+}
+
+// singleLearnedService collapses the comma-separated services columns of the rows
+// learned for one title into a single service name, or "" when they disagree. A
+// title that has legitimately fired for several services carries no answer on its
+// own, so it is left to the agent.
+func singleLearnedService(serviceLists []string) string {
+	var only string
+	for _, list := range serviceLists {
+		for _, svc := range strings.Split(list, ",") {
+			svc = strings.TrimSpace(svc)
+			if svc == "" {
+				continue
+			}
+			if only == "" {
+				only = svc
+				continue
+			}
+			if svc != only {
+				return ""
+			}
+		}
+	}
+	return only
+}
+
 // ResolveSubjectNameViaAgent asks the webhook_subject_name_extractor agent to map
 // an alert to a single running-service name. The agent owns the running-services
 // inventory and the historical title→service patterns (fetched and cached
@@ -442,7 +505,8 @@ func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels 
 //
 // Every exit records nb_llm_match, so an absent label means only one thing: the
 // agent was never asked. The values are the matched service name, "not_found"
-// (agent declined), "skipped_cluster_scoped" (alert names no object), "error"
+// (agent declined), "skipped_cluster_scoped" (alert names no object),
+// "skipped_learned_mapping" (this exact title has resolved before), "error"
 // (the call failed) and "empty" (the call returned nothing). They are diagnostic
 // — nothing parses them; the sole reader is the presence check in
 // enrichEventsWithSubjectResolution.
@@ -461,6 +525,23 @@ func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, d
 		labels["nb_llm_match"] = "skipped_cluster_scoped"
 		labels["nb_subject_resolution"] = "cluster-scoped"
 		return ""
+	}
+
+	// Skip the LLM when this exact title has already been resolved and every mapping
+	// learned for it agrees on one service. For a repeat title the agent's entire job
+	// is to find that same line in the "Historical Title -> Service Patterns" block of
+	// its own prompt — a call carrying the whole running-service inventory and the
+	// learned history just to hand back a row we already hold. The answer still goes
+	// through the caller's workload validation, so a mapping that has gone stale is
+	// caught exactly as an LLM pick would be. Titles whose history disagrees fall
+	// through on purpose: choosing between them is what the agent is for.
+	if learned := lookupLearnedSubject(sc, title); learned != "" {
+		labels["nb_llm_match"] = "skipped_learned_mapping"
+		labels["nb_subject_resolution"] = "learned-mapping"
+		if labels["service"] == "" {
+			labels["service"] = learned
+		}
+		return learned
 	}
 
 	payload, _ := json.Marshal(map[string]any{
