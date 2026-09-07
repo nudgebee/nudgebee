@@ -905,6 +905,9 @@ func (r K8sResourceSearchTool) handleNamespaceSearch(request K8sResourceSearchRe
 		var namespaces []string
 		lines := strings.Split(output, "\n")
 		for _, line := range lines {
+			if isNonResourceOutputLine(line) {
+				continue
+			}
 			fields := strings.Fields(line)
 			if len(fields) > 0 {
 				namespaces = append(namespaces, fields[0])
@@ -1203,10 +1206,10 @@ func (r K8sResourceSearchTool) getCustomResourceTypes(nbRequestContext core.NbTo
 
 	lines := strings.Split(response, "\n")
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		if isNonResourceOutputLine(line) {
 			continue
 		}
+		line = strings.TrimSpace(line)
 
 		fields := strings.Fields(line)
 		if len(fields) >= 1 {
@@ -1453,8 +1456,50 @@ func (r K8sResourceSearchTool) isClusterWideResource(resourceType string) bool {
 	return k8sClusterWideResources[strings.ToLower(resourceType)]
 }
 
+// isNonResourceOutputLine reports whether line is a kubectl status message,
+// error, warning, or table header rather than an actual resource entry.
+func isNonResourceOutputLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	// "No resources found..." always contains spaces (K8s resource names cannot contain spaces).
+	if strings.HasPrefix(lower, "no resources found") {
+		return true
+	}
+	// Kubectl error/warning messages have colons or multi-word phrases ("error: ...", "error from server", "warning: ...").
+	// Using specific prefixes avoids false-matching valid K8s resources named "error" or "warning",
+	// which would start with "error " or "warning " due to kubectl column spacing padding.
+	if strings.HasPrefix(lower, "error:") ||
+		strings.HasPrefix(lower, "error from server") ||
+		strings.HasPrefix(lower, "warning:") {
+		return true
+	}
+	fields := strings.Fields(trimmed)
+	// Check for table header rows:
+	// - Single-namespace: "NAME READY STATUS...", "NAME DATA AGE", "NAME SCHEDULE ... AGE"
+	// - All-namespaces:   "NAMESPACE NAME READY STATUS..."
+	// Standard kubectl get headers begin with NAME and end with AGE.
+	if len(fields) >= 2 {
+		first := fields[0]
+		second := fields[1]
+		last := fields[len(fields)-1]
+		if strings.EqualFold(first, "name") && (strings.EqualFold(second, "ready") || strings.EqualFold(second, "status") || strings.EqualFold(second, "type") || strings.EqualFold(last, "age")) {
+			return true
+		}
+		if strings.EqualFold(first, "namespace") && strings.EqualFold(second, "name") {
+			return true
+		}
+	}
+	return false
+}
+
 // parseGenericResourceLine parses a generic kubectl output line
 func (r K8sResourceSearchTool) parseGenericResourceLine(line, resourceType, namespace string, isAllNamespaces bool) *K8sResourceInfo {
+	if isNonResourceOutputLine(line) {
+		return nil
+	}
 	fields := strings.Fields(line)
 	if len(fields) < 1 {
 		return nil
@@ -1563,6 +1608,9 @@ func (r K8sResourceSearchTool) executeKubectlAndParseResources(command, resource
 
 // parsePodLine parses a kubectl get pods output line
 func (r K8sResourceSearchTool) parsePodLine(line, namespace string, isAllNamespaces bool) *K8sResourceInfo {
+	if isNonResourceOutputLine(line) {
+		return nil
+	}
 	fields := strings.Fields(line)
 	if len(fields) < 3 {
 		return nil
@@ -1596,6 +1644,9 @@ func (r K8sResourceSearchTool) parsePodLine(line, namespace string, isAllNamespa
 
 // parseDeploymentLine parses a kubectl get deployments output line
 func (r K8sResourceSearchTool) parseDeploymentLine(line, namespace string, isAllNamespaces bool) *K8sResourceInfo {
+	if isNonResourceOutputLine(line) {
+		return nil
+	}
 	fields := strings.Fields(line)
 	if len(fields) < 4 {
 		return nil
@@ -1629,6 +1680,9 @@ func (r K8sResourceSearchTool) parseDeploymentLine(line, namespace string, isAll
 
 // parseAllResourceLine parses a kubectl get all output line
 func (r K8sResourceSearchTool) parseAllResourceLine(line, namespace string, isAllNamespaces bool) *K8sResourceInfo {
+	if isNonResourceOutputLine(line) {
+		return nil
+	}
 	fields := strings.Fields(line)
 	if len(fields) < 1 {
 		return nil

@@ -1208,3 +1208,89 @@ func TestFilterResourcesByRelevance_SeparatorClasses(t *testing.T) {
 		assert.Len(t, r.filterResourcesByRelevance(resources, "   "), 2)
 	})
 }
+
+// TestIsNonResourceOutputLine guards against kubectl status messages, errors,
+// and table headers being mistaken for real resources (e.g. "No resources found in..."
+// parsing into a phantom pod named "No").
+func TestIsNonResourceOutputLine(t *testing.T) {
+	nonResourceLines := []string{
+		"",
+		"   ",
+		"No resources found in app-100a namespace.",
+		"No resources found.",
+		"no resources found in default namespace",
+		"Error from server (NotFound): namespaces \"unknown\" not found",
+		"error: the server could not find the requested resource",
+		"Warning: v1 ComponentStatus is deprecated in v1.19+",
+		"NAME READY STATUS RESTARTS AGE",
+		"NAMESPACE NAME READY STATUS RESTARTS AGE",
+		"name ready status restarts age",
+		"NAME   DATA   AGE",
+		"NAME   SCHEDULE   SUSPEND   ACTIVE   LAST SCHEDULE   AGE",
+	}
+
+	for _, line := range nonResourceLines {
+		t.Run("rejects "+line, func(t *testing.T) {
+			assert.True(t, isNonResourceOutputLine(line), "must recognize line as non-resource")
+		})
+	}
+
+	validResourceLines := []string{
+		"payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d",
+		"app-100a payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d",
+		"payment-api 1/1 1 1 5d",
+		"pod/payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d",
+		"error-service-7f68c47b56-k6mzp 1/1 Running 0 2d",
+		"warning-collector-56bdf-q91a 1/1 Running 0 1d",
+		"name 1/1 Running 0 1d",
+		"error 1/1 Running 0 1d",
+		"warning 1/1 Running 0 1d",
+	}
+
+	for _, line := range validResourceLines {
+		t.Run("accepts "+line, func(t *testing.T) {
+			assert.False(t, isNonResourceOutputLine(line), "must recognize valid resource line")
+		})
+	}
+}
+
+func TestParsers_IgnoreNonResourceLines(t *testing.T) {
+	r := K8sResourceSearchTool{}
+	noResourcesOutput := "No resources found in app-100a namespace."
+	headerOutput := "NAME READY STATUS RESTARTS AGE"
+	errorOutput := "Error from server (NotFound): namespaces \"test\" not found"
+
+	// parseGenericResourceLine must return nil for status/header/error lines
+	assert.Nil(t, r.parseGenericResourceLine(noResourcesOutput, "pods", "app-100a", false))
+	assert.Nil(t, r.parseGenericResourceLine(headerOutput, "pods", "app-100a", false))
+	assert.Nil(t, r.parseGenericResourceLine(errorOutput, "pods", "app-100a", false))
+
+	// parsePodLine must return nil for status/header/error lines
+	assert.Nil(t, r.parsePodLine(noResourcesOutput, "app-100a", false))
+	assert.Nil(t, r.parsePodLine(headerOutput, "app-100a", false))
+	assert.Nil(t, r.parsePodLine(errorOutput, "app-100a", false))
+
+	// parseDeploymentLine must return nil for status/header/error lines
+	assert.Nil(t, r.parseDeploymentLine(noResourcesOutput, "app-100a", false))
+	assert.Nil(t, r.parseDeploymentLine(headerOutput, "app-100a", false))
+	assert.Nil(t, r.parseDeploymentLine(errorOutput, "app-100a", false))
+
+	// parseAllResourceLine must return nil for status/header/error lines
+	assert.Nil(t, r.parseAllResourceLine(noResourcesOutput, "app-100a", false))
+	assert.Nil(t, r.parseAllResourceLine(headerOutput, "app-100a", false))
+	assert.Nil(t, r.parseAllResourceLine(errorOutput, "app-100a", false))
+
+	// Valid pod line parses correctly into actual resource fields
+	validPod := "payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d"
+	pod := r.parsePodLine(validPod, "app-100a", false)
+	require.NotNil(t, pod)
+	assert.Equal(t, "payment-api-7b89f899c7-xk6lp", pod.Name)
+	assert.Equal(t, "app-100a", pod.Namespace)
+	assert.Equal(t, "Running", pod.Status)
+
+	// Valid pod named "error" parses correctly and is not dropped
+	errorNamedPod := "error 1/1 Running 0 1d"
+	podError := r.parsePodLine(errorNamedPod, "app-100a", false)
+	require.NotNil(t, podError)
+	assert.Equal(t, "error", podError.Name)
+}
