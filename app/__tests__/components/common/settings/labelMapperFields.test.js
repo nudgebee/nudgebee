@@ -13,6 +13,7 @@ import {
 const CANONICAL_TRACE_FIELDS = [
   'service_name',
   'workload_name',
+  'workload_namespace',
   'span_name',
   'trace_id',
   'duration_ns',

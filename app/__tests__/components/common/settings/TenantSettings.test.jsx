@@ -281,7 +281,7 @@ describe('TenantSettings', () => {
       fireEvent.change(screen.getByTestId('trace-label-service_name'), { target: { value: 'k8s.service' } });
       const saved = await saveAndParseTraceLabels();
       expect(saved.service_name).toBe('k8s.service');
-      expect(Object.keys(saved)).toHaveLength(10);
+      expect(Object.keys(saved)).toHaveLength(11);
     });
 
     // Pins the unconditional write. Gating it on "has the operator typed anything" would

@@ -151,7 +151,7 @@ func TestGetMergedTraceLabelMapping_EmptyCustom(t *testing.T) {
 		"span_name":          "operation_name",
 		"workload_namespace": "kube_namespace",
 	}
-	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, &mockTraceSource{staticMapping: staticMap})
+	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, providerRef{}, &mockTraceSource{staticMapping: staticMap})
 	assert.Equal(t, staticMap, result)
 }
 
@@ -166,7 +166,7 @@ func TestGetMergedTraceLabelMapping_CustomOverridesStatic(t *testing.T) {
 		"span_name":          "operation_name", // overridden
 		"workload_namespace": "kube_namespace", // preserved
 	}
-	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, &mockTraceSource{staticMapping: staticMap})
+	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, providerRef{}, &mockTraceSource{staticMapping: staticMap})
 
 	assert.Equal(t, "custom_service", result["workload_name"], "custom should override static")
 	assert.Equal(t, "custom_op", result["span_name"], "custom should override static")
@@ -181,7 +181,7 @@ func TestGetMergedTraceLabelMapping_CustomAddsNewKey(t *testing.T) {
 	seedTraceCache(t, key, map[string]string{"resource": "resource_name"}) // not in static
 
 	staticMap := map[string]string{"workload_name": "service"}
-	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, &mockTraceSource{staticMapping: staticMap})
+	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, providerRef{}, &mockTraceSource{staticMapping: staticMap})
 
 	assert.Equal(t, "resource_name", result["resource"], "new key from custom should appear")
 	assert.Equal(t, "service", result["workload_name"], "existing static key should remain")
@@ -201,7 +201,7 @@ func TestGetMergedTraceLabelMapping_DynamicOverridesAccount(t *testing.T) {
 		}},
 		dynamicMapping: map[string]string{"workload_name": "dynamic_service"},
 	}
-	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, source)
+	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, providerRef{}, source)
 
 	assert.Equal(t, "dynamic_service", result["workload_name"], "dynamic should win over account")
 	assert.Equal(t, "account_op", result["span_name"], "account-only key should remain")
@@ -220,7 +220,7 @@ func TestGetMergedTraceLabelMapping_DynamicEmpty_FallsBackToStatic(t *testing.T)
 		mockTraceSource: mockTraceSource{staticMapping: staticMap},
 		dynamicMapping:  map[string]string{},
 	}
-	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, source)
+	result := getMergedTraceLabelMapping(newLogLabelCtx(), key, providerRef{}, source)
 	assert.Equal(t, staticMap, result)
 }
 

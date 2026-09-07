@@ -1898,7 +1898,8 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			// Skip the merge when accountId is empty: with no account the lookup
 			// can only return the static defaults, so there's nothing to merge.
 			if accountId != "" {
-				caps.LabelMappings = getMergedTraceLabelMapping(ctx, accountId, source)
+				caps.LabelMappings = getMergedTraceLabelMapping(ctx, accountId,
+					providerRef{Provider: provider, Source: integrationSource}, source)
 			} else {
 				caps.LabelMappings = source.GetLabelMapping()
 			}
@@ -2133,7 +2134,8 @@ func GetTracesLabelValues(context *security.RequestContext, labelValuesRequest T
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
-	filteringMap := getMergedTraceLabelMapping(context, labelValuesRequest.AccountId, source)
+	filteringMap := getMergedTraceLabelMapping(context, labelValuesRequest.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	labelValuesRequest.QueryRequest.Where = convertWhereClauseWithMApping(labelValuesRequest.QueryRequest.Where, filteringMap)
 
 	return source.GetLabelValues(context, labelValuesRequest)
@@ -2233,7 +2235,8 @@ func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelR
 		discovered = nil
 	}
 
-	merged := getMergedTraceLabelMapping(context, request.AccountId, source)
+	merged := getMergedTraceLabelMapping(context, request.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	return TraceLabelsResponse{Labels: buildTraceLabels(merged, providerDeclaresTraceFields(source), discovered)}, nil
 }
 
@@ -2327,7 +2330,9 @@ func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Reque
 	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
 		return []TraceGroupingValues{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// Resolved, not static — see the note in GetTraces.
+	filteringMap := getMergedTraceLabelMapping(context, TraceQuery.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	TraceQuery.QueryRequest.Where = convertWhereClauseWithMApping(TraceQuery.QueryRequest.Where, filteringMap)
 
 	return source.QueryGroupedTraces(context, TraceQuery)
@@ -2353,7 +2358,9 @@ func GetGroupedTracesCount(context *security.RequestContext, TraceQuery TracesV3
 	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// Resolved, not static — see the note in GetTraces.
+	filteringMap := getMergedTraceLabelMapping(context, TraceQuery.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	TraceQuery.QueryRequest.Where = convertWhereClauseWithMApping(TraceQuery.QueryRequest.Where, filteringMap)
 
 	return source.QueryGroupedTracesCount(context, TraceQuery)
@@ -2401,7 +2408,9 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// Resolved, not static — see the note in GetTraces.
+	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	return source.CountTraces(context, fetchTracesRequest)
@@ -2432,7 +2441,14 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return TracesResult{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// The RESOLVED mapping, not the provider's static one. Every trace query path used
+	// source.GetLabelMapping() here, so a tenant or account trace_labels override reached
+	// the label listing and the empty-result diagnosis (both of which already merged) but
+	// never the query itself — the mapping was configurable and inert. It is also what
+	// keeps the Advanced Settings panel honest: the panel renders a projection of this
+	// same resolve, so a mapping it names as the winner is the one that runs.
+	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	var referencedLabels map[string]struct{}
@@ -2474,7 +2490,8 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 				"outcome", outcome)
 		}()
 
-		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
+		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+			providerRef{Provider: traceProvider, Source: integrationSource}, source)
 		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
 			outcome = "unknown_label_name"
 			return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error(), Query: usedQuery, Provider: traceProvider}, nil
@@ -2550,7 +2567,9 @@ func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest Tr
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return nil, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// Resolved, not static — see the note in GetTraces.
+	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	return source.QueryRootSpansByTrace(context, fetchTracesRequest)
@@ -2579,7 +2598,9 @@ func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest Tra
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// Resolved, not static — see the note in GetTraces.
+	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	return source.CountTracesByTrace(context, fetchTracesRequest)
@@ -2621,7 +2642,9 @@ func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return TracesQueryResult{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	// Resolved, not static — see the note in GetTraces.
+	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+		providerRef{Provider: traceProvider, Source: integrationSource}, source)
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	var referencedLabels map[string]struct{}
@@ -2632,7 +2655,8 @@ func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest
 
 	raw, err := clickhouseSource.QueryTracesRaw(context, fetchTracesRequest)
 	if fetchTracesRequest.ValidateRequest && (err != nil || len(raw.Rows) == 0) {
-		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
+		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+			providerRef{Provider: traceProvider, Source: integrationSource}, source)
 		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
 			return TracesQueryResult{}, verr
 		}

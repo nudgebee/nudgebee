@@ -1,6 +1,11 @@
 /**
- * LogLabelMappingCards — per-account editor for a log integration's canonical →
- * provider field mapping, rendered under Advanced Settings.
+ * LabelMappingCards — per-account editor for an integration's canonical → provider
+ * field mapping, rendered under Advanced Settings.
+ *
+ * One component serves BOTH signals, the way DefaultFiltersCard serves both filter
+ * lists: the log and trace mappings differ only in vocabulary, storage key and where
+ * the field suggestions come from, so those are props. Defaults reproduce the log
+ * mapper exactly.
  *
  * Why per-account rather than one map for the integration: one Elasticsearch cluster
  * (or Loki, or Splunk) routinely serves several cloud accounts whose shippers spell
@@ -9,8 +14,10 @@
  * Same shape, and the same storage contract, as the sibling Default Log Filters and
  * Per-Account Index blobs.
  *
- * Storage: one JSON string under `log_label_mappings`, shaped
- * `[{ accountId, mappings: { canonical: providerField } }]`.
+ * Storage: one JSON string under `log_label_mappings` / `trace_label_mappings`, shaped
+ * `[{ accountId, mappings: { canonical: providerField } }]`. Two keys, not one: several
+ * integrations (datadog, dynatrace, chronosphere, ES) serve both signals from a single
+ * record, so sharing a key would apply a log mapping to trace queries.
  */
 import React from 'react';
 import PropTypes from 'prop-types';
@@ -25,9 +32,10 @@ import { getBrandTitle } from '@hooks/useTenantBranding';
 import EffectiveLabelMappingPanel from './EffectiveLabelMappingPanel';
 import { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 
-// The concepts the log pipeline actually builds filters from. Suggestions only —
-// every input is freeSolo, because a deployment can legitimately need a concept we
-// have not enumerated, and blocking that would send people back to editing DB rows.
+// The concepts the log pipeline actually builds filters from, and the default for
+// `canonicalOptions`. Suggestions only — every input is freeSolo, because a deployment
+// can legitimately need a concept we have not enumerated, and blocking that would send
+// people back to editing DB rows.
 export const CANONICAL_LOG_FIELDS = ['app', 'container', 'content', 'level', 'message', 'namespace', 'pod', 'timestamp', 'trace_id'];
 
 const emptyRow = () => ({ canonical: '', field: '' });
@@ -102,7 +110,7 @@ function savedMappingsFor(savedCards, accountId) {
   return out;
 }
 
-export default function LogLabelMappingCards({
+export default function LabelMappingCards({
   cards,
   setCards,
   savedCards,
@@ -116,6 +124,19 @@ export default function LogLabelMappingCards({
   fieldOptions,
   indexRules,
   topLevelIndex,
+  title = 'Log Label Mapping (Optional)',
+  helpText,
+  lockedText = "Run Test Connection to load the backend's fields and configure the mapping.",
+  canonicalOptions = CANONICAL_LOG_FIELDS,
+  canonicalPlaceholder = 'e.g. pod',
+  fieldPlaceholder = 'e.g. kubernetes.pod_name.keyword',
+  fieldOptionsForCard,
+  testIdPrefix = 'log-label-mapping',
+  providerType = 'logs',
+  signalNoun = 'log',
+  conceptLabels,
+  conceptOrder,
+  sx,
 }) {
   const updateCard = (cardIdx, patch) => setCards(cards.map((c, i) => (i === cardIdx ? { ...c, ...patch } : c)));
 
@@ -136,14 +157,18 @@ export default function LogLabelMappingCards({
   };
 
   return (
-    <Box data-testid='log-label-mapping-section'>
+    <Box data-testid={`${testIdPrefix}-section`} sx={sx}>
       <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', mb: ds.space[1] }}>
-        Log Label Mapping (Optional)
+        {title}
       </Typography>
       <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', mb: ds.space[4], pl: ds.space[1] }}>
-        {`Tell ${getBrandTitle()} which field in this backend holds each concept (e.g. `}
-        <em>pod → kubernetes.pod_name.keyword</em>
-        {`). What you set here wins over the account and tenant mappings. Leave a concept out and it falls through to those.`}
+        {helpText || (
+          <>
+            {`Tell ${getBrandTitle()} which field in this backend holds each concept (e.g. `}
+            <em>pod → kubernetes.pod_name.keyword</em>
+            {`). What you set here wins over the account and tenant mappings. Leave a concept out and it falls through to those.`}
+          </>
+        )}
       </Typography>
 
       {/*
@@ -155,15 +180,21 @@ export default function LogLabelMappingCards({
         its mapping immediately and only hides it again if a connection field changes.
       */}
       {!connectionVerified ? (
-        <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', pl: ds.space[1], mb: ds.space[3] }}>
-          Run Test Connection to load the backend&apos;s fields and configure the mapping.
-        </Typography>
+        <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', pl: ds.space[1], mb: ds.space[3] }}>{lockedText}</Typography>
       ) : (
         <>
           {cards.map((card, cardIdx) => {
             const cardNeedsAccount = !card.accountId && card.rows.some((r) => (r.canonical || '').trim() || (r.field || '').trim());
+            // Traces have no unsaved-config field probe (there is no traces_list_labels
+            // client wrapper, and that action needs a saved integration anyway), so the
+            // trace instance passes a resolver returning no suggestions and the input
+            // stays free text. The panel below is what confirms a typed value took.
             const cardIndex = indexForAccount(indexRules, card.accountId, topLevelIndex);
-            const accountFields = fieldOptions?.[fieldOptionsKey(card.accountId, cardIndex)] || { loading: false, options: [], message: '' };
+            const accountFields = (fieldOptionsForCard ? fieldOptionsForCard(card) : fieldOptions?.[fieldOptionsKey(card.accountId, cardIndex)]) || {
+              loading: false,
+              options: [],
+              message: '',
+            };
             const fieldHint = accountFields.message || (accountFields.loading ? 'Loading fields…' : '');
             const draftMappings = {};
             card.rows.forEach((r) => {
@@ -182,7 +213,7 @@ export default function LogLabelMappingCards({
                   mb: ds.space[4],
                   backgroundColor: ds.blue[100],
                 }}
-                data-testid={`log-label-mapping-card-${cardIdx}`}
+                data-testid={`${testIdPrefix}-card-${cardIdx}`}
               >
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: ds.space[3] }}>
                   <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
@@ -196,7 +227,7 @@ export default function LogLabelMappingCards({
                       icon={<DeleteOutlineIcon sx={{ fontSize: 16 }} />}
                       aria-label='Remove account'
                       onClick={() => removeCard(cardIdx)}
-                      data-testid={`log-label-mapping-remove-card-${cardIdx}`}
+                      data-testid={`${testIdPrefix}-remove-card-${cardIdx}`}
                     />
                   )}
                 </Box>
@@ -226,16 +257,16 @@ export default function LogLabelMappingCards({
                   <Box
                     key={rowIdx}
                     sx={{ display: 'flex', alignItems: 'flex-end', gap: ds.space[2], mb: ds.space[2] }}
-                    data-testid={`log-label-mapping-row-${cardIdx}-${rowIdx}`}
+                    data-testid={`${testIdPrefix}-row-${cardIdx}-${rowIdx}`}
                   >
                     <Box sx={{ flex: '1 1 40%', minWidth: 140 }}>
                       <FilterDropdown
                         label={rowIdx === 0 ? 'Concept' : undefined}
                         freeSolo
-                        options={CANONICAL_LOG_FIELDS}
+                        options={canonicalOptions}
                         value={row.canonical}
                         onSelect={(_e, v) => updateRow(cardIdx, rowIdx, { canonical: v?.value ?? v ?? '' })}
-                        placeholder='e.g. pod'
+                        placeholder={canonicalPlaceholder}
                       />
                     </Box>
                     <ArrowForwardIcon sx={{ fontSize: 16, color: ds.gray[400], mb: ds.space[2] }} />
@@ -247,7 +278,7 @@ export default function LogLabelMappingCards({
                         value={row.field}
                         isOptionsLoading={accountFields.loading}
                         onSelect={(_e, v) => updateRow(cardIdx, rowIdx, { field: v?.value ?? v ?? '' })}
-                        placeholder='e.g. kubernetes.pod_name.keyword'
+                        placeholder={fieldPlaceholder}
                       />
                       {rowIdx === card.rows.length - 1 && fieldHint && (
                         <Typography sx={{ color: ds.gray[500], fontSize: 'var(--ds-text-caption)', mt: ds.space[1], pl: ds.space[1] }}>
@@ -263,7 +294,7 @@ export default function LogLabelMappingCards({
                       aria-label='Remove mapping'
                       disabled={card.rows.length === 1 && !row.canonical && !row.field}
                       onClick={() => removeRow(cardIdx, rowIdx)}
-                      data-testid={`log-label-mapping-remove-row-${cardIdx}-${rowIdx}`}
+                      data-testid={`${testIdPrefix}-remove-row-${cardIdx}-${rowIdx}`}
                     />
                   </Box>
                 ))}
@@ -273,7 +304,7 @@ export default function LogLabelMappingCards({
                   size='sm'
                   icon={<AddIcon sx={{ fontSize: 16 }} />}
                   onClick={() => addRow(cardIdx)}
-                  data-testid={`log-label-mapping-add-row-${cardIdx}`}
+                  data-testid={`${testIdPrefix}-add-row-${cardIdx}`}
                 >
                   Add mapping
                 </Button>
@@ -285,12 +316,17 @@ export default function LogLabelMappingCards({
                   draftMappings={draftMappings}
                   unsaved={stableKey(draftMappings) !== stableKey(savedMappingsFor(savedCards, card.accountId))}
                   cardIdx={cardIdx}
+                  providerType={providerType}
+                  signalNoun={signalNoun}
+                  testIdPrefix={`${testIdPrefix}-effective`}
+                  conceptLabels={conceptLabels}
+                  conceptOrder={conceptOrder}
                 />
               </Box>
             );
           })}
 
-          <Button tone='secondary' size='md' onClick={addCard} data-testid='log-label-mapping-add-card'>
+          <Button tone='secondary' size='md' onClick={addCard} data-testid={`${testIdPrefix}-add-card`}>
             + Add account
           </Button>
         </>
@@ -299,7 +335,7 @@ export default function LogLabelMappingCards({
   );
 }
 
-LogLabelMappingCards.propTypes = {
+LabelMappingCards.propTypes = {
   cards: PropTypes.array.isRequired,
   setCards: PropTypes.func.isRequired,
   // The cards as hydrated from the saved config, for the unsaved-vs-live comparison.
@@ -317,4 +353,25 @@ LogLabelMappingCards.propTypes = {
   // Per-account index cards + the top-level Log Index, for index resolution.
   indexRules: PropTypes.array,
   topLevelIndex: PropTypes.string,
+  // Section heading, blurb and the locked-until-Test-Connection line.
+  title: PropTypes.string,
+  helpText: PropTypes.node,
+  lockedText: PropTypes.string,
+  // Canonical-field suggestions for the left-hand input, and the two placeholders.
+  canonicalOptions: PropTypes.array,
+  canonicalPlaceholder: PropTypes.string,
+  fieldPlaceholder: PropTypes.string,
+  // Overrides the (account, index) lookup into `fieldOptions` for the right-hand input.
+  // Traces pass one returning no options — see the comment at its call site.
+  fieldOptionsForCard: PropTypes.func,
+  // Defaults to the log testids, which app-e2e-tests already binds to. A second
+  // instance on the same form must pass its own prefix or the two collide.
+  testIdPrefix: PropTypes.string,
+  // Which resolver the effective-mapping panel asks: 'logs' | 'traces'.
+  providerType: PropTypes.string,
+  signalNoun: PropTypes.string,
+  // Human names and display order for the effective-mapping panel's rows.
+  conceptLabels: PropTypes.object,
+  conceptOrder: PropTypes.array,
+  sx: PropTypes.object,
 };

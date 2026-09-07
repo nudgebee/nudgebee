@@ -161,6 +161,9 @@ jest.mock('@hooks/useTenantBranding', () => ({
     relayUrl: 'https://relay.example.com',
     signingPublicKey: '',
   }),
+  // The modal white-labels its help text through this. The mock predates the export,
+  // and only started biting once a section the suite renders began calling it.
+  getBrandTitle: () => 'Nudgebee',
 }));
 
 const defaultSchemaResponse = {

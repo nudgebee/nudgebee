@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"maps"
 	"time"
 
 	"nudgebee/services/common"
@@ -180,6 +179,9 @@ func InvalidateTraceLabelsCacheForAccount(accountId string) {
 	if err := common.CacheDelete(traceLabelsCacheNamespace, accountId); err != nil {
 		slog.Warn("InvalidateTraceLabelsCacheForAccount: failed to invalidate", "account_id", accountId, "error", err)
 	}
+	// The integration tier is per-account too, and an account-scoped save is the one
+	// moment an operator is watching the panel. Mirrors InvalidateLogLabelsCacheForAccount.
+	InvalidateTraceLabelMappingsCache(accountId)
 }
 
 // InvalidateTraceLabelsCacheForTenant drops the tenant-wide entry. Keyed with the same
@@ -194,30 +196,65 @@ func InvalidateTraceLabelsCacheForTenant(tenantId string) {
 	}
 }
 
-// getMergedTraceLabelMapping returns the trace provider's static label mapping merged
-// with tenant-wide, account-specific, and (optionally) integration-dynamic overrides.
-// Precedence (highest → lowest): dynamic (integration config) > account > tenant > static.
-// Mirrors getMergedLabelMapping (log_labels.go) and reuses the source-agnostic
-// DynamicLabelMappingSource interface defined there.
-func getMergedTraceLabelMapping(ctx *security.RequestContext, accountId string, source TraceSource) map[string]string {
-	staticMap := source.GetLabelMapping()
-	tenantId := ctx.GetSecurityContext().GetTenantId()
-	tenantMap := getTenantTraceLabels(ctx, tenantId)
-	accountMap := getCustomTraceLabels(ctx, accountId)
+// resolveTraceLabelMapping is the single implementation of the canonical -> provider
+// TRACE field merge. getMergedTraceLabelMapping projects it for query execution and
+// GetTraceLabelMapping projects it for the Advanced Settings panel, so the mapping an
+// operator is shown is by construction the mapping their queries will use.
+//
+// The mirror of resolveLogLabelMapping (log_labels.go), reusing label_mapping.go's
+// tiers, order and ResolvedLabelMapping verbatim — traces need no tier logs do not
+// have, so labelMappingTierOrder is unchanged.
+//
+// Precedence is declared once, in labelMappingTierOrder. Every tier fails open to an
+// empty map, so a missing integration or an unreachable DB degrades the answer rather
+// than failing the query.
+//
+// `ref` is the RESOLVED (provider, source) pair the caller queried with, not one
+// derived from the source type. Logs can derive theirs (LogSource.ProviderRef) because
+// each log source is dispatched for exactly one pair; traces cannot — resolveTraceSource
+// returns ElasticSaasTraceSource *or* ElasticOtelTraceSource for the same ES/user
+// integration, and gcp matches on provider alone regardless of source. Every trace call
+// site already holds the resolved pair, so it is threaded instead.
+func resolveTraceLabelMapping(ctx *security.RequestContext, accountId string,
+	ref providerRef, source TraceSource, draft *labelMappingOverride) ResolvedLabelMapping {
+	byTier := map[LabelMappingTier]map[string]string{
+		LabelTierProviderDefault: source.GetLabelMapping(),
+		LabelTierTenant:          getTenantTraceLabels(ctx, ctx.GetSecurityContext().GetTenantId()),
+		LabelTierAccount:         getCustomTraceLabels(ctx, accountId),
+	}
 
-	var dynamicMap map[string]string
+	// No trace source implements DynamicLabelMappingSource today, and that is the right
+	// answer rather than a gap: the tier exists for integrations that carry user-typed
+	// FIELD names (Pinot's pinot_pod_col, Hive's hive_message_col), and both of those
+	// are log-only providers absent from getTraceSource. Trace integrations carry
+	// CONTAINERS — trace_index, openobserve_trace_stream — not field names. The type
+	// assertion stays so a future trace source that genuinely does carry field names
+	// slots in without touching the resolver.
 	if dyn, ok := source.(DynamicLabelMappingSource); ok {
-		dynamicMap = dyn.GetDynamicLabelMapping(ctx, accountId)
+		byTier[LabelTierProviderConfig] = dyn.GetDynamicLabelMapping(ctx, accountId)
 	}
 
-	if len(tenantMap) == 0 && len(accountMap) == 0 && len(dynamicMap) == 0 {
-		return staticMap
+	switch {
+	case draft != nil && draft.Set:
+		byTier[LabelTierIntegration] = sanitizeLabelMapping(draft.Mappings)
+	default:
+		byTier[LabelTierIntegration] = getIntegrationTraceLabels(ctx, accountId, ref)
 	}
 
-	merged := make(map[string]string, len(staticMap)+len(tenantMap)+len(accountMap)+len(dynamicMap))
-	maps.Copy(merged, staticMap)
-	maps.Copy(merged, tenantMap)
-	maps.Copy(merged, accountMap)
-	maps.Copy(merged, dynamicMap)
-	return merged
+	return newResolvedLabelMapping(byTier)
+}
+
+// getMergedTraceLabelMapping returns the canonical -> provider field map trace queries
+// are rewritten with. Keep this body a single projection of resolveTraceLabelMapping:
+// the moment it re-implements any part of the merge, the Advanced Settings panel starts
+// lying about what queries actually do.
+//
+// Note this now always returns a FRESH map, and drops entries with an empty key or
+// value (flattenLayers). The previous hand-merge returned the source's static map by
+// reference on the no-override path; no caller mutates the result — they pass it to
+// convertWhereClauseWithMApping, validateReferencedTraceLabels or buildTraceLabels, or
+// place it in a response body — so the copy is safe as well as correct.
+func getMergedTraceLabelMapping(ctx *security.RequestContext, accountId string,
+	ref providerRef, source TraceSource) map[string]string {
+	return resolveTraceLabelMapping(ctx, accountId, ref, source, nil).Effective
 }

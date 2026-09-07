@@ -30,6 +30,8 @@ import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
+import LabelMappingCards, { parseLogLabelMappings, serializeLogLabelMappings } from './LabelMappingCards';
+import useLogFieldOptions, { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 import DefaultFiltersCard, { emptyFilterCard, hasCardMissingAccount, parseDefaultFilters, serializeDefaultFilters } from './DefaultFiltersCard';
 import { TRACE_LABEL_ADVANCED_FIELDS, TRACE_LABEL_FIELDS } from '@components/common/settings/labelMapperFields';
 
@@ -56,9 +58,14 @@ const dropStaleValidation = (validation, prevCards, nextCards) => {
 
 // Log/observability integrations that support per-account "Default Log Filters"
 // (always-apply where-clause filters injected into every log query for the account).
+// The add flow receives an empty object rather than undefined, so presence alone does not
+// distinguish add from edit.
+const hasEditData = (editData) => !!(editData && Object.keys(editData).length > 0);
+
 const LOG_FILTER_INTEGRATIONS = new Set([
   'pinot',
   'ES',
+  'elasticsearch',
   'loki',
   'signoz',
   'openobserve',
@@ -75,7 +82,12 @@ const LOG_FILTER_INTEGRATIONS = new Set([
 // from the log set above: 'otel_clickhouse' (the agent trace provider) rather than
 // 'clickhouse' (an unrelated database integration), and no 'signoz' — signoz has no
 // trace source today. 'gcp' is resolver-synthesized and has no form at all.
-const TRACE_FILTER_INTEGRATIONS = new Set([
+// Also gates the Trace Label Mapping section. Deliberately NOT keyed off
+// `config.properties?.trace_label_mappings` the way the log mapping is: the backend
+// injects that property for every Log AND ObservabilityPlatform integration, which is
+// broader than the set getTraceSource serves — a schema-driven gate would render a dead
+// trace section on loki, pinot and hive.
+const TRACE_INTEGRATIONS = new Set([
   'otel_clickhouse',
   'jaeger',
   'chronosphere',
@@ -95,10 +107,49 @@ const TRACE_FILTER_INTEGRATIONS = new Set([
 // Canonical trace field names, reused from the Settings trace label mapper so the two
 // screens cannot drift: the server stores and applies trace filters in exactly this
 // vocabulary (canonicalTraceFields in observability/service.go).
-const CANONICAL_TRACE_FIELD_OPTIONS = [...TRACE_LABEL_FIELDS, ...TRACE_LABEL_ADVANCED_FIELDS].map(({ field }) => ({
+const ALL_TRACE_LABEL_FIELDS = [...TRACE_LABEL_FIELDS, ...TRACE_LABEL_ADVANCED_FIELDS];
+
+// Label stays the bare canonical name on purpose: these dropdowns are inputs whose VALUE
+// is the canonical field, and the Default Trace Filters card round-trips the displayed
+// text. The human names are used where they read as prose — the effective-mapping panel.
+const CANONICAL_TRACE_FIELD_OPTIONS = ALL_TRACE_LABEL_FIELDS.map(({ field }) => ({
   label: field,
   value: field,
 }));
+
+// canonical -> human name, and the order an operator meets these fields on the Settings
+// trace mapper: the five most-retuned first, the rarer ones behind its disclosure after.
+// Reused rather than re-listed so the panel, the mapper and the filter dropdown cannot
+// drift.
+const TRACE_CONCEPT_LABELS = Object.fromEntries(ALL_TRACE_LABEL_FIELDS.map(({ field, label }) => [field, label]));
+const TRACE_CONCEPT_ORDER = ALL_TRACE_LABEL_FIELDS.map(({ field }) => field);
+
+// Alert Template body NudgeBee expects from OpenObserve. Every `{variable}` is
+// substituted by OpenObserve at delivery; the k8s_* keys resolve from the
+// matching stream row and are simply dropped when the stream has no such field,
+// so the same template works for log, metric and trace alerts.
+const OPENOBSERVE_ALERT_TEMPLATE = `{
+  "alert_name": "{alert_name}",
+  "alert_type": "{alert_type}",
+  "stream_name": "{stream_name}",
+  "stream_type": "{stream_type}",
+  "org_name": "{org_name}",
+  "alert_period": "{alert_period}",
+  "alert_operator": "{alert_operator}",
+  "alert_threshold": "{alert_threshold}",
+  "alert_count": "{alert_count}",
+  "alert_agg_value": "{alert_agg_value}",
+  "alert_start_time": "{alert_start_time}",
+  "alert_end_time": "{alert_end_time}",
+  "alert_url": "{alert_url}",
+  "severity": "{severity}",
+  "k8s_cluster_name": "{k8s_cluster_name}",
+  "k8s_namespace_name": "{k8s_namespace_name}",
+  "k8s_pod_name": "{k8s_pod_name}",
+  "k8s_deployment_name": "{k8s_deployment_name}",
+  "k8s_node_name": "{k8s_node_name}",
+  "service_name": "{service_name}"
+}`;
 
 // Display labels for enum values whose stored form doesn't title-case into
 // something readable. Values not listed here fall back to snakeToTitleCase.
@@ -190,6 +241,18 @@ const IntegrationDynamicFormModal = ({
   // Per-account ES index override (Advanced Settings): each card maps an account to
   // its own log/metrics/trace index; unmapped accounts fall back to the top-level index.
   const [indexRules, setIndexRules] = useState([{ accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
+  // Per-account canonical -> provider log field mapping (Advanced Settings). Highest
+  // precedence layer of the mapping merge, above the account and tenant settings.
+  const [labelMappingCards, setLabelMappingCards] = useState([{ accountId: '', rows: [{ canonical: '', field: '' }] }]);
+  // The same cards as first hydrated from the saved config, so each card can tell an
+  // in-progress edit from a mapping that is already live.
+  const [savedLabelMappingCards, setSavedLabelMappingCards] = useState([]);
+  // Per-account canonical -> provider TRACE field mapping (Advanced Settings). Same
+  // tier and the same stored shape as the log mapping above, under a separate config
+  // value for the reason the trace filters are separate: one integration record
+  // commonly serves both signals.
+  const [traceLabelMappingCards, setTraceLabelMappingCards] = useState([{ accountId: '', rows: [{ canonical: '', field: '' }] }]);
+  const [savedTraceLabelMappingCards, setSavedTraceLabelMappingCards] = useState([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // On-demand column validation per card: { [cardIdx]: { loading, done, invalid: [colNames] } }.
   const [columnValidation, setColumnValidation] = useState({});
@@ -200,7 +263,11 @@ const IntegrationDynamicFormModal = ({
   const [providerFields, setProviderFields] = useState([]);
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
-  const [connectionVerified, setConnectionVerified] = useState(!!editData);
+  // Object.keys, not !!editData: ListIntegrations passes `editData={selectedIntegration || {}}`,
+  // so the add flow receives an empty object and `!!{}` is true — a brand-new integration
+  // started out "verified" and every Advanced Settings editor rendered before a single
+  // connection had been proven. Matches the `isEdit` test used further down.
+  const [connectionVerified, setConnectionVerified] = useState(hasEditData(editData));
   // Which encrypted secret fields are currently revealed (eye toggle), keyed by field key.
   const [revealedSecrets, setRevealedSecrets] = useState({});
   // Cluster indices for the ES per-account index picker; fetched once the
@@ -215,6 +282,21 @@ const IntegrationDynamicFormModal = ({
   })();
 
   const isAgentSource = editData?.source === 'agent';
+
+  // Advanced Settings editors are gated on a proven connection, because their dropdowns
+  // are filled from the backend. But a provider whose schema is not `testable` renders no
+  // Test Connection button — agent-sourced ES and Loki are the live cases — so gating them
+  // on it strands the add flow behind an instruction the user cannot follow. Nothing to
+  // verify means nothing to wait for; their config is the relay agent, not a URL in this
+  // form, so there is no unsaved endpoint to preview either.
+  const advancedSettingsUnlocked = !isTestable || connectionVerified;
+
+  // Gated on the backend's own answer — it emits the `log_label_mappings` property
+  // only for integrations that resolve to a real log source. No provider list lives
+  // here, so this cannot drift from what a save will accept. LOG_FILTER_INTEGRATIONS is
+  // deliberately not reused: it excludes ES, the provider with no other way to set a
+  // mapping at all.
+  const supportsLogLabelMapping = !!config.properties?.log_label_mappings;
 
   useEffect(() => {
     if (openModal && isAgentSource && editData?.integrations_cloud_accounts) {
@@ -246,7 +328,7 @@ const IntegrationDynamicFormModal = ({
 
   useEffect(() => {
     if (openModal) {
-      setConnectionVerified(!!editData);
+      setConnectionVerified(hasEditData(editData));
       setIsLoadingSchema(true);
       const fetchData = async (configs) => {
         const updatedConfig = { ...configs };
@@ -599,13 +681,40 @@ const IntegrationDynamicFormModal = ({
     );
   }, [editData]);
 
-  // Auto-expand Advanced Settings for ES so the Per-Account Index cards are visible
-  // without an extra click (collapsed by default for other integrations).
+  // Hydrate the per-account log label mapping from the saved log_label_mappings blob
+  // (JSON array of { accountId, mappings }).
   useEffect(() => {
-    if (openModal && (integrationName === 'ES' || integrationName === 'elasticsearch')) {
-      setAdvancedOpen(true);
+    const raw = editData?.integration_config_values?.log_label_mappings;
+    if (!raw) {
+      setSavedLabelMappingCards([]);
+      return;
     }
-  }, [openModal, integrationName]);
+    const parsed = parseLogLabelMappings(raw);
+    setLabelMappingCards(parsed);
+    setSavedLabelMappingCards(parsed);
+  }, [editData]);
+
+  // Same, for the trace label mapping. Its own effect rather than folded into the one
+  // above because the two configs are independent: an integration can carry one, the
+  // other, or both.
+  useEffect(() => {
+    const raw = editData?.integration_config_values?.trace_label_mappings;
+    if (!raw) {
+      setSavedTraceLabelMappingCards([]);
+      return;
+    }
+    const parsed = parseLogLabelMappings(raw);
+    setTraceLabelMappingCards(parsed);
+    setSavedTraceLabelMappingCards(parsed);
+  }, [editData]);
+
+  // Advanced Settings stays collapsed on open, for every provider.
+  //
+  // Elasticsearch used to force it open so the Per-Account Index cards were visible
+  // without an extra click. That made sense when the section held one card; it now
+  // holds three (default filters, per-account index, label mapping), so opening the
+  // form dumped the whole panel on you before you had touched anything — and it was
+  // the one provider that behaved differently.
 
   // Hydrate the per-source label mapping (webhook_label_mapping) from the saved
   // config value. Stored as arrays; rendered as arrays for FilterDropdown multi-select.
@@ -1066,13 +1175,17 @@ const IntegrationDynamicFormModal = ({
     setDefaultTraceFilterRules([emptyFilterCard()]);
     setColumnValidation({});
     setIndexRules([{ accountId: '', log_index: '', metrics_index: '', trace_index: '' }]);
+    setLabelMappingCards([{ accountId: '', rows: [{ canonical: '', field: '' }] }]);
+    setTraceLabelMappingCards([{ accountId: '', rows: [{ canonical: '', field: '' }] }]);
+    setSavedTraceLabelMappingCards([]);
+    setSavedLabelMappingCards([]);
     setAdvancedOpen(false);
     setLabelMapping({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
     setAgentAccountProviders([]);
     setProviderFields([]);
     setVmAgentCredentials(null);
     setIsTesting(false);
-    setConnectionVerified(!!editData);
+    setConnectionVerified(hasEditData(editData));
     handleClose(trigger);
   };
 
@@ -1161,11 +1274,44 @@ const IntegrationDynamicFormModal = ({
       }
       return {
         name: key,
-        value: transformedValue,
-        is_encrypted: field?.is_encrypted && !!editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK,
+        // Both coerced, never left undefined. `&&` yields undefined when the schema
+        // carries no is_encrypted, and callers that inline this into a GraphQL string
+        // (gqlStringify) then emit the bare token `undefined`, which the Go decoder
+        // rejects with "expected type 'bool', got unconvertible type 'string'". The
+        // variables-based callers never saw it, because JSON.stringify drops undefined.
+        value: transformedValue ?? '',
+        is_encrypted: !!(field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK),
       };
     });
   };
+
+  // One field-list probe shared by both Advanced Settings sections that need it:
+  // Default Log Filters (which column to filter on) and Log Label Mapping (which field
+  // holds each concept) ask the backend the same question. Fires only once the
+  // connection is verified, and clears when it is invalidated.
+  const logFieldAccountPairs = useMemo(() => {
+    const pairs = [];
+    const seen = new Set();
+    const add = (accountId) => {
+      if (!accountId) return;
+      const index = indexForAccount(indexRules, accountId, formValues.log_index);
+      const key = fieldOptionsKey(accountId, index);
+      if (seen.has(key)) return;
+      seen.add(key);
+      pairs.push({ accountId, index });
+    };
+    labelMappingCards.forEach((c) => add(c.accountId));
+    defaultFilterRules.forEach((c) => add(c.accountId));
+    return pairs;
+  }, [labelMappingCards, defaultFilterRules, indexRules, formValues.log_index]);
+
+  const logFieldOptions = useLogFieldOptions({
+    enabled: advancedSettingsUnlocked,
+    provider: integrationName,
+    providerSource: editData?.source || 'user',
+    buildProbeConfigValues,
+    accountIndexPairs: logFieldAccountPairs,
+  });
 
   const currentAccountIds = () =>
     Array.isArray(formValues.account_id) ? formValues.account_id : formValues.account_id ? [formValues.account_id] : [];
@@ -1285,9 +1431,29 @@ const IntegrationDynamicFormModal = ({
       snackbar.error('Default Log Filters: please select an account for each filter card.');
       return;
     }
-    if (TRACE_FILTER_INTEGRATIONS.has(integrationName) && hasCardMissingAccount(defaultTraceFilterRules)) {
+    if (TRACE_INTEGRATIONS.has(integrationName) && hasCardMissingAccount(defaultTraceFilterRules)) {
       snackbar.error('Default Trace Filters: please select an account for each filter card.');
       return;
+    }
+    if (supportsLogLabelMapping) {
+      // Any mapping card with a row entered must have an account selected — without
+      // one there is nothing to attach the mapping to and it would be silently dropped.
+      const mappingCardMissingAccount = labelMappingCards.some(
+        (c) => !c.accountId && (c.rows || []).some((r) => (r.canonical || '').trim() || (r.field || '').trim())
+      );
+      if (mappingCardMissingAccount) {
+        snackbar.error('Log Label Mapping: please select an account for each mapping card.');
+        return;
+      }
+    }
+    if (showTraceLabelMapping) {
+      const traceMappingCardMissingAccount = traceLabelMappingCards.some(
+        (c) => !c.accountId && (c.rows || []).some((r) => (r.canonical || '').trim() || (r.field || '').trim())
+      );
+      if (traceMappingCardMissingAccount) {
+        snackbar.error('Trace Label Mapping: please select an account for each mapping card.');
+        return;
+      }
     }
     if (integrationName === 'ES' || integrationName === 'elasticsearch') {
       // Any index card with an index entered must have an account selected.
@@ -1484,13 +1650,46 @@ const IntegrationDynamicFormModal = ({
     // same clear-to-empty-array rule as the log filters above, under a separate config
     // name: one integration record often serves both logs and traces, so sharing
     // `default_filters` would apply log filters to trace queries.
-    if (TRACE_FILTER_INTEGRATIONS.has(integrationName)) {
+    if (TRACE_INTEGRATIONS.has(integrationName)) {
       const cleanedTraceFilters = serializeDefaultFilters(defaultTraceFilterRules);
       const previouslySet = !!editData?.integration_config_values?.default_trace_filters;
       if (cleanedTraceFilters.length > 0 || previouslySet) {
         transformedValues.push({
           name: 'default_trace_filters',
           value: JSON.stringify(cleanedTraceFilters),
+          is_encrypted: false,
+        });
+      }
+    }
+
+    // Per-account log label mapping → log_label_mappings. Emitted for every log /
+    // observability-platform integration; the backend auto-allows the key for exactly
+    // those categories. Emit an empty array when a previously-saved mapping is cleared,
+    // because config values are upserted per name and omitting the key would leave the
+    // old mapping in force.
+    if (supportsLogLabelMapping) {
+      const cleanedMappings = serializeLogLabelMappings(labelMappingCards);
+      const mappingPreviouslySet = !!editData?.integration_config_values?.log_label_mappings;
+      if (cleanedMappings.length > 0 || mappingPreviouslySet) {
+        transformedValues.push({
+          name: 'log_label_mappings',
+          value: JSON.stringify(cleanedMappings),
+          is_encrypted: false,
+        });
+      }
+    }
+
+    // Per-account trace label mapping → trace_label_mappings. Same shape and the same
+    // clear-to-empty-array rule as the log mapping above, under a separate config name:
+    // one integration record often serves both signals, so sharing `log_label_mappings`
+    // would apply a log field mapping to trace queries.
+    if (showTraceLabelMapping) {
+      const cleanedTraceMappings = serializeLogLabelMappings(traceLabelMappingCards);
+      const tracePreviouslySet = !!editData?.integration_config_values?.trace_label_mappings;
+      if (cleanedTraceMappings.length > 0 || tracePreviouslySet) {
+        transformedValues.push({
+          name: 'trace_label_mappings',
+          value: JSON.stringify(cleanedTraceMappings),
           is_encrypted: false,
         });
       }
@@ -1734,11 +1933,21 @@ const IntegrationDynamicFormModal = ({
         text: 'how to configure Elasticsearch/Kibana Webhook',
       },
     },
+    openobserve_webhook: {
+      endpoint: 'openobserve',
+      message: 'Configure the following URL as a Webhook destination in OpenObserve (Management → Alert Destinations)',
+      // OpenObserve delivers whatever the alert Template renders — there is no
+      // fixed payload schema — so the destination is only half the setup. The
+      // template below is what NudgeBee parses best; it is shown inline because
+      // a user who skips it gets an event with no severity, subject or link.
+      template: OPENOBSERVE_ALERT_TEMPLATE,
+      templateMessage:
+        'OpenObserve has no fixed webhook payload — the body is whatever the alert Template renders. Create a Template (Management → Templates, type: Webhook) with the JSON below and select it on the destination above.',
+    },
     workflow_webhook: {
       endpoint: 'workflow',
       message: 'Point your external system at the following URL to trigger the associated automation',
-    },
-    cubeapm_webhook: {
+    },    cubeapm_webhook: {
       endpoint: 'cubeapm',
       message:
         'Add the following URL as a Webhook notification channel in CubeAPM. Leave the payload template unset — CubeAPM’s default body is already Alertmanager-compatible, which is what NudgeBee parses',
@@ -1781,6 +1990,45 @@ const IntegrationDynamicFormModal = ({
           </Typography>
           <CopyButton text={url} />
         </Box>
+
+        {config.template && (
+          <>
+            <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
+              {config.templateMessage}
+            </Typography>
+            <Box
+              sx={{
+                mt: 'var(--ds-space-4)',
+                mb: 'var(--ds-space-4)',
+                p: 2,
+                borderRadius: ds.radius.lg,
+                border: `1px solid ${ds.brand[200]}`,
+                backgroundColor: ds.gray[100],
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: ds.space[2],
+              }}
+            >
+              <Typography
+                component='pre'
+                sx={{
+                  color: ds.gray[600],
+                  fontSize: 'var(--ds-text-body)',
+                  fontFamily: 'monospace',
+                  lineHeight: 1.6,
+                  flex: 1,
+                  m: 0,
+                  maxHeight: ds.space.mul(0, 160),
+                  overflow: 'auto',
+                }}
+                id={`${config.endpoint}-template`}
+              >
+                {config.template}
+              </Typography>
+              <CopyButton text={config.template} />
+            </Box>
+          </>
+        )}
 
         {integrationName === 'workflow_webhook' ? (
           <Box
@@ -1845,12 +2093,18 @@ const IntegrationDynamicFormModal = ({
   const accountOptions = config.properties?.account_id?.possible_values || [];
 
   // ES (integrationName is 'ES' or 'elasticsearch') shows the Advanced Settings
-  // section for the Per-Account Index mapping in BOTH add and edit flows. Default
-  // Log Filters is not shown for ES (per product decision), but for the other
-  // LOG_FILTER_INTEGRATIONS it's now shown in both add and edit flows too.
+  // section for the Per-Account Index mapping in BOTH add and edit flows, and now
+  // for Default Log Filters too — the backend applies them provider-agnostically
+  // in FetchLogs, so ES honoured a saved default_filters value all along while the
+  // form was the only thing hiding it. Every LOG_FILTER_INTEGRATIONS entry shows
+  // the filter editor in both add and edit flows.
   const isESIntegration = integrationName === 'ES' || integrationName === 'elasticsearch';
-  const showLogFilters = LOG_FILTER_INTEGRATIONS.has(integrationName) && !isESIntegration;
-  const showTraceFilters = TRACE_FILTER_INTEGRATIONS.has(integrationName);
+  const showLogFilters = LOG_FILTER_INTEGRATIONS.has(integrationName);
+  const showTraceFilters = TRACE_INTEGRATIONS.has(integrationName);
+  // Same gate as the trace filters: the providers getTraceSource actually serves and
+  // that have an integration form. See the comment on TRACE_INTEGRATIONS for why this
+  // is not derived from the schema property the way supportsLogLabelMapping is.
+  const showTraceLabelMapping = TRACE_INTEGRATIONS.has(integrationName);
 
   // A fresh tenant with no onboarded cluster / cloud account has nothing to link
   // an account-scoped integration to. The `account_id` schema field is present
@@ -1899,6 +2153,7 @@ const IntegrationDynamicFormModal = ({
             'grafana_webhook',
             'solarwinds_webhook',
             'elasticsearch_webhook',
+            'openobserve_webhook',
             'workflow_webhook',
           ].includes(integrationName)
         }
@@ -2653,7 +2908,7 @@ const IntegrationDynamicFormModal = ({
                 </Box>
               </>
             )}
-            {(showLogFilters || showTraceFilters || isESIntegration) && (
+            {(showLogFilters || showTraceFilters || isESIntegration || supportsLogLabelMapping || showTraceLabelMapping) && (
               <Box sx={{ mt: ds.space[6] }}>
                 {renderAdvancedToggle()}
                 <Collapse in={advancedOpen}>
@@ -2667,7 +2922,7 @@ const IntegrationDynamicFormModal = ({
                         </>
                       }
                       lockedText="Run Test Connection to load the backend's columns and configure default filters."
-                      unlocked
+                      unlocked={advancedSettingsUnlocked}
                       cards={defaultFilterRules}
                       onCardsChange={handleDefaultFilterRulesChange}
                       accountOptions={accountOptions}
@@ -2676,6 +2931,12 @@ const IntegrationDynamicFormModal = ({
                       fieldLabel='Column'
                       fieldPlaceholder='e.g. cluster_id'
                       valuePlaceholder='e.g. nudgebee'
+                      fieldOptionsForCard={(card) =>
+                        logFieldOptions[fieldOptionsKey(card.accountId, indexForAccount(indexRules, card.accountId, formValues.log_index))] || {
+                          loading: false,
+                          options: [],
+                        }
+                      }
                       validation={columnValidation}
                       onValidateCard={handleValidateCard}
                       validateLabel='Validate columns'
@@ -2695,7 +2956,7 @@ const IntegrationDynamicFormModal = ({
                         </>
                       }
                       lockedText='Run Test Connection to configure default trace filters.'
-                      unlocked
+                      unlocked={advancedSettingsUnlocked}
                       cards={defaultTraceFilterRules}
                       onCardsChange={setDefaultTraceFilterRules}
                       accountOptions={accountOptions}
@@ -2726,7 +2987,7 @@ const IntegrationDynamicFormModal = ({
                         When one Elasticsearch endpoint serves multiple accounts, map each account to its own index. Leave a field blank to fall back
                         to the index configured above.
                       </Typography>
-                      {!connectionVerified ? (
+                      {!advancedSettingsUnlocked ? (
                         <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', pl: ds.space[1], mb: ds.space[3] }}>
                           Run Test Connection to load the cluster&apos;s indices and configure per-account mapping.
                         </Typography>
@@ -2837,6 +3098,62 @@ const IntegrationDynamicFormModal = ({
                         </>
                       )}
                     </>
+                  )}
+                  {supportsLogLabelMapping && (
+                    <Box sx={{ mt: showLogFilters || showTraceFilters || isESIntegration ? ds.space[6] : 0 }}>
+                      <LabelMappingCards
+                        cards={labelMappingCards}
+                        setCards={setLabelMappingCards}
+                        savedCards={savedLabelMappingCards}
+                        connectionVerified={advancedSettingsUnlocked}
+                        fieldOptions={logFieldOptions}
+                        indexRules={indexRules}
+                        topLevelIndex={formValues.log_index}
+                        accountOptions={accountOptions}
+                        accountOptionsLoading={loadingOptions.account_id}
+                        grouped={config.properties?.account_id?.grouped}
+                        renderAccountGroupIcon={renderAccountGroupIcon}
+                        provider={integrationName}
+                        providerSource={editData?.source || 'user'}
+                      />
+                    </Box>
+                  )}
+                  {showTraceLabelMapping && (
+                    <Box sx={{ mt: showLogFilters || showTraceFilters || isESIntegration || supportsLogLabelMapping ? ds.space[6] : 0 }}>
+                      <LabelMappingCards
+                        cards={traceLabelMappingCards}
+                        setCards={setTraceLabelMappingCards}
+                        savedCards={savedTraceLabelMappingCards}
+                        connectionVerified={advancedSettingsUnlocked}
+                        accountOptions={accountOptions}
+                        accountOptionsLoading={loadingOptions.account_id}
+                        grouped={config.properties?.account_id?.grouped}
+                        renderAccountGroupIcon={renderAccountGroupIcon}
+                        provider={integrationName}
+                        providerSource={editData?.source || 'user'}
+                        providerType='traces'
+                        signalNoun='trace'
+                        testIdPrefix='trace-label-mapping'
+                        title='Trace Label Mapping (Optional)'
+                        helpText={
+                          <>
+                            {`Tell ${getBrandTitle()} which span or resource attribute in this backend holds each canonical trace field (e.g. `}
+                            <em>service_name → service.name</em>
+                            {`). What you set here wins over the account and tenant mappings. Leave a field out and it falls through to those.`}
+                          </>
+                        }
+                        lockedText='Run Test Connection to configure the trace field mapping.'
+                        canonicalOptions={CANONICAL_TRACE_FIELD_OPTIONS}
+                        canonicalPlaceholder='e.g. service_name'
+                        fieldPlaceholder='e.g. service.name'
+                        // No field probe for traces: traces_list_labels has no client wrapper and needs a
+                        // saved integration, so the right-hand input is free text and the panel below is
+                        // what confirms a typed value actually took.
+                        fieldOptionsForCard={() => ({ loading: false, options: [], message: '' })}
+                        conceptLabels={TRACE_CONCEPT_LABELS}
+                        conceptOrder={TRACE_CONCEPT_ORDER}
+                      />
+                    </Box>
                   )}
                 </Collapse>
               </Box>

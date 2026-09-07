@@ -80,6 +80,7 @@ func invalidateIntegrationCaches(ctx *security.RequestContext, accountIds []stri
 		observability.InvalidateDefaultLogFiltersCache(accId)
 		observability.InvalidateDefaultTraceFiltersCache(accId)
 		observability.InvalidateLogLabelMappingsCache(accId)
+		observability.InvalidateTraceLabelMappingsCache(accId)
 	}
 }
 

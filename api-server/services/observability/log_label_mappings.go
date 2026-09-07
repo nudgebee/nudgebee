@@ -136,14 +136,8 @@ func SupportsLogSource(provider, integrationSource string) bool {
 // It projects the same resolveLogLabelMapping every log query goes through, so the
 // panel cannot report a mapping that queries do not use.
 func GetLogLabelMapping(ctx *security.RequestContext, request GetLabelMappingRequest) (LabelMappingResponse, error) {
-	providerType := strings.TrimSpace(request.ProviderType)
-	if providerType == "" {
-		providerType = "logs"
-	}
-	if providerType != "logs" {
-		return LabelMappingResponse{}, fmt.Errorf("provider_type %q is not supported (only \"logs\")", providerType)
-	}
-
+	// provider_type is validated by the GetLabelMapping facade, which is what routes
+	// here; this function is the logs branch and nothing else.
 	provider, integrationSource, _, err := getLogsMetricsTracesProviderWithIntegration(
 		ctx, request.AccountId, request.Provider, "logs", request.ProviderSource)
 	if err != nil {
@@ -184,7 +178,7 @@ func GetLogLabelMapping(ctx *security.RequestContext, request GetLabelMappingReq
 		AccountId:        request.AccountId,
 		Provider:         provider,
 		ProviderSource:   integrationSource,
-		ProviderType:     providerType,
+		ProviderType:     labelMappingProviderTypeLogs,
 		IntegrationSaved: integrationSaved,
 		DraftApplied:     request.DraftSet,
 		TierOrder:        labelMappingTierOrder,

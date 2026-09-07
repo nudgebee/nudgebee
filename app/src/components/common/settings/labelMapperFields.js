@@ -31,6 +31,10 @@ export const TRACE_LABEL_FIELDS = [
 // already holds a value, so a configured override is never hidden.
 export const TRACE_LABEL_ADVANCED_FIELDS = [
   { label: 'Trace ID', field: 'trace_id', placeholder: 'Provider field for trace_id' },
+  // The source-side namespace: the one a span came FROM, paired with `workload_name`
+  // above. It was the one canonical trace field with no input on this screen, so it
+  // could only be mapped by hand-written SQL.
+  { label: 'Workload namespace', field: 'workload_namespace', placeholder: 'Provider field for workload_namespace' },
   { label: 'HTTP status code', field: 'http_status_code', placeholder: 'Provider field for http_status_code' },
   { label: 'Resource', field: 'resource', placeholder: 'Provider field for resource' },
   { label: 'Destination workload name', field: 'destination_workload_name', placeholder: 'Provider field for destination_workload_name' },

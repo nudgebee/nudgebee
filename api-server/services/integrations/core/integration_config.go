@@ -182,12 +182,14 @@ func CreateIntegrationConfig(
 
 	integrationConfigSchema = injectSharedLogConfigProperties(integrationConfigSchema, integration.Category())
 
-	// Shape-validate log_label_mappings before it reaches the schema check below.
+	// Shape-validate the label-mapping blobs before they reach the schema check below.
 	// Deliberately lenient, mirroring the index_account_mapping contract: only the
 	// array shape and a non-empty accountId are enforced, because an unknown account
 	// or a blank field name simply contributes nothing at resolution time.
-	if err := validateLogLabelMappings(integrationConfigValues); err != nil {
-		return IntegrationDto{}, err
+	for _, name := range []string{LogLabelMappingsConfigName, TraceLabelMappingsConfigName} {
+		if err := validateLabelMappings(integrationConfigValues, name); err != nil {
+			return IntegrationDto{}, err
+		}
 	}
 
 	// Inject schema defaults that the frontend doesn't send (e.g. hidden

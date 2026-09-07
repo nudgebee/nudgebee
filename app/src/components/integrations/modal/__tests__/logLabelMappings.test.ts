@@ -6,7 +6,7 @@
  * a dropped row silently reverts a mapping, and omitting a cleared value leaves the
  * old mapping in force.
  */
-import { parseLogLabelMappings, serializeLogLabelMappings } from '../LogLabelMappingCards';
+import { parseLogLabelMappings, serializeLogLabelMappings } from '../LabelMappingCards';
 import { indexForAccount } from '../useLogFieldOptions';
 
 describe('parseLogLabelMappings', () => {
