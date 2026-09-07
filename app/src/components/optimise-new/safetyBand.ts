@@ -129,13 +129,16 @@ export const deriveVerdict = (
   changeClass?: ChangeClass | null
 ): { tone: 'success' | 'warning' | 'critical'; title: string } => {
   const prodCount = prod ?? 0;
+  // Risky reads as a fact to plan around, not an alarm: amber, and "in the
+  // blast radius" rather than "affected". Red is reserved for the one case
+  // that cannot be planned around — an irreversible change.
   if (band === 'risky') {
-    if (prodCount > 0) return { tone: 'critical', title: `${prodCount} production dependent${prodCount === 1 ? '' : 's'} affected` };
-    if (truncated) return { tone: 'critical', title: 'Large blast radius' };
     if (changeClass === 'destructive') return { tone: 'critical', title: 'Irreversible change' };
-    return { tone: 'critical', title: 'Dependents would be affected' };
+    if (prodCount > 0) return { tone: 'warning', title: `${prodCount} production dependent${prodCount === 1 ? '' : 's'} in the blast radius` };
+    if (truncated) return { tone: 'warning', title: 'Large blast radius' };
+    return { tone: 'warning', title: 'Dependents in the blast radius' };
   }
-  if (band === 'unknown') return { tone: 'warning', title: 'Impact unknown' };
+  if (band === 'unknown') return { tone: 'warning', title: 'Not in the dependency graph yet' };
   // Removal is irreversible even when the neighbourhood looks empty, so it
   // keeps a visible caution rather than a green "no known dependents".
   if (changeClass === 'destructive') return { tone: 'warning', title: 'Irreversible change' };

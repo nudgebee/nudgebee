@@ -71,7 +71,7 @@ func DeriveSafetyBand(impact *core.ImpactSummary, class ChangeClass) (SafetyBand
 func deriveReductiveBand(impact *core.ImpactSummary) (SafetyBand, string) {
 	switch {
 	case impact.ProductionDependents > 0:
-		return SafetyBandRisky, fmt.Sprintf("%d production dependent(s) would be affected", impact.ProductionDependents)
+		return SafetyBandRisky, fmt.Sprintf("%d production dependent(s) in the blast radius", impact.ProductionDependents)
 	case impact.Truncated:
 		return SafetyBandRisky, "very large blast radius (dependents exceeded the traversal cap)"
 	case impact.DependentCount == 0:
@@ -87,7 +87,7 @@ func deriveReductiveBand(impact *core.ImpactSummary) (SafetyBand, string) {
 func deriveAdditiveBand(impact *core.ImpactSummary) (SafetyBand, string) {
 	switch {
 	case impact.ProductionDependents > 0:
-		return SafetyBandReview, fmt.Sprintf("adds capacity only; %d production dependent(s) are unaffected by a larger allocation — the rolling restart is the remaining risk", impact.ProductionDependents)
+		return SafetyBandReview, fmt.Sprintf("adds capacity only; %d production dependent(s) are unaffected by a larger allocation — only the rolling restart to plan for", impact.ProductionDependents)
 	case impact.Truncated:
 		return SafetyBandReview, "very large dependent set, but the change only adds capacity"
 	case impact.DependentCount == 0:

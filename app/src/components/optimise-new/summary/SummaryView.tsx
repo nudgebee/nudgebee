@@ -47,6 +47,7 @@ import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { buildKubectlCommand, formatRuleName, getRecommendationBrief, getResourceDisplayName, safeParseJSON } from '../utils';
 import { useSummaryData } from './useSummaryData';
+import recommendationApi from '@api1/recommendation';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -259,8 +260,22 @@ const SummaryView = () => {
     },
     [insights]
   );
-  const handleResolve = useCallback((rec: any) => {
-    setResolveModalRec(rec);
+  // The summary projection omits the safety columns; the modal's readiness
+  // banner needs the full row, so refetch by id and fall back to the slim one.
+  // Without an id the query would be unscoped and return someone else's row,
+  // so only a row that answers to this id replaces the slim one.
+  const handleResolve = useCallback(async (rec: any) => {
+    if (!rec?.id) {
+      setResolveModalRec(rec);
+      return;
+    }
+    try {
+      const result: any = await recommendationApi.getK8sRecommendation({ recommendationId: rec.id, status: [], limit: 1 });
+      const full = result?.data?.recommendation?.[0];
+      setResolveModalRec(full?.id === rec.id ? full : rec);
+    } catch {
+      setResolveModalRec(rec);
+    }
   }, []);
   // Deep-links into the Resolutions tab, carrying the same account scope this
   // page is already narrowed to (if any) plus the InProgress status filter —

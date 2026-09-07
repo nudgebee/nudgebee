@@ -25,6 +25,8 @@ import { snackbar } from '@shared/snackbarService';
 import { infoIcon } from '@assets';
 import TicketFormSection from '@components/tickets/TicketFormSection';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { autoOptimizeNotice } from '@components/optimise-new/applyReadiness';
+import { Banner } from '@ui/Banner';
 
 interface TimeHeaderProps {
   title: string;
@@ -1125,8 +1127,13 @@ const VerticalAutoOptimizeSingleConfiguration = ({
         hideTabs
         clusterOptions={isExistingConfig ? undefined : accountOptions}
       />
-      <Box sx={{ display: 'flex', gap: '16px', marginTop: '16px' }}>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {autoOptimizeNotice(autoOptimizeData?.data) && (
+        <Box sx={{ mt: ds.space[4] }}>
+          <Banner id='auto-optimize-prod-dependents' surface='section' tone='info' message={autoOptimizeNotice(autoOptimizeData?.data)} />
+        </Box>
+      )}
+      <Box sx={{ display: 'flex', gap: ds.space[4], marginTop: ds.space[4] }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5] }}>
           <VerticalAutopPilotForm
             handleUpdateData={handleUpdateData}
             handleSelectedAlgo={handleSelectedAlgo}

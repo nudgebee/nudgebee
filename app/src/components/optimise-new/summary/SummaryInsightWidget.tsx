@@ -584,7 +584,7 @@ const SummaryInsightWidget = ({
                 title={`${safeToApply.count.toLocaleString()} findings`}
                 detail={`${
                   safeToApply.dollars > 0 ? `${formatDollars(safeToApply.dollars, savingsSymbol)}/mo · ` : ''
-                }no dependants in the blast radius`}
+                }no dependents in the blast radius`}
               />
             )}
           </TileStack>

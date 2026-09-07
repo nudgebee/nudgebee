@@ -150,26 +150,57 @@ func (m RecommendationCliTool) ToolPrompt() []string {
 	}
 }
 
-// safetyFactsForRefusal fetches the recommendation's safety data so the
-// refusal message hands the agent the exact facts it must present, saving a
-// second lookup round trip. Best-effort: any failure returns "" and the
-// generic refusal still stands.
-func safetyFactsForRefusal(nbCtx core.NbToolContext, recommendationId string) string {
+// recommendationSafety is the stored safety verdict for one recommendation.
+// Band is normalised so a never-assessed row reads as "unknown" — the same
+// word the agent is told to present for it.
+type recommendationSafety struct {
+	Band  string
+	Facts string
+}
+
+// recommendationSafetyFacts reads the recommendation's safety row through the
+// account-scoped view, so a row from another account is simply not found.
+func recommendationSafetyFacts(nbCtx core.NbToolContext, recommendationId string) (recommendationSafety, error) {
 	if !uuidPattern.MatchString(recommendationId) {
-		return ""
+		return recommendationSafety{}, fmt.Errorf("recommendation_id must be a UUID, got %q", recommendationId)
 	}
 	query := fmt.Sprintf(
 		"SELECT rule_name, status, safety_band, safety_reason, dependent_count, production_dependents, estimated_saving FROM recommendation_view WHERE id = '%s'",
 		recommendationId)
 	_, rows, err := sqlToolCall(nbCtx, query, "recommendation_view", recommendationView, 1, nil)
-	if err != nil || len(rows) == 0 {
-		return ""
+	if err != nil {
+		return recommendationSafety{}, err
+	}
+	if len(rows) == 0 {
+		return recommendationSafety{}, fmt.Errorf("recommendation %s not found in this account", recommendationId)
+	}
+	band := "unknown"
+	switch v := rows[0]["safety_band"].(type) {
+	case string:
+		if strings.TrimSpace(v) != "" {
+			band = strings.TrimSpace(v)
+		}
+	case []byte:
+		if strings.TrimSpace(string(v)) != "" {
+			band = strings.TrimSpace(string(v))
+		}
 	}
 	facts, err := json.Marshal(rows[0])
 	if err != nil {
+		return recommendationSafety{}, err
+	}
+	return recommendationSafety{Band: band, Facts: string(facts)}, nil
+}
+
+// safetyFactsForRefusal renders the safety data for a refusal message so the
+// agent gets the exact facts it must present without a second lookup.
+// Best-effort: any failure returns "" and the generic refusal still stands.
+func safetyFactsForRefusal(nbCtx core.NbToolContext, recommendationId string) string {
+	safety, err := recommendationSafetyFacts(nbCtx, recommendationId)
+	if err != nil {
 		return ""
 	}
-	return " — its safety data: " + string(facts)
+	return " — its safety data: " + safety.Facts
 }
 
 func (m RecommendationCliTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {

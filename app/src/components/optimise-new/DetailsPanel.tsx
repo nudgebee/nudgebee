@@ -112,11 +112,13 @@ const BLAST_RADIUS_HELP =
 
 // Plain-language explanation for each safety band, shown in the header chip tooltip.
 const SAFETY_BAND_HELP: Record<string, string> = {
-  safe: 'No dependents were found and the graph is well-observed. Generally safe to apply.',
+  safe: 'No dependents were found and the graph is well-observed. Safe to apply.',
   review:
-    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. Safe to apply after a quick human check.',
-  risky: 'Production dependents would be affected, the blast radius is very large, or the change is irreversible. Review carefully before applying.',
-  unknown: "This resource isn't in the dependency graph, so its impact can't be measured — don't assume it's safe.",
+    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. Safe to apply after a glance at the dependents.',
+  risky:
+    'Production dependents are in the blast radius, the blast radius is very large, or the change is irreversible. Apply with a safeguard — a no-restart apply, a maintenance window, or a ticket to the owner.',
+  unknown:
+    "This resource isn't in the dependency graph yet, so impact isn't assessed. Apply as you normally would; the verdict appears once the graph sees it.",
 };
 
 // Wraps a chip so the tooltip gets a ref-holding element (Label doesn't forward refs).

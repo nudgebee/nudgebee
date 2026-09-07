@@ -7,6 +7,8 @@ import AutoOptimizeForm from '@components/autopilot/form/AutoOptimizeVerticalRig
 import { formatMemory } from '@lib/formatter';
 import { ds } from 'src/utils/colors';
 import { singleReplicaOutage } from './interpretation/buildInterpretation';
+import { applyReadiness } from './applyReadiness';
+import { Banner } from '@ui/Banner';
 import { safeJSONParse } from 'src/utils/common';
 import { toast as snackbar } from '@ui/Toast';
 import { ANNOTATIONS, CI_PREFIX } from '@lib/annotationKeys';
@@ -97,6 +99,10 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
   // pending large-change confirmation rows (null = no confirmation open).
   const [gitOpsInfo, setGitOpsInfo] = useState<{ manager: string | null; gitRepo: string | null }>({ manager: null, gitRepo: null });
   const [driftConfirm, setDriftConfirm] = useState<Array<{ label: string; from: string; to: string; pct: number }> | null>(null);
+  // The safety verdict at the point of applying; safetyConfirm is the pending
+  // acknowledgement for a Review/Risky deploy (false = none open).
+  const readiness = useMemo(() => applyReadiness(recommendation, inPlace), [recommendation, inPlace]);
+  const [safetyConfirm, setSafetyConfirm] = useState(false);
 
   // Ticket state
   const [isTicketFormOpen, setIsTicketFormOpen] = useState(false);
@@ -504,10 +510,16 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
     return rows;
   };
 
-  const submitRecommendation = async (skipConfirm = false) => {
+  const submitRecommendation = async ({ safetyAcked = false, driftAcked = false } = {}) => {
+    // A Review/Risky verdict pauses for one acknowledging "Deploy Fix" — the
+    // facts and the safeguard, then the same button the user already pressed.
+    if (!safetyAcked && readiness?.needsAck) {
+      setSafetyConfirm(true);
+      return;
+    }
     // Warn before a large deviation from the current allocation (a likely mistake
     // or fat-fingered value) — the user confirms once, then we proceed.
-    if (!skipConfirm) {
+    if (!driftAcked) {
       const rows = computeDriftRows();
       if (rows.length > 0) {
         setDriftConfirm(rows);
@@ -839,6 +851,11 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
       >
         <Box sx={{ pb: ds.space.mul(0, 15) }}>
           <AutoPilotHeaderCard header='' data={autoPilotData} />
+          {readiness && (
+            <Box sx={{ mt: ds.space[4] }}>
+              <Banner id='resolve-modal-readiness' surface='section' tone={readiness.tone} title={readiness.title} message={readiness.message} />
+            </Box>
+          )}
           {gitOpsInfo.manager && (
             <Box sx={{ backgroundColor: ds.amber[100], border: `0.5px solid ${ds.amber[300]}`, p: ds.space[4], mt: ds.space[4] }}>
               <Typography variant='body2' sx={{ color: ds.amber[700] }}>
@@ -993,6 +1010,34 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
         )}
       </Modal>
 
+      {/* ── Acknowledge the safety verdict before a Review/Risky deploy ── */}
+      <Modal width='sm' open={safetyConfirm} handleClose={() => setSafetyConfirm(false)} title='Ready to apply'>
+        <Box sx={{ p: ds.space[4] }} id='resolve-modal-safety-confirm'>
+          <Typography variant='body2' sx={{ color: ds.gray[700], fontWeight: ds.weight.semibold, mb: ds.space[2] }}>
+            {readiness?.title}
+          </Typography>
+          <Typography variant='body2' sx={{ color: ds.gray[700], mb: ds.space[5] }}>
+            {readiness?.message}
+          </Typography>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3] }}>
+            <Button tone='secondary' size='md' onClick={() => setSafetyConfirm(false)} id='resolve-modal-safety-cancel'>
+              Cancel
+            </Button>
+            <Button
+              tone='primary'
+              size='md'
+              id='resolve-modal-safety-deploy'
+              onClick={() => {
+                setSafetyConfirm(false);
+                submitRecommendation({ safetyAcked: true });
+              }}
+            >
+              Deploy Fix
+            </Button>
+          </Box>
+        </Box>
+      </Modal>
+
       {/* ── Confirm large resource change ── */}
       <Modal width='sm' open={!!driftConfirm} handleClose={() => setDriftConfirm(null)} title='Confirm large resource change'>
         <Box sx={{ p: ds.space[4] }}>
@@ -1016,7 +1061,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
               size='md'
               onClick={() => {
                 setDriftConfirm(null);
-                submitRecommendation(true);
+                submitRecommendation({ safetyAcked: true, driftAcked: true });
               }}
             >
               Deploy anyway

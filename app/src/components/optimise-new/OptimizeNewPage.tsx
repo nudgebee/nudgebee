@@ -215,8 +215,8 @@ const SAFETY_HEADER_TOOLTIP = (
     lead='Blast radius from the dependency graph — how many resources depend on this one.'
     rows={[
       { term: safetyChip('safe'), description: 'Low blast radius — safe to act now.' },
-      { term: safetyChip('review'), description: 'Check dependents before acting.' },
-      { term: safetyChip('risky'), description: 'High blast radius — proceed with caution.' },
+      { term: safetyChip('review'), description: 'Dependents exist — glance at them first.' },
+      { term: safetyChip('risky'), description: 'High blast radius — apply with a safeguard.' },
     ]}
   />
 );

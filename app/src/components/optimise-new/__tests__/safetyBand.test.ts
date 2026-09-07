@@ -163,8 +163,8 @@ describe('changeClass presentation', () => {
 
 describe('deriveVerdict', () => {
   it('headlines production dependents only when the band grades them dangerous', () => {
-    expect(deriveVerdict('risky', 10, 10, false, 'reductive')).toEqual({ tone: 'critical', title: '10 production dependents affected' });
-    expect(deriveVerdict('risky', 1, 1, false, 'reductive')).toEqual({ tone: 'critical', title: '1 production dependent affected' });
+    expect(deriveVerdict('risky', 10, 10, false, 'reductive')).toEqual({ tone: 'warning', title: '10 production dependents in the blast radius' });
+    expect(deriveVerdict('risky', 1, 1, false, 'reductive')).toEqual({ tone: 'warning', title: '1 production dependent in the blast radius' });
   });
 
   it('never contradicts a Review verdict on an additive change with production dependents', () => {
@@ -184,8 +184,8 @@ describe('deriveVerdict', () => {
   });
 
   it('keeps the pre-existing verdicts for everything else', () => {
-    expect(deriveVerdict('risky', 0, 500, true, 'reductive')).toEqual({ tone: 'critical', title: 'Large blast radius' });
-    expect(deriveVerdict('unknown', 0, 0, false, null)).toEqual({ tone: 'warning', title: 'Impact unknown' });
+    expect(deriveVerdict('risky', 0, 500, true, 'reductive')).toEqual({ tone: 'warning', title: 'Large blast radius' });
+    expect(deriveVerdict('unknown', 0, 0, false, null)).toEqual({ tone: 'warning', title: 'Not in the dependency graph yet' });
     expect(deriveVerdict('safe', 0, 0, false, 'reductive')).toEqual({ tone: 'success', title: 'No known dependents' });
     expect(deriveVerdict('review', 0, 3, false, 'reductive')).toEqual({ tone: 'success', title: 'Contained blast radius' });
     expect(deriveVerdict(undefined, undefined, undefined, undefined, null).tone).toBe('success');
