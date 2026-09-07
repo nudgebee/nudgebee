@@ -520,16 +520,38 @@ func (s *CubeAPMTraceSource) QueryTraces(ctx *security.RequestContext, req Trace
 
 // fetchSpans runs the search, decodes every span of every matched trace, applies
 // the filters the API could not, and truncates to the requested page size.
+// fetchSpans returns one PAGE of spans: the full fan-out result, truncated to the
+// requested limit. Callers that summarise the whole result — label and label-value
+// discovery — must use collectSpans instead, or the summary describes only the page.
 func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	spans, err := s.collectSpans(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if limit := cubeAPMTraceLimit(req); len(spans) > limit {
+		spans = spans[:limit]
+	}
+	return spans, nil
+}
+
+// collectSpans runs the per-service fan-out and returns EVERY span it matched,
+// filtered and sorted but not truncated.
+//
+// The distinction matters because the search API caps each request at 100 traces
+// and accepts no wildcard service, so a query with no service filter is answered
+// by one request per discovered service. Truncating that union to a page size
+// keeps only the most recent spans, which in practice all belong to whichever
+// service is busiest — so label-value discovery over a truncated page reported a
+// single service out of five.
+func (s *CubeAPMTraceSource) collectSpans(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
 	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get CubeAPM configs: %w", err)
 	}
 
-	limit := cubeAPMTraceLimit(req)
-	fetchLimit := limit
+	fetchLimit := cubeAPMTraceLimit(req)
 	if cubeAPMWhereHasFilters(req.QueryRequest.Where) {
-		fetchLimit = min(limit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
+		fetchLimit = min(fetchLimit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
 	}
 
 	// The API requires an exact service and supports no wildcard, so a query that
@@ -597,10 +619,6 @@ func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req Traces
 		return nil, err
 	}
 	sortCubeAPMSpans(spans, req.QueryRequest.OrderBy)
-
-	if len(spans) > limit {
-		spans = spans[:limit]
-	}
 	return spans, nil
 }
 
@@ -877,7 +895,7 @@ func (s *CubeAPMTraceSource) GetLabelValues(ctx *security.RequestContext, req Tr
 			fmt.Errorf("access denied for account: %s", req.AccountId)
 	}
 
-	spans, err := s.fetchSpans(ctx, TracesV3Request{
+	spans, err := s.collectSpans(ctx, TracesV3Request{
 		AccountId:    req.AccountId,
 		StartTime:    req.StartTime,
 		EndTime:      req.EndTime,
@@ -915,7 +933,7 @@ func (s *CubeAPMTraceSource) GetLabelValues(ctx *security.RequestContext, req Tr
 // full tag set — so the label picker lists this deployment's real attributes
 // instead of falling back to the derived canonical set.
 func (s *CubeAPMTraceSource) QueryLabels(ctx *security.RequestContext, req FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
-	spans, err := s.fetchSpans(ctx, TracesV3Request{
+	spans, err := s.collectSpans(ctx, TracesV3Request{
 		AccountId:    req.AccountId,
 		StartTime:    req.StartTime,
 		EndTime:      req.EndTime,

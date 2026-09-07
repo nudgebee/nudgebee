@@ -3,6 +3,7 @@ package observability
 import (
 	"encoding/json"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -838,5 +839,45 @@ func TestCubeAPMTraceLimitRespectsServerCap(t *testing.T) {
 	fetch := min(cubeAPMDefaultTraceLimit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
 	if fetch > 100 {
 		t.Errorf("over-fetch resolves to %d, above the server cap of 100", fetch)
+	}
+}
+
+// Label and label-value discovery must summarise the WHOLE fan-out, not one page.
+//
+// The search API caps each request at 100 traces and takes no wildcard service, so
+// an unfiltered query issues one request per discovered service. Truncating that
+// union to a page size keeps only the most recent spans — which in practice all
+// belong to whichever service is busiest. Live, that made the Traces filter offer
+// exactly one service out of five.
+//
+// This pins the wiring: the two discovery methods must not go through the paged
+// helper. It is a source-level check because reproducing it needs a multi-service
+// backend, which the unit suite has no access to.
+func TestCubeAPMDiscoveryDoesNotUsePagedFetch(t *testing.T) {
+	src, err := os.ReadFile("cubeapm_traces.go")
+	if err != nil {
+		t.Fatalf("could not read source: %v", err)
+	}
+	body := string(src)
+
+	for _, method := range []string{"GetLabelValues", "QueryLabels"} {
+		start := strings.Index(body, "func (s *CubeAPMTraceSource) "+method+"(")
+		if start < 0 {
+			t.Fatalf("could not locate %s", method)
+		}
+		// Bound the scan at the next top-level func so we only read this method.
+		end := strings.Index(body[start+1:], "\nfunc ")
+		if end < 0 {
+			end = len(body) - start - 1
+		}
+		section := body[start : start+1+end]
+
+		if strings.Contains(section, "s.fetchSpans(") {
+			t.Errorf("%s calls the paged fetchSpans; label discovery would describe "+
+				"only the newest page and drop entire services", method)
+		}
+		if !strings.Contains(section, "s.collectSpans(") {
+			t.Errorf("%s must call collectSpans so it summarises the full fan-out", method)
+		}
 	}
 }
