@@ -336,6 +336,13 @@ type ProviderCapabilities struct {
 	SupportsLogGroups              bool `json:"supports_log_groups"`
 	// Interface-derived at runtime (optional interface — not all providers implement it)
 	SupportsAutoQuery bool `json:"supports_auto_query"`
+	// Whether Create Alert can write a rule for this provider + account. Decided
+	// for the two Prometheus transports (the agent must be connected to land a
+	// PrometheusRule CR; a direct Prometheus must declare a ruler); every other
+	// provider answers true and fails, if at all, at its own API. AlertRulesReason
+	// carries the operator-facing explanation when false.
+	SupportsAlertRules bool   `json:"supports_alert_rules"`
+	AlertRulesReason   string `json:"alert_rules_reason,omitempty"`
 	// Runtime-detected from source. SupportedOperatorDescriptors carries the
 	// backend-authoritative display metadata (chip/line labels, kinds); the UI
 	// migrates from SupportedOperators to SupportedOperatorDescriptors and the

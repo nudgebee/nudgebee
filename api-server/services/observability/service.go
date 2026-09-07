@@ -9,8 +9,10 @@ import (
 	"nudgebee/services/account"
 	"nudgebee/services/cloud"
 	"nudgebee/services/common"
+	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/observability/alertrule"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"regexp"
@@ -1916,6 +1918,7 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get metrics source", "provider", provider, "error", err)
 		}
+		caps.SupportsAlertRules, caps.AlertRulesReason = alertRuleCapability(ctx, accountId, provider, integrationSource)
 	}
 
 	// Descriptors carry the operator↔data-type matrix the UI filters its per-label
@@ -1925,6 +1928,25 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 	caps.SupportedOperatorDescriptors = applyOperatorDataTypeOverrides(
 		query.DescribeOperators(caps.SupportedOperators), resolvedSource)
 	return caps
+}
+
+// alertRuleCapability says whether Create Alert can write a rule for this metrics
+// provider. Only the two Prometheus transports are decided here, because they are
+// the two that fail after the form is filled in: the in-cluster path lands a
+// PrometheusRule CR through the agent, so it needs one connected; the direct path
+// writes to the ruler API, so the integration must declare one. Other providers
+// keep the answer the UI already assumes.
+func alertRuleCapability(ctx *security.RequestContext, accountId, provider, integrationSource string) (bool, string) {
+	if provider != "prometheus" || accountId == "" {
+		return true, ""
+	}
+	if integrationSource == "user" {
+		return alertrule.PrometheusRulerConfigured(ctx, accountId)
+	}
+	if !eventrule.IsK8sAgentConnected(accountId) {
+		return false, "no k8s agent is connected for this account — alert rules for an in-cluster Prometheus are written by the agent"
+	}
+	return true, ""
 }
 
 func GetDefaultProvider(context *security.RequestContext, accountId, providerType, providerSource, requestedProvider string) (*DefaultProviderResponse, error) {

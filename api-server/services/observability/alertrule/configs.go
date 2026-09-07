@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"nudgebee/services/common"
+	"nudgebee/services/integrations/promclient"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 )
@@ -615,4 +616,34 @@ func cubeAPMAdminHeaders(token string) map[string]string {
 		headers["Authorization"] = "Bearer " + token
 	}
 	return headers
+}
+
+// getPrometheusUserConfig loads the account's user-source Prometheus row into the
+// shared client config. Like getLokiConfigs, this reads the row locally: the
+// package cannot import integrations (eventrule → alertrule → integrations →
+// eventrule), so the row is read here and handed to promclient, which holds the
+// one auth implementation the metric queries also use.
+func getPrometheusUserConfig(sc *security.RequestContext, accountId string) (promclient.PrometheusUserConfig, error) {
+	configs, err := listIntegrationConfigValuesWithSource(sc, accountId, "prometheus", "user")
+	if err != nil {
+		return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to get prometheus integration: %w", err)
+	}
+
+	values := make(map[string]string, len(configs))
+	for _, c := range configs {
+		value, err := decryptConfigValue(c)
+		if err != nil {
+			return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to decrypt prometheus config %s: %w", c.Name, err)
+		}
+		values[c.Name] = value
+	}
+
+	cfg, err := promclient.NewPrometheusUserConfig(values)
+	if err != nil {
+		return cfg, fmt.Errorf("prometheus integration has invalid settings: %w", err)
+	}
+	if cfg.URL == "" {
+		return cfg, fmt.Errorf("missing required prometheus configuration values")
+	}
+	return cfg, nil
 }

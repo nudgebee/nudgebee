@@ -23,6 +23,8 @@ func TestNormalizeSyncSeverity(t *testing.T) {
 // knows, and must be a bare provider name rather than a *_webhook source — a
 // synced rule is the definition, not a firing of it.
 func TestSyncableProvidersAreWellFormed(t *testing.T) {
+	// Webhook sources named before the *_webhook convention settled.
+	webhookSourceExceptions := map[string]string{"prometheus": "prometheus_alertmanager_webhook"}
 	assert.NotEmpty(t, SyncableProviders())
 	for source, entry := range syncableProviders {
 		assert.NotEmpty(t, entry.provider, "source %q has no provider", source)
@@ -31,9 +33,22 @@ func TestSyncableProvidersAreWellFormed(t *testing.T) {
 		// provider's webhook source so a synced definition and the webhook
 		// reporting its firings share one row.
 		assert.NotContains(t, source, "_webhook", "request source %q must be the provider, not its webhook", source)
-		assert.Equal(t, source+"_webhook", entry.ruleSource,
+		want := source + "_webhook"
+		if exception, ok := webhookSourceExceptions[source]; ok {
+			want = exception
+		}
+		assert.Equal(t, want, entry.ruleSource,
 			"source %q must write to its own *_webhook event_rules.source", source)
 	}
+}
+
+// Prometheus rules must land on the Alertmanager webhook's source so the firings
+// that webhook reports and the definitions the sync reads share one row.
+func TestPrometheusWritesToAlertmanagerWebhookSource(t *testing.T) {
+	entry := syncableProviders["prometheus"]
+	assert.Equal(t, "prometheus", entry.provider)
+	assert.Equal(t, "user", entry.providerSource, "only the direct integration is synced; the agent pushes its own inventory")
+	assert.Equal(t, "prometheus_alertmanager_webhook", entry.ruleSource)
 }
 
 // Datadog rules must land on datadog_webhook so they merge with the rows the

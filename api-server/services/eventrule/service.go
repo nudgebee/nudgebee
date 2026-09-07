@@ -166,7 +166,8 @@ func isExternalProviderSource(source string) bool {
 		"cloudwatch": true, "azure_monitor": true, "gcp_monitoring": true,
 		"splunk": true, "elasticsearch": true, "loki": true,
 		"signoz": true, "grafana": true, "chronosphere_user": true,
-		"cubeapm": true,
+		"cubeapm":                true,
+		prometheusUserSourceName: true,
 	}
 	return externalSources[source]
 }
@@ -192,6 +193,8 @@ func resolveProviderFromSource(source string) (string, string) {
 		return "chronosphere", "user"
 	case "loki":
 		return "loki", "agent"
+	case prometheusUserSourceName:
+		return "prometheus", "user"
 	case "cloudwatch":
 		return "aws_cloudwatch", "user"
 	case "azure_monitor":
@@ -279,6 +282,19 @@ func upsertAgentPlaybook(dbms *database.DatabaseManager, cloudAccountId, tenantI
 
 const agentEventSourceName = "prometheus"
 
+// prometheusUserSourceName is the source of a metric rule an account writes to its
+// OWN Prometheus-compatible ruler (Mimir / Cortex / Grafana Cloud) through the
+// direct prometheus:user integration. Kept apart from agentEventSourceName — the
+// relay / PrometheusRule path — the way chronosphere_user is kept apart from
+// chronosphere.
+const prometheusUserSourceName = "prometheus_user"
+
+// errNoAgentForPrometheusRule is returned instead of letting the relay call time
+// out: a rule on the agent path can only land as a PrometheusRule CR, and with no
+// agent there is nothing to write it to. A hosted Prometheus is connected as
+// prometheus:user and takes the ruler path instead.
+var errNoAgentForPrometheusRule = errors.New("no k8s agent is connected for this account, so the alert rule cannot be written to its Prometheus — connect the Prometheus directly with a ruler (Mimir / Cortex / Grafana Cloud), or install the agent")
+
 // normalizeEventSource resolves the canonical source for a metric rule from the
 // available provider signals on the request. Order of precedence:
 //  0. Webhook-ingested source (`*_webhook`) — keep as-is. A webhook rule describes an
@@ -290,7 +306,10 @@ const agentEventSourceName = "prometheus"
 //     table), and it would also defeat the `_webhook` guards on the upsert and on
 //     playbook creation.
 //  1. Explicit external provider (`source` already names a known external system) — keep as-is.
-//  2. Explicit `metric_provider` — reverse-map to its source.
+//  2. Explicit `metric_provider` — reverse-map to its source. `prometheus` maps only
+//     together with `metric_provider_source: user` (the direct, agentless
+//     integration → `prometheus_user`, the ruler path); a bare `prometheus` is left
+//     unmapped on purpose so the agent path in step 3 stays the default.
 //  3. Default / ambiguous (`source` is "" or "nudgebee") for a metric rule with no
 //     external provider — treat as the in-cluster Prometheus, so the relay push branch fires.
 //     Without this the rule lands in the metastore but is never created in the agent's
@@ -306,13 +325,17 @@ func normalizeEventSource(req *EventConfig) {
 	if isExternalProviderSource(req.Source) {
 		return
 	}
+	isMetricRule := req.AlertType == "" || req.AlertType == "metric"
+	if isMetricRule && req.MetricProvider == agentEventSourceName && req.MetricProviderSource == "user" {
+		req.Source = prometheusUserSourceName
+		return
+	}
 	if req.MetricProvider != "" {
 		if resolved := resolveSourceFromMetricProvider(req.MetricProvider); resolved != "" {
 			req.Source = resolved
 			return
 		}
 	}
-	isMetricRule := req.AlertType == "" || req.AlertType == "metric"
 	if isMetricRule && (req.Source == "" || req.Source == "nudgebee") {
 		req.Source = agentEventSourceName
 	}
@@ -376,6 +399,9 @@ func CreateEventRule(context *security.RequestContext, eventRequest EventConfig)
 
 	// 1. Prometheus: sync via relay (existing path)
 	if eventRequest.Source == agentEventSourceName {
+		if !isK8sAgentConnected(eventRequest.AccountID) {
+			return data, errNoAgentForPrometheusRule
+		}
 		relayRequest := relay.RelayExecuteRequest{
 			NoSinks: true,
 			Cache:   false,
@@ -475,6 +501,9 @@ func UpdateEventRule(context *security.RequestContext, eventRequest EventConfig)
 
 	// 1. Prometheus: sync via relay (existing path)
 	if eventRequest.Source == agentEventSourceName {
+		if !isK8sAgentConnected(eventRequest.AccountID) {
+			return data, errNoAgentForPrometheusRule
+		}
 		relayRequest := relay.RelayExecuteRequest{
 			NoSinks: true,
 			Cache:   false,

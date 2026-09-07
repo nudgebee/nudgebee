@@ -8254,6 +8254,8 @@ type LinkDrillDown {
 
 type ProviderCapabilities {
   supports_log_groups: Boolean!
+  supports_alert_rules: Boolean
+  alert_rules_reason: String
   supports_auto_query: Boolean!
   supports_raw_query: Boolean!
   supports_heatmap: Boolean!

@@ -46,7 +46,7 @@ func TestBuildLokiAlertRule_RelayGroupNameUnchanged(t *testing.T) {
 // On the ruler API the group name IS the group's identity: writing every rule under one
 // group name would make each create overwrite the previous rule.
 func TestBuildLokiAlertRuleGroup_NamesGroupPerRule(t *testing.T) {
-	name, rule := decodeRuleGroup(t, buildLokiAlertRuleGroup(AlertRuleConfig{
+	name, rule := decodeRuleGroup(t, buildRuleGroup(AlertRuleConfig{
 		Name:  "PodCrashLoop",
 		Query: `sum(count_over_time({namespace="demo"} |= "CrashLoopBackOff" [5m])) > 0`,
 	}, "PodCrashLoop"))
@@ -60,7 +60,7 @@ func TestBuildLokiAlertRuleGroup_NamesGroupPerRule(t *testing.T) {
 }
 
 func TestBuildLokiAlertRuleGroup_MergesCustomLabels(t *testing.T) {
-	_, rule := decodeRuleGroup(t, buildLokiAlertRuleGroup(AlertRuleConfig{
+	_, rule := decodeRuleGroup(t, buildRuleGroup(AlertRuleConfig{
 		Name:        "Custom",
 		Labels:      map[string]string{"team": "platform"},
 		Annotations: map[string]string{"description": "too many errors"},
@@ -97,7 +97,7 @@ func TestLokiSaasAlertRule_CreateWritesGroupNamedAfterRule(t *testing.T) {
 		Headers:  map[string]string{"X-Extra": "yes"},
 	}
 
-	err := (&LokiSaasAlertRuleSource{}).postRuleGroup(cfg, buildLokiAlertRuleGroup(AlertRuleConfig{
+	err := (&LokiSaasAlertRuleSource{}).postRuleGroup(cfg, buildRuleGroup(AlertRuleConfig{
 		Name:  "HighErrorRate",
 		Query: `sum(count_over_time({namespace="demo"} |= "error" [5m])) > 0`,
 	}, "HighErrorRate"))

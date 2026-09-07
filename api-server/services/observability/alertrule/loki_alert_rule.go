@@ -112,14 +112,15 @@ func (s *LokiAlertRuleSource) DeleteAlertRule(ctx *security.RequestContext, acco
 // buildLokiAlertRule builds the rule group the relay path sends. The agent action takes
 // the rule name separately, so every group it writes can share one static name.
 func buildLokiAlertRule(config AlertRuleConfig) string {
-	return buildLokiAlertRuleGroup(config, "nudgebee-alerts")
+	return buildRuleGroup(config, "nudgebee-alerts")
 }
 
-// buildLokiAlertRuleGroup builds a Prometheus-compatible rule group under the given
-// group name. On the direct ruler API the group name in the body IS the group's identity
-// — POSTing every rule under one name would make each create overwrite the last — so the
-// user-mode source passes the rule's own name here.
-func buildLokiAlertRuleGroup(config AlertRuleConfig, groupName string) string {
+// buildRuleGroup builds a Prometheus rule group under the given group name — the
+// format the Loki ruler and the Cortex/Mimir ruler both take, so the Prometheus
+// direct source uses it as well. On the direct ruler API the group name in the body
+// IS the group's identity — POSTing every rule under one name would make each create
+// overwrite the last — so the user-mode sources pass the rule's own name here.
+func buildRuleGroup(config AlertRuleConfig, groupName string) string {
 	forDuration := "5m"
 	if config.Duration != "" {
 		forDuration = config.Duration
@@ -136,8 +137,14 @@ func buildLokiAlertRuleGroup(config AlertRuleConfig, groupName string) string {
 	}
 
 	description := ""
+	// The caller's summary is the alert title downstream (the Alertmanager webhook
+	// parser reads annotations.summary); fall back to the rule name when none given.
+	summary := config.Name
 	if config.Annotations != nil {
 		description = config.Annotations["description"]
+		if s := config.Annotations["summary"]; s != "" {
+			summary = s
+		}
 	}
 
 	// Build Prometheus-compatible rule group YAML
@@ -153,7 +160,7 @@ func buildLokiAlertRuleGroup(config AlertRuleConfig, groupName string) string {
 					"source":   "nudgebee",
 				},
 				"annotations": map[string]string{
-					"summary":     config.Name,
+					"summary":     summary,
 					"description": description,
 				},
 			},
@@ -187,7 +194,7 @@ func (s *LokiSaasAlertRuleSource) CreateAlertRule(ctx *security.RequestContext, 
 	}
 
 	// The group is named after the rule so each rule is its own addressable group.
-	if err := s.postRuleGroup(cfg, buildLokiAlertRuleGroup(config, config.Name)); err != nil {
+	if err := s.postRuleGroup(cfg, buildRuleGroup(config, config.Name)); err != nil {
 		return nil, fmt.Errorf("failed to create Loki alert rule: %w", err)
 	}
 
@@ -206,7 +213,7 @@ func (s *LokiSaasAlertRuleSource) UpdateAlertRule(ctx *security.RequestContext, 
 
 	// The ruler API has no separate update verb: re-POSTing a group replaces it, so the
 	// group name must stay the one this rule was created under.
-	if err := s.postRuleGroup(cfg, buildLokiAlertRuleGroup(config, externalRuleId)); err != nil {
+	if err := s.postRuleGroup(cfg, buildRuleGroup(config, externalRuleId)); err != nil {
 		return nil, fmt.Errorf("failed to update Loki alert rule: %w", err)
 	}
 

@@ -83,6 +83,16 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   const [stepErrors, setStepErrors] = useState<boolean[]>([false, false, false]);
   const [functions, setFunctions] = useState([]);
   const [metricsProvider, setMetricsProvider] = useState<string>('');
+  // Whether the account's metrics provider is connected through the in-cluster
+  // agent or directly ('user'). A direct Prometheus has no PrometheusRule CR to
+  // land a rule in, so its rules are written to the provider's own ruler API and
+  // the request must say so (metric_provider_source) or the backend routes it at
+  // an agent the account does not have.
+  const [metricsSource, setMetricsSource] = useState<string>('');
+  // Backend verdict on whether a rule can be written for this provider at all
+  // (agent connected / ruler declared). When it cannot, submitting is pointless:
+  // the form says why up front instead of failing after every step is filled in.
+  const [alertRules, setAlertRules] = useState<{ supported: boolean; reason: string }>({ supported: true, reason: '' });
 
   // Providers whose alert condition is expressed in PromQL / MetricsQL.
   const PROMQL_METRICS_PROVIDERS = ['prometheus', 'victoria_metrics', 'victoria-metrics', 'chronosphere'];
@@ -104,7 +114,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     const src = alertManagerObject?.source;
     if (src) {
       if (src === 'datadog_webhook' || src === 'datadog') return 'datadog';
-      if (src === 'chronosphere' || src === 'prometheus' || src === 'nudgebee') return 'promql';
+      if (src === 'chronosphere' || src === 'prometheus' || src === 'prometheus_user' || src === 'nudgebee') return 'promql';
       return 'other';
     }
     if (metricsProvider === 'datadog') return 'datadog';
@@ -166,11 +176,24 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
         // Fail closed to the PromQL default (prior behaviour) on an error response or a
         // missing/blank provider, rather than acting on incomplete data. This is a silent
         // fallback by design — provider detection failing shouldn't error-toast on open.
-        const provider = res?.data?.errors ? '' : res?.data?.data?.observability_get_default_provider?.provider;
+        const resolved = res?.data?.errors ? null : res?.data?.data?.observability_get_default_provider;
+        const provider = resolved?.provider;
         setMetricsProvider(typeof provider === 'string' ? provider : '');
+        setMetricsSource(typeof resolved?.integration_source === 'string' ? resolved.integration_source : '');
+        const caps = resolved?.capabilities;
+        // Only an explicit false blocks: an older backend without the flag, or a
+        // failed lookup, keeps the prior behaviour of letting the submit through.
+        setAlertRules({
+          supported: caps?.supports_alert_rules !== false,
+          reason: typeof caps?.alert_rules_reason === 'string' ? caps.alert_rules_reason : '',
+        });
       })
       .catch(() => {
-        if (!cancelled) setMetricsProvider('');
+        if (!cancelled) {
+          setMetricsProvider('');
+          setMetricsSource('');
+          setAlertRules({ supported: true, reason: '' });
+        }
       });
     return () => {
       cancelled = true;
@@ -580,7 +603,18 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     return _result;
   };
 
+  // A rule created on an account whose metrics provider is a direct (agentless)
+  // Prometheus goes to that provider's ruler, not the agent. An existing alert
+  // keeps the source it was stored under.
+  const isDirectPrometheus = metricsProvider === 'prometheus' && metricsSource === 'user';
+  const submitSource = isCreateAlert && isDirectPrometheus ? 'prometheus_user' : source;
+  const alertRulesBlocked = isCreateAlert && !alertRules.supported;
+
   const handleSubmit = () => {
+    if (alertRulesBlocked) {
+      snackbar.error(alertRules.reason || 'Alert rules cannot be created for this account.');
+      return;
+    }
     if (!validateForm()) {
       snackbar.error('Please fill all required fields.');
 
@@ -614,7 +648,8 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
       alert: alertName,
       duration: time + timeCondition,
       accountId: accountId,
-      source: source,
+      source: submitSource,
+      ...(isCreateAlert && isDirectPrometheus ? { metric_provider: 'prometheus', metric_provider_source: 'user' } : {}),
       category: 'kubernetes-apps',
       severity: severity.toLowerCase(),
       enabled: true,
@@ -867,6 +902,21 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                   2. you can also configure actions to be taken whenever the alert conditions are met
                 </Typography>
               </Box>
+              {alertRulesBlocked && (
+                <Box
+                  data-testid='alert-rules-unavailable'
+                  sx={{
+                    p: 'var(--ds-space-3) var(--ds-space-4)',
+                    backgroundColor: ds.red[100],
+                    border: `1px solid ${ds.red[300]}`,
+                    borderRadius: 'var(--ds-radius-lg)',
+                  }}
+                >
+                  <Typography sx={{ ...styles.instructionText, color: ds.gray[700], mb: '0px' }}>
+                    Alert rules cannot be created for this account yet: {alertRules.reason}
+                  </Typography>
+                </Box>
+              )}
               {/* Alert Name */}
               <Input
                 label='Alert Name'

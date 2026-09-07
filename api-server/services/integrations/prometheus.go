@@ -3,6 +3,7 @@ package integrations
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	neturl "net/url"
 	"nudgebee/services/integrations/core"
@@ -181,6 +182,30 @@ func (m Prometheus) ConfigSchema() core.IntegrationSchema {
 				Multiline:  true,
 				Priority:   40,
 			},
+			// A hosted endpoint answers PromQL but does not necessarily take alert
+			// rules: Mimir, Cortex and Grafana Cloud expose the Cortex ruler API; a
+			// plain Prometheus, Thanos or VictoriaMetrics has no rule-write API at
+			// all. The operator says which, so Create Alert can refuse up front
+			// instead of failing against an endpoint that will never store the rule.
+			PrometheusRulerTypeKey: {
+				Type: core.ToolSchemaTypeString,
+				Description: "Whether Nudgebee can write alert rules to this endpoint. Mimir, Cortex and Grafana Cloud " +
+					"expose a rule-management API; a plain Prometheus, Thanos or VictoriaMetrics does not — leave " +
+					"'none' and Nudgebee will query it but manage no rules on it.",
+				Default:    PrometheusRulerNone,
+				Enum:       []any{PrometheusRulerNone, PrometheusRulerMimirCortex},
+				Priority:   50,
+				IsTestable: true,
+			},
+			PrometheusRulerURLKey: {
+				Type: core.ToolSchemaTypeString,
+				Description: "Base URL of the ruler API when it is served somewhere other than the Prometheus URL above — " +
+					"the path up to, not including, /config/v1/rules (e.g. https://mimir.example.com/prometheus). " +
+					"Leave empty to use the Prometheus URL.",
+				ShowWhen:   map[string]any{PrometheusRulerTypeKey: PrometheusRulerMimirCortex},
+				Priority:   48,
+				IsTestable: true,
+			},
 			// The k8s agent reports its own cluster label via connection_status,
 			// which the relay substitutes into __CLUSTER__. A direct connection has
 			// no agent, so a shared multi-cluster backend (Mimir, Thanos, Cortex)
@@ -251,11 +276,59 @@ func (m Prometheus) ValidateConfig(sc *security.SecurityContext, config []core.I
 		errs = append(errs, fmt.Errorf("%s: %w", key, err))
 	}
 	errs = append(errs, validatePrometheusAuth(cfg)...)
+	if rawRuler := strings.TrimSpace(values[PrometheusRulerURLKey]); rawRuler != "" && cfg.HasRuler() {
+		if urlErr := validateEgressURL(rawRuler); urlErr != nil {
+			errs = append(errs, fmt.Errorf("%s %w", PrometheusRulerURLKey, urlErr))
+		}
+	}
 	if len(errs) > 0 {
 		return errs
 	}
 
-	return probePrometheus(cfg)
+	if probeErrs := probePrometheus(cfg); len(probeErrs) > 0 {
+		return probeErrs
+	}
+	if cfg.HasRuler() {
+		return probePrometheusRuler(cfg)
+	}
+	return nil
+}
+
+// probePrometheusRuler proves the declared ruler is really there by listing the
+// tenant's rule groups — the cheapest call the Cortex ruler API serves. A ruler
+// holding no groups answers 404 "no rule groups found" (Cortex, Mimir); that is a
+// working ruler, not a missing one, so 404 passes only with that body. A bare 404
+// or a 405 is what a plain Prometheus returns for a path it does not serve, and
+// VictoriaMetrics answers 400 `unsupported path requested` — all three are the
+// misconfiguration this probe exists to catch at save time.
+func probePrometheusRuler(cfg PrometheusUserConfig) []error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ruler := cfg.Ruler()
+	resp, err := ruler.DoGet(ctx, "/config/v1/rules", nil)
+	if err != nil {
+		return []error{fmt.Errorf("failed to connect to the ruler at %s: %w", ruler.URL, err)}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return nil
+	case resp.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(string(body)), "no rule groups found"):
+		return nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		return []error{fmt.Errorf("the ruler at %s rejected the credentials (HTTP 401) — check the %s settings", ruler.URL, PrometheusAuthTypeKey)}
+	case resp.StatusCode == http.StatusForbidden:
+		return []error{fmt.Errorf("insufficient permissions on the ruler at %s (HTTP 403) — a Grafana Cloud token needs the rules:read and rules:write scopes", ruler.URL)}
+	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed,
+		resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(string(body)), "unsupported path"):
+		return []error{fmt.Errorf("no ruler API at %s/config/v1/rules (HTTP %d) — set %s to none for a plain Prometheus, Thanos or VictoriaMetrics, or point %s at the Mimir / Cortex ruler",
+			ruler.URL, resp.StatusCode, PrometheusRulerTypeKey, PrometheusRulerURLKey)}
+	default:
+		return []error{fmt.Errorf("the ruler at %s returned unexpected status: HTTP %d", ruler.URL, resp.StatusCode)}
+	}
 }
 
 // validatePrometheusAuth checks that the credentials the selected auth_type needs

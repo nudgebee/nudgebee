@@ -161,6 +161,9 @@ const ENUM_VALUE_LABELS = {
   // so they are deliberately left alone.
   aws_sigv4: 'AWS SigV4 (Amazon Managed Prometheus)',
   azure_ad: 'Azure AD (Azure Monitor managed Prometheus)',
+  // snakeToTitleCase would render "Mimir Cortex", which names neither the API nor
+  // Grafana Cloud — the deployments an operator is actually choosing between.
+  mimir_cortex: 'Mimir / Cortex / Grafana Cloud',
   cloud_api_token: 'Confluence Cloud — email + API token',
   datacenter_pat: 'Data Center / Server — personal access token',
   datacenter_password: 'Data Center / Server — username + password',
@@ -1354,6 +1357,36 @@ const IntegrationDynamicFormModal = ({
   // this only runs on edit — a not-yet-created integration has nothing to read.
   const [promLabels, setPromLabels] = useState([]);
 
+  // Alert delivery for a Prometheus connected without an agent. There is no
+  // runner in the cluster to receive Alertmanager's webhook, so alerts reach
+  // Nudgebee through the public Alertmanager-webhook integration instead — and
+  // an operator setting this up has no way to discover that from this form. On
+  // edit, list the account's Alertmanager webhooks and show the receiver URL
+  // with the account name pinned as the cluster, the same value an agent-
+  // delivered alert would carry.
+  const isDirectPrometheus = integrationName === 'prometheus' && !!editData?.id && editData?.source !== 'agent';
+  const [alertmanagerWebhooks, setAlertmanagerWebhooks] = useState([]);
+
+  useEffect(() => {
+    if (!openModal || !isDirectPrometheus) return;
+    let cancelled = false;
+    apiIntegrations
+      .listIntegrations({ type: 'prometheus_alertmanager_webhook', limit: 50 })
+      .then((res) => {
+        if (!cancelled) {
+          setAlertmanagerWebhooks(res?.data?.data?.integrations_list?.rows || []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAlertmanagerWebhooks([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [openModal, isDirectPrometheus]);
+
   // The endpoint returns EVERY label in the Prometheus — hundreds — which is
   // unusable as a list and overflows the modal. Surface only the ones that
   // plausibly identify a cluster (what this field is for) and report the rest
@@ -1952,6 +1985,100 @@ const IntegrationDynamicFormModal = ({
       message:
         'Add the following URL as a Webhook notification channel in CubeAPM. Leave the payload template unset — CubeAPM’s default body is already Alertmanager-compatible, which is what NudgeBee parses',
     },
+  };
+
+  // List rows carry integrations_cloud_accounts / integration_config_values as
+  // JSON strings; the edit row arrives already parsed. Accept either.
+  const asList = (value) => {
+    if (Array.isArray(value)) return value;
+    const parsed = safeJSONParse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  };
+  const webhookToken = (row) => {
+    const values = row?.integration_config_values;
+    const parsed = typeof values === 'string' ? safeJSONParse(values) : values;
+    if (Array.isArray(parsed)) {
+      return parsed.find((c) => c?.name === 'token')?.value || '';
+    }
+    return parsed?.token || '';
+  };
+
+  const renderAlertDelivery = () => {
+    if (!isDirectPrometheus) {
+      return null;
+    }
+    const receivers = [];
+    asList(editData?.integrations_cloud_accounts).forEach((acc) => {
+      alertmanagerWebhooks.forEach((row) => {
+        const linked = asList(row?.integrations_cloud_accounts).some((a) => a?.cloud_account_id === acc?.cloud_account_id);
+        const token = webhookToken(row);
+        if (!linked || !token) {
+          return;
+        }
+        const accountName = acc?.cloud_account_name || '';
+        const cluster = accountName ? `&cluster=${encodeURIComponent(accountName)}` : '';
+        receivers.push({
+          key: `${row.id}-${acc.cloud_account_id}`,
+          accountName: accountName || acc.cloud_account_id,
+          webhookName: row.name,
+          url: `${window.location.origin}/api/webhooks/prometheus-alertmanager?token=${encodeURIComponent(token)}${cluster}`,
+        });
+      });
+    });
+
+    return (
+      <Box data-testid='prometheus-alert-delivery' sx={{ mt: ds.space[5] }}>
+        <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
+          Alert delivery
+        </Typography>
+        <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400], mt: ds.space[1] }}>
+          A Prometheus connected without an agent delivers alerts through its Alertmanager. Add a webhook receiver pointing at the URL below; the
+          account name rides along as the cluster. Rules created in Nudgebee are written to the ruler configured above.
+        </Typography>
+        {receivers.length === 0 ? (
+          <Typography
+            variant='body2'
+            sx={{ mt: ds.space[2], fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}
+            data-testid='prometheus-alert-delivery-missing'
+          >
+            No Prometheus Alertmanager Webhook integration is linked to this account yet —{' '}
+            <Link href='/accounts/account-form?cloudProvider=prometheus_alertmanager_webhook' openInNew>
+              create one
+            </Link>{' '}
+            for the same account, then come back here for its URL.
+          </Typography>
+        ) : (
+          receivers.map((receiver) => (
+            <Box
+              key={receiver.key}
+              sx={{
+                mt: ds.space[3],
+                p: 2,
+                borderRadius: ds.radius.lg,
+                border: `1px solid ${ds.brand[200]}`,
+                backgroundColor: ds.gray[100],
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: ds.space[2],
+              }}
+            >
+              <Box sx={{ flex: 1 }}>
+                <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[600], mb: ds.space[1] }}>
+                  {receiver.accountName} · {receiver.webhookName}
+                </Typography>
+                <Typography
+                  sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-body)', wordBreak: 'break-all', lineHeight: 1.6 }}
+                  data-testid='prometheus-alert-delivery-url'
+                >
+                  {receiver.url}
+                </Typography>
+              </Box>
+              <CopyButton text={receiver.url} />
+            </Box>
+          ))
+        )}
+      </Box>
+    );
   };
 
   const renderWebhookContent = (integrationName, response) => {
@@ -3158,6 +3285,7 @@ const IntegrationDynamicFormModal = ({
                 </Collapse>
               </Box>
             )}
+            {!isLoadingSchema && renderAlertDelivery()}
             <Box
               sx={{
                 display: 'flex',

@@ -59,6 +59,10 @@ func getAlertRuleSource(provider, integrationSource string) (AlertRuleSource, er
 		return &LokiAlertRuleSource{}, nil
 	case provider == "loki" && integrationSource == "user":
 		return &LokiSaasAlertRuleSource{}, nil
+	// No prometheus+agent case on purpose: the in-cluster agent's rules are a
+	// PrometheusRule CR pushed over the relay by eventrule, not an external provider.
+	case provider == "prometheus" && integrationSource == "user":
+		return &PrometheusSaasAlertRuleSource{}, nil
 	case provider == "aws_cloudwatch" || provider == "azure_app_insights" || provider == "gcp_monitoring":
 		return &CloudAlertRuleSource{}, nil
 	default:

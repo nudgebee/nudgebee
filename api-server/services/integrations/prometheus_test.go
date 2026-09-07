@@ -1,19 +1,12 @@
 package integrations
 
 import (
-	"context"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	neturl "net/url"
 	"regexp"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"nudgebee/services/integrations/core"
 
@@ -28,14 +21,6 @@ func promCfg(m map[string]string) []core.IntegrationConfigValue {
 		out = append(out, core.IntegrationConfigValue{Name: k, Value: v})
 	}
 	return out
-}
-
-// resetAzureTokenCache clears cached tokens so cases don't leak into each other.
-func resetAzureTokenCache(t *testing.T) {
-	t.Helper()
-	azureTokenMu.Lock()
-	azureTokenCache = map[string]azureTokenEntry{}
-	azureTokenMu.Unlock()
 }
 
 // ----- metadata / registration ---------------------------------------------
@@ -160,175 +145,6 @@ func TestPrometheus_ConfigSchema_Defaults(t *testing.T) {
 	props := Prometheus{}.ConfigSchema().Properties
 	assert.Equal(t, PrometheusDefaultAWSService, props[PrometheusAWSServiceNameKey].Default)
 	assert.Equal(t, PrometheusDefaultAzureResource, props[PrometheusAzureResourceKey].Default)
-}
-
-// ----- header parsing -------------------------------------------------------
-
-func TestParsePrometheusHeaders(t *testing.T) {
-	t.Run("multiline", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders("X-Scope-OrgID: tenant-1\nX-Extra: value")
-		require.NoError(t, err)
-		assert.Equal(t, "tenant-1", headers.Get("X-Scope-OrgID"))
-		assert.Equal(t, "value", headers.Get("X-Extra"))
-	})
-
-	// The agent takes this form from PROMETHEUS_HEADERS, so a config copied
-	// across from an agent install must parse.
-	t.Run("comma separated", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders("X-Scope-OrgID: tenant-1, X-Extra: value")
-		require.NoError(t, err)
-		assert.Equal(t, "tenant-1", headers.Get("X-Scope-OrgID"))
-		assert.Equal(t, "value", headers.Get("X-Extra"))
-	})
-
-	// A value may legitimately contain a comma, so a line that already parses
-	// as one header is never re-split.
-	t.Run("value containing comma is kept whole", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders("X-List: a, b, c")
-		require.NoError(t, err)
-		assert.Equal(t, "a, b, c", headers.Get("X-List"))
-	})
-
-	t.Run("blank input", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders("  \n\n ")
-		require.NoError(t, err)
-		assert.Nil(t, headers)
-	})
-
-	t.Run("malformed line", func(t *testing.T) {
-		_, err := ParsePrometheusHeaders("not-a-header")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "expected")
-	})
-
-	// The JSON form matches the shape llm_extra_headers already uses, so an
-	// operator who learned one field does not have to learn a second syntax.
-	t.Run("json object", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders(`{"X-Scope-OrgID": "tenant-1", "X-Extra": "value"}`)
-		require.NoError(t, err)
-		assert.Equal(t, "tenant-1", headers.Get("X-Scope-OrgID"))
-		assert.Equal(t, "value", headers.Get("X-Extra"))
-	})
-
-	// A repeated header is what the line form gets from writing the name twice.
-	t.Run("json array value repeats the header", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders(`{"X-Repeat": ["a", "b"]}`)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"a", "b"}, headers.Values("X-Repeat"))
-	})
-
-	t.Run("json values are trimmed", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders(`{"X-Scope-OrgID": "  tenant-1  "}`)
-		require.NoError(t, err)
-		assert.Equal(t, "tenant-1", headers.Get("X-Scope-OrgID"))
-	})
-
-	t.Run("empty json object", func(t *testing.T) {
-		headers, err := ParsePrometheusHeaders("{}")
-		require.NoError(t, err)
-		assert.Nil(t, headers)
-	})
-
-	// A leading brace commits to JSON: the error must name the real problem
-	// rather than the line parser's "expected \"Header: value\"".
-	t.Run("malformed json is not retried as lines", func(t *testing.T) {
-		_, err := ParsePrometheusHeaders(`{"X-Scope-OrgID": }`)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid JSON header object")
-	})
-
-	t.Run("json non-string value", func(t *testing.T) {
-		_, err := ParsePrometheusHeaders(`{"X-Count": 3}`)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must be a string or an array of strings")
-	})
-
-	t.Run("json array with non-string item", func(t *testing.T) {
-		_, err := ParsePrometheusHeaders(`{"X-Repeat": ["a", 2]}`)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "array values must be strings")
-	})
-}
-
-func TestParsePrometheusAdditionalLabels(t *testing.T) {
-	t.Run("single label", func(t *testing.T) {
-		got, err := ParsePrometheusAdditionalLabels(`{"cluster": "prod"}`)
-		require.NoError(t, err)
-		assert.Equal(t, `cluster="prod"`, got)
-	})
-
-	// Go map order is randomised, so the generated fragment must be sorted or the
-	// same config would produce a different query on every call.
-	t.Run("multiple labels are sorted", func(t *testing.T) {
-		got, err := ParsePrometheusAdditionalLabels(`{"region": "us", "cluster": "prod"}`)
-		require.NoError(t, err)
-		assert.Equal(t, `cluster="prod",region="us"`, got)
-	})
-
-	t.Run("empty", func(t *testing.T) {
-		got, err := ParsePrometheusAdditionalLabels("  ")
-		require.NoError(t, err)
-		assert.Empty(t, got)
-	})
-
-	// A configured value lands inside every query the builders produce, so a
-	// quote must not be able to close the matcher and append arbitrary PromQL.
-	t.Run("value quotes are escaped", func(t *testing.T) {
-		got, err := ParsePrometheusAdditionalLabels(`{"cluster": "pr\"od"}`)
-		require.NoError(t, err)
-		assert.Equal(t, `cluster="pr\"od"`, got)
-	})
-
-	t.Run("rejects invalid label name", func(t *testing.T) {
-		_, err := ParsePrometheusAdditionalLabels(`{"cluster\"} or up{": "x"}`)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid label name")
-	})
-
-	t.Run("rejects non-object", func(t *testing.T) {
-		_, err := ParsePrometheusAdditionalLabels(`cluster="prod"`)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must be a JSON object")
-	})
-
-	t.Run("rejects non-string value", func(t *testing.T) {
-		_, err := ParsePrometheusAdditionalLabels(`{"cluster": 3}`)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must be a JSON object")
-	})
-}
-
-func TestExpandClusterPlaceholder(t *testing.T) {
-	// The templates write __CLUSTER__ with no comma after it, so the expansion
-	// supplies the separator -- matching the relay-server byte for byte.
-	t.Run("configured", func(t *testing.T) {
-		got := ExpandClusterPlaceholder(`node_cpu_seconds_total{__CLUSTER__ mode!="idle"}`, `cluster="prod"`)
-		// Two spaces before `mode`: one from the " , " separator, one already in the
-		// template. The relay-server produces exactly the same string, and PromQL
-		// ignores the whitespace -- asserted verbatim to keep the paths identical.
-		assert.Equal(t, `node_cpu_seconds_total{cluster="prod" ,  mode!="idle"}`, got)
-	})
-
-	// The unconfigured case is the actual bug fix: the token must not survive
-	// into the request, or the backend rejects the query outright.
-	t.Run("unconfigured drops the token", func(t *testing.T) {
-		got := ExpandClusterPlaceholder(`node_cpu_seconds_total{__CLUSTER__ mode!="idle"}`, "")
-		assert.Equal(t, `node_cpu_seconds_total{ mode!="idle"}`, got)
-		assert.NotContains(t, got, ClusterPlaceholder)
-	})
-
-	t.Run("bare selector unconfigured", func(t *testing.T) {
-		assert.Equal(t, `kube_node_info{}`, ExpandClusterPlaceholder(`kube_node_info{__CLUSTER__}`, ""))
-	})
-
-	// An `or`-joined query carries the token once per selector; injectPromQLMatchers
-	// only rewrites the first, so this replacement has to cover them all.
-	t.Run("every occurrence is replaced", func(t *testing.T) {
-		in := `sum(a{__CLUSTER__ x="1"}) or sum(b{__CLUSTER__ y="2"})`
-		got := ExpandClusterPlaceholder(in, `cluster="prod"`)
-		assert.NotContains(t, got, ClusterPlaceholder)
-		assert.Equal(t, 2, strings.Count(got, `cluster="prod"`))
-	})
 }
 
 // ----- structural validation ------------------------------------------------
@@ -569,179 +385,6 @@ func TestPrometheus_ValidateConfig_UnreachableEndpoint(t *testing.T) {
 	assert.Contains(t, errs[0].Error(), "failed to connect")
 }
 
-// ----- azure ad -------------------------------------------------------------
-
-func TestPrometheus_AzureAD_MintsAndCachesToken(t *testing.T) {
-	resetAzureTokenCache(t)
-	t.Cleanup(func() { resetAzureTokenCache(t) })
-
-	var tokenRequests int
-	var lastForm neturl.Values
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenRequests++
-		require.NoError(t, r.ParseForm())
-		lastForm = r.PostForm
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"azure-token","expires_in":"3600"}`))
-	}))
-	defer tokenServer.Close()
-
-	original := azureTokenEndpointBase
-	azureTokenEndpointBase = tokenServer.URL
-	t.Cleanup(func() { azureTokenEndpointBase = original })
-
-	var got *http.Request
-	promServer := newPrometheusProbeServer(t, func(_ http.ResponseWriter, r *http.Request) { got = r.Clone(r.Context()) })
-	defer promServer.Close()
-
-	config := promCfg(map[string]string{
-		PrometheusURLKey:               promServer.URL,
-		PrometheusAuthTypeKey:          PrometheusAuthAzureAD,
-		PrometheusAzureClientIDKey:     "client-id",
-		PrometheusAzureClientSecretKey: "client-secret",
-		PrometheusAzureTenantIDKey:     "tenant-id",
-	})
-
-	require.Empty(t, Prometheus{}.ValidateConfig(nil, config, "acc"))
-	require.NotNil(t, got)
-	assert.Equal(t, "Bearer azure-token", got.Header.Get("Authorization"))
-	assert.Equal(t, "client_credentials", lastForm.Get("grant_type"))
-	assert.Equal(t, "client-id", lastForm.Get("client_id"))
-	assert.Equal(t, "client-secret", lastForm.Get("client_secret"))
-	assert.Equal(t, PrometheusDefaultAzureResource, lastForm.Get("resource"))
-	assert.Equal(t, 1, tokenRequests)
-
-	// A second call reuses the cached token rather than minting another.
-	require.Empty(t, Prometheus{}.ValidateConfig(nil, config, "acc"))
-	assert.Equal(t, 1, tokenRequests, "token should be served from cache")
-}
-
-func TestPrometheus_AzureAD_RemintsExpiredToken(t *testing.T) {
-	resetAzureTokenCache(t)
-	t.Cleanup(func() { resetAzureTokenCache(t) })
-
-	var tokenRequests int
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		tokenRequests++
-		w.Header().Set("Content-Type", "application/json")
-		// expires_in below the 60s refresh margin, so the token is never reusable.
-		_, _ = w.Write([]byte(`{"access_token":"short-lived","expires_in":30}`))
-	}))
-	defer tokenServer.Close()
-
-	original := azureTokenEndpointBase
-	azureTokenEndpointBase = tokenServer.URL
-	t.Cleanup(func() { azureTokenEndpointBase = original })
-
-	promServer := newPrometheusProbeServer(t, func(http.ResponseWriter, *http.Request) {})
-	defer promServer.Close()
-
-	config := promCfg(map[string]string{
-		PrometheusURLKey:               promServer.URL,
-		PrometheusAuthTypeKey:          PrometheusAuthAzureAD,
-		PrometheusAzureClientIDKey:     "client-id",
-		PrometheusAzureClientSecretKey: "client-secret",
-		PrometheusAzureTenantIDKey:     "tenant-id",
-	})
-
-	require.Empty(t, Prometheus{}.ValidateConfig(nil, config, "acc"))
-	require.Empty(t, Prometheus{}.ValidateConfig(nil, config, "acc"))
-	assert.Equal(t, 2, tokenRequests, "an expiring token must be re-minted")
-}
-
-// azureTokenMu is process-wide, so holding it across the Azure AD round trip would
-// serialise token minting across every tenant — one slow response stalling all of
-// them. Distinct tenants are used deliberately: they occupy different cache keys
-// and share nothing but the mutex, so if they cannot mint concurrently the lock is
-// being held across the network call again.
-func TestPrometheus_AzureAD_MintsConcurrentlyAcrossTenants(t *testing.T) {
-	resetAzureTokenCache(t)
-	t.Cleanup(func() { resetAzureTokenCache(t) })
-
-	const callers = 4
-
-	var mu sync.Mutex
-	inFlight, maxInFlight := 0, 0
-	allArrived := make(chan struct{})
-	var once sync.Once
-
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		inFlight++
-		if inFlight > maxInFlight {
-			maxInFlight = inFlight
-		}
-		reached := inFlight == callers
-		mu.Unlock()
-
-		// Hold every request open until all of them have arrived. If the mutex were
-		// still held across the mint, only one could ever be in flight and this
-		// would time out instead of releasing.
-		if reached {
-			once.Do(func() { close(allArrived) })
-		}
-		select {
-		case <-allArrived:
-		case <-time.After(5 * time.Second):
-		}
-
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"azure-token","expires_in":"3600"}`))
-	}))
-	defer tokenServer.Close()
-
-	original := azureTokenEndpointBase
-	azureTokenEndpointBase = tokenServer.URL
-	t.Cleanup(func() { azureTokenEndpointBase = original })
-
-	var wg sync.WaitGroup
-	errs := make([]error, callers)
-	tokens := make([]string, callers)
-	for i := 0; i < callers; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			cfg := PrometheusUserConfig{
-				AzureTenantID:     fmt.Sprintf("tenant-%d", i),
-				AzureClientID:     "client-id",
-				AzureClientSecret: "client-secret",
-				AzureResource:     PrometheusDefaultAzureResource,
-			}
-			tokens[i], errs[i] = cfg.azureBearer(context.Background())
-		}(i)
-	}
-	wg.Wait()
-
-	for i := 0; i < callers; i++ {
-		require.NoError(t, errs[i])
-		assert.Equal(t, "azure-token", tokens[i])
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, callers, maxInFlight, "tenants must mint concurrently; the cache lock must not be held across the token request")
-}
-
-func TestAzureTokenExpiry(t *testing.T) {
-	t.Run("prefers absolute expires_on", func(t *testing.T) {
-		want := time.Now().Add(2 * time.Hour).Unix()
-		got := azureTokenExpiry(json.Number(strconv.FormatInt(want, 10)), json.Number("60"))
-		assert.Equal(t, want, got.Unix())
-	})
-	t.Run("falls back to expires_in", func(t *testing.T) {
-		got := azureTokenExpiry(json.Number("0"), json.Number("600"))
-		assert.WithinDuration(t, time.Now().Add(600*time.Second), got, time.Minute)
-	})
-	t.Run("defaults when neither parses", func(t *testing.T) {
-		got := azureTokenExpiry("", "")
-		assert.WithinDuration(t, time.Now().Add(5*time.Minute), got, time.Minute)
-	})
-}
-
 // ----- config resolution ----------------------------------------------------
 
 // An account can hold both an agent-created row (no URL, no credentials) and a
@@ -762,17 +405,6 @@ func TestPickPrometheusUserIntegration_SkipsAgentRow(t *testing.T) {
 	assert.False(t, found)
 }
 
-func TestNewPrometheusUserConfig_Defaults(t *testing.T) {
-	cfg, err := NewPrometheusUserConfig(map[string]string{
-		PrometheusURLKey: "https://prometheus.example.com/prometheus/",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "https://prometheus.example.com/prometheus", cfg.URL, "trailing slash trimmed, path kept")
-	assert.Equal(t, PrometheusAuthNone, cfg.AuthType)
-	assert.Equal(t, PrometheusDefaultAWSService, cfg.AWSService)
-	assert.Equal(t, PrometheusDefaultAzureResource, cfg.AzureResource)
-}
-
 // ----- helpers --------------------------------------------------------------
 
 func errorsToString(errs []error) string {
@@ -781,4 +413,106 @@ func errorsToString(errs []error) string {
 		parts = append(parts, err.Error())
 	}
 	return strings.Join(parts, "; ")
+}
+
+// ----- ruler --------------------------------------------------------------
+
+func TestPrometheus_ConfigSchema_RulerFields(t *testing.T) {
+	props := Prometheus{}.ConfigSchema().Properties
+	rulerType := props[PrometheusRulerTypeKey]
+	assert.Equal(t, PrometheusRulerNone, rulerType.Default, "a ruler is opt-in")
+	assert.ElementsMatch(t, []any{PrometheusRulerNone, PrometheusRulerMimirCortex}, rulerType.Enum)
+	assert.Nil(t, rulerType.ShowWhen, "the choice applies under every auth scheme")
+	// The URL only matters once a ruler is declared, and is never required: it
+	// defaults to the query endpoint.
+	assert.Equal(t, map[string]any{PrometheusRulerTypeKey: PrometheusRulerMimirCortex}, props[PrometheusRulerURLKey].ShowWhen)
+	assert.Nil(t, props[PrometheusRulerURLKey].RequiredWhen)
+}
+
+// newPrometheusWithRulerServer serves the label-values probe on the query path
+// and answers the ruler listing as told, so save-time validation can be driven
+// end to end against both.
+func newPrometheusWithRulerServer(t *testing.T, rulerStatus int, rulerBody string, sawRuler *bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/config/v1/rules") {
+			*sawRuler = true
+			w.WriteHeader(rulerStatus)
+			_, _ = w.Write([]byte(rulerBody))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":["up"]}`))
+	}))
+}
+
+func TestPrometheus_ValidateConfig_RulerProbe(t *testing.T) {
+	t.Run("no ruler declared makes no ruler request", func(t *testing.T) {
+		var sawRuler bool
+		server := newPrometheusWithRulerServer(t, http.StatusOK, "", &sawRuler)
+		defer server.Close()
+		errs := Prometheus{}.ValidateConfig(nil, promCfg(map[string]string{PrometheusURLKey: server.URL}), "acc")
+		require.Empty(t, errs)
+		assert.False(t, sawRuler)
+	})
+
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string // empty = pass
+	}{
+		{name: "groups listed", status: http.StatusOK, body: "nudgebee:\n- name: x\n"},
+		{name: "empty tenant on Cortex/Mimir is a working ruler", status: http.StatusNotFound, body: "no rule groups found\n"},
+		{name: "bare 404 is a plain Prometheus", status: http.StatusNotFound, body: "404 page not found\n", wantErr: "no ruler API"},
+		{name: "405 is a plain Prometheus", status: http.StatusMethodNotAllowed, body: "", wantErr: "no ruler API"},
+		{name: "victoriametrics 400 names the unsupported path", status: http.StatusBadRequest, body: `requestURI: /config/v1/rules; unsupported path requested: "/config/v1/rules"`, wantErr: "no ruler API"},
+		{name: "an unrelated 400 is not reported as a missing ruler", status: http.StatusBadRequest, body: "bad query parameter", wantErr: "unexpected status"},
+		{name: "401 names the credentials", status: http.StatusUnauthorized, body: "", wantErr: "rejected the credentials"},
+		{name: "403 names the scope", status: http.StatusForbidden, body: "", wantErr: "rules:write"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawRuler bool
+			server := newPrometheusWithRulerServer(t, tc.status, tc.body, &sawRuler)
+			defer server.Close()
+			errs := Prometheus{}.ValidateConfig(nil, promCfg(map[string]string{
+				PrometheusURLKey:       server.URL,
+				PrometheusRulerTypeKey: PrometheusRulerMimirCortex,
+			}), "acc")
+			assert.True(t, sawRuler, "a declared ruler must be probed on save")
+			if tc.wantErr == "" {
+				assert.Empty(t, errs, errorsToString(errs))
+				return
+			}
+			require.NotEmpty(t, errs)
+			assert.Contains(t, errorsToString(errs), tc.wantErr)
+		})
+	}
+
+	t.Run("separate ruler URL is the one probed", func(t *testing.T) {
+		var sawQueryRuler, sawRuler bool
+		query := newPrometheusWithRulerServer(t, http.StatusNotFound, "404 page not found", &sawQueryRuler)
+		defer query.Close()
+		ruler := newPrometheusWithRulerServer(t, http.StatusOK, "", &sawRuler)
+		defer ruler.Close()
+		errs := Prometheus{}.ValidateConfig(nil, promCfg(map[string]string{
+			PrometheusURLKey:       query.URL,
+			PrometheusRulerTypeKey: PrometheusRulerMimirCortex,
+			PrometheusRulerURLKey:  ruler.URL + "/prometheus",
+		}), "acc")
+		assert.Empty(t, errs, errorsToString(errs))
+		assert.True(t, sawRuler)
+		assert.False(t, sawQueryRuler)
+	})
+
+	t.Run("ruler URL is checked like the query URL", func(t *testing.T) {
+		errs := Prometheus{}.ValidateConfig(nil, promCfg(map[string]string{
+			PrometheusURLKey:       "https://prometheus.example.com",
+			PrometheusRulerTypeKey: PrometheusRulerMimirCortex,
+			PrometheusRulerURLKey:  "not a url",
+		}), "acc")
+		require.NotEmpty(t, errs)
+		assert.Contains(t, errorsToString(errs), PrometheusRulerURLKey)
+	})
 }
