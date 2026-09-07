@@ -1139,8 +1139,11 @@ func getAgentResponseFromConversation(ctx *security.RequestContext, sessionId st
 	return latestAgentGenerationResponse(messages, agentName)
 }
 
-// latestAgentGenerationResponse returns the newest completed agent answer for
-// agentName. Only `generation` rows carry an agent answer: a `followup` row is
+// latestAgentGenerationResponse returns the latest generation's answer only
+// when that generation completed with content. Messages are ordered oldest
+// first by ListConversationMessages. Never skip a newer unfinished/failed
+// generation to recover an older answer for the same agent (#37865).
+// Only `generation` rows carry an agent answer: a `followup` row is
 // the tool-approval prompt the agent raised, and its Response column holds the
 // *user's* reply ("yes"/"no"), not analysis. Because the followup row is created
 // after the generation row it answers, an unfiltered backwards scan picks it
@@ -1152,9 +1155,13 @@ func latestAgentGenerationResponse(messages []core.ConversationMessage, agentNam
 		if msg.MessageType != string(core.MessageTypeGeneration) {
 			continue
 		}
-		if msg.AgentName != nil && *msg.AgentName == agentName && msg.Response != "" && msg.Status == core.ConversationStatusCompleted {
-			return msg.Response, true
+		if msg.AgentName == nil || *msg.AgentName != agentName {
+			continue
 		}
+		if msg.Status != core.ConversationStatusCompleted || strings.TrimSpace(msg.Response) == "" {
+			return "", false
+		}
+		return msg.Response, true
 	}
 	return "", false
 }

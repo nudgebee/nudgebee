@@ -105,3 +105,53 @@ func TestLatestAgentGenerationResponseSkipsUnfinishedAndForeignMessages(t *testi
 	assert.False(t, found)
 	assert.Empty(t, got)
 }
+
+// An approval can complete a followup row while its owning generation is still
+// pending (or has failed). Falling back to a previous generation would persist
+// obsolete findings as the result of the current event investigation (#37865).
+func TestLatestAgentGenerationResponseDoesNotReusePreviousGeneration(t *testing.T) {
+	agentName := "aws_orchestrator"
+	tests := []struct {
+		name     string
+		status   core.ConversationStatus
+		response string
+	}{
+		{"waiting for approval", core.ConversationStatusWaiting, "Please approve the tool"},
+		{"waiting for client tool", core.ConversationStatusWaitingForClientTool, ""},
+		{"resumed on another worker", core.ConversationStatusInProgress, ""},
+		{"failed generation", core.ConversationStatusFailed, "failed to execute"},
+		{"completed without findings", core.ConversationStatusCompleted, ""},
+		{"completed with whitespace", core.ConversationStatusCompleted, " \n\t"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []core.ConversationMessage{
+				{AgentName: &agentName, MessageType: string(core.MessageTypeGeneration), Status: core.ConversationStatusCompleted, Response: "obsolete investigation"},
+				{AgentName: &agentName, MessageType: string(core.MessageTypeGeneration), Status: tt.status, Response: tt.response},
+				{AgentName: &agentName, MessageType: string(core.MessageTypeFollowup), Status: core.ConversationStatusCompleted, Response: "yes"},
+			}
+			got, found := latestAgentGenerationResponse(messages, agentName)
+			assert.False(t, found, "the newest generation must be usable before its stage can be recovered")
+			assert.Empty(t, got)
+		})
+	}
+}
+
+func TestLatestAgentGenerationResponsePreservesCompletedFindingsAfterApproval(t *testing.T) {
+	agentName := "aws_orchestrator"
+	otherAgent := "events"
+	for _, approval := range []string{"yes", "no", "test-pg", ""} {
+		t.Run("followup="+approval, func(t *testing.T) {
+			want := "  Root cause: database retry loop.\n"
+			messages := []core.ConversationMessage{
+				{AgentName: &agentName, MessageType: string(core.MessageTypeGeneration), Status: core.ConversationStatusCompleted, Response: "obsolete investigation"},
+				{AgentName: &agentName, MessageType: string(core.MessageTypeGeneration), Status: core.ConversationStatusCompleted, Response: want},
+				{AgentName: &agentName, MessageType: string(core.MessageTypeFollowup), Status: core.ConversationStatusCompleted, Response: approval},
+				{AgentName: &otherAgent, MessageType: string(core.MessageTypeGeneration), Status: core.ConversationStatusWaiting, Response: "unrelated stage"},
+			}
+			got, found := latestAgentGenerationResponse(messages, agentName)
+			assert.True(t, found)
+			assert.Equal(t, want, got, "preserve the generation text verbatim; approval wording is irrelevant")
+		})
+	}
+}
