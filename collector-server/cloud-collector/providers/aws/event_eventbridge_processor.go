@@ -980,6 +980,20 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 		if err != nil {
 			return nil, fmt.Errorf("eventprocessor: parsing time offsets for aws_get_metric: %w", err)
 		}
+
+		// Never query coarser than the alarm evaluated. A 60s alarm that fired on
+		// a 99.9% datapoint, queried at the rule's default 300s period, comes back
+		// as a ~33% five-minute bucket — below its own 40% threshold — so the
+		// evidence card contradicts the alarm it is meant to explain.
+		if alarmPeriod := extractAlarmEvaluation(ebEvent).PeriodSeconds; alarmPeriod > 0 &&
+			(params.PeriodSeconds <= 0 || alarmPeriod < params.PeriodSeconds) {
+			if int64(endTime.Sub(startTime).Seconds())/alarmPeriod <= maxMetricDatapoints {
+				logger.Info("eventprocessor: narrowing metric period to the alarm evaluation period",
+					"rulePeriodSeconds", params.PeriodSeconds, "alarmPeriodSeconds", alarmPeriod)
+				params.PeriodSeconds = alarmPeriod
+			}
+		}
+
 		metricQuery := providers.QueryMetricsRequest{
 			ServiceName:     params.Namespace,
 			MetricNamespace: params.Namespace, // Pass CW namespace directly so getAwsCloudwatchMetrics uses it as-is
@@ -2340,7 +2354,7 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 			} else {
 				provEvent.AdditionalContext = append(provEvent.AdditionalContext, providers.EventEvidence{
 					Type:    providers.EventEvidenceTypeJson,
-					Insight: []string{actionDef.Name, actionDef.Description},
+					Insight: buildActionEvidenceInsight(ebEvent, actionDef, actionResult),
 					Data:    string(actionResultJson),
 					AdditionalInfo: map[string]string{
 						"action_name": actionDef.Name,
