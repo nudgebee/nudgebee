@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -73,6 +74,14 @@ type ImpactedService struct {
 	// one at all. Informational: it does not feed DependentCount or the safety
 	// band.
 	Criticality string `json:"criticality,omitempty"`
+	// LastObservedAt is when an active traffic signal (eBPF / traces / APM)
+	// last asserted the edge between this dependent and the seed. Set only on
+	// direct (hop-1) dependents: a deeper node's connecting edge points at an
+	// intermediate, so its freshness says nothing about the seed-adjacent hop.
+	// Taken from contributing_sources[].last_seen_at, not the edge's
+	// updated_at, which any source (a k8s re-assertion) bumps. Zero when no
+	// flow source has vouched for the edge.
+	LastObservedAt time.Time `json:"last_observed_at,omitzero"`
 }
 
 // ImpactSummary is the blast-radius rollup for a single resource node.
@@ -876,17 +885,22 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 		}
 		env := resolveNodeEnvironment(n, accountEnv)
 		att := attribution[n.ID]
+		var lastObserved time.Time
+		if nodeMinDepth[n.ID] == 1 {
+			lastObserved = att.lastObserved
+		}
 		summary.Dependents = append(summary.Dependents, ImpactedService{
-			NodeID:       n.ID,
-			Name:         impactNodeName(n),
-			ResourceID:   impactNodeAttr(n, "resource_id"),
-			NodeType:     n.NodeType,
-			Namespace:    impactNodeAttr(n, "namespace"),
-			Environment:  env,
-			Criticality:  resolveNodeCriticality(n, criticality),
-			HopsAway:     nodeMinDepth[n.ID],
-			Relationship: att.relationship,
-			Sources:      att.sources,
+			NodeID:         n.ID,
+			Name:           impactNodeName(n),
+			ResourceID:     impactNodeAttr(n, "resource_id"),
+			NodeType:       n.NodeType,
+			Namespace:      impactNodeAttr(n, "namespace"),
+			Environment:    env,
+			Criticality:    resolveNodeCriticality(n, criticality),
+			LastObservedAt: lastObserved,
+			HopsAway:       nodeMinDepth[n.ID],
+			Relationship:   att.relationship,
+			Sources:        att.sources,
 		})
 		summary.DependentCount++
 		if isProdEnv(env) {
@@ -981,6 +995,9 @@ func sortImpactedServices(deps []ImpactedService) {
 type connectingEdgeAttribution struct {
 	relationship RelationshipType
 	sources      []string
+	// lastObserved is the freshest flow-source last_seen_at across the
+	// connecting edges; zero when only static sources assert them.
+	lastObserved time.Time
 }
 
 // attributeConnectingEdges maps each discovered node to the relationship and
@@ -993,6 +1010,7 @@ type connectingEdgeAttribution struct {
 func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, direction TraverseDirection) map[string]connectingEdgeAttribution {
 	best := map[string]*DbEdge{}
 	sourceSets := map[string]map[string]struct{}{}
+	lastObserved := map[string]time.Time{}
 	for _, e := range edges {
 		if e == nil {
 			continue
@@ -1017,6 +1035,9 @@ func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, dire
 			if cs.Source != "" {
 				set[cs.Source] = struct{}{}
 			}
+			if flowObservationSources[cs.Source] && cs.LastSeenAt.After(lastObserved[nodeID]) {
+				lastObserved[nodeID] = cs.LastSeenAt
+			}
 		}
 		// Edges predating the contributing_sources column fall back to the
 		// winning source so provenance is never silently empty.
@@ -1034,7 +1055,7 @@ func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, dire
 			sources = append(sources, s)
 		}
 		sort.Strings(sources)
-		out[id] = connectingEdgeAttribution{relationship: e.RelationshipType, sources: sources}
+		out[id] = connectingEdgeAttribution{relationship: e.RelationshipType, sources: sources, lastObserved: lastObserved[id]}
 	}
 	return out
 }

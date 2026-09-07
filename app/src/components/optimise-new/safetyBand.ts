@@ -28,6 +28,9 @@ export interface DependentRef {
   // tier at all (only k8s-sourced workloads can). Never read absence as "not
   // important".
   criticality?: Criticality;
+  // When an active traffic signal last saw this DIRECT dependency (RFC3339).
+  // Absent on indirect dependents and on edges only static sources assert.
+  last_observed_at?: string;
 }
 
 export interface ImpactSummary {
@@ -42,6 +45,10 @@ export interface ImpactSummary {
   // summaries persisted before criticality existed, so no tier on a dependent
   // there means "never looked up", not "ordinary".
   criticality_resolved?: boolean;
+  // When this summary was computed. Ages derived from persisted timestamps are
+  // measured against this, never against now: non-Open recommendations are
+  // never recomputed, so their summaries freeze here.
+  computed_at?: string;
   coverage_confidence?: 'none' | 'low' | 'observed' | 'high';
   truncated?: boolean;
   safety_reason?: string;
@@ -264,6 +271,30 @@ export const criticalityLabel = (tier?: Criticality): string | null => {
 // and any "N of M" would overstate what was actually assessed.
 export const businessCriticalCount = (deps?: DependentRef[]): number =>
   (deps || []).filter((d) => d.criticality === 'critical' || d.criticality === 'high').length;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Flow edges are tombstoned after this many days without traffic; a snapshot
+// older than that can no longer vouch for what it lists.
+const EDGE_STALE_DAYS = 7;
+
+// observedAgeLabel renders how long before the summary was computed a traffic
+// signal last saw a direct dependency — "Last seen 5d ago". Null when: no
+// observation, the age is under two days (hourly builds plus the signal's
+// lookback make finer precision meaningless), or the snapshot itself is older
+// than the tombstone window, at which point the listing may already be wrong.
+export const observedAgeLabel = (dep: DependentRef, computedAt?: string): string | null => {
+  if (!dep.last_observed_at || !computedAt) return null;
+  const seen = Date.parse(dep.last_observed_at);
+  const computed = Date.parse(computedAt);
+  if (Number.isNaN(seen) || Number.isNaN(computed)) return null;
+  if (Date.now() - computed > EDGE_STALE_DAYS * DAY_MS) return null;
+  const days = Math.floor((computed - seen) / DAY_MS);
+  if (days < 2) return null;
+  return `Last seen ${days}d ago`;
+};
+
+export const OBSERVED_AGE_HELP =
+  'How long before this assessment an active traffic signal (eBPF, traces or APM) last saw this dependency. A window, not an instant — dependencies stay listed for up to 7 days after traffic stops, so an old sighting may mean the dependency is already gone.';
 
 export const CRITICALITY_HELP =
   'How business-critical this workload is, curated in Settings → Workload Criticality. Informational: it explains why a dependent matters, but it does not change the safety verdict.';

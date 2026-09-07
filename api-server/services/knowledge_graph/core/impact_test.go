@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func newImpactTestNode(id string, nt NodeType, name, env, ns string) *DbNode {
 	qa := map[string]interface{}{}
@@ -451,5 +454,51 @@ func TestSummarizeImpact_StampsCriticality(t *testing.T) {
 	// Criticality is informational: it must not move the counts or the coverage.
 	if got.DependentCount != 2 || got.ProductionDependents != 0 {
 		t.Errorf("criticality must not affect counts, got dependents=%d prod=%d", got.DependentCount, got.ProductionDependents)
+	}
+}
+
+// Recency comes from flow-source last_seen_at only, on direct dependents only:
+// a k8s re-assertion must not read as "traffic observed", and a hop-2 node's
+// connecting edge points at an intermediate, not the seed.
+func TestSummarizeImpact_LastObservedFromFlowSourcesOnDirectDependents(t *testing.T) {
+	seedID := "db-1"
+	old := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	fresh := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	k8sNow := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeDatabase, "orders-db", "", ""),
+		newImpactTestNode("wl-direct", NodeTypeWorkload, "checkout", "", "shop"),
+		newImpactTestNode("wl-static", NodeTypeWorkload, "cron", "", "shop"),
+		newImpactTestNode("wl-far", NodeTypeWorkload, "reporting", "", "shop"),
+	}
+	minDepth := map[string]int{seedID: 0, "wl-direct": 1, "wl-static": 1, "wl-far": 2}
+	edges := []*DbEdge{
+		// Two parallel edges: the freshest FLOW timestamp wins; the newer k8s one is ignored.
+		{SourceNodeID: "wl-direct", DestinationNodeID: seedID, RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf", LastSeenAt: old}, {Source: "k8s", LastSeenAt: k8sNow}}},
+		{SourceNodeID: "wl-direct", DestinationNodeID: seedID, RelationshipType: RelationshipMounts,
+			ContributingSources: []EdgeContributingSource{{Source: "traces", LastSeenAt: fresh}}},
+		// Static-only assertion → no observation.
+		{SourceNodeID: "wl-static", DestinationNodeID: seedID, RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "k8s", LastSeenAt: k8sNow}}},
+		// Hop 2 with a flow source → still not stamped.
+		{SourceNodeID: "wl-far", DestinationNodeID: "wl-direct", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf", LastSeenAt: fresh}}},
+	}
+
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, edges, minDepth, map[string]string{}, map[string]string{})
+
+	byID := map[string]time.Time{}
+	for _, d := range got.Dependents {
+		byID[d.NodeID] = d.LastObservedAt
+	}
+	if !byID["wl-direct"].Equal(fresh) {
+		t.Errorf("direct dependent LastObservedAt = %v, want freshest flow source %v", byID["wl-direct"], fresh)
+	}
+	if !byID["wl-static"].IsZero() {
+		t.Errorf("static-only dependent must carry no observation, got %v", byID["wl-static"])
+	}
+	if !byID["wl-far"].IsZero() {
+		t.Errorf("hop-2 dependent must carry no observation, got %v", byID["wl-far"])
 	}
 }

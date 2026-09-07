@@ -147,6 +147,7 @@ var recommendationView = `
 			(r.finops_score_breakdown -> 'impact_summary' ->> 'dependent_count')::int AS dependent_count,
 			(r.finops_score_breakdown -> 'impact_summary' ->> 'production_dependents')::int AS production_dependents,
 			r.finops_score_breakdown -> 'impact_summary' -> 'dependents' AS dependents,
+			r.finops_score_breakdown -> 'impact_summary' ->> 'computed_at' AS computed_at,
 			r.dedupe_group,
 			-- One row per opportunity; see PrimaryRecommendationRank.
 			(` + PrimaryRecommendationRank("r", "ca") + ` = 1) AS is_primary_recommendation
@@ -205,7 +206,9 @@ func (m RecommendationExecuteTool) ToolPrompt() []string {
 		"- safety_reason (STRING): One-line reason behind the band (e.g. '2 production dependent(s) would be affected')",
 		"- dependent_count (INT), production_dependents (INT): Number of dependent services, and how many are production",
 		"- dependents (JSON): Compact list of the dependent services (name, namespace, hops away, and criticality when the workload carries a curated tier); select only when the caller asks for the blast radius in detail",
+		"- computed_at (TIMESTAMP): When the blast radius was assessed; the anchor for any dependent's last_observed_at",
 		"- A dependent's criticality is informational and is NOT reflected in safety_band: never present it as raising or lowering the safety verdict. An absent criticality means no tier is stated (an ordinary workload, or one that cannot carry a tier) — never report it as 'not important'.",
+		"- A dependent's last_observed_at (present only on direct dependents seen by an active traffic signal) is a coarse window, not an instant: measure it against the summary's computed_at, never against now, and round to days. Absence means no traffic signal vouched for the edge, not that the dependency is stale.",
 		"- finops_score (INT 0-100), finops_band (STRING): Priority score and band ('Act Now', 'Critical', 'High', 'Medium', 'Low') — prioritization, NOT apply-safety; safety_band is the safety verdict",
 		"",
 		"**Temporal Fields:**",
@@ -258,7 +261,7 @@ func (m RecommendationExecuteTool) GetType() core.NBToolType {
 }
 
 func (m RecommendationExecuteTool) Description() string {
-	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, service, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation, finops_score, finops_band, safety_band, safety_reason, dependent_count, production_dependents, dependents, dedupe_group, is_primary_recommendation. " +
+	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, service, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation, finops_score, finops_band, safety_band, safety_reason, dependent_count, production_dependents, dependents, computed_at, dedupe_group, is_primary_recommendation. " +
 		"Savings totals MUST filter is_primary_recommendation (rows sharing a dedupe_group are alternative ways to buy ONE opportunity — only one is purchasable, so summing them overstates savings)."
 }
 

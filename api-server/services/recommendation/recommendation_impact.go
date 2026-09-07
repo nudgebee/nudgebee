@@ -2,6 +2,7 @@ package recommendation
 
 import (
 	"strings"
+	"time"
 
 	"nudgebee/services/knowledge_graph/core"
 )
@@ -111,6 +112,10 @@ type dependentRef struct {
 	// Criticality is the workload's curated tier, when it has one. Absent means
 	// no tier is stated, which includes every dependent that cannot carry one.
 	Criticality string `json:"criticality,omitempty"`
+	// LastObservedAt is when an active traffic signal last saw this direct
+	// dependency, RFC3339 UTC; absent for indirect dependents and for edges
+	// only static sources assert.
+	LastObservedAt string `json:"last_observed_at,omitempty"`
 }
 
 // compactDependents projects a knowledge-graph blast radius into the bounded list
@@ -137,6 +142,9 @@ func compactDependents(deps []core.ImpactedService) []dependentRef {
 			PodCount:     d.PodCount,
 			Criticality:  d.Criticality,
 		}
+		if !d.LastObservedAt.IsZero() {
+			out[i].LastObservedAt = d.LastObservedAt.UTC().Format(time.RFC3339)
+		}
 	}
 	return out
 }
@@ -155,8 +163,14 @@ func buildImpactSummary(impact *core.ImpactSummary, reason string) map[string]an
 		// production dependents" apart from "environment never resolved" —
 		// non-Open recommendations are excluded from the recompute cron, so
 		// pre-fix summaries survive indefinitely on resolved recs.
-		"environment_resolved":    impact.EnvironmentResolved,
-		"criticality_resolved":    impact.CriticalityResolved,
+		"environment_resolved": impact.EnvironmentResolved,
+		"criticality_resolved": impact.CriticalityResolved,
+		// Snapshot anchor: every age the UI derives from a persisted timestamp
+		// is measured against this, not against "now" — a summary on a
+		// non-Open recommendation is never recomputed, so its edge timestamps
+		// freeze here and an age relative to wall-clock would only measure how
+		// old the summary is.
+		"computed_at":             time.Now().UTC().Format(time.RFC3339),
 		"coverage_confidence":     string(impact.CoverageConfidence),
 		"truncated":               impact.Truncated,
 		"safety_reason":           reason,

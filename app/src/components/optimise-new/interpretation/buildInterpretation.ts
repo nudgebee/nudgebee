@@ -31,17 +31,42 @@ interface BuildArgs {
   recData?: any;
   /** Catalog recommendation steps — the richest "why" text when present. */
   recommendations?: string[];
+  /** The live workload facts behind a k8s recommendation, for restart risk. */
+  workload?: WorkloadFacts;
+}
+
+export interface WorkloadFacts {
+  /** Controller kind from discovery meta (Deployment, StatefulSet, ...). */
+  kind?: string;
+  /** Live pod count from discovery meta — not spec.replicas: 0 mid-rollout. */
+  pods?: number | null;
 }
 
 // Rule-family caveats. Kept deliberately small for v1 — only rules where the
 // operational consequence is well-defined and worth surfacing up-front.
 const RISK_BY_RULE: Record<string, string> = {
-  pod_right_sizing: "Applying updates the workload's resource requests and triggers a rolling restart. Reversible by reverting the change.",
+  pod_right_sizing:
+    "Applying updates the workload's resource requests; unless the no-restart (in-place) apply is used, that triggers a rolling restart. Reversible by reverting the change.",
   replica_right_sizing: 'Reducing replicas lowers spare capacity for traffic spikes and failures — confirm there is enough headroom before applying.',
   pv_rightsize: "Persistent volumes can't be shrunk in place — this requires creating a new PVC and migrating data, with downtime.",
   unused_pvc: "Deleting a PVC can be irreversible if the volume isn't retained. Confirm nothing depends on it first.",
   abandoned_resource: "Scaling the workload to zero is reversible, but verify it's genuinely unused before applying.",
 };
+
+// singleReplicaOutage: a rolling restart is an outage only when the workload
+// cannot keep a pod serving while its one pod is replaced — a StatefulSet
+// replaces pods in place. A single-pod Deployment surges a new pod before
+// terminating the old one under the default strategy, so it earns no outage
+// claim. A live pod count of 0 (mid-rollout, scaled to zero) or an unknown
+// count is "unknown", never "single".
+export const singleReplicaOutage = (workload?: WorkloadFacts): boolean => workload?.kind === 'StatefulSet' && workload?.pods === 1;
+
+const SINGLE_REPLICA_RISK =
+  'This StatefulSet runs a single pod — a rolling restart is a brief outage for its callers. Prefer the no-restart (in-place) apply where the cluster supports it, or apply in a maintenance window. ';
+
+// podRightSizingRisk composes the restart caveat for a rightsizing rec.
+export const podRightSizingRisk = (workload?: WorkloadFacts): string =>
+  (singleReplicaOutage(workload) ? SINGLE_REPLICA_RISK : '') + RISK_BY_RULE.pod_right_sizing;
 
 // Action-oriented verdicts for the K8s-native RightSizing rules, which have no
 // catalog title (it degrades to the prettified rule name, e.g. "Pod Right
@@ -223,11 +248,12 @@ export function buildInterpretation({
   savings,
   recData,
   recommendations,
+  workload,
 }: BuildArgs): InterpretationData {
   // "Why" source priority: catalog recommendation step (richest) → catalog/JSONB
   // description → computed insight (best for K8s-native rules with no catalog).
   const whyNow = recommendations?.[0]?.trim() || (description?.trim() ? description : insight) || undefined;
-  const sharedRisk = RISK_BY_RULE[ruleName] || undefined;
+  const sharedRisk = ruleName === 'pod_right_sizing' ? podRightSizingRisk(workload) : RISK_BY_RULE[ruleName] || undefined;
 
   // Rich treatment for K8s misconfiguration "array of findings" recs — the
   // findings are the recommendation, so lead with their breakdown.

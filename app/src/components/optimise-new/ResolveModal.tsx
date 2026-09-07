@@ -6,6 +6,7 @@ import AutoPilotHeaderCard from '@components/autopilot/card/AutoPilotHeaderCard'
 import AutoOptimizeForm from '@components/autopilot/form/AutoOptimizeVerticalRightSizingForm';
 import { formatMemory } from '@lib/formatter';
 import { ds } from 'src/utils/colors';
+import { singleReplicaOutage } from './interpretation/buildInterpretation';
 import { safeJSONParse } from 'src/utils/common';
 import { toast as snackbar } from '@ui/Toast';
 import { ANNOTATIONS, CI_PREFIX } from '@lib/annotationKeys';
@@ -756,6 +757,15 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
             <Checkbox checked={inPlace} onChange={(checked) => setInPlace(checked)} disabled={deploying} label='No-restart (in-place)' />
           </Box>
         </Tooltip>
+        {!inPlace &&
+          singleReplicaOutage({
+            kind: recommendation?.cloud_resourse?.meta?.controllerKind,
+            pods: recommendation?.cloud_resourse?.meta?.total_pods ?? null,
+          }) && (
+            <Typography id='resolve-modal-single-replica-warning' sx={{ fontSize: ds.text.small, color: ds.amber[700] }}>
+              Single-pod StatefulSet — a rolling restart is a brief outage for its callers.
+            </Typography>
+          )}
       </Box>
       <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), alignItems: 'center' }}>
         <Button tone='secondary' size='sm' onClick={openTicketForm} disabled={ticketExists} id='resolve-modal-ticket'>

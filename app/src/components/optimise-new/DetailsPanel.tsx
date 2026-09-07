@@ -41,6 +41,8 @@ import {
   criticalityTone,
   criticalityLabel,
   businessCriticalCount,
+  observedAgeLabel,
+  OBSERVED_AGE_HELP,
   CHANGE_CLASS_HELP,
   CRITICALITY_HELP,
   coverageTone,
@@ -130,7 +132,8 @@ const ChipTip = ({ title, children }: { title: string; children: ReactNode }) =>
 // chips (kind, proximity, role, provenance, environment). Chips render only
 // when the backend attributed the field, so sparse graphs degrade to
 // name-only rows. Proximity is omitted downstream (always one hop).
-const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstream' | 'downstream' }) => {
+const DependentRow = ({ dep, direction, computedAt }: { dep: DependentRef; direction: 'upstream' | 'downstream'; computedAt?: string }) => {
+  const observedAge = direction === 'upstream' ? observedAgeLabel(dep, computedAt) : null;
   const id = dep.namespace ? `${dep.namespace}/${dep.name}` : dep.name;
   const role = dependentRoleLabel(dep.relationship, direction);
   const proximity = direction === 'upstream' ? proximityLabel(dep.hops_away) : null;
@@ -194,6 +197,13 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
           <Label size='sm' tone={isProdEnvironment(dep.environment) ? 'critical' : 'neutral'}>
             {formatEnvironment(dep.environment)}
           </Label>
+        )}
+        {observedAge && (
+          <ChipTip title={OBSERVED_AGE_HELP}>
+            <Label size='sm' tone='warning'>
+              {observedAge}
+            </Label>
+          </ChipTip>
         )}
         {criticalityLabel(dep.criticality) && (
           <ChipTip title={CRITICALITY_HELP}>
@@ -412,7 +422,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
               )}
             </Box>
             {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
-              <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='upstream' />
+              <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='upstream' computedAt={impact.computed_at} />
             ))}
             {impact.dependents.length > DEP_COLLAPSE_LIMIT && (
               <Typography
@@ -558,6 +568,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           savings: rec.estimated_savings || 0,
           recData,
           recommendations: details?.recommendations,
+          workload: { kind: rec.cloud_resourse?.meta?.controllerKind, pods: rec.cloud_resourse?.meta?.total_pods ?? null },
         })}
       />
 

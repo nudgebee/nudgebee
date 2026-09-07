@@ -2,6 +2,7 @@ package recommendation
 
 import (
 	"testing"
+	"time"
 
 	"nudgebee/services/knowledge_graph/core"
 )
@@ -179,5 +180,24 @@ func TestCompactDependentsCapsList(t *testing.T) {
 	}
 	if got[0].HopsAway != 0 || got[maxStoredDependents-1].HopsAway != maxStoredDependents-1 {
 		t.Errorf("cap must retain the leading prefix, got first hops=%d last hops=%d", got[0].HopsAway, got[maxStoredDependents-1].HopsAway)
+	}
+}
+
+// The observation timestamp is formatted at the persistence boundary and
+// omitted when the graph recorded none.
+func TestCompactDependentsFormatsLastObserved(t *testing.T) {
+	seen := time.Date(2026, 9, 6, 10, 30, 0, 0, time.FixedZone("IST", 5*3600+1800))
+	got := compactDependents([]core.ImpactedService{
+		{Name: "checkout", NodeType: core.NodeTypeWorkload, LastObservedAt: seen},
+		{Name: "cron", NodeType: core.NodeTypeWorkload},
+	})
+	if got[0].LastObservedAt != "2026-09-06T05:00:00Z" {
+		t.Errorf("LastObservedAt = %q, want RFC3339 UTC", got[0].LastObservedAt)
+	}
+	if got[1].LastObservedAt != "" {
+		t.Errorf("zero observation must be omitted, got %q", got[1].LastObservedAt)
+	}
+	if _, ok := buildImpactSummary(&core.ImpactSummary{CoverageConfidence: core.CoverageHigh}, "r")["computed_at"]; !ok {
+		t.Error("summary must carry its computed_at anchor")
 	}
 }

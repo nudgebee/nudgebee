@@ -18,6 +18,7 @@ import {
   criticalityTone,
   criticalityLabel,
   businessCriticalCount,
+  observedAgeLabel,
 } from '../safetyBand';
 
 describe('safetyBand dependent categorization helpers', () => {
@@ -248,5 +249,33 @@ describe('businessCriticalCount', () => {
     expect(businessCriticalCount([{ name: 'a' }, { name: 'b' }])).toBe(0);
     expect(businessCriticalCount([])).toBe(0);
     expect(businessCriticalCount(undefined)).toBe(0);
+  });
+});
+
+describe('observedAgeLabel', () => {
+  const day = 24 * 60 * 60 * 1000;
+  // A fresh snapshot: computed within the tombstone window relative to now.
+  const freshComputed = new Date(Date.now() - day).toISOString();
+
+  it('measures the age against the snapshot, in whole days, from two days up', () => {
+    const seen = new Date(Date.parse(freshComputed) - 5 * day).toISOString();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: seen }, freshComputed)).toBe('Last seen 5d ago');
+  });
+
+  it('hides sub-two-day ages — hourly builds and the signal lookback make them meaningless', () => {
+    const seen = new Date(Date.parse(freshComputed) - 1.25 * day).toISOString();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: seen }, freshComputed)).toBeNull();
+  });
+
+  it('hides the age entirely once the snapshot itself is older than the tombstone window', () => {
+    const staleComputed = new Date(Date.now() - 10 * day).toISOString();
+    const seen = new Date(Date.parse(staleComputed) - 5 * day).toISOString();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: seen }, staleComputed)).toBeNull();
+  });
+
+  it('needs both an observation and an anchor', () => {
+    expect(observedAgeLabel({ name: 'a' }, freshComputed)).toBeNull();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: freshComputed }, undefined)).toBeNull();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: 'not-a-date' }, freshComputed)).toBeNull();
   });
 });
