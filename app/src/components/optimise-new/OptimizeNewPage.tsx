@@ -33,7 +33,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
 import { Chip } from '@ui/Chip';
-import { safetyBandTone, safetyBandLabel } from './safetyBand';
+import { presentBand, presentRecommendation, presentBandOnly, safetyDotColor, type SafetyPresentation } from './safetyBand';
 import SearchInput from '@ui/SearchInput';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
@@ -105,16 +105,11 @@ const CATEGORY_DOT_COLOR: Record<string, string> = {
   K8sSpotRecommendation: 'var(--ds-green-500)',
 };
 
-// Display order + dot colours for the Safety filter chips. `unknown` collects
-// rows whose blast radius was never assessed (NULL safety_band included — see
-// applyFacetFilters in @api1/recommendation).
+// Display order for the Safety filter chips (stored-band keys; the label and
+// dot colour come from the presentation). `unknown` collects rows whose blast
+// radius was never assessed (NULL safety_band included — see applyFacetFilters
+// in @api1/recommendation).
 const SAFETY_ORDER = ['safe', 'review', 'risky', 'unknown'] as const;
-const SAFETY_DOT_COLOR: Record<string, string> = {
-  safe: 'var(--ds-green-500)',
-  review: 'var(--ds-amber-500)',
-  risky: 'var(--ds-red-500)',
-  unknown: 'var(--ds-gray-400)',
-};
 // Sort presets for the "Sort by" control. Each maps to a real backend sort
 // column so the dropdown and the column-header sort share one source of truth
 // (sortField + sortDirection). Options with no backend column (e.g. a pure
@@ -202,21 +197,27 @@ const SORT_FIELD_TO_HEADER: Partial<Record<SortField, string>> = {
 
 // The exact Safety chip used in the table cell, reused inside the header tooltip
 // so the legend reads with the same visual vocabulary as the rows.
-const safetyChip = (band: string) => (
-  <Chip variant='status' size='2xs' tone={safetyBandTone(band)} dot>
-    {safetyBandLabel(band)}
+const safetyChip = (p: SafetyPresentation) => (
+  <Chip variant='status' size='2xs' tone={p.tone} dot>
+    {p.label}
   </Chip>
 );
 
 // Header tooltip for the Safety column — a lead sentence plus a chip legend for each
 // blast-radius band (computed by the knowledge-graph impact pipeline; see safetyBand.ts).
+// Irreversible is a row-level reading of a destructive change; the filter chips
+// count such rows under the band they were graded into.
 const SAFETY_HEADER_TOOLTIP = (
   <TooltipBody
-    lead='Blast radius from the dependency graph — how many resources depend on this one.'
+    lead='What applying this calls for, from the dependency graph — how many resources depend on this one.'
     rows={[
-      { term: safetyChip('safe'), description: 'Low blast radius — safe to act now.' },
-      { term: safetyChip('review'), description: 'Dependents exist — glance at them first.' },
-      { term: safetyChip('risky'), description: 'High blast radius — apply with a safeguard.' },
+      { term: safetyChip(presentBandOnly('safe')), description: 'No known dependents — apply now.' },
+      { term: safetyChip(presentBandOnly('review')), description: 'Dependents exist, none production — glance at them first.' },
+      { term: safetyChip(presentBandOnly('risky')), description: 'Production callers — apply with a safeguard.' },
+      {
+        term: safetyChip(presentBand('risky', 'destructive')),
+        description: "Can't be undone — a last look at what still points at it. Filtered under Quick check or Plan it.",
+      },
     ]}
   />
 );
@@ -909,7 +910,7 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
         getResourceDisplayName(rec, ''),
         formatRuleName(rec.rule_name || '', rec.category),
         rec.category || '',
-        safetyBandLabel(rec.safety_band),
+        presentRecommendation(rec).label,
         accountInfo?.name || '',
         rec.estimated_savings || 0,
         rec.updated_at || rec.created_at || '',
@@ -1065,6 +1066,7 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
           accountCloudProvider: accountInfo?.cloud_provider || '',
           savings: rec.estimated_savings || 0,
           safetyBand: rec.safety_band || '',
+          safety: presentRecommendation(rec),
           updatedAt: rec.updated_at || rec.created_at || '',
           ticketId: rec.ticket?.ticket_id || '',
           ticketUrl: rec.ticket?.url || '',
@@ -1470,8 +1472,8 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
           // Safety band (knowledge-graph blast radius)
           {
             component: row.safetyBand ? (
-              <Chip variant='status' size='2xs' tone={safetyBandTone(row.safetyBand)} dot>
-                {safetyBandLabel(row.safetyBand)}
+              <Chip variant='status' size='2xs' tone={row.safety.tone} dot>
+                {row.safety.label}
               </Chip>
             ) : (
               <Tooltip title='Blast radius not assessed for this recommendation' placement='top'>
@@ -1855,6 +1857,7 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
           {safetyLoading
             ? chipSkeletons(4, 88)
             : SAFETY_ORDER.map((band) => {
+                const presentation = presentBandOnly(band);
                 const isActive = filters.safety.includes(band);
                 // Counts are unknown when the aggregate failed — render the band
                 // countless and clickable rather than muting it as if it were empty.
@@ -1868,13 +1871,13 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
                     disabled={muted}
                     onClick={muted ? undefined : () => handleSafetyClick(band)}
                     dot
-                    tone={safetyBandTone(band)}
+                    tone={presentation.tone}
                     count={count}
                     highlightCount={count !== undefined}
                     data-testid={`safety-chip-${band}`}
-                    sx={dotSx(SAFETY_DOT_COLOR[band])}
+                    sx={dotSx(safetyDotColor(presentation.tone))}
                   >
-                    {safetyBandLabel(band)}
+                    {presentation.label}
                   </Chip>
                 );
                 return muted ? (

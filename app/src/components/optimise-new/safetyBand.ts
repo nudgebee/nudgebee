@@ -68,20 +68,6 @@ export interface ImpactSummary {
   hosted_workloads?: DependentRef[];
 }
 
-const BAND_TONE: Record<SafetyBand, LabelTone> = {
-  safe: 'success',
-  review: 'warning',
-  risky: 'critical',
-  unknown: 'neutral',
-};
-
-// safetyBandTone maps a band to a DS status tone (safe→success, review→warning,
-// risky→critical, unknown/missing→neutral).
-export const safetyBandTone = (band?: string): LabelTone => BAND_TONE[(band || 'unknown') as SafetyBand] ?? 'neutral';
-
-// safetyBandLabel renders the band as a capitalised word ("Safe", "Risky", …).
-export const safetyBandLabel = (band?: string): string => (band ? band.charAt(0).toUpperCase() + band.slice(1) : '');
-
 // getImpactSummary pulls the blast-radius rollup out of a recommendation's
 // finops_score_breakdown, tolerating the JSONB arriving as a string or an object.
 export const getImpactSummary = (rec: any): ImpactSummary | null => {
@@ -103,6 +89,62 @@ export const getChangeClass = (rec: any): ChangeClass | null => {
   const cls = breakdown && breakdown.change_class;
   return cls === 'additive' || cls === 'reductive' || cls === 'destructive' ? cls : null;
 };
+
+// ── Presentation ──────────────────────────────────────────────────────────
+// The stored band (safe/review/risky/unknown) is a contract — persisted,
+// queried, filtered on, and what the agent's tools take. What people see is
+// the action it calls for, not a judgement about applying: production callers
+// mean "plan it", not "risky". Red is kept for the one thing that can't be
+// planned around — an irreversible change — and only when the graph also
+// grades it risky; a dependent-free removal is amber, matching its banner
+// (the backend never grades a removal safe, but the chip follows the banner
+// even if one arrived that way).
+export interface SafetyPresentation {
+  key: 'safe' | 'quick_check' | 'plan' | 'irreversible' | 'not_assessed';
+  label: string;
+  tone: LabelTone;
+}
+
+export const presentBand = (band: string | null | undefined, changeClass: ChangeClass | null): SafetyPresentation => {
+  const b = (band || '').trim().toLowerCase();
+  if (changeClass === 'destructive' && (b === 'safe' || b === 'review' || b === 'risky')) {
+    return { key: 'irreversible', label: 'Irreversible', tone: b === 'risky' ? 'critical' : 'warning' };
+  }
+  switch (b) {
+    case 'safe':
+      return { key: 'safe', label: 'Safe', tone: 'success' };
+    case 'review':
+      return { key: 'quick_check', label: 'Quick check', tone: 'info' };
+    case 'risky':
+      return { key: 'plan', label: 'Plan it', tone: 'warning' };
+    default:
+      return { key: 'not_assessed', label: 'Not assessed', tone: 'neutral' };
+  }
+};
+
+// presentRecommendation is the one place a row's presentation is computed:
+// band and change class together, so an irreversible change can never render
+// as "Plan it" because a caller forgot the second half.
+export const presentRecommendation = (rec: any): SafetyPresentation => presentBand(rec?.safety_band, getChangeClass(rec));
+
+// presentBandOnly is for surfaces that have a band but no recommendation —
+// filter chips and the legend. An irreversible change is counted under the
+// band it was graded into, so these never say "Irreversible".
+export const presentBandOnly = (band: string): SafetyPresentation => presentBand(band, null);
+
+const TONE_DOT_COLOR: Record<LabelTone, string> = {
+  success: 'var(--ds-green-500)',
+  info: 'var(--ds-blue-500)',
+  warning: 'var(--ds-amber-500)',
+  critical: 'var(--ds-red-500)',
+  neutral: 'var(--ds-gray-400)',
+};
+
+// safetyDotColor pins a filter chip's dot to its tone even while pressed.
+export const safetyDotColor = (tone: LabelTone): string => TONE_DOT_COLOR[tone];
+
+// coverageLabel capitalises a coverage confidence ("high", "observed", …).
+export const coverageLabel = (cov?: string): string => (cov ? cov.charAt(0).toUpperCase() + cov.slice(1) : '');
 
 const CHANGE_CLASS_PRESENTATION: Record<ChangeClass, { label: string; tone: LabelTone }> = {
   additive: { label: 'Additive', tone: 'success' },
@@ -154,10 +196,10 @@ export const deriveVerdict = (
 
 export const CHANGE_CLASS_HELP: Record<ChangeClass, string> = {
   additive:
-    'This change only adds capacity or commitments — dependents cannot be starved by it, so production callers cap the verdict at Review instead of Risky. The remaining risk is apply mechanics (e.g. a rolling restart).',
-  reductive: 'This change shrinks or reshapes something callers rely on. Production dependents make it Risky.',
+    'This change only adds capacity or commitments — dependents cannot be starved by it, so production callers cap the verdict at Quick check instead of Plan it. The remaining risk is apply mechanics (e.g. a rolling restart).',
+  reductive: 'This change shrinks or reshapes something callers rely on. Production dependents mean planning the apply.',
   destructive:
-    'This change removes the resource and cannot be undone. The verdict floors at Risky; a well-observed, dependent-free neighbourhood earns Review — never Safe.',
+    'This change removes the resource and cannot be undone. It always reads Irreversible; a well-observed, dependent-free neighbourhood needs one glance, never none.',
 };
 
 // Relationship → short role chip, from the row's point of view. Upstream rows

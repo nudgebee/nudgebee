@@ -392,7 +392,8 @@ func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
 	t.Run("apply leads with the summary, then the safety line and its safeguard", func(t *testing.T) {
 		q := RecommendationApplyTool{}.ConfirmationQuestion(
 			`{"recommendation_id":"rec-1","provider":"kubernetes","summary":"Right-size checkout: CPU 500m → 250m (est. $41/mo)","safety_band":"risky","safety_reason":"2 production dependent(s) in the blast radius"}`)
-		assert.Contains(t, q, "Safety: Risky — 2 production dependent(s) in the blast radius. Safeguard: use the no-restart (in-place) apply")
+		assert.Contains(t, q, "Safety: Plan it — 2 production dependent(s) in the blast radius. Safeguard: use the no-restart (in-place) apply")
+		assert.NotContains(t, q, "Risky")
 		assert.Less(t, strings.Index(q, "est. $41/mo"), strings.Index(q, "Safety:"))
 		assert.NotContains(t, strings.ToLower(q), "are you sure")
 	})
@@ -403,11 +404,18 @@ func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
 		assert.NotContains(t, safe, "Safeguard")
 
 		cloud := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","provider":"aws","safety_band":"review","safety_reason":"4 dependent(s); none detected as production."}`)
-		assert.Contains(t, cloud, "Safety: Review — 4 dependent(s); none detected as production. Safeguard: apply in a maintenance window")
+		assert.Contains(t, cloud, "Safety: Quick check — 4 dependent(s); none detected as production. Safeguard: apply in a maintenance window")
 		assert.NotContains(t, cloud, "no-restart")
 
 		unknown := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","safety_band":"unknown"}`)
-		assert.Contains(t, unknown, "not in the dependency graph yet")
+		assert.Contains(t, unknown, "Safety: Not assessed")
+
+		removal := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","provider":"aws","safety_band":"review","change_class":"destructive","safety_reason":"irreversible change; graph well-observed, no dependents"}`)
+		assert.Contains(t, removal, "Safety: Irreversible — irreversible change; graph well-observed, no dependents. Safeguard: confirm nothing still depends on it")
+		assert.NotContains(t, removal, "Quick check")
+		// The backend never grades a removal safe, but the card follows the
+		// change class if one ever arrives that way.
+		assert.Contains(t, RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","safety_band":"safe","change_class":"destructive"}`), "Safety: Irreversible")
 	})
 
 	t.Run("apply falls back to default rendering on unparseable input", func(t *testing.T) {

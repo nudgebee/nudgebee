@@ -22,8 +22,8 @@ import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
 import {
-  safetyBandTone,
-  safetyBandLabel,
+  presentRecommendation,
+  coverageLabel,
   getImpactSummary,
   dependentRoleLabel,
   proximityLabel,
@@ -52,6 +52,7 @@ import {
   PROD_CHIP_HELP,
   ENV_UNKNOWN_HELP,
   type DependentRef,
+  type SafetyPresentation,
 } from './safetyBand';
 import { Banner } from '@ui/Banner';
 import DsTooltip from '@ui/Tooltip';
@@ -110,15 +111,16 @@ const PROXIMITY_HELP =
 const BLAST_RADIUS_HELP =
   'What else could be affected if you apply this change — the workloads that depend on this resource, how directly, and how confident we are in that picture.';
 
-// Plain-language explanation for each safety band, shown in the header chip tooltip.
-const SAFETY_BAND_HELP: Record<string, string> = {
-  safe: 'No dependents were found and the graph is well-observed. Safe to apply.',
-  review:
-    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. Safe to apply after a glance at the dependents.',
-  risky:
-    'Production dependents are in the blast radius, the blast radius is very large, or the change is irreversible. Apply with a safeguard — a no-restart apply, a maintenance window, or a ticket to the owner.',
-  unknown:
-    "This resource isn't in the dependency graph yet, so impact isn't assessed. Apply as you normally would; the verdict appears once the graph sees it.",
+// Plain-language explanation for each safety reading, shown in the header chip tooltip.
+const SAFETY_BAND_HELP: Record<SafetyPresentation['key'], string> = {
+  safe: 'No dependents were found and the graph is well-observed. Apply now.',
+  quick_check:
+    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. A glance at the dependents, then apply.',
+  plan: 'Production callers are in the blast radius, or the blast radius is very large. Apply with a safeguard — a no-restart apply, a maintenance window, or a heads-up to the owner.',
+  irreversible:
+    "This change removes the resource and can't be undone. Take a last look at what still points at it, and snapshot first where the resource supports it.",
+  not_assessed:
+    "This resource isn't in the dependency graph yet, so impact isn't assessed. Apply as you normally would; the reading appears once the graph sees it.",
 };
 
 // Wraps a chip so the tooltip gets a ref-holding element (Label doesn't forward refs).
@@ -275,6 +277,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const band = rec?.safety_band as string | undefined;
   const impact = getImpactSummary(rec);
   const changeClass = getChangeClass(rec);
+  const safety = presentRecommendation(rec);
   const [showAllDeps, setShowAllDeps] = useState(false);
   const [showAllDownstream, setShowAllDownstream] = useState(false);
   const downstream = impact?.downstream_dependencies || [];
@@ -313,10 +316,10 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             </DsTooltip>
           </Box>
           {band && (
-            <DsTooltip variant='explainer' title={`Safety: ${safetyBandLabel(band)}`} desc={SAFETY_BAND_HELP[band] ?? ''}>
+            <DsTooltip variant='explainer' title={`Safety: ${safety.label}`} desc={SAFETY_BAND_HELP[safety.key]}>
               <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
-                <Label size='sm' tone={safetyBandTone(band)} dot>
-                  {safetyBandLabel(band)}
+                <Label size='sm' tone={safety.tone} dot>
+                  {safety.label}
                 </Label>
               </Box>
             </DsTooltip>
@@ -376,10 +379,10 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         {impact?.coverage_confidence && (
           <SafetyRow label='Graph coverage'>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
-              <DsTooltip variant='explainer' title={`Graph coverage: ${safetyBandLabel(impact.coverage_confidence)}`} desc={COVERAGE_HELP}>
+              <DsTooltip variant='explainer' title={`Graph coverage: ${coverageLabel(impact.coverage_confidence)}`} desc={COVERAGE_HELP}>
                 <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
                   <Label size='sm' tone={coverageTone(impact.coverage_confidence)}>
-                    {safetyBandLabel(impact.coverage_confidence)}
+                    {coverageLabel(impact.coverage_confidence)}
                   </Label>
                 </Box>
               </DsTooltip>
@@ -492,7 +495,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             <Banner
               tone={impact?.coverage_confidence === 'observed' ? 'info' : 'warning'}
               surface='section'
-              title={`Why coverage is ${safetyBandLabel(impact?.coverage_confidence)}`}
+              title={`Why coverage is ${coverageLabel(impact?.coverage_confidence)}`}
               message={explainer}
             />
           </Box>

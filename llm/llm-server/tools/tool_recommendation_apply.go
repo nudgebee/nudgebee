@@ -65,6 +65,10 @@ func (m RecommendationApplyTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "The recommendation's safety_reason from recommendation_view, shown on the approval card next to the band.",
 			},
+			"change_class": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The recommendation's change_class from recommendation_view ('additive', 'reductive', 'destructive'); a destructive change is presented as Irreversible on the approval card.",
+			},
 		},
 		Required: []string{"recommendation_id"},
 	}
@@ -114,15 +118,22 @@ func applyDataValueLines(data map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
-// applySafetyLine renders the safety verdict for the approval card: the
-// stored fact, then the safeguard that makes applying fine. The user is here
-// to save money, so the line informs — it never warns them off.
-func applySafetyLine(band, reason, provider string) string {
+// applySafetyLine renders the safety verdict for the approval card in the
+// product's words (the stored band names the action, not the fear): the
+// fact, then the safeguard that makes applying fine. The user is here to
+// save money, so the line informs — it never warns them off.
+func applySafetyLine(band, reason, provider, changeClass string) string {
 	reason = strings.TrimSuffix(strings.TrimSpace(reason), ".")
 	safeguard := "apply in a maintenance window, or give the owning team a heads-up first"
 	switch provider {
 	case "kubernetes", "git", "github", "gitlab":
 		safeguard = "use the no-restart (in-place) apply where the cluster supports it, or apply in a maintenance window"
+	}
+	if changeClass == "destructive" && (band == "safe" || band == "review" || band == "risky") {
+		if reason == "" {
+			reason = "this change removes the resource"
+		}
+		return "Safety: Irreversible — " + reason + ". Safeguard: confirm nothing still depends on it, and snapshot first where the resource supports it."
 	}
 	switch band {
 	case "safe":
@@ -134,14 +145,14 @@ func applySafetyLine(band, reason, provider string) string {
 		if reason == "" {
 			reason = "dependents exist but none look production"
 		}
-		return "Safety: Review — " + reason + ". Safeguard: " + safeguard + "."
+		return "Safety: Quick check — " + reason + ". Safeguard: " + safeguard + "."
 	case "risky":
 		if reason == "" {
-			reason = "production dependents are in the blast radius"
+			reason = "production callers are in the blast radius"
 		}
-		return "Safety: Risky — " + reason + ". Safeguard: " + safeguard + "."
+		return "Safety: Plan it — " + reason + ". Safeguard: " + safeguard + "."
 	default:
-		return "Safety: not in the dependency graph yet — impact isn't assessed."
+		return "Safety: Not assessed — this workload isn't in the dependency graph yet."
 	}
 }
 
@@ -173,7 +184,8 @@ func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
 	if band, _ := args["safety_band"].(string); strings.TrimSpace(band) != "" {
 		reason, _ := args["safety_reason"].(string)
 		provider, _ := args["provider"].(string)
-		sections = append(sections, applySafetyLine(strings.TrimSpace(band), reason, provider))
+		changeClass, _ := args["change_class"].(string)
+		sections = append(sections, applySafetyLine(strings.TrimSpace(band), reason, provider, strings.TrimSpace(changeClass)))
 	}
 	if data, ok := args["data"].(map[string]any); ok {
 		if valueLines := applyDataValueLines(data); valueLines != "" {

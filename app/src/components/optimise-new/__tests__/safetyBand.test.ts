@@ -19,6 +19,10 @@ import {
   criticalityLabel,
   businessCriticalCount,
   observedAgeLabel,
+  presentBand,
+  presentRecommendation,
+  presentBandOnly,
+  coverageLabel,
 } from '../safetyBand';
 
 describe('safetyBand dependent categorization helpers', () => {
@@ -277,5 +281,54 @@ describe('observedAgeLabel', () => {
     expect(observedAgeLabel({ name: 'a' }, freshComputed)).toBeNull();
     expect(observedAgeLabel({ name: 'a', last_observed_at: freshComputed }, undefined)).toBeNull();
     expect(observedAgeLabel({ name: 'a', last_observed_at: 'not-a-date' }, freshComputed)).toBeNull();
+  });
+});
+
+describe('band presentation', () => {
+  it('names the action, not the fear, and keeps the stored enum out of sight', () => {
+    expect(presentBandOnly('safe')).toMatchObject({ key: 'safe', label: 'Safe', tone: 'success' });
+    expect(presentBandOnly('review')).toMatchObject({ key: 'quick_check', label: 'Quick check', tone: 'info' });
+    expect(presentBandOnly('risky')).toMatchObject({ key: 'plan', label: 'Plan it', tone: 'warning' });
+    expect(presentBandOnly('unknown')).toMatchObject({ key: 'not_assessed', label: 'Not assessed', tone: 'neutral' });
+    expect(presentBand(null, null).key).toBe('not_assessed');
+    expect(presentBand('RISKY ', null).label).toBe('Plan it');
+  });
+
+  it('reserves red for an irreversible change the graph also grades risky; a dependent-free removal is amber', () => {
+    expect(presentBand('risky', 'destructive')).toMatchObject({ key: 'irreversible', label: 'Irreversible', tone: 'critical' });
+    expect(presentBand('review', 'destructive')).toMatchObject({ key: 'irreversible', label: 'Irreversible', tone: 'warning' });
+    expect(presentBand('safe', 'destructive')).toMatchObject({ key: 'irreversible', tone: 'warning' });
+    expect(presentBand('unknown', 'destructive').key).toBe('not_assessed');
+  });
+
+  it('never lets the chip argue with the banner beneath it', () => {
+    // Assessed bands only: an unassessed row keeps a neutral chip on purpose
+    // (a filter full of them must not read amber) while the panel banner
+    // beneath it explains "Not in the dependency graph yet" in warning tone.
+    expect(presentBandOnly('unknown').tone).toBe('neutral');
+    expect(deriveVerdict('unknown', 0, 0, false, null).tone).toBe('warning');
+    const bands = ['safe', 'review', 'risky'];
+    const classes = [null, 'additive', 'reductive', 'destructive'] as const;
+    for (const band of bands) {
+      for (const cls of classes) {
+        for (const prod of [0, 2]) {
+          const verdict = deriveVerdict(band, prod, prod + 1, false, cls);
+          if (verdict.tone === 'success') continue;
+          expect(presentBand(band, cls).tone).toBe(verdict.tone);
+        }
+      }
+    }
+  });
+
+  it('reads a recommendation row once, from band and change class together', () => {
+    const rec = { safety_band: 'review', finops_score_breakdown: { change_class: 'destructive' } };
+    expect(presentRecommendation(rec).label).toBe('Irreversible');
+    expect(presentRecommendation({ safety_band: 'risky' }).label).toBe('Plan it');
+    expect(presentRecommendation(undefined).key).toBe('not_assessed');
+  });
+
+  it('keeps coverage words out of the band vocabulary', () => {
+    expect(coverageLabel('observed')).toBe('Observed');
+    expect(coverageLabel(undefined)).toBe('');
   });
 });
