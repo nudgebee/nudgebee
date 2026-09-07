@@ -22,7 +22,7 @@ import { applyFiltersOnRouter } from '@lib/router';
 import { Avatar, Box, CircularProgress, Divider, Typography } from '@mui/material';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
-import { useEffect, useRef, useReducer, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useReducer, useMemo, useCallback, useState } from 'react';
 import { ds } from '@utils/colors';
 import AutoSuggestTextarea from '@components/k8s/common/TextAreaV2';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
@@ -334,6 +334,8 @@ const KubernetesLLMResponseGenerator = ({
     [conversationStatus, currentlyProcessingQuestion]
   );
 
+  const [optimisticFollowupAnswer, setOptimisticFollowupAnswer] = useState(null);
+
   // Derive the latest follow-up that's waiting for the user — this is what the bottom-anchored
   // FollowupSheet renders. The followup message itself is saved as IN_PROGRESS while it sits
   // waiting on the user; only COMPLETED/TERMINATED/KILLED/FAILED are terminal and disqualify
@@ -378,11 +380,55 @@ const KubernetesLLMResponseGenerator = ({
     ? `${activeWaitingFollowup.response?.message_id || ''}:${activeWaitingFollowup.response?.agent_id || ''}`
     : null;
 
+  // True once the user has optimistically answered the currently-active followup — hides the
+  // sheet the instant they submit, before the poll confirms it.
+  const isActiveFollowupOptimisticallyAnswered = Boolean(activeFollowupKey) && optimisticFollowupAnswer?.key === activeFollowupKey;
+
   // Only surface the followup prompt while the conversation itself is still open. The
   // per-message terminal check above can lag the conversation (a stale followup message can
   // still read IN_PROGRESS after the run finished), so gate on conversationStatus too —
-  // a COMPLETED conversation must never render an answerable followup sheet.
-  const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED';
+  // a COMPLETED conversation must never render an answerable followup sheet. Also drop it the
+  // moment the user optimistically answers, so the sheet collapses into its inline pill
+  // instead of sitting with a loader until the next poll.
+  const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED' && !isActiveFollowupOptimisticallyAnswered;
+
+  const displayMessages = useMemo(() => {
+    if (!optimisticFollowupAnswer) {
+      return messages;
+    }
+    return messages.map((m) => {
+      const type = m?.tool ?? m?.type;
+      if (type !== 'followup-question') {
+        return m;
+      }
+      const key = `${m.response?.message_id || ''}:${m.response?.agent_id || ''}`;
+      if (key !== optimisticFollowupAnswer.key || TERMINAL_FOLLOWUP_STATUSES.includes(m.response?.status)) {
+        return m;
+      }
+      return { ...m, response: { ...m.response, status: 'COMPLETED', text: optimisticFollowupAnswer.answer } };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, optimisticFollowupAnswer]);
+
+  // Drop the overlay once the server confirms the answer — the polled `messages` now carry the
+  // real terminal status + text, so we stop shadowing them with the optimistic copy.
+  useEffect(() => {
+    if (!optimisticFollowupAnswer) {
+      return;
+    }
+    const confirmed = messages.some((m) => {
+      const type = m?.tool ?? m?.type;
+      if (type !== 'followup-question') {
+        return false;
+      }
+      const key = `${m.response?.message_id || ''}:${m.response?.agent_id || ''}`;
+      return key === optimisticFollowupAnswer.key && TERMINAL_FOLLOWUP_STATUSES.includes(m.response?.status);
+    });
+    if (confirmed) {
+      setOptimisticFollowupAnswer(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, optimisticFollowupAnswer]);
 
   const currentSessionId = router.query.session_id || sessionId;
   const notifyNavigateTo = currentSessionId ? `/ask-nudgebee?accountId=${accountId}&session_id=${currentSessionId}` : '';
@@ -1777,7 +1823,7 @@ const KubernetesLLMResponseGenerator = ({
             )}
 
             <MessageStream
-              messages={messages}
+              messages={displayMessages}
               isProcessing={isConversationInProgress}
               collapsedObj={collapsedObj}
               setCollapsedObj={setCollapsedObj}
@@ -1954,6 +2000,11 @@ const KubernetesLLMResponseGenerator = ({
                     selectedTierModels={selectedTierModels}
                     popup={popup}
                     onStop={handleStopInvestigation}
+                    onOptimisticSubmit={(answer) => setOptimisticFollowupAnswer({ key: activeFollowupKey, answer })}
+                    onSubmitError={() => {
+                      setOptimisticFollowupAnswer(null);
+                      snackbar.error('Couldn’t submit your response. Please try again.');
+                    }}
                   />
                 </Box>
               )}
