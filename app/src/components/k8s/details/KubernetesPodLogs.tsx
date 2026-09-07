@@ -127,7 +127,14 @@ const KubernetesPodLogs: React.FC<KubernetesPodLogsProps> = ({ podData }) => {
 
   const renderingObject = () => {
     if (!errorMsg && !text && loading) {
-      return <Loader style={{ paddingTop: 'var(--ds-space-6)', width: '100%' }} />;
+      // Loader is an absolute overlay (inset:0). Wrap it in a positioned box with
+      // a min-height so it centers within the log area below the toolbar instead
+      // of escaping to the center of the whole page content region.
+      return (
+        <Box sx={{ position: 'relative', minHeight: ds.space.mul(0, 100) }}>
+          <Loader style={{ width: '100%' }} />
+        </Box>
+      );
     } else if (errorMsg) {
       return <MarkDowns data={errorMsg} sx={{ width: '100%', maxHeight: ds.space.mul(0, 300) }} allowExecutable={false} onLinkClick={null} />;
     }

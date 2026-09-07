@@ -759,7 +759,7 @@ const KubernetesNodeClass = ({ accountId }) => {
             ) : null
           }
         />
-        <ListingLayout.Body>
+        <ListingLayout.Body padding={`0 ${ds.space[5]} ${ds.space[4]}`}>
           <CustomTable
             id={'auto-scaler-node-class'}
             headers={['Kind', 'Name', { name: 'Time', width: '40%' }, '']}
