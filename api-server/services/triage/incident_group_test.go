@@ -2,6 +2,7 @@ package triage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -84,52 +85,78 @@ func TestDecideSameSubjectAttach_FollowsLiveLeader(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, offset)
 }
 
-func TestDecideSameSubjectAttach_CappedGroupDoesNotAbsorb(t *testing.T) {
+// TestDecideSameSubjectAttach_OldLeaderStillLiveWhileMembersFire is the reported
+// case, reduced.
+//
+// The two alerts on i-0dcee3621b8456783 opened their chains 19 hours apart on
+// 4 and 5 September and were both still firing on the 8th. A group is live while
+// its members are firing, not for a fixed period after its leader started — the
+// previous rule closed a group 90 minutes after the leader's first event, which
+// would reject every long-running incident, which is most of them.
+func TestDecideSameSubjectAttach_OldLeaderStillLiveWhileMembersFire(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	seed := gc("seed", "KubePodNotReady", now)
-	// The only recent activity is a child of a leader that started beyond the
-	// absorption cap: that group is over, so the seed does not attach.
+
+	// A member that fired 5 minutes ago, belonging to a group whose leader first
+	// fired days back. The group is live: something in it is still firing.
 	members := []groupCandidate{
 		gc("child", "KubePodCrashLooping", now.Add(-5*time.Minute)),
 	}
-	edges := map[string]string{"child": "stale-leader"}
-	leaderStarts := map[string]time.Time{"stale-leader": now.Add(-IncidentAbsorptionCap - time.Minute)}
+	edges := map[string]string{"child": "old-leader"}
+	leaderStarts := map[string]time.Time{"old-leader": now.Add(-72 * time.Hour)}
 
-	_, _, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, nil)
-	assert.False(t, ok)
-
-	// A fresh unlinked member alongside the capped group founds a new one.
-	members = append(members, gc("fresh", "KubeContainerOOMKilled", now.Add(-3*time.Minute)))
 	leader, _, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, nil)
+	require.True(t, ok, "a firing member keeps its group live however old the leader is")
+	assert.Equal(t, "old-leader", leader, "the seed joins the existing group rather than starting a rival")
+
+	// An unlinked member alongside it does not start a competing group: the
+	// existing group still wins, so one incident keeps one leader.
+	members = append(members, gc("fresh", "KubeContainerOOMKilled", now.Add(-3*time.Minute)))
+	leader, _, ok = decideSameSubjectAttach(seed, members, edges, leaderStarts, nil)
 	require.True(t, ok)
-	assert.Equal(t, "fresh", leader)
+	assert.Equal(t, "old-leader", leader, "an existing group anchors the incident as it grows")
 }
 
-func TestDecideSameSubjectAttach_ChronicNeverLeadsNorExtends(t *testing.T) {
+// TestDecideSameSubjectAttach_ChronicJoinsButNeverLeads pins the membership rule
+// that replaced the old "chronic never groups" one.
+//
+// Gating membership on the firing rate was measured against the Rackspace tenant
+// and left the reported machines ungrouped: payment (17 and 11 firings/week) and
+// inventory (15 and 11) have no non-chronic alert at all, so nothing could ever
+// found a group on them, and order qualified only because one counter sat at 9
+// against a threshold of 10. Whether an incident was visible came down to a noise
+// counter versus an arbitrary constant. Membership is now decided by what is
+// firing; the rate only decides who leads.
+func TestDecideSameSubjectAttach_ChronicJoinsButNeverLeads(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	seed := gc("seed", "KubePodNotReady", now)
 	chronic := map[string]bool{"FlappingLatency": true}
 
-	// A chronic flapper is the only member: no group.
+	// A chronic member alone still forms a group and leads it: the incident is
+	// real, it just ranks low. This is the case that used to return no group.
 	members := []groupCandidate{
 		gc("flap", "FlappingLatency", now.Add(-2*time.Minute)),
 	}
-	_, _, ok := decideSameSubjectAttach(seed, members, nil, nil, chronic)
-	assert.False(t, ok, "a chronic pair must not found a group")
-
-	// Chronic member is earlier than a real one: the real one leads.
-	members = append(members, gc("oom", "KubeContainerOOMKilled", now.Add(-1*time.Minute)))
 	leader, _, ok := decideSameSubjectAttach(seed, members, nil, nil, chronic)
-	require.True(t, ok)
-	assert.Equal(t, "oom", leader)
+	require.True(t, ok, "a chronic pair must still form a group")
+	assert.Equal(t, "flap", leader)
 
-	// A recent chronic firing must not re-arm the timer for a stale real member.
+	// With a non-chronic member present, the non-chronic one leads even though
+	// the chronic one started earlier — a flapper never becomes the headline.
+	members = append(members, gc("oom", "KubeContainerOOMKilled", now.Add(-1*time.Minute)))
+	leader, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic)
+	require.True(t, ok)
+	assert.Equal(t, "oom", leader, "non-chronic outranks chronic regardless of start order")
+
+	// A chronic firing now DOES hold the group open, because membership is
+	// liveness-based: something is still firing on this subject.
 	members = []groupCandidate{
 		gc("flap", "FlappingLatency", now.Add(-2*time.Minute)),
 		gc("oom", "KubeContainerOOMKilled", now.Add(-IncidentAttachWindow-5*time.Minute)),
 	}
-	_, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic)
-	assert.False(t, ok, "chronic firings do not hold a group open")
+	leader, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic)
+	require.True(t, ok, "a recent chronic firing keeps the subject live")
+	assert.Equal(t, "oom", leader, "the stale non-chronic member still outranks the chronic one")
 }
 
 func TestDecideSameSubjectAttach_DeterministicTieBreak(t *testing.T) {
@@ -410,4 +437,100 @@ func TestSubjectKey_OwnerHashStripped(t *testing.T) {
 	deployment := AlertIdentity{SubjectNamespace: "namespace-104a", SubjectOwner: "postgres"}
 	replicaSet := AlertIdentity{SubjectNamespace: "namespace-104a", SubjectOwner: "postgres-78d9cffd68"}
 	assert.Equal(t, SubjectKey(deployment), SubjectKey(replicaSet))
+}
+
+// TestPoolConnectedMembers_GroupsTheWholeConnectedSet is the a-b-c case, built
+// from the topology actually stored on the Rackspace scenario-lab account:
+// payment and inventory both call order, and all three call database.
+//
+// The rule this replaces joined the single most recently active neighbour, so
+// whether three connected alerting services ended up in one incident was luck.
+// It also followed one hop only, which is not enough here: payment reaches
+// database directly, but reaches inventory only through order.
+func TestPoolConnectedMembers_GroupsTheWholeConnectedSet(t *testing.T) {
+	const (
+		order     = "aws:ComputeInstance:order"
+		payment   = "aws:ComputeInstance:payment"
+		inventory = "aws:ComputeInstance:inventory"
+		database  = "aws:ComputeInstance:database"
+		unrelated = "aws:ComputeInstance:billing"
+	)
+	graph := &DependencyGraph{
+		Nodes: map[string]*ServiceNode{
+			order: {}, payment: {}, inventory: {}, database: {}, unrelated: {},
+		},
+		Edges: map[string][]string{
+			payment:   {order, database},
+			inventory: {order, database},
+			order:     {database},
+		},
+		ReverseEdges: map[string][]string{
+			order:    {payment, inventory},
+			database: {payment, inventory, order},
+		},
+	}
+	now := time.Date(2026, 9, 8, 5, 56, 0, 0, time.UTC)
+	cand := func(id, subject, svc string) connectedCandidate {
+		return connectedCandidate{
+			candidate:  gc(id, "svc-down", now.Add(-2*time.Minute)),
+			subjectKey: "amazonec2|" + subject,
+			serviceKey: svc,
+			subject:    subject,
+		}
+	}
+	cands := []connectedCandidate{
+		cand("payment-chain", "i-payment", payment),
+		cand("inventory-chain", "i-inventory", inventory),
+		cand("database-chain", "i-database", database),
+		cand("unrelated-chain", "i-billing", unrelated),
+	}
+
+	members, hops, subjects, capped := poolConnectedMembers(graph, order, "amazonec2|i-order", cands)
+
+	assert.False(t, capped)
+	ids := make([]string, 0, len(members))
+	for _, m := range members {
+		ids = append(ids, m.ID)
+	}
+	assert.ElementsMatch(t, []string{"payment-chain", "inventory-chain", "database-chain"}, ids,
+		"every connected alerting service joins, not just the most recent one")
+	assert.Len(t, subjects, 3)
+	// The subject each key maps to is carried through, not parsed back out of the
+	// key: SubjectKey is not reversible (its datastore form is "db|ns|series"),
+	// and these values are what the chronic rate query matches on.
+	assert.ElementsMatch(t, []string{"i-payment", "i-inventory", "i-database"},
+		[]string{subjects["amazonec2|i-payment"], subjects["amazonec2|i-inventory"], subjects["amazonec2|i-database"]})
+	assert.NotContains(t, ids, "unrelated-chain", "a service with no path to the seed stays out")
+	for _, id := range ids {
+		assert.LessOrEqual(t, hops[id], maxIncidentHops)
+	}
+}
+
+// TestPoolConnectedMembers_StopsAtTheSubjectCap proves the cap stops adding
+// rather than truncating a group that already exists, so one runaway fan-out
+// cannot turn an incident into an estate-wide blob.
+func TestPoolConnectedMembers_StopsAtTheSubjectCap(t *testing.T) {
+	const seedSvc = "aws:ComputeInstance:hub"
+	graph := &DependencyGraph{
+		Nodes: map[string]*ServiceNode{seedSvc: {}},
+		Edges: map[string][]string{seedSvc: {}},
+	}
+	now := time.Date(2026, 9, 8, 5, 56, 0, 0, time.UTC)
+	cands := make([]connectedCandidate, 0, incidentGroupSubjectCap+5)
+	for i := 0; i < incidentGroupSubjectCap+5; i++ {
+		svc := fmt.Sprintf("aws:ComputeInstance:n%d", i)
+		graph.Nodes[svc] = &ServiceNode{}
+		graph.Edges[seedSvc] = append(graph.Edges[seedSvc], svc)
+		cands = append(cands, connectedCandidate{
+			candidate:  gc(fmt.Sprintf("chain-%d", i), "svc-down", now.Add(-time.Minute)),
+			subjectKey: fmt.Sprintf("amazonec2|i-%d", i),
+			serviceKey: svc,
+			subject:    fmt.Sprintf("i-%d", i),
+		})
+	}
+
+	_, _, subjects, capped := poolConnectedMembers(graph, seedSvc, "amazonec2|i-seed", cands)
+
+	assert.True(t, capped, "the cap must be reported, not applied silently")
+	assert.Len(t, subjects, incidentGroupSubjectCap)
 }

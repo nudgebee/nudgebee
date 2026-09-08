@@ -60,12 +60,21 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 		// Continue processing - don't fail entire triage on correlation error
 	}
 
-	// Step 3b: Same-subject incident grouping (epic #34655 slice 1). Only chain
-	// leaders participate — re-fires stay collapsed inside their dedup chain, so
-	// a group member stands for its whole chain. Additive: a failure here must
-	// never fail triage.
+	// Step 3b: Same-subject incident grouping (epic #34655). Runs on EVERY firing,
+	// not only the first. Grouping used to be gated on occurrence == 1, which meant
+	// it ran once per alert and never again; where alerts fire continuously the
+	// chain never breaks, so for most live alerts the check had already run days
+	// earlier and could never run again. Measured on the Rackspace tenant over 24
+	// hours: 19 machines had several alert types firing, 16 grouped nothing, and 10
+	// of those were blocked purely because every alert was a re-fire.
+	//
+	// The link is still written once per alert, not once per firing — attach
+	// resolves the chain's first event and hangs the link off that, which also
+	// makes a repeat attach a no-op. An alert whose chain cannot be resolved is
+	// skipped there rather than guessed at. Additive: a failure here must never
+	// fail triage.
 	isIncidentChild := false
-	if occurrence == 1 && incidentGroupingEnabled() {
+	if incidentGroupingEnabled() {
 		attached, err := attachSameSubjectIncident(ctx, db, event)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed same-subject incident attach", "error", err, "event_id", event.Id)
