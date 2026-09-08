@@ -93,6 +93,10 @@ type SetRCAFormatRequest struct {
 type RCAFormatResponse struct {
 	Format    string `json:"format"`
 	IsDefault bool   `json:"is_default"`
+	// DefaultFormat is always the built-in template, regardless of whether the
+	// account has a custom format stored. The settings editor uses it to offer
+	// "start from the Nudgebee default" without shipping its own copy of the text.
+	DefaultFormat string `json:"default_format"`
 }
 
 type EventAnalysisResponse struct {
@@ -328,8 +332,9 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 
 		c.JSON(200, buildApiResponse(RCAFormatResponse{
-			Format:    format,
-			IsDefault: isDefault,
+			Format:        format,
+			IsDefault:     isDefault,
+			DefaultFormat: agents.DefaultRCAFormat,
 		}, nil))
 	})
 
@@ -386,8 +391,9 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 
 		c.JSON(200, buildApiResponse(RCAFormatResponse{
-			Format:    responseFormat,
-			IsDefault: isDefault,
+			Format:        responseFormat,
+			IsDefault:     isDefault,
+			DefaultFormat: agents.DefaultRCAFormat,
 		}, nil))
 	})
 

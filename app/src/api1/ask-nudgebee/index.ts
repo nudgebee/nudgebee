@@ -1886,6 +1886,7 @@ const api = {
         data {
           is_default
           format
+          default_format
         }
         errors
       }

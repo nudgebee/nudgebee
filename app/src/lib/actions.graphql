@@ -10291,6 +10291,7 @@ type AISaveRcaFormatResponse {
 type AIGetRcaFormatResponseData {
   is_default: Boolean
   format: String
+  default_format: String
 }
 
 type AISaveRcaFormatResponseData {
