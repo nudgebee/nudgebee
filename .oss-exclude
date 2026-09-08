@@ -89,6 +89,14 @@ app/src/pages/signup_verify.tsx
 app/src/pages/api/auth/signup.ts
 app/src/pages/api/auth/signup_verify.ts
 
+# Tests for the self-signup routes above. Jest keeps tests outside src/, so
+# they are not covered by any directory entry, and a test whose subject was
+# removed cannot pass in the snapshot. They also import @ee/ratelimit, which
+# would trip both the boundary check and the "no residual ee/ imports"
+# assertion in build-oss-snapshot.sh.
+app/__tests__/pages/api/auth/signup.test.ts
+app/__tests__/pages/api/auth/signup_verify.test.ts
+
 # ─── Helm chart EE overlay ───────────────────────────────────────────
 # values-enterprise.yaml is the internal-registry overlay for high-frequency
 # private deploys (registry.nudgebee.com instead of public GHCR). Excluded
