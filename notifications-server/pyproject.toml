@@ -30,7 +30,7 @@ slack-bolt = "1.30.0"
 # Direct dep: webhook_auth.py uses slack_sdk.signature.SignatureVerifier for the
 # inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
 # so the security boundary can't break under a slack-bolt resolution change.
-slack-sdk = "3.44.0"
+slack-sdk = "3.44.1"
 sqlalchemy = {version = "^2.0.48", extras = ["asyncio"]}
 aio_pika = "10.0.1"
 uvicorn = ">=0.34.2,<0.53.0"
@@ -78,7 +78,7 @@ pre-commit = "4.6.2"
 black = "^26.3.1"
 mypy = "2.3.1"
 flake8 = "7.3.0"
-sqlglot = "30.17.0"
+sqlglot = "30.18.0"
 pytest = ">=8.3,<10.0"
 pypdf = "^6.15.0"
 aiosqlite = "^0.22.1"
