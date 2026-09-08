@@ -5208,6 +5208,8 @@ input KnowledgebaseInput {
   data: String!
   format: String!
   file_name: String!
+  note_category: String
+  context_tags: [String!]
 }
 
 input KnowledgebaseUpdateInput {
@@ -5217,6 +5219,8 @@ input KnowledgebaseUpdateInput {
   data: String
   format: String
   file_name: String
+  note_category: String
+  context_tags: [String!]
 }
 
 input CreateKBRequest {
@@ -9280,6 +9284,8 @@ type KnowledgebaseOutput {
   updated_at: timestamp
   document_count: Int
   last_loaded_at: timestamp
+  note_category: String
+  context_tags: [String!]
 }
 
 type CreateKBResponse {

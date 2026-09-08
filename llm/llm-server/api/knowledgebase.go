@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/tools/core"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -19,11 +20,13 @@ import (
 type kbCreateRequest struct {
 	AccountId     string `json:"account_id"`
 	Knowledgebase struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Data        string `json:"data"`
-		Format      string `json:"format"`
-		FileName    string `json:"file_name"`
+		Name         string   `json:"name"`
+		Description  string   `json:"description"`
+		Data         string   `json:"data"`
+		Format       string   `json:"format"`
+		FileName     string   `json:"file_name"`
+		NoteCategory string   `json:"note_category"`
+		ContextTags  []string `json:"context_tags"`
 	} `json:"knowledgebase"`
 }
 
@@ -39,12 +42,14 @@ type kbListRequest struct {
 type kbUpdateRequest struct {
 	AccountId     string `json:"account_id"`
 	Knowledgebase struct {
-		Id          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Data        string `json:"data"`
-		Format      string `json:"format"`
-		FileName    string `json:"file_name"`
+		Id           string   `json:"id"`
+		Name         string   `json:"name"`
+		Description  string   `json:"description"`
+		Data         string   `json:"data"`
+		Format       string   `json:"format"`
+		FileName     string   `json:"file_name"`
+		NoteCategory string   `json:"note_category"`
+		ContextTags  []string `json:"context_tags"`
 	} `json:"knowledgebase"`
 }
 
@@ -143,6 +148,8 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	kb := core.Knowledgebase{
+		NoteCategory: request.Knowledgebase.NoteCategory,
+		ContextTags:  pq.StringArray(request.Knowledgebase.ContextTags),
 		Name:         request.Knowledgebase.Name,
 		Description:  request.Knowledgebase.Description,
 		Data:         request.Knowledgebase.Data,
@@ -285,6 +292,8 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	updates := core.Knowledgebase{
+		NoteCategory: request.Knowledgebase.NoteCategory,
+		ContextTags:  pq.StringArray(request.Knowledgebase.ContextTags),
 		Name:         request.Knowledgebase.Name,
 		Description:  request.Knowledgebase.Description,
 		Data:         request.Knowledgebase.Data,

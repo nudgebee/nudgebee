@@ -22,6 +22,8 @@ interface KnowledgeBaseOutput {
   document_count?: number;
   last_loaded_at?: string;
   error_message?: string;
+  note_category?: string;
+  context_tags?: string[];
 }
 
 /**
@@ -37,6 +39,8 @@ interface CreateKnowledgeBasePayload {
   content: string;
   format?: string;
   fileName?: string;
+  noteCategory?: string;
+  contextTags?: string[];
 }
 
 interface UpdateKnowledgeBasePayload {
@@ -45,6 +49,8 @@ interface UpdateKnowledgeBasePayload {
   content?: string;
   format?: string;
   fileName?: string;
+  noteCategory?: string;
+  contextTags?: string[];
 }
 
 // Helper function to extract error message from nested GraphQL error response
@@ -98,6 +104,8 @@ const apiKnowledgeBase = {
             document_count
             last_loaded_at
             error_message
+            note_category
+            context_tags
           }
           errors {
             message
@@ -135,6 +143,8 @@ const apiKnowledgeBase = {
           document_count: kb.document_count,
           last_loaded_at: kb.last_loaded_at,
           error_message: kb.error_message,
+          note_category: kb.note_category,
+          context_tags: kb.context_tags,
         }));
         return { data: transformedData, errors: result.errors || [] };
       }
@@ -174,6 +184,8 @@ const apiKnowledgeBase = {
             created_at
             updated_at
             error_message
+            note_category
+            context_tags
           }
           errors {
             message
@@ -207,6 +219,8 @@ const apiKnowledgeBase = {
             created_by: kb.created_by ? { display_name: kb.created_by } : null,
             updated_by: kb.updated_by ? { display_name: kb.updated_by } : null,
             error_message: kb.error_message,
+            note_category: kb.note_category,
+            context_tags: kb.context_tags,
           };
           return { data: transformedData, errors: result.errors || [] };
         }
@@ -265,6 +279,8 @@ const apiKnowledgeBase = {
             data: payload.content,
             format: payload.format || 'text',
             file_name: payload.fileName || `${payload.name}.txt`,
+            note_category: payload.noteCategory || '',
+            context_tags: payload.contextTags || [],
           },
         },
       });
@@ -335,6 +351,8 @@ const apiKnowledgeBase = {
             data: payload.content,
             format: payload.format || 'text',
             file_name: payload.fileName,
+            note_category: payload.noteCategory,
+            context_tags: payload.contextTags,
           },
         },
       });
