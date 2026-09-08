@@ -512,3 +512,21 @@ func TestLogsV3KnowledgeDerivedCommandHandoff(t *testing.T) {
 		})
 	}
 }
+
+// Delegated scope must reach the translator used by both the primary and
+// kubectl fallback paths, not just remain on the request for tool execution.
+func TestLogsV3DelegatedContextReachesTranslator(t *testing.T) {
+	scope := "Use namespace payments-preprod and host preprod-01; last 15m limit 25"
+	request := buildFetchLogsV3Request(toolcore.NbToolContext{QueryContext: scope}, toolcore.NBToolCallRequest{Command: "fetch checkout logs"})
+	messages := buildLogIntentMessages("translator", request)
+	var human strings.Builder
+	for _, part := range messages[len(messages)-1].Parts {
+		if content, ok := part.(llms.TextContent); ok {
+			human.WriteString(content.Text)
+		}
+	}
+	require.Contains(t, human.String(), scope)
+	require.Contains(t, human.String(), "fetch checkout logs")
+	require.Empty(t, request.KBPrestepContent)
+	require.Empty(t, request.SkillsContext)
+}
