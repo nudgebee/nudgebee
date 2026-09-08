@@ -82,6 +82,10 @@ func searchDocumentation(nbRequestContext core.NbToolContext, query string) (str
 		return "", nil, fmt.Errorf("query cannot be empty")
 	}
 
+	if nbRequestContext.KnowledgePolicy == "disabled" || nbRequestContext.KnowledgePolicy == "llm_only" {
+		return "No documentation found for your query. Please try a different search term.", nil, nil
+	}
+
 	var matchingDocs []schema.Document
 
 	// Try fetching from RAG. All indexed doc sources (user KBs, Confluence,

@@ -173,6 +173,11 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 		}
 	}
 
+	if request.KnowledgePolicy == core.KnowledgeDisabled {
+		analysis.UseDocs = false
+		analysis.UseSkills = false
+	}
+
 	// 2. Execute searches in parallel
 	var wg sync.WaitGroup
 	results := make([]string, 3)
@@ -180,7 +185,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 	invocations := make([]core.ToolInvocation, 0)
 	var mu sync.Mutex
 
-	if analysis.UseDocs {
+	if analysis.UseDocs && core.AutomaticKnowledgeAllowed(request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -193,6 +198,8 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 				return
 			}
 			toolCtx := toolcore.NewNbToolContext(ctx, tool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.DocsQuery, nil, request.QueryContext, request.QueryConfig, "")
+			toolCtx.KnowledgePolicy = string(request.KnowledgePolicy)
+			toolCtx.KnowledgePolicyResolved = request.KnowledgePolicyResolved
 			resp, err := core.CallTool(toolCtx, tool, toolcore.NBToolCallRequest{Command: analysis.DocsQuery})
 
 			mu.Lock()
@@ -246,6 +253,8 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 				crawlTool, ok := toolcore.GetNBTool(request.AccountId, tools.ToolExecuteCrawlCommand)
 				if ok {
 					toolCtx := toolcore.NewNbToolContext(ctx, crawlTool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.TargetURL, nil, request.QueryContext, request.QueryConfig, "")
+					toolCtx.KnowledgePolicy = string(request.KnowledgePolicy)
+					toolCtx.KnowledgePolicyResolved = request.KnowledgePolicyResolved
 					resp, err := core.CallTool(toolCtx, crawlTool, toolcore.NBToolCallRequest{Command: analysis.TargetURL})
 					if err == nil {
 						mu.Lock()
@@ -269,6 +278,8 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 					searchErr = fmt.Errorf("web search tool not found")
 				} else {
 					toolCtx := toolcore.NewNbToolContext(ctx, tool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, analysis.WebQuery, nil, request.QueryContext, request.QueryConfig, "")
+					toolCtx.KnowledgePolicy = string(request.KnowledgePolicy)
+					toolCtx.KnowledgePolicyResolved = request.KnowledgePolicyResolved
 					resp, err := core.CallTool(toolCtx, tool, toolcore.NBToolCallRequest{Command: analysis.WebQuery})
 					if err != nil {
 						searchErr = err
@@ -291,6 +302,8 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 							for _, candidateUrl := range rankedUrls {
 								core.GetConversationDao().UpdateConversationMessageAsync(request.MessageId, fmt.Sprintf("Crawling %s...", candidateUrl), core.ConversationStatusInProgress)
 								crawlCtx := toolcore.NewNbToolContext(ctx, crawlTool, request.AccountId, request.UserId, request.ConversationId, request.MessageId, request.AgentId, candidateUrl, nil, request.QueryContext, request.QueryConfig, "")
+								crawlCtx.KnowledgePolicy = string(request.KnowledgePolicy)
+								crawlCtx.KnowledgePolicyResolved = request.KnowledgePolicyResolved
 								crawlResp, crawlErr := core.CallTool(crawlCtx, crawlTool, toolcore.NBToolCallRequest{Command: candidateUrl})
 								if crawlErr != nil {
 									ctx.GetLogger().Warn("unified_search: crawl failed, trying next URL", "url", candidateUrl, "error", crawlErr)

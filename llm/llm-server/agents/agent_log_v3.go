@@ -401,7 +401,8 @@ func generateCanonicalLogQueryV3(ctx *security.RequestContext, request core.NBAg
 	if res == nil || len(res.Choices) == 0 {
 		return "", fmt.Errorf("empty LLM response")
 	}
-	return strings.TrimSpace(res.Choices[0].Content), nil
+	raw := strings.TrimSpace(res.Choices[0].Content)
+	return enforceCanonicalLogConstraints(raw, request.Query), nil
 }
 
 // buildCanonicalLogQueryPromptV3 is v3's own copy of
@@ -510,9 +511,10 @@ func buildCanonicalLogQueryPromptV3(provider services_server.ObservabilityProvid
 	b.WriteString("If the caller asks for \"all logs\" or \"recent logs\" with no error keyword, emit a query with NO log-body filter.\n")
 
 	b.WriteString("\n**Always emit `time_range` and `limit` (mandatory):**\n")
-	b.WriteString("- A window in the question is a HARD constraint — honour it EXACTLY: \"last 1h\" → `\"time_range\": \"1h\"`, \"last 30m\" → `\"30m\"`, \"last 6h\" → `\"6h\"`. NEVER widen or shrink a window the user gave, whatever the intent (an error/investigation question that says \"last 1h\" still uses `\"1h\"`).\n")
-	b.WriteString("- ONLY when the question gives NO window, pick a default from intent: investigation (\"why is X broken\", \"diagnose\", \"what caused\", \"root cause\", \"failing\", \"crash\") → `\"time_range\": \"24h\"`, `\"limit\": 5000`; routine (\"show me logs\", \"recent logs\", \"tail\") → `\"time_range\": \"1h\"`, `\"limit\": 1000`.\n")
-	b.WriteString("- Read the caller's ORIGINAL user question (when provided) to classify intent.\n")
+	b.WriteString("- A window in the question is a HARD constraint — honour it EXACTLY: \"last 1h\" → `\"time_range\": \"1h\"`, \"last 30m\" → `\"30m\"`, \"last 15m\" → `\"15m\"`. NEVER widen or shrink a window the user gave, whatever the intent (an error/investigation question that says \"last 15m\" still uses `\"15m\"`).\n")
+	b.WriteString("- An explicit limit in the question is ALSO a HARD constraint — honour it EXACTLY: \"limit 25\" / \"--tail 25\" → `\"limit\": 25`. NEVER widen or increase a limit the caller gave.\n")
+	b.WriteString("- ONLY when the question gives NO window or limit, pick a default from intent: investigation (\"why is X broken\", \"diagnose\", \"what caused\", \"root cause\", \"failing\", \"crash\") → `\"time_range\": \"24h\"`, `\"limit\": 5000`; routine (\"show me logs\", \"recent logs\", \"tail\") → `\"time_range\": \"1h\"`, `\"limit\": 1000`.\n")
+	b.WriteString("- Explicit constraints in the CURRENT question ALWAYS override defaults and original user question intent.\n")
 
 	b.WriteString("\n**Examples:**\n")
 	examples := canonicalQueryExamples(supportedOperators)
