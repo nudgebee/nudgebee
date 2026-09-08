@@ -195,7 +195,10 @@ test(
       // The chevron's aria-label flips with its state, so the collapse control carrying
       // aria-expanded=true is the app's own statement that the row is open.
       await expect(tickets.collapseRowBtn(firstRow)).toHaveAttribute("aria-expanded", "true");
-      await expect(tickets.ticketDetailsTab).toBeVisible();
+      // No tab-strip assertion here: TicketListTable declares exactly one expandable tab
+      // ("Ticket Details"), and CustomTable's ExpandedRowComponent only renders the tab strip
+      // when more than one tab is present (normalizedTabs.length > 1) — the label is never on
+      // screen for this page. The panel's own content is what proves the drilldown opened.
       await expect(tickets.detailsDescriptionHeading).toBeVisible();
       await expect(tickets.detailsAdditionalHeading).toBeVisible();
     });
