@@ -97,6 +97,12 @@ app/src/pages/api/auth/signup_verify.ts
 app/__tests__/pages/api/auth/signup.test.ts
 app/__tests__/pages/api/auth/signup_verify.test.ts
 
+# Manual probe for the rate limiter. Both things it can point at are EE-only
+# now — the signup routes above, and the gateway limiter in app/src/ee/
+# ratelimit/ — so in an OSS snapshot it would report "nothing was throttled"
+# against a feature that isn't there and read as a bug rather than an absence.
+scripts/rate-limit-probe.sh
+
 # ─── Helm chart EE overlay ───────────────────────────────────────────
 # values-enterprise.yaml is the internal-registry overlay for high-frequency
 # private deploys (registry.nudgebee.com instead of public GHCR). Excluded
