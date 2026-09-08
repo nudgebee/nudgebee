@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/eventrule"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
 	"os"
@@ -630,4 +631,89 @@ func TestDedupeEvidencesByContent(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, cloudLogs)
+}
+
+// TestStampEvidencesWithSourceWorkflow covers the stamp that makes an evidence
+// attributable to the automation run that produced it. The stamp is also what
+// RefreshInvestigation keys its retention on, so a missing or misplaced field
+// here silently deletes the evidence on the next playbook run.
+func TestStampEvidencesWithSourceWorkflow(t *testing.T) {
+	source := &models.EvidenceSourceWorkflow{
+		WorkflowID:   "wf-1",
+		WorkflowName: "EC2 Application Diagnostic",
+		ExecutionID:  "run-9",
+	}
+	expected := map[string]any{
+		"workflow_id":   "wf-1",
+		"workflow_name": "EC2 Application Diagnostic",
+		"execution_id":  "run-9",
+	}
+
+	t.Run("creates additional_info when the caller supplied none", func(t *testing.T) {
+		evidences := []any{map[string]any{"type": "markdown", "data": "hello"}}
+
+		stampEvidencesWithSourceWorkflow(evidences, source)
+
+		additionalInfo := evidences[0].(map[string]any)["additional_info"].(map[string]any)
+		assert.Equal(t, expected, additionalInfo[evidenceSourceWorkflowKey])
+	})
+
+	t.Run("preserves the caller's other additional_info fields", func(t *testing.T) {
+		// actual_action_name decides which card the Investigate page draws; losing
+		// it would store the evidence and render nothing.
+		evidences := []any{map[string]any{
+			"type":            "markdown",
+			"additional_info": map[string]any{"actual_action_name": "text_enricher"},
+		}}
+
+		stampEvidencesWithSourceWorkflow(evidences, source)
+
+		additionalInfo := evidences[0].(map[string]any)["additional_info"].(map[string]any)
+		assert.Equal(t, "text_enricher", additionalInfo["actual_action_name"])
+		assert.Equal(t, expected, additionalInfo[evidenceSourceWorkflowKey])
+	})
+
+	t.Run("overwrites a caller-supplied stamp", func(t *testing.T) {
+		// The server is the authority on which run this is — a workflow author
+		// hand-writing the field must not be able to attribute output elsewhere.
+		evidences := []any{map[string]any{
+			"additional_info": map[string]any{
+				evidenceSourceWorkflowKey: map[string]any{"workflow_id": "someone-elses-workflow"},
+			},
+		}}
+
+		stampEvidencesWithSourceWorkflow(evidences, source)
+
+		additionalInfo := evidences[0].(map[string]any)["additional_info"].(map[string]any)
+		assert.Equal(t, expected, additionalInfo[evidenceSourceWorkflowKey])
+	})
+
+	t.Run("tolerates a typed nil additional_info map", func(t *testing.T) {
+		// A JSON `null` fails the map assertion and takes the create-fresh path, but a
+		// Go-constructed typed nil map passes it — and writing to a nil map panics.
+		evidences := []any{map[string]any{"additional_info": map[string]any(nil)}}
+
+		require.NotPanics(t, func() { stampEvidencesWithSourceWorkflow(evidences, source) })
+
+		additionalInfo := evidences[0].(map[string]any)["additional_info"].(map[string]any)
+		assert.Equal(t, expected, additionalInfo[evidenceSourceWorkflowKey])
+	})
+
+	t.Run("stamps every element and skips non-objects", func(t *testing.T) {
+		// A non-object element cannot carry a stamp; dropping it would lose evidence.
+		evidences := []any{
+			map[string]any{"type": "markdown"},
+			"not-an-object",
+			map[string]any{"type": "table"},
+		}
+
+		stampEvidencesWithSourceWorkflow(evidences, source)
+
+		require.Len(t, evidences, 3)
+		assert.Equal(t, "not-an-object", evidences[1])
+		for _, i := range []int{0, 2} {
+			additionalInfo := evidences[i].(map[string]any)["additional_info"].(map[string]any)
+			assert.Equal(t, expected, additionalInfo[evidenceSourceWorkflowKey])
+		}
+	})
 }

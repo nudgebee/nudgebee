@@ -339,7 +339,23 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			return
 		}
 
-		if err := event.AddEvidence(ctx, eventId, rawEvidences); err != nil {
+		// Sent by the events.add_evidence task; absent for any other caller, which
+		// then appends unstamped exactly as before.
+		var source *models.EvidenceSourceWorkflow
+		if rawSource, ok := actionRequest["source_workflow"].(map[string]any); ok {
+			workflowId, _ := rawSource["workflow_id"].(string)
+			if workflowId != "" {
+				workflowName, _ := rawSource["workflow_name"].(string)
+				executionId, _ := rawSource["execution_id"].(string)
+				source = &models.EvidenceSourceWorkflow{
+					WorkflowID:   workflowId,
+					WorkflowName: workflowName,
+					ExecutionID:  executionId,
+				}
+			}
+		}
+
+		if err := event.AddEvidence(ctx, eventId, rawEvidences, source); err != nil {
 			slog.Error("add_event_evidence: failed", "event_id", eventId, "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

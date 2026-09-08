@@ -17,6 +17,17 @@ import CustomBorderCard from '@ui/CustomBorderCard';
 import { ds } from '@utils/colors';
 import { safeJSONParse } from '@utils/common';
 
+// Same destination the "Triggered for this event" menu uses, so a card and that
+// menu resolve to the identical run. accountId is omitted when the page has none
+// rather than sent as "undefined".
+export function buildAutomationRunHref(sourceWorkflow, accountId) {
+  const params = new URLSearchParams();
+  if (accountId) params.set('accountId', accountId);
+  if (sourceWorkflow.execution_id) params.set('executionId', sourceWorkflow.execution_id);
+  const query = params.toString();
+  return `/automation/${sourceWorkflow.workflow_id}${query ? `?${query}` : ''}#executions`;
+}
+
 function CollapsableCard({
   id,
   icon,
@@ -35,6 +46,7 @@ function CollapsableCard({
   maxWidth = ds.space.mul(0, 750),
   eventResolution = null,
   onCloseResolveComponent,
+  sourceWorkflow = null,
 }) {
   // Computed once: the same status is rendered in two places on this card, and describeResolution
   // was being called for each field of each.
@@ -174,6 +186,21 @@ function CollapsableCard({
               {text}
             </Typography>
             {isBeta && <SafeIcon src={BetaIcon} alt='beta-icon' priority={true} />}
+            {/* Present only on evidence an automation attached (stamped server-side by
+                event.AddEvidence). Enricher cards carry no stamp and render unchanged.
+                Sits in the header rather than the body so the answer to "where did this
+                card come from" survives the card being collapsed. */}
+            {sourceWorkflow?.workflow_id && sourceWorkflow?.workflow_name && (
+              // The testid sits on the wrapper, not on Link: Link takes a fixed prop
+              // list and does not spread the rest, so a data-* passed to it never
+              // reaches the DOM. Link also stops click propagation itself, which is
+              // what keeps opening the run from collapsing the card behind it.
+              <Box component='span' data-testid='card-source-workflow-link' sx={{ display: 'inline-flex', minWidth: 0 }}>
+                <Link href={buildAutomationRunHref(sourceWorkflow, accountId)} openInNew secondaryText maxWidth={ds.space.mul(0, 160)}>
+                  via {sourceWorkflow.workflow_name}
+                </Link>
+              </Box>
+            )}
           </Grid>
 
           {highlightsData.length > 0 ? (
@@ -379,6 +406,7 @@ export default React.memo(CollapsableCard, (prevProps, nextProps) => {
   return (
     prevIsExpanded === nextIsExpanded &&
     prevProps.collapsedObj[prevProps.idx] === nextProps.collapsedObj[nextProps.idx] &&
-    prevProps.eventResolution === nextProps.eventResolution
+    prevProps.eventResolution === nextProps.eventResolution &&
+    prevProps.sourceWorkflow === nextProps.sourceWorkflow
   );
 });

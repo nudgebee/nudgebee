@@ -11,6 +11,10 @@ class TextEnricherDynamicCard {
     this.resolveButton = false;
     this.enricherData = data;
     this.disabled = data?.additional_info?.status == 'skipped';
+    // Set only when an automation attached this evidence (events.add_evidence);
+    // the card header turns it into a link to that run. Undefined for enricher
+    // evidence, which renders exactly as before.
+    this.sourceWorkflow = data?.additional_info?.source_workflow;
   }
 
   async canRenderContent() {

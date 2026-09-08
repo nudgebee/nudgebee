@@ -59,7 +59,15 @@ func (t *EventsAddEvidenceTask) Execute(taskCtx types.TaskContext, params map[st
 		return nil, errors.New("evidences must not be empty")
 	}
 
-	if err := service.AddEventEvidence(taskCtx.GetTenantID(), eventId, evidences); err != nil {
+	// Identity of the run doing the attaching, so the Investigate page can name
+	// the automation behind each card it produced.
+	source := service.EvidenceSourceWorkflow{
+		WorkflowID:   taskCtx.GetWorkflowID(),
+		WorkflowName: taskCtx.GetWorkflowName(),
+		ExecutionID:  taskCtx.GetWorkflowRunID(),
+	}
+
+	if err := service.AddEventEvidence(taskCtx.GetTenantID(), eventId, evidences, source); err != nil {
 		taskCtx.GetLogger().Error("events.add_evidence: failed",
 			"tenant", taskCtx.GetTenantID(), "event_id", eventId, "error", err)
 		return nil, err

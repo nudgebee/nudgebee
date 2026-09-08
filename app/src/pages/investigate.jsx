@@ -3037,6 +3037,7 @@ const Investigate = () => {
                                     newUI
                                     maxWidth='100%'
                                     eventResolution={isK8s ? getResolutionForCard(option?.id) : undefined}
+                                    sourceWorkflow={option?.sourceWorkflow}
                                   />
                                 </div>
                               ))}
