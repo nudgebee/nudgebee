@@ -64,7 +64,7 @@ func (s *K8sSource) fetchK8sSecretsFromRelay(ctx context.Context, req *core.Sour
 
 	relayResponse, err := relay.Execute(relayRequest)
 	if err != nil {
-		s.logger.Error("failed to execute relay request for Secrets", "error", err)
+		// Soft failure: BuildGraph logs this at WARN and continues without it.
 		return nil, fmt.Errorf("failed to execute relay request for Secrets: %w", err)
 	}
 
