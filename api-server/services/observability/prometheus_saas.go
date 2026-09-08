@@ -179,7 +179,13 @@ func (s *PrometheusSaasMetricSource) FetchMetricsQuery(ctx *security.RequestCont
 	if err != nil {
 		return OutputMetricQuery{}, fmt.Errorf("failed to get Prometheus configs: %w", err)
 	}
+	return s.fetchMetricsQueryWithConfig(ctx, cfg, req)
+}
 
+// fetchMetricsQueryWithConfig is FetchMetricsQuery for a caller that already
+// holds the connection config — the relay override resolves it once per action
+// and would otherwise load and decrypt the integration a second time.
+func (s *PrometheusSaasMetricSource) fetchMetricsQueryWithConfig(ctx *security.RequestContext, cfg integrations.PrometheusUserConfig, req FetchMetricsRequest) (OutputMetricQuery, error) {
 	// The `instant` request override wins over the typed field, matching the
 	// agent source — the UI's Validate-Query button sends it that way.
 	instant := req.Instant
@@ -195,6 +201,14 @@ func (s *PrometheusSaasMetricSource) FetchMetricsQuery(ctx *security.RequestCont
 		// and every query fails to parse. Runs before matcher injection so that
 		// operates on valid PromQL.
 		rawQuery = integrations.ExpandClusterPlaceholder(rawQuery, cfg.AdditionalLabels)
+		// The labels are the account's cluster scope on a shared backend; a query
+		// written without the placeholder — every internal enricher's — must be
+		// scoped too, so they are pinned onto every vector selector.
+		rawQuery, err := scopePromQLSelectors(rawQuery, cfg.AdditionalLabels)
+		if err != nil {
+			results.Results = append(results.Results, prometheusSaasQueryError(queryKey, rawQuery, err))
+			continue
+		}
 		promQL, err := injectPromQLMatchers(rawQuery, req.LabelMatchers, req.Labels)
 		if err != nil {
 			results.Results = append(results.Results, prometheusSaasQueryError(queryKey, rawQuery, err))

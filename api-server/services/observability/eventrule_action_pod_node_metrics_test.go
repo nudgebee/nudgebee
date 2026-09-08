@@ -56,8 +56,9 @@ func TestSeriesListByQueryKeyMatchesTheRelayWireShape(t *testing.T) {
 
 	first := series[0].(map[string]any)
 	assert.Equal(t, map[string]any{"pod": "p1", "namespace": "ns"}, first["metric"])
-	assert.Equal(t, []any{"1787803200", "1787803500"}, first["timestamps"])
-	// Values are strings, matching what transformToPrometheusValues consumes.
+	// Timestamps are numeric seconds and values strings — the shape the agent
+	// emits and every Prometheus card reader parses, before and after persistence.
+	assert.Equal(t, []any{1787803200.0, 1787803500.0}, first["timestamps"])
 	assert.Equal(t, []any{"1024", "2048"}, first["values"])
 }
 

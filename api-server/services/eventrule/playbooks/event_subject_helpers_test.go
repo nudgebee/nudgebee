@@ -61,9 +61,9 @@ func TestRangeQueryWindow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			start, end := rangeQueryWindow(tt.event, tt.lookback, now)
+			start, end := RangeQueryWindow(tt.event, tt.lookback, now)
 			if !start.Equal(tt.wantStart) || !end.Equal(tt.wantEnd) {
-				t.Errorf("rangeQueryWindow() = (%s, %s), want (%s, %s)",
+				t.Errorf("RangeQueryWindow() = (%s, %s), want (%s, %s)",
 					start, end, tt.wantStart, tt.wantEnd)
 			}
 		})

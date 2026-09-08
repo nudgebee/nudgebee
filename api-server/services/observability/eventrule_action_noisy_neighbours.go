@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/security"
 	"sort"
+	"time"
 )
 
 // noisy_neighbours_enricher composes Prometheus queries against the host
@@ -219,30 +220,40 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		return noisyNeighboursResponse(podName, namespace, rawParams, data)
 	}
 
-	// One batch, one relay round trip. Every query is scoped to a single node
-	// over a 10-minute range, so the added CPU half costs evaluation time on a
-	// few dozen series, not a fan-out.
-	results, err := playbooks.PromRangeQueries(ctx, []playbooks.NamedQuery{
-		{Key: "top_pods", Query: topPodsQuery},
-		{Key: "node_used", Query: nodeUsageQuery},
-		{Key: "node_alloc", Query: nodeAllocatableQuery},
-		{Key: "mem_requests", Query: memoryRequestsQuery},
-		{Key: "mem_limits", Query: memoryLimitsQuery},
-		{Key: "top_pods_cpu", Query: topPodsCPUQuery},
-		{Key: "node_cpu_used", Query: nodeCPUUsageQuery},
-		{Key: "node_cpu_alloc", Query: nodeCPUCapacityQuery},
-		{Key: "cpu_requests", Query: cpuRequestsQuery},
-		{Key: "cpu_limits", Query: cpuLimitsQuery},
-	}, noisyNeighboursLookbackMinutes)
+	// One batch through the metrics layer, which runs it on the connection the
+	// user configured or the cluster agent's Prometheus. Every query is scoped to
+	// a single node over a 10-minute range, so the added CPU half costs
+	// evaluation time on a few dozen series, not a fan-out.
+	start, end := playbooks.RangeQueryWindow(ctx.GetEvent(), noisyNeighboursLookbackMinutes, time.Now().UTC())
+	output, err := FetchMetricsQuery(requestCtx, FetchMetricsRequest{
+		AccountId:      accountID,
+		MetricProvider: integrationPrometheus,
+		Queries: map[string]string{
+			"top_pods":       topPodsQuery,
+			"node_used":      nodeUsageQuery,
+			"node_alloc":     nodeAllocatableQuery,
+			"mem_requests":   memoryRequestsQuery,
+			"mem_limits":     memoryLimitsQuery,
+			"top_pods_cpu":   topPodsCPUQuery,
+			"node_cpu_used":  nodeCPUUsageQuery,
+			"node_cpu_alloc": nodeCPUCapacityQuery,
+			"cpu_requests":   cpuRequestsQuery,
+			"cpu_limits":     cpuLimitsQuery,
+		},
+		StartTime:    start.UnixMilli(),
+		EndTime:      end.UnixMilli(),
+		StepInterval: 30,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("noisy_neighbours_enricher: prom: %w", err)
 	}
+	results := latestValuesByKey(output)
 
 	// Index requests / limits by (namespace, pod, container) for O(1)
 	// lookup while iterating top_pods. kube-state-metrics emits one
 	// series per (pod, container) per resource — no aggregation needed.
-	memRequests := playbooks.IndexByPodContainer(results["mem_requests"])
-	memLimits := playbooks.IndexByPodContainer(results["mem_limits"])
+	memRequests := indexByPodContainer(results["mem_requests"])
+	memLimits := indexByPodContainer(results["mem_limits"])
 	totalRequested := 0.0
 	for _, v := range memRequests {
 		totalRequested += v
@@ -250,10 +261,10 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 
 	neighbours := []map[string]any{}
 	if vec, ok := results["top_pods"]; ok {
-		for _, s := range playbooks.LatestValueEntries(vec) {
-			pod, _ := s.Metric["pod"].(string)
-			ns, _ := s.Metric["namespace"].(string)
-			container, _ := s.Metric["container"].(string)
+		for _, s := range vec {
+			pod := s.Metric["pod"]
+			ns := s.Metric["namespace"]
+			container := s.Metric["container"]
 			key := ns + "/" + pod + "/" + container
 			entry := map[string]any{
 				"name":             container,
@@ -281,14 +292,14 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 	// Same shape for CPU, ranked on its own. Kept as a separate list rather
 	// than extra columns on `neighbours`: the pod hogging memory is usually not
 	// the pod hogging CPU, and one list can only be sorted by one of them.
-	cpuRequests := playbooks.IndexByPodContainer(results["cpu_requests"])
-	cpuLimits := playbooks.IndexByPodContainer(results["cpu_limits"])
+	cpuRequests := indexByPodContainer(results["cpu_requests"])
+	cpuLimits := indexByPodContainer(results["cpu_limits"])
 	cpuNeighbours := []map[string]any{}
 	if vec, ok := results["top_pods_cpu"]; ok {
-		for _, entry := range playbooks.LatestValueEntries(vec) {
-			pod, _ := entry.Metric["pod"].(string)
-			ns, _ := entry.Metric["namespace"].(string)
-			container, _ := entry.Metric["container"].(string)
+		for _, entry := range vec {
+			pod := entry.Metric["pod"]
+			ns := entry.Metric["namespace"]
+			container := entry.Metric["container"]
 			key := ns + "/" + pod + "/" + container
 			cpuNeighbours = append(cpuNeighbours, map[string]any{
 				"name":          container,
@@ -310,10 +321,10 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		}
 	}
 
-	nodeUsed := playbooks.FirstLatestValue(results["node_used"])
-	nodeAlloc := playbooks.FirstLatestValue(results["node_alloc"])
-	nodeCPUUsed := playbooks.FirstLatestValue(results["node_cpu_used"])
-	nodeCPUCapacity := playbooks.FirstLatestValue(results["node_cpu_alloc"])
+	nodeUsed := firstLatestValue(results["node_used"])
+	nodeAlloc := firstLatestValue(results["node_alloc"])
+	nodeCPUUsed := firstLatestValue(results["node_cpu_used"])
+	nodeCPUCapacity := firstLatestValue(results["node_cpu_alloc"])
 
 	// Every query came back empty, allocatable included. A real node always
 	// reports allocatable, so this is a node Prometheus has never heard of —
@@ -377,4 +388,50 @@ func noisyNeighboursResponse(podName, namespace string, rawParams map[string]any
 		"query":                rawParams,
 	}
 	return playbooks.NewPlaybookActionResponseJson(payload, additionalInfo, []playbooks.PlaybookActionResponseInsight{}, metadata), nil
+}
+
+// latestSample is one series reduced to its most recent sample.
+type latestSample struct {
+	Metric map[string]string
+	Value  float64
+}
+
+// latestValuesByKey reduces a range result to {metric, latest value} per series,
+// keyed by query — what the neighbour tables are built from.
+func latestValuesByKey(output OutputMetricQuery) map[string][]latestSample {
+	out := make(map[string][]latestSample, len(output.Results))
+	for _, result := range output.Results {
+		samples := make([]latestSample, 0, len(result.Payload))
+		for _, series := range result.Payload {
+			if len(series.Values) == 0 {
+				continue
+			}
+			samples = append(samples, latestSample{Metric: series.Metric, Value: series.Values[len(series.Values)-1]})
+		}
+		out[result.QueryKey] = samples
+	}
+	return out
+}
+
+// indexByPodContainer builds a {namespace/pod/container → latest value} map from
+// a kube-state-metrics result, for the O(1) requests/limits join.
+func indexByPodContainer(samples []latestSample) map[string]float64 {
+	out := map[string]float64{}
+	for _, s := range samples {
+		pod, container := s.Metric["pod"], s.Metric["container"]
+		if pod == "" || container == "" {
+			continue
+		}
+		out[s.Metric["namespace"]+"/"+pod+"/"+container] = s.Value
+	}
+	return out
+}
+
+// firstLatestValue is the latest sample of the first series — for the
+// scalar-ish node queries that resolve to a single series.
+func firstLatestValue(samples []latestSample) float64 {
+	for _, s := range samples {
+		return s.Value
+	}
+	return 0
 }

@@ -180,7 +180,7 @@ func (s *TracesFlowSource) BuildFlowRelationships(
 		// podIPResolver is built per-account because kube_pod_info is fetched from
 		// the per-account Prometheus relay. Mirrors the wiring in
 		// ebpf_flow_source.go's processK8sAccount.
-		podIPResolver := NewPodIPResolver(account.CloudAccountID, req.ExistingNodes, s.logger)
+		podIPResolver := NewPodIPResolver(reqCtx, account.CloudAccountID, req.ExistingNodes, s.logger)
 		accountEdges, accountNodes, err := s.processK8sAccount(ctx, reqCtx, req, account, queryStartTime, queryEndTime, ipResolver, podIPResolver, nodeIPResolver)
 		if err != nil {
 			s.logger.Error("failed to process K8s account",

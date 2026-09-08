@@ -8,7 +8,6 @@ import (
 	"math"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
-	"nudgebee/llm/relay"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools/core"
 	"slices"
@@ -476,201 +475,59 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 	if step < time.Minute {
 		step = time.Minute
 	}
-	// Round to nearest second for cleaner step string
 	stepSeconds := int(step.Seconds())
-	stepStr := strconv.Itoa(stepSeconds) + "s"
 
-	// Format the time to the specified string format
-	startTimeString := startTime.Format("2006-01-02 15:04:05 UTC")
-	endTimeString := endTime.Format("2006-01-02 15:04:05 UTC")
-	actionParam := relay.ActionExecuteBody{
-		AccountID:  accountId,
-		ActionName: "prometheus_enricher",
-		ActionParams: map[string]any{
-			"promql_query": query,
-			"duration":     map[string]any{"starts_at": startTimeString, "ends_at": endTimeString},
-			"step":         stepStr,
-		},
-	}
-	slog.Debug("prometheus query", "query", query, "start_time", startTimeString, "end_time", endTimeString)
-	response, err := relay.Execute(nbRequestContext.GoContext(), actionParam)
+	// Ask the services-server rather than the relay: it resolves the account's
+	// metrics provider, so a Prometheus connected without an agent (#37536) is
+	// queried over HTTP and an agent-backed one still goes through the relay —
+	// the same path the logs and traces tools already take.
+	slog.Debug("prometheus query", "query", query, "start_time", startTime, "end_time", endTime, "step_seconds", stepSeconds)
+	response, err := services_server.QueryMetrics(*nbRequestContext.Ctx, core.ObservabilityMetricsQueryRequest{
+		AccountId:    accountId,
+		Queries:      map[string]string{"query": query},
+		StartTime:    startTime.UnixMilli(),
+		EndTime:      endTime.UnixMilli(),
+		StepInterval: stepSeconds,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("executePromQl: relay execute: %w", err)
+		return nil, fmt.Errorf("executePromQl: metrics query: %w", err)
 	}
-	dataFromEvidence, err := m.getDataFromRelayPrometheusResponse(response)
+	seriesData, err := m.seriesFromMetricsResponse(response)
 	if err != nil {
-		slog.Error("error marshaling JSON at Prometheus API call:", "error", err)
-		return nil, fmt.Errorf("executePromQl: parse relay response: %w", err)
+		return nil, fmt.Errorf("executePromQl: %w", err)
 	}
-	slog.Debug("prometheus response data", "data", dataFromEvidence)
-	return dataFromEvidence, nil
-}
-
-// metricsProviderNeedsServicesServer reports whether a resolved metrics provider
-// must be queried through the api-server rather than the relay.
-//
-// "agent" is the in-cluster Prometheus (and the cloud-CLI fallbacks, which
-// GetMetricsProvider also labels agent) — those keep the relay path. Anything
-// user-configured is an integration the api-server owns the credentials and the
-// query dialect for; the relay cannot reach it.
-//
-// A user-configured Prometheus is deliberately left on the relay path: it speaks
-// the same PromQL the relay already sends, and moving it would change behaviour
-// for accounts this bug never affected.
-func metricsProviderNeedsServicesServer(provider services_server.ObservabilityProvider) bool {
-	if strings.EqualFold(strings.TrimSpace(provider.IntegrationSource), "agent") {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
-	case "", "prometheus":
-		return false
-	}
-	return true
-}
-
-// MetricsDiscoveryProvider resolves which provider the metric-discovery tools
-// (metrics_list, the label tools, metrics_series_match) should enumerate for an
-// account.
-//
-// PrometheusAgent is the fallback for every backend without a dedicated agent, so
-// the literal "prometheus" its tools were built with is a default, not a fact. On a
-// CubeAPM or OpenObserve account it made those tools ask the api-server to
-// enumerate PROMETHEUS metrics — a provider that account has not configured — so
-// discovery came back empty and the agent fell back to guessing metric names from
-// its Kubernetes priors (container_http_requests_total, istio_requests_total),
-// which match nothing and read as "this service reports no metrics".
-//
-// Returns "prometheus" unchanged for the agent-backed default, the cloud-CLI
-// fallbacks and a user-configured Prometheus — the same boundary
-// metricsProviderNeedsServicesServer draws for execution, so discovery and
-// execution can never disagree about which backend is being talked to.
-func MetricsDiscoveryProvider(accountId string) string {
-	provider, err := GetMetricsProvider(accountId)
-	if err != nil {
-		slog.Warn("metrics: could not resolve provider for discovery, defaulting to prometheus",
-			"accountId", accountId, "error", err)
-		return "prometheus"
-	}
-	return metricsDiscoveryProviderFor(provider)
-}
-
-// metricsDiscoveryProviderFor is the decision MetricsDiscoveryProvider makes once
-// the account's provider is known, split out so it can be exercised for backends
-// no test environment has to be wired up to.
-func metricsDiscoveryProviderFor(provider services_server.ObservabilityProvider) string {
-	if metricsProviderNeedsServicesServer(provider) {
-		return strings.TrimSpace(provider.Provider)
-	}
-	return "prometheus"
-}
-
-func (m PrometheusExecuteTool) getDataFromRelayPrometheusResponse(relayResponse map[string]any) ([]any, error) {
-	dataFromResponse, ok := relayResponse["data"].(map[string]any)
-	if !ok || dataFromResponse == nil {
-		slog.Info("prometheus relay response", "relayResponse", relayResponse)
-		return nil, errors.New("data field not found or is nil from response")
-	}
-	findings, ok := dataFromResponse["findings"].([]any)
-	if !ok || findings == nil {
-		slog.Info("prometheus relay response", "data", dataFromResponse)
-		return nil, errors.New("findings field not found or is nil from data")
-	}
-	if len(findings) == 0 {
-		slog.Info("prometheus: query returned empty findings (no matching data)")
-		return []any{}, nil
-	}
-	firstFinding, ok := findings[0].(map[string]any)
-	if !ok || firstFinding == nil {
-		slog.Info("prometheus relay response", "findings", findings)
-		return nil, errors.New("findings field has no values from")
-	}
-	evidence, ok := firstFinding["evidence"].([]any)
-	if !ok || evidence == nil {
-		slog.Info("prometheus relay response", "firstFinding", firstFinding)
-		return nil, errors.New("evidence field not found or is nil from findings")
-	}
-	if len(evidence) == 0 {
-		slog.Info("prometheus relay response", "evidence", evidence)
-		return nil, errors.New("evidence field is empty")
-	}
-	firstEvidence, ok := evidence[0].(map[string]any)
-	if !ok || firstEvidence == nil {
-		slog.Info("prometheus relay response", "evidence", evidence)
-		return nil, errors.New("evidence field has no values")
-	}
-	evidenceData, ok := firstEvidence["data"].(string)
-	if !ok {
-		slog.Info("prometheus relay response", "firstEvidence", firstEvidence)
-		return nil, errors.New("data field not found or is nil from evidence")
-	}
-	var dataList []map[string]any
-	if err := common.UnmarshalJson([]byte(evidenceData), &dataList); err != nil {
-		slog.Info("prometheus relay response, unable to unmarshal", "evidenceData", evidenceData)
-		return nil, fmt.Errorf("getDataFromRelayPrometheusResponse: unmarshal evidence data: %w", err)
-	}
-	seriesData, err := m.getMappedValuesFromDataList(dataList)
-	if err != nil {
-		slog.Info("prometheus relay response, unable to unmarshal", "datalist", dataList)
-		return nil, fmt.Errorf("getDataFromRelayPrometheusResponse: map values: %w", err)
-	}
+	slog.Debug("prometheus response data", "data", seriesData)
 	return seriesData, nil
 }
 
-func (m PrometheusExecuteTool) getMappedValuesFromDataList(dataList []map[string]any) ([]any, error) {
-	for _, data := range dataList {
-		if data == nil || data["data"] == nil {
-			continue
+// seriesFromMetricsResponse flattens the services-server answer into the
+// `[{metric, timestamps, values}]` list the stats pass consumes — the shape the
+// relay's series_list_result carried, with numeric values. A per-query failure
+// arrives in results[].error rather than the HTTP status, so it is surfaced here
+// the way the relay's result_type=error envelope was.
+func (m PrometheusExecuteTool) seriesFromMetricsResponse(response core.ObservabilityMetricsQueryResponse) ([]any, error) {
+	out := []any{}
+	for _, result := range response.Results {
+		if result.Error != nil && *result.Error != "" {
+			return nil, errors.New(*result.Error)
 		}
-
-		// Handle both map and string (double-encoded JSON) formats for data["data"]
-		var dataMap map[string]any
-		switch v := data["data"].(type) {
-		case map[string]any:
-			dataMap = v
-		case string:
-			if err := common.UnmarshalJson([]byte(v), &dataMap); err != nil {
-				slog.Warn("prometheus: unable to parse data string from relay response", "error", err)
-				continue
+		for _, series := range result.Payload {
+			metric := make(map[string]any, len(series.Metric))
+			for k, v := range series.Metric {
+				metric[k] = v
 			}
-		default:
-			continue
-		}
-
-		// Handle "query" wrapper (prometheus_queries_enricher format)
-		if queryData, ok := dataMap["query"].(map[string]any); ok {
-			dataMap = queryData
-		}
-
-		// Check result_type for error responses
-		if resultType, _ := dataMap["result_type"].(string); resultType == "error" {
-			errMsg := "prometheus query returned an error"
-			if stringResult, ok := dataMap["string_result"].(string); ok && stringResult != "" {
-				errMsg = stringResult
+			timestamps := make([]any, 0, len(series.Timestamps))
+			for _, ts := range series.Timestamps {
+				timestamps = append(timestamps, float64(ts))
 			}
-			return nil, errors.New(errMsg)
+			values := make([]any, 0, len(series.Values))
+			for _, v := range series.Values {
+				values = append(values, v)
+			}
+			out = append(out, map[string]any{"metric": metric, "timestamps": timestamps, "values": values})
 		}
-
-		// Try series_list_result (matrix/range queries)
-		if seriesList, ok := dataMap["series_list_result"].([]any); ok && len(seriesList) > 0 {
-			return seriesList, nil
-		}
-
-		// Try vector_result (instant queries)
-		if vectorResult, ok := dataMap["vector_result"].([]any); ok && len(vectorResult) > 0 {
-			return vectorResult, nil
-		}
-
-		// Try scalar_result (scalar aggregation queries).
-		// Uses "value" (singular) intentionally — scalar results are a single [timestamp, value]
-		// pair, not a time series, so stats computation (min/max/avg/p99) in Call() is skipped.
-		if scalarResult, ok := dataMap["scalar_result"].([]any); ok && len(scalarResult) > 0 {
-			return []any{map[string]any{"metric": map[string]any{}, "value": scalarResult}}, nil
-		}
-
-		// No non-empty result found in this data entry
-		return []any{}, nil
 	}
-	return []any{}, nil
+	return out, nil
 }
 
 // sanitizeFloats recursively walks a data structure and replaces any +Inf/NaN
@@ -1733,4 +1590,62 @@ func getESMetricIndexPattern(nbRequestContext core.NbToolContext, defaultIndex s
 		}
 	}
 	return ""
+}
+
+// metricsProviderNeedsServicesServer reports whether a resolved metrics provider
+// must be queried through the api-server rather than the relay.
+//
+// "agent" is the in-cluster Prometheus (and the cloud-CLI fallbacks, which
+// GetMetricsProvider also labels agent) — those keep the relay path. Anything
+// user-configured is an integration the api-server owns the credentials and the
+// query dialect for; the relay cannot reach it.
+//
+// A user-configured Prometheus is deliberately left on the relay path: it speaks
+// the same PromQL the relay already sends, and moving it would change behaviour
+// for accounts this bug never affected.
+func metricsProviderNeedsServicesServer(provider services_server.ObservabilityProvider) bool {
+	if strings.EqualFold(strings.TrimSpace(provider.IntegrationSource), "agent") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
+	case "", "prometheus":
+		return false
+	}
+	return true
+}
+
+// MetricsDiscoveryProvider resolves which provider the metric-discovery tools
+// (metrics_list, the label tools, metrics_series_match) should enumerate for an
+// account.
+//
+// PrometheusAgent is the fallback for every backend without a dedicated agent, so
+// the literal "prometheus" its tools were built with is a default, not a fact. On a
+// CubeAPM or OpenObserve account it made those tools ask the api-server to
+// enumerate PROMETHEUS metrics — a provider that account has not configured — so
+// discovery came back empty and the agent fell back to guessing metric names from
+// its Kubernetes priors (container_http_requests_total, istio_requests_total),
+// which match nothing and read as "this service reports no metrics".
+//
+// Returns "prometheus" unchanged for the agent-backed default, the cloud-CLI
+// fallbacks and a user-configured Prometheus — the same boundary
+// metricsProviderNeedsServicesServer draws for execution, so discovery and
+// execution can never disagree about which backend is being talked to.
+func MetricsDiscoveryProvider(accountId string) string {
+	provider, err := GetMetricsProvider(accountId)
+	if err != nil {
+		slog.Warn("metrics: could not resolve provider for discovery, defaulting to prometheus",
+			"accountId", accountId, "error", err)
+		return "prometheus"
+	}
+	return metricsDiscoveryProviderFor(provider)
+}
+
+// metricsDiscoveryProviderFor is the decision MetricsDiscoveryProvider makes once
+// the account's provider is known, split out so it can be exercised for backends
+// no test environment has to be wired up to.
+func metricsDiscoveryProviderFor(provider services_server.ObservabilityProvider) string {
+	if metricsProviderNeedsServicesServer(provider) {
+		return strings.TrimSpace(provider.Provider)
+	}
+	return "prometheus"
 }

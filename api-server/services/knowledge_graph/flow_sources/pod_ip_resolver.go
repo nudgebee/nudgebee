@@ -5,7 +5,8 @@ import (
 	"net"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
-	"nudgebee/services/relay"
+	"nudgebee/services/observability"
+	"nudgebee/services/security"
 	"time"
 )
 
@@ -55,7 +56,7 @@ type nsNameKey struct {
 // namespace the K8sSource filtered out) are silently skipped: emitting an
 // ExternalService is preferable to fabricating a synthetic Workload that
 // markInactiveNodes can't tombstone safely.
-func NewPodIPResolver(k8sAccountID string, existingNodes []*core.DbNode, logger *slog.Logger) *PodIPResolver {
+func NewPodIPResolver(reqCtx *security.RequestContext, k8sAccountID string, existingNodes []*core.DbNode, logger *slog.Logger) *PodIPResolver {
 	r := &PodIPResolver{
 		byClusterIP:        make(map[clusterIPKey]*core.DbNode),
 		byIPAcrossClusters: make(map[string][]*core.DbNode),
@@ -76,30 +77,29 @@ func NewPodIPResolver(k8sAccountID string, existingNodes []*core.DbNode, logger 
 	// through to Source B (k8s_pods) so accounts without Prometheus still resolve
 	// pod names.
 	//
-	// .UTC() is defense in depth: relay/agent format the timestamp as UTC, so
-	// the value must be UTC too. The relay-side fix in relay.ExecutePrometheus
-	// already converts, but every caller should pass UTC directly to keep the
-	// contract local to this function (and survive future relay refactors).
 	endTime := time.Now().UTC()
 	startTime := endTime.Add(-5 * time.Minute)
-	resp, err := relay.ExecutePrometheus(
-		k8sAccountID, startTime, endTime,
-		map[string]string{"pod_info": `kube_pod_info`},
-		true,
-	)
+	resp, err := observability.FetchMetricsQuery(reqCtx, observability.FetchMetricsRequest{
+		AccountId:      k8sAccountID,
+		MetricProvider: "prometheus",
+		Queries:        map[string]string{"pod_info": `kube_pod_info`},
+		StartTime:      startTime.UnixMilli(),
+		EndTime:        endTime.UnixMilli(),
+		Instant:        true,
+	})
 	if err != nil {
 		if logger != nil {
 			logger.Warn("PodIPResolver: kube_pod_info query failed",
 				"k8s_account_id", k8sAccountID, "error", err)
 		}
 	} else {
-		for _, metric := range extractPodInfoMetrics(resp) {
-			podIP, _ := metric["pod_ip"].(string)
-			namespace, _ := metric["namespace"].(string)
-			cluster, _ := metric["k8s_cluster"].(string)
-			createdByKind, _ := metric["created_by_kind"].(string)
-			createdByName, _ := metric["created_by_name"].(string)
-			podName, _ := metric["pod"].(string)
+		for _, metric := range observability.PromQLLabels(resp, "pod_info") {
+			podIP := metric["pod_ip"]
+			namespace := metric["namespace"]
+			cluster := metric["k8s_cluster"]
+			createdByKind := metric["created_by_kind"]
+			createdByName := metric["created_by_name"]
+			podName := metric["pod"]
 			if namespace == "" || createdByName == "" {
 				continue
 			}
@@ -474,46 +474,4 @@ func resolveOwner(createdByKind, createdByName string) (string, string) {
 		return "Deployment", core.ExtractDeploymentFromReplicaSet(createdByName)
 	}
 	return createdByKind, createdByName
-}
-
-// extractPodInfoMetrics flattens the relay's varied Prometheus response shape
-// into a list of label maps. Tolerates the three shapes ip_mapper.go already
-// handles (top-level keyed list, top-level data list, nested data.pod_info.result).
-func extractPodInfoMetrics(resp map[string]interface{}) []map[string]interface{} {
-	raw := unwrapPodInfoResult(resp)
-	out := make([]map[string]interface{}, 0, len(raw))
-	for _, item := range raw {
-		pod, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		metric, ok := pod["metric"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		out = append(out, metric)
-	}
-	return out
-}
-
-// unwrapPodInfoResult peels the three possible relay response envelopes back
-// to the list of result entries. Split out from extractPodInfoMetrics to keep
-// each function within complexity budget.
-func unwrapPodInfoResult(resp map[string]interface{}) []interface{} {
-	if v, ok := resp["pod_info"].([]interface{}); ok {
-		return v
-	}
-	if data, ok := resp["data"].([]interface{}); ok {
-		return data
-	}
-	data, ok := resp["data"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	pod, ok := data["pod_info"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	result, _ := pod["result"].([]interface{})
-	return result
 }

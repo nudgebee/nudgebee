@@ -94,212 +94,6 @@ func TestSanitizeFloats_MarshalableAfter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// getMappedValuesFromDataList
-// ---------------------------------------------------------------------------
-
-func TestGetMappedValuesFromDataList_SeriesListResult(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	series := []any{map[string]any{"metric": "cpu", "values": []any{1.0, 2.0}}}
-	dataList := []map[string]any{
-		{"data": map[string]any{"series_list_result": series}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, series, result)
-}
-
-func TestGetMappedValuesFromDataList_VectorResult(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	vector := []any{map[string]any{"metric": "mem", "value": []any{1234567890.0, "0.5"}}}
-	dataList := []map[string]any{
-		{"data": map[string]any{"vector_result": vector}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, vector, result)
-}
-
-func TestGetMappedValuesFromDataList_ScalarResult(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	scalar := []any{1234567890.0, "42"}
-	dataList := []map[string]any{
-		{"data": map[string]any{"scalar_result": scalar}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	require.Len(t, result, 1)
-	wrapped := result[0].(map[string]any)
-	assert.Equal(t, map[string]any{}, wrapped["metric"])
-	assert.Equal(t, scalar, wrapped["value"])
-}
-
-func TestGetMappedValuesFromDataList_DoubleEncodedJSON(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	innerJSON := `{"series_list_result":[{"metric":"cpu","values":[1,2]}]}`
-	dataList := []map[string]any{
-		{"data": innerJSON},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	require.Len(t, result, 1)
-}
-
-func TestGetMappedValuesFromDataList_QueryWrapper(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	series := []any{map[string]any{"metric": "disk"}}
-	dataList := []map[string]any{
-		{"data": map[string]any{
-			"query": map[string]any{
-				"series_list_result": series,
-			},
-		}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, series, result)
-}
-
-func TestGetMappedValuesFromDataList_ErrorResultType(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	dataList := []map[string]any{
-		{"data": map[string]any{
-			"result_type":   "error",
-			"string_result": "invalid PromQL expression",
-		}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	assert.Nil(t, result)
-	require.Error(t, err)
-	assert.Equal(t, "invalid PromQL expression", err.Error())
-}
-
-func TestGetMappedValuesFromDataList_ErrorResultTypeDefaultMsg(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	dataList := []map[string]any{
-		{"data": map[string]any{"result_type": "error"}},
-	}
-	_, err := tool.getMappedValuesFromDataList(dataList)
-	require.Error(t, err)
-	assert.Equal(t, "prometheus query returned an error", err.Error())
-}
-
-func TestGetMappedValuesFromDataList_NilAndEmptyEntries(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-
-	t.Run("nil data entries skipped", func(t *testing.T) {
-		series := []any{map[string]any{"metric": "net"}}
-		dataList := []map[string]any{
-			nil,
-			{"data": nil},
-			{"data": map[string]any{"series_list_result": series}},
-		}
-		result, err := tool.getMappedValuesFromDataList(dataList)
-		require.NoError(t, err)
-		assert.Equal(t, series, result)
-	})
-
-	t.Run("all nil returns empty", func(t *testing.T) {
-		dataList := []map[string]any{nil, {"data": nil}}
-		result, err := tool.getMappedValuesFromDataList(dataList)
-		require.NoError(t, err)
-		assert.Equal(t, []any{}, result)
-	})
-
-	t.Run("empty dataList returns empty", func(t *testing.T) {
-		result, err := tool.getMappedValuesFromDataList([]map[string]any{})
-		require.NoError(t, err)
-		assert.Equal(t, []any{}, result)
-	})
-}
-
-func TestGetMappedValuesFromDataList_AllResultFieldsEmpty(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	dataList := []map[string]any{
-		{"data": map[string]any{
-			"series_list_result": []any{},
-			"vector_result":      []any{},
-			"scalar_result":      []any{},
-		}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, []any{}, result)
-}
-
-func TestGetMappedValuesFromDataList_UnsupportedDataType(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	dataList := []map[string]any{
-		{"data": 12345}, // int, not map or string
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, []any{}, result)
-}
-
-func TestGetMappedValuesFromDataList_InvalidStringJSON(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	dataList := []map[string]any{
-		{"data": "not valid json"},
-	}
-	// Invalid JSON string should be skipped (continue), returning empty
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, []any{}, result)
-}
-
-func TestGetMappedValuesFromDataList_SeriesTakesPriorityOverVector(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	series := []any{map[string]any{"metric": "series_data"}}
-	vector := []any{map[string]any{"metric": "vector_data"}}
-	dataList := []map[string]any{
-		{"data": map[string]any{
-			"series_list_result": series,
-			"vector_result":      vector,
-		}},
-	}
-	result, err := tool.getMappedValuesFromDataList(dataList)
-	require.NoError(t, err)
-	assert.Equal(t, series, result)
-}
-
-// ---------------------------------------------------------------------------
-// getDataFromRelayPrometheusResponse — empty findings
-// ---------------------------------------------------------------------------
-
-func TestGetDataFromRelayPrometheusResponse_EmptyFindings(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	response := map[string]any{
-		"data": map[string]any{
-			"findings": []any{},
-		},
-	}
-	result, err := tool.getDataFromRelayPrometheusResponse(response)
-	require.NoError(t, err)
-	assert.Equal(t, []any{}, result)
-}
-
-func TestGetDataFromRelayPrometheusResponse_MissingData(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	result, err := tool.getDataFromRelayPrometheusResponse(map[string]any{})
-	assert.Nil(t, result)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "data field not found")
-}
-
-func TestGetDataFromRelayPrometheusResponse_NilFindings(t *testing.T) {
-	tool := PrometheusExecuteTool{}
-	response := map[string]any{
-		"data": map[string]any{
-			"findings": nil,
-		},
-	}
-	result, err := tool.getDataFromRelayPrometheusResponse(response)
-	assert.Nil(t, result)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "findings field not found")
-}
-
-// ---------------------------------------------------------------------------
 // extractPromQLFromCommand — the double-serialization guard
 // ---------------------------------------------------------------------------
 
@@ -870,5 +664,52 @@ func TestMetricsDiscoveryProviderFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, metricsDiscoveryProviderFor(tc.provider), tc.why)
 		})
+	}
+}
+
+// seriesFromMetricsResponse — the services-server answer, flattened for the
+// stats pass exactly as the relay's series_list_result used to be.
+
+func TestSeriesFromMetricsResponse_FlattensSeriesWithNumericValues(t *testing.T) {
+	tool := PrometheusExecuteTool{}
+	got, err := tool.seriesFromMetricsResponse(core.ObservabilityMetricsQueryResponse{Results: []core.ObservabilityMetricsQueryResult{{
+		QueryKey: "query",
+		Payload: []core.ObservabilityMetricsQuerySeries{
+			{Metric: map[string]string{"pod": "api-1"}, Timestamps: []int64{1700000000, 1700000060}, Values: []float64{1, 2.5}},
+			{Metric: map[string]string{"pod": "api-2"}, Timestamps: []int64{1700000000}, Values: []float64{3}},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(got))
+	}
+	first := got[0].(map[string]any)
+	if first["metric"].(map[string]any)["pod"] != "api-1" {
+		t.Errorf("metric labels not carried: %v", first["metric"])
+	}
+	if vals := first["values"].([]any); len(vals) != 2 || vals[1] != 2.5 {
+		t.Errorf("values not carried as numbers: %v", vals)
+	}
+	if ts := first["timestamps"].([]any); len(ts) != 2 || ts[0] != 1.7e9 {
+		t.Errorf("timestamps not carried as seconds: %v", ts)
+	}
+}
+
+func TestSeriesFromMetricsResponse_PerQueryErrorSurfaces(t *testing.T) {
+	tool := PrometheusExecuteTool{}
+	msg := "parse error at char 5: unexpected end of input"
+	_, err := tool.seriesFromMetricsResponse(core.ObservabilityMetricsQueryResponse{Results: []core.ObservabilityMetricsQueryResult{{QueryKey: "query", Error: &msg}}})
+	if err == nil || err.Error() != msg {
+		t.Fatalf("expected the provider's error, got %v", err)
+	}
+}
+
+func TestSeriesFromMetricsResponse_EmptyIsEmptyNotNil(t *testing.T) {
+	tool := PrometheusExecuteTool{}
+	got, err := tool.seriesFromMetricsResponse(core.ObservabilityMetricsQueryResponse{})
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("expected an empty list, got %v (%v)", got, err)
 	}
 }

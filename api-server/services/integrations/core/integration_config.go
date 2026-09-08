@@ -2352,6 +2352,127 @@ func ListActiveIntegrationsForAccount(
 	return integrations, nil
 }
 
+// cachedIntegrationByType reads the shared by-type cache, evicting an expired
+// entry as it goes. Both by-type lookups use it so InvalidateIntegrationCache
+// keeps clearing every variant after an integration is created or edited.
+func cachedIntegrationByType(cacheKey string) (*IntegrationDto, bool) {
+	integrationByTypeCache.RLock()
+	entry, ok := integrationByTypeCache.entries[cacheKey]
+	if ok && time.Now().Before(entry.expiresAt) {
+		integrationByTypeCache.RUnlock()
+		return entry.value, true
+	}
+	integrationByTypeCache.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	integrationByTypeCache.Lock()
+	if e, exists := integrationByTypeCache.entries[cacheKey]; exists && time.Now().After(e.expiresAt) {
+		delete(integrationByTypeCache.entries, cacheKey)
+	}
+	integrationByTypeCache.Unlock()
+	return nil, false
+}
+
+func storeIntegrationByType(cacheKey string, value *IntegrationDto) {
+	integrationByTypeCache.Lock()
+	integrationByTypeCache.entries[cacheKey] = integrationCacheEntry{
+		value:     value,
+		expiresAt: time.Now().Add(integrationCacheTTL),
+	}
+	integrationByTypeCache.Unlock()
+}
+
+// defaultProviderColumns are the integrations_cloud_accounts flags that record
+// which integration an account chose for each kind of telemetry. Only these
+// names may be interpolated into the ordering below.
+var defaultProviderColumns = map[string]bool{
+	"default_log_provider":     true,
+	"default_traces_provider":  true,
+	"default_metrics_provider": true,
+	"default_llm_provider":     true,
+}
+
+// GetIntegrationByTypePreferringDefault returns the account's integration of the
+// given type, preferring the one the account actually selected for this kind of
+// telemetry (defaultColumn, e.g. default_metrics_provider).
+//
+// An account can hold two integrations of one type: the k8s agent registers its
+// own Prometheus (and Chronosphere) row, carrying no URL or credentials, beside
+// a connection somebody added by hand. Picking between them by source alone
+// would override the operator's own choice, so the flag they set decides and
+// the hand-added row is only a tie-break for when nothing is flagged.
+//
+// Kept separate from GetIntegrationByType because that one is shared with
+// callers — dashboards resolving a datasource, for instance — that have no
+// notion of a default telemetry provider and must keep their existing order.
+func GetIntegrationByTypePreferringDefault(
+	context *security.RequestContext,
+	accountId string,
+	integrationType string,
+	defaultColumn string,
+) (*IntegrationDto, error) {
+	if !defaultProviderColumns[defaultColumn] {
+		// Nothing to prefer by — behave exactly like the shared lookup.
+		return GetIntegrationByType(context, accountId, integrationType)
+	}
+
+	// Same TTL cache as the shared lookup: the knowledge-graph sweep resolves a
+	// provider once per load balancer and per DNS record, so an uncached join
+	// here would be one query per resource. The column is part of the key, so
+	// this can never serve the differently-ordered row the shared lookup cached.
+	cacheKey := accountId + ":" + integrationType + ":" +
+		context.GetSecurityContext().GetTenantId() + ":default=" + defaultColumn
+	if value, ok := cachedIntegrationByType(cacheKey); ok {
+		return value, nil
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, err
+	}
+
+	// BuildInClause for the values, as elsewhere in this file: parameterized
+	// queries here trigger lib/pq unnamed prepared statements that collide under
+	// concurrent goroutines. defaultColumn is allow-listed above, never a value.
+	rows, err := dbms.Db.Queryx(fmt.Sprintf(`
+        SELECT i.id, i.name, i.source, i.type
+        FROM integrations i
+        JOIN integrations_cloud_accounts ica
+            ON i.id = ica.integration_id
+        WHERE ica.cloud_account_id = %s
+        AND i.type = %s
+        AND i.tenant_id = %s
+        AND i.status != 'disabled'
+        ORDER BY (ica.%s = true) DESC,
+                 CASE WHEN i.source = 'user' THEN 0 ELSE 1 END
+        LIMIT 1
+    `, dbms.BuildInClause(accountId), dbms.BuildInClause(integrationType),
+		dbms.BuildInClause(context.GetSecurityContext().GetTenantId()), defaultColumn))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Error("integrations: failed to close integration by type result", "error", cerr)
+		}
+	}()
+
+	var result *IntegrationDto
+	if rows.Next() {
+		var integration IntegrationDto
+		if err := rows.Scan(&integration.Id, &integration.Name, &integration.Source, &integration.Type); err != nil {
+			return nil, err
+		}
+		result = &integration
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	storeIntegrationByType(cacheKey, result)
+	return result, nil
+}
+
 func GetIntegrationByType(
 	context *security.RequestContext,
 	accountId string,

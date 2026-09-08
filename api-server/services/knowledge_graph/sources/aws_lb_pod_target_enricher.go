@@ -12,7 +12,7 @@ import (
 	"nudgebee/services/cloud"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/knowledge_graph/flow_sources"
-	"nudgebee/services/relay"
+	"nudgebee/services/observability"
 	"nudgebee/services/security"
 )
 
@@ -423,13 +423,17 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 		"pod_info": fmt.Sprintf(`kube_pod_info{pod_ip=~"%s"}`, ipFilter),
 	}
 
-	// Use UTC: relay.ExecutePrometheus formats the timestamp with a "UTC"
-	// suffix; the value must already be UTC or Prometheus is queried at a
-	// future time and returns empty. Defense in depth with the relay-side fix.
 	endTime := time.Now().UTC()
 	startTime := endTime.Add(-5 * time.Minute)
 
-	podInfoResp, err := relay.ExecutePrometheus(k8sAccountID, startTime, endTime, queries, true)
+	podInfoResp, err := observability.FetchMetricsQuery(reqCtx, observability.FetchMetricsRequest{
+		AccountId:      k8sAccountID,
+		MetricProvider: "prometheus",
+		Queries:        queries,
+		StartTime:      startTime.UnixMilli(),
+		EndTime:        endTime.UnixMilli(),
+		Instant:        true,
+	})
 	if err != nil {
 		e.logger.Warn("Failed to query kube_pod_info",
 			"lb_name", lbNode.Properties["name"],
@@ -438,45 +442,22 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 	}
 
 	// Step 4: Create Pod nodes and edges from query results
-	var resultArray []interface{}
+	podMetrics := observability.PromQLLabels(podInfoResp, "pod_info")
 
-	if podInfoData, ok := podInfoResp["pod_info"].([]interface{}); ok {
-		resultArray = podInfoData
-		e.logger.Debug("Found pod info with query name key", "count", len(podInfoData))
-	} else if data, ok := podInfoResp["data"].([]interface{}); ok {
-		resultArray = data
-		e.logger.Debug("Found pod info in data array", "count", len(data))
-	} else if data, ok := podInfoResp["data"].(map[string]interface{}); ok {
-		if podInfoData, ok := data["pod_info"].(map[string]interface{}); ok {
-			if result, ok := podInfoData["result"].([]interface{}); ok {
-				resultArray = result
-				e.logger.Debug("Found pod info in nested structure", "count", len(result))
-			}
-		}
-	}
-
-	if len(resultArray) == 0 {
+	if len(podMetrics) == 0 {
 		e.logger.Warn("No pod info results found in Prometheus response",
 			"lb_name", lbNode.Properties["name"],
 			"target_ips", len(uniqueIPs))
 	}
 
 	replicaSetsToQuery := make(map[string]bool)
-	podMetrics := make([]map[string]interface{}, 0)
+	for _, metric := range podMetrics {
+		createdByKind := metric["created_by_kind"]
+		createdByName := metric["created_by_name"]
+		namespace := metric["namespace"]
 
-	for _, item := range resultArray {
-		if pod, ok := item.(map[string]interface{}); ok {
-			if metric, ok := pod["metric"].(map[string]interface{}); ok {
-				podMetrics = append(podMetrics, metric)
-
-				createdByKind, _ := metric["created_by_kind"].(string)
-				createdByName, _ := metric["created_by_name"].(string)
-				namespace, _ := metric["namespace"].(string)
-
-				if createdByKind == "ReplicaSet" && createdByName != "" && namespace != "" {
-					replicaSetsToQuery[fmt.Sprintf("%s/%s", namespace, createdByName)] = true
-				}
-			}
+		if createdByKind == "ReplicaSet" && createdByName != "" && namespace != "" {
+			replicaSetsToQuery[fmt.Sprintf("%s/%s", namespace, createdByName)] = true
 		}
 	}
 
@@ -487,36 +468,26 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 			"rs_owner": "kube_replicaset_owner",
 		}
 
-		rsResp, err := relay.ExecutePrometheus(k8sAccountID, startTime, endTime, rsQueries, true)
+		rsResp, err := observability.FetchMetricsQuery(reqCtx, observability.FetchMetricsRequest{
+			AccountId:      k8sAccountID,
+			MetricProvider: "prometheus",
+			Queries:        rsQueries,
+			StartTime:      startTime.UnixMilli(),
+			EndTime:        endTime.UnixMilli(),
+			Instant:        true,
+		})
 		if err == nil {
-			var rsResultArray []interface{}
-			if rsData, ok := rsResp["rs_owner"].([]interface{}); ok {
-				rsResultArray = rsData
-			} else if data, ok := rsResp["data"].([]interface{}); ok {
-				rsResultArray = data
-			} else if data, ok := rsResp["data"].(map[string]interface{}); ok {
-				if rsData, ok := data["rs_owner"].(map[string]interface{}); ok {
-					if result, ok := rsData["result"].([]interface{}); ok {
-						rsResultArray = result
-					}
-				}
-			}
+			for _, metric := range observability.PromQLLabels(rsResp, "rs_owner") {
+				rsNamespace := metric["namespace"]
+				rsName := metric["replicaset"]
+				ownerKind := metric["owner_kind"]
+				ownerName := metric["owner_name"]
 
-			for _, item := range rsResultArray {
-				if rs, ok := item.(map[string]interface{}); ok {
-					if metric, ok := rs["metric"].(map[string]interface{}); ok {
-						rsNamespace, _ := metric["namespace"].(string)
-						rsName, _ := metric["replicaset"].(string)
-						ownerKind, _ := metric["owner_kind"].(string)
-						ownerName, _ := metric["owner_name"].(string)
-
-						if rsNamespace != "" && rsName != "" {
-							key := fmt.Sprintf("%s/%s", rsNamespace, rsName)
-							replicaSetOwners[key] = map[string]string{
-								"kind": ownerKind,
-								"name": ownerName,
-							}
-						}
+				if rsNamespace != "" && rsName != "" {
+					key := fmt.Sprintf("%s/%s", rsNamespace, rsName)
+					replicaSetOwners[key] = map[string]string{
+						"kind": ownerKind,
+						"name": ownerName,
 					}
 				}
 			}
@@ -525,12 +496,12 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 
 	// Step 6: Process all pod metrics and create owner nodes
 	for _, metric := range podMetrics {
-		podIP, _ := metric["pod_ip"].(string)
-		podName, _ := metric["pod"].(string)
-		namespace, _ := metric["namespace"].(string)
-		k8sCluster, _ := metric["k8s_cluster"].(string)
-		createdByKind, _ := metric["created_by_kind"].(string)
-		createdByName, _ := metric["created_by_name"].(string)
+		podIP := metric["pod_ip"]
+		podName := metric["pod"]
+		namespace := metric["namespace"]
+		k8sCluster := metric["k8s_cluster"]
+		createdByKind := metric["created_by_kind"]
+		createdByName := metric["created_by_name"]
 
 		if podName == "" || namespace == "" {
 			continue
@@ -591,9 +562,7 @@ func (e *LoadBalancerPodTargetEnricher) enrichLoadBalancerWithTargets(
 			} else {
 				labels := make(map[string]string)
 				for k, v := range metric {
-					if strVal, ok := v.(string); ok {
-						labels[k] = strVal
-					}
+					labels[k] = v
 				}
 
 				properties := map[string]interface{}{

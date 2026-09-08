@@ -669,48 +669,6 @@ func PodActionExecutor(accountId string, podName string, namespace string, actio
 	return evidence, nil
 }
 
-func WorkloadMetricsExecutor(accountId string, workloadName string, namespace string, resourceType string, startTime time.Time, endTime time.Time) (map[string]any, error) {
-	var promql_query string
-	switch resourceType {
-	case "cpu":
-		promql_query = fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{ __CLUSTER__ pod=~"%s.*", namespace="%s"}[5m])) by (pod,namespace)`, workloadName, namespace)
-	case "memory":
-		promql_query = fmt.Sprintf(`sum(container_memory_usage_bytes{ __CLUSTER__ pod=~"%s.*", namespace="%s"}) by (pod, namespace)`, workloadName, namespace)
-	case "network":
-		promql_query = fmt.Sprintf(`sum(rate(container_network_receive_bytes_total{ __CLUSTER__ pod=~"%s.*", namespace="%s"}[5m])) + sum(rate(container_network_transmit_bytes_total{ __CLUSTER__ pod=~"%s.*", namespace="%s"}[5m]))`, workloadName, namespace, workloadName, namespace)
-	case "latency":
-		promql_query = fmt.Sprintf(`histogram_quantile(0.99, sum(rate(container_http_requests_duration_seconds_total_bucket{ __CLUSTER__ actual_destination_workload_name=~"%s.*", actual_destination_workload_namespace="%s"}[5m])) by (le))`, workloadName, namespace)
-	case "error_rate":
-		promql_query = fmt.Sprintf(`sum(rate(container_http_requests_duration_seconds_total_count{ __CLUSTER__ actual_destination_workload_name=~"%s.*", actual_destination_workload_namespace="%s"}[5m]))`, workloadName, namespace)
-	case "replicas":
-		promql_query = fmt.Sprintf(`sum(kube_deployment_status_replicas{ __CLUSTER__ deployment=~"%s.*", namespace="%s"})`, workloadName, namespace)
-	case "cpu_throttling":
-		promql_query = fmt.Sprintf(`sum(rate(container_resources_cpu_throttled_seconds_total{ __CLUSTER__ container_id=~".*%s/%s.*"}[5m])) by (container_id)`, namespace, workloadName)
-	default:
-		return map[string]any{}, errors.New("relay: invalid resource type")
-	}
-	relayRequest := RelayExecuteRequest{
-		Body: ActionExecuteBody{
-			AccountID:  accountId,
-			ActionName: "prometheus_enricher",
-			ActionParams: map[string]any{
-				"promql_query": promql_query,
-				"duration": map[string]any{
-					"starts_at": startTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-					"ends_at":   endTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-				},
-			},
-		},
-	}
-
-	evidence, err := Execute(relayRequest)
-
-	if err != nil {
-		return map[string]any{}, err
-	}
-	return evidence, nil
-}
-
 func CommandExecutor(accountId string, command string, secretName string, envFromSecret map[string]string) (map[string]any, error) {
 
 	if accountId == "" {

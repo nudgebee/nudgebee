@@ -1284,6 +1284,7 @@ func QueryMetrics(ctx security.RequestContext, req core.ObservabilityMetricsQuer
 				"queries":         req.Queries,
 				"start_time":      req.StartTime,
 				"end_time":        req.EndTime,
+				"step_interval":   req.StepInterval,
 				"request":         req.Request,
 			},
 		},

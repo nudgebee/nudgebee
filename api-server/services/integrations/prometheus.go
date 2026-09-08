@@ -214,7 +214,9 @@ func (m Prometheus) ConfigSchema() core.IntegrationSchema {
 				Type: core.ToolSchemaTypeString,
 				Description: "Optional labels identifying this cluster's series, as a JSON object " +
 					"({\"cluster\": \"prod\"}). Required only when one endpoint serves several " +
-					"clusters (Mimir, Thanos, Cortex); leave empty for a single-cluster Prometheus.",
+					"clusters (Mimir, Thanos, Cortex); leave empty for a single-cluster Prometheus. " +
+					"They scope every query Nudgebee runs for this account — dashboards and the " +
+					"background discovery, evidence and knowledge-graph queries alike.",
 				// Testable for the same reason as extra headers: the dynamic form uses
 				// is_testable to decide whether an edit re-runs validation, so without
 				// it a labels-only edit would save an invalid label name unvalidated.

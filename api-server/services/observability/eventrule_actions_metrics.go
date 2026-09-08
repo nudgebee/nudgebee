@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/event"
@@ -13,14 +14,11 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/ml"
-	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/prometheus/prometheus/promql/parser"
 )
 
 func init() {
@@ -30,11 +28,6 @@ func init() {
 	playbooks.RegisterAction("datadog_metrics", &datadogMetricsAction{})
 	playbooks.RegisterAction("metric_anomaly_enricher", &metricAnomalyAction{})
 }
-
-// promQLParser is a shared, stateless PromQL parser. ParseExpr builds a fresh
-// internal parser per call, so one package-level instance is concurrency-safe
-// and avoids per-call allocations.
-var promQLParser = parser.NewParser(parser.Options{})
 
 type PrometheusInstantResult struct {
 	Metric map[string]any `json:"metric"`
@@ -194,57 +187,46 @@ func (a *prometheusAction) Execute(ctx playbooks.PlaybookActionContext, rawParam
 		extractSeriesResponse = true
 	}
 
-	relayRequest := relay.RelayExecuteRequest{
-		Body: relay.ActionExecuteBody{
-			AccountID:  ctx.GetAccountId(),
-			ActionName: "prometheus_queries_enricher",
-			ActionParams: map[string]any{
-				"duration": map[string]any{
-					"ends_at":   endTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-					"starts_at": startTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-				},
-				"steps":          params.Step,
-				"instant":        params.Instant,
-				"promql_query":   params.PromqlQuery,
-				"promql_queries": params.PromqlQueries,
-			},
-			Origin: "services-server",
-		},
-		NoSinks: true,
-		Cache:   false,
+	queries := make(map[string]string, len(params.PromqlQueries))
+	for _, q := range params.PromqlQueries {
+		if q.Key != "" && q.Query != "" {
+			queries[q.Key] = q.Query
+		}
 	}
-	relayResponse, additionalInfo, err := relay.ExecuteAndExtractResponse(relayRequest)
+	// The metrics layer resolves where PromQL runs for this account — the
+	// connection the user configured, or the cluster agent's Prometheus.
+	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	output, err := FetchMetricsQuery(requestCtx, FetchMetricsRequest{
+		AccountId:      ctx.GetAccountId(),
+		MetricProvider: integrationPrometheus,
+		Queries:        queries,
+		StartTime:      startTime.UnixMilli(),
+		EndTime:        endTime.UnixMilli(),
+		StepInterval:   promQLStepSeconds(params.Step),
+		Instant:        params.Instant,
+	})
 	if err != nil {
 		return nil, err
 	}
 
+	// The card keeps the wire shape the agent produced, which is what the
+	// investigate page and the label mergers read back from events.evidences.
 	data := map[string]any{}
-	if relayResponse["data"] != nil {
-		switch d := relayResponse["data"].(type) {
-		case map[string]any:
-			data = d
-		case string:
-			err := common.UnmarshalJson([]byte(d), &data)
-			if err != nil {
-				ctx.GetLogger().Error("prometheus: unable to parse response", "error", err, "response", d)
-			}
+	for _, result := range output.Results {
+		if extractSeriesResponse {
+			data = promQLSingleEnvelope(result, params.Instant)
+			break
 		}
+		data[result.QueryKey] = promQLQueriesResult(result, params.Instant)
 	}
 
-	if extractSeriesResponse && data["A"] != nil {
-		data = data["A"].(map[string]any)
-	}
-
-	metadata, ok := relayResponse["metadata"].(map[string]any)
-	if !ok {
-		metadata = map[string]any{}
-	}
+	metadata := map[string]any{}
 	if rawQuery != "" {
 		metadata["query"] = rawQuery
 	}
 	metadata["query-result-version"] = "1.0"
-
-	insight := playbooks.InsightFromRelayResponse(relayResponse)
+	additionalInfo := map[string]any{}
+	insight := []playbooks.PlaybookActionResponseInsight{}
 
 	// Generate Chronosphere metrics explorer URL
 	if len(params.PromqlQueries) > 0 {
@@ -1220,4 +1202,21 @@ func (a *metricAnomalyAction) Execute(ctx playbooks.PlaybookActionContext, rawPa
 	}
 
 	return response, nil
+}
+
+// promQLStepSeconds reads a playbook's `step` — a Go duration ("30s") or bare
+// seconds ("60") — as the range step. Empty or unreadable leaves the provider's
+// own default.
+func promQLStepSeconds(step string) int {
+	step = strings.TrimSpace(step)
+	if step == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(step); err == nil && n > 0 {
+		return n
+	}
+	if d, err := time.ParseDuration(step); err == nil && d > 0 {
+		return int(math.Ceil(d.Seconds()))
+	}
+	return 0
 }

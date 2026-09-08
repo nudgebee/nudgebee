@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -527,6 +528,17 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 	}
 }
 
+// ErrNoTenantContext is returned when a provider lookup is attempted with a
+// request context that carries no security context. Background callers build
+// theirs with security.NewRequestContextForTenantAdmin, which leaves the
+// security context nil when the tenant lookup fails; the integration queries
+// behind the resolver read the tenant from it. Every provider entry point
+// (FetchMetricsQuery, FetchMetricUtilisation, GetLogsMetricsTracesProvider and
+// the sources behind them) funnels through getLogsMetricsTracesProviderWithIntegration,
+// so refusing there turns what would be a nil dereference — inside an
+// evidence goroutine, with nothing to recover it — into a soft, loggable error.
+var ErrNoTenantContext = errors.New("observability: request context carries no tenant; provider cannot be resolved")
+
 func getMetricsSourceForAccount(ctx *security.RequestContext, accountId string, metricsProvider string, metricsProviderSource string) (MetricSource, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("account_id is required")
@@ -559,6 +571,9 @@ func GetLogsMetricsTracesProvider(ctx *security.RequestContext, accountId, logPr
 // match (when one exists), so callers that need additional config from the
 // same integration can avoid a second lookup.
 func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, accountId, logProviderFromRequest, providerType string, logSourceFromRequest string) (string, string, *core.IntegrationDto, error) {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return "", "", nil, ErrNoTenantContext
+	}
 	defaultProvider := logProviderFromRequest
 	defaultSource := logSourceFromRequest
 	var matchedIntegration *core.IntegrationDto
@@ -635,7 +650,10 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 			}
 		}
 	} else if defaultSource == "" {
-		integrationDto, err := core.GetIntegrationByType(ctx, accountId, defaultProvider)
+		// The caller named a provider but no source. Prefer the integration the
+		// account actually selected for this telemetry kind — an account can hold
+		// both the agent's own row and a hand-added connection of the same type.
+		integrationDto, err := core.GetIntegrationByTypePreferringDefault(ctx, accountId, defaultProvider, valueProvider)
 		if err != nil {
 			ctx.GetLogger().Error("failed to look up source for provider", "provider", defaultProvider, "error", err)
 			return "", "", nil, err
@@ -2763,8 +2781,13 @@ func GetLogsQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest)
 	}, nil
 }
 
+// metricsSourceForAccount resolves the source FetchMetricsQuery dispatches to.
+// Indirected so tests can hand a query to a source without the integration
+// tables behind getMetricsSourceForAccount.
+var metricsSourceForAccount = getMetricsSourceForAccount
+
 func FetchMetricsQuery(ctx *security.RequestContext, fetchMetricsRequest FetchMetricsRequest) (OutputMetricQuery, error) {
-	source, err := getMetricsSourceForAccount(ctx, fetchMetricsRequest.AccountId, fetchMetricsRequest.MetricProvider, fetchMetricsRequest.MetricProviderSource)
+	source, err := metricsSourceForAccount(ctx, fetchMetricsRequest.AccountId, fetchMetricsRequest.MetricProvider, fetchMetricsRequest.MetricProviderSource)
 	if err != nil {
 		return OutputMetricQuery{}, err
 	}

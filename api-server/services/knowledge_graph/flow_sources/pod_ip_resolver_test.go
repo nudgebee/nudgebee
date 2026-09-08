@@ -2,7 +2,6 @@ package flow_sources
 
 import (
 	"nudgebee/services/knowledge_graph/core"
-	"reflect"
 	"testing"
 )
 
@@ -231,54 +230,6 @@ func TestResolveOwner_ReplicaSetToDeployment(t *testing.T) {
 			t.Errorf("resolveOwner(%q, %q) = (%q, %q); want (%q, %q)",
 				tt.createdByKind, tt.createdByName, gotKind, gotName, tt.wantKind, tt.wantName)
 		}
-	}
-}
-
-func TestExtractPodInfoMetrics_HandlesAllRelayShapes(t *testing.T) {
-	want := []map[string]interface{}{
-		{"pod": "rabbitmq-0", "pod_ip": "172.31.5.25"},
-	}
-
-	// Shape 1: top-level pod_info as []interface{}
-	shape1 := map[string]interface{}{
-		"pod_info": []interface{}{
-			map[string]interface{}{"metric": want[0]},
-		},
-	}
-	if got := extractPodInfoMetrics(shape1); !reflect.DeepEqual(got, want) {
-		t.Errorf("shape 1 mismatch: got %v want %v", got, want)
-	}
-
-	// Shape 2: top-level data as []interface{}
-	shape2 := map[string]interface{}{
-		"data": []interface{}{
-			map[string]interface{}{"metric": want[0]},
-		},
-	}
-	if got := extractPodInfoMetrics(shape2); !reflect.DeepEqual(got, want) {
-		t.Errorf("shape 2 mismatch: got %v want %v", got, want)
-	}
-
-	// Shape 3: nested data.pod_info.result
-	shape3 := map[string]interface{}{
-		"data": map[string]interface{}{
-			"pod_info": map[string]interface{}{
-				"result": []interface{}{
-					map[string]interface{}{"metric": want[0]},
-				},
-			},
-		},
-	}
-	if got := extractPodInfoMetrics(shape3); !reflect.DeepEqual(got, want) {
-		t.Errorf("shape 3 mismatch: got %v want %v", got, want)
-	}
-
-	// Empty / malformed should yield nothing without panicking.
-	if got := extractPodInfoMetrics(nil); len(got) != 0 {
-		t.Errorf("nil response should yield no metrics, got %v", got)
-	}
-	if got := extractPodInfoMetrics(map[string]interface{}{"unknown": "shape"}); len(got) != 0 {
-		t.Errorf("unknown shape should yield no metrics, got %v", got)
 	}
 }
 
