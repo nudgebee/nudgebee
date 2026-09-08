@@ -136,6 +136,7 @@ func TestLogAgentV3_SystemPrompt_ReusesResolvedPodsAndExplainsArtifactFormat(t *
 	assert.Contains(t, body, "Step 2a remains mandatory")
 	assert.Contains(t, body, "logs_format_hint")
 	assert.Contains(t, body, "never JSON-decode the whole file")
+	assert.Contains(t, body, "kubectl_disclosure")
 }
 
 // TestLogAgentV3_FastPathAppAnchor_RoutineOnly pins the one point where v3's
