@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"os"
@@ -1293,4 +1294,96 @@ func TestParsers_IgnoreNonResourceLines(t *testing.T) {
 	podError := r.parsePodLine(errorNamedPod, "app-100a", false)
 	require.NotNil(t, podError)
 	assert.Equal(t, "error", podError.Name)
+}
+
+// search_type was declared Required while processSearchRequest had always
+// routed an absent value to handleResourceSuggestions. Pre-execution schema
+// validation therefore rejected calls that would have worked — 15 of them in
+// 14 days on dev, the single largest tool-input failure in the service. These
+// pin the corrected contract: optional, enumerated, defaulting to suggestions.
+func TestK8sResourceSearchTool_SearchTypeContract(t *testing.T) {
+	schema := K8sResourceSearchTool{}.InputSchema()
+
+	t.Run("search_type is not required", func(t *testing.T) {
+		assert.NotContains(t, schema.Required, "search_type",
+			"Call() defaults an absent search_type to suggestions, so requiring it only lets the validator reject working calls")
+	})
+
+	t.Run("search_type enumerates exactly the values the switch handles", func(t *testing.T) {
+		assert.ElementsMatch(t,
+			[]any{searchTypeFuzzy, searchTypeSuggestions, searchTypeNamespace, searchTypeLabel},
+			schema.Properties["search_type"].Enum,
+			"an enum that drifts from processSearchRequest's switch would reject values the tool actually supports")
+	})
+
+	t.Run("search_type advertises its default", func(t *testing.T) {
+		assert.Equal(t, searchTypeSuggestions, schema.Properties["search_type"].Default)
+	})
+
+	t.Run("the description tells the model the field is optional", func(t *testing.T) {
+		assert.Contains(t, K8sResourceSearchTool{}.Description(), "search_type (optional)",
+			"Description() is the only input contract some planners render, so it must agree with the schema")
+	})
+}
+
+// The exact production shape: a search with no search_type at all must now pass
+// validation instead of being rejected before Call() runs.
+func TestK8sResourceSearchTool_InputWithoutSearchTypeValidates(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+
+	t.Run("omitting search_type is accepted", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_name":"nginx","namespace":"default"}`),
+			"this is the call the agent was making when it got 'missing required field \"search_type\"'")
+	})
+
+	t.Run("an explicit valid search_type is still accepted", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_type":"podss","search_type":"fuzzy"}`))
+	})
+
+	t.Run("an unrecognised search_type is now rejected with the valid list", func(t *testing.T) {
+		got := core.ValidateToolInput(tool, `{"namespace":"default","search_type":"fuzzyy"}`)
+		if assert.NotNil(t, got, "a typo used to fall through to suggestions silently; the enum should catch it") {
+			assert.Contains(t, *got, "search_type")
+		}
+	})
+}
+
+// Adding the search_type enum must not swap one pre-execution rejection for
+// another. Native tool-calling providers routinely emit every declared property,
+// filling unset ones with "" rather than omitting them — and "" already meant
+// "not specified" to Call(). Without the normalizer these would fail the enum
+// check with `value  not in allowed enum`.
+func TestK8sResourceSearchTool_EmptySearchTypeIsTreatedAsAbsent(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+
+	t.Run("an explicitly empty search_type still validates", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_name":"nginx","search_type":""}`),
+			"\"\" means unspecified; rejecting it would break the same tool this change is fixing")
+	})
+
+	t.Run("a whitespace-only search_type still validates", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_name":"nginx","search_type":"   "}`))
+	})
+
+	t.Run("the normalizer drops only the empty key and leaves the rest intact", func(t *testing.T) {
+		got := tool.NormalizeInputForSchemaValidation(`{"resource_name":"nginx","search_type":""}`)
+		assert.NotContains(t, got, "search_type")
+		assert.Contains(t, got, "nginx", "normalization must not discard the rest of the call")
+	})
+
+	t.Run("a populated search_type is passed through untouched", func(t *testing.T) {
+		in := `{"resource_type":"podss","search_type":"fuzzy"}`
+		assert.Equal(t, in, tool.NormalizeInputForSchemaValidation(in))
+	})
+
+	t.Run("non-JSON input is passed through untouched", func(t *testing.T) {
+		assert.Equal(t, "kubectl get pods", tool.NormalizeInputForSchemaValidation("kubectl get pods"))
+	})
+
+	t.Run("an empty search_type routes to suggestions in Call's parser", func(t *testing.T) {
+		var req K8sResourceSearchRequest
+		assert.NoError(t, json.Unmarshal([]byte(`{"resource_name":"nginx","search_type":""}`), &req))
+		assert.Equal(t, "", req.SearchType,
+			"processSearchRequest normalizes this to suggestions; pinned here so the two paths cannot diverge")
+	})
 }

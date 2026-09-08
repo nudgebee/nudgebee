@@ -35,7 +35,7 @@ The LLM Server depends on services running in Kubernetes that must be port-forwa
 | Service | Local Port | Port-Forward Command |
 |---------|-----------|---------------------|
 | cloud-collector-server | 8000 | `kubectl port-forward -n nudgebee svc/cloud-collector-server 8000:8000` |
-| services-server (api-server) | 8120 | `kubectl port-forward -n nudgebee svc/api-server 8120:8000` |
+| services-server (api-server) | 8120 | `kubectl port-forward -n nudgebee svc/services-server 8120:8000` |
 | rag-server | 8700 | `kubectl port-forward -n nudgebee svc/rag-server 8700:8700` |
 | relay-server | 8006 | `kubectl port-forward -n nudgebee svc/relay-server 8006:8080` |
 

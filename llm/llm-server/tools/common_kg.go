@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/lithammer/fuzzysearch/fuzzy"
 )
 
 // uuidRegex detects the canonical 8-4-4-4-12 UUID form. Used to decide whether
@@ -120,18 +122,131 @@ func resolveAccountIdentifiers(identifiers []string, accountMap map[string]strin
 	}
 
 	if len(unresolved) > 0 {
-		// Surface the available account names so the LLM can correct itself
-		// in-flight without another tool call.
 		sort.Strings(allNames)
-		return nil, fmt.Errorf(
-			"invalid account name(s): %s. Available account names for this tenant: %s. "+
-				"Use one of the listed names exactly (case-insensitive) OR pass the canonical UUID",
-			strings.Join(unresolved, ", "),
-			strings.Join(allNames, ", "),
-		)
+		return nil, unresolvedAccountError(unresolved, allNames)
 	}
 
 	return resolved, nil
+}
+
+// maxListedAccountNames caps how many account names an unresolved-identifier
+// error echoes back. The list exists so the LLM can self-correct in-flight, but
+// a tenant can hold hundreds of accounts: before this cap a single failure on a
+// 340-account tenant emitted 5,541 characters (~1,385 tokens) of mostly junk
+// names, which is neither a usable hint nor an affordable one.
+const maxListedAccountNames = 20
+
+// Bounds on the "did you mean" suggestions. maxAccountNameDistance is the
+// Levenshtein cutoff past which a "suggestion" is noise rather than a likely
+// typo; maxAccountNameSuggestions caps how many are offered across ALL
+// unresolved identifiers in one call.
+const (
+	maxAccountNameDistance    = 3
+	maxAccountNameSuggestions = 3
+)
+
+// cloudAccountNumberRegex matches a bare cloud-provider account identifier — in
+// practice an AWS 12-digit account id. Callers reach here after scraping one out
+// of an ARN (arn:aws:cloudwatch:us-east-1:123456789012:alarm:...), which is a
+// reasonable thing for an agent to try and is never a valid input: account
+// numbers are not unique across cloud_accounts rows, so one number can name
+// several distinct accounts in the same tenant.
+var cloudAccountNumberRegex = regexp.MustCompile(`^[0-9]{10,14}$`)
+
+// unresolvedAccountError builds the LLM-facing error for identifiers that are
+// neither a UUID nor a known account name. allNames must already be sorted.
+//
+// The message leads with the most actionable thing it can determine: an
+// account-number-shaped input gets told exactly why it failed (fuzzy matching
+// cannot help an all-digit string), anything else gets "did you mean" against
+// the closest real names. A capped sample of the tenant's accounts follows as a
+// fallback so the model still has something concrete to pick from.
+func unresolvedAccountError(unresolved, allNames []string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "invalid account name(s): %s", strings.Join(unresolved, ", "))
+
+	switch suggestions := similarAccountNames(unresolved, allNames); {
+	case allAccountNumbers(unresolved):
+		b.WriteString(" — that is a cloud provider account number, which is not accepted here" +
+			" (one account number can map to several accounts in a tenant).")
+	case len(suggestions) > 0:
+		fmt.Fprintf(&b, " — did you mean: %s?", strings.Join(suggestions, ", "))
+	default:
+		b.WriteString(".")
+	}
+
+	b.WriteString(" Pass a friendly account name (case-insensitive) or the canonical UUID.")
+
+	if len(allNames) > 0 {
+		shown := allNames
+		if len(shown) > maxListedAccountNames {
+			shown = shown[:maxListedAccountNames]
+		}
+		fmt.Fprintf(&b, " Accounts in this tenant (showing %d of %d): %s",
+			len(shown), len(allNames), strings.Join(shown, ", "))
+		if len(allNames) > len(shown) {
+			b.WriteString(", …")
+		}
+	}
+
+	return errors.New(b.String())
+}
+
+// allAccountNumbers reports whether every unresolved identifier looks like a
+// cloud provider account number. Requiring all of them keeps the specific
+// message honest when a call mixes a bad number with an ordinary typo.
+func allAccountNumbers(unresolved []string) bool {
+	for _, u := range unresolved {
+		if !cloudAccountNumberRegex.MatchString(u) {
+			return false
+		}
+	}
+	return len(unresolved) > 0
+}
+
+// similarAccountNames returns up to 3 account names closest to the unresolved
+// input, so a typo self-corrects without another tool call. Mirrors
+// findSimilarResourceTypes in tool_resource_search.go — same library, same
+// shape — so the two "did you mean" surfaces behave alike.
+func similarAccountNames(unresolved, allNames []string) []string {
+	if len(allNames) == 0 {
+		return nil
+	}
+	lowered := make([]string, len(allNames))
+	for i, n := range allNames {
+		lowered[i] = strings.ToLower(n)
+	}
+
+	// Rank every unresolved identifier against every name FIRST, then take the
+	// globally closest few. Capping inside the per-identifier loop instead would
+	// let the first identifier's three near-misses starve a later identifier of
+	// any suggestion at all — even an exact match — so a call like
+	// account_ids:["aws-prod","gcp-dev-1"] could return three aws-prod-* variants
+	// and never mention gcp-dev-1.
+	var ranked fuzzy.Ranks
+	for _, u := range unresolved {
+		for _, r := range fuzzy.RankFind(strings.ToLower(u), lowered) {
+			if r.Distance <= maxAccountNameDistance {
+				ranked = append(ranked, r)
+			}
+		}
+	}
+	sort.Stable(ranked)
+
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range ranked {
+		if len(out) >= maxAccountNameSuggestions {
+			break
+		}
+		// RankFind searched the lowercased copies; report the original casing.
+		name := allNames[r.OriginalIndex]
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // KG response character cap for the `Data` field. Raw JSON goes in AdditionalDetails

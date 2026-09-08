@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
@@ -26,12 +27,22 @@ func init() {
 
 type K8sResourceSearchTool struct{}
 
+// Accepted values for K8sResourceSearchRequest.SearchType. Kept in sync with the
+// `search_type` enum in InputSchema and the switch in processSearchRequest —
+// searchTypeSuggestions is the default an absent value resolves to.
+const (
+	searchTypeFuzzy       = "fuzzy"
+	searchTypeSuggestions = "suggestions"
+	searchTypeNamespace   = "namespace"
+	searchTypeLabel       = "label"
+)
+
 type K8sResourceSearchRequest struct {
 	ResourceName  string `json:"resource_name,omitempty"`
 	ResourceType  string `json:"resource_type,omitempty"`
 	Namespace     string `json:"namespace,omitempty"`
 	LabelSelector string `json:"label_selector,omitempty"`
-	SearchType    string `json:"search_type"` // "fuzzy", "suggestions", "namespace", "label"
+	SearchType    string `json:"search_type,omitempty"` // see searchType* consts; empty = suggestions
 }
 
 type K8sResourceSearchResponse struct {
@@ -200,11 +211,12 @@ func (r K8sResourceSearchTool) Description() string {
 * resource_type (optional): Type of resource (pods, services, etc.)
 * namespace (optional): Namespace to search in
 * label_selector (optional): Kubernetes label selector, required when search_type is "label" (e.g. 'app=nginx,tier=frontend')
-* search_type: Type of search - one of "fuzzy", "suggestions", "namespace", or "label" ("label" requires label_selector)
+* search_type (optional): Type of search - one of "fuzzy", "suggestions", "namespace", or "label" ("label" requires label_selector). Defaults to "suggestions" when omitted.
 
 **Examples:**
 * Fuzzy resource type: {"resource_type": "podss", "search_type": "fuzzy"}
 * App search: {"resource_name": "nginx", "namespace": "default", "search_type": "suggestions"} → Returns deployment + pods
+* App search, default type: {"resource_name": "nginx", "namespace": "default"} → same as "suggestions"
 * CRD discovery: {"resource_name": "my-custom-app", "namespace": "default", "search_type": "suggestions"}
 * Namespace discovery: {"namespace": "nudgebe", "search_type": "namespace"}
 
@@ -233,11 +245,50 @@ func (r K8sResourceSearchTool) InputSchema() core.ToolSchema {
 			},
 			"search_type": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Type of search: 'fuzzy', 'suggestions', 'namespace', or 'label'",
+				Description: "OPTIONAL. Type of search: 'fuzzy', 'suggestions', 'namespace', or 'label' ('label' requires label_selector). Defaults to 'suggestions'.",
+				Enum:        []any{searchTypeFuzzy, searchTypeSuggestions, searchTypeNamespace, searchTypeLabel},
+				Default:     searchTypeSuggestions,
 			},
 		},
-		Required: []string{"search_type"},
+		// search_type is deliberately NOT required: processSearchRequest already
+		// routes an absent value to handleResourceSuggestions, so declaring it
+		// required only let pre-execution validation reject calls that would
+		// have succeeded (15 such rejections in 14 days on dev).
+		Required: []string{},
 	}
+}
+
+// NormalizeInputForSchemaValidation drops an explicitly-empty search_type before
+// the enum check sees it. Native tool-calling providers often emit every
+// declared property, filling the unset ones with "" rather than omitting them —
+// and "" is semantically "not specified", which processSearchRequest already
+// resolves to suggestions. Without this, adding the enum would have turned a
+// call that used to work into a "value  not in allowed enum" rejection, i.e.
+// swapped one pre-execution failure for another on the same tool. Call()
+// receives the original input and normalizes "" itself.
+func (r K8sResourceSearchTool) NormalizeInputForSchemaValidation(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if !strings.HasPrefix(trimmed, "{") {
+		return input
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil || parsed == nil {
+		return input
+	}
+	v, exists := parsed["search_type"]
+	if !exists {
+		return input
+	}
+	s, isString := v.(string)
+	if !isString || strings.TrimSpace(s) != "" {
+		return input
+	}
+	delete(parsed, "search_type")
+	normalized, err := json.Marshal(parsed)
+	if err != nil {
+		return input
+	}
+	return string(normalized)
 }
 
 func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -313,14 +364,24 @@ func (r K8sResourceSearchTool) processSearchRequest(input string, nbRequestConte
 		}
 	}
 
+	// An absent search_type resolves to suggestions — the schema documents that
+	// default and does not mark the field required, so this is a supported call
+	// shape rather than a fallback for malformed input.
+	if request.SearchType == "" {
+		request.SearchType = searchTypeSuggestions
+	}
+
 	switch request.SearchType {
-	case "fuzzy":
+	case searchTypeFuzzy:
 		return r.handleFuzzyResourceType(request)
-	case "namespace":
+	case searchTypeNamespace:
 		return r.handleNamespaceSearch(request, nbRequestContext)
-	case "label":
+	case searchTypeLabel:
 		return r.handleLabelSearch(request, nbRequestContext)
 	default:
+		// searchTypeSuggestions, plus any unrecognised value: the schema enum
+		// rejects unknown values before Call(), but stay permissive for callers
+		// that reach the tool with schema validation disabled.
 		return r.handleResourceSuggestions(request, nbRequestContext)
 	}
 }
