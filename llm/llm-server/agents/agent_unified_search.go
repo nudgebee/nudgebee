@@ -80,13 +80,13 @@ func isCrawlContentUsable(data string) bool {
 }
 
 func init() {
-	toolDescription := `A unified search agent that searches across internal docs, skills, and the web in parallel.`
-	toolInput := "A natural language query."
+	toolDescription := `Searches relevant internal docs, skills, and web sources in parallel, or crawls a provided URL directly. Use for internal runbooks, public documentation, error messages, and upstream issues.`
+	toolInput := "A natural language question or a URL with instructions about what to find."
 	toolOutput := "A comprehensive answer based on search results."
 
-	core.RegisterNBAgentFactoryAndTool(WebSearchAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterNBAgentFactoryAndToolWithAliases(WebSearchAgentName, func(accountId string) (core.NBAgent, error) {
 		return newUnifiedSearchAgent(accountId), nil
-	}, toolDescription, toolInput, toolOutput)
+	}, toolDescription, toolInput, toolOutput, "websearch_old")
 }
 
 func newUnifiedSearchAgent(accountId string) UnifiedSearchAgent {
@@ -108,7 +108,7 @@ func (a UnifiedSearchAgent) GetNameAliases() []string {
 }
 
 func (a UnifiedSearchAgent) GetDescription() string {
-	return `Searches across internal documentation, skills, and the web to answer user queries.`
+	return `Searches internal documentation, skills, and the web, or reads a provided URL, to answer user queries.`
 }
 
 func (a UnifiedSearchAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {

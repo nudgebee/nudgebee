@@ -432,16 +432,10 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
     notFor: 'Anything inside a cluster (Kubernetes Troubleshooter). Cloud control-plane questions (AWS / GCP / Azure Troubleshooter).',
   },
   websearch: {
-    brief: 'Searches internal documentation, skills and the web together to answer a question.',
-    whenToUse: '"What is our procedure for a failed node?", "do we have a runbook for this?", or any question where an internal answer may exist.',
-    why: 'It is the superset of the Web Researcher: it checks your own runbooks and documentation first, so an internal answer wins over a generic one.',
+    brief: 'Searches internal documentation, skills and the web, or reads a specific page, to answer a question.',
+    whenToUse: '"Do we have a runbook for this?", "is this Kubernetes error a known upstream bug?", "read this vendor page".',
+    why: 'Selects relevant sources and searches them in parallel. When sources conflict, it prioritizes internal documentation in the answer.',
     notFor: 'Live system state - it searches documents, not your infrastructure.',
-  },
-  websearch_old: {
-    brief: 'Searches the internet, or fetches the contents of a specific page, and answers from what it finds.',
-    whenToUse: '"What does this Kubernetes error mean?", "is this a known bug in version 1.29?", "read this vendor page".',
-    why: 'For error strings, CVEs, vendor docs and upstream issues that exist nowhere in your telemetry.',
-    notFor: 'Anything about your own systems - every other agent in this list is better at that.',
   },
   visualizer: {
     brief:
