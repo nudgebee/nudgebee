@@ -812,6 +812,7 @@ type Mutation {
   cloud_list_notification_targets(
     account_id: String!
     region: String
+    resource_id: String
   ): CloudNotificationTargetsResponse
 }
 

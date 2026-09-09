@@ -137,7 +137,10 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({
     if (!open || !targetVocab || !accountId || accountId === 'demo') {
       return undefined;
     }
-    if (normalizedProvider === 'aws' && !alarmRegion) {
+    // SNS topics are regional. The Optimise listing carries no region, so fall
+    // back to the resource id and let the server look the region up.
+    const resourceId = recommendation?.resource_id || '';
+    if (normalizedProvider === 'aws' && !alarmRegion && !resourceId) {
       setTargetsError("Couldn't determine the alarm's region to list SNS topics");
       return undefined;
     }
@@ -145,18 +148,24 @@ const AlarmCreationModal: React.FC<AlarmCreationModalProps> = ({
     setTargetsLoading(true);
     setTargetsError(null);
     setNotificationTargets([]);
-    apiCloudAccount.listNotificationTargets(accountId, normalizedProvider === 'aws' ? alarmRegion : undefined).then((result) => {
-      if (!active) {
-        return;
-      }
-      setNotificationTargets(result.targets);
-      setTargetsError(result.error || null);
-      setTargetsLoading(false);
-    });
+    apiCloudAccount
+      .listNotificationTargets(
+        accountId,
+        normalizedProvider === 'aws' ? alarmRegion : undefined,
+        normalizedProvider === 'aws' ? resourceId : undefined
+      )
+      .then((result) => {
+        if (!active) {
+          return;
+        }
+        setNotificationTargets(result.targets);
+        setTargetsError(result.error || null);
+        setTargetsLoading(false);
+      });
     return () => {
       active = false;
     };
-  }, [open, normalizedProvider, accountId, alarmRegion, targetVocab]);
+  }, [open, normalizedProvider, accountId, alarmRegion, targetVocab, recommendation?.resource_id]);
 
   const handleCreateAlarm = async () => {
     // Validate inputs
