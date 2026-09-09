@@ -493,6 +493,16 @@ func splunkEnterpriseSecret(value core.IntegrationConfigValue) (string, error) {
 // GetSplunkEnterpriseConfig retrieves and decrypts the Splunk Enterprise configuration
 // for an account.
 func GetSplunkEnterpriseConfig(sc *security.RequestContext, accountId string) (SplunkEnterpriseConfig, error) {
+	// ListIntegrationConfigs always scopes by tenant (and rejects an empty tenant
+	// outright), so this is not a cross-tenant guard. It guards the ACCOUNT: that
+	// query applies the cloud_account_id filter only when accountId is non-empty,
+	// so an empty one silently returns whichever Splunk Enterprise integration
+	// happens to come first in the tenant — connecting to another account's Splunk
+	// with another account's credentials, and reporting success.
+	if accountId == "" {
+		return SplunkEnterpriseConfig{}, fmt.Errorf("account_id is required to resolve a Splunk Enterprise integration")
+	}
+
 	integrationConfigs, err := core.ListIntegrationConfigs(sc, accountId, IntegrationSplunkEnterprise)
 	if err != nil {
 		return SplunkEnterpriseConfig{}, fmt.Errorf("failed to list Splunk Enterprise integration configs: %w", err)

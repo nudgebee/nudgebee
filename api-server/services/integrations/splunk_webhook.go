@@ -385,8 +385,10 @@ func splunkEventRuleAlertType(payloadString string) string {
 func createSplunkEventRule(sc *security.RequestContext, accountId, alertName, title, description, severityLabel, alertType string) {
 	// A rule needs a stable name to upsert against; without the saved-search name
 	// the only identifier left is the per-firing SID, which would create a new rule
-	// on every run.
-	if alertName == "" {
+	// on every run. accountId is required for the same reason it is in
+	// GetSplunkEnterpriseConfig: the rule is written against a cloud account, and an
+	// empty one would attach this rule to an arbitrary account within the tenant.
+	if accountId == "" || alertName == "" {
 		return
 	}
 
