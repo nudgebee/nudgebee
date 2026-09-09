@@ -136,7 +136,14 @@ function renderTableCell(kind: ColumnKind, value: string): React.ReactNode {
   }
 }
 
-const DashboardPanel: React.FC<Props> = ({
+/**
+ * Memoised: the dashboard re-renders on every keystroke in its toolbar and every
+ * time the editor opens or closes, and without this each of those re-rendered
+ * every panel — and every re-render handed Chart.js fresh arrays, so every chart
+ * on the page updated and rebuilt its legend for a change that touched none of
+ * them. Callers pass stable props (see SortablePanel) so the memo holds.
+ */
+const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   panel,
   accounts,
   variables,
@@ -148,7 +155,7 @@ const DashboardPanel: React.FC<Props> = ({
   sampleData,
   onEdit,
   actions,
-}) => {
+}) {
   /**
    * Narrowing is per PANEL and single-select: the options are exactly the accounts THIS panel is scoped to —
    * every account of the provider when it is type-scoped, or just the ones it names.
@@ -240,29 +247,15 @@ const DashboardPanel: React.FC<Props> = ({
     return undefined;
   };
 
-  const body = () => {
-    if (panel.type === 'text') {
-      return (
-        <Typography variant='body2' sx={{ whiteSpace: 'pre-wrap', color: ds.gray[600] }}>
-          {panel.content || ''}
-        </Typography>
-      );
-    }
-    if (error) {
-      return (
-        <Box sx={{ height: '100%' }} data-testid={`panel-error-${panel.id}`}>
-          <PanelState
-            tone={ERROR_TONE[error.kind]}
-            title={error.message}
-            icon={error.kind === 'filter' ? <FilterAltOutlinedIcon sx={{ fontSize: 18 }} /> : undefined}
-            action={errorAction(error.kind)}
-          />
-        </Box>
-      );
-    }
-    if (loading || !data) {
-      return <Skeleton height={CHART_HEIGHT} width='100%' />;
-    }
+  /*
+   * The drawing, rebuilt only when the data or the panel changes. The chart
+   * props below are new arrays each time this runs, and react-chartjs-2
+   * updates the chart whenever their identity changes — so a rebuild on an
+   * unrelated render (Edit pressed, the header's account filter opening) is a
+   * full chart update and legend rebuild, on every panel at once.
+   */
+  const drawing = React.useMemo(() => {
+    if (panel.type === 'text' || !data) return null;
     // A command datasource answers with a table, whatever the panel type says.
     if (data.table) {
       if (data.table.rows.length === 0) {
@@ -415,6 +408,32 @@ const DashboardPanel: React.FC<Props> = ({
           />
         );
     }
+  }, [panel, data]);
+
+  const body = () => {
+    if (panel.type === 'text') {
+      return (
+        <Typography variant='body2' sx={{ whiteSpace: 'pre-wrap', color: ds.gray[600] }}>
+          {panel.content || ''}
+        </Typography>
+      );
+    }
+    if (error) {
+      return (
+        <Box sx={{ height: '100%' }} data-testid={`panel-error-${panel.id}`}>
+          <PanelState
+            tone={ERROR_TONE[error.kind]}
+            title={error.message}
+            icon={error.kind === 'filter' ? <FilterAltOutlinedIcon sx={{ fontSize: 18 }} /> : undefined}
+            action={errorAction(error.kind)}
+          />
+        </Box>
+      );
+    }
+    if (loading || !data) {
+      return <Skeleton height={CHART_HEIGHT} width='100%' />;
+    }
+    return drawing;
   };
 
   return (
@@ -536,6 +555,6 @@ const DashboardPanel: React.FC<Props> = ({
       </Box>
     </Box>
   );
-};
+});
 
 export default DashboardPanel;

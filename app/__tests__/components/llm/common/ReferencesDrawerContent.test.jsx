@@ -50,3 +50,37 @@ describe('ReferencesDrawerContent knowledge_base rows', () => {
     expect(screen.queryByRole('link', { name: /open source page/i })).not.toBeInTheDocument();
   });
 });
+
+describe('ReferencesDrawerContent knowledge_base kinds', () => {
+  // Three writers persist reference_type 'knowledge_base': pre-step documents
+  // attributed to a KB, documents from collections with no KB row, and skills
+  // loaded mid-run. Before metadata.kind they rendered identically, so a
+  // conversation that injected no KB content still showed "contexts" and read
+  // as grounded.
+  const rows = [
+    { id: '1', type: 'knowledge_base', metadata: { kind: 'kb_document', name: 'Runbooks', subject: 'Restart procedure' } },
+    { id: '2', type: 'knowledge_base', metadata: { kind: 'nb_document', name: 'nudgebee_docs', subject: 'Playbook Catalog' } },
+    { id: '3', type: 'knowledge_base', metadata: { kind: 'skill', name: 'Golden_Signal_Dashboard' } },
+    {
+      id: '4',
+      type: 'knowledge_base',
+      metadata: { kind: 'account_document', name: 'Account documents', url: 'https://nudgebee.atlassian.net/wiki/spaces/SD/pages/164064' },
+    },
+    { id: '5', type: 'knowledge_base', metadata: { name: 'Legacy row, no kind' } },
+  ];
+
+  it('labels each kind distinctly instead of collapsing them', () => {
+    render(<ReferencesDrawerContent references={rows} />);
+    expect(screen.getAllByText('Knowledge Base').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('NB Doc').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Skill').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Confluence').length).toBeGreaterThan(0);
+  });
+
+  it('treats a row written before metadata.kind as a KB document', () => {
+    render(<ReferencesDrawerContent references={[rows[4]]} />);
+    expect(screen.getAllByText('Knowledge Base').length).toBeGreaterThan(0);
+    expect(screen.queryByText('NB Doc')).toBeNull();
+    expect(screen.queryByText('Skill')).toBeNull();
+  });
+});

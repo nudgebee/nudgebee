@@ -1,5 +1,5 @@
 import { Box, Typography } from '@mui/material';
-import { useEffect, useState, useCallback, useRef, useMemo, memo } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { useRouter } from 'next/router';
@@ -11,17 +11,11 @@ import recommendationApi from '@api1/recommendation';
 import { toast as snackbar } from '@ui/Toast';
 import { SeverityIcon, type SeverityLevel as DsSeverityLevel } from '@ui/SeverityIcon';
 import { Skeleton } from '@ui/Skeleton';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { DropdownMenu } from '@ui/DropdownMenu';
-import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
-import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
-import DoNotDisturbOnOutlinedIcon from '@mui/icons-material/DoNotDisturbOnOutlined';
 import CloseIcon from '@mui/icons-material/Close';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import OptimizeIcon from 'src/assets/images/home/optimize-icon-button.svg';
-import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
-import SafeIcon from '@shared/icons/SafeIcon';
-import MoreVertIcon from '@mui/icons-material/MoreVert';
+import { useTenantBranding } from '@hooks/useTenantBranding';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -29,7 +23,7 @@ import CopyButton from '@shared/buttons/CopyButton';
 import Tooltip, { TooltipBody, OverflowTooltip } from '@ui/Tooltip';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import DismissModal from './DismissModal';
-import { hasWriteAccess, hasPermission } from '@lib/auth';
+import TicketLink from '@shared/links/TicketLink';
 import { formatMemory } from '@lib/formatter';
 import ResolveModal from './ResolveModal';
 import CliCommandModal from './CliCommandModal';
@@ -40,14 +34,15 @@ import { CostCallout } from '@ui/CostCallout';
 import { Chip } from '@ui/Chip';
 import { safetyBandTone, safetyBandLabel } from './safetyBand';
 import SearchInput from '@ui/SearchInput';
-import CustomTicketLink from '@components/common/CustomTicketLink';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import RecommendationDetailPanel from './RecommendationDetailPanel';
+import ConfigRuleRollup from './ConfigRuleRollup';
+import RowActions from './RowActions';
 import { type SeverityLevel } from './SeverityBadge';
 import {
-  NON_SECURITY_CATEGORIES,
+  RECOMMENDATION_CATEGORIES,
   UPGRADE_PLANNER_RULES,
   DEFAULT_STATUS,
   CATEGORY_LABELS,
@@ -64,6 +59,8 @@ import {
   safeParseJSON,
   STATUS_FILTER_OPTIONS,
   dismissalLabel,
+  cardTabSx,
+  cardKeyDown,
   type SortField,
   type SortDirection,
 } from './utils';
@@ -150,7 +147,9 @@ const chipSkeletons = (count: number, width: number) =>
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-const WIDGET_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] as const;
+// Configuration is absent deliberately: it has its own tab, so a card here would
+// switch the list to a category this tab no longer queries.
+const WIDGET_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'K8sSpotRecommendation'] as const;
 
 function sumCategoryRows(rows: any[]): { count: number; savings: number } {
   let count = 0;
@@ -175,37 +174,6 @@ const WIDGET_CATEGORY_TOOLTIPS: Record<string, string> = {
   K8sSpotRecommendation: 'Workloads eligible for Spot/preemptible instances to reduce compute costs',
 };
 
-// Shared chrome for the clickable stat-card tabs: the active card carries the
-// same blue border + tint the Troubleshoot summary widgets use for their active
-// drill-down; zero-count cards render muted and inert.
-const cardTabSx = (pressed: boolean, muted: boolean) => ({
-  flex: 1,
-  minWidth: 0,
-  mt: 0,
-  padding: `${ds.space[3]} ${ds.space[4]}`,
-  ...(muted
-    ? { opacity: 0.5 }
-    : {
-        cursor: 'pointer',
-        // Stat and Chip pin their own `cursor: default`, which would otherwise leave
-        // the hand pointer showing only on the card's bare padding. `&&` outranks them.
-        '&& *': { cursor: 'pointer' },
-        transition: `border-color ${ds.motion.micro} ${ds.motion.ease}, background-color ${ds.motion.micro} ${ds.motion.ease}`,
-        // Re-assert the blue border on hover for the active card — the gray hover
-        // border would otherwise mask its highlight while hovering.
-        '&:hover': { borderColor: pressed ? ds.blue[400] : ds.gray[400] },
-      }),
-  ...(pressed ? { borderColor: ds.blue[400], backgroundColor: ds.blue[100] } : {}),
-});
-
-// Enter/Space activation so the card tabs work as buttons for keyboard users.
-const cardKeyDown = (activate: () => void) => (e: React.KeyboardEvent) => {
-  if (e.key === 'Enter' || e.key === ' ') {
-    e.preventDefault();
-    activate();
-  }
-};
-
 /** Parse a URL query param that may be a string or string[] into a string[] */
 const parseQueryArray = (param: string | string[] | undefined): string[] => {
   if (!param) {
@@ -214,7 +182,7 @@ const parseQueryArray = (param: string | string[] | undefined): string[] => {
   return Array.isArray(param) ? param : [param];
 };
 
-// Map between CustomTable2 header labels and backend sort fields.
+// Map between CustomTable header labels and backend sort fields.
 const HEADER_TO_SORT_FIELD: Record<string, SortField> = {
   Severity: 'severity',
   Category: 'category',
@@ -279,7 +247,7 @@ const SAVINGS_HEADER_TOOLTIP = (
 );
 
 // Column headers for the recommendations table. Sortable columns carry
-// `sortEnabled` so CustomTable2 renders the sort affordance. Safety sits 5th
+// `sortEnabled` so CustomTable renders the sort affordance. Safety sits 5th
 // (after Category) so severity → resource → recommendation read first. Safety is
 // not sortable — safety_band is a text band, so an alphabetical sort isn't a
 // meaningful "safest first" ordering.
@@ -338,104 +306,22 @@ const getTicketSourceFromCloudProvider = (cloudProvider: string | undefined): st
   }
 };
 
-interface RowActionsProps {
-  rowId: string;
-  rec: any;
-  ticketId: string;
-  assistantName: string | undefined;
-  onAskNubi: (rec: any) => void;
-  onResolve: (rec: any) => void;
-  onCreateTicket: (rec: any) => void;
-  onCopyCli: (rec: any) => void;
-  onDismiss: (rec: any) => void;
+interface OptimizeNewPageProps {
+  /**
+   * Pins the page to a single category and hides the category cards, so one tab
+   * can present one category with the same table, filters, detail panel and
+   * actions the Recommendations tab uses. The Configuration tab is this page
+   * locked to `Configuration`; the Recommendations tab passes nothing and covers
+   * the savings-bearing categories.
+   */
+  lockedCategory?: string;
 }
 
-const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli, onDismiss }: RowActionsProps) => {
-  const showResolve = rec.rule_name === 'pod_right_sizing' && hasWriteAccess(rec.account_id);
-  const showCopyCli = rec.rule_name === 'pod_right_sizing';
-  // Only offer what the backend legality matrix accepts: dismiss from Open,
-  // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive) get
-  // no menu entry rather than a guaranteed error toast.
-  const canDismiss = hasWriteAccess(rec.account_id) && (!rec.status || rec.status === 'Open' || rec.status === 'Dismissed');
-  // Creating a ticket needs write access to the row's account OR the
-  // tickets:Write custom-role grant (tickets_create → tickets:Write). Disabled
-  // rather than dropped so an existing ticket id stays readable.
-  const canCreateTicket = hasWriteAccess(rec.account_id) || hasPermission('tickets', 'Write');
-
-  const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
-    {
-      id: `action-ticket-${rowId}`,
-      label: ticketId ? `Ticket: ${ticketId}` : 'Create ticket',
-      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
-      onSelect: () => onCreateTicket(rec),
-      disabled: !!ticketId || !canCreateTicket,
-    },
-    ...(canDismiss
-      ? [
-          {
-            id: `action-dismiss-${rowId}`,
-            label: rec.status === 'Dismissed' ? 'Reactivate' : 'Dismiss / snooze',
-            icon: <DoNotDisturbOnOutlinedIcon sx={{ fontSize: 16 }} />,
-            onSelect: () => onDismiss(rec),
-          },
-        ]
-      : []),
-    ...(showCopyCli
-      ? [
-          {
-            id: `action-copy-cli-${rowId}`,
-            label: 'Copy CLI command',
-            icon: <ContentCopyOutlinedIcon sx={{ fontSize: 16 }} />,
-            onSelect: () => onCopyCli(rec),
-          },
-        ]
-      : []),
-  ];
-
-  return (
-    <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1], justifyContent: 'flex-end' }}>
-      {showResolve && (
-        <Tooltip title='Optimize' placement='top'>
-          <span>
-            <Button
-              tone='ghost'
-              size='xs'
-              composition='icon-only'
-              icon={<SafeIcon src={OptimizeIcon} alt='' width={16} height={16} />}
-              aria-label='Optimize'
-              id={`action-resolve-${rowId}`}
-              onClick={() => onResolve(rec)}
-            />
-          </span>
-        </Tooltip>
-      )}
-      <Tooltip title={`Ask ${assistantName || 'Nubi'}`} placement='top'>
-        <span>
-          <Button
-            tone='ghost'
-            size='xs'
-            composition='icon-only'
-            icon={<SafeIcon src={getNubiIconUrl()} alt='' width={16} height={16} />}
-            aria-label={`Ask ${assistantName || 'Nubi'}`}
-            id={`action-ask-nubi-${rowId}`}
-            onClick={() => onAskNubi(rec)}
-          />
-        </span>
-      </Tooltip>
-      <DropdownMenu
-        align='end'
-        size='sm'
-        items={menuItems}
-        trigger={
-          <Button tone='ghost' size='xs' composition='icon-only' icon={<MoreVertIcon />} aria-label='More actions' id={`action-menu-${rowId}`} />
-        }
-      />
-    </Box>
-  );
-});
-RowActions.displayName = 'RowActions';
-
-const OptimizeNewPage = () => {
+const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
+  // Everything this page counts and queries when no category is selected. A
+  // locked tab sees only its own category; the Recommendations tab sees the
+  // savings-bearing ones, Configuration having moved to its own tab.
+  const pageCategories = useMemo(() => (lockedCategory ? [lockedCategory] : RECOMMENDATION_CATEGORIES), [lockedCategory]);
   const router = useRouter();
   const routerRef = useRef(router);
   routerRef.current = router;
@@ -489,7 +375,9 @@ const OptimizeNewPage = () => {
     return {
       severity: severityFromUrl.length > 0 ? severityFromUrl : DEFAULT_SEVERITY,
       account: parseQueryArray(router.query.account),
-      category: parseQueryArray(router.query.category),
+      // A locked tab owns its category outright — a stale ?category= from an old
+      // link cannot select a different one out from under it.
+      category: lockedCategory ? [lockedCategory] : parseQueryArray(router.query.category),
       search: (router.query.search as string) || '',
       safety: parseQueryArray(router.query.safety),
       rules: parseQueryArray(router.query.rules),
@@ -498,6 +386,17 @@ const OptimizeNewPage = () => {
       lastSeen: (router.query.seen as string) || '',
     };
   });
+
+  // Configuration findings are emitted per resource, so the flat list runs to
+  // thousands of rows for ~90 checks and carries no savings to sort on. On that
+  // card the check is the unit worth reading, so the list rolls up by rule until
+  // the reader picks one — which drops back into the ordinary filtered table,
+  // keeping its detail panel, actions and pagination. Declared here because the
+  // table's fetch effect below skips its query while the rollup is showing.
+  // True whenever the list is scoped to Configuration alone — on its own tab, or
+  // via the Config card before the tab existed.
+  const isConfigurationOnly = filters.category.length === 1 && filters.category[0] === 'Configuration';
+  const showConfigRollup = isConfigurationOnly && filters.rules.length === 0;
 
   // Local search input state — typed value, not yet applied. Mirrors ManualInvestigated pattern.
   const [searchInput, setSearchInput] = useState((router.query.search as string) || '');
@@ -637,7 +536,7 @@ const OptimizeNewPage = () => {
       const query: any = {};
 
       // No category card selected → all optimize categories.
-      query.category = merged.category.length > 0 ? merged.category : NON_SECURITY_CATEGORIES;
+      query.category = merged.category.length > 0 ? merged.category : pageCategories;
       query.status = merged.status.length > 0 ? merged.status : DEFAULT_STATUS;
       query.excludeRuleName = UPGRADE_PLANNER_RULES;
 
@@ -650,13 +549,18 @@ const OptimizeNewPage = () => {
       }
 
       if (merged.search) {
-        query.accountObjectId = merged.search;
+        query.search = merged.search;
       }
 
       if (merged.safety.length > 0) {
         query.safetyBand = merged.safety;
       }
-      Object.assign(query, savingsBucketToParams(merged.savings), lastSeenBucketToParams(merged.lastSeen));
+      // Savings is not a dimension of a Configuration-only list — the category is
+      // $0, which is why the control is hidden there. A value carried over from
+      // another tab or an old link would otherwise empty the list with nothing
+      // visible to clear.
+      const configurationOnly = merged.category.length === 1 && merged.category[0] === 'Configuration';
+      Object.assign(query, savingsBucketToParams(configurationOnly ? '' : merged.savings), lastSeenBucketToParams(merged.lastSeen));
 
       return query;
     },
@@ -687,7 +591,7 @@ const OptimizeNewPage = () => {
       try {
         const allRows = await recommendationApi.getK8sRecommendationSummaryByRuleName({
           accountId,
-          category: NON_SECURITY_CATEGORIES as any,
+          category: pageCategories as any,
           excludeRuleName: UPGRADE_PLANNER_RULES,
           status: DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
@@ -733,7 +637,7 @@ const OptimizeNewPage = () => {
     setSeverityLoading(true);
 
     const accountId = filters.account.length > 0 ? filters.account : '';
-    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
+    const activeCategories = filters.category.length > 0 ? filters.category : pageCategories;
 
     const fetchSeverityRows = async () => {
       try {
@@ -741,11 +645,11 @@ const OptimizeNewPage = () => {
           accountId,
           category: activeCategories as any,
           excludeRuleName: UPGRADE_PLANNER_RULES,
-          accountObjectId: filters.search || undefined,
+          search: filters.search || undefined,
           status: filters.status.length > 0 ? filters.status : DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
           safetyBand: filters.safety.length > 0 ? filters.safety : undefined,
-          ...savingsBucketToParams(filters.savings),
+          ...savingsBucketToParams(isConfigurationOnly ? '' : filters.savings),
           ...lastSeenBucketToParams(filters.lastSeen),
         });
         if (cancelled) {
@@ -786,7 +690,7 @@ const OptimizeNewPage = () => {
     // Same category scoping as the table (buildTableQuery): the card wins; else a
     // category-scoped rule selection tightens the bands to those categories.
     const activeCategories =
-      filters.category.length > 0 ? filters.category : ruleFilter.categories.length > 0 ? ruleFilter.categories : NON_SECURITY_CATEGORIES;
+      filters.category.length > 0 ? filters.category : ruleFilter.categories.length > 0 ? ruleFilter.categories : pageCategories;
 
     const fetchSafetyRows = async () => {
       try {
@@ -795,10 +699,10 @@ const OptimizeNewPage = () => {
           category: activeCategories,
           ruleName: ruleFilter.ruleNames.length > 0 ? ruleFilter.ruleNames : undefined,
           excludeRuleName: UPGRADE_PLANNER_RULES,
-          accountObjectId: filters.search || undefined,
+          search: filters.search || undefined,
           status: filters.status.length > 0 ? filters.status : DEFAULT_STATUS,
           severity: filters.severity.length > 0 ? [...filters.severity] : [...SEVERITY_ORDER],
-          ...savingsBucketToParams(filters.savings),
+          ...savingsBucketToParams(isConfigurationOnly ? '' : filters.savings),
           ...lastSeenBucketToParams(filters.lastSeen),
         });
         if (cancelled) {
@@ -875,8 +779,14 @@ const OptimizeNewPage = () => {
     setTableTotal(count);
   }, []);
 
-  // Auto-fetch with cancellation guard on dependency change
+  // Auto-fetch with cancellation guard on dependency change. Skipped while the
+  // rollup is showing — the per-resource rows are not rendered there, and every
+  // filter change would otherwise pay for a page of them.
   useEffect(() => {
+    if (showConfigRollup) {
+      setTableLoading(false);
+      return;
+    }
     let cancelled = false;
     setTableLoading(true);
 
@@ -896,7 +806,7 @@ const OptimizeNewPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [buildTableQuery, applyTableResult]);
+  }, [buildTableQuery, applyTableResult, showConfigRollup]);
 
   // Manual re-fetch (e.g. after ticket creation) — no cancellation needed since it's user-initiated
   const fetchTableData = useCallback(async () => {
@@ -1199,6 +1109,8 @@ const OptimizeNewPage = () => {
     setDetailOpen(true);
   };
 
+  const configRollupAccountIds = useMemo(() => (filters.account.length > 0 ? filters.account : Object.keys(accounts)), [filters.account, accounts]);
+
   // Notification deep link: /optimise?id=<recommendation_id>#recommendations opens
   // that recommendation's detail panel. Fetched by id, independent of the table's
   // filters and default status, so closed or filtered-out items still open. Tracks
@@ -1219,6 +1131,21 @@ const OptimizeNewPage = () => {
         });
         const rec = result?.data?.recommendation?.[0];
         if (rec) {
+          // The link's hash predates the Configuration tab — producers still
+          // write #recommendations for every category — so the recommendation's
+          // own category decides which tab should host it. Hand off by rewriting
+          // the hash rather than by setting the tab directly: the tab strip
+          // parses the hash itself and would immediately put it back. ?id= is
+          // kept, so the tab that takes over resolves the same recommendation
+          // and opens its panel.
+          const ownerFragment = rec.category === 'Configuration' ? 'configuration' : 'recommendations';
+          const hostedHere = (lockedCategory ? 'configuration' : 'recommendations') === ownerFragment;
+          if (!hostedHere) {
+            routerRef.current.replace({ pathname: routerRef.current.pathname, query: routerRef.current.query, hash: ownerFragment }, undefined, {
+              shallow: true,
+            });
+            return;
+          }
           setSelectedRec(rec);
           setDetailInitialTab(0);
           setDetailOpen(true);
@@ -1267,7 +1194,7 @@ const OptimizeNewPage = () => {
     return description;
   };
 
-  // CustomTable2 sort: map header label → backend sort field.
+  // CustomTable sort: map header label → backend sort field.
   const handleTableSort = useCallback((nextSort: { name: string; order: string }) => {
     const field = HEADER_TO_SORT_FIELD[nextSort.name];
     if (!field) return;
@@ -1276,7 +1203,7 @@ const OptimizeNewPage = () => {
     setPage(0);
   }, []);
 
-  // CustomTable2 pagination: 1-based page; same callback handles page + pageSize.
+  // CustomTable pagination: 1-based page; same callback handles page + pageSize.
   const handlePaginationChange = useCallback(
     (nextPage: number, pageSize: number) => {
       if (pageSize !== rowsPerPage) {
@@ -1289,7 +1216,7 @@ const OptimizeNewPage = () => {
     [rowsPerPage]
   );
 
-  // Current sort in CustomTable2 shape.
+  // Current sort in CustomTable shape.
   const sortBy = useMemo(() => ({ name: SORT_FIELD_TO_HEADER[sortField], order: sortDirection }), [sortField, sortDirection]);
 
   // The "Sort by" dropdown reflects the shared sort state: highlight the preset
@@ -1312,8 +1239,6 @@ const OptimizeNewPage = () => {
     accountsRef.current = accounts;
   }, [accounts]);
 
-  // Reused by both the row action menu and the detail panel.
-  // Dismiss/snooze opens the modal; a Dismissed rec reactivates directly.
   const handleDismissAction = useCallback(
     (rec: any) => {
       if (rec.status !== 'Dismissed') {
@@ -1376,7 +1301,26 @@ const OptimizeNewPage = () => {
 
   const { assistantName } = useTenantBranding();
 
-  // CustomTable2 row data. Each row is an array of `{ component }` cell objects,
+  // Reused by both the row action menu and the detail panel.
+  // Dismiss/snooze opens the modal; a Dismissed rec reactivates directly.
+  // Memoised because ConfigRuleFindings lists it in the dependency array of the
+  // useMemo that builds its rows: an inline literal is a new reference every
+  // render of this page, which would rebuild the whole findings table each time.
+  // The setters are useState setters and stable, so only the two callbacks and
+  // the branding string belong in the deps.
+  const configRowActions = useMemo(
+    () => ({
+      assistantName,
+      onAskNubi: askNubiAboutRec,
+      onResolve: setResolveModalRec,
+      onCreateTicket: setTicketModalRec,
+      onCopyCli: setCliModalRec,
+      onDismiss: handleDismissAction,
+    }),
+    [assistantName, askNubiAboutRec, handleDismissAction]
+  );
+
+  // CustomTable row data. Each row is an array of `{ component }` cell objects,
   // one per TABLE_HEADERS column, holding the same content the DS Table columns
   // rendered. The first cell carries `drilldownQuery` so `onRowClick` receives
   // the recommendation. Closes over handlers + branding.
@@ -1416,7 +1360,7 @@ const OptimizeNewPage = () => {
                 )}
                 {row.ticketId && (
                   <Box>
-                    <CustomTicketLink ticketURL={row.ticketUrl} ticketID={row.ticketId} />
+                    <TicketLink ticketURL={row.ticketUrl} ticketID={row.ticketId} />
                   </Box>
                 )}
                 {row.status === 'Dismissed' && (
@@ -1528,164 +1472,159 @@ const OptimizeNewPage = () => {
 
   return (
     <Box sx={{ p: '0px' }} data-testid='optimize-new-page'>
-      {/* Summary widgets */}
-      <Box sx={{ display: 'flex', gap: ds.space[3], mt: ds.space[4] }}>
-        <WidgetCard
-          id='optimize-card-savings'
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            mt: 0,
-            padding: `${ds.space[3]} ${ds.space[4]}`,
-          }}
-        >
-          <Stat
-            size='md'
-            label='Total Savings'
-            info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
-            value={cardsLoading ? '…' : <CostCallout size='lg' tone='high-savings' value={totalSavings} period='/ mo' />}
-          />
-        </WidgetCard>
-        <WidgetCard
-          id='optimize-card-all'
-          role='button'
-          tabIndex={0}
-          aria-pressed={filters.category.length === 0}
-          data-testid='optimize-card-all'
-          onClick={handleAllCardClick}
-          onKeyDown={cardKeyDown(handleAllCardClick)}
-          sx={cardTabSx(filters.category.length === 0, false)}
-        >
-          <Stat
-            size='md'
-            label='All Recommendations'
-            info={{ tooltip: 'Total number of active optimization recommendations across all categories. Click to show every category.' }}
-            value={
-              cardsLoading ? (
-                '…'
-              ) : (
-                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
-                  <Box component='span'>{totalCount.toLocaleString()}</Box>
-                  {(criticalCount > 0 || highCount > 0) && (
-                    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
-                      {criticalCount > 0 && (
-                        <Chip size='2xs' tone='critical' dot aria-label={`${criticalCount} critical`}>
-                          {criticalCount.toLocaleString()}
-                        </Chip>
-                      )}
-                      {highCount > 0 && (
-                        <Chip size='2xs' tone='warning' dot aria-label={`${highCount} high`}>
-                          {highCount.toLocaleString()}
-                        </Chip>
-                      )}
-                    </Box>
-                  )}
-                </Box>
-              )
-            }
-          />
-        </WidgetCard>
+      {/* Summary widgets. A locked tab is already one category, so the cards —
+          which exist to switch between categories — have nothing to offer. */}
+      {!lockedCategory && (
+        <Box sx={{ display: 'flex', gap: ds.space[3], mt: ds.space[4] }}>
+          <WidgetCard
+            id='optimize-card-savings'
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              mt: 0,
+              padding: `${ds.space[3]} ${ds.space[4]}`,
+            }}
+          >
+            <Stat
+              size='md'
+              label='Total Savings'
+              info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
+              value={cardsLoading ? '…' : <CostCallout size='lg' tone='high-savings' value={totalSavings} period='/ mo' />}
+            />
+          </WidgetCard>
+          <WidgetCard
+            id='optimize-card-all'
+            role='button'
+            tabIndex={0}
+            aria-pressed={filters.category.length === 0}
+            data-testid='optimize-card-all'
+            onClick={handleAllCardClick}
+            onKeyDown={cardKeyDown(handleAllCardClick)}
+            sx={cardTabSx(filters.category.length === 0, false)}
+          >
+            <Stat
+              size='md'
+              label='All Recommendations'
+              info={{ tooltip: 'Total number of active optimization recommendations across all categories. Click to show every category.' }}
+              value={
+                cardsLoading ? (
+                  '…'
+                ) : (
+                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+                    <Box component='span'>{totalCount.toLocaleString()}</Box>
+                    {(criticalCount > 0 || highCount > 0) && (
+                      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+                        {criticalCount > 0 && (
+                          <Chip size='2xs' tone='critical' dot aria-label={`${criticalCount} critical`}>
+                            {criticalCount.toLocaleString()}
+                          </Chip>
+                        )}
+                        {highCount > 0 && (
+                          <Chip size='2xs' tone='warning' dot aria-label={`${highCount} high`}>
+                            {highCount.toLocaleString()}
+                          </Chip>
+                        )}
+                      </Box>
+                    )}
+                  </Box>
+                )
+              }
+            />
+          </WidgetCard>
 
-        {WIDGET_CATEGORIES.map((cat) => {
-          const catCount = categoryCounts[cat]?.count || 0;
-          const catSavings = categoryCounts[cat]?.savings || 0;
-          const pressed = filters.category.length === 1 && filters.category[0] === cat;
-          const muted = catCount === 0 && !pressed && !cardsLoading;
-          const card = (
-            <WidgetCard
-              key={cat}
-              role='button'
-              tabIndex={muted ? -1 : 0}
-              aria-pressed={pressed}
-              aria-disabled={muted || undefined}
-              data-testid={`optimize-card-${cat.toLowerCase()}`}
-              onClick={muted ? undefined : () => handleCategoryCardClick(cat)}
-              onKeyDown={muted ? undefined : cardKeyDown(() => handleCategoryCardClick(cat))}
-              sx={cardTabSx(pressed, muted)}
-            >
-              <Stat
-                size='md'
-                label={WIDGET_CATEGORY_LABELS[cat]}
-                info={{ tooltip: `${WIDGET_CATEGORY_TOOLTIPS[cat]} Click to filter the list; click again to unselect.` }}
-                value={
-                  cardsLoading ? (
-                    '…'
-                  ) : (
-                    <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[2] }}>
-                      <Box component='span'>{catCount.toLocaleString()}</Box>
-                      {catSavings > 0 && <CostCallout size='sm' tone='low-savings' value={catSavings} period='/ mo' />}
-                    </Box>
-                  )
-                }
-              />
-            </WidgetCard>
-          );
-          return muted ? (
-            <Tooltip key={cat} title='No open recommendations' placement='top'>
-              {card}
-            </Tooltip>
-          ) : (
-            card
-          );
-        })}
-
-        <WidgetCard
-          id='optimize-card-savings'
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            mt: 0,
-            padding: `${ds.space[3]} ${ds.space[4]}`,
-          }}
-        >
-          <Stat
-            size='md'
-            label='Total Savings'
-            info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
-            value={cardsLoading ? '…' : <CostCallout size='md' tone='high-savings' value={totalSavings} period='/ mo' />}
-          />
-        </WidgetCard>
-      </Box>
+          {WIDGET_CATEGORIES.map((cat) => {
+            const catCount = categoryCounts[cat]?.count || 0;
+            const catSavings = categoryCounts[cat]?.savings || 0;
+            const pressed = filters.category.length === 1 && filters.category[0] === cat;
+            const muted = catCount === 0 && !pressed && !cardsLoading;
+            const card = (
+              <WidgetCard
+                key={cat}
+                role='button'
+                tabIndex={muted ? -1 : 0}
+                aria-pressed={pressed}
+                aria-disabled={muted || undefined}
+                data-testid={`optimize-card-${cat.toLowerCase()}`}
+                onClick={muted ? undefined : () => handleCategoryCardClick(cat)}
+                onKeyDown={muted ? undefined : cardKeyDown(() => handleCategoryCardClick(cat))}
+                sx={cardTabSx(pressed, muted)}
+              >
+                <Stat
+                  size='md'
+                  label={WIDGET_CATEGORY_LABELS[cat]}
+                  info={{ tooltip: `${WIDGET_CATEGORY_TOOLTIPS[cat]} Click to filter the list; click again to unselect.` }}
+                  value={
+                    cardsLoading ? (
+                      '…'
+                    ) : (
+                      <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[2] }}>
+                        <Box component='span'>{catCount.toLocaleString()}</Box>
+                        {catSavings > 0 && <CostCallout size='sm' tone='low-savings' value={catSavings} period='/ mo' />}
+                      </Box>
+                    )
+                  }
+                />
+              </WidgetCard>
+            );
+            return muted ? (
+              <Tooltip key={cat} title='No open recommendations' placement='top'>
+                {card}
+              </Tooltip>
+            ) : (
+              card
+            );
+          })}
+        </Box>
+      )}
 
       <ListingLayout id='optimize-recommendations' sx={{ mt: ds.space[4] }}>
         <ListingLayout.Toolbar
           sx={{ padding: `${ds.space[3]} ${ds.space[4]}` }}
           actions={
             <>
-              <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], fontWeight: ds.weight.medium }}>Sort by</Typography>
-                <DropdownMenu
-                  align='end'
+              {/* The presets sort the per-resource list; the rollup is ordered by
+                  blast radius, so the control has nothing to act on there. */}
+              {!showConfigRollup && (
+                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], fontWeight: ds.weight.medium }}>Sort by</Typography>
+                  <DropdownMenu
+                    align='end'
+                    size='sm'
+                    items={SORT_ORDER.map((value) => ({
+                      id: `optimize-sort-${value}`,
+                      label: SORT_PRESETS[value].label,
+                      active: activeSortValue === value,
+                      onSelect: () => handleSortOptionSelect(value),
+                    }))}
+                    trigger={
+                      <Button
+                        id='optimize-sort-trigger'
+                        tone='secondary'
+                        size='sm'
+                        icon={<KeyboardArrowDownIcon />}
+                        iconPlacement='end'
+                        aria-label='Sort recommendations'
+                      >
+                        {sortTriggerLabel}
+                      </Button>
+                    }
+                  />
+                </Box>
+              )}
+              {/* The export is built from the per-resource rows, which the rollup
+                  does not load — exporting them here would hand the reader a file
+                  that does not match the checks on screen. Open a check first. */}
+              {!showConfigRollup && (
+                <Button
+                  id='optimize-download'
+                  tone='secondary'
                   size='sm'
-                  items={SORT_ORDER.map((value) => ({
-                    id: `optimize-sort-${value}`,
-                    label: SORT_PRESETS[value].label,
-                    active: activeSortValue === value,
-                    onSelect: () => handleSortOptionSelect(value),
-                  }))}
-                  trigger={
-                    <Button
-                      id='optimize-sort-trigger'
-                      tone='secondary'
-                      size='sm'
-                      icon={<KeyboardArrowDownIcon />}
-                      iconPlacement='end'
-                      aria-label='Sort recommendations'
-                    >
-                      {sortTriggerLabel}
-                    </Button>
-                  }
+                  composition='icon-only'
+                  icon={<FileDownloadOutlinedIcon />}
+                  aria-label='Download recommendations as CSV'
+                  onClick={handleDownloadCsv}
                 />
-              </Box>
-              <Button
-                id='optimize-download'
-                tone='secondary'
-                size='sm'
-                composition='icon-only'
-                icon={<FileDownloadOutlinedIcon />}
-                aria-label='Download recommendations as CSV'
-                onClick={handleDownloadCsv}
-              />
+              )}
             </>
           }
         >
@@ -1700,7 +1639,7 @@ const OptimizeNewPage = () => {
                 return next;
               });
             }}
-            onEnterPress={() => handleFiltersChange({ ...filters, search: searchInput })}
+            onEnterPress={() => handleFiltersChange({ ...filters, search: searchInput.trim() })}
             onClear={() => {
               setSearchInput('');
               handleFiltersChange({ ...filters, search: '' });
@@ -1734,16 +1673,20 @@ const OptimizeNewPage = () => {
               handleRulesChange((Array.isArray(items) ? items : []).map((it: any) => it.value));
             }}
           />
-          <FilterDropdown
-            id='optimize-savings-filter'
-            label='Savings'
-            options={savingsFilterOptions}
-            value={savingsFilterOptions.find((o) => o.value === filters.savings && o.value !== '') || null}
-            onSelect={(_e: any, item: any) => {
-              const next = (item && typeof item === 'object' ? item.value : item) || '';
-              handleFiltersChange({ ...filters, savings: next });
-            }}
-          />
+          {/* Configuration findings carry no savings, so every bucket here would
+              empty the list. Offered only where there is money to filter on. */}
+          {!isConfigurationOnly && (
+            <FilterDropdown
+              id='optimize-savings-filter'
+              label='Savings'
+              options={savingsFilterOptions}
+              value={savingsFilterOptions.find((o) => o.value === filters.savings && o.value !== '') || null}
+              onSelect={(_e: any, item: any) => {
+                const next = (item && typeof item === 'object' ? item.value : item) || '';
+                handleFiltersChange({ ...filters, savings: next });
+              }}
+            />
+          )}
           <FilterDropdown
             id='optimize-last-seen-filter'
             label='Last seen'
@@ -1884,25 +1827,36 @@ const OptimizeNewPage = () => {
         </Box>
 
         <ListingLayout.Body>
-          <CustomTable2
-            id='optimize-recommendations-table'
-            headers={TABLE_HEADERS}
-            tableData={tableData}
-            loading={tableLoading}
-            rowsPerPage={rowsPerPage}
-            totalRows={tableTotal}
-            pageNumber={page + 1}
-            onPageChange={handlePaginationChange}
-            sort={sortBy}
-            onSortChange={handleTableSort}
-            onRowClick={(query: any) => query?.rec && handleRowClick(query.rec)}
-            showEmptyStateText
-            emptyStateText={
-              hasActiveFilter
-                ? 'No recommendations match these filters. Try clearing one of the filters to see more results.'
-                : 'No active recommendations. Your infrastructure looks well-optimised — check back after the next scan.'
-            }
-          />
+          {showConfigRollup ? (
+            <ConfigRuleRollup
+              accountId={configRollupAccountIds}
+              status={filters.status.length > 0 ? filters.status : DEFAULT_STATUS}
+              severity={filters.severity}
+              accounts={accounts}
+              onSelectRecommendation={handleRowClick}
+              rowActions={configRowActions}
+            />
+          ) : (
+            <CustomTable
+              id='optimize-recommendations-table'
+              headers={TABLE_HEADERS}
+              tableData={tableData}
+              loading={tableLoading}
+              rowsPerPage={rowsPerPage}
+              totalRows={tableTotal}
+              pageNumber={page + 1}
+              onPageChange={handlePaginationChange}
+              sort={sortBy}
+              onSortChange={handleTableSort}
+              onRowClick={(query: any) => query?.rec && handleRowClick(query.rec)}
+              showEmptyStateText
+              emptyStateText={
+                hasActiveFilter
+                  ? 'No recommendations match these filters. Try clearing one of the filters to see more results.'
+                  : 'No active recommendations. Your infrastructure looks well-optimised — check back after the next scan.'
+              }
+            />
+          )}
         </ListingLayout.Body>
       </ListingLayout>
 

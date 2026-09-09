@@ -4,6 +4,7 @@
 >
 > - **[Architecture Decisions](docs/architecture-decisions.md)** — the living "why-behind-X" log; reasoning behind structural choices we don't want to re-litigate.
 > - **[RPC action naming convention](docs/rpc-action-naming.md)** — the verb taxonomy every new action in `app/src/lib/actions.yaml` must follow.
+> - **[Writing PRs and issues people actually read](docs/writing-for-readers.md)** — the style contract for every PR body, issue, and review comment: one screen above the fold, reader-side verification steps, everything else demoted into a `<details>` block.
 > - **[Database Migrations & RPC Actions](#database-migrations--rpc-actions)** — Atlas engine, the migration scaffolding script, and why `CREATE INDEX CONCURRENTLY` and batched data migrations must be run out-of-band.
 > - **Build commands** — the per-service `make validate` / `npm run lint2` flows.
 > - **[Definition of Done](#2-definition-of-done)** — what "done" means here beyond green unit tests.
@@ -36,6 +37,7 @@ These principles apply to every agent (Claude, Gemini, human) working in this re
 - **Validation passes locally** for every affected service ([Build Commands](#build-commands)) — before commit, always.
 - **Cross-cutting changes ship complete.** If the change threads something through many places — a payload field, trace/log context, a rename, an API contract — enumerate every producer/consumer/call site with a sweep (grep) *before* opening the PR, and cover them all in that PR. Do not ship the happy path and discover the remaining call sites one follow-up fix at a time.
 - **Behavior was observed, not assumed.** For anything with cross-service runtime surface, exercise the affected flow once (local run, e2e test, or dev environment) and put the evidence — command + output, event id, screenshot — in the PR body. Green unit tests prove nothing broke; they don't prove the change does what it claims.
+- **Someone else can verify it.** The PR says, in reader-side steps, how a reviewer or QA confirms the change — not just which commands the author ran. If the change has no observable surface, it says that in one line. Written to [`docs/writing-for-readers.md`](docs/writing-for-readers.md), which also caps the PR body at one screen above the fold.
 - **Feature flags ship in the first PR** of a risky feature, not retrofitted after the incident.
 - **The commit type is honest.** `fix` repairs a defect; new capability is `feat` even when it closes a gap. Metrics, release notes, and future churn analysis depend on this.
 - **One logical change = one PR.** Don't split one change into many same-day PRs; batch mechanical work (dependency bumps, version bumps) instead of one PR each.

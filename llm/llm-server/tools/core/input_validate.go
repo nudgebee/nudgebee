@@ -19,6 +19,9 @@ func MissingRequiredFields(tool NBTool, input string) []string {
 	if tool == nil {
 		return nil
 	}
+	if normalizer, ok := tool.(SchemaValidationInputNormalizer); ok {
+		input = normalizer.NormalizeInputForSchemaValidation(input)
+	}
 	schema := tool.InputSchema()
 	if len(schema.Required) == 0 {
 		return nil
@@ -78,6 +81,9 @@ func ParseNBToolCallRequestFromInput(input string) NBToolCallRequest {
 func ValidateToolInput(tool NBTool, input string) *string {
 	if tool == nil {
 		return nil
+	}
+	if normalizer, ok := tool.(SchemaValidationInputNormalizer); ok {
+		input = normalizer.NormalizeInputForSchemaValidation(input)
 	}
 	schema := tool.InputSchema()
 	if len(schema.Properties) == 0 && len(schema.Required) == 0 && len(schema.RequiredOneOf) == 0 {

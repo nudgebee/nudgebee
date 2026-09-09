@@ -1,3 +1,12 @@
+{{- if .Values.branding.enabled }}
+{{- range $host, $slug := .Values.branding.hostMap }}
+{{- $known := false }}
+{{- range $.Values.branding.tenants }}{{- if eq .slug $slug }}{{- $known = true }}{{- end }}{{- end }}
+{{- if not $known }}
+{{- fail (printf "branding.hostMap[%s] selects tenant %q, which has no entry in branding.tenants — its kit would not be mounted and the host would silently render Nudgebee branding." $host $slug) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,10 +64,28 @@ spec:
             - configMapRef:
                 name: {{ include "app.fullname" . }}-extra-env
             {{- end }}
-          {{- if .Values.statusNotice.configMapName }}
+          {{- if or .Values.statusNotice.configMapName (and .Values.branding.enabled (or .Values.branding.defaultTenant .Values.branding.hostMap)) }}
           env:
+            {{- if .Values.statusNotice.configMapName }}
             - name: STATUS_NOTICE_FILE
               value: /etc/nudgebee/status/notice.json
+            {{- end }}
+            {{- if .Values.branding.enabled }}
+            {{- if .Values.branding.defaultTenant }}
+            # Read by loadBrandingFile() relative to process.cwd()/public, i.e.
+            # /app/public/branding/<tenant>/theme.json — the mount below. Applies
+            # to every host with no branding.hostMap entry.
+            - name: TENANT_BRANDING_FILE
+              value: branding/{{ .Values.branding.defaultTenant }}/theme.json
+            {{- end }}
+            {{- if .Values.branding.hostMap }}
+            # Per-host brand selection: request hostname -> tenant slug. Read by
+            # ee/branding/serverInit.ts, which resolves the theme file for the
+            # request's X-Forwarded-Host on every render and API call.
+            - name: TENANT_BRANDING_HOST_MAP
+              value: {{ toJson .Values.branding.hostMap | quote }}
+            {{- end }}
+            {{- end }}
           {{- end }}
           ports:
             - name: http
@@ -84,6 +111,24 @@ spec:
             - name: status-notice
               mountPath: /etc/nudgebee/status
               readOnly: true
+            {{- end }}
+            {{- if .Values.branding.enabled }}
+            # One mount per brand kit — a deployment fronting several partner
+            # hostnames carries all of their kits at once.
+            #
+            # Directory mounts, deliberately NOT subPath: subPath mounts do not
+            # receive ConfigMap updates, so editing a theme would need a pod
+            # restart. Nothing is shadowed — the image ships no
+            # public/branding/<tenant>/ directory for a white-label tenant.
+            #
+            # Only the app container. nginx serves `/public/` from its own copy
+            # of the static tree; `/branding/<tenant>/…` does not match that
+            # location and is proxied to Next.js in this container.
+            {{- range .Values.branding.tenants }}
+            - name: tenant-branding-{{ .slug }}
+              mountPath: /app/public/branding/{{ .slug }}
+              readOnly: true
+            {{- end }}
             {{- end }}
         - name: nginx  # Nginx sidecar container
           image: {{ .Values.nginx.image.registry }}/{{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag }}
@@ -121,6 +166,15 @@ spec:
           configMap:
             name: {{ .Values.statusNotice.configMapName | quote }}
             optional: true
+        {{- end }}
+        {{- if .Values.branding.enabled }}
+        # NOT optional: a missing brand kit would silently start the pod with
+        # Nudgebee branding on a white-label deployment. Fail to schedule instead.
+        {{- range .Values.branding.tenants }}
+        - name: tenant-branding-{{ .slug }}
+          configMap:
+            name: {{ .configMapName | quote }}
+        {{- end }}
         {{- end }}
         - name: nginx-config
           configMap:

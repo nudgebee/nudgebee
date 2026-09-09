@@ -350,15 +350,18 @@ export interface ListGatewaySessionsRequest {
   endDate: string; // RFC3339 UTC
   userId?: string; // optional; scope to one user
   search?: string; // optional; session_id contains
+  model?: string; // optional; sessions that touched this model
+  sort?: string; // optional; last_seen(default) | first_seen | cost | requests | tokens
+  order?: string; // optional; asc | desc(default)
   limit?: number;
   offset?: number;
 }
 
 const LIST_GATEWAY_SESSIONS = `mutation ListGatewaySessions(
-    $startDate: String!, $endDate: String!, $userId: String, $search: String, $limit: Int, $offset: Int
+    $startDate: String!, $endDate: String!, $userId: String, $search: String, $model: String, $sort: String, $order: String, $limit: Int, $offset: Int
   ) {
     llm_gateway_list_sessions(request: {
-      start_date: $startDate, end_date: $endDate, user_id: $userId, search: $search, limit: $limit, offset: $offset
+      start_date: $startDate, end_date: $endDate, user_id: $userId, search: $search, model: $model, sort: $sort, order: $order, limit: $limit, offset: $offset
     }) {
       data
     }
@@ -374,6 +377,9 @@ export async function listGatewaySessions(req: ListGatewaySessionsRequest, signa
       endDate: req.endDate,
       userId: req.userId ?? '',
       search: req.search ?? '',
+      model: req.model ?? '',
+      sort: req.sort ?? '',
+      order: req.order ?? '',
       limit: req.limit ?? 50,
       offset: req.offset ?? 0,
     },

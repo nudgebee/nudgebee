@@ -113,6 +113,7 @@ func TestListModelPricing_CollapsesOverrideOntoBuiltIn(t *testing.T) {
 		"cost_per_million_cached_input_tokens", "cost_per_million_cache_creation_tokens",
 		"context_threshold_tokens",
 		"cost_per_million_input_tokens_long_ctx", "cost_per_million_output_tokens_long_ctx",
+		"max_output_tokens", "max_context_tokens",
 		"is_built_in", "pricing_updated_at", "has_built_in",
 	}
 	// The dedup happens in SQL, so pin the two clauses that produce it: without
@@ -120,7 +121,7 @@ func TestListModelPricing_CollapsesOverrideOntoBuiltIn(t *testing.T) {
 	mock.ExpectQuery(`DISTINCT ON \(provider_name, model_name\)`).
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows(cols).
-			AddRow("gpt-4o", "openai", 1.8, 7.2, nil, nil, nil, nil, nil, false, nil, true))
+			AddRow("gpt-4o", "openai", 1.8, 7.2, nil, nil, nil, nil, nil, nil, nil, false, nil, true))
 
 	got, err := ListModelPricing(&common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, "tenant-1")
 	require.NoError(t, err)
@@ -146,11 +147,16 @@ func TestListModelPricing_PrefersTenantRowOverBuiltIn(t *testing.T) {
 			"cost_per_million_cached_input_tokens", "cost_per_million_cache_creation_tokens",
 			"context_threshold_tokens",
 			"cost_per_million_input_tokens_long_ctx", "cost_per_million_output_tokens_long_ctx",
+			"max_output_tokens", "max_context_tokens",
 			"is_built_in", "pricing_updated_at", "has_built_in",
-		}))
+		}).AddRow("gpt-4o", "openai", 1.8, 7.2, nil, nil, nil, nil, nil, 16384, nil, false, nil, true))
 
-	_, err = ListModelPricing(&common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, "tenant-1")
+	got, err := ListModelPricing(&common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, "tenant-1")
 	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.False(t, got[0].IsBuiltIn, "the surviving row must be the tenant's")
+	require.NotNil(t, got[0].MaxOutputTokens)
+	assert.Equal(t, int64(16384), *got[0].MaxOutputTokens)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -169,11 +175,14 @@ func TestListModelPricing_NoTenantSeesBuiltInsOnly(t *testing.T) {
 			"cost_per_million_cached_input_tokens", "cost_per_million_cache_creation_tokens",
 			"context_threshold_tokens",
 			"cost_per_million_input_tokens_long_ctx", "cost_per_million_output_tokens_long_ctx",
+			"max_output_tokens", "max_context_tokens",
 			"is_built_in", "pricing_updated_at", "has_built_in",
-		}))
+		}).AddRow("gpt-4o", "openai", 2.5, 10.0, nil, nil, nil, nil, nil, 16384, nil, true, nil, true))
 
-	_, err = ListModelPricing(&common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, "")
+	got, err := ListModelPricing(&common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, "")
 	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.True(t, got[0].IsBuiltIn, "with no tenant only built-in rows are visible")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

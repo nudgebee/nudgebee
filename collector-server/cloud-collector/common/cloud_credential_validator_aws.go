@@ -49,6 +49,14 @@ type AWSCredentials struct {
 
 	// Region used for SDK config. Defaults to us-east-1 when empty.
 	Region string
+
+	// CurReportName / CurS3Bucket narrow CUR discovery to one specific report.
+	// Both empty (the onboarding case) means "auto-pick the first usable
+	// report", which is the historical behavior. The Edit Billing Config flow
+	// sets them so validation checks the report the user actually named
+	// instead of whichever one happens to come back first.
+	CurReportName string
+	CurS3Bucket   string
 }
 
 // AWSCurInfo describes a discovered CUR report. Mirrors the JSON shape
@@ -71,9 +79,19 @@ type AWSCurInfo struct {
 //  2. Enumerate a usable CUR report (textORcsv + DAILY) via cur:DescribeReportDefinitions
 //  3. Read from the CUR S3 bucket (GetBucketLocation + ListObjectsV2 with the report prefix)
 //
-// All three steps are required for success (hard block on onboarding —
-// see plan). On the first failure we stop and surface a precise error
-// message identifying the failing step.
+// Only step 1 is required. Authentication is mandatory; cost is optional.
+// Steps 2 and 3 are recorded as failed PermissionStatus entries and listed in
+// MissingPermissions, but leave Success=true so the account can still be
+// onboarded — the caller detects "no cost data" via a nil Cur and warns the
+// user, and the CUR can be supplied later via Edit Billing Config.
+//
+// ErrorMessage is deliberately left empty when only the cost steps fail: the
+// onboarding UI renders a non-empty ErrorMessage as a hard error banner and
+// suppresses the per-permission breakdown, which is the opposite of what a
+// cost-only gap should look like.
+//
+// CUR was a hard block until #30893 was revised; see the AWS.md docs for why
+// an account with no usable CUR is now a supported state rather than a refusal.
 func ValidateAWSCredentials(ctx context.Context, creds AWSCredentials) ValidationResult {
 	result := ValidationResult{
 		Success:            true,
@@ -111,16 +129,17 @@ func ValidateAWSCredentials(ctx context.Context, creds AWSCredentials) Validatio
 	result.PermissionDetails = append(result.PermissionDetails, stsStatus)
 	result.AccountNumber = accountNumber
 
-	// Step 2: CUR DescribeReportDefinitions
+	// Step 2: CUR DescribeReportDefinitions. Non-fatal — a missing or
+	// unreadable CUR costs the account its spend data, not its onboarding.
 	curStatus := PermissionStatus{Permission: PermissionAWSCURDescribe}
-	report, curErr := discoverAWSCURReport(ctx, cfg)
+	report, curErr := discoverAWSCURReport(ctx, cfg, creds.CurReportName, creds.CurS3Bucket)
 	if curErr != nil {
 		curStatus.HasAccess = false
 		curStatus.ErrorDetail = curErr.Error()
 		result.PermissionDetails = append(result.PermissionDetails, curStatus)
 		result.MissingPermissions = append(result.MissingPermissions, PermissionAWSCURDescribe)
-		result.Success = false
-		result.ErrorMessage = fmt.Sprintf("Cost & Usage Report discovery failed: %s", curErr.Error())
+		// Leave Success=true and Cur=nil. Step 3 has nothing to probe without
+		// a report, so return here rather than reporting a bogus S3 failure.
 		return result
 	}
 	curStatus.HasAccess = true
@@ -128,14 +147,16 @@ func ValidateAWSCredentials(ctx context.Context, creds AWSCredentials) Validatio
 	result.Cur = report
 
 	// Step 3: CUR S3 access — verify we can actually read from the bucket.
+	// Also non-fatal, but it does clear Cur: a report we cannot read is not a
+	// report we should persist and hand to the collector, which would then
+	// fail the same way on every sync.
 	s3Status := PermissionStatus{Permission: PermissionAWSCURS3Access}
 	if err := checkAWSCURS3Access(ctx, cfg, report); err != nil {
 		s3Status.HasAccess = false
 		s3Status.ErrorDetail = err.Error()
 		result.PermissionDetails = append(result.PermissionDetails, s3Status)
 		result.MissingPermissions = append(result.MissingPermissions, PermissionAWSCURS3Access)
-		result.Success = false
-		result.ErrorMessage = fmt.Sprintf("CUR S3 bucket access check failed: %s", err.Error())
+		result.Cur = nil
 		return result
 	}
 	s3Status.HasAccess = true
@@ -189,8 +210,8 @@ func buildAWSConfigForValidation(ctx context.Context, c AWSCredentials) (aws.Con
 	stsClient := sts.NewFromConfig(baseCfg)
 	provider := stscreds.NewAssumeRoleProvider(stsClient, c.AssumeRole, func(o *stscreds.AssumeRoleOptions) {
 		o.RoleSessionName = "nudgebee-onboarding-validate"
-		if strings.TrimSpace(c.ExternalId) != "" {
-			o.ExternalID = aws.String(c.ExternalId)
+		if extID := strings.TrimSpace(c.ExternalId); extID != "" {
+			o.ExternalID = aws.String(extID)
 		}
 	})
 	baseCfg.Credentials = aws.NewCredentialsCache(provider)
@@ -216,9 +237,17 @@ func checkAWSCallerIdentity(ctx context.Context, cfg aws.Config) (string, error)
 // AWS-reported status indicates the S3 bucket is gone or CUR delivery
 // permissions are broken — picking those would surface as a confusing
 // NoSuchBucket / AccessDenied during the downstream S3 probe.
-func discoverAWSCURReport(ctx context.Context, cfg aws.Config) (*AWSCurInfo, error) {
+//
+// reportName and bucketName narrow the search to one specific report; empty
+// means "any", which is the onboarding auto-pick path. The same name/bucket
+// filter shape is applied by getUsageBucketFromCostReport at sync time, so a
+// report that validates here is one the collector will also resolve.
+func discoverAWSCURReport(ctx context.Context, cfg aws.Config, reportName, bucketName string) (*AWSCurInfo, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+
+	reportName = strings.TrimSpace(reportName)
+	bucketName = strings.TrimSpace(bucketName)
 
 	// CUR API is hosted only in us-east-1.
 	curCfg := cfg.Copy()
@@ -236,6 +265,12 @@ func discoverAWSCURReport(ctx context.Context, cfg aws.Config) (*AWSCurInfo, err
 		}
 
 		for _, r := range out.ReportDefinitions {
+			if reportName != "" && aws.ToString(r.ReportName) != reportName {
+				continue
+			}
+			if bucketName != "" && aws.ToString(r.S3Bucket) != bucketName {
+				continue
+			}
 			if !curMatchesIngestionFilter(r) {
 				continue
 			}
@@ -266,6 +301,14 @@ func discoverAWSCURReport(ctx context.Context, cfg aws.Config) (*AWSCurInfo, err
 		return nil, fmt.Errorf("found %d Cost & Usage Report(s) matching the required format (DAILY + textORcsv) "+
 			"but all were in an error state (ERROR_NO_BUCKET / ERROR_PERMISSIONS). "+
 			"Fix or delete the broken reports in the AWS billing console, then retry", skippedUnhealthy)
+	}
+	// When the caller named a specific report, say so — otherwise "no CUR
+	// found" reads as "you have no CUR at all", which sends the user to create
+	// a second one instead of correcting the name they typed.
+	if reportName != "" || bucketName != "" {
+		return nil, fmt.Errorf("no Cost & Usage Report matching report name %q / bucket %q was found with the "+
+			"required format (DAILY + textORcsv). Check the name and bucket in the AWS billing console",
+			reportName, bucketName)
 	}
 	return nil, errors.New("no Cost & Usage Report found matching the required format (DAILY + textORcsv). " +
 		"Configure a CUR report in the AWS billing console with TimeUnit=DAILY and Format=text/csv, then retry")

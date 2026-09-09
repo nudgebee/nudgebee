@@ -186,8 +186,8 @@ const apiDashboards = {
    * re-validated server-side against a read-only allowlist — the editor's
    * hints are guidance, not the guard.
    */
-  async executePanelQuery(request: PanelQueryRequest): Promise<Result<PanelQueryResult>> {
-    const response = await queryGraphQL(EXECUTE_PANEL_QUERY, 'ExecutePanelQuery', { request });
+  async executePanelQuery(request: PanelQueryRequest, signal?: AbortSignal): Promise<Result<PanelQueryResult>> {
+    const response = await queryGraphQL(EXECUTE_PANEL_QUERY, 'ExecutePanelQuery', { request }, undefined, signal);
     return {
       data: response?.data?.data?.dashboards_execute_query ?? null,
       errors: response?.data?.errors,
@@ -199,8 +199,8 @@ const apiDashboards = {
    * enforces the table allowlist and appends the account + time filters; the
    * stored query carries neither.
    */
-  async executeEntityQuery(request: EntityQueryRequest): Promise<Result<PanelQueryResult>> {
-    const response = await queryGraphQL(EXECUTE_ENTITY_QUERY, 'ExecuteEntityQuery', { request });
+  async executeEntityQuery(request: EntityQueryRequest, signal?: AbortSignal): Promise<Result<PanelQueryResult>> {
+    const response = await queryGraphQL(EXECUTE_ENTITY_QUERY, 'ExecuteEntityQuery', { request }, undefined, signal);
     return {
       data: response?.data?.data?.dashboards_execute_entity_query ?? null,
       errors: response?.data?.errors,

@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
-import KubernetesLogs from '@components/k8s/details/KubernetesLogs';
+import KubernetesLogs, { buildStructuredQueryFromOperations } from '@components/k8s/details/KubernetesLogs';
 import { useData } from '@context/DataContext';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
@@ -69,7 +69,6 @@ jest.mock('@api1/observability', () => ({
   default: {
     fetchLogs: jest.fn(),
     fetchLogLabels: jest.fn(),
-    createUserHistory: jest.fn(),
   },
 }));
 
@@ -166,5 +165,44 @@ describe('KubernetesLogs Signoz', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Builder/i })).toBeInTheDocument();
     });
+  });
+});
+
+// Builder-mode "Operations" (line filters) were dropped from the submitted
+// query_request — only label chips were sent. These lock in the conversion into
+// `content` pseudo-field clauses the log sources map to line filters.
+describe('buildStructuredQueryFromOperations', () => {
+  it('converts a backend-token operation into a content clause', () => {
+    expect(buildStructuredQueryFromOperations([{ id: 1, op: '_contains', value: 'raman' }])).toEqual([
+      { _binary: { content: { _contains: 'raman' } } },
+    ]);
+  });
+
+  it('maps legacy UI operator strings to backend tokens', () => {
+    expect(buildStructuredQueryFromOperations([{ id: 1, op: 'REGEX', value: 'err.*' }])).toEqual([{ _binary: { content: { _regex: 'err.*' } } }]);
+  });
+
+  it('skips empty-value and unmapped-operator rows but keeps falsy non-null values', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(
+      buildStructuredQueryFromOperations([
+        { id: 1, op: '_contains', value: '   ' },
+        { id: 2, op: '_contains', value: '' },
+        { id: 3, op: 'bogus_op', value: 'x' },
+        { id: 4, op: '_nlike', value: 'debug' },
+        { id: 5, op: '_contains', value: 0 },
+        { id: 6, op: '_contains', value: false },
+      ])
+    ).toEqual([
+      { _binary: { content: { _nlike: 'debug' } } },
+      { _binary: { content: { _contains: 0 } } },
+      { _binary: { content: { _contains: false } } },
+    ]);
+    warn.mockRestore();
+  });
+
+  it('returns an empty array for no operations', () => {
+    expect(buildStructuredQueryFromOperations([])).toEqual([]);
+    expect(buildStructuredQueryFromOperations(undefined)).toEqual([]);
   });
 });

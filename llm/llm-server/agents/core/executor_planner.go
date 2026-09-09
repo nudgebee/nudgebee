@@ -49,6 +49,38 @@ func init() {
 
 const plannerDummyTool = "planner"
 
+const (
+	executionModeParallelDispatch   = "parallel_dispatch"
+	executionModeSequentialDispatch = "sequential_dispatch"
+)
+
+func plannerSupportsExecutionBatches(planner NBAgentPlanner) bool {
+	switch planner.(type) {
+	case *NBReActPlanner3, *NBReActPlanner4:
+		return true
+	default:
+		return false
+	}
+}
+
+func annotateExecutionBatch(actions []NBAgentPlannerToolAction, batchID, mode, fallbackReason string, parallelismLimit int) {
+	for i := range actions {
+		actions[i].ExecutionBatchID = batchID
+		actions[i].ExecutionMode = mode
+		actions[i].ExecutionBatchSize = len(actions)
+		actions[i].SequentialFallbackReason = fallbackReason
+		if mode == executionModeParallelDispatch {
+			actions[i].ExecutionParallelismLimit = parallelismLimit
+		}
+	}
+}
+
+func annotatePlannerIteration(actions []NBAgentPlannerToolAction, iteration int) {
+	for i := range actions {
+		actions[i].PlannerIteration = iteration
+	}
+}
+
 // plannerToolNoData is the observation written when a tool succeeds (exit 0,
 // status=Success) but produces empty stdout. Many CLI mutations are silent on
 // success (e.g. `gh run rerun`, `kubectl apply`, `helm upgrade`, `aws s3 cp`),
@@ -73,6 +105,13 @@ const (
 // checkMessageTerminationStatus checks if a conversation message has been terminated,
 // using the project's cache abstraction to debounce database lookups.
 func checkMessageTerminationStatus(messageId, accountId, conversationId string) (bool, error) {
+	return CheckMessageTerminationStatus(messageId, accountId, conversationId)
+}
+
+// CheckMessageTerminationStatus checks if a conversation message has been
+// terminated, using the project's cache abstraction to debounce database
+// lookups.
+func CheckMessageTerminationStatus(messageId, accountId, conversationId string) (bool, error) {
 	// Try to get from cache first
 	if val, ok := common.CacheGet(MessageTerminationCacheNamespace, messageId); ok {
 		return string(val) == "true", nil
@@ -408,6 +447,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 
 		var finish *NBAgentPlannerFinishAction
 		iterStart := time.Now()
+		e.ctx.GetLogger().Info("plannerexecutor: iteration starting", "agent", e.agent.GetName(), "iteration", i)
 		prevStepCount := len(e.steps)
 		steps, finish, err := e.doIteration(ctx, e.steps, nameToTool, inputs)
 		e.ctx.GetLogger().Info("plannerexecutor: iteration complete", "iteration", i, "duration", time.Since(iterStart).String(), "steps", len(steps), "hasFinish", finish != nil)
@@ -452,31 +492,10 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		// Fast-fail: if the LLM returned no parseable actions OR only failures,
 		// count consecutive bad iterations. Breaking after 2 prevents burning
 		// 5+ iterations × 16s on a stuck model.
-		//
-		// NOTE (pre-existing, not introduced by the circuit breaker work):
-		// allFailed is seeded from len(steps)==0, so for any non-empty steps
-		// it starts false and the loop below can only ever leave it false —
-		// the "every step in this iteration failed" branch is dead today;
-		// only the zero-actions case reaches consecutiveFailedIters++. The
-		// `|| s.IsCircuitOpen` guard is therefore inert too. Left in place
-		// (rather than removed as dead code) because it's the correct
-		// exclusion for the moment someone fixes the seed — a circuit-open
-		// step is the breaker fast-failing, not the LLM spinning on a
-		// genuinely broken action, and shouldn't count toward this abort.
-		// Fixing the seed itself would revive a long-dormant abort path
-		// across every agent, which is a behavior change well beyond this
-		// PR's scope — tracked as separate follow-up, not done here.
-		allFailed := len(steps) == 0
-		for _, s := range steps {
-			if s.Status != ToolStatusFailure || s.IsCircuitOpen {
-				allFailed = false
-				break
-			}
-		}
-		if allFailed {
+		if shouldCountFailedIteration(steps, config.Config.LlmServerNoProgressBrakeEnabled) {
 			consecutiveFailedIters++
 			if consecutiveFailedIters >= 2 {
-				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive failed iterations (likely zero-output LLM)", "agent", e.agent.GetName(), "iteration", i)
+				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive iterations with no usable actions", "agent", e.agent.GetName(), "iteration", i)
 				break
 			}
 		} else {
@@ -521,6 +540,26 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 	}
 
 	return map[string]any{"output": agents.ErrNotFinished.Error()}, agents.ErrNotFinished
+}
+
+// shouldCountFailedIteration reports whether an iteration should advance the
+// consecutive-failure brake. Empty iterations retain the legacy behavior.
+// Counting non-empty all-failure iterations is gated with the broader
+// no-progress brake because ToolStatusFailure spans parser, validation,
+// condition, scheduling, and execution failures across every agent.
+func shouldCountFailedIteration(steps []NBAgentPlannerToolActionStep, countNonEmptyFailures bool) bool {
+	if len(steps) == 0 {
+		return true
+	}
+	if !countNonEmptyFailures {
+		return false
+	}
+	for _, step := range steps {
+		if step.Status != ToolStatusFailure || step.IsCircuitOpen {
+			return false
+		}
+	}
+	return true
 }
 
 // buildToolCallSummary renders the per-step status block fed into the
@@ -832,9 +871,28 @@ func (e *plannerExecutor) doIteration(
 	}
 
 	// Enable parallel execution when multiple actions are returned by a react_3
-	// planner and parallel execution is enabled in config.
+	// or react_4 planner and parallel execution is enabled in config. The write
+	// pre-flight (below) must run for both — a native react_4 tool batch can
+	// contain write actions just like a react_3 <actions> batch.
 	_, isReAct3Planner := e.agentPlanner.(*NBReActPlanner3)
-	if len(actions) > 1 && config.Config.PlannerParallelExecEnabled && isReAct3Planner {
+	isParallelCapablePlanner := plannerSupportsExecutionBatches(e.agentPlanner)
+	if isParallelCapablePlanner {
+		annotatePlannerIteration(actions, e.currentIteration+1)
+	}
+	isExecutionBatch := len(actions) > 1 && isParallelCapablePlanner
+	batchID := ""
+	parallelismLimit := config.Config.LLMServerAgentMaxParallel
+	if parallelismLimit < 1 {
+		parallelismLimit = 1
+	}
+	if isExecutionBatch {
+		batchID = common.GenerateUUID()
+	}
+	if isExecutionBatch && !config.Config.PlannerParallelExecEnabled {
+		annotateExecutionBatch(actions, batchID, executionModeSequentialDispatch, "parallel_execution_disabled", parallelismLimit)
+		e.ctx.GetLogger().Info("plannerexecutor: parallel execution disabled, executing batch sequentially", "agent", e.agent.GetName(), "actionsCount", len(actions), "executionBatchId", batchID)
+	}
+	if isExecutionBatch && config.Config.PlannerParallelExecEnabled {
 		// Pre-flight check: detect actions that might trigger followups (write approval
 		// or config resolution). Only one followup can be active at a time, so if any
 		// action in the batch could trigger one, fall back to sequential execution.
@@ -846,6 +904,7 @@ func (e *plannerExecutor) doIteration(
 		// Agent-type tools (NBToolTypeAgent) run their own sub-executor sequentially,
 		// so followup collisions within a single agent can't happen. Safe to parallelize.
 		needsSequential := false
+		sequentialFallbackReason := ""
 		for _, action := range actions {
 			tool, ok := nameToTool[strings.ToUpper(action.Tool)]
 			if !ok {
@@ -861,6 +920,7 @@ func (e *plannerExecutor) doIteration(
 				reqType, err := validator.InferToolRequestType(e.ctx, action.Tool, action.ToolInput)
 				if err == nil && reqType != "" && reqType != toolcore.ToolRequestTypeRead {
 					needsSequential = true
+					sequentialFallbackReason = "potential_write"
 					e.ctx.GetLogger().Info("plannerexecutor: pre-flight detected write action", "tool", action.Tool, "requestType", reqType)
 					break
 				}
@@ -872,11 +932,13 @@ func (e *plannerExecutor) doIteration(
 					reqType, _ := validator.InferToolRequestType(e.ctx, action.Tool, action.ToolInput)
 					if reqType == "" {
 						needsSequential = true
+						sequentialFallbackReason = "llm_only_request_classification"
 						e.ctx.GetLogger().Info("plannerexecutor: pre-flight detected tool with LLM-only classification, assuming potential write", "tool", action.Tool)
 						break
 					}
 				} else {
 					needsSequential = true
+					sequentialFallbackReason = "llm_only_request_classification"
 					e.ctx.GetLogger().Info("plannerexecutor: pre-flight detected tool with LLM-only classification, assuming potential write", "tool", action.Tool)
 					break
 				}
@@ -903,12 +965,14 @@ func (e *plannerExecutor) doIteration(
 				}
 				if !configResolved {
 					needsSequential = true
+					sequentialFallbackReason = "unresolved_tool_config"
 					e.ctx.GetLogger().Info("plannerexecutor: pre-flight detected unresolved tool config", "tool", action.Tool, "configTool", configCheckTool.Name())
 					break
 				}
 			}
 		}
 		if needsSequential {
+			annotateExecutionBatch(actions, batchID, executionModeSequentialDispatch, sequentialFallbackReason, parallelismLimit)
 			e.ctx.GetLogger().Info("plannerexecutor: falling back to sequential execution — parallel batch may trigger followups", "agent", e.agent.GetName(), "actionsCount", len(actions))
 			// First-turn fanout observability for React3. Diagnoses whether
 			// the prompt change actually drove a wider turn-1 batch and
@@ -923,7 +987,8 @@ func (e *plannerExecutor) doIteration(
 				)
 			}
 		} else {
-			e.ctx.GetLogger().Info("plannerexecutor: executing actions in parallel", "agent", e.agent.GetName(), "actionsCount", len(actions))
+			annotateExecutionBatch(actions, batchID, executionModeParallelDispatch, "", parallelismLimit)
+			e.ctx.GetLogger().Info("plannerexecutor: executing actions in parallel", "agent", e.agent.GetName(), "actionsCount", len(actions), "executionBatchId", batchID, "parallelismLimit", parallelismLimit)
 			if isReAct3Planner && e.currentIteration == 0 && (e.agentRequest.ParentAgentId == "" || e.agentRequest.ParentAgentId == e.agentRequest.AgentId) {
 				e.ctx.GetLogger().Info("plannerexecutor: react3 first-turn batch parallel",
 					"agent", e.agent.GetName(),
@@ -2252,6 +2317,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	var observation toolcore.NBToolResponse
 	var err error
 	toolExecStart := time.Now()
+	e.ctx.GetLogger().Info("plannerexecutor: tool execution starting", "tool", action.Tool, "toolId", action.ToolID)
 
 	// Optimization: If the tool is LLM (summarizer), use a direct optimized path
 	if strings.EqualFold(action.Tool, "LLM") {
@@ -3273,6 +3339,29 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				Log:        logValue,
 				Dependency: dependencies,
 				Condition:  actionCondition,
+				// Restored explicitly: this reconstruction is field-by-field, so any
+				// field omitted here is silently dropped on every resume. A resume is
+				// not an edge case — it is the write-approval path.
+				//
+				// DisplayID keeps citations ([E3]) pointing at the same step after a
+				// resume. TurnID and ThoughtSignature are load-bearing for react_4:
+				// without the signature a replayed Gemini functionCall is rejected
+				// outright ("missing a thought_signature"), and without the TurnID a
+				// parallel batch is split into separate assistant messages, which
+				// strips the signature from every sibling but the first. Losing
+				// either turns an approved write into a dead conversation.
+				DisplayID: toString(getVal(actionData, "display_id")),
+				TurnID:    toString(getVal(actionData, "turn_id")),
+			}
+			// []byte marshals to a base64 STRING, so it has to be decoded back or the
+			// signature survives serialization as unusable text.
+			if sig, ok := getVal(actionData, "thought_signature").(string); ok && sig != "" {
+				if decoded, decErr := base64.StdEncoding.DecodeString(sig); decErr == nil {
+					action.ThoughtSignature = decoded
+				} else {
+					e.ctx.GetLogger().Warn("plannerexecutor: could not decode thought signature on resume — react_4 replay of this call will be rejected",
+						"toolId", action.ToolID, "error", decErr)
+				}
 			}
 
 			status := ToolStatusSuccess // default
@@ -3377,6 +3466,20 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				Log:        logValue,
 				Dependency: dependencies,
 				Condition:  actionCondition,
+				DisplayID:  toString(getVal(actionMap, "display_id")),
+				TurnID:     toString(getVal(actionMap, "turn_id")),
+			}
+			// currentAction is the source of truth for a WAITING tool when resume
+			// drops its placeholder step. Preserve the provider signature here just
+			// as we do for completed steps; otherwise Gemini rejects the resumed
+			// function-call replay before the planner can continue.
+			if sig, ok := getVal(actionMap, "thought_signature").(string); ok && sig != "" {
+				if decoded, decErr := base64.StdEncoding.DecodeString(sig); decErr == nil {
+					action.ThoughtSignature = decoded
+				} else {
+					e.ctx.GetLogger().Warn("plannerexecutor: could not decode current action thought signature on resume",
+						"toolId", action.ToolID, "error", decErr)
+				}
 			}
 			e.currentAction = append(e.currentAction, action)
 		}

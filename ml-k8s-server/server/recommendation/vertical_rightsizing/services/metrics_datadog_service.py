@@ -15,7 +15,32 @@ from server.recommendation.vertical_rightsizing.strategy.strategies import BaseS
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
 from server.recommendation.vertical_rightsizing.services.metric_base_service import MetricsService
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
+
+
+def pods_from_series(data: Dict[str, Any], live_cutoff: float) -> list[PodData]:
+    """Map Datadog series to PodData, marking a pod live only when its series
+    has a datapoint at or after live_cutoff. Pure, so the liveness semantics —
+    the input to the estimated-savings replica multiplier — stay unit-testable.
+    """
+    last_seen: Dict[str, float] = {}
+    for series in data.get("series") or []:
+        scope = series.get("scope", "")
+        pod_name = ""
+        for part in scope.split(","):
+            part = part.strip()
+            if part.startswith("pod_name:"):
+                pod_name = part.split(":", 1)[1]
+                break
+        if not pod_name:
+            continue
+        for point in series.get("pointlist") or []:
+            if len(point) >= 2 and point[1] is not None:
+                ts = point[0] / 1000.0  # Datadog timestamps are in ms
+                if ts > last_seen.get(pod_name, 0.0):
+                    last_seen[pod_name] = ts
+    return [PodData(name=name, deleted=seen < live_cutoff) for name, seen in last_seen.items()]
+
 
 # Datadog metric names
 DD_CPU_METRIC = "kubernetes.cpu.usage.total"
@@ -112,7 +137,7 @@ class DatadogMetricsService(MetricsService):
         'pod_name:xxx,kube_container_name:yyy' and a pointlist.
         """
         result: Dict[str, Dict[str, list]] = {}
-        for series in data.get("series", []):
+        for series in data.get("series") or []:
             scope = series.get("scope", "")
             tag_map = {}
             for part in scope.split(","):
@@ -147,6 +172,12 @@ class DatadogMetricsService(MetricsService):
         Load pod names from Datadog metric series.
 
         We query a lightweight metric to discover pod names associated with the workload.
+        Discovery spans the whole history window, so liveness must NOT be inferred
+        from mere presence in the result: marking every discovered pod deleted=False
+        counted every incarnation from every deploy/restart as a live replica, and
+        the estimated-savings replica multiplier scaled by dozens instead of the
+        live replica count (same inflation as the Prometheus path's range-based
+        liveness check).
         """
         now = datetime.utcnow()
         from_ts = int((now - period).timestamp())
@@ -161,14 +192,7 @@ class DatadogMetricsService(MetricsService):
             logger.warning(f"Datadog load_pods query failed for {object}: {e}")
             return []
 
-        pod_names = set()
-        for series in data.get("series", []):
-            scope = series.get("scope", "")
-            for part in scope.split(","):
-                part = part.strip()
-                if part.startswith("pod_name:"):
-                    pod_names.add(part.split(":", 1)[1])
-        return [PodData(name=name, deleted=False) for name in pod_names]
+        return pods_from_series(data, live_cutoff=(now - timedelta(minutes=30)).timestamp())
 
     async def gather_data(
         self,

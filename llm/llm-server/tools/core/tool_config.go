@@ -30,8 +30,10 @@ type AccountConfigSummary struct {
 	// resolver (ListToolConfigs / ToolConfigSourceTicket(All)) is tenant-scoped —
 	// so their visibility gate must match.
 	TenantIntegrationTypes map[string]bool
-	CloudProviders         map[string]bool
-	HasAgent               bool
+	// CloudProviders is ACCOUNT-scoped. A provider active on another account in
+	// the tenant must not enable cloud tools for this account.
+	CloudProviders map[string]bool
+	HasAgent       bool
 }
 
 type accountConfigSummaryCache struct {
@@ -94,10 +96,10 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 	}
 
 	// Level 2: Shared cache (marshaled JSON).
-	// v2: bumped when TenantIntegrationTypes was added so pre-existing cached
-	// entries (which lack the field and would deserialize it as nil) are ignored
-	// rather than gating ticket tools off until the old entries expire.
-	cacheKey := "account_config_summary:v2:" + accountId
+	// v3: CloudProviders changed from tenant scope to account scope. Ignore v2
+	// entries so a provider active on a sibling account cannot remain authorized
+	// from cache after this fix is deployed.
+	cacheKey := "account_config_summary:v3:" + accountId
 	if cachedData, found := common.CacheGet(CacheNamespaceLlmToolConfig, cacheKey); found {
 		if err := common.UnmarshalJson(cachedData, &summary); err == nil {
 			accountConfigSummaryCacheInstance.set(accountId, summary)
@@ -190,12 +192,13 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 		return nil
 	})
 
-	// Fetch cloud accounts for the tenant to see which providers are active
+	// Fetch the selected account's active provider. This feeds account-scoped
+	// cloud CLI authorization; querying the whole tenant lets an active provider
+	// on a sibling account enable tools on this account.
 	g.Go(func() error {
-		tenantId := ctx.GetSecurityContext().GetTenantId()
-		cloudProviderRows, err := dbms.Query("SELECT DISTINCT lower(cloud_provider) FROM cloud_accounts WHERE tenant = $1 AND status = 'active'", tenantId)
+		cloudProviderRows, err := dbms.Query("SELECT lower(cloud_provider) FROM cloud_accounts WHERE id = $1 AND status = 'active'", accountId)
 		if err != nil {
-			slog.Error("tools: failed to query cloud accounts", "error", err, "tenant_id", tenantId)
+			slog.Error("tools: failed to query cloud account", "error", err, "account_id", accountId)
 			return err
 		}
 		defer func() {

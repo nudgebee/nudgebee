@@ -10,6 +10,7 @@ ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-python:3.12
 FROM ${PYTHON_BASE} AS python-base
 RUN apk update && \
     apk upgrade --no-cache && \
+    apk add --no-cache graphviz && \
     rm -rf /var/cache/apk/*
 # Set the working directory
 WORKDIR /usr/src/app

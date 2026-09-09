@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"nudgebee/llm/agents"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/tools/core"
@@ -90,6 +91,11 @@ func processCacheInvalidationMessage(_ context.Context, data []byte) error {
 		}
 		seen[id] = struct{}{}
 		core.InvalidateAccountIntegrationCache(id)
+		// The FinOps system prompt embeds the account's footprint (providers,
+		// integrations, K8s agent connected?) in a block cached for hours, so it
+		// needs busting here too — the AccountConfigSummary invalidation above
+		// does not reach a render that already happened.
+		agents.InvalidateFinOpsAccountContext(id)
 		// Best-effort: kick the per-account KB-sync fast path so a freshly-
 		// saved integration with sync_knowledge_base=true (or any confluence
 		// integration) starts indexing within seconds instead of waiting up

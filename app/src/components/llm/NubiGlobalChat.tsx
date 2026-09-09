@@ -4,7 +4,7 @@ import HistoryIcon from '@mui/icons-material/History';
 import CloseIcon from '@mui/icons-material/Close';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { createPortal } from 'react-dom';
 import CustomDrawer from '@shared/CustomDrawer';
@@ -40,11 +40,25 @@ const NubiGlobalChat: React.FC = () => {
   const [historySignal, setHistorySignal] = useState<number | undefined>(undefined);
   const [isExpanded, setIsExpanded] = useState(false);
   const historyButtonRef = useRef<HTMLButtonElement>(null);
+  // The conversation the embedded generator currently shows — read only when
+  // "Open full page" is clicked, so a session change never re-renders the drawer.
+  const activeSessionRef = useRef('');
+  const handleActiveSessionChange = useCallback((id: string) => {
+    activeSessionRef.current = id || '';
+  }, []);
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // The generator unmounts with the drawer; drop its last reported session so a
+  // stale value can't be read before it remounts and reports again.
+  useEffect(() => {
+    if (!isOpen) {
+      activeSessionRef.current = '';
+    }
+  }, [isOpen]);
 
   // The account label shown in the header. `allCluster` is only populated by the
   // header cluster dropdown, which the all-accounts pages (/troubleshoot,
@@ -394,7 +408,10 @@ const NubiGlobalChat: React.FC = () => {
     if (typeof window === 'undefined') {
       return;
     }
-    const sessionId = localStorage.getItem('nubi_selected_conversation_id');
+    // The conversation the embedded generator currently shows (it reports this via
+    // onActiveSessionChange, resolving cache-restored sessions too); chatContext
+    // covers the first render tick before the generator has reported.
+    const sessionId = activeSessionRef.current || chatContext?.sessionId || '';
     const params = new URLSearchParams();
     if (accountId) {
       params.set('accountId', accountId);
@@ -583,6 +600,7 @@ const NubiGlobalChat: React.FC = () => {
               historySignal={historySignal as any}
               historyButtonRef={historyButtonRef as any}
               drawerIsOpen={isOpen}
+              onActiveSessionChange={handleActiveSessionChange as any}
             />
           ) : (
             <Box

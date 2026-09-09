@@ -3,7 +3,7 @@ import { Box, ListItemText } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Link } from '@ui/Link';
 import Text from '@shared/format/Text';
-import CustomAccordion from '@shared/CustomAccordion';
+import { Accordion } from '@ui/Accordion';
 import { titleCase } from '@lib/formatter';
 import { getLast24Hrs } from '@lib/datetime';
 import { ds } from '@utils/colors';
@@ -106,7 +106,7 @@ const RenderApplications = React.memo(({ applications, rule, accountId }) => {
         >
           <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
             <Text value={app.name} maxSize={12} sx={{ color: 'var(--ds-blue-500)', fontSize: 'var(--ds-text-body)' }} />
-            <SafeIcon src={InvestigateHomeIcon} width={18} height={18} />
+            <SafeIcon src={InvestigateHomeIcon} alt='' width={18} height={18} />
           </Box>
         </Link>
         {index < applications.length - 1 && ', '}
@@ -156,32 +156,31 @@ const RenderListItemText = React.memo(({ item, imageSrc, message, ruleLink, link
     <ListItemText
       primary={
         <Box sx={{ '& a': { textDecoration: 'none', '&:hover': { '.application-name': { textDecoration: 'underline' } } } }}>
-          <CustomAccordion
-            title={message}
-            icon={<SafeIcon src={imageSrc} className='list-icon' width={22} height={22} />}
-            summaryStyle={{
-              backgroundColor: `var(--ds-background-100) !important`,
-              borderTop: '0px !important',
-              borderRight: '0px !important',
-              borderLeft: '0px !important',
-              borderBottom: `0.6px dashed var(--ds-gray-300) !important`,
-              padding: `${ds.space[0]} 0px !important`,
-            }}
-            detailsStyle={{ border: '0px !important' }}
-            titleStyle={{ fontSize: 'var(--ds-text-small) !important', fontWeight: 'var(--ds-font-weight-regular) !important' }}
-          >
-            <RenderApplications applications={item.applications} rule={item.rule} accountId={accountId} />
-            {ruleLink && (
-              <Box sx={{ '& a': { color: 'var(--ds-blue-300)' } }}>
-                <Link href={ruleLink} target='_blank' style={{ color: 'var(--ds-blue-500)' }}>
-                  <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>
-                    {linkTitle}
-                    <SafeIcon src={AttrFixIcon} height={18} width={18} />
-                  </Box>
-                </Link>
-              </Box>
-            )}
-          </CustomAccordion>
+          <Accordion
+            density='sm'
+            items={[
+              {
+                id: message,
+                label: message,
+                icon: <SafeIcon src={imageSrc} alt='' className='list-icon' width={22} height={22} />,
+                body: (
+                  <>
+                    <RenderApplications applications={item.applications} rule={item.rule} accountId={accountId} />
+                    {ruleLink && (
+                      <Box sx={{ '& a': { color: 'var(--ds-blue-300)' } }}>
+                        <Link href={ruleLink} target='_blank' style={{ color: 'var(--ds-blue-500)' }}>
+                          <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space.mul(0, 3) }}>
+                            {linkTitle}
+                            <SafeIcon src={AttrFixIcon} alt='' height={18} width={18} />
+                          </Box>
+                        </Link>
+                      </Box>
+                    )}
+                  </>
+                ),
+              },
+            ]}
+          />
         </Box>
       }
     />

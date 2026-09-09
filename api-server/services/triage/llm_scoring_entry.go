@@ -45,7 +45,7 @@ const classificationPromptVersion = 4
 // On cache miss it scores with a conservative fallback verdict and (best-effort, off the hot
 // path) triggers minting of the real verdict for subsequent events of the class. It never
 // blocks on llm-server — the hot path is a single indexed cache lookup.
-func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event) (*ScoreResult, error) {
+func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event, correlationType string, correlationScore float64, isIncidentChild bool) (*ScoreResult, error) {
 	classKey := ClassKey(event)
 	tenantID := ""
 	if event.Tenant != nil {
@@ -93,12 +93,15 @@ func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event) (*Sc
 		factors["guardrails"] = guardrails
 	}
 
-	// Correlation-aware cascade dampening: consume the existing event_correlations so a likely
-	// root cause stays prominent and downstream/co-occurring symptoms are quieted — collapsing a
-	// cascade toward one item instead of flooding the queue with its symptoms.
+	// Correlation-aware cascade dampening: quiet the symptoms so a cascade collapses toward one
+	// item instead of flooding the queue. The inputs arrive from processor.go (Steps 3 and 3b) —
+	// see resolveCorrelationAdjustment for which signal wins.
 	if event.Id != "" {
-		if adj, corrType := correlationDampening(ctx, db, event.Id); adj != 0 {
+		if adj, corrType := resolveCorrelationAdjustment(isIncidentChild, correlationType, correlationScore, llmCorrelationAdjustment); adj != 0 {
 			score = clamp(score+adj, 0, 100)
+			// Re-assert the verdict's band: this term runs after computeVerdictScore's own
+			// clamp, so without this a +15 pushes the score past the ceiling the model chose.
+			score = clampToBand(score, factors)
 			priority = scoreToPriority(score)
 			factors["correlation_type"] = corrType
 			factors["correlation_adjustment"] = adj
@@ -146,25 +149,6 @@ func resolveEventCriticality(ctx context.Context, db *sqlx.DB, event *models.Eve
 		return workloadTier{}
 	}
 	return workloadTier{level: wc.Criticality, source: wc.Source}
-}
-
-// correlationDampening returns the cascade adjustment for an event from its strongest recorded
-// correlation (>=0.5), or 0 if uncorrelated. See correlationTypeAdjustment for the mapping.
-func correlationDampening(ctx context.Context, db *sqlx.DB, eventID string) (int, string) {
-	var c struct {
-		CorrelationType  string  `db:"correlation_type"`
-		CorrelationScore float64 `db:"correlation_score"`
-	}
-	err := db.GetContext(ctx, &c, `
-		SELECT correlation_type, correlation_score
-		FROM event_correlations
-		WHERE event_id = $1
-		ORDER BY correlation_score DESC
-		LIMIT 1`, eventID)
-	if err != nil || c.CorrelationScore < 0.5 {
-		return 0, c.CorrelationType
-	}
-	return correlationTypeAdjustment(c.CorrelationType), c.CorrelationType
 }
 
 // getOccurrenceCount returns the per-fingerprint occurrence number from event_duplicates

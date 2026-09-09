@@ -36,6 +36,17 @@ func statusEmoji(s Status) string {
 	}
 }
 
+// UpdateMarker is the idempotency token stamped into every rendered
+// watch-update block, and the canonical definition of that format. Exported
+// because it is a cross-surface contract, not an implementation detail: the
+// responder matches on it to avoid double-appending, the watch e2e asserts
+// delivery with it, and the chat UI polls for it to know the follow-up has
+// landed (app/src/components/llm/utils/watchFollowup.js). Any change here has
+// to be made in that JS helper too.
+func UpdateMarker(watchID uuid.UUID) string {
+	return fmt.Sprintf("<!-- watch-update:%s -->", watchID.String())
+}
+
 // renderWatchUpdateBlock formats the LLM-generated summary with a
 // consistent visual frame. Markdown only — the existing chat renderer
 // handles `---`, bold, and blockquote without any UI changes. The
@@ -43,8 +54,16 @@ func statusEmoji(s Status) string {
 // responder skips append if it sees the marker already present in the
 // target message (defends against dispatcher misfires that re-call
 // terminate for the same watch).
+//
+// The marker is ALSO a client-side contract. `terminate` commits MarkTerminal
+// BEFORE the summarizer call that produces this block, so a watch reading
+// COMPLETED is not proof its follow-up has been delivered. The chat stream
+// therefore polls the conversation until this exact string shows up rather
+// than refetching once on the status transition — see
+// app/src/components/llm/utils/watchFollowup.js. Changing the format silently
+// costs the app its in-thread refresh; the tests below pin it.
 func renderWatchUpdateBlock(w Watch, status Status, summary string) string {
-	marker := fmt.Sprintf("<!-- watch-update:%s -->", w.ID.String())
+	marker := UpdateMarker(w.ID)
 	// Neutralize any HTML-comment sequences in the summary before embedding it.
 	// The summary is derived from untrusted observation data (command stdout,
 	// logs, an LLM rephrasing of them). If it contained another watch's literal
@@ -98,7 +117,7 @@ func appendWatchUpdate(ctx context.Context, db *sqlx.DB, w Watch, status Status,
 		return fmt.Errorf("watch.responder: tenant_id is required")
 	}
 	block := renderWatchUpdateBlock(w, status, summary)
-	marker := fmt.Sprintf("<!-- watch-update:%s -->", w.ID.String())
+	marker := UpdateMarker(w.ID)
 
 	dbCtx, cancel := context.WithTimeout(ctx, responderDBTimeout)
 	defer cancel()

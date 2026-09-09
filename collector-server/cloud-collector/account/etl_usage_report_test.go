@@ -1,6 +1,9 @@
 package account
 
 import (
+	"errors"
+	"fmt"
+
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
 	"os"
@@ -92,4 +95,58 @@ func TestSummarizeDailySpend_ExcludesCreditsAndRefunds(t *testing.T) {
 	assert.InDelta(t, 7.0, summary.monthlyServices["AmazonS3"], 1e-9)
 	assert.Equal(t, "USD", summary.currency)
 	assert.False(t, summary.mixedCurrencies)
+}
+
+// TestAgentStatusForUsageSync pins that an account with no cost reporting is
+// not reported as a disconnected agent.
+//
+// Onboarding accepts an AWS account with no usable Cost & Usage Report, so that
+// account is working as intended — events, resources and recommendations all
+// sync, and only spend is empty. Marking the agent disconnected for it showed
+// customers a red "The Agent is not connected" banner sitting directly above a
+// feature table where every row read Connected, and would trip agent-health
+// alerting for a supported configuration.
+//
+// A genuine failure must still mark the agent disconnected.
+func TestAgentStatusForUsageSync(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want AgentStatus
+	}{
+		{
+			name: "clean sync stays connected",
+			want: AgentStatusConnected,
+		},
+		{
+			name: "cost simply not configured stays connected",
+			err:  providers.ErrCostNotConfigured,
+			want: AgentStatusConnected,
+		},
+		{
+			name: "unsupported provider stays connected",
+			err:  errors.ErrUnsupported,
+			want: AgentStatusConnected,
+		},
+		{
+			// The sentinel is wrapped in practice (resolveCostReportDefinition
+			// wraps the AWS denial), so matching must survive unwrapping.
+			name: "wrapped not-configured stays connected",
+			err:  fmt.Errorf("resolve cost report: %w", providers.ErrCostNotConfigured),
+			want: AgentStatusConnected,
+		},
+		{
+			name: "a real failure disconnects",
+			err:  errors.New("failed to fetch cost report manifest: AccessDenied on the CUR bucket"),
+			want: AgentStatusDisconnected,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := agentStatusForUsageSync(tt.err); got != tt.want {
+				t.Fatalf("agentStatusForUsageSync() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

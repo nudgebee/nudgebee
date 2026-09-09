@@ -318,6 +318,50 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 		}
 		return
 
+	case "add_event_evidence":
+		// Lets an automation attach its collected output to the event that
+		// triggered it. trigger_investigation cannot do this: its duplicate
+		// branch deliberately drops evidences for an existing finding.
+		eventId, _ := actionRequest["event_id"].(string)
+		if eventId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("event_id is required"))
+			return
+		}
+		rawEvidences, ok := actionRequest["evidences"].([]any)
+		if !ok || len(rawEvidences) == 0 {
+			c.JSON(400, common.ErrorActionBadRequest("evidences must be a non-empty array"))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := event.AddEvidence(ctx, eventId, rawEvidences); err != nil {
+			slog.Error("add_event_evidence: failed", "event_id", eventId, "error", err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, gin.H{"event_id": eventId, "added": len(rawEvidences)})
+		if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
+			TenantId:      ctx.GetSecurityContext().GetTenantId(),
+			UserId:        ctx.GetSecurityContext().GetUserId(),
+			EventTime:     time.Now().UTC(),
+			EventCategory: audit.EventAlertEvent,
+			EventType:     audit.EventTypeEventUpdate,
+			EventState:    map[string]any{"event_id": eventId, "evidence_count": len(rawEvidences)},
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   eventId,
+			EventAction:   audit.EventActionUpdate,
+			EventStatus:   audit.EventStatusSuccess,
+		}}}); err != nil {
+			ctx.GetLogger().Error("failed to create audit event", "error", err)
+		}
+		return
+
 	case "event_get_filter_values":
 		var request event.GetEventFilterValuesRequest
 

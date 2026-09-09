@@ -12,6 +12,7 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/prompts"
 )
@@ -102,6 +103,36 @@ func TestReAct3HypothesisModeFence(t *testing.T) {
 		assert.NotContains(t, out, notebookHeader)
 		assert.NotContains(t, out, hypothesisHeader)
 	})
+}
+
+func TestReActPlannerStopWordsCoverAttributedObservations(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		model    string
+		want     []string
+	}{
+		{
+			name:     "Bedrock Claude",
+			provider: "bedrock",
+			model:    "us.anthropic.claude-sonnet-4-6",
+			want:     []string{"<observation"},
+		},
+		{
+			name:     "custom Vertex endpoint",
+			provider: ProviderCustom,
+			model:    "vertex/claude-sonnet-4-6",
+			want:     []string{"<observation"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stopWords := reactPlannerStopWords(tc.provider, tc.model)
+			require.Equal(t, tc.want, stopWords)
+			for _, observation := range []string{"<observation>", `<observation step="E1">`} {
+				assert.True(t, strings.HasPrefix(observation, stopWords[0]))
+			}
+		})
+	}
 }
 
 // TestReAct3RoleOverlayFence verifies the orchestrator/executor role overlays
@@ -340,7 +371,7 @@ func TestResolveOrchestratorThinkingLevel(t *testing.T) {
 // set runCritique declares. It guards against conditional-block imbalance and
 // undeclared template variables (both would fail Format), and lets the fence
 // tests assert that gate-scoped rules only render when their respective flag is on.
-func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled, sdgGroundingEnabled bool) string {
+func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled, sdgGroundingEnabled, premiseVerificationEnabled bool) string {
 	t.Helper()
 	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReactCritiquer, "")
 	assert.NotEmpty(t, base, "embedded react critiquer prompt must load")
@@ -348,21 +379,22 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 	vars := []string{
 		"input", "scratchpad", "final_answer", "question_type", "tool_names",
 		"tool_descriptions", "tools_invoked", "hypothesis_mode_enabled",
-		"sdg_grounding_enabled", "notebook", "today",
+		"sdg_grounding_enabled", "premise_verification_enabled", "notebook", "today",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
-		"input":                   "why is the api slow?",
-		"scratchpad":              "E1: kubectl get pods -> Running",
-		"final_answer":            "Root cause: ...",
-		"today":                   "Mon, 01 Jan 2024 00:00:00 UTC",
-		"notebook":                "## Hypothesis Tree\n- H1 [High][OPEN] saturation",
-		"question_type":           questionType,
-		"tool_names":              "kubectl, logs, metrics",
-		"tool_descriptions":       "kubectl: ...",
-		"tools_invoked":           "kubectl",
-		"hypothesis_mode_enabled": hypothesisModeEnabled,
-		"sdg_grounding_enabled":   sdgGroundingEnabled,
+		"input":                        "why is the api slow?",
+		"scratchpad":                   "E1: kubectl get pods -> Running",
+		"final_answer":                 "Root cause: ...",
+		"today":                        "Mon, 01 Jan 2024 00:00:00 UTC",
+		"notebook":                     "## Hypothesis Tree\n- H1 [High][OPEN] saturation",
+		"question_type":                questionType,
+		"tool_names":                   "kubectl, logs, metrics",
+		"tool_descriptions":            "kubectl: ...",
+		"tools_invoked":                "kubectl",
+		"hypothesis_mode_enabled":      hypothesisModeEnabled,
+		"sdg_grounding_enabled":        sdgGroundingEnabled,
+		"premise_verification_enabled": premiseVerificationEnabled,
 	})
 	assert.NoError(t, err, "react critiquer prompt must render without template errors")
 	return out
@@ -378,7 +410,7 @@ func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
 	const staleMarkerCarveOut = "Stale-marker carve-out"
 
 	t.Run("hypothesis mode on: completion gate present", func(t *testing.T) {
-		out := renderReactCritiquer(t, "investigation", true, false)
+		out := renderReactCritiquer(t, "investigation", true, false, false)
 		assert.Contains(t, out, gateHeader)
 		assert.Contains(t, out, toolFailureCarveOut)
 		assert.Contains(t, out, staleMarkerCarveOut,
@@ -386,13 +418,13 @@ func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
 	})
 
 	t.Run("investigation without hypothesis mode: no completion gate", func(t *testing.T) {
-		out := renderReactCritiquer(t, "investigation", false, false)
+		out := renderReactCritiquer(t, "investigation", false, false, false)
 		assert.NotContains(t, out, gateHeader)
 		assert.NotContains(t, out, staleMarkerCarveOut)
 	})
 
 	t.Run("plain query: no completion gate", func(t *testing.T) {
-		out := renderReactCritiquer(t, "query", false, false)
+		out := renderReactCritiquer(t, "query", false, false, false)
 		assert.NotContains(t, out, gateHeader)
 	})
 }
@@ -417,7 +449,7 @@ func TestReAct3CritiquerSDGGroundingGateFence(t *testing.T) {
 	const availableToolsCarveOut = "Skip entirely when `service_dependency_graph` is NOT in `<available_tools>`"
 
 	t.Run("sdg_grounding_enabled on: rule + all balance clauses present", func(t *testing.T) {
-		out := renderReactCritiquer(t, "investigation", true, true)
+		out := renderReactCritiquer(t, "investigation", true, true, false)
 		assert.Contains(t, out, ruleHeader, "Rule 8 header must render")
 		assert.Contains(t, out, acceptSDGCitation, "SDG citation must be listed as an accepted evidence form")
 		assert.Contains(t, out, acceptConfigMapEvidence, "ConfigMap / env-var evidence must be accepted (balance clause)")
@@ -430,16 +462,48 @@ func TestReAct3CritiquerSDGGroundingGateFence(t *testing.T) {
 	})
 
 	t.Run("sdg_grounding_enabled off: rule completely absent", func(t *testing.T) {
-		out := renderReactCritiquer(t, "investigation", true, false)
+		out := renderReactCritiquer(t, "investigation", true, false, false)
 		assert.NotContains(t, out, ruleHeader, "Rule 8 must not render when flag is off")
 		assert.NotContains(t, out, acceptConfigMapEvidence)
 		assert.NotContains(t, out, softAdvisoryLanguage)
 	})
 
 	t.Run("sdg_grounding on works for plain query too (rule is question-type agnostic)", func(t *testing.T) {
-		out := renderReactCritiquer(t, "query", false, true)
+		out := renderReactCritiquer(t, "query", false, true, false)
 		assert.Contains(t, out, ruleHeader,
 			"Rule 8 does not gate on question_type — a dependency claim in a plain-query answer is just as ungrounded as in an investigation")
+	})
+}
+
+// TestReAct3CritiquerPremiseGateFence verifies the Symptom Confirmation Gate
+// (rule 0b) renders only when premise_verification_enabled is set, carries both
+// terminal-accepting clauses (disproven / unconfirmable), and stays absent when
+// the flag is off — so it can be A/B'd cleanly and never regresses the shared
+// critiquer when off.
+func TestReAct3CritiquerPremiseGateFence(t *testing.T) {
+	const gateHeader = "Symptom Confirmation Gate"
+	const disprovenAccept = "Symptom actively DISPROVEN"
+	const unconfirmable = "Symptom UNCONFIRMABLE"
+	const failedMeasurement = `A failed or empty measurement is "unconfirmed", never "confirmed"`
+
+	t.Run("premise_verification on: gate + both honest-terminal clauses present", func(t *testing.T) {
+		out := renderReactCritiquer(t, "investigation", false, false, true)
+		assert.Contains(t, out, gateHeader, "the Symptom Confirmation Gate must render when the flag is on")
+		assert.Contains(t, out, disprovenAccept, "the disproven→accept clause must render")
+		assert.Contains(t, out, unconfirmable, "the unconfirmable→no-RCA clause must render")
+		assert.Contains(t, out, failedMeasurement, "the failed-measurement-is-unconfirmed clause must render")
+	})
+
+	t.Run("premise_verification off: gate completely absent", func(t *testing.T) {
+		out := renderReactCritiquer(t, "investigation", false, false, false)
+		assert.NotContains(t, out, gateHeader, "gate must not render when the flag is off")
+		assert.NotContains(t, out, disprovenAccept)
+		assert.NotContains(t, out, unconfirmable)
+	})
+
+	t.Run("premise_verification is question-type agnostic (also renders for plain query)", func(t *testing.T) {
+		out := renderReactCritiquer(t, "query", false, false, true)
+		assert.Contains(t, out, gateHeader, "gate is not gated on question_type — a false premise is just as wrong in a query")
 	})
 }
 

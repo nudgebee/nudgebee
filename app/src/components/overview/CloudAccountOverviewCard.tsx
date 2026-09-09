@@ -27,6 +27,33 @@ import type { CloudAccountOverviewSummary } from '@api1/overview';
  * card issues no requests of its own.
  */
 
+// Resolve an ISO currency code (USD/INR/EUR/…) to its narrow symbol via Intl, so
+// a card for an INR-billed account renders ₹ rather than the hardcoded $. Same
+// approach as optimise-new/summary/useSummaryData.ts. Cached because
+// Intl.NumberFormat construction isn't free and the currency set is tiny.
+const currencySymbolCache: Record<string, string> = {};
+
+const getCurrencySymbol = (currency: unknown): string => {
+  if (typeof currency !== 'string' || !currency) {
+    return '$';
+  }
+  // Some engines throw RangeError on lowercase ISO codes, so normalise first.
+  const code = currency.toUpperCase();
+  if (currencySymbolCache[code]) {
+    return currencySymbolCache[code];
+  }
+  try {
+    const symbol =
+      new Intl.NumberFormat('en-US', { style: 'currency', currency: code, currencyDisplay: 'narrowSymbol' })
+        .formatToParts(0)
+        .find((p) => p.type === 'currency')?.value || '$';
+    currencySymbolCache[code] = symbol;
+    return symbol;
+  } catch {
+    return '$';
+  }
+};
+
 const PANEL_SX = {
   minHeight: ds.space.mul(0, 55),
   boxSizing: 'border-box',
@@ -59,6 +86,8 @@ const CountBlock = ({ label, value, loading }: { label: string; value: number; l
 
 const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summary, loading = false }: Props) => {
   const detailsHref = `/cloud-account/details/${accountId}#summary`;
+  const currency = (summary?.currency || 'USD').toUpperCase();
+  const currencySymbol = getCurrencySymbol(currency);
   const forecast = getBudgetExpectedMonthlyExpense(summary?.mtdSpend || 0);
   const lastMonth = summary?.lastMonthSpend || 0;
   // Same convention as the K8s card: tone the forecast against last month, and
@@ -158,7 +187,13 @@ const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summa
                   {loading ? (
                     <Skeleton shape='rect' width={ds.space.mul(0, 40)} height='24px' />
                   ) : (
-                    <CostCallout value={entry.value} size='lg' tone={(entry.tone as any) || 'neutral'} arrow={(entry.arrow as any) || 'none'} />
+                    <CostCallout
+                      value={entry.value}
+                      currency={currency}
+                      size='lg'
+                      tone={(entry.tone as any) || 'neutral'}
+                      arrow={(entry.arrow as any) || 'none'}
+                    />
                   )}
                 </Box>
               ))}
@@ -173,6 +208,7 @@ const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summa
         <Grid item md={2} sm={4} xs={4}>
           <ClusterPotentialSaving
             savingPotentialSummary={{ yearly_recommendation_saving: (summary?.estimatedSavings || 0) * 12 }}
+            currencySymbol={currencySymbol}
             loading={loading}
           />
         </Grid>

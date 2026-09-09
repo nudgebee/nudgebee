@@ -30,10 +30,18 @@ class Category(Enum):
 
 
 # Database operation constants
+# The status CASE is what keeps a user's decision alive across a re-scan: the
+# scanner owns Open and Archive, the user owns Dismissed/snoozed, InProgress and
+# Closed. A bare EXCLUDED.status reopened dismissed findings, because the archive
+# step has already moved the row to Archive by the time this runs. Every writer
+# in this module shares this constant, so the guard belongs here rather than in
+# each of them.
 ON_CONFLICT_RECOMMENDATION = (
     "ON CONFLICT (cloud_account_id, rule_name, resource_id, category, "
     "account_object_id) DO UPDATE SET "
-    "recommendation = EXCLUDED.recommendation, status=EXCLUDED.status"
+    "recommendation = EXCLUDED.recommendation, "
+    "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+    "THEN recommendation.status ELSE EXCLUDED.status END"
 )
 
 DEFAULT_ESTIMATED_SAVINGS = 30 * 24 * 0.50  # 30 days extended support cost
@@ -1392,20 +1400,32 @@ def generate_eks_cluster_upgrade_recommendation(tenant: str, cloud_account_id: s
 
 
 def archive_existing_recommendations_multi_rule(cloud_account_id, tenant, category, rules):
-    """Archive existing recommendations for multiple rules."""
+    """Archive existing recommendations for multiple rules.
+
+    Tombstones Open rows only. Matching every non-Archive row flipped a
+    Dismissed row to Archive first, and the upsert then read that as
+    scanner-owned and reopened the finding. Keep in sync with the twin in
+    event_handler.py.
+    """
     update_to_archive = (
         "update recommendation set status = %s where tenant_id = %s and "
         "cloud_account_id = %s and category = %s and rule_name = ANY(%s) "
-        "and status not in ('Archive')"
+        "and status = 'Open'"
     )
     database.run_query(update_to_archive, ["Archive", tenant, cloud_account_id, category, rules])
 
 
 def archive_existing_with_rule(cloud_account_id, tenant, category, rule_name):
-    """Archive existing recommendations for a specific rule."""
+    """Archive existing recommendations for a specific rule.
+
+    Tombstones Open rows only. This previously carried no status filter at all,
+    so it archived Dismissed, InProgress and Closed rows alike before the upsert
+    reopened whichever ones the scan still reported.
+    """
     update_to_archive = (
         "update recommendation set status = %s where tenant_id = %s and "
-        "cloud_account_id = %s and category = %s and rule_name = %s"
+        "cloud_account_id = %s and category = %s and rule_name = %s "
+        "and status = 'Open'"
     )
     database.run_query(update_to_archive, ["Archive", tenant, cloud_account_id, category, rule_name])
 

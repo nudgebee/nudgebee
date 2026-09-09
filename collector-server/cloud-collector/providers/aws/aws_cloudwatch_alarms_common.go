@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"sort"
 	"strings"
 	"time"
 
@@ -421,15 +422,25 @@ func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account provider
 			stateReason := aws.ToString(alarm.StateReason)
 			alarmArn := aws.ToString(alarm.AlarmArn)
 
-			// Handle StateTransitionedTimestamp safely
+			// Handle StateTransitionedTimestamp safely.
+			//
+			// FindingId is deliberately left unset so the per-firing identity comes
+			// from providers.Event.FiringFindingID() — the same key the EventBridge
+			// path produces. A CloudWatch state change reaches us twice, by push and
+			// by this poller, and both already key on the alarm ARN plus the
+			// transition timestamp; this path used to print that pair as
+			// "<arn>/<RFC3339>" while the shared key prints "<arn>-<unix>", so the
+			// unique index on (tenant, cloud_account_id, finding_id) could not match
+			// them. Every alarm was stored twice and every firing advanced its dedup
+			// chain by two.
+			//
+			// Nothing is lost by dropping the bespoke format: eventDate *is* the
+			// transition timestamp, so the shared key is equally deterministic. When
+			// the timestamp is absent it falls back to now() and the finding id
+			// stops being stable across polls — pre-existing, and unchanged here.
 			var eventDate time.Time
-			var findingId string
 			if alarm.StateTransitionedTimestamp != nil {
 				eventDate = *alarm.StateTransitionedTimestamp
-				// Use deterministic FindingId only when we have a real transition timestamp.
-				// When timestamp is nil (fallback to time.Now()), leave FindingId empty
-				// so etl_events.go computes it from fingerprint+timestamp.
-				findingId = fmt.Sprintf("%s/%s", alarmArn, eventDate.Format(time.RFC3339))
 			} else {
 				eventDate = time.Now()
 			}
@@ -444,7 +455,6 @@ func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account provider
 				Date:                eventDate,
 				EventSource:         "AWS_CloudWatch_Alarm",
 				EventId:             eventId,
-				FindingId:           findingId,
 				EventStatus:         providers.EventStatusFiring,
 				EventSeverity:       providers.EventSeverityHigh,
 				ResourceType:        enrichment.ResourceType,
@@ -583,11 +593,31 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	// 1. Determine namespace info from shared map
 	namespace, knownNamespace := cloudwatchNamespaceServiceMap[info.MetricNamespace]
 	if !knownNamespace {
-		namespace = CloudwatchNamespace{
-			Name:                  info.MetricNamespace,
-			ResourceDimensionName: "Resource",
-			ServiceName:           "CloudWatch",
-			ResourceType:          "alarm",
+		// An unrecognised namespace does not mean an unrecognisable resource.
+		// A custom metric published against InstanceId is still about that EC2
+		// instance, and the dimensions say so even when the namespace does not.
+		//
+		// Falling straight through to ResourceType "alarm" made the event
+		// resolve to no cloud resource, which removed it from correlation and
+		// from analysis with no signal either had happened. Measured on one
+		// account: 22 such events produced 0 correlations and 0 analyses, while
+		// 35 compute-instance events from the same alarms produced 24 and 4.
+		// Application health is rarely a native AWS metric, so this is the
+		// common case for anyone alarming on their own telemetry.
+		if inferred, ok := namespaceFromDimensions(info.Dimensions); ok {
+			namespace = CloudwatchNamespace{
+				Name:                  info.MetricNamespace,
+				ResourceDimensionName: inferred.ResourceDimensionName,
+				ServiceName:           inferred.ServiceName,
+				ResourceType:          inferred.ResourceType,
+			}
+		} else {
+			namespace = CloudwatchNamespace{
+				Name:                  info.MetricNamespace,
+				ResourceDimensionName: "Resource",
+				ServiceName:           "CloudWatch",
+				ResourceType:          "alarm",
+			}
 		}
 	}
 
@@ -677,8 +707,66 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	return result
 }
 
-// resolveResourceFromDimensions finds the best resource identifier from alarm dimensions.
-// Priority: namespace's expected dimension → first non-generic dimension → alarm name.
+// resourceDimensionIndex maps a resource-identifying dimension name
+// ("InstanceId", "DBInstanceIdentifier", ...) to the namespace that owns it.
+// Built once from cloudwatchNamespaceServiceMap so it cannot drift from it.
+// A dimension is indexed when every namespace claiming it agrees on the
+// resource it identifies; genuine disagreement drops it, because guessing
+// between two resource kinds is worse than the generic fallback.
+var resourceDimensionIndex = func() map[string]CloudwatchNamespace {
+	// Several namespaces legitimately share a dimension while agreeing on what
+	// it identifies: AWS/EC2 and CWAgent both key on InstanceId and both mean a
+	// compute-instance. What disqualifies a dimension is disagreement about the
+	// resource, not the fact that more than one namespace uses it - counting
+	// occurrences would drop InstanceId, which is the case that matters most.
+	type kind struct{ service, resource string }
+	kinds := map[string]map[kind]bool{}
+	for _, ns := range cloudwatchNamespaceServiceMap {
+		if ns.ResourceDimensionName == "" {
+			continue
+		}
+		if kinds[ns.ResourceDimensionName] == nil {
+			kinds[ns.ResourceDimensionName] = map[kind]bool{}
+		}
+		kinds[ns.ResourceDimensionName][kind{ns.ServiceName, ns.ResourceType}] = true
+	}
+	// Sorted so the entry stored for a shared dimension is the same on every
+	// run. Callers read only ServiceName and ResourceType, which the agreement
+	// check above already proved identical, so today this changes nothing -
+	// but map iteration order is randomised, and leaving it unordered means the
+	// first reader of any other field gets a value that varies per process.
+	names := make([]string, 0, len(cloudwatchNamespaceServiceMap))
+	for name := range cloudwatchNamespaceServiceMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	idx := map[string]CloudwatchNamespace{}
+	for _, name := range names {
+		ns := cloudwatchNamespaceServiceMap[name]
+		if ns.ResourceDimensionName != "" && len(kinds[ns.ResourceDimensionName]) == 1 {
+			idx[ns.ResourceDimensionName] = ns
+		}
+	}
+	return idx
+}()
+
+// namespaceFromDimensions recovers the resource kind of a custom-namespace
+// alarm from its dimensions. Returns false when no dimension identifies a
+// known resource, leaving the caller's generic fallback in place.
+func namespaceFromDimensions(dims []AlarmDimension) (CloudwatchNamespace, bool) {
+	for _, dim := range dims {
+		if ns, ok := resourceDimensionIndex[dim.Name]; ok && dim.Value != "" {
+			return ns, true
+		}
+	}
+	return CloudwatchNamespace{}, false
+}
+
+// resolveResourceFromDimensions finds the best resource identifier from alarm
+// dimensions. Priority: the namespace's expected dimension, then any dimension
+// that names a resource, then the first non-generic dimension, then the alarm
+// name.
 func resolveResourceFromDimensions(dims []AlarmDimension, namespace CloudwatchNamespace, alarmName string) (instance, instanceType string) {
 	if len(dims) == 0 {
 		return alarmName, "AlarmName"
@@ -689,6 +777,19 @@ func resolveResourceFromDimensions(dims []AlarmDimension, namespace CloudwatchNa
 	for _, dim := range dims {
 		if dim.Name == targetDim {
 			return dim.Value, targetDim
+		}
+	}
+
+	// Prefer a dimension that actually identifies a resource. Falling straight
+	// through to "first non-generic" made the result depend on the order
+	// CloudWatch happened to list the dimensions in: three structurally
+	// identical alarms carrying Service and InstanceId resolved two to the
+	// instance and one to the service name, and the one that lost pointed at no
+	// cloud resource at all - so it was dropped from correlation while its
+	// siblings were kept. Same input, different answer, no signal.
+	for _, dim := range dims {
+		if _, known := resourceDimensionIndex[dim.Name]; known && dim.Value != "" {
+			return dim.Value, dim.Name
 		}
 	}
 

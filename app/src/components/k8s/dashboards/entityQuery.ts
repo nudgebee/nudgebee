@@ -24,10 +24,31 @@ export interface EntityColumn {
   type: EntityColumnType;
   /**
    * False when the panel cannot filter on it. Only the traces tables set this:
-   * they are read through the traces service, whose filters are named
-   * parameters rather than a free where clause (see traceQuery.ts).
+   * their filters are compiled against the trace store's own schema, which does
+   * not cover the aggregates a grouping row carries (see traceQuery.ts).
    */
   filterable?: boolean;
+  /**
+   * Filterable but not selectable — a column the store can filter on that the
+   * response does not return. The grouping call answers with a FIXED field
+   * list, so selecting or sorting by one of these would render a blank column.
+   */
+  filterOnly?: boolean;
+  /**
+   * Computed by the GROUP BY — count(*), sum(), max(). Mirrors `IsAggregated`
+   * on the same column in `api-server/services/query/metadata.go`.
+   *
+   * A filter on one of these belongs in a HAVING: the engine refuses an
+   * aggregate in a WHERE outright ("column X defined in where clause is
+   * aggregated"), which is what a panel filtering on Event count used to hit.
+   * `buildEntityQuery` routes them, so on the query-engine tables they stay
+   * filterable.
+   *
+   * The traces tables have no HAVING surface — their filters go to the traces
+   * service, not through `buildEntityQuery` — so theirs are marked but NOT
+   * `filterable`. Marking one filterable there would rebuild the same bug.
+   */
+  aggregate?: boolean;
   /** Overrides plain-text rendering — see EntityColumnFormat. */
   format?: EntityColumnFormat;
 }
@@ -102,17 +123,17 @@ const EVENT_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'priority', label: 'Priority', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
   { name: 'category', label: 'Category', type: 'string' },
-  { name: 'event_count', label: 'Event count', type: 'number', format: 'number' },
-  { name: 'count_priority_p0', label: 'P0 count', type: 'number', format: 'number' },
-  { name: 'count_priority_p1', label: 'P1 count', type: 'number', format: 'number' },
-  { name: 'count_priority_p2', label: 'P2 count', type: 'number', format: 'number' },
-  { name: 'count_priority_p3', label: 'P3 count', type: 'number', format: 'number' },
-  { name: 'count_new_issues', label: 'New issues', type: 'number', format: 'number' },
-  { name: 'count_pod_issues', label: 'Pod issues', type: 'number', format: 'number' },
-  { name: 'count_node_issues', label: 'Node issues', type: 'number', format: 'number' },
-  { name: 'count_application_issues', label: 'Application issues', type: 'number', format: 'number' },
-  { name: 'max_created_at', label: 'Last seen', type: 'datetime' },
-  { name: 'min_created_at', label: 'First seen', type: 'datetime' },
+  { name: 'event_count', label: 'Event count', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_priority_p0', label: 'P0 count', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_priority_p1', label: 'P1 count', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_priority_p2', label: 'P2 count', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_priority_p3', label: 'P3 count', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_new_issues', label: 'New issues', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_pod_issues', label: 'Pod issues', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_node_issues', label: 'Node issues', type: 'number', format: 'number', aggregate: true },
+  { name: 'count_application_issues', label: 'Application issues', type: 'number', format: 'number', aggregate: true },
+  { name: 'max_created_at', label: 'Last seen', type: 'datetime', aggregate: true },
+  { name: 'min_created_at', label: 'First seen', type: 'datetime', aggregate: true },
   { name: 'starts_at', label: 'Started at', type: 'datetime' },
   { name: 'created_at', label: 'Created at', type: 'datetime' },
 ];
@@ -150,8 +171,8 @@ const RECOMMENDATION_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'category', label: 'Category', type: 'string' },
   { name: 'severity', label: 'Severity', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'count', label: 'Recommendations', type: 'number', format: 'number' },
-  { name: 'sum_estimated_savings', label: 'Total savings', type: 'number', format: 'currency' },
+  { name: 'count', label: 'Recommendations', type: 'number', format: 'number', aggregate: true },
+  { name: 'sum_estimated_savings', label: 'Total savings', type: 'number', format: 'currency', aggregate: true },
   { name: 'estimated_savings', label: 'Estimated savings', type: 'number', format: 'currency' },
   { name: 'account_name', label: 'Account', type: 'string' },
   { name: 'account_cloud_provider', label: 'Cloud provider', type: 'string' },
@@ -171,10 +192,10 @@ const SPEND_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'resource_region', label: 'Region', type: 'string' },
   { name: 'resource_id', label: 'Resource id', type: 'string' },
   { name: 'account_id', label: 'Account id', type: 'string' },
-  { name: 'spend_amount', label: 'Spend', type: 'number', format: 'currency' },
-  { name: 'spend_count', label: 'Line items', type: 'number', format: 'number' },
-  { name: 'resource_count', label: 'Resources', type: 'number', format: 'number' },
-  { name: 'account_count', label: 'Accounts', type: 'number', format: 'number' },
+  { name: 'spend_amount', label: 'Spend', type: 'number', format: 'currency', aggregate: true },
+  { name: 'spend_count', label: 'Line items', type: 'number', format: 'number', aggregate: true },
+  { name: 'resource_count', label: 'Resources', type: 'number', format: 'number', aggregate: true },
+  { name: 'account_count', label: 'Accounts', type: 'number', format: 'number', aggregate: true },
   { name: 'currency_type', label: 'Currency', type: 'string' },
   // Rows the biller excludes from a total — credits, refunds, tax lines. Every
   // spend figure in the product filters these out; a panel that forgets to
@@ -231,7 +252,7 @@ const TICKET_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'title', label: 'Title', type: 'string' },
   { name: 'reference_id', label: 'Reference', type: 'string' },
   { name: 'account_id', label: 'Account id', type: 'string' },
-  { name: 'count', label: 'Tickets', type: 'number', format: 'number' },
+  { name: 'count', label: 'Tickets', type: 'number', format: 'number', aggregate: true },
 ];
 
 const ANOMALY_COLUMNS: EntityColumn[] = [
@@ -256,7 +277,7 @@ const ANOMALY_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'name', label: 'Subject', type: 'string' },
   { name: 'namespace', label: 'Namespace', type: 'string' },
   { name: 'is_anomaly', label: 'Is anomaly', type: 'boolean' },
-  { name: 'count', label: 'Occurrences', type: 'number' },
+  { name: 'count', label: 'Occurrences', type: 'number', aggregate: true },
   { name: 'evaluated_at', label: 'Evaluated at', type: 'datetime' },
   { name: 'created_at', label: 'Created at', type: 'datetime' },
   { name: 'updated_at', label: 'Updated at', type: 'datetime' },
@@ -271,8 +292,8 @@ const CIS_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'severity', label: 'Severity', type: 'string' },
   { name: 'severity_weight', label: 'Severity weight', type: 'number', format: 'number' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'count', label: 'Findings', type: 'number', format: 'number' },
-  { name: 'updated_at', label: 'Last checked', type: 'datetime' },
+  { name: 'count', label: 'Findings', type: 'number', format: 'number', aggregate: true },
+  { name: 'updated_at', label: 'Last checked', type: 'datetime', aggregate: true },
   { name: 'account_id', label: 'Account id', type: 'string' },
 ];
 
@@ -295,7 +316,7 @@ const VULNERABILITY_COLUMNS: EntityColumn[] = [
 const AUTOPILOT_TASK_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'auto_pilot_category', label: 'Category', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'count', label: 'Tasks', type: 'number', format: 'number' },
+  { name: 'count', label: 'Tasks', type: 'number', format: 'number', aggregate: true },
   { name: 'scheduled_time', label: 'Scheduled for', type: 'datetime' },
   { name: 'auto_pilot_id', label: 'Autopilot id', type: 'string' },
   { name: 'auto_pilot_account_id', label: 'Autopilot account', type: 'string' },
@@ -346,7 +367,7 @@ const AI_CONVERSATION_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'source', label: 'Source', type: 'string' },
   { name: 'status', label: 'Status', type: 'string' },
   { name: 'title', label: 'Title', type: 'string' },
-  { name: 'count', label: 'Investigations', type: 'number', format: 'number' },
+  { name: 'count', label: 'Investigations', type: 'number', format: 'number', aggregate: true },
   { name: 'created_at', label: 'Started at', type: 'datetime' },
   { name: 'updated_at', label: 'Updated at', type: 'datetime' },
   { name: 'account_id', label: 'Account id', type: 'string' },
@@ -375,18 +396,23 @@ const TRACE_COLUMNS: EntityColumn[] = [
 const TRACE_GROUPING_COLUMNS: EntityColumn[] = [
   { name: 'workload_name', label: 'Workload', type: 'string', filterable: true },
   { name: 'workload_namespace', label: 'Namespace', type: 'string', filterable: true },
-  { name: 'span_name', label: 'Span name', type: 'string' },
+  { name: 'span_name', label: 'Span name', type: 'string', filterable: true },
   { name: 'resource', label: 'Resource', type: 'string', filterable: true },
   { name: 'destination_workload_name', label: 'Destination workload', type: 'string', filterable: true },
   { name: 'destination_workload_namespace', label: 'Destination namespace', type: 'string', filterable: true },
-  { name: 'destination_workload_zone', label: 'Destination zone', type: 'string' },
+  { name: 'destination_workload_zone', label: 'Destination zone', type: 'string', filterable: true },
   { name: 'http_status_code', label: 'HTTP status', type: 'string', filterable: true },
-  { name: 'count', label: 'Requests', type: 'number', format: 'number' },
-  { name: 'error_count', label: 'Errors', type: 'number', format: 'number' },
-  { name: 'duration_ns', label: 'Duration (ns)', type: 'number', format: 'duration' },
-  { name: 'p95_latency', label: 'p95 latency', type: 'number', format: 'duration' },
-  { name: 'p99_latency', label: 'p99 latency', type: 'number', format: 'duration' },
-  { name: 'max_latency', label: 'Max latency', type: 'number', format: 'duration' },
+  { name: 'count', label: 'Requests', type: 'number', format: 'number', aggregate: true },
+  { name: 'error_count', label: 'Errors', type: 'number', format: 'number', aggregate: true },
+  { name: 'duration_ns', label: 'Duration (ns)', type: 'number', format: 'duration', filterable: true },
+  { name: 'p95_latency', label: 'p95 latency', type: 'number', format: 'duration', aggregate: true },
+  { name: 'p99_latency', label: 'p99 latency', type: 'number', format: 'duration', aggregate: true },
+  { name: 'max_latency', label: 'Max latency', type: 'number', format: 'duration', aggregate: true },
+  // Filter-only: the grouping query filters SPANS before it groups them, so
+  // these narrow the rows even though the response never carries them.
+  { name: 'status_code', label: 'Status code', type: 'string', filterable: true, filterOnly: true },
+  { name: 'trace_source', label: 'Trace source', type: 'string', filterable: true, filterOnly: true },
+  { name: 'trace_id', label: 'Trace id', type: 'string', filterable: true, filterOnly: true },
 ];
 
 /**
@@ -686,6 +712,8 @@ export function tablesFor(datasource: string): EntityTable[] {
  * providers (Loki / Elasticsearch chips). The entity path has no case for them
  * and fails the query with "binary clause type not supported", so offering them
  * here would build panels that only break at render.
+ *
+ * `operatorsFor` narrows this per table — see the traces carve-out there.
  */
 const OPERATORS_BY_TYPE: Record<EntityColumnType, { value: string; label: string }[]> = {
   string: [
@@ -745,6 +773,12 @@ export interface EntityQuery {
   table: string;
   columns: { name: string }[];
   where?: Record<string, unknown>;
+  /**
+   * Filters on the GROUP BY's own output (count, sum, max). Named `having` to
+   * land on `QueryRequest.Having`, which the panel query is unmarshalled
+   * straight into server-side — so this needed no backend change.
+   */
+  having?: Record<string, unknown>;
   order_by?: { column: string; order: string }[];
   limit?: number;
 }
@@ -759,7 +793,9 @@ export function findColumn(table: EntityTable, name: string): EntityColumn | und
 
 /**
  * Columns a filter row may name. Everything is filterable on the query-engine
- * tables; the traces tables mark only what their named parameters cover.
+ * tables; the traces tables mark only what the span store can filter on — a
+ * grouping's aggregates (count, p99) belong in a HAVING the builder has no
+ * surface for.
  */
 export function filterableColumns(table: EntityTable): EntityColumn[] {
   const anyDeclared = table.columns.some((c) => c.filterable);
@@ -768,7 +804,18 @@ export function filterableColumns(table: EntityTable): EntityColumn[] {
 
 export function operatorsFor(table: EntityTable, columnName: string) {
   const column = findColumn(table, columnName);
-  return OPERATORS_BY_TYPE[column?.type || 'string'];
+  const operators = OPERATORS_BY_TYPE[column?.type || 'string'];
+  // "is empty" compiles to IS NULL, and a span store's columns are not
+  // nullable — every ClickHouse trace column is a plain String, so the filter
+  // would return nothing at all rather than the rows with no value. Offering it
+  // on traces is offering a filter that silently empties the panel.
+  if (table.datasource === 'traces') return operators.filter((o) => o.value !== '_is_null');
+  return operators;
+}
+
+/** Columns a panel may SELECT or sort by — everything but the filter-only ones. */
+export function selectableColumns(table: EntityTable): EntityColumn[] {
+  return table.columns.filter((c) => !c.filterOnly);
 }
 
 export function operatorTakesValue(operator: string): boolean {
@@ -819,10 +866,15 @@ export function buildEntityQuery(draft: EntityQueryDraft): EntityQuery {
     limit: draft.limit > 0 ? draft.limit : 100,
   };
 
-  const clauses = draft.filters
-    .filter((f) => f.column && f.operator && (operatorTakesValue(f.operator) ? f.value.trim() !== '' : true))
-    .map((f) => ({ _binary: { [f.column]: { [f.operator]: filterValue(table, f) } } }));
-  if (clauses.length > 0) query.where = { _and: clauses };
+  const rows = draft.filters.filter((f) => f.column && f.operator && (operatorTakesValue(f.operator) ? f.value.trim() !== '' : true));
+  const clause = (f: EntityFilter) => ({ _binary: { [f.column]: { [f.operator]: coerceFilterValue(table, f) } } });
+  // A count(*) cannot be compared in a WHERE — SQL evaluates it after the
+  // grouping, and the engine rejects the query rather than guessing. Splitting
+  // here is what lets "Requests is greater than 100" mean what it says.
+  const where = rows.filter((f) => !findColumn(table, f.column)?.aggregate).map(clause);
+  const having = rows.filter((f) => findColumn(table, f.column)?.aggregate).map(clause);
+  if (where.length > 0) query.where = { _and: where };
+  if (having.length > 0) query.having = { _and: having };
 
   if (draft.sortColumn) {
     query.order_by = [{ column: draft.sortColumn, order: draft.sortDesc ? 'desc' : 'asc' }];
@@ -836,7 +888,7 @@ export function buildEntityQuery(draft: EntityQueryDraft): EntityQuery {
  * compares against the column's real type, so a string "5" would not match an
  * integer column.
  */
-function filterValue(table: EntityTable, filter: EntityFilter): unknown {
+export function coerceFilterValue(table: EntityTable, filter: EntityFilter): unknown {
   if (NO_VALUE_OPERATORS.has(filter.operator)) return true;
   const column = findColumn(table, filter.column);
   const raw = filter.value.trim();
@@ -857,6 +909,69 @@ function filterValue(table: EntityTable, filter: EntityFilter): unknown {
 }
 
 /**
+ * Substitutes the dashboard's variables into a stored query's filter VALUES.
+ *
+ * The other datasources get this for free: their query is a string, and
+ * `renderTemplate` runs over it before the fetch. An entity panel's query is a
+ * JSON object, so `$namespace` in a filter value used to travel to the engine
+ * verbatim and match nothing — even though the builder's placeholder offers it.
+ *
+ * Only values are touched. Column names and operators are not authored by hand
+ * and must not be substitutable.
+ *
+ * Returns the STORED shape rather than `EntityQuery` — it is handed straight to
+ * the execute action, whose `query` field is the opaque engine request.
+ */
+/**
+ * A `_binary` column's operator map, or an empty one when the stored query does
+ * not hold an object there. Dashboards are stored JSON that predates the current
+ * shape and can be hand-edited on import, so a column carrying `null` — or a
+ * string, or an array — is reachable, and it must not take the render down.
+ */
+function asOperators(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+export function renderEntityQuery(stored: unknown, render: (value: string) => string): Record<string, unknown> {
+  const query = (stored || {}) as EntityQuery;
+
+  const renderValue = (value: unknown): unknown => {
+    if (typeof value === 'string') return render(value);
+    // `_in` / `_not_in` carry a list; a number or the boolean `_is_null` takes
+    // no template.
+    if (Array.isArray(value)) return value.map((v) => (typeof v === 'string' ? render(v) : v));
+    return value;
+  };
+
+  const renderClauses = (clause: Record<string, unknown> | undefined) => {
+    const and = (clause as any)?._and;
+    if (!Array.isArray(and)) return clause;
+    return {
+      ...clause,
+      _and: and.map((c: any) => ({
+        ...c,
+        _binary: Object.fromEntries(
+          Object.entries((c?._binary || {}) as Record<string, unknown>).map(([column, operators]) => [
+            column,
+            // Guarded one level deeper than the container: a stored query with
+            // `_binary: { column: null }` would otherwise throw out of
+            // Object.entries and take the whole dashboard's render with it.
+            Object.fromEntries(Object.entries(asOperators(operators)).map(([operator, value]) => [operator, renderValue(value)])),
+          ])
+        ),
+      })),
+    };
+  };
+
+  return {
+    ...query,
+    ...(query.where ? { where: renderClauses(query.where) as Record<string, unknown> } : {}),
+    ...(query.having ? { having: renderClauses(query.having) as Record<string, unknown> } : {}),
+  };
+}
+
+/**
  * Reads a stored query back into the editor's draft, so reopening a panel shows
  * the filters that were saved rather than an empty builder.
  */
@@ -867,7 +982,12 @@ export function draftFromQuery(stored: unknown): EntityQueryDraft {
   if (!query.table) return base;
 
   const columns = (query.columns || []).map((c) => c.name).filter((name) => findColumn(table, name));
-  const clauses = ((query.where as any)?._and || []) as { _binary?: Record<string, Record<string, unknown>> }[];
+  // Both halves, since an aggregate filter was stored under `having`. They come
+  // back in where-then-having order rather than the order they were authored in
+  // — the stored form does not keep it.
+  const clauses = [...((query.where as any)?._and || []), ...((query.having as any)?._and || [])] as {
+    _binary?: Record<string, Record<string, unknown>>;
+  }[];
   const filters: EntityFilter[] = [];
   for (const clause of clauses) {
     for (const [column, byOperator] of Object.entries(clause._binary || {})) {

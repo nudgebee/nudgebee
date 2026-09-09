@@ -155,6 +155,11 @@ type InteractiveShellRequest struct {
 	Name      string `json:"name,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+	// Container selects which container of the pod to attach to. Optional — the
+	// agent resolves a default when it is empty. This struct is re-marshalled on
+	// the way to the agent rather than forwarded as raw JSON, so a field absent
+	// here is silently dropped and never reaches the exec call.
+	Container string `json:"container,omitempty"`
 }
 
 type InteractiveShellResponse struct {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/api"
 	"nudgebee/llm/common"
@@ -22,6 +23,10 @@ import (
 	"nudgebee/llm/security/egressfilter"
 	toolscore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+
+	// Enterprise-Edition packages register their hooks in init(). Blank-import
+	// triggers registration; absent these imports the corresponding OSS hooks
+	// stay nil and behavior matches the OSS edition.
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -252,9 +257,24 @@ func main() {
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
 
-	// Optional memory-v2 maintenance and projection implementations register
-	// through hooks. In OSS builds these remain safe no-ops.
+	// Expire stale WAITING conversations so the Waiting list stays an inbox.
+	if err := core.RegisterWaitingConversationExpiry(syncCtx); err != nil {
+		slog.Warn("main: failed to register waiting conversation expiry job", "error", err)
+	}
+
+	// Memory-v2 scheduled maintenance jobs (both the SQL-only bundle in
+	// memory/maintenance and the LLM-driven bundle in agents/core) are
+	// registered through a hook so this call is safe on OSS binaries too:
+	// the OSS-shape build has memory_v2.go stripped, so the hook stays at
+	// its no-op default and this line does nothing. The prod (EE-shape)
+	// build has memory_v2.go present; its init installs a real impl and
+	// this call registers the jobs — same timing as before the seam.
 	core.RegisterMemoryMaintenanceJobsFn()
+
+	// Memory-v2 RAG projector: write-side outbox workers drain rag_projected_at
+	// IS NULL rows into rag-server per layer. Gated internally on the module
+	// master + RAG flag. Same OSS/EE seam as the maintenance hook above —
+	// no-op on OSS builds where memory_v2.go is stripped.
 	core.StartMemoryRagProjectorsFn(syncCtx)
 
 	// Wire the watch package against the LLM + security stack and register
@@ -268,6 +288,7 @@ func main() {
 	go func() {
 		<-c
 		slog.Info("main: got SIGTERM, shutting down")
+		agents.CancelActiveCodeAnalyses()
 		syncCancel() // Stop the KB sync goroutine
 		slog.Info("main: connections closed, shutting down server")
 		err := srv.Shutdown(context.Background())

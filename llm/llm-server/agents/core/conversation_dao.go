@@ -349,8 +349,29 @@ type IConversationDao interface {
 type AgentReferenceType string
 
 const (
-	AgentReferenceTypeMemory       AgentReferenceType = "memory"
-	AgentReferenceTypeKB           AgentReferenceType = "knowledge_base"
+	AgentReferenceTypeMemory AgentReferenceType = "memory"
+	AgentReferenceTypeKB     AgentReferenceType = "knowledge_base"
+)
+
+// Reference "kind" — the metadata discriminator the UI switches on. Three
+// different writers persist rows with reference_type "knowledge_base": the KB
+// pre-step (documents attributed to a knowledge base), the pre-step's un-owned
+// path (product docs and other collections with no llm_knowledgebases row), and
+// the planner's load_skills/search_skills handler (skills loaded mid-run).
+// Without this the Additional Contexts panel renders all three identically, so
+// a conversation that injected no KB content can still look grounded.
+const (
+	AgentReferenceKindKBDocument = "kb_document"
+	// Documents from collections with no llm_knowledgebases row, split by the
+	// scope rag-server reports so the panel names the actual origin rather than
+	// lumping NudgeBee's own docs together with a customer's own content.
+	AgentReferenceKindNBDocument      = "nb_document"      // global product docs
+	AgentReferenceKindAccountDocument = "account_document" // legacy per-account collection
+	AgentReferenceKindTenantDocument  = "tenant_document"  // tenant-level user KB
+	AgentReferenceKindSkill           = "skill"
+)
+
+const (
 	AgentReferenceTypeContextState AgentReferenceType = "context_state"
 
 	// AgentReferenceTypeChannelContext is the provenance of a watched-channel
@@ -1258,6 +1279,54 @@ func (chat *ConversationDao) UpdateConversationAgentResponse(agenId, response st
 	return nil
 }
 
+// UpdateConversationNotebook updates the synthetic notebook agent row after it
+// has already reached success. The generic agent response updater intentionally
+// rejects terminal rows, so notebook replacements need this narrower contract.
+// The agent-name predicate prevents this escape hatch from mutating ordinary
+// completed agent calls.
+func (chat *ConversationDao) UpdateConversationNotebook(agentID, response, responseSummary string) error {
+	if len(responseSummary) > 250 {
+		responseSummary = common.TruncateHead(responseSummary, 250)
+	}
+	_, err := chat.dbManager.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		var messageStatus, conversationStatus string
+		if err := tx.QueryRow(
+			`SELECT m.status, c.status
+			 FROM llm_conversation_agent AS a
+			 JOIN llm_conversation_messages AS m ON m.id = a.message_id
+			 JOIN llm_conversations AS c ON c.id = m.conversation_id
+			 WHERE a.id = $1 AND a.agent_name = $2
+			 FOR UPDATE OF m, c`,
+			agentID, notebookDummyAgent,
+		).Scan(&messageStatus, &conversationStatus); err != nil {
+			return nil, fmt.Errorf("history: failed to lock notebook parent state: %w", err)
+		}
+		if strings.EqualFold(messageStatus, string(ConversationStatusTerminated)) ||
+			strings.EqualFold(conversationStatus, string(ConversationStatusKilled)) {
+			return nil, errors.New("history: notebook parent is terminated")
+		}
+
+		result, err := tx.Exec(
+			`UPDATE llm_conversation_agent
+			 SET response = $2, response_summary = $3, updated_at = now()
+			 WHERE id = $1 AND agent_name = $4 AND status = 'success'`,
+			agentID, response, responseSummary, notebookDummyAgent,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("history: failed to update notebook agent: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("history: failed to verify notebook agent update: %w", err)
+		}
+		if rowsAffected != 1 {
+			return nil, fmt.Errorf("history: notebook agent update affected %d rows", rowsAffected)
+		}
+		return nil, nil
+	})
+	return err
+}
+
 // maxWaitingAncestorSweepHops caps how far up the parent chain the sweep walks.
 // Real chains are 1–2 hops (orchestrator → delegate_agent → child); the cap is
 // a runaway-loop backstop for a corrupted parent_agent_id chain. Sized to match
@@ -2033,9 +2102,18 @@ func (chat *ConversationDao) ListConversationMessages(status ConversationStatus,
 	if deadWorker {
 		query += fmt.Sprintf(" AND worker_name not in (select worker_name from nb_workers where worker_type = $%d)", len(args)+1)
 		args = append(args, config.SERVICE_NAME)
-		// Only look at messages updated within the last 48 hours to avoid fetching
-		// ancient stuck records (3,600+ rows from months ago causing 30-60s query times)
-		query += " AND updated_at > now() - interval '48 hours'"
+		// Only look at recently-updated messages to avoid fetching ancient stuck
+		// records (3,600+ rows from months ago causing 30-60s query times). The
+		// horizon is shared with the boot-time own-orphan sweep so the two recovery
+		// paths cannot disagree about what counts as abandoned.
+		// Bound against the database clock, not the caller's: this query runs on every
+		// replica, and updated_at is written with now(), so the DB is the one clock all
+		// of them agree on.
+		// make_interval takes a number, so the horizon crosses into SQL as seconds and
+		// never as text — no dependence on how Go formats a Duration or on how Postgres
+		// parses it.
+		query += fmt.Sprintf(" AND updated_at > now() - make_interval(secs => $%d)", len(args)+1)
+		args = append(args, config.OrphanRecoveryHorizon.Seconds())
 	}
 
 	query += " ORDER BY created_at"

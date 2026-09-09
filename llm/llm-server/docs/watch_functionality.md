@@ -259,6 +259,19 @@ Indexes:
   microseconds, fine; jq when added would benefit from caching).
 - **`type: "final"` is overloaded** with regular agent replies — see
   open question above.
+- **Terminal status is observable before the follow-up lands.** `terminate`
+  commits `MarkTerminal` first, then spends up to `WatchSummarizerTimeoutSec`
+  (default 30s) on the summarizer before the responder appends the block — so
+  in that window a watch reads `COMPLETED` while its in-thread follow-up does
+  not exist yet. The ordering is deliberate: `MarkTerminal` is the claim that
+  stops a duplicate dispatch (the dispatcher has no in-flight guard, and
+  `WatchPollTimeoutSec` > `WatchDispatcherIntervalSec`) from paying for a
+  second summarizer call. Consequence: **clients must not treat terminal
+  status as delivery.** The chat UI polls for the responder's
+  `<!-- watch-update:<id> -->` marker instead
+  (`app/src/components/llm/utils/watchFollowup.js`). A `follow_up_appended_at`
+  column would let clients read the delivered state directly, at the cost of a
+  migration.
 - **Time is read directly from `time.Now()`**, not from an injected
   clock. Tests of expiry / backoff should plan around this.
 - **No admin escape hatch** to bulk-cancel pending watches when

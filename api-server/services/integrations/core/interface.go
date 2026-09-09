@@ -59,6 +59,16 @@ type TenantScopedIntegration interface {
 	TenantScoped() bool
 }
 
+// ConfigNormalizer is an optional capability an Integration may implement to
+// rewrite user input into the canonical form every consumer of the stored
+// config reads (e.g. a pasted page URL into the page ID). CreateIntegrationConfig
+// invokes it on decrypted values before ValidateConfig, and persists the
+// rewritten values. Implementations must be idempotent: canonical input must
+// pass through unchanged, because the hook runs once per account.
+type ConfigNormalizer interface {
+	NormalizeConfig(ctx *security.SecurityContext, values []IntegrationConfigValue) error
+}
+
 type IntegrationSchemaType string
 
 const (
@@ -71,14 +81,22 @@ const (
 )
 
 type IntegrationSchemaProperty struct {
-	Type             IntegrationSchemaType `json:"type"`
-	Description      string                `json:"description,omitempty"`
-	Items            map[string]any        `json:"items,omitempty"`
-	Enum             []any                 `json:"enum,omitempty"`
-	Default          any                   `json:"default,omitempty"`
-	Pattern          string                `json:"pattern,omitempty"`
-	IsEncrypted      bool                  `json:"is_encrypted,omitempty"`
-	AutoGenerateFunc string                `json:"auto_generate_func,omitempty"`
+	Type IntegrationSchemaType `json:"type"`
+	// DisplayName overrides the field label, which otherwise title-cases the
+	// property key. Use it when the storage key is not the clearest name for
+	// the user (e.g. page_trees -> "Limit to pages"); the key itself is a
+	// stored contract and must not be renamed to improve wording.
+	DisplayName string `json:"display_name,omitempty"`
+	Description string `json:"description,omitempty"`
+	// SearchPlaceholder overrides the placeholder inside a picker's search box.
+	// Only meaningful on fields rendered as a dropdown.
+	SearchPlaceholder string         `json:"search_placeholder,omitempty"`
+	Items             map[string]any `json:"items,omitempty"`
+	Enum              []any          `json:"enum,omitempty"`
+	Default           any            `json:"default,omitempty"`
+	Pattern           string         `json:"pattern,omitempty"`
+	IsEncrypted       bool           `json:"is_encrypted,omitempty"`
+	AutoGenerateFunc  string         `json:"auto_generate_func,omitempty"`
 	// DependsOn lists other field names whose values are inputs to
 	// AutoGenerateFunc. The frontend watches these fields and refetches the
 	// autogen options when any of them changes. Used for cascading dropdowns
@@ -90,12 +108,21 @@ type IntegrationSchemaProperty struct {
 	AllowEdit    bool           `json:"allow_edit,omitempty"`
 	Hidden       bool           `json:"hidden,omitempty"`
 	Multiline    bool           `json:"multiline,omitempty"`
-	IsTestable   bool           `json:"is_testable,omitempty"`
+	// Widget names a custom frontend renderer for this field, overriding the default
+	// input for its Type (which is unchanged, so the stored value + validation still
+	// apply). E.g. "model_alias_list" renders a string field of comma-joined
+	// `alias=served` entries as a two-column name → served-model editor.
+	Widget     string `json:"widget,omitempty"`
+	IsTestable bool   `json:"is_testable,omitempty"`
 	// SingleSelect, on an array-typed property with auto_generate_func='listAccounts',
 	// tells the frontend to render a single-select dropdown instead of the default
 	// multi-select. Used for integrations that bind 1:1 to an account (e.g.
 	// workflow_webhook, which is bound to one workflow per row).
 	SingleSelect bool `json:"single_select,omitempty"`
+	// Advanced moves the field into the form's collapsed "Advanced Settings"
+	// section, for options most users never touch. The field is still part of
+	// the schema and is validated and stored like any other.
+	Advanced bool `json:"advanced,omitempty"`
 }
 
 type IntegrationSchema struct {

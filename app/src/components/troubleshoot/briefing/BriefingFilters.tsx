@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import { useRouter } from 'next/router';
 import dayjs from 'dayjs';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import apiHome from '@api1/home';
 import { applyFiltersOnRouter } from '@lib/router';
+import { ds } from 'src/utils/colors';
 import { useBriefingWindow } from './useBriefingData';
 
 interface Props {
@@ -79,7 +81,24 @@ const BriefingFilters = ({ showRange = true }: Props) => {
   };
 
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+    // Grouped filter-bar: a background surface so the controls read as a
+    // deliberate cluster, led by a funnel icon + "Viewing" label that signals
+    // the Account/date picker below are shaping what the page shows.
+    <Box
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 'var(--ds-space-2)',
+        padding: 'var(--ds-space-1) var(--ds-space-3)',
+        background: ds.background[200],
+        border: `1px solid ${ds.gray[200]}`,
+        borderRadius: 'var(--ds-radius-lg)',
+      }}
+    >
+      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)', color: ds.gray[600] }}>
+        <FilterAltOutlinedIcon sx={{ fontSize: 'var(--ds-text-body)' }} />
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[600] }}>Viewing</Typography>
+      </Box>
       <FilterDropdown
         id='briefing-filter-account'
         label='Account'

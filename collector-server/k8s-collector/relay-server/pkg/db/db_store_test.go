@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,23 @@ func TestProxyTypeToIntegrationType(t *testing.T) {
 		assert.Equal(t, tc.want, proxyTypeToIntegrationType(tc.proxyType, tc.dsType),
 			"proxyType=%s dsType=%s", tc.proxyType, tc.dsType)
 	}
+}
+
+// UpsertAgentDatasources defaults a discovery integration's scan target to the
+// agent's own account so the "Scan account for vulnerabilities" button works
+// for a self-hosted forager without a separate
+// integrations_upsert_discovery_target call. The insert must stay conditional
+// on no discovery_target row already existing — it runs on every
+// datasource_inventory message (every reconnect), and dropping that guard
+// would clobber a target a user deliberately pointed at another cloud account.
+// ON CONFLICT DO NOTHING keeps concurrent callers that both pass the guard
+// from erroring on the duplicate own-account tuple.
+func TestDefaultDiscoveryTargetSQL_IsIdempotentAndTargetScoped(t *testing.T) {
+	sql := strings.ToLower(defaultDiscoveryTargetSQL)
+	assert.Contains(t, sql, "'discovery_target'")
+	assert.Contains(t, sql, "where not exists", "must not overwrite a user-set discovery target on reconnect")
+	assert.NotContains(t, sql, "delete", "defaulting the target must never remove an existing association")
+	assert.Contains(t, sql, "on conflict", "must handle concurrent inserts of the same default target gracefully")
 }
 
 // Proxy types the server addresses per-datasource must get routing config

@@ -298,6 +298,17 @@ func GetLogsQueryPreview(ctx *security.RequestContext, accountId string, logProv
 	}
 	setRequestIndex(&logRequest, p.index)
 
+	// The index has to ride in `request`, not just the top-level field:
+	// services-server's FetchLogRequest — the struct logs_get_query decodes
+	// into — has no top-level index at all, and reads it only out of the
+	// free-form request bag (labelDiscoveryRequest). Without this, an ES index
+	// selection is silently dropped and logs_get_query type-checks the where
+	// clause against whichever index label discovery falls back to, since
+	// Elasticsearch field types are per-index.
+	if p.index != "" {
+		logRequest.Request = map[string]any{"index": p.index}
+	}
+
 	output, err := services_server.GetLogsQuery(*ctx, logRequest)
 	if err != nil {
 		return "", err
@@ -618,6 +629,10 @@ func cloudProviderToObservabilityFallback(cloudProvider string) string {
 // connected-agent probe in tools/core/tool_config.go. Fails closed (treats a DB
 // error as "agent present") so a transient error never silently enables the
 // hijack this guard exists to prevent.
+type queryGetter interface {
+	Get(dest any, query string, args ...any) error
+}
+
 func hasConnectedK8sAgent(accountId string) bool {
 	if _, err := uuid.Parse(accountId); err != nil {
 		return false
@@ -627,8 +642,12 @@ func hasConnectedK8sAgent(accountId string) bool {
 		slog.Warn("observability: could not check k8s agent presence; assuming present", "error", err, "accountId", accountId)
 		return true
 	}
+	return hasConnectedK8sAgentInDb(dbms.Db, accountId)
+}
+
+func hasConnectedK8sAgentInDb(db queryGetter, accountId string) bool {
 	var connectedCount int
-	if err := dbms.Db.Get(&connectedCount, "select count(*) from agent where status = 'CONNECTED' and cloud_account_id = $1", accountId); err != nil {
+	if err := db.Get(&connectedCount, "select count(*) from agent where status = 'CONNECTED' and lower(type) = 'k8s' and cloud_account_id = $1", accountId); err != nil {
 		slog.Warn("observability: k8s agent presence query failed; assuming present", "error", err, "accountId", accountId)
 		return true
 	}
@@ -749,9 +768,9 @@ func getLogProviderUncached(accountId string) (services_server.ObservabilityProv
 		slog.Error("logs: unable to fetch dbms", "error", err)
 		return services_server.ObservabilityProvider{}, err
 	}
-	rows, err := dbms.Db.Queryx("select connection_status::text, status from agent where cloud_account_id = $1", accountId)
+	rows, err := dbms.Db.Queryx("select connection_status::text, status, coalesce(type, '') from agent where cloud_account_id = $1", accountId)
 	if err != nil {
-		slog.Error("logs: unable to fetch dbms", "error", err)
+		slog.Error("logs: unable to query agents", "error", err)
 		return services_server.ObservabilityProvider{}, err
 	}
 	defer func() {
@@ -761,17 +780,18 @@ func getLogProviderUncached(accountId string) (services_server.ObservabilityProv
 	}()
 
 	explicitlySet := false
-	hasConnectedAgent := false
+	hasConnectedK8s := false
 	for rows.Next() {
 		var connectionStatusString *string
 		var agentStatus string
-		err := rows.Scan(&connectionStatusString, &agentStatus)
+		var agentType string
+		err := rows.Scan(&connectionStatusString, &agentStatus, &agentType)
 		if err != nil {
 			slog.Error("logs: unable to scan rows", "error", err)
-			break
+			return services_server.ObservabilityProvider{}, err
 		}
-		if agentStatus == "CONNECTED" {
-			hasConnectedAgent = true
+		if agentStatus == "CONNECTED" && strings.EqualFold(strings.TrimSpace(agentType), "k8s") {
+			hasConnectedK8s = true
 		}
 		connectionStatus := map[string]any{}
 		if connectionStatusString != nil {
@@ -789,17 +809,17 @@ func getLogProviderUncached(accountId string) (services_server.ObservabilityProv
 			slog.Info("logs: unable to find log connection provider, will be using default")
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("logs: error iterating rows", "error", err)
+		return services_server.ObservabilityProvider{}, err
+	}
 
 	// No log provider was explicitly configured (neither services-server nor the
-	// agent connection_status named one). For a cloud-ONLY GCP/Azure account (no
+	// agent connection_status named one). For a cloud-only account (no
 	// connected k8s agent) the bare "k8s" default can't read logs, so fall back to
-	// the account's cloud CLI (Cloud Logging / Log Analytics). Both gates matter: an
-	// explicit provider (even "k8s" from a GKE/AKS agent that streams logs) is
-	// respected via explicitlySet, and the hasConnectedAgent check additionally
-	// covers a connected agent whose status omitted logsConnectionProvider.
-	// AWS/unknown keep the k8s default.
+	// the account's cloud CLI (Cloud Logging / Log Analytics / CloudWatch Logs).
 	if !explicitlySet {
-		if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedAgent {
+		if cloud := cloudFallbackProvider(accountId); cloud != "" && !hasConnectedK8s {
 			return services_server.ObservabilityProvider{Provider: cloud, IntegrationSource: "agent"}, nil
 		}
 	}

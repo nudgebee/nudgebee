@@ -3413,12 +3413,27 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   };
 
   // Update all nodes to final execution state
-  const updateAllNodeStatesToFinalState = (_executionStatus: string) => {
+  const updateAllNodeStatesToFinalState = (executionStatus: string) => {
+    // An aborted run leaves nodes mid-flight; preserving those reads as "still waiting"
+    // forever, and an approval stuck at SCHEDULED keeps its form alive (#36358).
+    const abortedRun = ['CANCELED', 'CANCELLED', 'TERMINATED', 'TIMED_OUT'].includes(executionStatus?.toUpperCase());
+    const unfinishedNodeStatuses = ['SCHEDULED', 'STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING'];
+
     setNodes((prevNodes) =>
       prevNodes.map((node) => {
         if ((node.type === 'action' || node.type === 'switch') && node.data.taskConfig) {
           // Preserve task-specific status if already set by polling (e.g. COMPLETED, FAILED)
           if (node.data.executionStatus) {
+            if (abortedRun && unfinishedNodeStatuses.includes(String(node.data.executionStatus).toUpperCase())) {
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  executionStatus: 'CANCELED',
+                  lastExecutionTime: new Date().toISOString(),
+                },
+              };
+            }
             return node;
           }
           // Tasks that were never reached get SKIPPED status

@@ -101,22 +101,6 @@ export function deriveAccountTypes(panel: PanelScope, accounts: AccountOption[])
 }
 
 /**
- * Whether a panel names EVERY account of the providers it spans.
- *
- * That is what `panelScopeFromTypes` writes for a multi-provider choice, and it
- * has to be told apart from a genuine hand-picked subset: the first should
- * reopen as "these providers, all accounts" with the account picker empty, the
- * second as the exact accounts that were ticked.
- */
-export function coversAllOfTypes(panel: PanelScope, accounts: AccountOption[]): boolean {
-  if (panel.account_type) return true;
-  const ids = new Set((panel.account_ids || []).filter(Boolean));
-  if (ids.size === 0) return false;
-  const inTypes = accountsOfTypes(deriveAccountTypes(panel, accounts), accounts);
-  return inTypes.length > 0 && inTypes.every((a) => ids.has(a.value));
-}
-
-/**
  * Labels describing what a panel is scoped to, one per chip: the provider for a
  * type-scoped panel, or every account name for an id-scoped one. Empty when
  * nothing resolves.

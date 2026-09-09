@@ -70,6 +70,22 @@ func init() {
 	if err != nil {
 		slog.Error("sync: unable to create sync_stuck_event_analyses job", "error", err)
 	}
+
+	// Registered everywhere, pods included. The dead-worker reaper above can only recover
+	// a message whose owner has vanished from nb_workers, so it is blind to any process
+	// that comes back under the SAME worker name — which is exactly what an OOMKilled
+	// container does: the pod (and its name) survives, only the container restarts, and
+	// the heartbeat resumes as if nothing happened. Its in-flight messages then stay
+	// IN_PROGRESS forever, with the restarted process often being the very leader running
+	// the reaper that skips them. Observed on dev: llm-server-7f86ddd467-d6scf, OOMKilled
+	// twice in one afternoon, still holding an orphan 35 minutes later.
+	//
+	// Safe in-cluster because bootCutoff() bounds the sweep to work that predates this
+	// process: a restarted container recovers what it abandoned and cannot touch a request
+	// its siblings are still serving.
+	if err := common.NewPooledJob("sync_own_orphan_messages", syncOwnOrphanMessages); err != nil {
+		slog.Error("sync: unable to create sync_own_orphan_messages job", "error", err)
+	}
 }
 
 // checkBudgetAndRestartMessage checks budget limits and conversation state before restarting a message.
@@ -128,16 +144,114 @@ func syncDeadWorkerMessages() error {
 	}
 
 	messages = lo.Filter(messages, func(message core.ConversationMessage, index int) bool {
-		if message.MessageType == "followup" {
-			return false
-		}
-		if message.WorkerName != nil && (*message.WorkerName == "localhost" || *message.WorkerName == "127.0.0.1" || *message.WorkerName == "0.0.0.0" || *message.WorkerName == "::" || strings.Contains(*message.WorkerName, ".local")) {
-			return false
-		}
-		return true
+		return isDeadWorkerMessageRecoverable(message)
 	})
 
 	slog.Info("sync: restarting conversation messages for dead workers", "count", len(messages))
+	restartMessages(dao, messages)
+	return nil
+}
+
+// syncOwnOrphanMessages restarts the in-progress messages this worker owns. It runs
+// once at boot on processes that can never win the leader election, whose abandoned
+// conversations nothing else will pick up.
+//
+// Running at boot is what makes it safe: a message still marked in-progress under our
+// own name before we have started any work was necessarily left behind by a previous
+// run of this same process. There is no live execution to race with, so no staleness
+// heuristic is needed — unlike the dead-worker path, which cannot use our own name
+// because we re-register it on startup and so never look dead to ourselves.
+func syncOwnOrphanMessages() error {
+	dao := core.GetConversationDao()
+	if dao == nil {
+		return common.Error{Message: "conversation dao is not initialized"}
+	}
+	messages, err := dao.ListConversationMessages(core.ConversationStatusInProgress, config.Config.ServerName, "", false)
+	if err != nil {
+		return err
+	}
+
+	cutoff := bootCutoff()
+	messages = lo.Filter(messages, func(message core.ConversationMessage, index int) bool {
+		return isOwnOrphanRecoverable(message, cutoff)
+	})
+
+	if len(messages) == 0 {
+		return nil
+	}
+
+	slog.Info("sync: restarting own conversation messages orphaned by a previous run",
+		"count", len(messages), "worker_name", config.Config.ServerName)
+	restartMessages(dao, messages)
+	return nil
+}
+
+// isDeadWorkerMessageRecoverable reports whether the cluster may restart a message
+// left behind by a worker that is no longer registered.
+func isDeadWorkerMessageRecoverable(message core.ConversationMessage) bool {
+	if message.MessageType == "followup" {
+		return false
+	}
+	// A conversation owned by a machine outside the cluster is that machine's to
+	// recover (syncOwnOrphanMessages). Restarting it here would run someone's local
+	// session on cluster infrastructure, against whatever credentials and code that
+	// pod happens to have.
+	if message.WorkerName != nil && config.IsLocalWorkerName(*message.WorkerName) {
+		return false
+	}
+	return true
+}
+
+// processStartedAt is captured at package init, before the HTTP listener can accept
+// anything. Only its *elapsed* value is ever used, never its wall-clock value — see
+// bootCutoff.
+var processStartedAt = time.Now()
+
+// bootCutoff returns the moment this process started, expressed on the database's
+// clock. updated_at is written by the database, so comparing it against a laptop's
+// time.Now() would make this bound only as trustworthy as the skew between the two
+// machines — and it guards a window a few seconds wide, so seconds of skew are enough
+// to matter. Instead the elapsed time comes from Go's monotonic clock and now() from
+// the database: each side reads only its own clock.
+func bootCutoff() time.Time {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err == nil {
+		var cutoff time.Time
+		if err = dbManager.Db.Get(&cutoff, "SELECT now() - make_interval(secs => $1)",
+			time.Since(processStartedAt).Seconds()); err == nil {
+			return cutoff
+		}
+	}
+	// Fall back to the local clock rather than skipping recovery entirely: a slightly
+	// skewed bound still rules out almost everything, whereas no bound reopens the
+	// boot race this exists to close.
+	slog.Warn("sync: could not read boot cutoff from the database clock, using local time", "error", err)
+	return processStartedAt
+}
+
+// isOwnOrphanRecoverable reports whether a message this worker owns is worth
+// restarting at boot.
+func isOwnOrphanRecoverable(message core.ConversationMessage, bootCutoff time.Time) bool {
+	if message.MessageType == "followup" {
+		return false
+	}
+	if message.UpdatedAt == nil {
+		return false
+	}
+	// Only work that predates this process can be an orphan of a previous run. The
+	// listener starts serving a few seconds before this one-time job fires, so without
+	// this bound the sweep can race a conversation the current process just accepted
+	// and restart it underneath itself.
+	if !message.UpdatedAt.Before(bootCutoff) {
+		return false
+	}
+	// Same horizon the dead-worker query applies, from the one shared constant.
+	return time.Since(*message.UpdatedAt) < config.OrphanRecoveryHorizon
+}
+
+// restartMessages re-dispatches messages whose owning worker is gone, after checking
+// budget and conversation state for each.
+func restartMessages(dao core.IConversationDao, messages []core.ConversationMessage) {
 	for _, message := range messages {
 		// Check budget before restarting
 		if !checkBudgetAndRestartMessage(dao, message) {
@@ -171,7 +285,6 @@ func syncDeadWorkerMessages() error {
 		// Throttle to avoid OOM spike
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil
 }
 
 // syncStuckEventAnalyses reconciles event analysis records that are stuck in IN_PROGRESS status.

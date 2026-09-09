@@ -1302,7 +1302,10 @@ rules:
     event_template:
       title:
         template: "EC2 Instance {{ (index .Detail \"instanceId\") }} is {{ (index .Detail \"state\") }}"
-      severity: "Error"
+      # A state-change notification alone cannot tell a deliberate StopInstances apart
+      # from a host failure -- the stateReason only arrives via the actions below, after
+      # severity is already fixed. Report it as Info rather than paging on every stop.
+      severity: "Info"
       description:
         template: >-
           EC2 Instance {{ (index .Detail "instanceId") }} in account {{ (index .Event "account") }} (region {{ (index .Event "region") }})
@@ -1368,15 +1371,6 @@ rules:
           start_time_offset: "-1h"
           end_time_offset: "0m"
         description: "Fetch Instance Status Check failures for the instance."
-      - name: "ec2_console_output_on_stop" # Placeholder: aws_get_resource needs to support this
-        type: "aws_get_resource"
-        params:
-          service_name: "ec2"
-          resource_type: "instance-console-output" # Your provider needs to handle this
-          resource_identifier: "{{ (index .Detail \"instanceId\") }}"
-          identifier_type: "id"
-          region: "{{ (index .Event \"region\") }}"
-        description: "Fetch console output for the EC2 instance (GetConsoleOutput)."
 
 ########## RESOURCE SYNC RULES #############
 # These rules update cloud_resourses table in real-time based on EventBridge events

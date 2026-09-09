@@ -80,7 +80,7 @@ func TestTriageExplanationTool(t *testing.T) {
 		cleanup := startTriageStub(t, func(action string, input map[string]any) (int, string) {
 			gotAction = action
 			gotInput = input
-			return http.StatusOK, `{"event_id":"e1","is_duplicate":true,"correlation_count":2}`
+			return http.StatusOK, `{"event_id":"e1","is_duplicate":true,"hourly_trend":[]}`
 		})
 		defer cleanup()
 
@@ -193,20 +193,14 @@ func TestTriageToolErrorSurfacing(t *testing.T) {
 }
 
 func TestBoundTriageExplanation(t *testing.T) {
-	t.Run("caps chain and correlations, preserves totals", func(t *testing.T) {
+	t.Run("caps chain, preserves total", func(t *testing.T) {
 		chain := make([]map[string]any, 28)
 		for i := range chain {
 			chain[i] = map[string]any{"occurrence_number": i + 1}
 		}
-		corr := make([]map[string]any, 28)
-		for i := range corr {
-			corr[i] = map[string]any{"correlated_event_id": i, "correlation_score": float64(i) / 100.0}
-		}
 		raw, _ := json.Marshal(map[string]any{
-			"event_id":          "e1",
-			"duplicate_info":    map[string]any{"total_occurrences": 28, "duplicate_chain": chain},
-			"correlated_events": corr,
-			"correlation_count": 28,
+			"event_id":       "e1",
+			"duplicate_info": map[string]any{"total_occurrences": 28, "duplicate_chain": chain},
 		})
 
 		var out map[string]any
@@ -219,17 +213,10 @@ func TestBoundTriageExplanation(t *testing.T) {
 		assert.Equal(t, float64(28), gotChain[len(gotChain)-1].(map[string]any)["occurrence_number"])
 		assert.Equal(t, float64(28), di["total_occurrences"], "total preserved")
 		assert.Equal(t, true, di["duplicate_chain_truncated"])
-
-		gotCorr := out["correlated_events"].([]any)
-		assert.Len(t, gotCorr, maxCorrelations)
-		// sorted by score desc → first is the highest (0.27)
-		assert.InDelta(t, 0.27, gotCorr[0].(map[string]any)["correlation_score"], 0.001)
-		assert.Equal(t, float64(28), out["correlation_count"], "count preserved")
-		assert.Equal(t, true, out["correlated_events_truncated"])
 	})
 
 	t.Run("small payload passes through unchanged", func(t *testing.T) {
-		raw := `{"event_id":"e1","is_duplicate":false,"correlated_events":[]}`
+		raw := `{"event_id":"e1","is_duplicate":false,"hourly_trend":[]}`
 		assert.JSONEq(t, raw, boundTriageExplanation(raw))
 	})
 

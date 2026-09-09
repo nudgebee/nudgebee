@@ -32,16 +32,21 @@ type RequestContext struct {
 
 	Streaming bool
 
-	// DirectKey, when non-nil, is a per-request provider credential resolved BEFORE the
-	// pipeline (e.g. a custom-upstream vLLM key built from the tenant's llm_gateway
-	// integration, carrying its base URL). The resolver stage injects it verbatim,
-	// bypassing the normal per-tenant/operator credential lookup.
+	// DirectKey, when non-nil, is the exact integration credential selected by a model
+	// mapping before the pipeline (and may carry a custom upstream's base URL). The
+	// resolver stage injects it verbatim, bypassing provider-wide credential lookup.
 	DirectKey *schemas.Key
 
 	// DirectKeyURLPath, when non-empty, overrides the vLLM lane's request path for the
 	// DirectKey above (set on the Bifrost context by the resolver stage). Used by a
 	// vertex_openai upstream to dial Vertex's `…/endpoints/openapi/chat/completions`.
 	DirectKeyURLPath string
+
+	// MappedModel is the served model selected by an explicit client-facing mapping.
+	// Model retains the client name through the routing stage so policies and metering see
+	// what the caller requested; the handler applies MappedModel before dispatch only when
+	// routing did not replace that request with a different target.
+	MappedModel string
 
 	// Set by the route stage; consumed by metering as the routing decision record.
 	Decision routing.Decision

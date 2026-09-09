@@ -512,16 +512,16 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 
 	// Optimize chunk size to reduce continuation attempts.
 	//
-	// The floor below is a last resort for models we have no ceiling for, and it is
-	// LOWER than most current models support — a model that lands here truncates at
-	// max_tokens and pays the continuation loop on every long response. That is
+	// The floor below is a last resort for models with no ceiling anywhere, and it
+	// is LOWER than most current models support — a model that lands here truncates
+	// at max_tokens and pays the continuation loop on every long response. That is
 	// silent by nature (the loop succeeds), so log it: a Claude 4.x model sat on
 	// this floor unnoticed until a customer investigation was traced call by call.
-	maxOutputTokens := GetLlmMaxOutputTokens(model)
+	maxOutputTokens := ResolveMaxOutputTokens(accountId, provider, model)
 	if maxOutputTokens <= 0 {
-		maxOutputTokens = 4096
-		ctx.GetLogger().Warn("llm: no max-output-token entry for model, applying the conservative floor — "+
-			"long responses will truncate and drive the continuation loop until an entry is added",
+		maxOutputTokens = DefaultMaxOutputTokensFloor
+		ctx.GetLogger().Warn("llm: no max-output-token value in config or pricing catalog, applying the conservative floor — "+
+			"long responses will truncate and drive the continuation loop until a catalog row is added",
 			"model", model, "provider", provider, "agentName", agentName, "maxOutputTokens", maxOutputTokens)
 	}
 	options = append(options, llms.WithMaxTokens(maxOutputTokens))
@@ -1199,6 +1199,26 @@ func ttftDeadlineSeconds(flatSeconds int, opts llms.CallOptions) int {
 	return min(flatSeconds+budget/rate, maxSeconds)
 }
 
+// sustainedGenDeadlineSeconds layers the sustained-generation deadline on top
+// of the TTFT deadline calculation instead of using a flat constant. A
+// thinking-aware TTFT deadline (ttftDeadlineSeconds) can exceed a flat
+// sustained-gen constant at higher thinking levels — e.g. ~193s TTFT vs a flat
+// 60s sustained-gen on "high" — which would silently make sustained-gen fire
+// first on every such call and turn TTFT's thinking-budget calculation into
+// dead code (PR #36332 review). Deriving sustained-gen from the same
+// calculation, plus a fixed safety headroom, guarantees TTFT always gets its
+// full configured chance to fire first, while sustained-gen still catches the
+// failure mode TTFT structurally cannot see: a stream that starts and never
+// stops.
+//
+// floorSeconds (the resolved LlmProviderSustainedGenTimeoutSeconds) remains
+// the lower bound — for a call with no thinking budget, or a low thinking
+// level, the TTFT deadline alone would be too short a sustained-gen budget.
+func sustainedGenDeadlineSeconds(floorSeconds int, provider string, opts llms.CallOptions) int {
+	ttft := ttftDeadlineSeconds(resolveTTFTFlatSeconds(provider), opts)
+	return max(ttft, floorSeconds) + config.Config.LlmProviderSustainedGenHeadroomSeconds
+}
+
 // thinkingBudgetFromOptions reads the thinking allowance a call was dispatched with.
 // Prefers the numeric budget; falls back to the qualitative level's own ceiling so
 // providers using the string ThinkingLevel API are covered too.
@@ -1238,6 +1258,7 @@ const SentinelOmitTemperature = -1.0
 
 // withoutTemperature returns a CallOption that clears Temperature from CallOptions
 // by setting it to SentinelOmitTemperature (-1.0).
+//
 // The sentinel is the whole signal. Do NOT also record this in
 // CallOptions.Metadata: the OpenAI-compatible client forwards that map verbatim
 // as the request's `metadata` field, which only accepts string values, so a
@@ -1379,6 +1400,24 @@ func attachTenantIDForEgressFilter(ctx context.Context, sc *security.SecurityCon
 	return egressfilter.WithTenantID(ctx, parsed)
 }
 
+// isEmptyCompletion reports whether a completion carries no usable payload and
+// should be treated as a broken generation (retry / model fallback).
+//
+// A response carrying TOOL CALLS is complete even with empty text. The
+// emptiness check predates provider-native tool calling, when every valid
+// response was text and "no text" reliably meant a broken generation. A native
+// tool-calling planner (react_4) routinely produces a turn whose entire payload
+// is a tool_use block with no prose — observed live as stopReason=STOP,
+// toolCalls=1, outputTokens=25. Counting that as empty burned the
+// retry/fallback budget on healthy responses and then failed the turn outright.
+func isEmptyCompletion(completion *llms.ContentResponse) bool {
+	if completion == nil || len(completion.Choices) == 0 {
+		return true
+	}
+	choice := completion.Choices[0]
+	return len(choice.ToolCalls) == 0 && choice.Content == ""
+}
+
 func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("retryContext is nil")
@@ -1485,6 +1524,42 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		}
 	}()
 
+	// Sustained-generation timeout: cancel and retry same-model if TOTAL call
+	// duration exceeds the deadline, regardless of streaming state — unlike the
+	// TTFT watchdog above, which only guards the gap before the first token and
+	// has zero visibility into what happens after streaming starts. Catches a
+	// call that streams normally for a few seconds and then keeps generating far
+	// longer than any ReAct decision step should (observed: up to 188s on a
+	// single call, well past the point a legitimate "pick next tool" response
+	// would ever need). Enable is per-provider (see getLLMSustainedGenTimeout),
+	// same opt-in-after-validation shape as the TTFT watchdog.
+	var sustainedGenFired atomic.Bool
+	var sustainedGenTimer *time.Timer
+	sustainedGenSeconds := 0
+	// armSustainedGenWatchdog starts the deadline. Like armTTFTWatchdog above, it is
+	// called immediately before GenerateContent rather than here, for the same reason:
+	// everything between this point and the send — the cache round-trip and, most
+	// importantly, waiting for a concurrency permit — is queue time, not generation
+	// time. Arming early would let a call merely queued behind
+	// LLMServerMaxConcurrentLlmCalls burn its whole budget waiting for a permit, then
+	// get cancelled and retried as if the model itself were running away.
+	armSustainedGenWatchdog := func() {
+		if enabled, s := getLLMSustainedGenTimeout(rc.currentProvider); enabled && s > 0 {
+			sustainedGenSeconds = sustainedGenDeadlineSeconds(s, rc.currentProvider, watchdogOpts)
+			sustainedGenTimer = time.AfterFunc(time.Duration(sustainedGenSeconds)*time.Second, func() {
+				if !done.Load() {
+					sustainedGenFired.Store(true)
+					cancel()
+				}
+			})
+		}
+	}
+	defer func() {
+		if sustainedGenTimer != nil {
+			sustainedGenTimer.Stop()
+		}
+	}()
+
 	if rc.conversationId != "" && rc.enableCaching {
 		rc.ctx.GetLogger().Debug("Applying cache for current model",
 			"model", rc.currentModel,
@@ -1507,6 +1582,15 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		if sc := rc.ctx.GetSecurityContext(); sc != nil {
 			tenantId = sc.GetTenantId()
 		}
+		// Native tool declarations must be baked into the cached content: Google AI
+		// rejects a request that sets both CachedContent and tools. Materialize the
+		// caller's options to recover them. Callers that pass no tools (react_3 and
+		// every summarizer) yield an empty slice, leaving the cache path unchanged.
+		cacheCallOpts := llms.CallOptions{}
+		for _, opt := range optionsToSend {
+			opt(&cacheCallOpts)
+		}
+
 		cacheReq := &CacheRequest{
 			TenantId:       tenantId,
 			AccountId:      rc.accountId,
@@ -1520,6 +1604,7 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 			Scope:          rc.cacheScope,
 			Capabilities:   rc.capabilities,
 			PromptVariant:  rc.promptVariant,
+			Tools:          cacheCallOpts.Tools,
 		}
 
 		cacheResp := cacheManager.ApplyCache(ctx, cacheReq)
@@ -1597,19 +1682,25 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		}
 	}
 
-	// Arm the TTFT deadline only now: the request is about to go on the wire, so from
-	// here on silence really is the model failing to respond. tracker.started is
-	// deliberately left at the call start so the persisted ttft_ms keeps its existing
-	// meaning and stays comparable with historical rows; only the watchdog's own clock
-	// starts here. The deadlines are calibrated against that (larger) recorded TTFT,
-	// so measuring from the send point can only leave more headroom, never less.
+	// Arm the TTFT and sustained-generation deadlines only now: the request is about to
+	// go on the wire, so from here on silence (or a runaway) really is the model, not
+	// queue time. tracker.started is deliberately left at the call start so the
+	// persisted ttft_ms keeps its existing meaning and stays comparable with historical
+	// rows; only the watchdogs' own clocks start here. The TTFT deadline is calibrated
+	// against that (larger) recorded TTFT, so measuring from the send point can only
+	// leave more headroom, never less.
 	armTTFTWatchdog()
+	armSustainedGenWatchdog()
 
+	rc.ctx.GetLogger().Info("LLM GenerateContent call starting", "model", rc.currentModel, "provider", rc.currentProvider, "conversationId", rc.conversationId, "messages", len(messagesToSend), "ttft_watchdog_seconds", watchdogSeconds, "sustained_gen_watchdog_seconds", sustainedGenSeconds)
 	completion, err := rc.llm.GenerateContent(ctx, messagesToSend, optionsToSend...)
 	// done must be set before Stop(), which doesn't wait for an in-flight callback.
 	done.Store(true)
 	if watchdogTimer != nil {
 		watchdogTimer.Stop()
+	}
+	if sustainedGenTimer != nil {
+		sustainedGenTimer.Stop()
 	}
 	// Record latency for EVERY outcome, before any error branch returns. The failure
 	// paths below return early, so assigning this only on success would leave
@@ -1643,7 +1734,23 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		// one abandoned attempt is counted two or three times.
 		recordAbandonedAttempt(rc, rc.currentModel, rc.currentProvider, err)
 	}
-	if err == nil && (completion == nil || len(completion.Choices) == 0 || completion.Choices[0].Content == "") {
+	if err != nil && sustainedGenFired.Load() {
+		// Same retry-classification requirement as the TTFT branch above: must
+		// contain "timeout" (isTransientError) and must NOT contain "deadline
+		// exceeded" (isDeadlineExceededError), so this retries the same model
+		// instead of routing to fallbacks — a runaway single call is not evidence
+		// the model/provider itself is unhealthy.
+		err = fmt.Errorf("sustained generation timeout: model exceeded %ds total call duration, timeout — retrying same model: %w",
+			sustainedGenSeconds, err)
+	}
+	// A response carrying tool calls is COMPLETE even with empty text. This check
+	// predates provider-native tool calling, when every valid response was text and
+	// "no text" reliably meant a broken generation. A native tool-calling planner
+	// (react_4) routinely gets a turn whose entire payload is a tool_use block with
+	// no prose — observed live as stopReason=STOP, toolCalls=1, outputTokens=25.
+	// Treating that as empty burned the retry/fallback budget on healthy responses
+	// and then failed the turn outright.
+	if err == nil && isEmptyCompletion(completion) {
 		stopReason := ""
 		var toolCallCount int
 		var promptTokens, outputTokens, thinkingTokens int
@@ -2200,7 +2307,7 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 		// early-exit at iteration 1 and surface a misleading internal-error
 		// response.
 		if !summarizedAnyMessage {
-			largestIdx, largestTokens := largestTextMessageIndex(rc.promptMessages, msgTokenCounts)
+			largestIdx, largestTokens := largestTextMessageIndex(rc.promptMessages, msgTokenCounts, -1)
 			if largestIdx < 0 {
 				ctx.GetLogger().Warn("No text messages available to summarize but total still exceeds limit",
 					"iteration", iteration,
@@ -2296,10 +2403,18 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 // with the highest token count whose first part is a TextContent (the only
 // kind we know how to summarise), or -1 if no such message exists.
 // Caller passes a parallel slice of pre-computed token counts.
-func largestTextMessageIndex(messages []llms.MessageContent, tokens []int) (int, int) {
+//
+// protectIdx is skipped entirely; pass -1 to consider every message. The
+// pre-flight cap uses it to keep the user's turn out of a byte-slicing trim —
+// that message carries the question, and losing it makes the model answer
+// something nobody asked.
+func largestTextMessageIndex(messages []llms.MessageContent, tokens []int, protectIdx int) (int, int) {
 	bestIdx := -1
 	bestTokens := -1
 	for i, msg := range messages {
+		if i == protectIdx {
+			continue
+		}
 		if len(msg.Parts) == 0 {
 			continue
 		}
@@ -2312,6 +2427,24 @@ func largestTextMessageIndex(messages []llms.MessageContent, tokens []int) (int,
 		}
 	}
 	return bestIdx, bestTokens
+}
+
+// lastHumanTextMessageIndex returns the index of the final human turn, or -1.
+// That turn holds the user's question (and, in ReAct, the scratchpad appended
+// to it), so it is the one message a size-driven trim must not silently drop.
+func lastHumanTextMessageIndex(messages []llms.MessageContent) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != llms.ChatMessageTypeHuman {
+			continue
+		}
+		if len(messages[i].Parts) == 0 {
+			continue
+		}
+		if _, ok := messages[i].Parts[0].(llms.TextContent); ok {
+			return i
+		}
+	}
+	return -1
 }
 
 // fallbackCause records why the fallback path was entered. Quota exhaustion and

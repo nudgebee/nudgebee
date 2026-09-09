@@ -352,10 +352,18 @@ const CustomTooltip = React.forwardRef<HTMLDivElement, CustomTooltipProps>(
       };
     }
 
+    // MUI's Tooltip names its child `aria-label={title}` when `title` is a string
+    // (Tooltip.js, describeChild=false). We always hand MUI a JSX wrapper, so that
+    // naming never fires and an icon-only trigger is left with no accessible name.
+    // Restore it here, deferring to a name the call site already set.
+    const childProps = (children as ReactElement<any>).props as Record<string, unknown>;
+    const needsAccessibleName = typeof title === 'string' && !childProps['aria-label'] && !childProps['aria-labelledby'];
+
     return (
       <StyledTooltip title={tooltipContent} {...tooltipProps}>
         {React.cloneElement(children as ReactElement<any>, {
           ...(ref != null && { ref }),
+          ...(needsAccessibleName && { 'aria-label': title }),
           ...(isInteractive && {
             onMouseEnter: handleOpen,
             onMouseLeave: handleClose,

@@ -464,6 +464,19 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	executeEventInvestigation(context, request, c)
 }
 
+// shouldAttributeToSystemUser reports whether an event analysis run must be
+// attributed to the system user rather than the caller's own identity.
+// regenerate is the one signal that reliably means a human asked for this
+// (set only by the UI's "Regenerate" action, see RCACard.js). Everything
+// else — first-time analyses auto-triggered on event ingestion, and any
+// implicit re-trigger, e.g. a plain page view silently retrying a previously
+// failed analysis that produced no output — is automated, not user-driven,
+// and must not get tagged with whichever operator's session happened to be
+// open when it ran (#35805).
+func shouldAttributeToSystemUser(existingAnalysis *events.EventAnalysis, regenerate bool) bool {
+	return existingAnalysis == nil || !regenerate
+}
+
 func executeEventAnalysis(ctx *security.RequestContext, c *gin.Context, request any, analysisType events.EventAnalysisType, analysisFunc func(ctx *security.RequestContext, request any) (any, error)) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -520,12 +533,7 @@ func executeEventAnalysis(ctx *security.RequestContext, c *gin.Context, request 
 		return
 	}
 
-	// First-time analyses are system-initiated (auto-triggered on event
-	// ingestion), not user-driven. Attribute them to the system user so
-	// token-usage, audit, and conversation rows don't get tagged with
-	// whichever operator happened to hit the API first. Re-analyses
-	// (existingAnalysis != nil) keep the caller's identity.
-	if existingAnalysis == nil {
+	if shouldAttributeToSystemUser(existingAnalysis, regenerate) {
 		userId = security.GetSystemUserId()
 		switch r := request.(type) {
 		case EventRCAAnalysisRequest:
@@ -754,6 +762,9 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	anyFailed := false
 	anyInProgress := false
 	anyStarted := len(dbAnalyses) > 0
+	// Newest completed stage's write time; the post-loop staleness check ages
+	// it against the event's created_at.
+	var latestAnalysisAt time.Time
 
 	// First-time analyses are system-initiated (auto-triggered on event
 	// ingestion), not user-driven. Attribute them to the system user so
@@ -771,8 +782,11 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 				finalResponse.RelatedEventId = existingAnalysis.RelatedEventId
 			}
 			finalResponse.TaskStatuses[string(aType)] = existingAnalysis.Status
-			if existingAnalysis.Status != string(events.AnalysisStatusCompleted) || eventAnalysisRepo.IsAnalysisStale(existingAnalysis.UpdatedAt) {
+			if existingAnalysis.Status != string(events.AnalysisStatusCompleted) {
 				allCompleted = false
+			}
+			if existingAnalysis.UpdatedAt.After(latestAnalysisAt) {
+				latestAnalysisAt = existingAnalysis.UpdatedAt
 			}
 			if isLiveFailure(eventAnalysisRepo, existingAnalysis) {
 				anyFailed = true
@@ -825,6 +839,13 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		} else {
 			allCompleted = false
 		}
+	}
+
+	// One post-loop check on the newest stage (not per-stage in the loop) so it
+	// stays identical to the events-list "View Analysis" test in
+	// services/query is_investigated: completion_ts >= event.created_at - window.
+	if allCompleted && eventAnalysisRepo.IsAnalysisStaleForEvent(latestAnalysisAt, eventInfo.CreatedAt) {
+		allCompleted = false
 	}
 
 	if anyStarted && !request.Regenerate {
@@ -1109,10 +1130,24 @@ func getAgentResponseFromConversation(ctx *security.RequestContext, sessionId st
 	if err != nil {
 		return "", false
 	}
-	// Search backwards for the latest COMPLETED response from this agent
+	return latestAgentGenerationResponse(messages, agentName)
+}
+
+// latestAgentGenerationResponse returns the newest completed agent answer for
+// agentName. Only `generation` rows carry an agent answer: a `followup` row is
+// the tool-approval prompt the agent raised, and its Response column holds the
+// *user's* reply ("yes"/"no"), not analysis. Because the followup row is created
+// after the generation row it answers, an unfiltered backwards scan picks it
+// first — that is how event a1ffed9c stored "yes" as its whole investigation and
+// synthesised a "root cause undetermined" report on top of a completed RCA.
+func latestAgentGenerationResponse(messages []core.ConversationMessage, agentName string) (string, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].AgentName != nil && *messages[i].AgentName == agentName && messages[i].Response != "" && messages[i].Status == core.ConversationStatusCompleted {
-			return messages[i].Response, true
+		msg := messages[i]
+		if msg.MessageType != string(core.MessageTypeGeneration) {
+			continue
+		}
+		if msg.AgentName != nil && *msg.AgentName == agentName && msg.Response != "" && msg.Status == core.ConversationStatusCompleted {
+			return msg.Response, true
 		}
 	}
 	return "", false
@@ -2093,7 +2128,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			summaryQuery := "Get the details of Event with id - " + eventData.Id +
 				". Also explain how Nudgebee auto-triaged this event: its triage status (nb_status), " +
 				"computed priority and the score_factors that produced it, and the deduplication chain and " +
-				"correlated events behind the decision. Use get_triage_explanation for the dedup chain and correlations."
+				"firing history behind the decision. Use get_triage_explanation for the dedup chain and " +
+				"firing history, and get_incident_assembly for what else is involved in the same incident."
 			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}))
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {

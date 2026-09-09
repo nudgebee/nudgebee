@@ -243,7 +243,7 @@ function SelectedLabel({ label }: { label: string }) {
         sx={{
           color: 'var(--ds-blue-500)',
           fontWeight: 'var(--ds-font-weight-semibold)',
-          maxWidth: ds.space.mul(0, 50),
+          minWidth: 0,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           display: 'inline-block',

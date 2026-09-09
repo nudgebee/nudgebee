@@ -2,6 +2,7 @@ package azure
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,10 @@ const (
 	// costManagementBaseBackoff is the fallback schedule (30s, 60s, 120s) used
 	// when the response carries no usable retry hint.
 	costManagementBaseBackoff = 30 * time.Second
+
+	// maxRetryAfterSeconds is the largest whole number of seconds that fits in a
+	// time.Duration without overflowing its int64 nanosecond count.
+	maxRetryAfterSeconds = int64(math.MaxInt64) / int64(time.Second)
 )
 
 // azureRetryAfterHeaders lists the headers Azure uses to say how long to wait,
@@ -49,9 +54,19 @@ func retryAfterFromResponse(resp *http.Response) (time.Duration, bool) {
 			continue
 		}
 
-		if seconds, err := strconv.Atoi(value); err == nil {
+		// ParseInt with an explicit 64-bit width rather than Atoi: the value is
+		// treated as an int64 below, and Atoi's int is platform-width.
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
 			if seconds <= 0 {
 				continue
+			}
+			// time.Duration counts nanoseconds in an int64, so anything past
+			// ~292 years wraps to a negative delay — and a negative delay makes
+			// the retry timer fire immediately, turning the backoff into a spin.
+			// Clamp to the largest representable duration and let the caller
+			// bound it to something sane.
+			if seconds > maxRetryAfterSeconds {
+				return time.Duration(math.MaxInt64), true
 			}
 			return time.Duration(seconds) * time.Second, true
 		}

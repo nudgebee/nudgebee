@@ -1,10 +1,14 @@
 package handlers
 
 import (
+	"context"
+	"nudgebee/code-analysis-agent/common"
+	"nudgebee/code-analysis-agent/config"
 	"nudgebee/code-analysis-agent/internal/credentials"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Regression test for the analysis-id collision bug: agent_code_2 calls
@@ -23,6 +27,70 @@ func TestNewAnalysisID_UniquePerCall(t *testing.T) {
 			t.Fatalf("duplicate id at iter %d: %s", i, id)
 		}
 		seen[id] = struct{}{}
+	}
+}
+
+func TestWatchAnalysisLeaseCancelsAfterMissedCheckIn(t *testing.T) {
+	oldMinInterval := analysisLeaseMinInterval
+	analysisLeaseMinInterval = 5 * time.Millisecond
+	t.Cleanup(func() { analysisLeaseMinInterval = oldMinInterval })
+
+	analysisID := "test-lease-cancel"
+	common.InitAnalysis(analysisID)
+	defer common.CleanupAnalysis(analysisID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	common.SetCancelFunc(analysisID, cancel)
+
+	handler := &AgenticAnalyzeHandler{config: &config.Config{
+		Analysis: config.AnalysisConfig{CheckInTimeout: 20 * time.Millisecond},
+	}}
+	go handler.watchAnalysisLease(analysisID, ctx)
+
+	deadline := time.After(500 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("expected lease watcher to cancel stale analysis")
+		case <-ticker.C:
+			state := common.Snapshot(analysisID)
+			if state != nil && state.Status == "cancelled" {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					t.Fatal("analysis state was cancelled but context was not")
+				}
+			}
+		}
+	}
+}
+
+func TestWatchAnalysisLeaseDisabledForNonPositiveTimeout(t *testing.T) {
+	oldMinInterval := analysisLeaseMinInterval
+	analysisLeaseMinInterval = 5 * time.Millisecond
+	t.Cleanup(func() { analysisLeaseMinInterval = oldMinInterval })
+
+	analysisID := "test-lease-disabled"
+	common.InitAnalysis(analysisID)
+	defer common.CleanupAnalysis(analysisID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	common.SetCancelFunc(analysisID, cancel)
+
+	handler := &AgenticAnalyzeHandler{config: &config.Config{
+		Analysis: config.AnalysisConfig{CheckInTimeout: 0},
+	}}
+	go handler.watchAnalysisLease(analysisID, ctx)
+
+	time.Sleep(30 * time.Millisecond)
+	state := common.Snapshot(analysisID)
+	if state == nil || state.Status != "running" {
+		t.Fatalf("expected disabled lease watcher to leave analysis running, got %#v", state)
 	}
 }
 

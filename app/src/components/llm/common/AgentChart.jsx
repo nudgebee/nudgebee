@@ -179,6 +179,7 @@ const AgentChart = ({ spec }) => {
       data-testid='agent-chart'
       sx={{
         width: '100%',
+        boxSizing: 'border-box',
         my: ds.space[3],
         p: ds.space[3],
         borderRadius: ds.radius.lg,

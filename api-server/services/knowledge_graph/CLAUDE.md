@@ -2,7 +2,7 @@
 
 Multi-cloud topology of services, workloads, and cloud resources. Built periodically from cloud APIs + flow data, persisted to PostgreSQL, served to the frontend (ReactFlow), event-investigation, and LLM agents.
 
-**Storage:** PostgreSQL only — no graph DB. Two tables: `knowledge_graph_node`, `knowledge_graph_edge`. BFS/traversal is implemented in Go.
+**Storage:** PostgreSQL only — no graph DB. The graph itself is two tables: `knowledge_graph_node`, `knowledge_graph_edge`. BFS/traversal is implemented in Go. A third side table, `knowledge_graph_classification_review`, holds near-miss classifications and is never read by graph queries (see [Uncertain Classifications](#uncertain-classifications--the-near-miss-side-channel)).
 
 ---
 
@@ -18,6 +18,7 @@ knowledge_graph/
 │   ├── cross_account_relationships.go  rule-driven inter-account edges
 │   ├── default_relationships.{go,json} 100+ matching rules (JSON embedded)
 │   ├── node_matcher.go              cross-source matching
+│   ├── classification_review.go     records near-miss classifications (source-agnostic)
 │   ├── filter_repository.go         sync-version + per-tenant filters
 │   └── action_service_map.go        event-investigation slice
 ├── sources/              # Phase 1: per-account static sources (registered via factory)
@@ -98,6 +99,45 @@ Built in [core/unique_key_builder.go](core/unique_key_builder.go). Same key from
 
 ---
 
+## Uncertain Classifications — the Near-Miss Side Channel
+
+When a classifier tries every rule it has and still isn't confident enough to decide *what* a thing is (or *which* existing node it is), the signal it saw on the way used to vanish. It's now recorded instead, so a too-aggressive confidence guard's false negatives can be reviewed and backtracked on without re-running ingestion.
+
+**This never changes the graph.** No node, no edge, no `properties.type_evidence` — those still reflect only confident classifications. It writes one row to `knowledge_graph_classification_review` and nothing else.
+
+**Recorder:** [`core.RecordUncertainClassification(ctx, dbManager, core.UncertainClassificationCandidate{...})`](core/classification_review.go) — source-agnostic and **fire-and-forget by construction**: it returns nothing, so no caller can let a failure here affect build success. Pass a short-timeout context derived from `context.Background()`, **not** the build's request context — a cancelled build must not turn this into an error path.
+
+| Field | Meaning |
+|---|---|
+| `Source` | who saw it — `"traces"` today; `"ebpf"` / `"aws"` / `"gcp"` / `"azure"` / `"k8s"` are the intended next ones |
+| `ClassificationKind` | which *kind* of decision was uncertain — `"node_type"` today; `"specific_type"` / `"node_match"` are reserved |
+| `CandidateType` | the type/value that was rejected or left unmapped |
+| `ReasonCode` | which guard fired — free-form, but keep one code per distinct guard |
+| `Evidence` | JSONB; whatever lets a human re-find the signal (trace/span ids, matched key) |
+
+**Row identity** is `(tenant_id, source, classification_kind, candidate_name, candidate_namespace, candidate_cluster)`. Repeat sightings overwrite reason/type/evidence with the latest occurrence and bump `occurrence_count` — latest-wins, no history array. `candidate_cluster` is in the key because the same namespace/service name in two clusters is two independent near-misses, and `candidate_namespace`/`candidate_cluster` are `NOT NULL DEFAULT ''` because Postgres `UNIQUE` treats `NULL <> NULL` (nullable would let two "no namespace" sightings insert as duplicates instead of colliding onto one row).
+
+### Wiring a new source into it
+
+Traces is the reference implementation; the shape generalises:
+
+1. **Producer** — the classifier returns the near-miss alongside its answer instead of dropping it. [`traces.detectApplicationType`](../traces/helpers.go) returns a third value, `*UncertainMatch`, populated only when a guard excluded a pattern that *would* have matched. First-write-wins within a single classification pass.
+2. **Carrier** — hang it on whatever struct already survives to the flow/source layer (`traces.ServiceApplication.UncertainMatch`), so aggregation across spans/resources keeps the first near-miss rather than the last.
+3. **Flush** — call the recorder once per processed item per build, at [`recordUncertainClassificationIfAny`](flow_sources/traces_flow_source.go), so `occurrence_count`/`last_seen_at` track every rebuild the near-miss is still present in.
+4. **Suppress the settled cases** — skip recording when the thing already resolves confidently *for the decision in question* (traces skips when `inferNodeType` already yields a Database/Cache/MessageQueue override). Deliberately **not** gated on "any confident signal at all": most services get a language tag from some span, and the motivating case had no language signal — gating that broadly suppresses exactly what this exists to catch.
+
+**Reason codes in use today** (all `source="traces"`, `classification_kind="node_type"`):
+
+| Code | Guard that fired |
+|---|---|
+| `outbound_span_kind` | span kind is CLIENT/PRODUCER/CONSUMER — the name describes the callee, not this service |
+| `operation_verb_span_name` | no span kind at all, but the name carries an operation verb (consume/process/send/…) and no SERVER kind confirms this service is the destination |
+| `messaging_system_name_mismatch` | `messaging.system` is set but the service name doesn't contain it |
+
+When adding a guard, give it its **own** reason code rather than reusing a near-neighbour — a review row labelled `outbound_span_kind` for a span that carried no span kind is worse than no row, because it sends whoever reads it looking for something that was never there.
+
+---
+
 ## Read Path — Query Methods on `Service`
 
 All on `*Service` in [core/service.go](core/service.go):
@@ -138,6 +178,7 @@ V2 declares the **ReAct** planner type (runs the ReAct3 engine). V1 and V2 are *
 - **`query_attributes` is driven by the per-`specific_type` schema** — when adding a new resource type, declare its `core.SpecificTypeSchema` co-located in `sources/<cloud>/<x>.go` (register via `init()`), marking filterable fields `Indexed: true` (they get hoisted) and identity fields `Required`. It's unioned with the per-NodeType `QueryablePropertiesMap` fallback in [core/types.go](core/types.go). A forcing-function test (`sources/<cloud>/*coverage_test.go`) fails if a new `specific_type` has no schema; a consistency test (`test/schema_consistency_test.go`) fails if the schema and the ontology mapping disagree on a property key. `PropertyDef.Name` must equal the exact `properties` key the extractor writes, or the field silently won't populate.
 - **Edge priority matters for conflicts.** If two sources emit the same edge with different properties, the priority order in [flow_sources/edge_priority.go](flow_sources/edge_priority.go) decides who wins. Adding a new flow source means deciding where it slots in.
 - **Flow sources cannot tombstone infra nodes.** `markInactiveNodes` respects `InfraAuthoritativeNodeTypes` — flow-source-only sync runs do not increment sync_version and do not delete infra.
+- **Don't drop a signal just because you can't act on it.** If a classifier/matcher saw something suggestive but wasn't confident enough to decide, record it via `core.RecordUncertainClassification` instead of returning empty — see [Uncertain Classifications](#uncertain-classifications--the-near-miss-side-channel). It must stay fire-and-forget: short timeout off `context.Background()`, never the build's request context, and never a returned error.
 - **The 1-hour per-tenant lock in the consumer is real** — a stuck or slow build blocks subsequent ones for that tenant for an hour.
 - **Frontend caps at 1500 nodes** — bigger graphs need server-side filtering (account_ids, node_types) before the client gets them.
 
@@ -151,6 +192,7 @@ V2 declares the **ReAct** planner type (runs the ReAct3 engine). V1 and V2 are *
 | Add a new source | [sources/interface.go](sources/interface.go) → [sources/registry.go](sources/registry.go) → copy structure of [sources/k8s_source.go](sources/k8s_source.go) |
 | Add a new flow source | [flow_sources/interface.go](flow_sources/interface.go) → [flow_sources/base_flow_source.go](flow_sources/base_flow_source.go) → [flow_sources/edge_priority.go](flow_sources/edge_priority.go) (add to priority list) |
 | Add a cross-account rule | [core/default_relationships.json](core/default_relationships.json) → [core/cross_account_relationships.go](core/cross_account_relationships.go) for matcher behaviour |
+| Record a near-miss classification from a new source | [core/classification_review.go](core/classification_review.go) (recorder + candidate shape) → copy the producer→carrier→flush wiring in [traces/helpers.go](../traces/helpers.go) `detectApplicationType` and [flow_sources/traces_flow_source.go](flow_sources/traces_flow_source.go) `recordUncertainClassificationIfAny` → give each new guard its own `ReasonCode` |
 | Debug a missing edge | confirm both endpoint nodes exist with correct unique_key → check source priority in [flow_sources/edge_priority.go](flow_sources/edge_priority.go) → check tombstone state (`is_active`) |
 | Debug a stuck/slow build | [queue/consumer.go](queue/consumer.go) (lock state) → BuildGraphs phase logs in [core/service.go:570](core/service.go#L570) → batch sizes in SaveNodes/SaveEdges |
 | Work on the LLM SDG V2 agent | [llm/llm-server/agents/agent_service_dependency_V2.go](../../../llm/llm-server/agents/agent_service_dependency_V2.go) → [tool_kg_traverse.go](../../../llm/llm-server/tools/tool_kg_traverse.go) → [TraverseDirectional:3463](core/service.go#L3463) |

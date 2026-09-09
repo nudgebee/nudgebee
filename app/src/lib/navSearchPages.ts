@@ -106,6 +106,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Troubleshoot', label: 'Auto Investigated', path: '/troubleshoot#investigations/auto-investigated' },
   { group: 'Troubleshoot', label: 'Manual Investigated', path: '/troubleshoot#investigations/manual-investigated' },
   { group: 'Troubleshoot', label: 'Knowledge Graph', path: '/troubleshoot#kg' },
+  { group: 'Troubleshoot', label: 'Analytics', path: '/troubleshoot#analytics' },
 
   // Fleet-wide summary across every provider's accounts (K8s, AWS, Azure, GCP,
   // CloudFoundry, self-hosted VMs). Was /kubernetes#overview while it only
@@ -118,7 +119,12 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Dashboards', label: 'Application Grouping', path: '/dashboards#groups' },
 
   { group: 'Optimize', label: 'Optimize Summary', path: '/optimise#summary' },
-  { group: 'Optimize', label: 'Optimize Recommendations', path: '/optimise#recommendations' },
+  { group: 'Optimize', label: 'Optimize Cost', path: '/optimise#recommendations' },
+  { group: 'Optimize', label: 'Optimize Configuration', path: '/optimise#configuration' },
+  { group: 'Optimize', label: 'Security - Image Scan', path: '/optimise#security/image-scan' },
+  { group: 'Optimize', label: 'Security - CIS Scan', path: '/optimise#security/cis-scan' },
+  { group: 'Optimize', label: 'Security - VM Vulnerabilities', path: '/optimise#security/vm-vulnerabilities' },
+  { group: 'Optimize', label: 'Security - Cloud Posture', path: '/optimise#security/cloud-posture' },
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },
   { group: 'Optimize', label: 'Auto Optimize - Optimizations', path: '/optimise#auto-optimize/optimizations' },
   { group: 'Optimize', label: 'Auto Optimize - Approvals', path: '/optimise#auto-optimize/approvals' },

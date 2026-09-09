@@ -15,7 +15,6 @@ from typing import List, Optional
 from botocore.exceptions import ClientError
 from rag.core.types import Document
 
-from rag.core.documents.loaders.base import trim_text
 from rag.core.embeddings.tracker import EmbeddingTracker
 from rag.exceptions import is_not_found_error
 from rag.qdrant.client import get_qdrant_client
@@ -29,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 # Module-level engine for connection pooling — avoid creating per-call.
 _kb_engine = None
+
+# Ids per existence-probe request. Qdrant carries the id list in the request body,
+# so a whole embedding batch is chunked rather than sent as one oversized call.
+_EXISTENCE_PROBE_CHUNK = 256
 
 
 def _get_kb_engine():
@@ -132,10 +135,42 @@ def _get_document_id(doc):
     return hashlib.md5(doc.page_content.encode()).hexdigest()
 
 
-# NOTE: _check_document_exists() function removed - it was causing major performance issues
-# Old implementation checked existence of each document individually (N HTTP requests per batch)
-# Qdrant's upsert operation handles duplicates automatically and atomically
-# If you need the old function for reference, check git history
+# NOTE: the original _check_document_exists() did one HTTP round-trip per document
+# (N per batch) and was removed for that reason. Upsert does dedupe *storage* — point
+# ids are content hashes, so an unchanged page overwrites itself — but the vector is
+# computed before Qdrant is ever contacted, so unchanged pages were still being
+# re-embedded on every sync. This is the batched form: one retrieve per batch instead
+# of N, ids only, no payload or vectors.
+def _normalize_point_id(point_id):
+    """Hyphen-stripped form of a point id, for comparison only.
+
+    Qdrant accepts a bare 32-char hex id on write but stores and returns it in
+    canonical hyphenated UUID form, so `_generate_document_ids`' plain hex never
+    equals a returned `point.id` by string compare. Same normalisation as
+    `_get_missing_doc_ids`.
+    """
+    return str(point_id).replace("-", "")
+
+
+def _existing_point_ids(collection_name, ids):
+    """Return the normalised subset of `ids` already present in the collection.
+
+    Chunked because Qdrant takes the id list in the request body and a whole
+    embedding batch can be large. Ids only — no payload, no vectors — so this
+    stays a cheap existence probe rather than a read.
+    """
+    existing = set()
+    client = get_qdrant_client()
+    for start in range(0, len(ids), _EXISTENCE_PROBE_CHUNK):
+        chunk = ids[start : start + _EXISTENCE_PROBE_CHUNK]
+        found = client.retrieve(
+            collection_name=collection_name,
+            ids=chunk,
+            with_payload=False,
+            with_vectors=False,
+        )
+        existing.update(_normalize_point_id(point.id) for point in found)
+    return existing
 
 
 def _create_embeddings_batch(
@@ -210,11 +245,12 @@ async def generate_embeddings_batch(
         collection_name: Target collection name
         collection_metadata: Collection metadata
         tracker: Embedding tracker for metrics
-        verify_doc: Whether to verify document existence before processing (deprecated - ignored)
+        verify_doc: Skip documents already present in the collection (set by _setup_collection)
         vector_store: Optional pre-created vector store for reuse across batches
 
-    NOTE: verify_doc parameter is deprecated and ignored. Qdrant's upsert operation
-    automatically handles duplicates, so existence checks are unnecessary and slow.
+    NOTE: verify_doc gates the batched existence probe. Upsert dedupes storage, but
+    the embedding is computed before Qdrant is contacted, so skipping unchanged
+    documents is what avoids the redundant embedding work.
     """
     if not documents:
         return
@@ -223,11 +259,29 @@ async def generate_embeddings_batch(
     wait_time = int(os.environ.get("INITIAL_WAIT_TIME", 1))
     max_retry_duration = int(os.environ.get("MAX_RETRY_DURATION", 600))
 
-    # NOTE: Removed existence check - Qdrant's upsert automatically handles duplicates
-    # Old code: if verify_doc: for doc in documents: if not _check_document_exists()...
-    # This was causing N individual HTTP requests for each document in the batch
-    # Upsert is atomic and much faster - it updates existing docs or inserts new ones
+    # Skip documents already embedded in this collection. `verify_doc` is only set
+    # when the collection exists AND carries embeddings_generated_at (see
+    # _setup_collection), i.e. exactly the re-sync case — on a first build there is
+    # nothing to find, so the probe is skipped entirely. Fails open: any error here
+    # embeds the full batch rather than blocking ingestion.
     docs_to_process = documents
+    if verify_doc and documents:
+        try:
+            batch_ids = [_get_document_id(d) for d in documents]
+            existing = _existing_point_ids(collection_name, batch_ids)
+            if existing:
+                docs_to_process = [
+                    d for d, doc_id in zip(documents, batch_ids) if _normalize_point_id(doc_id) not in existing
+                ]
+                logger.info(
+                    f"Skipping {len(documents) - len(docs_to_process)} already-embedded "
+                    f"documents of {len(documents)} in batch"
+                )
+            if not docs_to_process:
+                return
+        except Exception as e:
+            logger.warning(f"Existence probe failed, embedding full batch: {e}")
+            docs_to_process = documents
 
     # Main retry loop for entire batch
     while time.time() - start_time < max_retry_duration:
@@ -254,6 +308,13 @@ async def generate_embeddings_batch(
                 if token_limit_error:
                     logger.info("Too many input tokens in batch. Retrying by reducing document sizes...")
                     # Trim all documents in batch
+                    # Imported here, not at module scope: rag.core.documents.loaders
+                    # imports process_documents from this module, so a top-level
+                    # import of loaders.base makes the package __init__ re-enter
+                    # a half-initialised processing module. Deferring it to this
+                    # rare token-limit retry breaks the cycle.
+                    from rag.core.documents.loaders.base import trim_text
+
                     for doc in docs_to_process:
                         doc.page_content = trim_text(doc.page_content)
                         # Update document ID after content change

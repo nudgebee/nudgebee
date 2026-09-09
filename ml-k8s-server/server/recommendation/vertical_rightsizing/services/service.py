@@ -29,7 +29,7 @@ from server.recommendation.vertical_rightsizing.strategy.strateggy_nudgebee impo
     NudgebeeStrategySettings,
 )
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
 
 
 class CriticalRunnerException(Exception):

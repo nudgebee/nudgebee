@@ -24,6 +24,13 @@ const SECURITY_DETAILS_RECOMMENDATION_STATUS = ['Open', 'Archive', 'InProgress',
 const KubernetesSecurity = (props) => {
   const router = useRouter();
 
+  // Cross-account mode (the /optimise Security tab) passes kubernetes.id as a
+  // list plus an accountsById name map. The namespace/workload cascade is
+  // per-account data, so those filters only operate when exactly one cluster
+  // is in scope.
+  const accountScope = props?.kubernetes?.id;
+  const singleAccountId = Array.isArray(accountScope) ? (accountScope.length === 1 ? accountScope[0] : null) : accountScope;
+
   const [recommendationStatus, setRecommendationStatus] = useState('Open');
   const [recommendationSeverity, setRecommendationSeverity] = useState([]);
   const [recommendationImage, setRecommendationImage] = useState(props.filters?.image ?? '');
@@ -41,22 +48,24 @@ const KubernetesSecurity = (props) => {
   }, [router?.query?.severity]);
 
   useEffect(() => {
-    if (!props?.kubernetes?.id) {
+    if (!singleAccountId) {
+      setNamespaces([]);
       return;
     }
     recommendationApi
       .listRecommendationNamesapces({
-        accountId: props?.kubernetes?.id,
+        accountId: singleAccountId,
         category: 'Security',
         status: recommendationStatus,
       })
       .then((res) => {
         setNamespaces(res);
       });
-  }, [props?.kubernetes?.id, recommendationStatus]);
+  }, [singleAccountId, recommendationStatus]);
 
   useEffect(() => {
-    if (!props?.kubernetes?.id) {
+    if (!singleAccountId) {
+      setWorkloads([]);
       return;
     }
     if (!selectedNamespace) {
@@ -64,7 +73,7 @@ const KubernetesSecurity = (props) => {
     }
     recommendationApi
       .listRecommendationWorkloads({
-        accountId: props?.kubernetes?.id,
+        accountId: singleAccountId,
         category: 'Security',
         status: recommendationStatus,
         namespaceName: selectedNamespace,
@@ -72,7 +81,7 @@ const KubernetesSecurity = (props) => {
       .then((res) => {
         setWorkloads(res);
       });
-  }, [props?.kubernetes?.id, recommendationStatus, selectedNamespace]);
+  }, [singleAccountId, recommendationStatus, selectedNamespace]);
 
   const filterOptions = [
     {
@@ -105,7 +114,7 @@ const KubernetesSecurity = (props) => {
       width: '155px',
       options: namespaces,
       value: selectedNamespace,
-      enabled: props?.enableFilters?.includes('namespace') ?? true,
+      enabled: Boolean(singleAccountId) && (props?.enableFilters?.includes('namespace') ?? true),
       onSelect: function (e, _rule) {
         setSelectedNamespace(e?.target?.value);
         setSelectedWorkload('');
@@ -120,7 +129,7 @@ const KubernetesSecurity = (props) => {
       width: '155px',
       options: workloads,
       value: selectedWorkload,
-      enabled: props?.enableFilters?.includes('workload') ?? true,
+      enabled: Boolean(singleAccountId) && (props?.enableFilters?.includes('workload') ?? true),
       onSelect: function (e, _rule) {
         setSelectedWorkload(e?.target?.value);
         setResetPage(`workload-${e?.target?.value}`);
@@ -160,6 +169,7 @@ const KubernetesSecurity = (props) => {
           </>
         }
       >
+        {props?.leadingFilters}
         {filterOptions
           .filter((f) => f.enabled !== false && f.type !== 'search')
           .map((f) => (
@@ -198,6 +208,7 @@ const KubernetesSecurity = (props) => {
         {activeToggleButton == 'apps' && (
           <KubernetesSecurityApps
             kubernetes={{ id: props?.kubernetes?.id }}
+            accountsById={props?.accountsById}
             query={{
               workload_name: selectedWorkload,
               namespace: selectedNamespace,
@@ -212,6 +223,7 @@ const KubernetesSecurity = (props) => {
         {activeToggleButton == 'details' && (
           <KubernetesSecurityDetails
             kubernetes={{ id: props?.kubernetes?.id }}
+            accountsById={props?.accountsById}
             query={{
               workload_name: selectedWorkload,
               namespace: selectedNamespace,
@@ -226,6 +238,7 @@ const KubernetesSecurity = (props) => {
         {activeToggleButton == 'images' && (
           <KubernetesSecurityImages
             kubernetes={{ id: props?.kubernetes?.id }}
+            accountsById={props?.accountsById}
             query={{
               workload_name: selectedWorkload,
               namespace: selectedNamespace,
@@ -241,6 +254,7 @@ const KubernetesSecurity = (props) => {
         {activeToggleButton == 'cve' && (
           <KubernetesSecurityCVE
             kubernetes={{ id: props?.kubernetes?.id }}
+            accountsById={props?.accountsById}
             query={{
               workload_name: selectedWorkload,
               namespace: selectedNamespace,
@@ -260,6 +274,8 @@ const KubernetesSecurity = (props) => {
 KubernetesSecurity.propTypes = {
   heading: PropTypes.string,
   kubernetes: PropTypes.object,
+  accountsById: PropTypes.object,
+  leadingFilters: PropTypes.node,
   enableFilters: PropTypes.array,
   filters: PropTypes.object,
   disableInfographic: PropTypes.bool,

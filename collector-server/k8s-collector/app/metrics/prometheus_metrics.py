@@ -122,6 +122,12 @@ rabbitmq_messages_dlq_total = Counter(
     ["queue_name"],
 )
 
+rabbitmq_messages_dropped_disabled_total = Counter(
+    "rabbitmq_messages_dropped_disabled_total",
+    "Total number of messages dropped because their cloud account is disabled",
+    ["queue_name", "account_id"],
+)
+
 rabbitmq_message_processing_duration_seconds = Histogram(
     "rabbitmq_message_processing_duration_seconds",
     "Time spent processing messages end-to-end",
@@ -338,6 +344,12 @@ def record_message_dlq(queue_name: str):
     """Record message sent to DLQ"""
     rabbitmq_messages_dlq_total.labels(queue_name=queue_name).inc()
     logger.debug(f"Metrics: Message sent to DLQ from {queue_name}")
+
+
+def record_message_dropped_disabled(queue_name: str, account_id: str):
+    """Record a message dropped because its cloud account is disabled"""
+    rabbitmq_messages_dropped_disabled_total.labels(queue_name=queue_name, account_id=account_id).inc()
+    logger.debug(f"Metrics: Message dropped from {queue_name}, account {account_id} is disabled")
 
 
 def record_ack(queue_name: str, success: bool):

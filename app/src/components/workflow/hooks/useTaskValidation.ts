@@ -334,6 +334,23 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
     }
   }
 
+  // Paired resize fields (change_by + change_to): exclusive, but one of them is
+  // mandatory — a JSON-schema `required` flag can't express "exactly one of", so
+  // tasks like k8s.pv_rightsize declared neither and the node validated as OK
+  // with no resize value at all, failing only at execution ("either 'change_by'
+  // or 'change_to' must be provided"). Gate mirrors the sidebar's synthetic
+  // "Resize" dropdown: suppressed when the task exposes its own `scaling_mode`
+  // selector (k8s.horizontal_rightsize), which drives visibility itself.
+  const hasChangeGroup = !!inputSchema.change_by && !!inputSchema.change_to && !inputSchema.scaling_mode;
+  if (hasChangeGroup) {
+    const isBlank = (v: any) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+    if (isBlank(data?.change_by) && isBlank(data?.change_to)) {
+      errors.change_by = 'Resize value is required';
+      errors.change_to = 'Resize value is required';
+      isValid = false;
+    }
+  }
+
   // Foreach / group: validate the nested sub-task list so the node warning icon
   // and save-gating fire without opening the tasks editor.
   if (actionType === 'core.foreach' || actionType === 'core.group') {

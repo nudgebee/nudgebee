@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Typography, Chip, Tooltip, IconButton, LinearProgress } from '@mui/material';
+import { Box, Typography, Chip, IconButton, LinearProgress } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import api from '@api1/ask-nudgebee';
@@ -114,7 +115,7 @@ function WatchRow({ watch: w, onCancel }) {
           </Tooltip>
         </Box>
         {!isTerminal && (
-          <Tooltip title='Cancel watch'>
+          <Tooltip title='Cancel watch' placement='bottom'>
             <IconButton
               size='small'
               onClick={() => onCancel(w)}
@@ -318,7 +319,7 @@ export default function WatchesTab({ conversationId }) {
       {/* header strip with active-poll progress hint */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Typography className='nb-text-h3-widget'>Watches ({watches.length})</Typography>
-        <Tooltip title='Refresh'>
+        <Tooltip title='Refresh' placement='bottom'>
           <IconButton size='small' onClick={refresh} data-testid='watches-refresh-btn'>
             <RefreshIcon sx={{ fontSize: 18 }} />
           </IconButton>

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -233,6 +234,74 @@ func TestXyChartArrays(t *testing.T) {
 		assert.NotEmpty(t, errors, "Should detect string values in bar array")
 		assert.Contains(t, errors[0], "numeric", "Error message should mention numeric requirement")
 	})
+}
+
+func TestArrowLabelAndNodeIDValidation(t *testing.T) {
+	tests := []struct {
+		name          string
+		code          string
+		expectedError bool
+		errorContains string
+	}{
+		{
+			name:          "Incorrect: stray '>' after edge label pipe",
+			code:          "graph LR\n    A -->|\"ROUTES_TO_SERVICE\"|> B",
+			expectedError: true,
+			errorContains: "|>",
+		},
+		{
+			name:          "Correct: edge label closed with a single pipe",
+			code:          "graph LR\n    A -->|\"ROUTES_TO_SERVICE\"| B",
+			expectedError: false,
+		},
+		{
+			name:          "Incorrect: hyphenated node ID",
+			code:          "graph LR\n    A --> llm-gateway[\"llm-gateway\"]",
+			expectedError: true,
+			errorContains: "alphanumeric",
+		},
+		{
+			name:          "Incorrect: dotted node ID",
+			code:          "graph LR\n    A --> logging.googleapis.com[\"External Logging\"]",
+			expectedError: true,
+			errorContains: "alphanumeric",
+		},
+		{
+			name:          "Correct: alphanumeric node ID with the real name in the label",
+			code:          "graph LR\n    A --> llmGateway[\"llm-gateway\"]",
+			expectedError: false,
+		},
+		{
+			name: "Real-world scenario: reproduces the exact thread diagram, both errors on every edge line",
+			code: "graph LR\n" +
+				"    Ingress -->|ROUTES_TO_SERVICE|> llm-gateway(K8sService)\n" +
+				"    llm-gateway(K8sService) --> llm-gateway(Workload)\n" +
+				"    llm-gateway(Workload) -->|CALLS|> kube-dns(Workload)\n" +
+				"    kube-dns(Workload) -->|CALLS|> logging.googleapis.com(ExternalService)",
+			expectedError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errors := validateMermaidCode(tt.code)
+			if tt.expectedError {
+				assert.NotEmpty(t, errors, "Expected validation errors for case: %s", tt.name)
+				if tt.errorContains != "" {
+					found := false
+					for _, e := range errors {
+						if strings.Contains(e, tt.errorContains) {
+							found = true
+							break
+						}
+					}
+					assert.True(t, found, "Expected an error containing %q, got: %v", tt.errorContains, errors)
+				}
+			} else {
+				assert.Empty(t, errors, "Expected no validation errors but got: %v", errors)
+			}
+		})
+	}
 }
 
 func TestClassDiagramSupport(t *testing.T) {

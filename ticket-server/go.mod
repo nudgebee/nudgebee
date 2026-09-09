@@ -7,7 +7,7 @@ toolchain go1.26.6
 require (
 	github.com/Cyprinus12138/otelgin v1.0.3
 	github.com/PagerDuty/go-pagerduty v1.8.0
-	github.com/allegro/bigcache/v3 v3.1.0
+	github.com/allegro/bigcache/v3 v3.2.0
 	github.com/eko/gocache/lib/v4 v4.2.4
 	github.com/eko/gocache/store/bigcache/v4 v4.2.4
 	github.com/eko/gocache/store/redis/v4 v4.2.6
@@ -15,7 +15,7 @@ require (
 	github.com/google/go-github/v67 v67.0.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/michaeldcanady/servicenow-sdk-go v1.12.0
+	github.com/michaeldcanady/servicenow-sdk-go v1.12.1
 	github.com/redis/go-redis/v9 v9.22.0
 	gitlab.com/gitlab-org/api/client-go v1.46.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.70.0
@@ -29,7 +29,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
 	golang.org/x/oauth2 v0.36.0
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 )
 
 require (
@@ -57,7 +57,7 @@ require (
 	github.com/microsoft/kiota-abstractions-go v1.9.4 // indirect
 	github.com/microsoft/kiota-http-go v1.5.6 // indirect
 	github.com/microsoft/kiota-serialization-form-go v1.1.3 // indirect
-	github.com/microsoft/kiota-serialization-json-go v1.1.2 // indirect
+	github.com/microsoft/kiota-serialization-json-go v1.1.4 // indirect
 	github.com/microsoft/kiota-serialization-multipart-go v1.1.2 // indirect
 	github.com/microsoft/kiota-serialization-text-go v1.1.3 // indirect
 	github.com/mozillazg/go-httpheader v0.4.0 // indirect
@@ -100,7 +100,7 @@ require (
 	github.com/andygrunwald/go-jira v1.17.0
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/fatih/structs v1.1.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/gin-contrib/pprof v1.5.4
 	github.com/gin-contrib/sse v1.1.1 // indirect
 	github.com/gin-gonic/gin v1.12.0

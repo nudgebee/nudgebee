@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sort"
 	"strings"
 
 	"nudgebee/llm/common"
@@ -17,9 +16,10 @@ import (
 )
 
 // Tool name constants for the read-only triage tools. These expose Nudgebee's
-// auto-triage heuristics (dedup chains, correlations, scoring, triage rules and
-// threshold suggestions) to the events agent so it can explain *why* an event
-// was triaged the way it was — not just report the resulting nb_status.
+// auto-triage heuristics (dedup chains, incident assembly, scoring, triage
+// rules and threshold suggestions) to the events agent so it can explain *why*
+// an event was triaged the way it was — not just report the resulting
+// nb_status.
 const (
 	ToolTriageExplanation    = "get_triage_explanation"
 	ToolTriageRules          = "get_triage_rules"
@@ -30,16 +30,13 @@ const (
 	ToolIncidentAssembly     = "get_incident_assembly"
 )
 
-// Bounds on the triage explanation payload. A noisy event can have a very long
-// duplicate chain and dozens of correlations; the scratchpad caps a single tool
-// observation (~4KB by default), which would truncate the raw payload mid-JSON.
-// We keep the most recent occurrences and the strongest correlations, slim each
-// entry to the fields needed to reason about causality, and rely on the
-// backend-provided total counts to tell the LLM how much was elided.
-const (
-	maxDuplicateChainEntries = 5
-	maxCorrelations          = 8
-)
+// Bound on the triage explanation payload. A noisy event can have a very long
+// duplicate chain; the scratchpad caps a single tool observation (~4KB by
+// default), which would truncate the raw payload mid-JSON. We keep the most
+// recent occurrences, slim each entry to the fields needed to reason about
+// recurrence, and rely on the backend-provided total to tell the LLM how much
+// was elided.
+const maxDuplicateChainEntries = 5
 
 func init() {
 	core.RegisterNBToolFactory(ToolTriageExplanation, func(accountId string) (core.NBTool, error) {
@@ -179,11 +176,14 @@ func stringArg(input core.NBToolCallRequest, key string) string {
 // get_triage_explanation — why was this event triaged the way it was?
 // ---------------------------------------------------------------------------
 
-// TriageExplanationTool returns the combined triage picture for a single event:
-// duplicate chain (occurrence number, time-since-first/previous), correlated
-// events (root-cause vs downstream), historical stats and the hourly trend.
-// Combined with the event's own score_factors column, this answers
-// "why is this event P0 / SUPPRESSED / DUPLICATE?".
+// TriageExplanationTool returns the recurrence picture for a single event:
+// duplicate chain (occurrence number, time-since-first/previous), historical
+// stats and the hourly trend. Combined with the event's own score_factors
+// column, this answers "why is this event SUPPRESSED / DUPLICATE / P3?".
+//
+// It carries no "related events" lane: #34658 made the incident assembly
+// (ToolIncidentAssembly) the single source of what else is involved, so
+// relatedness questions belong there.
 type TriageExplanationTool struct{}
 
 func (t TriageExplanationTool) Name() string             { return ToolTriageExplanation }
@@ -191,10 +191,10 @@ func (t TriageExplanationTool) GetType() core.NBToolType { return core.NBToolTyp
 
 func (t TriageExplanationTool) Description() string {
 	return "Explains how a single event was triaged. Given an event_id, returns its duplicate chain " +
-		"(occurrence number, total occurrences, time since first/previous), correlated events " +
-		"(likely_root_cause / downstream_impact / upstream_dependency / same_service), historical " +
-		"firing stats and the hourly trend. Use this together with the event's score_factors column " +
-		"to explain why an event is DUPLICATE/SUPPRESSED or has a given computed_priority."
+		"(occurrence number, total occurrences, time since first/previous), historical firing stats " +
+		"and the hourly trend. Use this together with the event's score_factors column to explain why " +
+		"an event is DUPLICATE/SUPPRESSED or has a given computed_priority. For what else is involved " +
+		"in the same incident (root cause vs downstream impact), use " + ToolIncidentAssembly + " instead."
 }
 
 func (t TriageExplanationTool) InputSchema() core.ToolSchema {
@@ -227,11 +227,10 @@ func (t TriageExplanationTool) Call(nbCtx core.NbToolContext, input core.NBToolC
 	return triageResponse(boundTriageExplanation(data)), nil
 }
 
-// boundTriageExplanation trims the duplicate chain and correlation list so the
-// payload fits within the scratchpad's per-observation cap. It keeps the most
-// recent occurrences and the strongest correlations, leaving the backend's
-// total_occurrences / correlation_count intact so the LLM knows the full size.
-// On any parse failure it returns the original data unchanged.
+// boundTriageExplanation trims the duplicate chain so the payload fits within
+// the scratchpad's per-observation cap. It keeps the most recent occurrences,
+// leaving the backend's total_occurrences intact so the LLM knows the full
+// size. On any parse failure it returns the original data unchanged.
 func boundTriageExplanation(data string) string {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(data), &m); err != nil {
@@ -254,23 +253,6 @@ func boundTriageExplanation(data string) string {
 		}
 	}
 
-	if corr, ok := m["correlated_events"].([]any); ok {
-		sort.SliceStable(corr, func(i, j int) bool {
-			return correlationScore(corr[i]) > correlationScore(corr[j])
-		})
-		if len(corr) > maxCorrelations {
-			corr = corr[:maxCorrelations]
-			m["correlated_events_truncated"] = true
-			m["correlated_events_shown"] = len(corr)
-		}
-		slim := make([]any, 0, len(corr))
-		for _, e := range corr {
-			slim = append(slim, pick(e, "correlated_title", "correlation_type", "correlation_score",
-				"correlation_reason", "subject_name", "time_offset_minutes"))
-		}
-		m["correlated_events"] = slim
-	}
-
 	out, err := json.Marshal(m)
 	if err != nil {
 		return data
@@ -291,16 +273,6 @@ func pick(v any, keys ...string) any {
 		}
 	}
 	return out
-}
-
-// correlationScore reads correlation_score from a correlated-event map (0 if absent).
-func correlationScore(v any) float64 {
-	if c, ok := v.(map[string]any); ok {
-		if s, ok := c["correlation_score"].(float64); ok {
-			return s
-		}
-	}
-	return 0
 }
 
 // ---------------------------------------------------------------------------
@@ -525,8 +497,8 @@ func (t TriageDryRunTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 // EventClassificationTool returns the explicit classification verdict for an
 // event (true_positive / false_positive / benign_positive / duplicate) with its
 // reason_code, linked_event_id and the rule that produced it. This is distinct
-// from get_triage_explanation (which gives the dedup chain / correlations /
-// score) — it answers "what did we decide this event IS, and why".
+// from get_triage_explanation (which gives the dedup chain / historical firing
+// stats) — it answers "what did we decide this event IS, and why".
 type EventClassificationTool struct{}
 
 func (t EventClassificationTool) Name() string             { return ToolEventClassification }

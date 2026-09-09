@@ -51,6 +51,29 @@ const (
 // this list in sync with the api-server guard.
 var PRLifecycleTerminalStates = []string{"merged", "closed", "unresolvable"}
 
+// ValueRefreshCooldown mirrors valueRefreshCooldown in the api-server's
+// recommendation/pr_value_refresh.go. It is duplicated for the same reason
+// PRLifecycleTerminalStates above is: the two services are separate Go modules.
+//
+// It is used here to decide whether to RESELECT a recommendation that is only
+// InProgress because of its own open pull request. The api-server guard remains
+// authoritative — if these two ever drift, the guard still refuses early and the
+// only cost is a wasted run, never a duplicate refresh.
+const ValueRefreshCooldown = 6 * time.Hour
+
+// ValueRefreshCap mirrors valueRefreshCap in the api-server's
+// recommendation/pr_value_refresh.go, for the same reason ValueRefreshCooldown
+// above is mirrored.
+//
+// Selection has to know it, not just the guard. Once a pull request has used its
+// budget the guard refuses at valueRefreshBlocked BEFORE any claim is made, so
+// nothing re-stamps last_value_refresh_at — the stamp then ages past the cooldown
+// (or is absent entirely) and reads as "due" forever. Without this the exhausted
+// workload is reselected for a full generate-execute-apply on every run for the
+// rest of that pull request's life, which is exactly the churn the cooldown
+// clause exists to prevent.
+const ValueRefreshCap = 5
+
 type RecommendationResolutionStatus string
 
 const (
@@ -319,6 +342,17 @@ type AutoOptimizeTaskAttributes struct {
 	// open-PR guard returns the existing resolution untouched — so this is what
 	// separates the two. See notifications.go:classifyTask.
 	PRAction string `json:"pr_action,omitempty"`
+	// PRDecision is the open-PR guard's own words for what it decided —
+	// "still within the change threshold", "was updated less than 6h0m0s ago",
+	// "recommendation has changed ...; updating it".
+	//
+	// PRAction says WHICH of the three happened; this says why. They are not
+	// redundant on the unchanged path, which is the common one: the generator
+	// measures drift against the live cluster allocation and the guard measures
+	// it against the values already on the pull request, so a run routinely
+	// reports a large change and then correctly does nothing. Without the reason
+	// those two readings cannot be reconciled by anyone debugging it.
+	PRDecision string `json:"pr_decision,omitempty"`
 }
 
 // PRAction values, mirroring the api-server's recommendation.PRAction. Only the

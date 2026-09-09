@@ -105,7 +105,7 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 		Ctx:            ctx,
 		AccountId:      f.accountId,
 		ConversationId: query.ConversationId,
-		ParentAgentId:  query.ParentAgentId,
+		ParentAgentId:  nestedAgentParentID(query),
 		MessageId:      query.MessageId,
 		QueryContext:   query.QueryContext,
 		QueryConfig:    query.QueryConfig,
@@ -199,10 +199,15 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 	}
 
 	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, input)
-	if err != nil {
+	preambleResponse, preambleErr, handled := handleNestedAgentCallPreamble(nbRequestContext, resp, err, MetricsAgentName)
+	if preambleErr != nil {
 		nbRequestContext.Ctx.GetLogger().Error("metrics: unable to process events request", "error", err, "input", input)
-		return toolcore.NBToolResponse{}, err
+		return preambleResponse, preambleErr
 	}
+	if handled {
+		return preambleResponse, nil
+	}
+	additionalDetails := preambleResponse.AdditionalDetails
 
 	if len(resp.Response) > 0 {
 		metricData := resp.Response[0]
@@ -247,11 +252,12 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 
 		if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 			return toolcore.NBToolResponse{
-				Data:             metricData,
-				Type:             toolcore.NBToolResponseTypeText,
-				Status:           toolcore.NBToolResponseStatusSuccess,
-				References:       references,
-				SubAgentEvidence: subAgentEvidence,
+				Data:              metricData,
+				Type:              toolcore.NBToolResponseTypeText,
+				Status:            toolcore.NBToolResponseStatusSuccess,
+				References:        references,
+				SubAgentEvidence:  subAgentEvidence,
+				AdditionalDetails: additionalDetails,
 			}, nil
 		}
 
@@ -267,22 +273,24 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 				}
 
 				return toolcore.NBToolResponse{
-					Data:             respData,
-					Type:             respType,
-					Status:           toolcore.NBToolResponseStatusSuccess,
-					References:       references,
-					SubAgentEvidence: subAgentEvidence,
+					Data:              respData,
+					Type:              respType,
+					Status:            toolcore.NBToolResponseStatusSuccess,
+					References:        references,
+					SubAgentEvidence:  subAgentEvidence,
+					AdditionalDetails: additionalDetails,
 				}, nil
 			}
 		}
 		return toolcore.NBToolResponse{
-			Data:             metricData,
-			Type:             toolcore.NBToolResponseTypeText,
-			Status:           toolcore.NBToolResponseStatusSuccess,
-			References:       references,
-			SubAgentEvidence: subAgentEvidence,
+			Data:              metricData,
+			Type:              toolcore.NBToolResponseTypeText,
+			Status:            toolcore.NBToolResponseStatusSuccess,
+			References:        references,
+			SubAgentEvidence:  subAgentEvidence,
+			AdditionalDetails: additionalDetails,
 		}, nil
 	}
 
-	return toolcore.NBToolResponse{}, toolcore.ErrUnableToFetchData
+	return toolcore.NBToolResponse{AdditionalDetails: additionalDetails, References: resp.References}, toolcore.ErrUnableToFetchData
 }

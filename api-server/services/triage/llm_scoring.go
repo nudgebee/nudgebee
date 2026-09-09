@@ -128,12 +128,16 @@ func recurrenceAdjustment(count int, semantics string) int {
 	return tier // escalating (and any unknown semantics default to neutral handling above)
 }
 
-// correlationTypeAdjustment maps a correlation type to a contextual cascade adjustment applied
-// AFTER the intrinsic band: a likely root cause stays prominent; downstream/upstream symptoms
-// and same-resource/same-service co-occurrences are dampened so a cascade collapses toward its
-// root instead of flooding the queue. NOTE: `same_resource` is non-directional, so it only gets
-// a mild dampen here — true root-vs-downstream identification within a same_resource cluster is
-// the Phase-2 LLM causal DAG. (Also fixes the legacy bug where same_resource fell through to 0.)
+// correlationTypeAdjustment maps a legacy pairwise correlation type to a cascade adjustment:
+// a likely root cause stays prominent; downstream/upstream symptoms and same-resource/
+// same-service co-occurrences are dampened so a cascade collapses toward its root instead of
+// flooding the queue. NOTE: `same_resource` is non-directional, so it only gets a mild dampen
+// here. (Also fixes the legacy bug where same_resource fell through to 0.)
+//
+// Reachable ONLY through llmCorrelationAdjustment, i.e. when INCIDENT_GROUPING_ENABLED is off.
+// With grouping on, incidentCorrelationAdjustment replaces this table: the co-occurrence types
+// stop scoring entirely and a group child is dampened instead. Kept so the kill switch restores
+// this scorer's exact pre-grouping behaviour; retire it with the pairwise writer (#34715).
 func correlationTypeAdjustment(corrType string) int {
 	switch corrType {
 	case "likely_root_cause":

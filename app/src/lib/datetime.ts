@@ -92,6 +92,60 @@ export function getEndOfMonth(d?: Date): Date {
   return new Date(new Date(d.getFullYear(), d.getMonth() + 1, 1, 0, 0, 0, 0).getTime() - 1);
 }
 
+// ── UTC-anchored month/year windows, for spend queries ────────────────────
+//
+// Spend rows are written as a UTC calendar date at midnight (the collector
+// formats `item.StartDate.UTC()` as YYYY-MM-DD) into a `timestamp without time
+// zone` column. A window built from a local Date and serialised with
+// toISOString therefore lands offset by the viewer's UTC offset, and the
+// comparison silently moves by a day:
+//
+//   US-Eastern viewer: local Aug 1 00:00 → 2026-08-01T04:00Z, so the Aug 1 row
+//                      (stored 2026-08-01 00:00) falls outside `>=` and MTD is
+//                      short by a full day.
+//   IST viewer:        local Aug 1 00:00 → 2026-07-31T18:30Z, so MTD picks up
+//                      the last day of the PREVIOUS month.
+//
+// Two people in different timezones then see different totals for the same
+// account, and neither matches the provider's invoice. These take the calendar
+// month from the viewer's local date — so "this month" still means what their
+// calendar says — but anchor the boundaries to UTC to match how the rows are
+// stored.
+
+export function getStartOfMonthUTC(d?: Date): Date {
+  d = d || new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0));
+}
+
+export function getEndOfMonthUTC(d?: Date): Date {
+  d = d || new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth() + 1, 1, 0, 0, 0, 0) - 1);
+}
+
+// Built from year/month components rather than by stepping a Date back a month:
+// setMonth alone overflows on the 29th-31st (Jul 31 → "Jun 31" → Jul 1), which
+// made "last month" resolve to the CURRENT month for three days of every long
+// month.
+export function getStartOfLastMonthUTC(d?: Date): Date {
+  d = d || new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth() - 1, 1, 0, 0, 0, 0));
+}
+
+export function getEndOfLastMonthUTC(d?: Date): Date {
+  d = d || new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0) - 1);
+}
+
+export function getStartOfYearUTC(d?: Date): Date {
+  d = d || new Date();
+  return new Date(Date.UTC(d.getFullYear(), 0, 1, 0, 0, 0, 0));
+}
+
+export function getEndOfYearUTC(d?: Date): Date {
+  d = d || new Date();
+  return new Date(Date.UTC(d.getFullYear() + 1, 0, 1, 0, 0, 0, 0) - 1);
+}
+
 // Returns a Date object representing the start of the current year
 // Example: getStartOfYear(new Date(2023, 5, 15)) -> Jan 1, 2023 00:00:00
 export function getStartOfYear(d?: Date): Date {

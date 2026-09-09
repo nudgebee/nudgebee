@@ -20,6 +20,8 @@ import { Modal } from '@ui/Modal';
 import { Select } from '@ui/Select';
 import { Button } from '@ui/Button';
 import { safeJSONParse } from '@utils/common';
+import SecurityFindingPanel from './SecurityFindingPanel';
+import { fromImageScanRow } from './securityFinding';
 
 const SEVERITY_TO_DS_LEVEL = {
   critical: 'critical',
@@ -30,14 +32,26 @@ const SEVERITY_TO_DS_LEVEL = {
 };
 const toDsSeverityLevel = (s) => SEVERITY_TO_DS_LEVEL[String(s || '').toLowerCase()] || 'info';
 import PRLink, { resolutionsDeepLink } from '@shared/links/PRLink';
-import LinearLoader from '@components/k8s/common/LinearLoader';
+import { ProgressLinear } from '@ui/ProgressLinear';
 import apiTickets from '@api1/tickets';
 import k8sApi from '@api1/kubernetes';
 import { PrOpenIcon } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
-import WidgetCard from '@ui/WidgetCard';
 
 const KubernetesSecurityDetails = (props) => {
+  // Rows carry their own account_id; in cross-account mode (the /optimise
+  // Security tab) kubernetes.id is a list, so every per-row action must use the
+  // row's account. Page-level id remains the fallback for injected llm rows,
+  // which are always single-account. A multi-account scope has no single
+  // fallback: returning undefined makes the action fail loudly rather than
+  // silently raise a PR or ticket against an arbitrary cluster.
+  const accountIdForRow = (item) => {
+    if (item?.account_id) return item.account_id;
+    const scope = props?.kubernetes?.id;
+    if (!Array.isArray(scope)) return scope;
+    return scope.length === 1 ? scope[0] : undefined;
+  };
+
   const prevQueryRef = useRef();
 
   const [kubernetesSecurity, setKubernetesSecurity] = useState([]);
@@ -60,6 +74,9 @@ const KubernetesSecurityDetails = (props) => {
   const [prLoading, setPRLoading] = useState(false);
   const [isGitReposLoading, setIsGitReposLoading] = useState(false);
   const [selectedItemForPR, setSelectedItemForPR] = useState(null);
+  // The finding whose detail panel is open. Rows used to expand into an
+  // accordion; a single finding now opens the side panel instead.
+  const [panelFinding, setPanelFinding] = useState(null);
 
   // Helper to detect git provider from repo URL
   const detectGitProvider = (repoUrl) => {
@@ -86,9 +103,10 @@ const KubernetesSecurityDetails = (props) => {
   }, [filteredGitIntegrations, selectedGitIntegration]);
 
   const BEST_PRACTICES_HEADER = [
+    ...(props?.accountsById ? [{ name: 'Cluster', width: '10%' }] : []),
     { name: 'CVE', width: '15%' },
-    { name: 'Image', width: '20%' },
-    { name: 'App', width: '20%' },
+    { name: 'Image', width: props?.accountsById ? '15%' : '20%' },
+    { name: 'App', width: props?.accountsById ? '15%' : '20%' },
     { name: 'Title', width: '20%' },
     { name: 'Severity', width: '5%' },
     { name: 'Package Id', width: '5%' },
@@ -159,7 +177,7 @@ const KubernetesSecurityDetails = (props) => {
   const getWorkloadAnnotations = async (data) => {
     try {
       const res = await k8sApi.getK8sWorkload(1, 0, {
-        accountId: props?.kubernetes?.id,
+        accountId: accountIdForRow(data),
         namespaceName: data?.namespace,
         workloadName: data?.workload_name,
         exactNameMatch: true,
@@ -221,7 +239,7 @@ const KubernetesSecurityDetails = (props) => {
     setPRLoading(true);
     apiRecommendations
       .applyRecommendation(
-        props?.kubernetes?.id,
+        accountIdForRow(selectedItemForPR),
         selectedItemForPR.id,
         { workload_name: selectedItemForPR?.workload_name, namespace: selectedItemForPR?.namespace },
         integrationType,
@@ -271,6 +289,17 @@ const KubernetesSecurityDetails = (props) => {
     return query;
   };
 
+  // Why a PR cannot be raised for this finding, or '' when it can. A resolution
+  // that is still running or already terminal blocks a new one; only a failed
+  // one is retryable.
+  const prBlockedReason = (data) => {
+    if (!data) return '';
+    if (data.resolution && data.resolution.status !== 'Failed') {
+      return `A pull request resolution is already ${String(data.resolution.status || '').toLowerCase() || 'in progress'}`;
+    }
+    return '';
+  };
+
   const getMenuItems = (data) => {
     const hasFixAvailable = data?.recommendation?.FixedVersion;
     return [
@@ -301,6 +330,12 @@ const KubernetesSecurityDetails = (props) => {
 
   const buildRow = (item) => {
     let data = [];
+    if (props?.accountsById) {
+      data.push({
+        component: <Text value={props.accountsById[item.account_id] || item.account_id} showAutoEllipsis />,
+        data: item.account_id,
+      });
+    }
     data.push({
       component: (
         <Stack direction='column' spacing={1}>
@@ -327,7 +362,7 @@ const KubernetesSecurityDetails = (props) => {
           )}
         </Stack>
       ),
-      drilldownQuery: item,
+      drilldownQuery: { ...item, finding: item },
       data: item.recommendation?.VulnerabilityID,
     });
     data.push({
@@ -497,7 +532,7 @@ const KubernetesSecurityDetails = (props) => {
         ticketData={{
           subject: 'Security Issue On - ' + ticketData.image,
           description: getTicketDescription(ticketData),
-          accountId: props?.kubernetes?.id,
+          accountId: accountIdForRow(ticketData),
         }}
         ticketUrl={{}}
         reference={{
@@ -508,7 +543,7 @@ const KubernetesSecurityDetails = (props) => {
       <Modal width='md' open={openCreatePR} handleClose={closeCreatePRModal} title='Create Pull Request'>
         {prLoading && (
           <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 9999 }}>
-            <LinearLoader />
+            <ProgressLinear surface='page-top' />
           </Box>
         )}
         {isGitReposLoading || filteredGitIntegrations.length > 0 ? (
@@ -594,9 +629,21 @@ const KubernetesSecurityDetails = (props) => {
           )}
         </Box>
       )}
+      <SecurityFindingPanel
+        open={Boolean(panelFinding)}
+        onClose={() => setPanelFinding(null)}
+        finding={panelFinding ? fromImageScanRow(panelFinding) : null}
+        accountName={props?.accountsById?.[panelFinding?.account_id] || undefined}
+        scopeAccountId={props?.kubernetes?.id}
+        onCreateTicket={() => {
+          setTicketData(panelFinding);
+          setIsTicketCreateFormOpen(true);
+        }}
+        onCreatePR={() => openPRModal(panelFinding)}
+        createPRDisabledReason={!hasWriteAccess() ? 'You need write access to raise a pull request' : prBlockedReason(panelFinding)}
+      />
       <CustomTable
         id={props.tableId}
-        showExpandable
         headers={BEST_PRACTICES_HEADER}
         tableData={kubernetesSecurity}
         rowsPerPage={rowsPerPage}
@@ -604,117 +651,13 @@ const KubernetesSecurityDetails = (props) => {
         onPageChange={changePage}
         pageNumber={page + 1}
         tableHeadingCenter={['Severity']}
-        stickyColumnIndex='9'
+        stickyColumnIndex={props?.accountsById ? '10' : '9'}
         showUpdatedEmptyData={kubernetesSecurity?.length == 0}
         sort={{
           name: 'Savings',
           order: 'desc',
         }}
-        expandable={{
-          tabs: [
-            {
-              text: 'Details',
-              value: 0,
-              componentFn: (opt, drilldown, _row) => {
-                // Long image SHAs + CVSS vectors don't break naturally; constrain the
-                // wrapper and force-wrap so the panel stays within the table row.
-                return (
-                  <WidgetCard sx={{ mt: 0, mb: 'var(--ds-space-4)' }}>
-                    <Grid container spacing={2}>
-                      <Grid item md={3}>
-                        <b>Title</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.Title}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>Image</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.image}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>Package</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.PkgID || '-'}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>Fixed Version</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.FixedVersion || '-'}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>Installed Version</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.InstalledVersion || '-'}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>CVSS Score</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.CVSS?.nvd?.V3Score || '-'}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>CVSS Vector</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.CVSS?.nvd?.V3Vector || '-'}
-                      </Grid>
-                      <Grid item md={3}>
-                        <b>Layer</b>
-                      </Grid>
-                      <Grid item md={9}>
-                        {drilldown?.recommendation?.Layer?.Digest || '-'}
-                      </Grid>
-                    </Grid>
-                  </WidgetCard>
-                );
-              },
-            },
-            {
-              text: 'Description',
-              value: 1,
-              componentFn: (opt, drilldown, _row) => {
-                return (
-                  <WidgetCard sx={{ mt: 0, mb: 'var(--ds-space-4)' }}>
-                    <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-600)' }}>
-                      {drilldown?.recommendation?.Description || 'No description found'}
-                    </Typography>
-                  </WidgetCard>
-                );
-              },
-            },
-            {
-              text: 'References',
-              value: 2,
-              componentFn: (opt, drilldown, _row) => {
-                const refs = drilldown?.recommendation?.References;
-                return (
-                  <WidgetCard sx={{ mt: 0, mb: 'var(--ds-space-4)' }}>
-                    {refs?.length > 0 ? (
-                      <Box component='ul' sx={{ m: 0, pl: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-                        {refs.map((r) => (
-                          <li key={r}>
-                            <Link href={r} openInNew>
-                              {r}
-                            </Link>
-                          </li>
-                        ))}
-                      </Box>
-                    ) : (
-                      <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-400)', fontStyle: 'italic' }}>
-                        No references found
-                      </Typography>
-                    )}
-                  </WidgetCard>
-                );
-              },
-            },
-          ],
-        }}
+        onRowClick={(query) => query?.finding && setPanelFinding(query.finding)}
         loading={loading}
       />
     </>
@@ -722,6 +665,7 @@ const KubernetesSecurityDetails = (props) => {
 };
 
 KubernetesSecurityDetails.propTypes = {
+  accountsById: PropTypes.object,
   kubernetes: PropTypes.object,
   disableInfographic: PropTypes.bool,
   query: PropTypes.object,

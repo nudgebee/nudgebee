@@ -109,11 +109,20 @@ func (s *ElasticsearchAlertRuleSource) DeleteAlertRule(ctx *security.RequestCont
 	return nil
 }
 
+// esHeaders builds auth headers for the Elasticsearch API. An API key is a
+// complete credential on its own, so it is sent as `ApiKey` regardless of
+// auth_type; otherwise basic auth. Keying only off auth_type == "basic" meant an
+// api_key-authenticated integration got no Authorization header at all and every
+// Watcher call came back 401 "missing authentication credentials".
 func esHeaders(cfg *elasticsearchConfig) map[string]string {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
-	if cfg.AuthType == "basic" && cfg.Username != "" && cfg.Password != "" {
+	if cfg.ApiKey != "" {
+		headers["Authorization"] = "ApiKey " + cfg.ApiKey
+		return headers
+	}
+	if cfg.Username != "" && cfg.Password != "" {
 		credentials := base64.StdEncoding.EncodeToString([]byte(cfg.Username + ":" + cfg.Password))
 		headers["Authorization"] = "Basic " + credentials
 	}

@@ -22,6 +22,7 @@ function ConversationCollapsableCard({
   showFullText = false,
   textLength = false,
   headerActions = null,
+  expander = null,
 }) {
   // Per-type padding — extracted to a variable to keep the JSX clean (Sonar S3358).
   let cardPadding = `${ds.space[3]} ${ds.space[4]} ${ds.space[3]} ${ds.space[4]}`;
@@ -225,6 +226,7 @@ function ConversationCollapsableCard({
               }}
             >
               {headerActions}
+              {expander}
               {conversationCreatedAt && conversationUpdatedAt && !['planner', 'response'].includes(toolData.tool || toolData.type) && (
                 <Duration createdAt={conversationCreatedAt} updatedAt={conversationUpdatedAt} live={toolData.response_status === 'in_progress'} />
               )}
@@ -253,6 +255,7 @@ ConversationCollapsableCard.propTypes = {
   showFullText: PropTypes.bool,
   textLength: PropTypes.bool,
   headerActions: PropTypes.node,
+  expander: PropTypes.node,
 };
 
 export default ConversationCollapsableCard;

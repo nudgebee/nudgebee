@@ -88,14 +88,26 @@ func TestExtractTASavings(t *testing.T) {
 		expected float64
 	}{
 		{
+			// Trusted Advisor renders money for display, so this is the shape
+			// real metadata arrives in, not an edge case.
 			"estimated_monthly_savings present",
 			map[string]any{"estimated_monthly_savings": "$150.00"},
-			0, // string with $ won't parse
+			150.00,
 		},
 		{
 			"estimated_monthly_savings numeric string",
 			map[string]any{"estimated_monthly_savings": "150.00"},
 			150.00,
+		},
+		{
+			"thousands separator",
+			map[string]any{"estimated_monthly_savings": "$1,234.56"},
+			1234.56,
+		},
+		{
+			"currency-suffixed header key",
+			map[string]any{"estimated_monthly_savings_$": "$2,000.00"},
+			2000.00,
 		},
 		{
 			"monthly_savings field",
@@ -110,7 +122,12 @@ func TestExtractTASavings(t *testing.T) {
 		{
 			"savings is non-string type",
 			map[string]any{"estimated_monthly_savings": 100.0},
-			0, // extractTASavings only handles string values
+			100.0,
+		},
+		{
+			"unparseable placeholder",
+			map[string]any{"estimated_monthly_savings": "N/A"},
+			0,
 		},
 		{
 			"empty data",
@@ -178,6 +195,43 @@ func TestStringValue(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+func TestParseMoneyString(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected float64
+		wantErr  bool
+	}{
+		{name: "currency prefix", input: "$36.14", expected: 36.14},
+		{name: "thousands separator", input: "1,234.56", expected: 1234.56},
+		{name: "currency and separator", input: "$1,234.56", expected: 1234.56},
+		{name: "surrounding whitespace", input: "  $42.00 ", expected: 42.0},
+		{name: "plain decimal", input: "36.14", expected: 36.14},
+		{name: "integer", input: "150", expected: 150},
+		{name: "negative with currency", input: "-$5.00", expected: -5.0},
+		{name: "trailing parenthetical ignored", input: "$100.00 (20%)", expected: 100.0},
+		{name: "leading percentage does not win over the amount", input: "(20%) of $100.00 estimated", expected: 100.0},
+		{name: "sign after symbol", input: "$-5.00", expected: -5.0},
+		{name: "rupee symbol", input: "₹2,500.50", expected: 2500.50},
+		{name: "bare number when no currency symbol", input: "1234", expected: 1234},
+		{name: "percent-only string has no currency, first number wins", input: "20%", expected: 20},
+		{name: "empty", input: "", wantErr: true},
+		{name: "placeholder dash", input: "-", wantErr: true},
+		{name: "non numeric", input: "N/A", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseMoneyString(tc.input)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.InDelta(t, tc.expected, got, 0.0001)
+		})
+	}
 }
 
 func TestTrustedAdvisorIntegration(t *testing.T) {

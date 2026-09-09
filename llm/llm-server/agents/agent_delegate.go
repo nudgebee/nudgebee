@@ -85,6 +85,7 @@ func (t *delegateAgentTool) InputSchema() toolcore.ToolSchema {
 			},
 			"tools": {
 				Type:        toolcore.ToolSchemaTypeArray,
+				Items:       map[string]any{"type": "string"},
 				Description: "List of tool names the sub-agent should use (e.g., [\"mysql_query\", \"prometheus\"]). Must be tools available in the current account.",
 			},
 			"max_iterations": {

@@ -100,9 +100,9 @@ class SimpleStrategy(BaseStrategy[SimpleStrategySettings]):
                 History: {history_duration} hours
                 Step: {timeframe_duration} minutes
 
-                All parameters can be customized.
-                    For example: `krr simple --cpu_percentile=90 --memory_buffer_percentage=15`
-                `--history_duration=24 --timeframe_duration=0.5`
+                All parameters can be customized, for example:
+                    cpu_percentile=90, memory_buffer_percentage=15,
+                    history_duration=24, timeframe_duration=0.5
                 """).format(
             cpu_percentile=self.settings.cpu_percentile,
             memory_buffer_percentage=self.settings.memory_buffer_percentage,
@@ -113,9 +113,8 @@ class SimpleStrategy(BaseStrategy[SimpleStrategySettings]):
         if not self.settings.allow_hpa:
             s += "\nThis strategy does not work with objects with HPA defined (Horizontal Pod Autoscaler).\n"
             s += 'If HPA is defined for CPU or Memory, the strategy will return "?" for that resource.\n'
-            s += "You can override this behaviour by passing the --allow-hpa flag\n"
+            s += "You can override this behaviour by setting allow_hpa\n"
 
-        s += "\nLearn more: [underline]https://github.com/robusta-dev/krr#algorithm[/underline]"
         return s
 
     def __calculate_cpu_proposal(

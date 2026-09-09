@@ -33,6 +33,7 @@ import { Link } from '@ui/Link';
 import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
+import { podDisplayStatus } from 'src/utils/podStatus';
 import { TerminalIcon, DeleteIconRed as DeleteIcon } from '@assets';
 import apiKubernetes1 from '@api1/kubernetes1';
 
@@ -311,6 +312,7 @@ const KubernetesPodsTable = ({ accountId, defaultQuery = {}, enableFilters = tru
                     hideIcon={true}
                     nameMaxLength={70}
                     namespaceFont={ds.text.small}
+                    showTooltip={true}
                   />
                 </Box>
               ),
@@ -329,7 +331,7 @@ const KubernetesPodsTable = ({ accountId, defaultQuery = {}, enableFilters = tru
             { text: '-' },
             { text: '-' },
             { text: '-' },
-            { component: <Text value={item.status + '/' + (item.is_active ? 'Ready' : 'Deleted')} showAutoEllipsis /> },
+            { component: <Text value={podDisplayStatus(item) + '/' + (item.is_active ? 'Ready' : 'Deleted')} showAutoEllipsis /> },
             { component: <Text value={restartCount} /> },
             { component: <Datetime value={item.timestamp} /> },
             { component: <Text value={'-'} /> },

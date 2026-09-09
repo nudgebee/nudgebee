@@ -245,6 +245,9 @@ func TestReadResponse(t *testing.T) {
 func TestElasticSaasSource_LabelMappingAndOperators(t *testing.T) {
 	var e ElasticSaasSource
 	assert.Equal(t, map[string]string{}, e.GetLabelMapping())
+	// _ilike is advertised because ES executes it natively via a case-insensitive
+	// wildcard. It used to be omitted while the query generator emitted it anyway,
+	// so the whole query was refused with `unsupported operator "_ilike"`.
 	assert.Equal(t,
 		[]string{"_eq", "_neq", "_contains", "_like", "_ilike", "_nlike", "_gt", "_lt", "_is_null"},
 		e.GetSupportedOperators(),
@@ -454,4 +457,74 @@ func TestExtractFieldsFromProperties(t *testing.T) {
 	set2 := fieldSet(extractFieldsFromProperties(map[string]any{"a": map[string]any{"type": "keyword"}}, "pfx"))
 	_, ok := set2["pfx.a"]
 	assert.True(t, ok)
+}
+
+// A log index pattern matches one backing index per data stream, and those mappings
+// differ — a field is only mapped where a document carried it. Reading just one index
+// hid fields that exist in the estate; worse, the index read was chosen by Go's
+// randomized map iteration, so the field list varied between identical calls. The
+// consumer (applyLabelDataTypes) skips any field it cannot type, so a hidden field
+// silently disables that field's operator guard and value coercion.
+func TestParseESMappingFields_MergesAcrossIndices(t *testing.T) {
+	// `pod` is common; `job` exists only in the second index and `statefulset` only in
+	// the third — the shape measured on the dev cluster, where 16 of 86 fields were
+	// present in some indices but not others.
+	raw := []byte(`{
+		"logs-a-000001":{"mappings":{"properties":{"pod":{"type":"keyword"}}}},
+		"logs-b-000001":{"mappings":{"properties":{"pod":{"type":"keyword"},"job":{"type":"keyword"}}}},
+		"logs-c-000001":{"mappings":{"properties":{"statefulset":{"type":"keyword"}}}}
+	}`)
+
+	fields, err := parseESMappingFields(raw)
+	assert.NoError(t, err)
+
+	set := fieldSet(fields)
+	assert.Equal(t, "keyword", set["pod"])
+	assert.Equal(t, "keyword", set["job"], "a field mapped only in the second index must still be reported")
+	assert.Equal(t, "keyword", set["statefulset"], "a field mapped only in the third index must still be reported")
+	assert.Len(t, fields, 3, "the union is reported once per field, not once per index")
+
+	// Sorted output, so the same estate always yields the same list regardless of the
+	// order Elasticsearch enumerated its indices in.
+	assert.Equal(t, []string{"job", "pod", "statefulset"},
+		[]string{fields[0].Field, fields[1].Field, fields[2].Field})
+}
+
+// Map iteration order is randomized per call, so a field mapped with conflicting types
+// across indices would otherwise resolve differently between runs. Indices are visited
+// in sorted order, making the winner the lowest-sorted index every time.
+func TestParseESMappingFields_ConflictingTypeResolvesDeterministically(t *testing.T) {
+	raw := []byte(`{
+		"logs-z-000001":{"mappings":{"properties":{"code":{"type":"long"}}}},
+		"logs-a-000001":{"mappings":{"properties":{"code":{"type":"keyword"}}}}
+	}`)
+
+	for i := 0; i < 20; i++ {
+		fields, err := parseESMappingFields(raw)
+		assert.NoError(t, err)
+		assert.Equal(t, "keyword", fieldSet(fields)["code"],
+			"the lowest-sorted index must win on every call")
+	}
+}
+
+// QueryLabels and QueryIndexFields must answer with the same names: QueryLabels
+// delegates, so there is one implementation rather than two that can drift. This is the
+// invariant that replaced "QueryLabels returns index names" — the confusion that made the
+// empty-result diagnosis validate field names against a list of indices.
+func TestElasticSaasSourceQueryLabelsReturnsFields(t *testing.T) {
+	fields := []OutputLogLabelFields{
+		{Field: "kubernetes.namespace_name", Attributes: map[string]any{"type": "keyword"}},
+		{Field: "log", Attributes: map[string]any{"type": "keyword"}},
+	}
+	labels := LabelsFromIndexFields(fields)
+
+	names := make([]string, len(labels))
+	for i, l := range labels {
+		names[i] = l.Label
+	}
+	assert.Equal(t, []string{"kubernetes.namespace_name", "log"}, names,
+		"a label's name is the field's name")
+	assert.Equal(t, query.LabelTypeString, labels[0].DataType,
+		"the ES keyword type must survive the conversion, normalized to the canonical label type")
+	assert.NotEmpty(t, labels[0].Attributes, "attributes must survive: resolveLabelDataTypes reads them")
 }

@@ -120,7 +120,6 @@ Configuration is read via [viper](https://github.com/spf13/viper) — environmen
 |---------------------------|----------------|------------------------------------------------------|
 | `PORT`                    | `8080`         | HTTP port                                             |
 | `ENV`                     | `production`   | Runtime profile                                       |
-| `NUDGEBEE_DB_SSL_ENABLED` | `true`         | Set `false` for local Postgres without TLS            |
 
 ### GitHub App (only if using runbook-driven GitHub PRs)
 

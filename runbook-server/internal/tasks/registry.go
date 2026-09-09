@@ -155,6 +155,7 @@ func NewInitializedTaskRegistry() *TaskRegistry {
 	tr.RegisterTask(&scm.GithubCliTask{})
 	tr.RegisterTask(&scm.GitlabCliTask{})
 	tr.RegisterTask(&events.EventsStoreTask{})
+	tr.RegisterTask(&events.EventsAddEvidenceTask{})
 
 	tr.RegisterTask(&network.DnsTask{})
 	tr.RegisterTask(&network.TcpTask{})

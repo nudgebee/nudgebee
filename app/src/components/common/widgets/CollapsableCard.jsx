@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { describeResolution } from '@components/k8s/investigate/resolutionStatus';
 import Typography from '@mui/material/Typography';
 import { IconButton, Box, Grid, Avatar, Collapse, ListItem } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
@@ -35,6 +36,9 @@ function CollapsableCard({
   eventResolution = null,
   onCloseResolveComponent,
 }) {
+  // Computed once: the same status is rendered in two places on this card, and describeResolution
+  // was being called for each field of each.
+  const resolutionOutcome = eventResolution ? describeResolution(eventResolution) : null;
   const [openResolveComponent, setOpenResolveComponent] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
@@ -246,9 +250,7 @@ function CollapsableCard({
             </Box>
           )}
           <Box display='flex' alignItems='center' justifyContent='flex-end' gap={'var(--ds-space-2)'} textAlign={'end'}>
-            {resolveButton && eventResolution && (
-              <Label text={eventResolution.status === 'InProgress' ? 'In Progress' : eventResolution.status} height={ds.space[5]} />
-            )}
+            {resolveButton && eventResolution && <Label tone={resolutionOutcome.tone} text={resolutionOutcome.label} height={ds.space[5]} />}
             {resolveButton &&
               eventResolution &&
               eventResolution.type === 'PullRequest' &&
@@ -323,7 +325,7 @@ function CollapsableCard({
             >
               <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
                 <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--ds-space-2)' }}>
-                  <Label text={eventResolution.status === 'InProgress' ? 'In Progress' : eventResolution.status} height={ds.space.mul(0, 11)} />
+                  <Label tone={resolutionOutcome.tone} text={resolutionOutcome.label} height={ds.space.mul(0, 11)} />
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
                     {getResolutionDescription(eventResolution)
                       .split('\n')

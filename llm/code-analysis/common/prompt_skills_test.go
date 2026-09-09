@@ -34,7 +34,6 @@ func templateData(name, skills string) map[string]any {
 		data["AuditFindings"] = map[string]any{}
 		data["InvestigationHistory"] = ""
 		data["BuildConfig"] = nil
-		data["BuildVerifyEnabled"] = false
 	}
 	return data
 }

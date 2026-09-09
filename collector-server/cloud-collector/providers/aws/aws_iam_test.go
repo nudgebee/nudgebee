@@ -173,6 +173,9 @@ func TestRecommendNoMFA(t *testing.T) {
 }
 
 func TestGetIAMRecommendations(t *testing.T) {
+	if os.Getenv("TEST_ACCESS_KEY") == "" {
+		t.Skip("Skipping integration test that requires AWS credentials")
+	}
 	region := "us-east-1"
 	account := providers.Account{Region: &region,
 		AccountNumber: os.Getenv("TEST_ACCOUNT"),

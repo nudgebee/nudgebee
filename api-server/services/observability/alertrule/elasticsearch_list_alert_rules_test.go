@@ -122,3 +122,16 @@ func TestKibanaHeaders(t *testing.T) {
 	h = kibanaHeaders(&elasticsearchConfig{})
 	assert.NotContains(t, h, "Authorization")
 }
+
+func TestEsHeaders(t *testing.T) {
+	// An API key authenticates on its own, so auth_type does not gate it. It used
+	// to, and an api_key integration reached Watcher with no Authorization header.
+	h := esHeaders(&elasticsearchConfig{AuthType: "api_key", ApiKey: "abc123"})
+	assert.Equal(t, "ApiKey abc123", h["Authorization"])
+
+	h = esHeaders(&elasticsearchConfig{AuthType: "basic", Username: "elastic", Password: "secret"})
+	assert.Equal(t, "Basic ZWxhc3RpYzpzZWNyZXQ=", h["Authorization"])
+
+	h = esHeaders(&elasticsearchConfig{AuthType: "basic"})
+	assert.NotContains(t, h, "Authorization")
+}

@@ -1535,13 +1535,17 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
 			}
+			// A missing price on either side leaves savings at zero: a zero baseline
+			// would report the replacement's whole cost as a negative saving, and a
+			// zero replacement price would claim the current instance's whole cost.
 			savings := 0.0
-			if len(newInstances) > 0 {
+			if len(newInstances) > 0 && currentInsatnceCost > 0 {
 				newInstanceCost, err := getPricingValue(newInstances[0])
 				if err != nil {
 					ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
+				} else if newInstanceCost > 0 && newInstanceCost < currentInsatnceCost {
+					savings = (currentInsatnceCost - newInstanceCost) * 24 * 30
 				}
-				savings = (currentInsatnceCost - newInstanceCost) * 24 * 30
 			}
 
 			if len(cpuMetrics.Items) == 0 || len(freeableMemoryMetrices.Items) == 0 {
@@ -1589,28 +1593,36 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 			if err != nil {
 				ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
 			}
-			savings := -currentInsatnceCost * 24 * 30
+			// Upsizing an overutilized instance costs more, it does not save money.
+			// Report zero savings (this is a reliability recommendation) and carry the
+			// extra spend separately so the cost impact is still visible.
+			additionalMonthlyCost := 0.0
 			if len(newInstances) > 0 {
 				newInstanceCost, err := getPricingValue(newInstances[0])
 				if err != nil {
 					ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
+				} else if currentInsatnceCost > 0 && newInstanceCost > currentInsatnceCost {
+					additionalMonthlyCost = (newInstanceCost - currentInsatnceCost) * 24 * 30
 				}
-				savings = (currentInsatnceCost - newInstanceCost) * 24 * 30
+			}
+			overutilizedData := map[string]any{
+				"cpu":                  cpuMetrics.Items[0],
+				"memory":               freeableMemoryMetrices.Items[0],
+				"startDate":            startDate.Format(time.RFC3339),
+				"endDate":              endDate.Format(time.RFC3339),
+				"recommendedInstances": newInstances,
+				"recommendedMemoryGb":  memory,
+				"recommendedVCpu":      cpu,
+			}
+			if additionalMonthlyCost > 0 {
+				overutilizedData["additional_monthly_cost"] = additionalMonthlyCost
 			}
 			recommendations = append(recommendations, providers.Recommendation{
-				CategoryName: providers.RecommendationCategoryRightSizing,
-				RuleName:     "aws_rds_overutilized",
-				Severity:     providers.RecommendationSeverityHigh,
-				Savings:      savings * -1,
-				Data: map[string]any{
-					"cpu":                  cpuMetrics.Items[0],
-					"memory":               freeableMemoryMetrices.Items[0],
-					"startDate":            startDate.Format(time.RFC3339),
-					"endDate":              endDate.Format(time.RFC3339),
-					"recommendedInstances": newInstances,
-					"recommendedMemoryGb":  memory,
-					"recommendedVCpu":      cpu,
-				},
+				CategoryName:        providers.RecommendationCategoryRightSizing,
+				RuleName:            "aws_rds_overutilized",
+				Severity:            providers.RecommendationSeverityHigh,
+				Savings:             0,
+				Data:                overutilizedData,
 				Action:              providers.RecommendationActionModify,
 				ResourceServiceName: resource.ServiceName,
 				ResourceId:          resource.Id,
@@ -1901,24 +1913,27 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 				if len(alternateInsatnces) > 0 {
 					//calculate savings betweem lowest and current instance
 					alternateInsatnceCost, err := getPricingValue(alternateInsatnces[0])
-					if err != nil {
-						ctx.GetLogger().Warn("failed to get available rds instances", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
+					// A failed lookup leaves the cost at 0, which would report the entire
+					// current bill as savings. Emit nothing rather than a fabricated number.
+					if err != nil || alternateInsatnceCost <= 0 {
+						ctx.GetLogger().Warn("rds: skipping alternate instance recommendation, no usable price", "error", err, "accountNumber", account.AccountNumber, "region", resource.Region)
+					} else {
+						savings := (currentInsatnceCost - alternateInsatnceCost) * 24 * 30
+						recommendations = append(recommendations, providers.Recommendation{
+							CategoryName: providers.RecommendationCategoryRightSizing,
+							RuleName:     "aws_rds_alternate_instances",
+							Severity:     providers.RecommendationSeverityMedium,
+							Savings:      savings,
+							Data: map[string]any{
+								"alternate_instances": alternateInsatnces,
+							},
+							Action:              providers.RecommendationActionModify,
+							ResourceServiceName: resource.ServiceName,
+							ResourceId:          resource.Id,
+							ResourceType:        resource.Type,
+							ResourceRegion:      resource.Region,
+						})
 					}
-					savings := (currentInsatnceCost - alternateInsatnceCost) * 24 * 30
-					recommendations = append(recommendations, providers.Recommendation{
-						CategoryName: providers.RecommendationCategoryRightSizing,
-						RuleName:     "aws_rds_alternate_instances",
-						Severity:     providers.RecommendationSeverityMedium,
-						Savings:      savings,
-						Data: map[string]any{
-							"alternate_instances": alternateInsatnces,
-						},
-						Action:              providers.RecommendationActionModify,
-						ResourceServiceName: resource.ServiceName,
-						ResourceId:          resource.Id,
-						ResourceType:        resource.Type,
-						ResourceRegion:      resource.Region,
-					})
 				}
 			}
 		}

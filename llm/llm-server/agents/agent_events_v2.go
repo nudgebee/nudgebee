@@ -151,7 +151,7 @@ func (a AgentEventsV2) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlan
 func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	instructions := []string{
 		"**TOOL-FIRST RULE:** Prefer the structured tools — get_event_by_id, list_events, aggregate_events — over events_execute/anomaly_execute raw SQL. Only write raw SQL when a structured tool genuinely cannot express the request: free-text search over title/description, filter combinations the structured tools don't support, or anomaly-table (workload metric anomaly) queries.",
-		"**get_event_by_id:** single-event UUID lookups and 'why was this event triaged this way' questions. Returns full evidence — combine with get_triage_explanation for the dedup chain and correlations.",
+		"**get_event_by_id:** single-event UUID lookups and 'why was this event triaged this way' questions. Returns full evidence — combine with get_triage_explanation for the dedup chain and firing history.",
 		"**list_events:** any 'show me / list / recent events matching X' question. Takes typed filters (subject_name, subject_namespace, subject_type, finding_type, aggregation_key, priority, time range). Returns a compact evidence *manifest* per event, not full evidence — call get_event_by_id or get_event_evidence afterward to drill into a specific one.",
 		"**aggregate_events:** 'how many X' / 'top N by Y' / alert-noise questions. group_by is one of: aggregation_key, subject_namespace, subject_type, finding_type, priority, source, nb_status.",
 		"**IMPORTANT — NO INVENTION:** Do NOT invent resource names, namespaces, timestamps, or other facts. If the incoming JSON lacks any field, say 'unknown' for that field and DO NOT guess.",
@@ -168,7 +168,7 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"    - nb_status is set by the HIGHEST-PRIORITY matching triage rule, INDEPENDENT of the score. A P0 event can still be SUPPRESSED if a suppression rule matched.",
 		"    - computed_score is fully explained by the `score_factors` column (returned by get_event_by_id): base_severity × env_multiplier × 4 = raw_score, then duplicate_penalty, correlation_adjustment, finding_type_adjustment and evidence_bonus are applied.",
 		"    - fingerprint groups recurring occurrences. Use aggregate_events with count_distinct_fingerprint=true to separate unique patterns from raw occurrence counts.",
-		"    To EXPLAIN one event's triage decision: get_event_by_id(event_id), then get_triage_explanation(event_id) for the dedup chain + correlations.",
+		"    To EXPLAIN one event's triage decision: get_event_by_id(event_id), then get_triage_explanation(event_id) for the dedup chain and firing history.",
 		"    For an ALERT-NOISE / HYGIENE report: aggregate_events(group_by='aggregation_key') and aggregate_events(group_by='aggregation_key', count_distinct_fingerprint=true) to compare firings vs distinct patterns, then get_triage_rules to surface coverage gaps.",
 		"    For THRESHOLD tuning: call list_threshold_suggestions; highlight high estimated_reduction + tune_threshold/disable rows, flag low-confidence MAD=0 rows as weak.",
 		"    To PROPOSE a new triage rule: call dryrun_triage_rule with the candidate criteria to get the projected volume reduction, present the number, then direct the user to create the rule in the UI.",
@@ -215,7 +215,7 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"Strategy: for a broad or multi-hypothesis investigation (e.g. root-cause analysis), call this ONCE with evidence_type='all' rather than fetching types one at a time — cheaper and avoids redundant round-trips. Only request a single specific evidence_type when you already know exactly which one you need.",
 		},
 		tools.ToolTriageExplanation: {
-			"Explains HOW a single event was triaged (why DUPLICATE/SUPPRESSED or its computed_priority).",
+			"Explains HOW a single event was triaged (why DUPLICATE/SUPPRESSED or its computed_priority) via its dedup chain, historical firing stats and hourly trend. Does NOT list related events.",
 			"Input: event_id (required). Combine with get_event_by_id's score_factors for a complete explanation.",
 		},
 		tools.ToolTriageRules: {
@@ -281,7 +281,7 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 				{Tool: tools.ToolGetEventById, Input: `{"event_id": "your-event-id"}`},
 				{Tool: tools.ToolTriageExplanation, Input: `{"event_id": "your-event-id"}`},
 			},
-			Explanation: "Single-event detail + triage question — the dominant real query shape for this agent. get_event_by_id returns full evidence and score_factors; get_triage_explanation adds the dedup chain and correlations.",
+			Explanation: "Single-event detail + triage question — the dominant real query shape for this agent. get_event_by_id returns full evidence and score_factors; get_triage_explanation adds the dedup chain and firing history.",
 		},
 		{
 			Question: "Show recent OOM or pod restart events in the nudgebee, redis, and rabbit namespaces.",

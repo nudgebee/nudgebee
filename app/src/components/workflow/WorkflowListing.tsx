@@ -460,26 +460,23 @@ const WorkflowListing: React.FC = () => {
         icon: CopyIconBlue,
       });
 
-      // Check if workflow has schedule trigger
-      const pauseResumeApplicable = workflow?.definition?.triggers?.some((trigger: any) => ['schedule', 'event', 'webhook'].includes(trigger.type));
-
-      if (pauseResumeApplicable) {
-        // State-aware toggle (see getAutomationToggleAction): Active -> Pause,
-        // Paused -> Activate, anything else (e.g. INACTIVE) -> neither.
-        const toggleAction = getAutomationToggleAction(workflow.status);
-        if (toggleAction === 'pause') {
-          MENU_ITEMS.push({
-            label: 'Pause',
-            id: 'pause',
-            icon: pauseIcon,
-          });
-        } else if (toggleAction === 'activate') {
-          MENU_ITEMS.push({
-            label: 'Activate',
-            id: 'resume',
-            icon: playIcon,
-          });
-        }
+      // State-aware toggle (see getAutomationToggleAction): Active -> Pause,
+      // Paused -> Activate, anything else (e.g. INACTIVE) -> neither. Status is
+      // the only input — deliberately not gated on trigger type, see
+      // automationMenu.ts.
+      const toggleAction = getAutomationToggleAction(workflow.status);
+      if (toggleAction === 'pause') {
+        MENU_ITEMS.push({
+          label: 'Pause',
+          id: 'pause',
+          icon: pauseIcon,
+        });
+      } else if (toggleAction === 'activate') {
+        MENU_ITEMS.push({
+          label: 'Activate',
+          id: 'resume',
+          icon: playIcon,
+        });
       }
 
       MENU_ITEMS.push({
@@ -1907,7 +1904,12 @@ const WorkflowListing: React.FC = () => {
             </Box>
           }
         >
-          <DialogContentText>Are you sure you want to pause this scheduled automation? It will stop executing until resumed.</DialogContentText>
+          {/* "Any … triggers" rather than "its triggers": the dialog is shown for every trigger
+              type, and a manual-only automation has none of the three. */}
+          <DialogContentText>
+            Are you sure you want to pause this automation? Any schedule, event or webhook triggers will stop firing until it is activated again. It
+            can still be run manually.
+          </DialogContentText>
         </Modal>
 
         <Modal
@@ -1928,7 +1930,7 @@ const WorkflowListing: React.FC = () => {
           }
         >
           <DialogContentText>
-            Are you sure you want to activate this scheduled automation? It will start executing according to its schedule.
+            Are you sure you want to activate this automation? Any schedule, event or webhook triggers will start firing again.
           </DialogContentText>
         </Modal>
 

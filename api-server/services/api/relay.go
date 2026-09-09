@@ -70,7 +70,7 @@ var readActions = map[string]bool{
 	"query_data":                      true,
 	"query_es":                        true,
 	"query_es_indices":                true,
-	"query_esindex_field":             true,
+	"query_es_index_field":            true,
 	"query_loki_labels":               true,
 	"query_grafana_loki_label_values": true,
 	"prometheus_enricher":             true,

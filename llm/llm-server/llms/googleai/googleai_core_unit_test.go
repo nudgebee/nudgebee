@@ -94,7 +94,7 @@ func TestConvertParts(t *testing.T) { //nolint:funlen // comprehensive test
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertParts(context.Background(), tt.parts)
+			result, err := convertParts(context.Background(), tt.parts, nil)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -207,7 +207,7 @@ func TestConvertContent(t *testing.T) { //nolint:funlen // comprehensive test
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertContent(context.Background(), tt.content)
+			result, err := convertContent(context.Background(), tt.content, nil)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -503,7 +503,7 @@ func TestRoleMapping(t *testing.T) {
 				Parts: []llms.ContentPart{llms.TextContent{Text: "test"}},
 			}
 
-			result, err := convertContent(context.Background(), content)
+			result, err := convertContent(context.Background(), content, nil)
 
 			if !tt.supported {
 				assert.Error(t, err)
@@ -534,7 +534,7 @@ func TestFunctionCallConversion(t *testing.T) {
 			},
 		}
 
-		result, err := convertParts(context.Background(), []llms.ContentPart{part})
+		result, err := convertParts(context.Background(), []llms.ContentPart{part}, nil)
 		assert.NoError(t, err)
 		assert.Len(t, result, 1)
 
@@ -550,7 +550,7 @@ func TestFunctionCallConversion(t *testing.T) {
 			Content: "It's 20°C and sunny",
 		}
 
-		result, err := convertParts(context.Background(), []llms.ContentPart{part})
+		result, err := convertParts(context.Background(), []llms.ContentPart{part}, nil)
 		assert.NoError(t, err)
 		assert.Len(t, result, 1)
 

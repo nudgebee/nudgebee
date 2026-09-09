@@ -49,6 +49,14 @@ type CacheRequest struct {
 	Scope          CacheScope
 	Capabilities   toolcore.AgentCapabilities // Optional; used to isolate cache slots when tool set varies per request
 	PromptVariant  string                     // Optional; isolates the lean vs full orchestrator prompt into distinct cache slots (empty = full/default)
+	// Tools, when non-empty, are baked INTO the cached content at creation time.
+	// Google AI rejects a request that sets both CachedContent and tools, so a
+	// native tool-calling caller cannot send them per-request; they must be part
+	// of the cache. They also participate in the content hash, so changing an
+	// agent's tool set invalidates the slot rather than silently serving a cache
+	// built with different tool declarations. Empty for callers that send no
+	// tools (e.g. the react_3 planner), leaving behavior byte-identical.
+	Tools []llms.Tool
 }
 
 // CacheResponse contains the result of cache operation
@@ -287,7 +295,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	}
 
 	// Calculate content hash
-	contentHash := hashContent(cacheableMessages)
+	contentHash := hashContent(cacheableMessages, req.Tools)
 
 	// Check if cache exists and is valid (shared cache)
 	var cacheInfo CacheInfo
@@ -700,7 +708,7 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 		"cacheableMessages", len(cacheableMessages),
 		"displayName", displayName)
 
-	cachedContent, err := cachingHelper.CreateCachedContent(ctx, req.Model, cacheableMessages, ttl, displayName)
+	cachedContent, err := cachingHelper.CreateCachedContent(ctx, req.Model, cacheableMessages, ttl, displayName, req.Tools)
 	if err != nil {
 		return nil, err
 	}
@@ -1043,10 +1051,25 @@ func padMessagesIfRequired(messages []llms.MessageContent, scope CacheScope) []l
 	return newMessages
 }
 
-func hashContent(messages []llms.MessageContent) string {
+// hashContent fingerprints what actually got baked into a cached content entry.
+//
+// tools participate because they are stored INSIDE the cached content (see
+// CacheRequest.Tools). Without them, an agent whose tool set changed would match
+// the existing hash and be served a cache built with the OLD tool declarations —
+// the model would then be offered tools that no longer exist, or miss new ones.
+// They are only mixed in when non-empty, so entries created by tool-less callers
+// (the react_3 planner, every summarizer) keep their existing hash and are not
+// invalidated on deploy.
+func hashContent(messages []llms.MessageContent, tools []llms.Tool) string {
 	hasher := sha256.New()
 	for _, msg := range messages {
 		_, _ = fmt.Fprintf(hasher, "%v:%v", msg.Role, msg.Parts)
+	}
+	for _, t := range tools {
+		if t.Function == nil {
+			continue
+		}
+		_, _ = fmt.Fprintf(hasher, "|tool:%s:%s:%s:%v", t.Type, t.Function.Name, t.Function.Description, t.Function.Parameters)
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }

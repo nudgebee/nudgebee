@@ -54,22 +54,23 @@ func (h *handler) handleChat(c *gin.Context) {
 	identity := auth.FromContext(c)
 
 	requestedModel, streaming := parseBody(body)
-	// Resolution order — a tenant's EXPLICITLY-configured upstream wins over the built-in
-	// heuristics. A custom / vertex_openai model (matched by the exact configured id) is
-	// checked FIRST: otherwise a configured MaaS id like "google/gemma-…-maas" would be
+	// Resolution order — a tenant's explicit model mapping wins over built-in heuristics.
+	// Mappings select the exact integration account for every provider and are checked first;
+	// this also prevents a configured MaaS id like "google/gemma-…-maas" from being
 	// hijacked by the "google" → Gemini provider alias and sent to generateContent instead of
 	// the tenant's endpoint. Falling through: a known "provider/model" or bare name, then a
 	// tier alias (e.g. "nb-fast") a routing rule maps to a provider, else a clear 400.
-	// customKey, when set, is that upstream's per-request credential (carries its base URL),
-	// injected as a DirectKey so the request routes on the vLLM lane.
+	// mappedKey is the selected account credential; custom routes also carry their base URL.
 	var provider schemas.ModelProvider
 	var model string
-	var customKey *schemas.Key
-	var customKeyPath string
-	if cp, key, path, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
-		provider, model = cp, requestedModel
-		customKey = &key
-		customKeyPath = path
+	var mappedKey *schemas.Key
+	var mappedKeyPath string
+	var mappedModel string
+	if mp, key, served, path, mapped := resolveModelMapping(identity.TenantID, requestedModel); mapped {
+		provider, model = mp, requestedModel
+		mappedKey = &key
+		mappedKeyPath = path
+		mappedModel = served
 	} else if p, m, known := resolveModelProvider(requestedModel); known {
 		provider, model = p, m
 	} else if lane, isTier := h.tierLane(identity, requestedModel); isTier {
@@ -91,8 +92,9 @@ func (h *handler) handleChat(c *gin.Context) {
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
 		Identity: identity, Provider: provider,
 		Model: model, Path: chatCompletionsPath, Body: body, Streaming: streaming,
-		DirectKey: customKey, DirectKeyURLPath: customKeyPath,
+		DirectKey: mappedKey, DirectKeyURLPath: mappedKeyPath,
 	}
+	rc.MappedModel = mappedModel
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: chat pipeline error", "error", err, "provider", provider, "model", model)
@@ -121,21 +123,8 @@ func (h *handler) handleChat(c *gin.Context) {
 		c.Writer.Header().Set("x-nb-llm-deprecated",
 			fmt.Sprintf("%s->%s", rc.Decision.RequestedModel, rc.Decision.ResolvedModel))
 	}
-
-	// A custom upstream may serve its model under a name different from the client-facing alias
-	// the tenant configured (models: "alias=served"). ResolveCustom put the SERVED name on the
-	// key's ModelName; forward + meter that (so the upstream receives the id it expects and
-	// pricing hits the catalog), while the decision's RequestedModel keeps the alias — recorded
-	// on the usage row — for attribution. A bare `models` entry leaves served == alias, a no-op.
-	// Read from rc.DirectKey (the key that will actually be dialed) rather than the pre-pipeline
-	// local. Guard on rc.Provider == VLLM: a routing/substitution rule may have redirected a
-	// custom model to a well-known provider (changing rc.Provider) while the DirectKey resolved
-	// before the pipeline stays non-nil — overwriting the model there would send the custom
-	// served name to the wrong provider and corrupt metering.
-	if rc.Provider == schemas.VLLM {
-		if k := rc.DirectKey; k != nil && k.VLLMKeyConfig != nil && k.VLLMKeyConfig.ModelName != "" {
-			rc.Model = k.VLLMKeyConfig.ModelName
-		}
+	if rc.MappedModel != "" {
+		rc.Model = rc.MappedModel
 	}
 
 	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
@@ -271,15 +260,29 @@ var genericModelCatalog = []struct{ id, ownedBy string }{
 // OpenAI-compatible tools populate. It is a static metadata call (not metered).
 func (h *handler) handleModels(c *gin.Context) {
 	type model struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
+		ID          string `json:"id"`
+		Object      string `json:"object"`
+		OwnedBy     string `json:"owned_by"`
+		ServedModel string `json:"served_model,omitempty"`
+		Integration string `json:"integration,omitempty"`
 	}
-	data := make([]model, 0, len(genericModelCatalog))
+	tenantModels := resolveModelCatalog(auth.FromContext(c).TenantID)
+	data := make([]model, 0, len(genericModelCatalog)+len(tenantModels))
+	seen := make(map[string]bool, cap(data))
+	for _, m := range tenantModels {
+		data = append(data, model{
+			ID: m.ID, Object: "model", OwnedBy: string(m.Provider),
+			ServedModel: m.ServedModel, Integration: m.Integration,
+		})
+		seen[m.ID] = true
+	}
 	for _, m := range genericModelCatalog {
 		// Don't advertise the tier aliases when tiering is disabled deployment-wide
 		// (the tier rows are the "nudgebee"-owned entries).
 		if m.ownedBy == "nudgebee" && !config.Config.TiersEnabled {
+			continue
+		}
+		if seen[m.id] {
 			continue
 		}
 		data = append(data, model{ID: m.id, Object: "model", OwnedBy: m.ownedBy})

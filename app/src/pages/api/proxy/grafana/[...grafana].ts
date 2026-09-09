@@ -1,4 +1,4 @@
-import { getToken } from 'next-auth/jwt';
+import { readSessionToken } from '@lib/sessionCookie';
 import { getServerSession } from 'next-auth/next';
 
 import type { NextApiRequest, NextApiResponse } from 'next';
@@ -48,7 +48,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!token) {
       const session = await getServerSession(req, res, authOptions);
       if (session && session?.user) {
-        const jwtToken = await getToken({ req });
+        const jwtToken = await readSessionToken(req);
         if (jwtToken) {
           userDetails.userId = jwtToken?.sub as string;
           userDetails.tenantId = (jwtToken?.tenant as any)?.id as string;

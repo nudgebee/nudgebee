@@ -8,6 +8,7 @@ import { Switch } from '@ui/Switch';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import FilterDropdown from '@ui/FilterDropdown';
+import Tooltip from '@ui/Tooltip';
 import apiUser from '@api1/user';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
@@ -26,6 +27,11 @@ import apiTicketIntegrations from '@api1/tickets';
 import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import { docsUrl } from '@lib/externalUrls';
+import ModelAliasList from '@components/common/forms/ModelAliasList';
+
+// Array-typed config fields travel as one comma-joined string in
+// integration_config_values; chips may be plain values or {label, value}.
+const joinConfigArray = (values) => values.map((v) => (v && typeof v === 'object' ? v.value : v)).join(',');
 
 // Group-header icon for the account dropdown — maps a group (the account's
 // cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
@@ -288,6 +294,14 @@ const IntegrationDynamicFormModal = ({
                 // and submit path see a scalar.
                 if (prop.single_select && Array.isArray(val)) {
                   val = val[0] ?? '';
+                }
+                // Array-typed config fields (other than account_id, which has its own
+                // pivot table) are stored as one comma-joined string.
+                if (prop.type === 'array' && key !== 'account_id' && typeof val === 'string') {
+                  val = val
+                    .split(',')
+                    .map((v) => v.trim())
+                    .filter(Boolean);
                 }
                 if (key == 'default_log_provider' || key == 'default_traces_provider' || key == 'default_metrics_provider') {
                   if (editData?.integrations_cloud_accounts?.length) {
@@ -653,6 +667,91 @@ const IntegrationDynamicFormModal = ({
     });
   };
 
+  const renderAdvancedToggle = () => (
+    <Box
+      sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', mb: ds.space[2] }}
+      onClick={() => setAdvancedOpen((v) => !v)}
+      data-testid='advanced-settings-toggle'
+    >
+      <KeyboardArrowDownIcon
+        sx={{ transform: advancedOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s', color: ds.brand[500] }}
+      />
+      <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+        Advanced Settings
+      </Typography>
+    </Box>
+  );
+
+  // Form-context-dependent autocomplete (e.g. Hive column names, Confluence
+  // pages), fed by the field's auto_generate_func. freeSolo lets the customer
+  // adopt a typed value that isn't in the suggestions. Array-typed fields
+  // collect several values as chips; the stored form is the comma-joined
+  // values (see joinConfigArray).
+  const renderAutogenField = (key, field, isRequired, errorText) => {
+    const ag = autogenState[key] || { options: [], message: '', loading: false };
+    const isMulti = field.type === 'array';
+    const fieldLabel = field.display_name || snakeToTitleCase(key);
+    return (
+      <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+        <Typography
+          variant='body2'
+          sx={{
+            color: ds.gray[400],
+            fontSize: 'var(--ds-text-small)',
+            lineHeight: 1.5,
+            mb: ds.space[2],
+            pl: ds.space[1],
+            display: 'flex',
+            alignItems: 'center',
+            gap: ds.space[1],
+          }}
+        >
+          {field.advanced ? fieldLabel : field.description}
+          {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
+          {field.advanced && (
+            <Tooltip title={field.description} maxWidth='360px'>
+              <Box component='span' sx={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
+                <SafeIcon src={infoIcon} alt='info' width={14} height={14} />
+              </Box>
+            </Tooltip>
+          )}
+        </Typography>
+        <FilterDropdown
+          key={key}
+          id={toKebabCase(field.display_name || key)}
+          label={fieldLabel}
+          options={ag.options}
+          multiple={isMulti}
+          limitTag={3}
+          value={isMulti ? (Array.isArray(formValues[key]) ? formValues[key] : []) : formValues[key] || ''}
+          freeSolo
+          onSelect={(_event, value) =>
+            handleChange(key, isMulti ? (value || []).map((v) => (v && typeof v === 'object' ? v.value : v)) : value?.value ?? value)
+          }
+          isOptionsLoading={ag.loading}
+          sx={{ width: '100%' }}
+          disabled={field.disabled || field.allow_edit === false}
+          searchPlaceholder={field.search_placeholder || 'Search or type to add…'}
+        />
+        {errorText && (
+          <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
+            {errorText}
+          </Typography>
+        )}
+        {!errorText && ag.message && (
+          <Typography variant='body2' sx={{ mt: 0.5, fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
+            {ag.message}
+          </Typography>
+        )}
+        {!errorText && !ag.message && !ag.loading && ag.options.length > 0 && (
+          <Typography variant='body2' sx={{ mt: 0.5, fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
+            {ag.options.length} suggestion{ag.options.length === 1 ? '' : 's'}
+          </Typography>
+        )}
+      </Box>
+    );
+  };
+
   const handleChange = (key, value) => {
     if (isTestable && config.properties?.[key]?.is_testable) {
       setConnectionVerified(false);
@@ -955,6 +1054,8 @@ const IntegrationDynamicFormModal = ({
         transformedValue = String(value);
       } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
         transformedValue = editData?.integration_config_values?.[key];
+      } else if (Array.isArray(value)) {
+        transformedValue = joinConfigArray(value);
       }
       return {
         name: key,
@@ -1162,6 +1263,8 @@ const IntegrationDynamicFormModal = ({
         transformedValue = String(value);
       } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === '*************************************************') {
         transformedValue = editData?.integration_config_values?.[key];
+      } else if (Array.isArray(value)) {
+        transformedValue = joinConfigArray(value);
       }
       return {
         name: key,
@@ -1792,269 +1895,125 @@ const IntegrationDynamicFormModal = ({
                     </Box>
                   )}
                   {Object.keys(config?.properties || {}).length > 0 ? (
-                    getSortedFieldKeys().map((key) => {
-                      const field = config.properties[key];
-                      let inputComponent;
-                      const errorText = errors[key] || '';
+                    (() => {
+                      const renderField = (key) => {
+                        const field = config.properties[key];
+                        let inputComponent;
+                        const errorText = errors[key] || '';
 
-                      if (!field.description) {
-                        return null;
-                      }
+                        if (!field.description) {
+                          return null;
+                        }
 
-                      const isRequired = isFieldRequired(key, field);
+                        const isRequired = isFieldRequired(key, field);
 
-                      switch (field.type) {
-                        case 'array':
-                        case 'list':
-                          if (field.possible_values) {
-                            if (Array.isArray(field.default)) {
-                              const rawValue = formValues[key];
-                              const value =
-                                rawValue != null
-                                  ? field.possible_values?.filter(
-                                      (op) =>
-                                        Array.isArray(rawValue)
-                                          ? rawValue.includes(op.value) || rawValue.includes(op) // array case
-                                          : op.value === rawValue || op === rawValue // single value case
-                                    )
-                                  : null;
-                              inputComponent = (
-                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
-                                  <Typography
-                                    variant='body2'
-                                    sx={{
-                                      color: ds.gray[400],
-                                      fontSize: 'var(--ds-text-small)',
-                                      lineHeight: 1.5,
-                                      mb: ds.space[2],
-                                      pl: ds.space[1],
-                                    }}
-                                  >
-                                    {field.description}
-                                    {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
-                                  </Typography>
-                                  <Box>
-                                    <FilterDropdown
-                                      key={`auto-complete-${key}`}
-                                      multiple
-                                      label={field.display_name || snakeToTitleCase(key)}
-                                      value={value || []}
-                                      options={field.possible_values ?? []}
-                                      grouped={field.grouped}
-                                      groupIcon={field.grouped ? renderAccountGroupIcon : undefined}
-                                      disabled={field.possible_values?.length === 0}
-                                      onSelect={(_, value) => handleChange(key, value)}
-                                      isOptionsLoading={loadingOptions[key]}
-                                    />
-                                    {errorText && (
-                                      <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
-                                        {errorText}
-                                      </Typography>
-                                    )}
-                                  </Box>
-                                </Box>
-                              );
-                            } else {
-                              const value =
-                                formValues[key] != null
-                                  ? field.possible_values?.find((op) => op.value == formValues[key] || op == formValues[key])
-                                  : null;
-                              inputComponent = (
-                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
-                                  <Typography
-                                    variant='body2'
-                                    sx={{
-                                      color: ds.gray[400],
-                                      fontSize: 'var(--ds-text-small)',
-                                      lineHeight: 1.5,
-                                      mb: ds.space[2],
-                                      pl: ds.space[1],
-                                    }}
-                                  >
-                                    {field.description}
-                                    {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
-                                  </Typography>
-                                  <Box>
-                                    <FilterDropdown
-                                      key={`auto-complete-${key}`}
-                                      label={field.display_name || snakeToTitleCase(key)}
-                                      value={value}
-                                      options={field.possible_values || []}
-                                      grouped={field.grouped}
-                                      groupIcon={field.grouped ? renderAccountGroupIcon : undefined}
-                                      disabled={
-                                        field.possible_values?.length == 0 ||
-                                        (editData?.integration_config_values?.account_id && key == 'account_id') ||
-                                        false
-                                      }
-                                      onSelect={(_, _value) => handleChange(key, _value?.value || _value)}
-                                      isOptionsLoading={loadingOptions[key]}
-                                    />
-                                    {errorText && (
-                                      <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
-                                        {errorText}
-                                      </Typography>
-                                    )}
-                                  </Box>
-                                </Box>
-                              );
-                            }
-                          }
-                          break;
-
-                        case 'int':
-                        case 'integer':
-                          inputComponent = (
-                            <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
-                              <Typography
-                                variant='body2'
-                                sx={{
-                                  color: ds.gray[400],
-                                  fontSize: 'var(--ds-text-small)',
-                                  lineHeight: 1.5,
-                                  mb: ds.space[2],
-                                  pl: ds.space[1],
-                                }}
-                              >
-                                {field.description}
-                                {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
-                              </Typography>
-                              <Box>
-                                <Input
-                                  id={toKebabCase(field.display_name || key)}
-                                  key={key}
-                                  label={field.display_name || snakeToTitleCase(key)}
-                                  type='number'
-                                  value={String(formValues[key] ?? '')}
-                                  onChange={(value) => handleChange(key, parseInt(value, 10))}
-                                  size='sm'
-                                  error={errorText || undefined}
-                                />
-                              </Box>
-                            </Box>
-                          );
-                          break;
-
-                        case 'bool':
-                        case 'boolean':
-                          inputComponent = (
-                            <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
-                              <Typography
-                                variant='body2'
-                                sx={{
-                                  color: ds.gray[400],
-                                  fontSize: 'var(--ds-text-small)',
-                                  lineHeight: 1.5,
-                                  mb: ds.space[2],
-                                  pl: ds.space[1],
-                                }}
-                              >
-                                {field.description}
-                              </Typography>
-                              <Box>
-                                <Checkbox
-                                  key={key}
-                                  id={toKebabCase(field.display_name || key)}
-                                  checked={!!formValues[key]}
-                                  onChange={(next) => handleChange(key, next)}
-                                  label={`${field.display_name || snakeToTitleCase(key)}${isRequired ? ' *' : ''}`}
-                                />
-                                {errorText && (
-                                  <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
-                                    {errorText}
-                                  </Typography>
-                                )}
-                              </Box>
-                            </Box>
-                          );
-                          break;
-
-                        case 'string':
-                          if (field.possible_values?.length > 0) {
-                            inputComponent = (
-                              <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
-                                <Typography
-                                  variant='body2'
-                                  sx={{
-                                    color: ds.gray[400],
-                                    fontSize: 'var(--ds-text-small)',
-                                    lineHeight: 1.5,
-                                    mb: ds.space[2],
-                                    pl: ds.space[1],
-                                  }}
-                                >
-                                  {field.description}
-                                  {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
-                                </Typography>
-                                <Box>
-                                  <FilterDropdown
-                                    key={key}
-                                    label={field.display_name || snakeToTitleCase(key)}
-                                    options={field.possible_values}
-                                    value={formValues[key] || ''}
-                                    onSelect={(_event, value) => handleChange(key, value?.value ?? value)}
-                                    isOptionsLoading={loadingOptions[key]}
-                                  />
-                                  {errorText && (
-                                    <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
-                                      {errorText}
+                        switch (field.type) {
+                          case 'array':
+                          case 'list':
+                            if (field.possible_values) {
+                              if (Array.isArray(field.default)) {
+                                const rawValue = formValues[key];
+                                const value =
+                                  rawValue != null
+                                    ? field.possible_values?.filter(
+                                        (op) =>
+                                          Array.isArray(rawValue)
+                                            ? rawValue.includes(op.value) || rawValue.includes(op) // array case
+                                            : op.value === rawValue || op === rawValue // single value case
+                                      )
+                                    : null;
+                                inputComponent = (
+                                  <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                    <Typography
+                                      variant='body2'
+                                      sx={{
+                                        color: ds.gray[400],
+                                        fontSize: 'var(--ds-text-small)',
+                                        lineHeight: 1.5,
+                                        mb: ds.space[2],
+                                        pl: ds.space[1],
+                                      }}
+                                    >
+                                      {field.description}
+                                      {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
                                     </Typography>
-                                  )}
-                                </Box>
-                              </Box>
-                            );
-                          } else if (field.auto_generate_func && field.auto_generate_func !== 'listAccounts') {
-                            // Form-context-dependent autocomplete (e.g. Hive
-                            // column names). Renders through the same
-                            // FilterDropdownButton used for the account
-                            // selector — freeSolo lets the customer adopt a
-                            // typed value that isn't in the suggestions.
-                            const ag = autogenState[key] || { options: [], message: '', loading: false };
-                            inputComponent = (
-                              <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
-                                <Typography
-                                  variant='body2'
-                                  sx={{
-                                    color: ds.gray[400],
-                                    fontSize: 'var(--ds-text-small)',
-                                    lineHeight: 1.5,
-                                    mb: ds.space[2],
-                                    pl: ds.space[1],
-                                  }}
-                                >
-                                  {field.description}
-                                  {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
-                                </Typography>
-                                <FilterDropdown
-                                  key={key}
-                                  id={toKebabCase(field.display_name || key)}
-                                  label={field.display_name || snakeToTitleCase(key)}
-                                  options={ag.options}
-                                  value={formValues[key] || ''}
-                                  freeSolo
-                                  onSelect={(_event, value) => handleChange(key, value?.value ?? value)}
-                                  isOptionsLoading={ag.loading}
-                                  disabled={field.disabled || field.allow_edit === false}
-                                  searchPlaceholder='Search columns or type to add…'
-                                />
-                                {errorText && (
-                                  <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
-                                    {errorText}
-                                  </Typography>
-                                )}
-                                {!errorText && ag.message && (
-                                  <Typography variant='body2' sx={{ mt: 0.5, fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
-                                    {ag.message}
-                                  </Typography>
-                                )}
-                                {!errorText && !ag.message && !ag.loading && ag.options.length > 0 && (
-                                  <Typography variant='body2' sx={{ mt: 0.5, fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>
-                                    {ag.options.length} suggestion{ag.options.length === 1 ? '' : 's'}
-                                  </Typography>
-                                )}
-                              </Box>
-                            );
-                          } else {
+                                    <Box>
+                                      <FilterDropdown
+                                        key={`auto-complete-${key}`}
+                                        multiple
+                                        label={field.display_name || snakeToTitleCase(key)}
+                                        value={value || []}
+                                        options={field.possible_values ?? []}
+                                        grouped={field.grouped}
+                                        groupIcon={field.grouped ? renderAccountGroupIcon : undefined}
+                                        disabled={field.possible_values?.length === 0}
+                                        onSelect={(_, value) => handleChange(key, value)}
+                                        isOptionsLoading={loadingOptions[key]}
+                                        sx={{ width: '100%' }}
+                                      />
+                                      {errorText && (
+                                        <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
+                                          {errorText}
+                                        </Typography>
+                                      )}
+                                    </Box>
+                                  </Box>
+                                );
+                              } else {
+                                const value =
+                                  formValues[key] != null
+                                    ? field.possible_values?.find((op) => op.value == formValues[key] || op == formValues[key])
+                                    : null;
+                                inputComponent = (
+                                  <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                    <Typography
+                                      variant='body2'
+                                      sx={{
+                                        color: ds.gray[400],
+                                        fontSize: 'var(--ds-text-small)',
+                                        lineHeight: 1.5,
+                                        mb: ds.space[2],
+                                        pl: ds.space[1],
+                                      }}
+                                    >
+                                      {field.description}
+                                      {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
+                                    </Typography>
+                                    <Box>
+                                      <FilterDropdown
+                                        key={`auto-complete-${key}`}
+                                        label={field.display_name || snakeToTitleCase(key)}
+                                        value={value}
+                                        options={field.possible_values || []}
+                                        grouped={field.grouped}
+                                        groupIcon={field.grouped ? renderAccountGroupIcon : undefined}
+                                        disabled={
+                                          field.possible_values?.length == 0 ||
+                                          (editData?.integration_config_values?.account_id && key == 'account_id') ||
+                                          false
+                                        }
+                                        onSelect={(_, _value) => handleChange(key, _value?.value || _value)}
+                                        isOptionsLoading={loadingOptions[key]}
+                                        sx={{ width: '100%' }}
+                                      />
+                                      {errorText && (
+                                        <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
+                                          {errorText}
+                                        </Typography>
+                                      )}
+                                    </Box>
+                                  </Box>
+                                );
+                              }
+                            } else if (field.auto_generate_func && field.auto_generate_func !== 'listAccounts') {
+                              // No fixed option list: a multi-value picker fed by the
+                              // backend (e.g. Confluence page trees).
+                              inputComponent = renderAutogenField(key, field, isRequired, errorText);
+                            }
+                            break;
+
+                          case 'int':
+                          case 'integer':
                             inputComponent = (
                               <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
                                 <Typography
@@ -2072,75 +2031,223 @@ const IntegrationDynamicFormModal = ({
                                 </Typography>
                                 <Box>
                                   <Input
-                                    key={key}
                                     id={toKebabCase(field.display_name || key)}
+                                    key={key}
                                     label={field.display_name || snakeToTitleCase(key)}
-                                    type={
-                                      // Password masking (with the eye toggle) applies to SINGLE-LINE secrets only —
-                                      // a multiline encrypted field (e.g. a service-account JSON) can't be a password
-                                      // input, so it renders as a textarea (still encrypted at rest + masked on edit).
-                                      field.is_encrypted && !field.multiline
-                                        ? // Reveal only applies to a freshly-typed value. A stored secret is
-                                          // never sent to the UI — on edit the field holds the mask, which stays
-                                          // masked (and offers no eye), so a saved key can't be exposed.
-                                          revealedSecrets[key] && formValues[key] && formValues[key] !== ENCRYPTED_MASK
-                                          ? 'text'
-                                          : 'password'
-                                        : field.multiline
-                                        ? 'textarea'
-                                        : 'text'
-                                    }
-                                    value={formValues[key] || ''}
-                                    onChange={(value) => handleChange(key, value)}
-                                    trailingIcon={
-                                      // Eye toggle only while inserting a new single-line value (not for the stored
-                                      // mask, and not for multiline secrets which render as a textarea).
-                                      field.is_encrypted && !field.multiline && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
-                                        <Box
-                                          component='button'
-                                          type='button'
-                                          aria-label={revealedSecrets[key] ? 'Hide value' : 'Show value'}
-                                          onClick={() => setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
-                                          sx={{
-                                            cursor: 'pointer',
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            padding: 0,
-                                            border: 'none',
-                                            background: 'none',
-                                            color: ds.gray[500],
-                                          }}
-                                        >
-                                          {revealedSecrets[key] ? (
-                                            <VisibilityOffIcon sx={{ fontSize: 16 }} />
-                                          ) : (
-                                            <VisibilityIcon sx={{ fontSize: 16 }} />
-                                          )}
-                                        </Box>
-                                      ) : undefined
-                                    }
+                                    type='number'
+                                    value={String(formValues[key] ?? '')}
+                                    onChange={(value) => handleChange(key, parseInt(value, 10))}
                                     size='sm'
                                     error={errorText || undefined}
-                                    minRows={field.multiline ? 3 : undefined}
-                                    disabled={
-                                      field.disabled ||
-                                      field.allow_edit === false ||
-                                      (editData?.integration_config_values?.integration_config_name && key == 'integration_config_name') ||
-                                      false
-                                    }
                                   />
                                 </Box>
                               </Box>
                             );
-                          }
-                          break;
+                            break;
 
-                        default:
-                          inputComponent = null;
-                      }
+                          case 'bool':
+                          case 'boolean':
+                            inputComponent = (
+                              <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                <Typography
+                                  variant='body2'
+                                  sx={{
+                                    color: ds.gray[400],
+                                    fontSize: 'var(--ds-text-small)',
+                                    lineHeight: 1.5,
+                                    mb: ds.space[2],
+                                    pl: ds.space[1],
+                                  }}
+                                >
+                                  {field.description}
+                                </Typography>
+                                <Box>
+                                  <Checkbox
+                                    key={key}
+                                    id={toKebabCase(field.display_name || key)}
+                                    checked={!!formValues[key]}
+                                    onChange={(next) => handleChange(key, next)}
+                                    label={`${field.display_name || snakeToTitleCase(key)}${isRequired ? ' *' : ''}`}
+                                  />
+                                  {errorText && (
+                                    <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
+                                      {errorText}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              </Box>
+                            );
+                            break;
 
-                      return inputComponent || null;
-                    })
+                          case 'string':
+                            if (field.widget === 'model_alias_list') {
+                              inputComponent = (
+                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                  <Typography
+                                    variant='body2'
+                                    sx={{
+                                      color: ds.gray[400],
+                                      fontSize: 'var(--ds-text-small)',
+                                      lineHeight: 1.5,
+                                      mb: ds.space[2],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    {field.description}
+                                    {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
+                                  </Typography>
+                                  <ModelAliasList
+                                    value={formValues[key] || ''}
+                                    onChange={(value) => handleChange(key, value)}
+                                    disabled={field.disabled || field.allow_edit === false}
+                                  />
+                                  {errorText && (
+                                    <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
+                                      {errorText}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              );
+                            } else if (field.possible_values?.length > 0) {
+                              inputComponent = (
+                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                  <Typography
+                                    variant='body2'
+                                    sx={{
+                                      color: ds.gray[400],
+                                      fontSize: 'var(--ds-text-small)',
+                                      lineHeight: 1.5,
+                                      mb: ds.space[2],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    {field.description}
+                                    {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
+                                  </Typography>
+                                  <Box>
+                                    <FilterDropdown
+                                      key={key}
+                                      label={field.display_name || snakeToTitleCase(key)}
+                                      options={field.possible_values}
+                                      value={formValues[key] || ''}
+                                      onSelect={(_event, value) => handleChange(key, value?.value ?? value)}
+                                      isOptionsLoading={loadingOptions[key]}
+                                      sx={{ width: '100%' }}
+                                    />
+                                    {errorText && (
+                                      <Typography variant='body2' color='error' sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)' }}>
+                                        {errorText}
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                </Box>
+                              );
+                            } else if (field.auto_generate_func && field.auto_generate_func !== 'listAccounts') {
+                              inputComponent = renderAutogenField(key, field, isRequired, errorText);
+                            } else {
+                              inputComponent = (
+                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                  <Typography
+                                    variant='body2'
+                                    sx={{
+                                      color: ds.gray[400],
+                                      fontSize: 'var(--ds-text-small)',
+                                      lineHeight: 1.5,
+                                      mb: ds.space[2],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    {field.description}
+                                    {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
+                                  </Typography>
+                                  <Box>
+                                    <Input
+                                      key={key}
+                                      id={toKebabCase(field.display_name || key)}
+                                      label={field.display_name || snakeToTitleCase(key)}
+                                      type={
+                                        // Password masking (with the eye toggle) applies to SINGLE-LINE secrets only —
+                                        // a multiline encrypted field (e.g. a service-account JSON) can't be a password
+                                        // input, so it renders as a textarea (still encrypted at rest + masked on edit).
+                                        field.is_encrypted && !field.multiline
+                                          ? // Reveal only applies to a freshly-typed value. A stored secret is
+                                            // never sent to the UI — on edit the field holds the mask, which stays
+                                            // masked (and offers no eye), so a saved key can't be exposed.
+                                            revealedSecrets[key] && formValues[key] && formValues[key] !== ENCRYPTED_MASK
+                                            ? 'text'
+                                            : 'password'
+                                          : field.multiline
+                                          ? 'textarea'
+                                          : 'text'
+                                      }
+                                      value={formValues[key] || ''}
+                                      onChange={(value) => handleChange(key, value)}
+                                      trailingIcon={
+                                        // Eye toggle only while inserting a new single-line value (not for the stored
+                                        // mask, and not for multiline secrets which render as a textarea).
+                                        field.is_encrypted && !field.multiline && formValues[key] && formValues[key] !== ENCRYPTED_MASK ? (
+                                          <Box
+                                            component='button'
+                                            type='button'
+                                            aria-label={revealedSecrets[key] ? 'Hide value' : 'Show value'}
+                                            onClick={() => setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
+                                            sx={{
+                                              cursor: 'pointer',
+                                              display: 'inline-flex',
+                                              alignItems: 'center',
+                                              padding: 0,
+                                              border: 'none',
+                                              background: 'none',
+                                              color: ds.gray[500],
+                                            }}
+                                          >
+                                            {revealedSecrets[key] ? (
+                                              <VisibilityOffIcon sx={{ fontSize: 16 }} />
+                                            ) : (
+                                              <VisibilityIcon sx={{ fontSize: 16 }} />
+                                            )}
+                                          </Box>
+                                        ) : undefined
+                                      }
+                                      size='sm'
+                                      error={errorText || undefined}
+                                      minRows={field.multiline ? 3 : undefined}
+                                      disabled={
+                                        field.disabled ||
+                                        field.allow_edit === false ||
+                                        (editData?.integration_config_values?.integration_config_name && key == 'integration_config_name') ||
+                                        false
+                                      }
+                                    />
+                                  </Box>
+                                </Box>
+                              );
+                            }
+                            break;
+
+                          default:
+                            inputComponent = null;
+                        }
+
+                        return inputComponent || null;
+                      };
+                      // Schema fields flagged `advanced` render inside the same
+                      // collapsed section the ES/log integrations use, so every
+                      // integration's "Advanced Settings" looks and behaves alike.
+                      const sortedKeys = getSortedFieldKeys();
+                      const advancedKeys = sortedKeys.filter((key) => config.properties[key]?.advanced);
+                      return (
+                        <>
+                          {sortedKeys.filter((key) => !config.properties[key]?.advanced).map(renderField)}
+                          {advancedKeys.length > 0 && (
+                            <Box sx={{ mt: ds.space[6] }}>
+                              {renderAdvancedToggle()}
+                              <Collapse in={advancedOpen}>{advancedKeys.map(renderField)}</Collapse>
+                            </Box>
+                          )}
+                        </>
+                      );
+                    })()
                   ) : (
                     <Box
                       sx={{
@@ -2382,18 +2489,7 @@ const IntegrationDynamicFormModal = ({
             )}
             {(showLogFilters || isESIntegration) && (
               <Box sx={{ mt: ds.space[6] }}>
-                <Box
-                  sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', mb: ds.space[2] }}
-                  onClick={() => setAdvancedOpen((v) => !v)}
-                  data-testid='advanced-settings-toggle'
-                >
-                  <KeyboardArrowDownIcon
-                    sx={{ transform: advancedOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s', color: ds.brand[500] }}
-                  />
-                  <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-medium)' }}>
-                    Advanced Settings
-                  </Typography>
-                </Box>
+                {renderAdvancedToggle()}
                 <Collapse in={advancedOpen}>
                   {showLogFilters && (
                     <>

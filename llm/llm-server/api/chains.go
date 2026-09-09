@@ -66,6 +66,22 @@ type ConversationApiRequest struct {
 	// logs tab's "Log Provider:" dropdown override sent as log_provider on
 	// observability.fetchLogs. Ignored by every other handler.
 	LogProvider string `json:"log_provider,omitempty"`
+	// ReplyRef is an opaque per-question correlator the caller attaches and
+	// gets back verbatim on the /llm/response webhook (see
+	// conversation_notification.go:sendReplyToNotificationServer). It exists
+	// because SessionId is deliberately reused across many distinct questions
+	// in some callers (notifications-server's bound incident channels route
+	// every future @mention to the same SessionId so they share one LLM
+	// conversation) — SessionId alone can no longer identify which specific
+	// question a response answers. Never read or interpreted here; passed
+	// through unchanged.
+	ReplyRef string `json:"reply_ref,omitempty"`
+	// Index optionally pins /log-query generation to a specific Elasticsearch
+	// index — the logs tab's "Select an Index" dropdown selection. It scopes the
+	// field list the query generator is shown (fields are per-index) and is the
+	// index the generated query is resolved against. Ignored for backends with
+	// no index concept (Loki, …) and by every other handler.
+	Index string `json:"index,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -579,7 +595,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,
@@ -1389,7 +1405,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			source = request.Source
 		}
 
-		var logQueryChain = agents.NewLogQueryAgent(request.AccountId, request.LogProvider)
+		var logQueryChain = agents.NewLogQueryAgent(request.AccountId, request.LogProvider, request.Index)
 		// Check budget limits for tenant and account
 		module := budget.ModuleUserInvestigation
 		if strings.HasPrefix(request.SessionId, events.SessionIdPrefixEvent) {

@@ -173,3 +173,25 @@ func TestWaitBeforeRetry_SleepsWhenLive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// A Retry-After larger than time.Duration can represent (~292 years) used to
+// wrap to a negative delay, which the cap in costManagementBackoff does not
+// catch and which makes the retry timer fire immediately.
+func TestRetryAfterFromResponse_ClampsOverflowingSeconds(t *testing.T) {
+	for _, value := range []string{"9223372037", "9223372036854775807"} {
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: headerWith("Retry-After", value)}
+
+		got, ok := retryAfterFromResponse(resp)
+		if !ok {
+			t.Fatalf("%s: hint was discarded", value)
+		}
+		if got <= 0 {
+			t.Fatalf("%s: overflowed to %v", value, got)
+		}
+
+		// And the caller must still bound it.
+		if back, _ := costManagementBackoff(resp, 0); back != costManagementMaxRetryAfter {
+			t.Fatalf("%s: backoff = %v, want the %v cap", value, back, costManagementMaxRetryAfter)
+		}
+	}
+}

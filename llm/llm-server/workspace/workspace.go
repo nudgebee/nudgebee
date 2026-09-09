@@ -16,6 +16,7 @@ import (
 	"nudgebee/llm/security"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,14 @@ import (
 )
 
 const imageAnnotationKey = "nudgebee.com/code-agent-image"
+const workspaceSpecAnnotationKey = "nudgebee.com/workspace-spec-version"
+
+// workspaceSpecVersion is bumped whenever an existing healthy workspace pod
+// must be recreated to pick up a pod-spec-only change. CreateWorkspace checks
+// it during recovery, while the leader sweep upgrades a bounded batch at a time.
+const workspaceSpecVersion = "workspace-storage-v2"
+
+const workspaceSpecUpgradeBatchSize = 5
 
 const CacheNamespaceWorkspaceTokens = "workspace_tokens"
 
@@ -338,6 +347,12 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 		return fmt.Errorf("workspace: accountId is required")
 	}
 
+	storageLimit, err := workspaceStorageSizeLimit()
+	if err != nil {
+		ctx.GetLogger().Error("workspace: invalid ephemeral storage limit", "error", err)
+		return fmt.Errorf("workspace: invalid ephemeral storage limit: %w", err)
+	}
+
 	logger := ctx.GetLogger()
 	if dockerMode() {
 		runtime, err := newDockerRuntime()
@@ -372,12 +387,24 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 			// kubeconfig and must not stomp on pods owned by the real
 			// in-cluster llm-server (e.g. if the developer's local
 			// LLM_SERVER_CODE_AGENT_IMAGE differs from what's deployed).
-			if _, inClusterErr := rest.InClusterConfig(); inClusterErr == nil {
+			if config.IsInCluster() {
 				needsReplace = true
 				replaceReason = fmt.Sprintf("image mismatch (pod=%s, expected=%s)", podImage, image)
 			} else {
 				logger.Warn("workspace: skipping image-mismatch replacement (not running in-cluster), reusing existing pod",
 					"pod_name", podName, "pod_image", podImage, "expected_image", image)
+			}
+		} else if !hasCurrentWorkspaceSpec(existingPod) {
+			podSpecVersion := existingPod.Annotations[workspaceSpecAnnotationKey]
+			// Apply pod-spec-only security changes lazily when the workspace is next
+			// used. Local llm-server processes may point at a shared cluster and must
+			// not replace pods owned by the in-cluster deployment.
+			if config.IsInCluster() {
+				needsReplace = true
+				replaceReason = fmt.Sprintf("workspace spec mismatch (pod=%s, expected=%s)", podSpecVersion, workspaceSpecVersion)
+			} else {
+				logger.Warn("workspace: skipping spec-mismatch replacement (not running in-cluster), reusing existing pod",
+					"pod_name", podName, "pod_spec_version", podSpecVersion, "expected_spec_version", workspaceSpecVersion)
 			}
 		}
 
@@ -425,10 +452,6 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	// Command to start server (no arguments usually starts server, based on main.go)
 	args := []string{"/app/code-analysis-agent", "--server"}
 
-	runAsUser := int64(1000)
-	runAsGroup := int64(3000)
-	runAsNonRoot := true
-
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -438,14 +461,18 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 				"account_id": strings.ToLower(accountId),
 			},
 			Annotations: map[string]string{
-				imageAnnotationKey: image,
+				imageAnnotationKey:         image,
+				workspaceSpecAnnotationKey: workspaceSpecVersion,
 			},
 		},
 		Spec: corev1.PodSpec{
-			SecurityContext: &corev1.PodSecurityContext{
-				RunAsUser:    &runAsUser,
-				RunAsGroup:   &runAsGroup,
-				RunAsNonRoot: &runAsNonRoot,
+			Volumes: []corev1.Volume{
+				{
+					Name: "workspace-storage",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+						SizeLimit: storageLimit,
+					}},
+				},
 			},
 			// GKE resolves metadata.google.internal to the real metadata IP
 			// (169.254.169.254) inside pods, but the NetworkPolicy blackholes
@@ -478,6 +505,9 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						},
 					},
 					Resources: buildWorkspaceResources(),
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "workspace-storage", MountPath: "/tmp/code-analysis"},
+					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
@@ -514,38 +544,26 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 							Name:  "SERVER_WRITE_TIMEOUT",
 							Value: config.Config.LlmServerWorkspaceCommandTimeout,
 						},
+						{
+							// The pod's ephemeral-storage budget, same value as the
+							// workspace-storage emptyDir sizeLimit. code-analysis's
+							// cache GC measures the workspace tree against this;
+							// syscall.Statfs inside the pod would report the node
+							// filesystem instead and never trip its threshold.
+							Name:  "WORKSPACE_STORAGE_LIMIT_BYTES",
+							Value: strconv.FormatInt(storageLimit.Value(), 10),
+						},
 					},
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyAlways, // Server should restart
 		},
 	}
+	applyWorkspaceSecurityDefaults(pod)
 
 	// Pass only required secret keys as env vars instead of mounting the entire secret
 	if config.Config.LlmServerCodeAgentSecret != "" {
-		secretName := config.Config.LlmServerCodeAgentSecret
-		optional := true
-		secretEnvVars := []corev1.EnvVar{
-			{Name: "LLM_PROVIDER", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER", Optional: &optional}}},
-			{Name: "LLM_MODEL_NAME", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_MODEL_NAME", Optional: &optional}}},
-			{Name: "LLM_PROVIDER_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_API_KEY", Optional: &optional}}},
-			{Name: "LLM_PROVIDER_API_ENDPOINT", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_API_ENDPOINT", Optional: &optional}}},
-			{Name: "LLM_PROVIDER_REGION", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_REGION", Optional: &optional}}},
-			{Name: "LLM_PROVIDER_API_VERSION", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_API_VERSION", Optional: &optional}}},
-			{Name: "LLM_PROVIDER_API_TYPE", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_API_TYPE", Optional: &optional}}},
-			{Name: "LLM_PROVIDER_MAX_RETRIES", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "LLM_PROVIDER_MAX_RETRIES", Optional: &optional}}},
-			// BASE_URL is the public frontend URL the code-analysis orchestrator uses
-			// to build PR/workflow links (e.g. "View Workflow"). It is non-sensitive,
-			// so it does not widen the blast radius the comment below guards against;
-			// without it the pod falls back to the prod default (app.nudgebee.com).
-			{Name: "BASE_URL", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}, Key: "BASE_URL", Optional: &optional}}},
-			// NUDGEBEE_ENCRYPTION_KEY intentionally NOT mounted (B4).
-			// The workspace pod's decrypt path was dead code — llm-server
-			// already decrypts integration credentials upstream and sends
-			// plaintext `type: "token"` in git_credentials. Removing the
-			// key from the pod env narrows the master-key blast radius.
-		}
-		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, secretEnvVars...)
+		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, LLMSecretEnvVars(config.Config.LlmServerCodeAgentSecret)...)
 	}
 
 	// Operator-configured extra env (comma-separated KEY=VALUE) — the rollout
@@ -572,6 +590,54 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	}
 	logger.Info("workspace pod created", "pod_name", podName)
 	return nil
+}
+
+func hasCurrentWorkspaceSpec(pod *corev1.Pod) bool {
+	return pod != nil && pod.Annotations[workspaceSpecAnnotationKey] == workspaceSpecVersion
+}
+
+// applyWorkspaceSecurityDefaults establishes the portable baseline for every
+// workspace container. ReadOnlyRootFilesystem is deliberately deferred: the
+// code-analysis image still needs explicit writable mounts for its workspace,
+// HOME, temporary files, and provider CLI state before that can be enabled.
+func applyWorkspaceSecurityDefaults(pod *corev1.Pod) {
+	runAsUser := int64(1000)
+	runAsGroup := int64(3000)
+	runAsNonRoot := true
+	disabled := false
+
+	pod.Spec.AutomountServiceAccountToken = &disabled
+	pod.Spec.EnableServiceLinks = &disabled
+	if pod.Spec.SecurityContext == nil {
+		pod.Spec.SecurityContext = &corev1.PodSecurityContext{}
+	}
+	pod.Spec.SecurityContext.RunAsUser = &runAsUser
+	pod.Spec.SecurityContext.RunAsGroup = &runAsGroup
+	pod.Spec.SecurityContext.RunAsNonRoot = &runAsNonRoot
+	pod.Spec.SecurityContext.SeccompProfile = &corev1.SeccompProfile{
+		Type: corev1.SeccompProfileTypeRuntimeDefault,
+	}
+
+	applyContainerSecurityDefaults(pod.Spec.InitContainers)
+	applyContainerSecurityDefaults(pod.Spec.Containers)
+}
+
+func applyContainerSecurityDefaults(containers []corev1.Container) {
+	for i := range containers {
+		containerRunAsNonRoot := true
+		privileged := false
+		allowPrivilegeEscalation := false
+		if containers[i].SecurityContext == nil {
+			containers[i].SecurityContext = &corev1.SecurityContext{}
+		}
+		securityContext := containers[i].SecurityContext
+		securityContext.RunAsNonRoot = &containerRunAsNonRoot
+		securityContext.Privileged = &privileged
+		securityContext.AllowPrivilegeEscalation = &allowPrivilegeEscalation
+		securityContext.Capabilities = &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		}
+	}
 }
 
 // extraEnvKeyRe matches valid env var names. Anything else is skipped: an
@@ -620,6 +686,24 @@ func LLMSecretEnvVars(secretName string) []corev1.EnvVar {
 	}
 }
 
+// defaultWorkspaceStorageLimit caps workspace ephemeral storage when the
+// operator has not configured a value. A nil SizeLimit would leave the emptyDir
+// unbounded, letting one workspace pod fill the node disk and evict unrelated
+// pods, so we always return a concrete limit.
+const defaultWorkspaceStorageLimit = "5Gi"
+
+func workspaceStorageSizeLimit() (*resource.Quantity, error) {
+	raw := config.Config.LlmServerWorkspaceResourceLimitStorage
+	if raw == "" {
+		raw = defaultWorkspaceStorageLimit
+	}
+	limit, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &limit, nil
+}
+
 func buildWorkspaceResources() corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
@@ -627,11 +711,16 @@ func buildWorkspaceResources() corev1.ResourceRequirements {
 			corev1.ResourceMemory: resource.MustParse(config.Config.LlmServerWorkspaceResourceRequestMemory),
 		},
 	}
-	if config.Config.LlmServerWorkspaceResourceLimitCpu != "" && config.Config.LlmServerWorkspaceResourceLimitMemory != "" {
-		resources.Limits = corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse(config.Config.LlmServerWorkspaceResourceLimitCpu),
-			corev1.ResourceMemory: resource.MustParse(config.Config.LlmServerWorkspaceResourceLimitMemory),
-		}
+	resources.Limits = corev1.ResourceList{}
+	if config.Config.LlmServerWorkspaceResourceLimitCpu != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(config.Config.LlmServerWorkspaceResourceLimitCpu)
+	}
+	if config.Config.LlmServerWorkspaceResourceLimitMemory != "" {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(config.Config.LlmServerWorkspaceResourceLimitMemory)
+	}
+	if storageLimit, err := workspaceStorageSizeLimit(); err == nil && storageLimit != nil {
+		resources.Requests[corev1.ResourceEphemeralStorage] = storageLimit.DeepCopy()
+		resources.Limits[corev1.ResourceEphemeralStorage] = *storageLimit
 	}
 	return resources
 }
@@ -801,7 +890,9 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 	return nil
 }
 
-// CleanupStaleWorkspaces deletes workspace pods running an outdated image.
+// CleanupStaleWorkspaces deletes workspace pods running an outdated image or
+// pod spec. Image changes retain the existing immediate behavior; spec-only
+// changes are bounded per sweep to avoid restarting the whole fleet at once.
 // Called on startup AND on a periodic leader schedule: the lazy-create path is
 // optimistic (a healthy pod's image is never re-checked), so without the
 // periodic sweep a long-lived pod keeps serving a stale image until its first
@@ -851,8 +942,41 @@ func CleanupStaleWorkspaces(ctx context.Context) {
 				slog.Warn("workspace: failed to delete stale workspace pod; it keeps serving the old image until the next sweep",
 					"pod", pod.Name, "error", err)
 			}
+			continue
 		}
 	}
+
+	for _, pod := range selectWorkspaceSpecUpgrades(pods.Items, currentImage, workspaceSpecUpgradeBatchSize) {
+		slog.Info("workspace: deleting workspace pod with outdated spec",
+			"pod", pod.Name,
+			"pod_spec_version", pod.Annotations[workspaceSpecAnnotationKey],
+			"current_spec_version", workspaceSpecVersion)
+		gracePeriod := int64(0)
+		if err := clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: &gracePeriod,
+		}); err != nil && !errors.IsNotFound(err) {
+			slog.Warn("workspace: failed to delete workspace pod with outdated spec; it will be retried on the next sweep",
+				"pod", pod.Name, "error", err)
+		}
+	}
+}
+
+func selectWorkspaceSpecUpgrades(pods []corev1.Pod, currentImage string, limit int) []*corev1.Pod {
+	if limit <= 0 {
+		return nil
+	}
+
+	selected := make([]*corev1.Pod, 0, min(limit, len(pods)))
+	for i := range pods {
+		if pods[i].DeletionTimestamp != nil || pods[i].Annotations[imageAnnotationKey] != currentImage || hasCurrentWorkspaceSpec(&pods[i]) {
+			continue
+		}
+		selected = append(selected, &pods[i])
+		if len(selected) == limit {
+			break
+		}
+	}
+	return selected
 }
 
 type executePayload struct {
@@ -901,11 +1025,48 @@ func (e *CommandFailure) Is(target error) bool {
 // single update site.
 const stderrExitStatus1 = "exit status 1"
 
+// exitStatusRe matches the agent's report of a process that actually
+// ran. It is the only failure shape the agent produces from cmd.Run();
+// every other command_status:"failed" is a pre-execution rejection
+// (empty command, bad workspace path, security validation), where
+// nothing ran and there is no exit code to speak of. The trailing
+// remainder is optional because "exit status 1: something" is a shape
+// callers already treat as reachable.
+var exitStatusRe = regexp.MustCompile(`^exit status (\d+)(?::.*)?$`)
+
+// ExitCodeFromFailure returns the process exit code the agent reported,
+// and whether err carried one at all. A false second return means the
+// command did not run (or did not fail through the agent), so callers
+// must not present an exit code for it -- reporting a flat 1 there
+// states a specific wrong number instead of an honest unknown.
+//
+// Lives here beside stderrExitStatus1 for the reason that constant
+// gives: one update site if the agent's format ever changes.
+func ExitCodeFromFailure(err error) (int, bool) {
+	var cf *CommandFailure
+	if !stderrors.As(err, &cf) {
+		return 0, false
+	}
+	m := exitStatusRe.FindStringSubmatch(strings.TrimSpace(cf.StdErr))
+	if m == nil {
+		return 0, false
+	}
+	code, convErr := strconv.Atoi(m[1])
+	if convErr != nil {
+		return 0, false
+	}
+	return code, true
+}
+
 // IsExitStatus1Failure reports whether err is a *CommandFailure whose
 // stderr is exactly "exit status 1" (after trimming surrounding
 // whitespace). Used by the shell tool to distinguish the grep-family
 // no-match exit from richer command failures without exposing the
 // literal string to every caller.
+//
+// Deliberately stricter than ExitCodeFromFailure: it stays an exact
+// match on stderrExitStatus1, because "exit status 1: something" is a
+// richer failure that must NOT be reclassified as a grep no-match.
 func IsExitStatus1Failure(err error) bool {
 	var cf *CommandFailure
 	if !stderrors.As(err, &cf) {
@@ -1275,6 +1436,9 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 			return nil, fmt.Errorf("failed to build local request: %w", reqErr)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if localToken := config.Config.LlmServerWorkspaceLocalToken; localToken != "" {
+			req.Header.Set("X-Workspace-Token", localToken)
+		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("local workspace call failed: %w", err)
@@ -1430,6 +1594,9 @@ func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, 
 			return nil, fmt.Errorf("failed to build local stream request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if localToken := config.Config.LlmServerWorkspaceLocalToken; localToken != "" {
+			req.Header.Set("X-Workspace-Token", localToken)
+		}
 		localClient := &http.Client{}
 		resp, err := localClient.Do(req)
 		if err != nil {

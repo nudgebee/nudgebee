@@ -171,6 +171,44 @@ func TestDetectAndRecordDuplicate_DedupWindow_E2E(t *testing.T) {
 			"the window is start-to-start, so an implausible ends_at cannot suppress the break")
 	})
 
+	// A chain that broke on the window must still chain its OWN re-fires (#37273). The chain
+	// lookup used to order by occurrence_number, which stops being monotonic per fingerprint
+	// the moment a new chain resets it to 1: the query kept returning the pre-break peak row,
+	// so every later event measured its gap against an event from before the break and opened
+	// yet another chain. Live symptom was 12 hourly re-fires of one deployment all reporting
+	// occurrence 1, with the Triage Inbox showing Count = 1 over an eight-event drill-down.
+	t.Run("a chain that restarted still chains its own re-fires", func(t *testing.T) {
+		tx, err := dbms.Db.BeginTxx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		const fp = "fp-e2e-dedup-window-restarted-chain"
+		first := seed(tx, fp, base, nil)
+		// Breaks the first chain and heads a new one.
+		restarted := seed(tx, fp, base.Add(DefaultDedupWindow+time.Second), nil)
+		// Well inside the window measured from `restarted`, but far outside it measured from
+		// `first` — the ordering is the only thing that decides which one it is compared to.
+		refire := seed(tx, fp, base.Add(DefaultDedupWindow+time.Hour), nil)
+
+		occ, err := detectAndRecordDuplicate(ctx, tx, first)
+		require.NoError(t, err)
+		require.Equal(t, 1, occ, "first event opens the chain")
+
+		occ, err = detectAndRecordDuplicate(ctx, tx, restarted)
+		require.NoError(t, err)
+		require.Equal(t, 1, occ, "the window break opens a new chain")
+
+		occ, err = detectAndRecordDuplicate(ctx, tx, refire)
+		require.NoError(t, err)
+		assert.Equal(t, 2, occ, "a re-fire inside the window must extend the RESTARTED chain")
+
+		var firstEventID string
+		require.NoError(t, sqlx.GetContext(ctx, tx, &firstEventID,
+			`SELECT first_event_id::text FROM event_duplicates WHERE event_id = $1`, refire.Id))
+		assert.Equal(t, restarted.Id, firstEventID,
+			"the re-fire belongs to the chain that restarted, not to the one that broke")
+	})
+
 	t.Run("out-of-order delivery never opens a new chain", func(t *testing.T) {
 		tx, err := dbms.Db.BeginTxx(ctx, nil)
 		require.NoError(t, err)

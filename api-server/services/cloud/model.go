@@ -14,6 +14,10 @@ type StoreUsageRequest struct {
 	AccountId string     `json:"account_id" validate:"required"`
 	Month     time.Month `json:"month" validate:"required"`
 	Year      int        `json:"year" validate:"required"`
+	// Backfill also ingests the historical billing periods the provider already
+	// has, rather than just the requested month. Set when an account is first
+	// connected.
+	Backfill bool `json:"backfill"`
 }
 
 type QueryMetricsRequest struct {

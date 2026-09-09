@@ -257,7 +257,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{
 			{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 		}
-		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Len(t, refs, 2)
 		// Each row is the page that was used: its own url, subject, snippet.
 		assert.Equal(t, "https://example.atlassian.net/wiki/pages/113836034", refs[0].Metadata["url"])
@@ -287,7 +287,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{
 			{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 		}
-		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Len(t, refs, 1)
 	})
 
@@ -299,7 +299,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{
 			{Id: "kb-snow", Name: "snow", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
 		}
-		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Len(t, refs, 1)
 		_, hasURL := refs[0].Metadata["url"]
 		assert.False(t, hasURL)
@@ -313,9 +313,33 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 		kbs := []toolcore.Knowledgebase{
 			{Id: "kb-snow", Name: "snow", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
 		}
-		refs := attributeKBReferences(ctx, "acct", docs, kbs)
+		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Empty(t, refs)
 	})
+}
+
+// TestAttributionDropCountExcludesDuplicates pins what the caller's fail-closed
+// warning reports. Duplicates are not a fail-closed drop, so counting them would
+// warn that content was silently withheld from the prompt when nothing was.
+func TestAttributionDropCountExcludesDuplicates(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	kbs := []toolcore.Knowledgebase{
+		{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+	}
+	// Deliberately raw (undeduplicated) input, which is the only way the two
+	// exclusion reasons can both occur in one call.
+	docs := toolcore.RAGSearchResults{
+		{Document: "SOP content.", Metadata: map[string]any{"source": "confluence", "url": "https://x/sop"}, SimilarityScore: 0.9},
+		{Document: "SOP content.", Metadata: map[string]any{"source": "confluence", "url": "https://x/sop"}, SimilarityScore: 0.89},
+		{Document: "orphan content", Metadata: map[string]any{"source": "nowhere"}, SimilarityScore: 0.5},
+	}
+	refs, attributed, dropped := attributeKBReferences(ctx, "acct", docs, kbs)
+
+	assert.Len(t, refs, 1, "the duplicate collapses into one reference row")
+	assert.Len(t, attributed, 1)
+	assert.Equal(t, 1, dropped, "only the unattributable doc counts as dropped, not the duplicate")
+	// The inference this replaced would have reported 2 here.
+	assert.NotEqual(t, len(docs)-len(attributed), dropped)
 }
 
 func TestDedupRAGDocs(t *testing.T) {
@@ -332,6 +356,34 @@ func TestDedupRAGDocs(t *testing.T) {
 	assert.Equal(t, "runbook A", out[0].Document)
 	assert.Equal(t, "sop B", out[1].Document)
 	assert.Equal(t, "no-url doc", out[2].Document)
+}
+
+// TestDedupRAGDocsLeavesNoDuplicateKeys pins the coupling that makes the dup
+// checks inside attributeKBReferences unreachable: attribution runs over the
+// output of dedupRAGDocs and re-derives the SAME key, so it can never be the
+// thing that drops a distinct chunk of a page. If a future change gives the two
+// different keys, that branch silently becomes live and starts deleting
+// retrieved content from the prompt — this test fails first.
+func TestDedupRAGDocsLeavesNoDuplicateKeys(t *testing.T) {
+	docs := toolcore.RAGSearchResults{
+		{Document: "chunk 1 of the runbook", Metadata: map[string]any{"url": "https://x/a"}},
+		{Document: "chunk 2 of the runbook", Metadata: map[string]any{"url": "https://x/a"}},
+		{Document: "  https url with spaces  ", Metadata: map[string]any{"url": "  https://x/b  "}},
+		{Document: "same text", Metadata: map[string]any{}},
+		{Document: "same text", Metadata: map[string]any{"url": ""}},
+	}
+	out := dedupRAGDocs(docs)
+
+	seen := make(map[string]struct{}, len(out))
+	for _, doc := range out {
+		key := ragDocDedupKey(doc)
+		_, dup := seen[key]
+		assert.False(t, dup, "dedupRAGDocs emitted two docs sharing key %q", key)
+		seen[key] = struct{}{}
+	}
+	assert.Len(t, out, 3, "same-url chunks and same-text docs collapse to one each")
+	assert.Equal(t, "https://x/b", ragDocDedupKey(out[1]), "url key is trimmed")
+	assert.Equal(t, "same text", ragDocDedupKey(out[2]), "empty url falls back to trimmed text")
 }
 
 func TestFormatRetrievedKBBlockSequentialBudget(t *testing.T) {
@@ -362,4 +414,37 @@ func TestKBPrestepTimeoutConfigurable(t *testing.T) {
 	assert.Equal(t, 12*time.Second, kbPrestepTimeout())
 	config.Config.LlmServerKBPrestepTimeoutSeconds = -3
 	assert.Equal(t, 12*time.Second, kbPrestepTimeout())
+}
+
+// TestClassifyCollection pins the collection-name contract rag-server reports on
+// every hit. The name is the document's only identity — nothing in the point
+// payload carries a kb id — so this mapping decides whether a document is
+// attributed to a KB, or treated as global (product docs, no KB row by design).
+func TestClassifyCollection(t *testing.T) {
+	kbID, integID := classifyCollection("kb_aeaab529-165f-4199-a030-8ea3f2302c22")
+	assert.Equal(t, "aeaab529-165f-4199-a030-8ea3f2302c22", kbID)
+	assert.Empty(t, integID)
+
+	kbID, integID = classifyCollection("8693c52d-7f8b-4392-a597-db6531770e8a_knowledge_base")
+	assert.Empty(t, kbID)
+	assert.Equal(t, "8693c52d-7f8b-4392-a597-db6531770e8a", integID)
+
+	// Global: neither form -> no KB owns it, so it takes the recorded-global path.
+	kbID, integID = classifyCollection("nudgebee_docs")
+	assert.Empty(t, kbID)
+	assert.Empty(t, integID)
+}
+
+// TestDocCollectionStamp covers the rollout gap: a hit from a rag-server that
+// predates the stamp reports no collection, and must fall back to the existing
+// text/source rules rather than being misread as global.
+func TestDocCollectionStamp(t *testing.T) {
+	name, ok := docCollection(toolcore.RAGSearchResult{
+		Metadata: map[string]any{"collection": " kb_abc "},
+	})
+	assert.True(t, ok)
+	assert.Equal(t, "kb_abc", name)
+
+	_, ok = docCollection(toolcore.RAGSearchResult{Metadata: map[string]any{}})
+	assert.False(t, ok, "missing stamp must not look like a global collection")
 }

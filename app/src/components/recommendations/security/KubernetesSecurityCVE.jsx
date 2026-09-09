@@ -8,15 +8,7 @@ import PropTypes from 'prop-types';
 import Text from '@shared/format/Text';
 import CustomTable from '@shared/tables/CustomTable2';
 import { SeverityIcon } from '@ui/SeverityIcon';
-
-const SEVERITY_TO_DS_LEVEL = {
-  critical: 'critical',
-  high: 'high',
-  medium: 'medium',
-  low: 'low',
-  info: 'info',
-};
-const toDsSeverityLevel = (s) => SEVERITY_TO_DS_LEVEL[String(s || '').toLowerCase()] || 'info';
+import { toSeverityLevel } from '@utils/common';
 
 const KubernetesSecurityCVE = (props) => {
   const [loading, setLoading] = useState(false);
@@ -47,6 +39,14 @@ const KubernetesSecurityCVE = (props) => {
       .then((res) => {
         const securityAppsTableData = res?.recommendation_security_groupings_v2?.rows?.map((item) => {
           const data = [];
+          // Cross-account mode (the /optimise Security tab): rows span clusters,
+          // so lead with the cluster and scope the drill-down to the row's account.
+          if (props?.accountsById) {
+            data.push({
+              component: <Text value={props.accountsById[item.account_id] || item.account_id} showAutoEllipsis />,
+              drilldownQuery: { account_id: item.account_id },
+            });
+          }
           data.push({
             component: <Text value={item?.vulnerability_id} />,
             drilldownQuery: { vulnerabilityId: item?.vulnerability_id },
@@ -61,7 +61,7 @@ const KubernetesSecurityCVE = (props) => {
             component: <Text value={item?.count} />,
           });
           data.push({
-            component: <SeverityIcon level={toDsSeverityLevel(item?.severity)} aria-label={item?.severity || '-'} />,
+            component: <SeverityIcon level={toSeverityLevel(item?.severity)} aria-label={item?.severity || '-'} />,
             data: item?.severity,
           });
           return data;
@@ -139,7 +139,7 @@ const KubernetesSecurityCVE = (props) => {
       <CustomTable
         id={props.tableId}
         loading={loading}
-        headers={['CVE', 'Images', 'Applications', 'Count', 'Severity']}
+        headers={[...(props?.accountsById ? ['Cluster'] : []), 'CVE', 'Images', 'Applications', 'Count', 'Severity']}
         tableData={tableData}
         totalRows={tableData?.length}
         rowsPerPage={tableData?.length}
@@ -154,7 +154,7 @@ const KubernetesSecurityCVE = (props) => {
               componentFn: function (e, drilldownQuery) {
                 return (
                   <KubernetesSecurityDetails
-                    kubernetes={props?.kubernetes}
+                    kubernetes={drilldownQuery?.account_id ? { id: drilldownQuery.account_id } : props?.kubernetes}
                     query={{
                       workload_name: drilldownQuery?.workload_name,
                       namespace: drilldownQuery?.namespace,
@@ -177,6 +177,7 @@ export default KubernetesSecurityCVE;
 
 KubernetesSecurityCVE.propTypes = {
   kubernetes: PropTypes.object,
+  accountsById: PropTypes.object,
   query: PropTypes.object,
   tableId: PropTypes.string,
   disableInfographic: PropTypes.bool,

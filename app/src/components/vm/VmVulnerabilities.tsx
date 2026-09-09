@@ -19,6 +19,8 @@ import { usePagination } from '@hooks/usePagination';
 import { toSeverityLevel } from '@utils/common';
 import { hasPermission, hasWriteAccess } from '@lib/auth';
 import apiVm, { SEVERITY_ORDER, VmVulnerability, VmVulnerabilityGroup, VmVulnerabilityGrouping } from '@api1/vm';
+import SecurityFindingPanel from '@components/recommendations/security/SecurityFindingPanel';
+import { fromVmRow } from '@components/recommendations/security/securityFinding';
 import { CellText, joinVmNames, useLatestRequest } from './common';
 import { ds } from '@utils/colors';
 
@@ -26,13 +28,27 @@ import { ds } from '@utils/colors';
 // let Severity (a badge) and the version columns starve Last Seen until its
 // relative time wrapped to three lines.
 const HEADERS = [
-  { name: 'Severity', width: '6%' },
-  { name: 'Vulnerability', width: '18%' },
+  { name: 'Severity', width: '8%' },
+  { name: 'Vulnerability', width: '16%' },
   { name: 'Package', width: '19%' },
   { name: 'Installed', width: '17%' },
   { name: 'Fixed In', width: '17%' },
   { name: 'CVSS', width: '5%' },
   { name: 'Last Seen', width: '10%' },
+  { name: 'Actions', width: '8%' },
+];
+
+// Flat-table headers for the cross-account Security tab: same columns, with the
+// owning account named first. Widths trimmed from the two widest text columns.
+const HEADERS_WITH_ACCOUNT = [
+  { name: 'Account', width: '12%' },
+  { name: 'Severity', width: '8%' },
+  { name: 'Vulnerability', width: '15%' },
+  { name: 'Package', width: '16%' },
+  { name: 'Installed', width: '15%' },
+  { name: 'Fixed In', width: '15%' },
+  { name: 'CVSS', width: '5%' },
+  { name: 'Last Seen', width: '8%' },
   { name: 'Actions', width: '8%' },
 ];
 
@@ -118,7 +134,8 @@ const ticketDescription = (finding: VmVulnerability) => {
 };
 
 interface VmVulnerabilitiesProps {
-  accountId: string;
+  /** One VM account, or the list of them (the cross-account Security tab). */
+  accountId: string | string[];
   /** Scope to a single VM. Set by the inventory table's expanded row. */
   cloudResourceId?: string;
   /** Scope to a single CVE. Set by the Vulnerability grouping's expanded row. */
@@ -137,6 +154,21 @@ interface VmVulnerabilitiesProps {
    */
   scopeLabel?: string;
   onClearScope?: () => void;
+  /** Extra filter(s) rendered first in the toolbar — the cross-account Security tab's Account picker. */
+  leadingFilters?: React.ReactNode;
+  /**
+   * Drop the standalone /vm page's own outer padding. Set when this view is
+   * hosted inside another page's tab, where the host already supplies the page
+   * inset — without it the table sits narrower than its sibling tabs.
+   */
+  hidePageInset?: boolean;
+  /**
+   * account id → display name. Set only by the cross-account Security tab, where
+   * it adds an Account column to the flat findings table. The grouped views roll
+   * findings up ACROSS accounts, so a single account per group row would be
+   * wrong there and the column is deliberately omitted.
+   */
+  accountsById?: Record<string, string>;
 }
 
 /**
@@ -158,6 +190,9 @@ const VmVulnerabilities = ({
   initialSeverity,
   scopeLabel,
   onClearScope,
+  leadingFilters,
+  accountsById,
+  hidePageInset = false,
 }: VmVulnerabilitiesProps) => {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<VmVulnerability[]>([]);
@@ -166,6 +201,9 @@ const VmVulnerabilities = ({
   const [severity, setSeverity] = useState<string | null>(initialSeverity || null);
   const [grouping, setGrouping] = useState<VmVulnerabilityGrouping | 'all'>('all');
   const [ticketFinding, setTicketFinding] = useState<VmVulnerability | null>(null);
+  // Flat findings had no detail view at all — the scan already stores a
+  // description, EPSS, KEV and advisory links that nothing rendered.
+  const [panelFinding, setPanelFinding] = useState<VmVulnerability | null>(null);
   // Seeded from the scope props so a link that arrives filtered shows its filter
   // in the control that owns it; from then on the dropdown is authoritative, or
   // the filter could never be cleared.
@@ -177,7 +215,9 @@ const VmVulnerabilities = ({
   const beginRequest = useLatestRequest();
   const { assistantName } = useTenantBranding();
 
-  const canCreateTicket = hasWriteAccess(accountId) || hasPermission('tickets', 'Write');
+  // With a multi-account scope the check falls back to tenant-level write; the
+  // ticket itself is always created against the finding's own account.
+  const canCreateTicket = hasWriteAccess(Array.isArray(accountId) ? undefined : accountId) || hasPermission('tickets', 'Write');
 
   // Embedded instances never show the tabs, so grouping stays 'all' for them.
   const isGrouped = grouping !== 'all';
@@ -275,7 +315,10 @@ const VmVulnerabilities = ({
       .filter(Boolean)
       .join(' · ');
     return [
-      { component: <SeverityIcon level={toSeverityLevel(finding.severity)} size={14} aria-label={finding.severity} /> },
+      ...(accountsById
+        ? [{ component: <CellText text={accountsById[finding.account_id] || finding.account_id} />, drilldownQuery: { finding } }]
+        : []),
+      { component: <SeverityIcon level={toSeverityLevel(finding.severity)} size={14} aria-label={finding.severity} />, drilldownQuery: { finding } },
       { component: <CellText text={payload.vuln_id} subtext={vulnSubtext || undefined} mono /> },
       { component: <CellText text={payload.package?.name} subtext={packageSubtext || undefined} /> },
       { component: <CellText text={payload.package?.version} mono /> },
@@ -341,14 +384,16 @@ const VmVulnerabilities = ({
   const table = (
     <CustomTable
       id={tableId}
-      headers={isGrouped ? GROUP_HEADERS[grouping] : HEADERS}
+      headers={isGrouped ? GROUP_HEADERS[grouping] : accountsById ? HEADERS_WITH_ACCOUNT : HEADERS}
       tableData={isGrouped ? groupData : tableData}
       loading={loading}
       rowsPerPage={rowsPerPage}
       pageNumber={page + 1}
       totalRows={total}
       onPageChange={changePage}
+      tableHeadingCenter={['Severity']}
       showExpandable={isGrouped}
+      onRowClick={isGrouped ? undefined : (query: any) => query?.finding && setPanelFinding(query.finding)}
       expandable={
         isGrouped
           ? {
@@ -358,7 +403,7 @@ const VmVulnerabilities = ({
                   value: 0,
                   key: `vm-vulnerability-group-${grouping}`,
                   componentFn: (_option: any, group: VmVulnerabilityGroup) => (
-                    <VmVulnerabilities accountId={accountId} embedded {...groupScope(group)} />
+                    <VmVulnerabilities accountId={accountId} accountsById={accountsById} embedded {...groupScope(group)} />
                   ),
                 },
               ],
@@ -368,6 +413,19 @@ const VmVulnerabilities = ({
       emptyHeading='No open vulnerabilities'
       emptySubHeading='Findings appear here after a VM package scan matches installed packages against the CVE database.'
       showUpdatedEmptyData={true}
+    />
+  );
+
+  const findingPanel = (
+    <SecurityFindingPanel
+      open={Boolean(panelFinding)}
+      onClose={() => setPanelFinding(null)}
+      finding={panelFinding ? fromVmRow(panelFinding) : null}
+      accountName={panelFinding ? accountsById?.[panelFinding.account_id] : undefined}
+      scopeAccountId={accountId}
+      onCreateTicket={() => {
+        if (panelFinding) setTicketFinding(panelFinding);
+      }}
     />
   );
 
@@ -399,12 +457,13 @@ const VmVulnerabilities = ({
           <ListingLayout.Body>{table}</ListingLayout.Body>
         </ListingLayout>
         {ticketModal}
+        {findingPanel}
       </Box>
     );
   }
 
   return (
-    <Box sx={{ px: ds.space[5], pb: ds.space[5] }}>
+    <Box sx={{ px: hidePageInset ? 0 : ds.space[5], pb: ds.space[5] }}>
       {/* Grouping selector — an outer tab bar above the card, so the toolbar
           below keeps carrying only the filters that apply to every tab. */}
       <Box sx={{ pb: ds.space[3] }}>
@@ -421,6 +480,7 @@ const VmVulnerabilities = ({
       </Box>
       <ListingLayout id='vm-vulnerabilities'>
         <ListingLayout.Toolbar actions={<DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />}>
+          {leadingFilters}
           <FilterDropdown
             id='vm-vulnerability-severity'
             label='Severity'
@@ -465,6 +525,7 @@ const VmVulnerabilities = ({
         <ListingLayout.Body>{table}</ListingLayout.Body>
       </ListingLayout>
       {ticketModal}
+      {findingPanel}
     </Box>
   );
 };

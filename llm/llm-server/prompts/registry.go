@@ -36,6 +36,7 @@ const (
 	PromptWebhookSubjectExtractor            = "webhook_subject_extractor"
 	PromptAgentRewriteToolInput              = "agent_rewrite_tool_input"
 	PromptReact3Base                         = "react_3_base"
+	PromptReact4Base                         = "react_4_base"
 	PromptReactCritiquer                     = "react_critiquer"
 	PromptConfigAutoSelection                = "config_auto_selection"
 	PromptRemediationGenerate                = "remediation_generate"
@@ -94,6 +95,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptWebhookSubjectExtractor:            CategoryAgents,
 	PromptAgentRewriteToolInput:              CategoryPlanners,
 	PromptReact3Base:                         CategoryPlanners,
+	PromptReact4Base:                         CategoryPlanners,
 	PromptReactCritiquer:                     CategoryPlanners,
 	PromptConfigAutoSelection:                CategoryTools,
 	PromptRemediationGenerate:                CategoryTools,
@@ -207,7 +209,7 @@ func MustResolveAll() error {
 	for _, module := range modules {
 		// Verified against the default provider at v1: that is the final fallback of
 		// every resolution path, so if it exists no provider/version can resolve to nothing.
-		if _, err := loader.loadPromptFile(module, promptCategories[module], "default", "v1"); err != nil {
+		if _, _, err := loader.loadPromptFile(module, promptCategories[module], "default", "v1"); err != nil {
 			missing = append(missing, fmt.Sprintf("%s/%s: %v", promptCategories[module], module, err))
 		}
 	}

@@ -306,13 +306,20 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		isServiceSource := (attrs.ServiceName != "" && attrs.ServiceName == serviceName) ||
 			(attrs.ServiceName == "" && span.WorkloadName == serviceName)
 		if isServiceSource {
-			appType, appTypeEvidence := t.detectApplicationType(span, attrs, rawAttrs, stats.TelemetryLabels)
+			appType, appTypeEvidence, uncertainMatch := t.detectApplicationType(span, attrs, rawAttrs, stats.TelemetryLabels)
 			if appType != "" {
 				stats.ApplicationTypes[appType] = true
 				// First span to produce this type wins, so evidence stays stable across rebuilds.
 				if _, exists := stats.TypeEvidence[appType]; !exists && appTypeEvidence != nil {
 					stats.TypeEvidence[appType] = *appTypeEvidence
 				}
+			}
+			// First near-miss across all this service's spans wins — can
+			// coexist with a confident type from a different span; whether
+			// that confident type actually overrides the node's classification
+			// is decided later, downstream, not here.
+			if uncertainMatch != nil && stats.UncertainMatch == nil {
+				stats.UncertainMatch = uncertainMatch
 			}
 		}
 
@@ -475,6 +482,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 			Type:             appTypes,
 			TypeEvidence:     stats.TypeEvidence,
 			CreationEvidence: stats.CreationEvidence,
+			UncertainMatch:   stats.UncertainMatch,
 			DesiredInstances: 1,
 			FailedInstances:  0,
 			IsHealthy:        stats.ErrorCount == 0,
@@ -524,6 +532,9 @@ type serviceMetrics struct {
 	// The first span observed for this service — evidence that it exists at all,
 	// independent of any type classification.
 	CreationEvidence *TypeEvidence
+	// First near-miss classification signal seen for this service, if any —
+	// see UncertainMatch.
+	UncertainMatch *UncertainMatch
 }
 
 // ParsedSpanAttributes contains both structured and raw attribute data

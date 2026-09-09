@@ -75,7 +75,12 @@ export function CloudCostSummary({ clusterSummary = {}, currencySymbol = '$' }: 
     clusterSummary?.lm_gross_spends_aggregate?.aggregate?.sum?.amount || clusterSummary?.lm_spends_aggregate?.aggregate?.sum?.amount || 0;
   const lastMonthCredits = Math.abs(clusterSummary?.lm_credits_aggregate?.aggregate?.sum?.amount || 0);
   const currentCredits = Math.abs(clusterSummary?.credits_aggregate?.aggregate?.sum?.amount || 0);
-  const currentNetSpend = clusterSummary?.spends_aggregate?.aggregate?.sum?.amount || 0;
+  // Net is derived from the two figures shown above it, so the card's own
+  // arithmetic holds. It used to read spends_aggregate, which sums the
+  // exclude_aggregate = false rows — the credits are exactly the rows flagged
+  // true, so the number labelled "Net spend" did not have them taken off and
+  // could sit under a "Credits / Discounts" line it visibly failed to subtract.
+  const currentNetSpend = Math.max(currentGrossSpend - currentCredits, 0);
 
   const monthlyForecast = getBudgetExpectedMonthlyExpense(currentGrossSpend);
   const dailyAvgCost = currentGrossSpend / (new Date().getDate() || 1);

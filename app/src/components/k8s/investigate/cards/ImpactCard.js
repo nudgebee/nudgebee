@@ -24,8 +24,16 @@ const buildInsight = (data) => {
   if (causes > 0) {
     out.push(`${causes} possible cause${causes === 1 ? '' : 's'} just before it started`);
   }
+  // Dependents the topology found, whether or not any of them alerted. Counting
+  // only the alert-derived tier made the header claim there was no service map
+  // while the card below it listed the dependents that map had just produced —
+  // the usual case on a cloud stack, where every dependent is infrastructure.
+  const dependents = ((data.impacted || []).length || 0) + ((data.infrastructure_impacted || []).length || 0);
+
   if (affected > 0) {
     out.push(`${affected} service${affected === 1 ? '' : 's'} broke after this one`);
+  } else if (dependents > 0) {
+    out.push(`${dependents} thing${dependents === 1 ? '' : 's'} depend on this one — none of them alerted`);
   } else if (noCoverage) {
     out.push('No service map for this one — we can’t tell what it affected');
   } else {

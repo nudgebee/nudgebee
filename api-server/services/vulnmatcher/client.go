@@ -98,7 +98,7 @@ type Finding struct {
 	FixChannel   string `json:"fix_channel,omitempty"`
 
 	Severity     string   `json:"severity"`
-	CVSSv3Score  float64  `json:"cvss_v3_score,omitempty"`
+	CVSSv3Score  *float64 `json:"cvss_v3_score,omitempty"`
 	CVSSv3Vector string   `json:"cvss_v3_vector,omitempty"`
 	EPSS         *EPSS    `json:"epss,omitempty"`
 	KEV          bool     `json:"kev"`

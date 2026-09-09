@@ -7,10 +7,12 @@ import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
 import NubiBriefing from '@components/troubleshoot/briefing/NubiBriefing';
 import BriefingFilters from '@components/troubleshoot/briefing/BriefingFilters';
 import { Box, CircularProgress } from '@mui/material';
+import { Card } from '@ui/Card';
 import { useMemo, useState, useEffect } from 'react';
 import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
 import ManualInvestigated from '@components/troubleshoot/ManualInvestigated';
 import EventResolutions from '@components/troubleshoot/EventResolutions';
+import TroubleshootAnalytics from '@components/troubleshoot/analytics/TroubleshootAnalytics';
 import Tabs from '@shared/navigation/Tabs';
 import {
   AllEventsIcon,
@@ -84,6 +86,16 @@ const filterOptions = [
     fragment: 'kg',
     value: 2,
     icon: ServiceMapsIcon,
+    iconSize: 16,
+  },
+  // Analytics is a top-level destination, not a view of the events list: it
+  // answers "is the estate getting better" rather than "what fired". No
+  // tabOptions — it owns its whole pane, like Knowledge Graph.
+  {
+    name: 'Analytics',
+    fragment: 'analytics',
+    value: 3,
+    icon: GroupedEventsIcon,
     iconSize: 16,
   },
 ];
@@ -303,6 +315,25 @@ const TroubleshootPage = () => {
           <ErrorBoundary>
             <KnowledgeGraphServiceMapWrapper />
           </ErrorBoundary>
+        </div>
+      )}
+
+      {/* Analytics drills back into All Events via applyWidgetFilter, which
+          switches selectedTab itself — so a click here leaves this pane for the
+          events list, exactly as the briefing's tiles do. */}
+      {selectedTab === 3 && (
+        <div style={{ margin: 'var(--ds-space-4) var(--ds-space-6) 0' }}>
+          {/* The whole Analytics pane sits in one white panel (ds/Card — the same
+              white surface ListingLayout gives the other tabs) so it reads as a
+              single bounded surface instead of sections floating on the app's
+              grey. The account/range controls (`filters`) render on the Overview
+              heading row inside the panel — same controls the All Events tab
+              carries; without them this pane offered no way to change the window. */}
+          <Card sx={{ mt: 0 }}>
+            <ErrorBoundary>
+              <TroubleshootAnalytics onDrillDown={applyWidgetFilter} filters={<BriefingFilters />} />
+            </ErrorBoundary>
+          </Card>
         </div>
       )}
     </>

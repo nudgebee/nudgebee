@@ -152,6 +152,55 @@ secretName: 'nudgebee'
 statusNotice:
   configMapName: ''
 
+# -- Tenant brand kits (white-label logo, favicon, assistant icons) mounted at
+# runtime. Brand assets are deliberately NOT baked into the image: only
+# `app/public/branding/default/` is committed (see `app/.gitignore`), so a
+# white-label deployment supplies its own kits as ConfigMaps and this chart
+# mounts them plus tells the app which kit answers which hostname.
+#
+# One deployment can serve several partner hostnames: list every kit under
+# `tenants`, then map hostnames to slugs under `hostMap`. A request arriving on
+# a mapped host renders that kit; anything else falls back to `defaultTenant`,
+# and with no `defaultTenant` to Nudgebee. The map is read per request from
+# `X-Forwarded-Host`, so nothing needs a restart when traffic shifts between
+# hostnames.
+#
+# Create each ConfigMap out-of-band, one key per file:
+#
+#   kubectl create configmap <tenant>-branding \
+#     --from-file=./branding/<tenant> --dry-run=client -o yaml | kubectl apply -f -
+#
+# ConfigMap keys must match `[-._a-zA-Z0-9]+`, so **brand asset filenames
+# cannot contain spaces** — a kit with `Assistant icon.svg` in it cannot be
+# stored as a ConfigMap at all. Rename before creating the ConfigMap.
+#
+# Only the app container gets the mounts. The nginx sidecar aliases `/public/`
+# at its own copy of the static tree, but branding URLs are `/branding/<tenant>/…`,
+# which falls through to `location /` and is proxied to Next.js — so the app
+# container's filesystem is what serves them.
+branding:
+  # -- Mount the brand kits below and configure per-host brand selection.
+  enabled: false
+  # -- Brand kits to mount. Each entry mounts `configMapName` at
+  # `/app/public/branding/<slug>/`, served at `/branding/<slug>/<file>`; the
+  # theme file inside must be named `theme.json`. `slug` also becomes part of a
+  # Kubernetes volume name, so keep it to a lowercase DNS label (`[a-z0-9-]`).
+  # @default -- `[]`
+  tenants: []
+  #  - slug: acme
+  #    configMapName: acme-branding
+  # -- Hostname -> tenant slug. A request on a listed host renders that kit.
+  # Every slug used here must also appear in `tenants` — the chart refuses to
+  # render otherwise, because an unmounted kit would silently fall back to
+  # Nudgebee branding on a partner's own domain.
+  # @default -- `{}`
+  hostMap: {}
+  #   demo.partner.example.com: acme
+  # -- Optional deployment-wide brand for hosts with no `hostMap` entry. Leave
+  # empty to keep unmapped hosts on Nudgebee branding. Setting this alone (no
+  # `hostMap`) is the single-tenant setup: every host gets this brand.
+  defaultTenant: ''
+
 annotations: {}
 
 nginx:

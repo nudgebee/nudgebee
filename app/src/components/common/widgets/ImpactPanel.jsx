@@ -489,14 +489,20 @@ const ImpactPanel = ({ eventId, prefetched }) => {
 
   const impacted = Array.isArray(data.impacted) ? data.impacted : [];
   const dependsOn = Array.isArray(data.depends_on) ? data.depends_on : [];
-  const correlated = impacted.filter((s) => s.alerting);
+  const infraAll = Array.isArray(data.infrastructure_impacted) ? data.infrastructure_impacted : [];
+  // An alerting dependent belongs in the incident whichever list it came back in.
+  // On a cloud stack every dependent is infrastructure, so reading only `impacted`
+  // here meant the correlated section stayed empty no matter how loudly the
+  // instances in front of the resource were alarming.
+  const correlated = [...impacted.filter((s) => s.alerting), ...infraAll.filter((s) => s.alerting)];
   const potential = impacted.filter((s) => !s.alerting);
   // Dependents that are not application-level types. They are reported separately by the
   // API so they cannot inflate dependent_count, which feeds recommendation safety scoring
   // — but they must still be shown: on a VM or serverless stack the instance calling this
   // resource IS the application, and hiding it makes a real blast radius read as "nothing
   // was affected".
-  const infrastructure = Array.isArray(data.infrastructure_impacted) ? data.infrastructure_impacted : [];
+  // Only the ones not already listed above as correlated incidents.
+  const infrastructure = infraAll.filter((s) => !s.alerting);
   const lowCoverage = data.coverage_confidence === 'none' || data.coverage_confidence === 'low';
   const goTo = (evId) => evId && router.push(`/investigate?id=${evId}&accountId=${accountId}`);
 

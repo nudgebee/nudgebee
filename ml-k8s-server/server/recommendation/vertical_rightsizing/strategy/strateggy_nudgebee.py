@@ -2,7 +2,7 @@ import textwrap
 from datetime import datetime
 import numpy as np
 import pydantic as pd
-from typing import Dict, List, Union
+from typing import Dict, List, Tuple, Union
 
 from server.recommendation.vertical_rightsizing.strategy.strategies import (
     BaseStrategy,
@@ -20,6 +20,7 @@ from server.recommendation.vertical_rightsizing.metrics.cpu import (
 
 from server.recommendation.vertical_rightsizing.metrics.memory import (
     MaxMemoryLoader,
+    MaxUsageMemoryLoader,
     MemoryAmountLoader,
     MaxOOMKilledMemoryLoader,
 )
@@ -58,18 +59,36 @@ class NudgebeeStrategySettings(StrategySettings):
     oom_memory_buffer_percentage: float = pd.Field(
         25, gt=0, description="What percentage to increase the memory when there are OOMKill events."
     )
+    memory_limit_buffer_percentage: float = pd.Field(
+        15,
+        gt=0,
+        description="The percentage of added buffer over the cgroup memory high-water mark for the memory limit.",
+    )
     allow_hpa: bool = pd.Field(
         True,
         description="Whether to calculate recommendations even when there is an HPA scaler defined on that resource.",
     )
 
-    def calculate_memory_proposal(self, data: PodsTimeData, max_oomkill: float = 0) -> float:
-        data_ = [np.max(values[:, 1]) for values in data.values()]
-        if len(data_) == 0:
-            return float("NaN")
+    def calculate_memory_proposal(self, data: PodsTimeData, max_oomkill: float = 0) -> Tuple[float, float]:
+        """Returns (peak memory usage observed, peak with the configured buffer applied).
 
-        return np.max(data_), max(
-            np.max(data_) * (1 + self.memory_buffer_percentage / 100),
+        NaN-tolerant for the same reason as `_max_usage_high_water`: Prometheus serialises a
+        scrape gap as "NaN", and one such sample would otherwise propagate through np.max and
+        void the whole memory recommendation - including the high-water floor, since
+        `max(NaN, floor)` is NaN. A pod with nothing but NaN contributes nothing; a workload
+        with no usable pod left still yields NaN, which the caller reads as "no recommendation".
+        """
+        data_ = [
+            float(np.nanmax(values[:, 1]))
+            for values in data.values()
+            if len(values) > 0 and not np.isnan(values[:, 1]).all()
+        ]
+        if len(data_) == 0:
+            return float("NaN"), float("NaN")
+
+        peak = max(data_)
+        return peak, max(
+            peak * (1 + self.memory_buffer_percentage / 100),
             max_oomkill * (1 + self.oom_memory_buffer_percentage / 100),
         )
 
@@ -91,14 +110,16 @@ class NudgebeeStrategySettings(StrategySettings):
 class NudgebeeStrategy(BaseStrategy[NudgebeeStrategySettings]):
     """
     CPU request: {cpu_percentile}% percentile, limit: unset
-    Memory request: max + {memory_buffer_percentage}%, limit: max + {memory_buffer_percentage}%
+    Memory request: max + {memory_buffer_percentage}%
+    Memory limit: max(request, cgroup high-water + {memory_limit_buffer_percentage}%)
     History: {history_duration} hours
     Step: {timeframe_duration} minutes
 
     This strategy does not work with objects with HPA defined (Horizontal Pod Autoscaler).
     If HPA is defined for CPU or Memory, the strategy will return "?" for that resource.
 
-    Learn more: [underline]https://github.com/robusta-dev/krr#algorithm[/underline]
+    See VERTICAL_RIGHTSIZING.md for why the memory limit is derived from the cgroup high-water
+    mark rather than from the sampled working-set peak the request uses.
     """
 
     display_name = "nudgebee"
@@ -109,18 +130,18 @@ class NudgebeeStrategy(BaseStrategy[NudgebeeStrategySettings]):
         s = textwrap.dedent(
             """
             CPU request: {cpu_percentile}% percentile, limit: unset
-            Memory request: max + {memory_buffer_percentage}%, limit: max + {memory_buffer_percentage}%
+            Memory request: max + {memory_buffer_percentage}%
+            Memory limit: max(request, cgroup high-water + {memory_limit_buffer_percentage}%)
             History: {history_duration} hours
             Step: {timeframe_duration} minutes
 
-            All parameters can be customized. For example:
-            `krr simple --cpu_percentile=90 --memory_buffer_percentage=15
-                --history_duration=24
-                --timeframe_duration=0.5
-            `
+            All parameters can be customized, for example:
+                cpu_percentile=90, memory_buffer_percentage=15,
+                history_duration=24, timeframe_duration=0.5
             """.format(
                 cpu_percentile=self.settings.cpu_percentile,
                 memory_buffer_percentage=self.settings.memory_buffer_percentage,
+                memory_limit_buffer_percentage=self.settings.memory_limit_buffer_percentage,
                 history_duration=self.settings.history_duration,
                 timeframe_duration=self.settings.timeframe_duration,
             )
@@ -135,6 +156,7 @@ class NudgebeeStrategy(BaseStrategy[NudgebeeStrategySettings]):
             "cpu_percentile_99": PercentileCPULoader(self.settings.cpu_percentile_99),
             "cpu_percentile_92": PercentileCPULoader(self.settings.cpu_percentile_92),
             "MaxMemoryLoader": MaxMemoryLoader,
+            "MaxUsageMemoryLoader": MaxUsageMemoryLoader,
             "CPUAmountLoader": CPUAmountLoader,
             "MemoryAmountLoader": MemoryAmountLoader,
         }
@@ -273,14 +295,60 @@ class NudgebeeStrategy(BaseStrategy[NudgebeeStrategySettings]):
             filtered_data, max_oomkill_value
         )
 
+        # The request is derived from a gauge sampled every scrape interval, so it is blind to
+        # peaks shorter than that gap. The limit must not inherit that blind spot: floor it at the
+        # cgroup's own high-water mark, which cannot miss a peak. Limits are not reserved capacity
+        # and do not enter the savings calculation, so this costs nothing and prevents OOMKills.
+        high_water = self._max_usage_high_water(history_data, filtered_data.keys())
+        memory_limit = memory_usage_beffered
+        if high_water > 0:
+            limit_floor = high_water * (1 + self.settings.memory_limit_buffer_percentage / 100)
+            # The high-water mark counts reclaimable page cache, which grows to fill whatever limit
+            # the container is given. Left uncapped, a cache-saturated container would ratchet its
+            # own limit up by the buffer on every scan. A container that never breached its limit
+            # and never OOMKilled has already proven it needs no more than it has.
+            allocated_limit = object_data.allocations.limits.get(ResourceType.Memory)
+            if (
+                not oom_details["oomkill_detected"]
+                and isinstance(allocated_limit, (int, float))
+                and high_water <= allocated_limit
+            ):
+                limit_floor = min(limit_floor, float(allocated_limit))
+            memory_limit = max(memory_limit, limit_floor)
+
         # Build config with detailed OOM information
         config = {
             "actual_recommended_request": actual_recomm_memory_usage,
             "actual_recommended_limit": actual_recomm_memory_usage,
+            "memory_high_water_mark": high_water or None,
+            "memory_sampling_gap_ratio": (
+                round(high_water / actual_recomm_memory_usage, 3)
+                if high_water > 0 and actual_recomm_memory_usage > 0
+                else None
+            ),
             **oom_details,  # Include all OOM details
         }
 
-        return ResourceRecommendation(request=memory_usage_beffered, limit=memory_usage_beffered, config=config)
+        return ResourceRecommendation(request=memory_usage_beffered, limit=memory_limit, config=config)
+
+    @staticmethod
+    def _max_usage_high_water(history_data: MetricsPodData, pods) -> float:
+        """Peak of the cgroup memory high-water mark across the pods used for the recommendation.
+
+        Returns 0 when the metric is unavailable (older cAdvisor / cgroup versions), which leaves
+        the limit equal to the request - the behaviour before this loader existed.
+        """
+        data = history_data.get("MaxUsageMemoryLoader", {})
+        # Prometheus serialises a gap as the string "NaN", so a single missed scrape can put a
+        # NaN in a pod's samples. np.max would propagate it and then max() over the per-pod
+        # results is order-dependent with NaN - one unlucky pod ordering silently drops the
+        # floor this method exists to provide. Ignore NaN samples, and pods that have only NaN.
+        values = [
+            float(np.nanmax(v[:, 1]))
+            for pod, v in data.items()
+            if pod in pods and len(v) > 0 and not np.isnan(v[:, 1]).all()
+        ]
+        return max(values) if values else 0.0
 
     def run(self, history_data: MetricsPodData, object_data: K8sObjectData) -> RunResult:
         result = {

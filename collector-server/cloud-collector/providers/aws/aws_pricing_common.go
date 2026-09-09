@@ -56,6 +56,22 @@ func getPricingValue(currentInstance map[string]interface{}) (float64, error) {
 	return currentInsatnceCost, nil
 }
 
+// usablyPricedInstances keeps only the entries the pricing API gave a real USD
+// amount for. A 0 (or a failed lookup) is missing data, not a free instance,
+// and callers pick alternatives by sorting on price — so leaving those in puts
+// them at the front as the "cheapest" option, where they either fabricate
+// savings worth the whole resource or, once guarded against, silently discard
+// an otherwise valid recommendation.
+func usablyPricedInstances(instances []map[string]interface{}) []map[string]interface{} {
+	usable := make([]map[string]interface{}, 0, len(instances))
+	for _, instance := range instances {
+		if p, err := getPricingValue(instance); err == nil && p > 0 {
+			usable = append(usable, instance)
+		}
+	}
+	return usable
+}
+
 func alternateInstancesBasedOnPricing(instances []map[string]interface{}, currentInstance map[string]interface{}) ([]map[string]interface{}, error) {
 	recommendedInstances := []map[string]interface{}{}
 	currentInsatnceCost, err := getPricingValue(currentInstance)
@@ -82,7 +98,10 @@ func alternateInstancesBasedOnPricing(instances []map[string]interface{}, curren
 		if err != nil {
 			continue
 		}
-		if p < currentInsatnceCost {
+		// p == 0 means the pricing API returned no usable USD amount, not a free
+		// instance. Without this it sorts to the front as the "cheapest"
+		// alternative and callers report the entire current bill as savings.
+		if p > 0 && p < currentInsatnceCost {
 			recommendedInstances = append(recommendedInstances, instance)
 		}
 	}

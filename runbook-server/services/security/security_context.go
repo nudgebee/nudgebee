@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
+	"sync"
 	"time"
 
 	"slices"
@@ -382,12 +383,18 @@ func IsValidTenantRole(role string) bool {
 	return false
 }
 
-var tenantIdAccountIdCache = make(map[string]string)
+var (
+	tenantIdAccountIdCache = make(map[string]string)
+	tenantCacheMutex       sync.RWMutex
+)
 
 func GetTenantIdFromAccountId(accountId string) (string, error) {
+	tenantCacheMutex.RLock()
 	if cachedTenantId, ok := tenantIdAccountIdCache[accountId]; ok {
+		tenantCacheMutex.RUnlock()
 		return cachedTenantId, nil
 	}
+	tenantCacheMutex.RUnlock()
 
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -406,7 +413,9 @@ func GetTenantIdFromAccountId(accountId string) (string, error) {
 		return "", fmt.Errorf("GetTenantIdFromAccountId: db query failed: %w", err)
 	}
 
+	tenantCacheMutex.Lock()
 	tenantIdAccountIdCache[accountId] = tenantId
+	tenantCacheMutex.Unlock()
 	return tenantId, nil
 }
 
@@ -439,7 +448,9 @@ func GetAccountIdsForTenant(tenantId string) ([]string, error) {
 			return nil, fmt.Errorf("GetAccountIdsForTenant: db scan failed: %w", err)
 		}
 		accountIds = append(accountIds, accountId)
+		tenantCacheMutex.Lock()
 		tenantIdAccountIdCache[accountId] = tenantId
+		tenantCacheMutex.Unlock()
 	}
 	return accountIds, nil
 }

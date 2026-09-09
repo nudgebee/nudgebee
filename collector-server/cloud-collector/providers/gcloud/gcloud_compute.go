@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -306,7 +307,7 @@ func (s *computeEngineService) GetRecommendations(ctx providers.CloudProviderCon
 		if len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_compute_no_labels",
+				RuleName:     constants.GCPComputeNoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{
@@ -326,7 +327,7 @@ func (s *computeEngineService) GetRecommendations(ctx providers.CloudProviderCon
 		if resource.Status == providers.ResourceStatusInactive {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryRightSizing,
-				RuleName:     "gcp_compute_stopped_instance",
+				RuleName:     constants.GCPComputeStoppedInstance,
 				Severity:     providers.RecommendationSeverityMedium,
 				Savings:      0,
 				Data: map[string]any{
@@ -399,10 +400,10 @@ func (s *computeEngineService) ApplyRecommendation(ctx providers.CloudProviderCo
 	}
 
 	switch recommendation.RuleName {
-	case "gcp_compute_no_labels":
+	case constants.GCPComputeNoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or gcloud CLI")
 
-	case "gcp_compute_stopped_instance":
+	case constants.GCPComputeStoppedInstance:
 		// Delete the stopped instance
 		instanceName, ok := recommendation.Data["instance_name"].(string)
 		if !ok || instanceName == "" {

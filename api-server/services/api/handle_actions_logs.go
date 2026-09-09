@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -58,9 +59,19 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			return
 		}
 
+		start := time.Now()
 		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityLogsQueryTimeout, func() (observability.FetchLogsResult, error) {
 			return observability.FetchLogs(ctx, request)
 		})
+		// Recorded before the error branch so failures are captured too — the
+		// client cannot do this itself, since a failed query returns no body and
+		// Builder mode never had a query string to fall back on. Elapsed time is
+		// handler-side, so it excludes the gateway hop and both network legs.
+		if shouldRecordUserQueryHistory(request.RecordHistory, actionPayload.SessionVariables) {
+			if row, ok := observability.BuildLogQueryHistory(request, resp, err, time.Since(start)); ok {
+				recordUserQueryHistoryAsync(c, ctx, row, tracer, meter, logger)
+			}
+		}
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

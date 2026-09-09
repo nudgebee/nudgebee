@@ -8,7 +8,6 @@ import { unique } from '@lib/collections';
 import LineChart from '@shared/charts/LineCharts';
 import { determineAndFormatTime, getLast7Days, isWithinTimeFrame } from '@lib/datetime';
 import ChartComponent from '@shared/charts/ChartComponent';
-import observability from '@api1/observability';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { buildPromQueries } from '@shared/MetricQueryInfo';
 
@@ -258,43 +257,16 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
     }
   };
 
-  useEffect(() => {
-    const requestBody = {
-      account_id: accountId,
-      queries: {
-        promql_query: 'kube_node_info{__CLUSTER__}',
-      },
-      start_time: dateRange.startDate,
-      end_time: dateRange.endDate,
-    };
-
-    setIsNodesDataLoading(true);
-    observability
-      .metricsQuery(requestBody)
-      .then((res) => {
-        if (res?.data?.data?.metrics_list?.results?.[0]?.payload) {
-          const groupData = res?.data?.data?.metrics_list?.results?.[0]?.payload;
-          let timeToNodes = getTimeToNodes(groupData);
-          updateActiveNodesData(timeToNodes);
-          updateAllNodesData(timeToNodes);
-          return;
-        }
-        setActiveNodesData({
-          data: [],
-          label: [],
-        });
-        setAllNodesData({
-          data: [],
-          label: [],
-        });
-      })
-      .catch(() => {
-        setActiveNodesData([]);
-      })
-      .finally(() => {
-        setIsNodesDataLoading(false);
-      });
-  }, [accountId, dateRange.startDate, dateRange.endDate]);
+  const updateNodesTrend = (groupData) => {
+    if (!groupData || groupData.length === 0) {
+      setActiveNodesData({ data: [], label: [] });
+      setAllNodesData({ data: [], label: [] });
+      return;
+    }
+    const timeToNodes = getTimeToNodes(groupData);
+    updateActiveNodesData(timeToNodes);
+    updateAllNodesData(timeToNodes);
+  };
 
   const resetState = () => {
     setLoadingTrend((prevTrend) => ({
@@ -319,15 +291,12 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
       data: [],
       label: [],
     });
+    setIsNodesDataLoading(true);
   };
 
   useEffect(() => {
-    if (!showZoneTrend) {
-      return;
-    }
-
     resetState();
-    const requestBody = createRequestBody(accountId, dateRange);
+    const requestBody = createRequestBody(accountId, dateRange, showZoneTrend);
 
     let cancelled = false;
     apiKubernetes1
@@ -347,10 +316,10 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
     };
   }, [showZoneTrend, accountId, dateRange.startDate, dateRange.endDate]);
 
-  function createRequestBody(accountId, dateRange) {
-    return {
-      accountId: accountId,
-      metrics: [
+  function createRequestBody(accountId, dateRange, showZoneTrend) {
+    const metrics = ['active_nodes'];
+    if (showZoneTrend) {
+      metrics.push(
         'node_az',
         'pod_az',
         'no_of_pods',
@@ -359,8 +328,12 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
         'node_created_node_pool',
         'nodes_terminated_node_pool',
         'node_disruption_decisions_reason_decision',
-        'nodes_eligible_disruption_reason',
-      ],
+        'nodes_eligible_disruption_reason'
+      );
+    }
+    return {
+      accountId: accountId,
+      metrics: metrics,
       kind: 'node',
       startDate: dateRange.startDate,
       endDate: dateRange.endDate,
@@ -371,6 +344,9 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
     if (!results?.length) {
       return;
     }
+
+    const activeNodesSeriesResult = results.find((data) => data.query_key === 'active_nodes')?.payload || [];
+    updateNodesTrend(activeNodesSeriesResult);
 
     setPromQueries(buildPromQueries(results));
 
@@ -438,6 +414,7 @@ export const KubernetesNodesTrends = ({ accountId, showZoneTrend = false }) => {
       nodeDisruptionDecisionsReasonDecision: false,
       nodesEligibleDisruptionReason: false,
     }));
+    setIsNodesDataLoading(false);
   }
 
   const handleDateRangeChange = (passedSelectedDateTime) => {

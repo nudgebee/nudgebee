@@ -120,8 +120,36 @@ func TestStripQuotedContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := stripQuotedContent(tt.input)
+			result := StripQuotedContent(tt.input)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// isShellSyntax detects a substitution by the two-character "$(", so preserving a lone "$" through
+// the quote strip is not enough for it — "$(id)" inside double quotes became "$" and matched
+// nothing. A backtick substitution was never in its pattern list at all, so it bypassed the guard
+// whether quoted or not.
+//
+// This function currently has no production callers; it is kept correct so that wiring it up later
+// is not a trap.
+func TestIsShellSyntax_SubstitutionInsideDoubleQuotes(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{"command substitution in double quotes", `aws s3 ls "$(id)"`, true},
+		{"backtick substitution in double quotes", "aws s3 ls \"`id`\"", true},
+		{"backtick substitution unquoted", "aws s3 ls `id`", true},
+		{"command substitution unquoted", `aws s3 ls $(id)`, true},
+		{"single quotes suppress substitution", `aws s3 ls '$(id)'`, false},
+		{"jmespath filter is not shell syntax", `aws ec2 describe-instances --query "Reservations[].Instances[?State.Name=='running']"`, false},
+		{"parenthesised jmespath is not shell syntax", `aws ec2 describe-instances --query "length(Reservations)"`, false},
+		{"plain command", `aws ec2 describe-instance-status --instance-ids i-0abc`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isShellSyntax(tt.command))
 		})
 	}
 }

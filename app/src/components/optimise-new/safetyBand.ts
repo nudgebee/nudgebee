@@ -20,11 +20,18 @@ export interface DependentRef {
   hops_away?: number;
   relationship?: string;
   sources?: string[];
+  // Hosted-workload rollup annotation: pods of this workload on the seed node.
+  pod_count?: number;
 }
 
 export interface ImpactSummary {
   dependent_count?: number;
   production_dependents?: number;
+  // Regime marker: true when the backend resolved dependent environments
+  // against the per-account tiers (cloud_accounts.account_env). Summaries
+  // persisted before that existed lack the key — for those, a zero prod count
+  // means "environment never resolved", not "verified no production impact".
+  environment_resolved?: boolean;
   coverage_confidence?: 'none' | 'low' | 'observed' | 'high';
   truncated?: boolean;
   safety_reason?: string;
@@ -34,6 +41,14 @@ export interface ImpactSummary {
   // the safety band.
   downstream_count?: number;
   downstream_dependencies?: DependentRef[];
+  // Non-caller neighbourhoods (persisted only when present): infrastructure
+  // attached to the resource (a volume's instance) and workloads hosted on it
+  // (a node's pod-placement rollup). Kept out of dependent_count; a destructive
+  // change refuses to soften while either is non-empty.
+  infrastructure_count?: number;
+  infrastructure_dependents?: DependentRef[];
+  hosted_workload_count?: number;
+  hosted_workloads?: DependentRef[];
 }
 
 const BAND_TONE: Record<SafetyBand, LabelTone> = {
@@ -59,6 +74,36 @@ export const getImpactSummary = (rec: any): ImpactSummary | null => {
   return (breakdown && breakdown.impact_summary) || null;
 };
 
+// Change class stamped by the backend classifier (recommendation/change_class.go):
+// what the recommendation does to the resource, the first axis of the verdict.
+// Absent on unclassified rules and pre-change-aware summaries.
+export type ChangeClass = 'additive' | 'reductive' | 'destructive';
+
+export const getChangeClass = (rec: any): ChangeClass | null => {
+  if (!rec) return null;
+  let breakdown = rec.finops_score_breakdown;
+  if (typeof breakdown === 'string') breakdown = safeJSONParse(breakdown);
+  const cls = breakdown && breakdown.change_class;
+  return cls === 'additive' || cls === 'reductive' || cls === 'destructive' ? cls : null;
+};
+
+const CHANGE_CLASS_PRESENTATION: Record<ChangeClass, { label: string; tone: LabelTone }> = {
+  additive: { label: 'Additive', tone: 'success' },
+  reductive: { label: 'Reductive', tone: 'warning' },
+  destructive: { label: 'Destructive', tone: 'critical' },
+};
+
+export const changeClassLabel = (cls?: ChangeClass | null): string | null => (cls ? CHANGE_CLASS_PRESENTATION[cls].label : null);
+export const changeClassTone = (cls?: ChangeClass | null): LabelTone => (cls ? CHANGE_CLASS_PRESENTATION[cls].tone : 'neutral');
+
+export const CHANGE_CLASS_HELP: Record<ChangeClass, string> = {
+  additive:
+    'This change only adds capacity or commitments — dependents cannot be starved by it, so production callers cap the verdict at Review instead of Risky. The remaining risk is apply mechanics (e.g. a rolling restart).',
+  reductive: 'This change shrinks or reshapes something callers rely on. Production dependents make it Risky.',
+  destructive:
+    'This change removes the resource and cannot be undone. The verdict floors at Risky; a well-observed, dependent-free neighbourhood earns Review — never Safe.',
+};
+
 // Relationship → short role chip, from the row's point of view. Upstream rows
 // rely on the resource (the blast radius); downstream rows are what the
 // resource itself uses. Mirrors backend RelationshipType strings.
@@ -74,6 +119,7 @@ const UPSTREAM_ROLE: Record<string, string> = {
   IS_BOUND_TO: 'Bound to it',
   EXPOSES: 'Exposes it',
   ROUTES_TO_SERVICE: 'Routes to it',
+  HOSTED_ON: 'Attached',
 };
 
 const DOWNSTREAM_ROLE: Record<string, string> = {
@@ -120,9 +166,82 @@ export const provenanceLabel = (sources?: string[]): string | null => {
   return 'Inferred';
 };
 
+// Friendly names for raw discovery-source identifiers (edge_priority.go), for
+// the coverage hover. Unknown sources render as written.
+const SOURCE_DISPLAY: Record<string, string> = {
+  ebpf: 'eBPF traffic',
+  traces: 'Traces',
+  'gcp-cloud-traces': 'GCP Cloud Traces',
+  'datadog-apm': 'Datadog APM',
+  'newrelic-apm': 'New Relic APM',
+  k8s: 'Kubernetes metadata',
+  aws: 'AWS metadata',
+  gcp: 'GCP metadata',
+  azure: 'Azure metadata',
+  manual: 'User-declared',
+};
+
+export const formatSourceName = (source: string): string => SOURCE_DISPLAY[source.toLowerCase()] || source;
+
+// impactSignalSources unions the discovery sources persisted across the
+// dependency lists — the concrete signals behind the coverage grade, shown on
+// hover of the coverage subtitle. Empty for pre-attribution summaries.
+export const impactSignalSources = (impact?: ImpactSummary | null): string[] => {
+  const seen = new Set<string>();
+  for (const dep of [...(impact?.dependents || []), ...(impact?.downstream_dependencies || [])]) {
+    for (const source of dep?.sources || []) {
+      if (source) seen.add(source.toLowerCase());
+    }
+  }
+  return Array.from(seen)
+    .map(formatSourceName)
+    .sort((a, b) => a.localeCompare(b));
+};
+
 // isProdEnvironment mirrors the backend's isProdEnv so prod dependents get the
 // critical treatment consistently.
 export const isProdEnvironment = (env?: string): boolean => ['prod', 'production', 'prd'].includes((env || '').trim().toLowerCase());
+
+// formatEnvironment prettifies the account-tier spellings for chips; anything
+// else (a free-form workload label like "staging") renders as written.
+export const formatEnvironment = (env: string): string => {
+  const normalized = env.trim().toLowerCase();
+  if (normalized === 'prod') return 'Production';
+  if (normalized === 'non_prod' || normalized === 'non-prod') return 'Non-production';
+  return env;
+};
+
+// prodChipState decides what the production-dependents chip may claim.
+// 'prod' — production dependents exist (critical). 'verified-zero' — the
+// backend resolved environments and found none (success). 'unknown' — a
+// pre-resolution summary, where zero is absence of data, not evidence
+// (neutral). Non-Open recommendations are never recomputed, so 'unknown'
+// summaries persist indefinitely and must not render as a verified zero.
+export const prodChipState = (impact?: ImpactSummary | null): 'prod' | 'verified-zero' | 'unknown' | null => {
+  if (impact?.production_dependents == null) return null;
+  if (impact.production_dependents > 0) return 'prod';
+  return impact.environment_resolved ? 'verified-zero' : 'unknown';
+};
+
+export const PROD_CHIP_HELP =
+  'A dependent counts as production when it runs in an account marked Production (Settings → Accounts) or carries a production environment label — the label wins. Unresolved external callers are never assumed production.';
+
+export const ENV_UNKNOWN_HELP =
+  'This assessment predates environment resolution, so a zero here means "environment unknown", not "no production impact". It refreshes automatically while the recommendation is Open.';
+
+// dependentCountNoun names what the headline count actually counts: a compute
+// instance's blast radius is the pods it hosts, not "services".
+export const dependentCountNoun = (deps?: DependentRef[]): string => {
+  if (deps && deps.length > 0 && deps.every((d) => d.node_type === 'Pod')) return 'Dependent pods';
+  return 'Dependent services';
+};
+
+// nodeTypeLabel renders a dependent's kind chip; ExternalService nodes are
+// unresolved IPs and say so instead of masquerading as a known service.
+export const nodeTypeLabel = (nodeType?: string): string | null => {
+  if (!nodeType) return null;
+  return nodeType === 'ExternalService' ? 'External (unresolved)' : nodeType;
+};
 
 // Graph-coverage presentation — tone, chip subtitle, ⓘ copy, and the
 // section-level explainer. Mirrors backend CoverageConfidence tiers

@@ -1,22 +1,9 @@
-import {
-  Grid,
-  Typography,
-  Stepper,
-  Step,
-  StepLabel,
-  StepConnector,
-  stepConnectorClasses,
-  styled,
-  Box,
-  Collapse,
-  Alert,
-  Tab,
-  Tabs,
-} from '@mui/material';
+import { Grid, Typography, Box, Collapse, Alert, Tab, Tabs } from '@mui/material';
 import { Chip } from '@ui/Chip';
+import { Stepper } from '@ui/Stepper';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
-import { ContentCopy, CheckCircleOutline, Check, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
+import { ContentCopy, CheckCircleOutline, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
@@ -32,53 +19,6 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
 import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import { ds } from 'src/utils/colors';
-
-const StepConnectorStyled = styled(StepConnector)(() => ({
-  [`&.${stepConnectorClasses.alternativeLabel}`]: {
-    top: ds.space.mul(1, 5),
-    left: `calc(-50% + ${ds.space[4]})`,
-    right: `calc(50% + ${ds.space[4]})`,
-  },
-  [`&.${stepConnectorClasses.active}, &.${stepConnectorClasses.completed}`]: {
-    [`& .${stepConnectorClasses.line}`]: {
-      borderColor: ds.green[500],
-      borderTopWidth: 2,
-    },
-  },
-  [`& .${stepConnectorClasses.line}`]: {
-    borderColor: ds.brand[200],
-    borderTopWidth: 1,
-    borderRadius: ds.radius.sm,
-  },
-}));
-
-const StepIconCustom = ({ active, completed, icon }) => {
-  const styles = completed
-    ? { backgroundColor: ds.green[400], border: 'none', color: ds.background[100] }
-    : {
-        backgroundColor: ds.background[100],
-        border: active ? `1px solid ${ds.green[500]}` : `1px solid ${ds.gray[300]}`,
-        color: active ? ds.green[500] : ds.gray[600],
-      };
-
-  return (
-    <Box
-      sx={{
-        width: ds.space[5],
-        height: ds.space[5],
-        borderRadius: ds.radius.pill,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: ds.text.bodyLg,
-        fontWeight: 'bold',
-        ...styles,
-      }}
-    >
-      {completed ? <Check sx={{ fontSize: ds.text.title }} /> : icon}
-    </Box>
-  );
-};
 
 const SETUP_GUIDE_CONTENT = `### Prerequisites
 
@@ -457,26 +397,6 @@ const AddGcpAccountModal = ({ open, onClose }) => {
         }
       }
 
-      // TODO: Re-enable Pub/Sub onboarding after testing
-      // Fetch Pub/Sub deployment URL for parent account
-      // if (result?.parent_id) {
-      //   setIsFetchingDeployUrl(true);
-      //   try {
-      //     const deployRes = await apiKubernetes1.getGcpDeploymentManagerURL(result.parent_id);
-      //     const deployData = deployRes?.data?.data?.gcp_get_onboard_pubsub_url;
-      //     if (deployData?.deployment_manager_url) {
-      //       setDeploymentManagerUrl(deployData.deployment_manager_url);
-      //       setExternalId(deployData.external_id);
-      //       setPubsubProjectId(deployData.pubsub_project_id || '');
-      //       setSubscriptionName(deployData.subscription_name || '');
-      //     }
-      //   } catch (error) {
-      //     console.error('Failed to fetch GCP Deployment Manager URL:', error);
-      //   } finally {
-      //     setIsFetchingDeployUrl(false);
-      //   }
-      // }
-
       handleCloseModal(true);
     } catch (error) {
       snackbar.error('Failed to onboard GCP projects.');
@@ -497,25 +417,9 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
   return (
     <Modal width='md' open={open} handleClose={isLoading ? () => {} : () => handleCloseModal(step === 3)} title='Add GCP Account' loader={isLoading}>
-      <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: ds.space[5], mt: ds.space[4] }}>
-        {STEPS.map((label, idx) => (
-          <Step key={label} completed={step > idx}>
-            <StepLabel
-              StepIconComponent={StepIconCustom}
-              sx={{
-                '& .MuiStepLabel-label.MuiStepLabel-alternativeLabel': {
-                  fontSize: ds.text.body,
-                  marginTop: ds.space[2],
-                  color: step === idx ? ds.gray[700] : 'inherit',
-                  fontWeight: step === idx ? 500 : 'normal',
-                },
-              }}
-            >
-              {label}
-            </StepLabel>
-          </Step>
-        ))}
-      </Stepper>
+      <Box sx={{ mb: ds.space[5], mt: ds.space[4] }}>
+        <Stepper steps={STEPS.map((label) => ({ id: label, label }))} current={step} orientation='horizontal' />
+      </Box>
 
       {isTourDemo && step > 0 && (
         <Banner

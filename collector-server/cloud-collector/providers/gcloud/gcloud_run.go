@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"regexp"
 	"strings"
 
@@ -271,7 +272,7 @@ func (s *cloudRunService) GetRecommendations(ctx providers.CloudProviderContext,
 		if len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryConfiguration,
-				RuleName:            "gcp_run_no_labels",
+				RuleName:            constants.GCPRunNoLabels,
 				Severity:            providers.RecommendationSeverityLow,
 				Savings:             0,
 				Action:              providers.RecommendationActionModify,
@@ -405,7 +406,7 @@ func (s *cloudRunService) ApplyRecommendation(ctx providers.CloudProviderContext
 	}()
 
 	switch recommendation.RuleName {
-	case "gcp_run_no_labels":
+	case constants.GCPRunNoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or gcloud CLI")
 
 	case "gcp_run_always_on":

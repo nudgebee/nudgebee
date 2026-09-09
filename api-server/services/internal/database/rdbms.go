@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -203,6 +204,22 @@ func (d *DatabaseManager) Exec(query string, args ...any) (sql.Result, error) {
 	}
 	q = d.Db.Rebind(q)
 	return d.Db.Exec(q, a...)
+}
+
+// ExecContext is Exec with the caller's context propagated to the driver, so a
+// bounded context (e.g. a detached write with a timeout) actually bounds the
+// query rather than only the surrounding goroutine.
+func (d *DatabaseManager) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	q, a, err := prepareQueryForIn(d.Db.DriverName(), query, args)
+	if err != nil {
+		return nil, err
+	}
+	q, a, err = sqlx.In(q, a...)
+	if err != nil {
+		return nil, err
+	}
+	q = d.Db.Rebind(q)
+	return d.Db.ExecContext(ctx, q, a...)
 }
 
 // move query filters here

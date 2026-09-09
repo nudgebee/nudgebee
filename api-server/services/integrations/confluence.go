@@ -19,6 +19,7 @@ import (
 
 func init() {
 	core.RegisterIntegration(Confluence{})
+	core.RegisterAutoGenHandler(confluenceListPagesAutogenFunc, listConfluencePages)
 }
 
 const IntegrationConfluence = "confluence"
@@ -156,9 +157,20 @@ func (m Confluence) ConfigSchema() core.IntegrationSchema {
 			},
 			"namespace": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Confluence namespace",
+				Description: "Space key to index (e.g. SRE). Leave empty to index every space the account can read.",
 				Default:     "",
 				Priority:    50,
+			},
+			confluencePageTreesField: {
+				Type:              core.ToolSchemaTypeArray,
+				DisplayName:       "Limit to pages",
+				Description:       "Index only these pages and everything beneath them, instead of the whole space. Pick a top-level page, or paste the URL of any page from the browser's address bar.",
+				SearchPlaceholder: "Search top-level pages, or paste a page URL…",
+				Default:           "",
+				AutoGenerateFunc:  confluenceListPagesAutogenFunc,
+				DependsOn:         confluencePageTreesDeps,
+				Advanced:          true,
+				Priority:          40,
 			},
 			"integration_config_name": {
 				Type:             core.ToolSchemaTypeString,
@@ -172,10 +184,7 @@ func (m Confluence) ConfigSchema() core.IntegrationSchema {
 }
 
 func (m Confluence) ValidateConfig(securityContext *security.SecurityContext, integrationConfig []core.IntegrationConfigValue, accountId string) []error {
-	configMap := make(map[string]string)
-	for _, c := range integrationConfig {
-		configMap[c.Name] = c.Value
-	}
+	configMap := confluenceConfigMap(integrationConfig)
 
 	mode := confluenceAuthType(configMap["auth_type"])
 	host := strings.TrimSpace(configMap["host"])
@@ -212,10 +221,20 @@ func (m Confluence) ValidateConfig(securityContext *security.SecurityContext, in
 	// success for a space that yields zero pages. An empty namespace means "all spaces"
 	// and is left unvalidated by design.
 	namespace := strings.TrimSpace(configMap["namespace"])
-	if namespace == "" {
-		return nil
+	if namespace != "" {
+		if errs := confluenceValidateNamespace(apiBase, authHeader, namespace); len(errs) > 0 {
+			return errs
+		}
 	}
-	return confluenceValidateNamespace(apiBase, authHeader, namespace)
+
+	// Every page tree must resolve for the same reason: a tree that cannot be
+	// read would otherwise pass the test and produce an empty knowledge base.
+	if trees := strings.TrimSpace(configMap[confluencePageTreesField]); trees != "" {
+		if _, err := confluenceResolvePageTrees(apiBase, authHeader, host, namespace, trees); err != nil {
+			return []error{err}
+		}
+	}
+	return nil
 }
 
 // confluenceValidateHost rejects malformed URLs, and URLs whose shape
@@ -249,8 +268,12 @@ type confluenceProbeResult struct {
 }
 
 func confluenceProbeSpaces(apiBase, authHeader string, params map[string]string) (*confluenceProbeResult, error) {
+	return confluenceGet(apiBase+"/space", authHeader, params)
+}
+
+func confluenceGet(fullURL, authHeader string, params map[string]string) (*confluenceProbeResult, error) {
 	resp, err := common.HttpGet(
-		apiBase+"/space",
+		fullURL,
 		common.HttpWithHeaders(map[string]string{
 			"Authorization": authHeader,
 			"Accept":        "application/json",

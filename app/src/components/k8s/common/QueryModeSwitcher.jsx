@@ -257,8 +257,14 @@ const QueryModeSwitcher = ({
         .join(';');
       if (formattedQuery) {
         setQuery(formattedQuery);
+        if (logProvider === 'ES') {
+          // The backend renders the builder chips as a DSL body, so a KQL
+          // selection left over from a previous Code-tab visit would send this
+          // JSON to the KQL parser. Pin the language to what was just seeded.
+          setEsQueryType('dsl');
+        }
         if (onQueryChange) {
-          onQueryChange({ query: formattedQuery, queryKeys });
+          onQueryChange({ query: formattedQuery, queryKeys, ...(logProvider === 'ES' ? { queryType: 'dsl' } : {}) });
         }
       }
     } catch (err) {
@@ -511,6 +517,33 @@ const QueryModeSwitcher = ({
     setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: initialEsIndex } : b)));
   }, [logProvider, initialEsIndex]);
 
+  // ES index picker, shared by the Code and AI tabs. Both read and write the one
+  // selection (prebuildQueryBlocks[0].selectedMetric), so the index a query was
+  // generated against in the AI tab is the index it then runs against when the
+  // query lands in the Code tab. getQuery differs per tab — the Code tab has to
+  // round-trip the live CodeMirror ref, the AI tab the generated query.
+  const renderEsIndexPicker = (getQuery) => (
+    <Box sx={{ width: ds.space.mul(0, 130) }}>
+      <FilterDropdown
+        label='Select an Index'
+        value={selectedEsIndex || null}
+        options={esIndexList ?? []}
+        freeSolo
+        // Same affordance as the Build tab's picker: freeSolo alone is
+        // invisible, so the hint is what tells the user a wildcard
+        // pattern outside the listed indices is accepted.
+        searchPlaceholder='Search or type pattern (use * for wildcard)...'
+        onSelect={(_event, value) => {
+          setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
+          if (onQueryChange) {
+            onQueryChange({ query: getQuery(), queryKeys: [''], index: value || '', queryType: esQueryType });
+          }
+        }}
+        isOptionsLoading={isEsIndexLoading}
+      />
+    </Box>
+  );
+
   const getExtension = () => {
     if (isPromQLMetricProvider(logProvider)) {
       extensions.push(
@@ -575,6 +608,14 @@ const QueryModeSwitcher = ({
     }
   };
 
+  // Reports the index a generated query was resolved against back to the parent,
+  // so Run Query executes it against that same index rather than whatever the
+  // Code tab last selected. Normally the current selection; when nothing was
+  // picked, the backend echoes the account default it fell back to, which then
+  // fills the dropdown in. Deliberately reports only the index — the query
+  // language is left exactly as the user set it, same as before.
+  const esIndexEcho = (queryData) => (logProvider === 'ES' ? { index: queryData?.index || selectedEsIndex } : {});
+
   const handleGenerateQuery = () => {
     setIsLoadingGenerateQuestionText(true);
     if (onAiLoadingChange) {
@@ -606,6 +647,12 @@ const QueryModeSwitcher = ({
           // dropdown shows. Always pinning to the currently-selected logProvider
           // removes that failure mode entirely.
           ...(logProvider ? { log_provider: logProvider } : {}),
+          // Elasticsearch field sets are per-index, so the selection has to
+          // reach generation, not just execution: it scopes the fields the
+          // generator is offered and pins the index the query resolves
+          // against. Omitted when blank — the backend then falls back to the
+          // account's default index and reports which one it used.
+          ...(logProvider === 'ES' && selectedEsIndex ? { index: selectedEsIndex } : {}),
         })
         .then((res) => {
           const errors = res?.data?.errors || [];
@@ -633,7 +680,7 @@ const QueryModeSwitcher = ({
                     const key = uuidv4();
                     setQuery(queryData.query);
                     if (onQueryChange) {
-                      onQueryChange({ query: queryData.query, queryKeys: [key] });
+                      onQueryChange({ query: queryData.query, queryKeys: [key], ...esIndexEcho(queryData) });
                     }
                     sendConversationIdAndLLMResponseToParent(result.conversationId, queryData.query);
                   }
@@ -649,7 +696,7 @@ const QueryModeSwitcher = ({
               const key = uuidv4();
               setQuery(queryData.query);
               if (onQueryChange) {
-                onQueryChange({ query: queryData.query, queryKeys: [key] });
+                onQueryChange({ query: queryData.query, queryKeys: [key], ...esIndexEcho(queryData) });
               }
               sendConversationIdAndLLMResponseToParent(data?.conversation_id ?? '', queryData.query);
             }
@@ -823,25 +870,7 @@ const QueryModeSwitcher = ({
                   }}
                 />
               </Box>
-              <Box sx={{ width: ds.space.mul(0, 130) }}>
-                <FilterDropdown
-                  label='Select an Index'
-                  value={selectedEsIndex || null}
-                  options={esIndexList ?? []}
-                  freeSolo
-                  // Same affordance as the Build tab's picker: freeSolo alone is
-                  // invisible, so the hint is what tells the user a wildcard
-                  // pattern outside the listed indices is accepted.
-                  searchPlaceholder='Search or type pattern (use * for wildcard)...'
-                  onSelect={(_event, value) => {
-                    setPrebuildQueryBlocks((prev) => prev.map((b, i) => (i === 0 ? { ...b, selectedMetric: value || '' } : b)));
-                    if (onQueryChange) {
-                      onQueryChange({ query: codeQueryRef.current || query, queryKeys: [''], index: value || '', queryType: esQueryType });
-                    }
-                  }}
-                  isOptionsLoading={isEsIndexLoading}
-                />
-              </Box>
+              {renderEsIndexPicker(() => codeQueryRef.current || query)}
             </Box>
           )}
           <CodeMirror
@@ -879,6 +908,11 @@ const QueryModeSwitcher = ({
       if (!mounted) return null;
       return (
         <>
+          {logProvider === 'ES' && (
+            <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', flexWrap: 'wrap', mt: 'var(--ds-space-4)' }}>
+              {renderEsIndexPicker(() => query)}
+            </Box>
+          )}
           <Box
             display='flex'
             sx={{

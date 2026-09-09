@@ -26,11 +26,6 @@ _embeddings_instance_cache: Dict[str, Dict[str, Any]] = {}
 _llm_instance_cache: Dict[str, Dict[str, Any]] = {}
 _instance_cache_lock = threading.Lock()
 
-# Instance caches for embeddings and LLM clients (keyed by account_id)
-_embeddings_instance_cache: Dict[str, Dict[str, Any]] = {}
-_llm_instance_cache: Dict[str, Dict[str, Any]] = {}
-_instance_cache_lock = threading.Lock()
-
 
 def validate_embeddings_provider_keys(selected_provider: str, get_config_value) -> None:
     required_keys = {
@@ -116,7 +111,7 @@ def build_embeddings_provider_map(
 
     def vertexai() -> Embeddings:
         return VertexAIEmbeddings(
-            model=str(get_config_value("embeddings_model_id", None)),
+            model_name=str(get_config_value("embeddings_model_id", None)),
             location=str(get_config_value("embeddings_region", None)),
         )
 

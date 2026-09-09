@@ -348,6 +348,9 @@ const api = {
     if (data.log_provider) {
       query.log_provider = data.log_provider;
     }
+    if (data.index) {
+      query.index = data.index;
+    }
     const response = await queryGraphQL(ASK_AI_GENERATE_LOG_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLogQuery', {});
     return response;
   },

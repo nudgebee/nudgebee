@@ -167,16 +167,6 @@ func LabelsFromIndexFields(fields []OutputLogLabelFields) []OutputLogLabel {
 	return labels
 }
 
-// LogLabelFieldsSource is an optional capability for log sources whose QueryLabels
-// does not describe queryable FIELDS. Elasticsearch is the case that matters: its
-// QueryLabels returns index names, while the per-field types live behind
-// QueryIndexFields. Both ES sources already implement this method (see the type
-// switch in FetchLogLabelsOrIndexFields), so declaring the interface costs nothing
-// and keeps type resolution generic instead of special-casing ES at the call site.
-type LogLabelFieldsSource interface {
-	QueryIndexFields(ctx *security.RequestContext, request FetchLogLabelRequest) ([]OutputLogLabelFields, error)
-}
-
 // OperatorDataTypeSource is an optional capability for sources whose operator↔type
 // validity differs from query.OperatorCatalog's default — e.g. a backend that
 // implicitly casts, or one whose label model is uniformly stringly-typed. Returns
@@ -224,9 +214,9 @@ func applyOperatorDataTypeOverrides(descriptors []query.OperatorDescriptor, sour
 }
 
 // resolveLabelDataTypes returns the label → normalized data type map for a log
-// source, cached per (account, provider, source, index) for 10 minutes. Prefers
-// QueryIndexFields when the source implements LogLabelFieldsSource (Elasticsearch);
-// otherwise normalizes QueryLabels' attributes.
+// source, cached per (account, provider, source, index) for 10 minutes. Types come
+// from QueryLabels' attributes for every provider — Elasticsearch included, where
+// QueryLabels reads the resolved index's mapping.
 //
 // Returns nil on any failure, which callers treat as "cannot determine" and fail
 // open — a label-discovery hiccup must never block a log query.
@@ -277,19 +267,6 @@ func logLabelTypesCacheKey(request FetchLogLabelRequest) string {
 // fetchLabelDataTypes performs the uncached discovery. Returns nil when the label
 // set cannot be established.
 func fetchLabelDataTypes(ctx *security.RequestContext, source LogSource, request FetchLogLabelRequest) map[string]string {
-	if fieldsSource, ok := source.(LogLabelFieldsSource); ok {
-		fields, err := fieldsSource.QueryIndexFields(ctx, request)
-		if err == nil && len(fields) > 0 {
-			types := make(map[string]string, len(fields))
-			for _, f := range fields {
-				types[f.Field] = normalizeLabelDataType(f.Attributes)
-			}
-			return types
-		}
-		// Fall through to QueryLabels: an ES account with no index selected still
-		// gets whatever the label listing can offer, rather than nothing.
-	}
-
 	labels, err := source.QueryLabels(ctx, request)
 	if err != nil || len(labels) == 0 {
 		return nil

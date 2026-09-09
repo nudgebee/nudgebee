@@ -155,6 +155,8 @@ Each inline comment MUST start with a **severity icon** on the first line, follo
 3. Clear explanation of the issue or observation
 4. If applicable, a suggested fix with a code block (use ` ```suggestion ` fenced blocks for single-line replacements, or regular fenced blocks for multi-line examples)
 
+**Length: one claim, its evidence, and the fix — five lines or fewer** (see [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md)). Never restate the code you are commenting on back at the author; they wrote it and GitHub renders it directly above your comment. If a finding genuinely needs more than five lines, it is a design discussion — say that in one line and raise it in the summary comment instead.
+
 **Example inline comment body:**
 ```
 ![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)

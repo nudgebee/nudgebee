@@ -304,11 +304,6 @@ def get_followup_selection_confirmation(question: str, option: str) -> str:
     return f'> _I asked:_ "{question}"\n{get_followup_confirmation(option)}'
 
 
-def get_account_selected_with_context(prompt: str, account_name: str) -> str:
-    """Agentic confirmation that preserves the account-selection prompt for context."""
-    return f'> _I asked:_ "{prompt}"\n{get_account_selected_confirmation(account_name)}'
-
-
 def get_processing_confirmation() -> str:
     """Get a random processing confirmation message."""
     return get_random_message(PROCESSING_CONFIRMATIONS)

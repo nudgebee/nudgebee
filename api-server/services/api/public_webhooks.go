@@ -44,7 +44,7 @@ func init() {
 
 // githubWebhookDeliverySeen returns true if the delivery ID has already been
 // processed within githubWebhookDedupTTL. Cache failures fall back to
-// "process it" — the addressing-state guard in ProcessOpenPRResolution
+// "process it" — the addressing-state guard in ProcessOpenPRFollowup
 // remains the correctness backstop, so the worst case is one duplicate LLM
 // run, not lost work.
 func githubWebhookDeliverySeen(deliveryID string) bool {
@@ -218,7 +218,7 @@ func azureEventGridWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, log
 // without DB I/O.
 //
 // Authorization model: HMAC proves the payload came from GitHub. Whether the
-// PR belongs to a tenant we own is decided by FindOpenPRResolutionByURL —
+// PR belongs to a tenant we own is decided by HasOpenPRResolutionForURL —
 // no match means "not our PR", and we 200-and-drop. No installation_id ↔
 // tenant_id lookup is required because the resolution row already carries
 // the tenant.
@@ -277,14 +277,14 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			return
 		}
 
-		resolutionID, tableName, err := account.FindOpenPRResolutionByURL(prURL)
+		owned, err := account.HasOpenPRResolutionForURL(prURL)
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "webhook_github", "lookup_failed")
 			logger.Error("github webhook: failed to look up resolution", "pr_url", prURL, "error", err)
 			c.JSON(500, map[string]string{"error": "resolution lookup failed"})
 			return
 		}
-		if resolutionID == "" {
+		if !owned {
 			common.MetricsPRFollowupWebhook(c.Request.Context(), "no_match")
 			logger.Info("github webhook: no open resolution row for PR", "pr_url", prURL, "event_type", eventType)
 			c.JSON(200, map[string]string{"status": "no_match"})
@@ -302,14 +302,13 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			}
 			common.MetricsPRFollowupWebhook(c.Request.Context(), "terminal")
 			logger.Info("github webhook: PR terminal, retiring resolution",
-				"pr_url", prURL, "event_type", eventType, "action", action,
-				"merged", merged, "resolution_id", resolutionID, "table", tableName)
+				"pr_url", prURL, "event_type", eventType, "action", action, "merged", merged)
 			sc := security.NewRequestContextForSuperAdmin(logger, tracer, meter)
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
 						logger.Error("github webhook: panic in terminal goroutine",
-							"resolution_id", resolutionID, "recover", r)
+							"pr_url", prURL, "recover", r)
 					}
 				}()
 				bgCtx, cancel := context.WithTimeout(context.Background(), githubWebhookDispatchTimeout)
@@ -324,7 +323,7 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 						"pr_url", prURL, "error", err)
 				}
 			}()
-			c.JSON(200, map[string]any{"status": "terminal", "resolution_id": resolutionID})
+			c.JSON(200, map[string]any{"status": "terminal", "pr_url": prURL})
 			return
 		}
 
@@ -333,16 +332,13 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			"pr_url", prURL,
 			"event_type", eventType,
 			"action", action,
-			"terminal", terminal,
-			"resolution_id", resolutionID,
-			"table", tableName)
+			"terminal", terminal)
 
-		// processResolution (called by ProcessOpenPRResolution) already spawns
-		// the followup work in a recovered goroutine, so we don't need to
-		// double-wrap. We still launch a goroutine here so the webhook
-		// returns 200 fast (<10s budget) even if the row update / lookup
-		// stalls on the database. The outer timeout caps DB lookup +
-		// claim + child-goroutine launch; the inner LLM call has its own
+		// ProcessOpenPRFollowup already spawns the followup work in a recovered
+		// goroutine, so we don't need to double-wrap. We still launch a goroutine
+		// here so the webhook returns 200 fast (<10s budget) even if the row
+		// update / lookup stalls on the database. The outer timeout caps DB
+		// lookup + claim + child-goroutine launch; the inner LLM call has its own
 		// 35-min bound. Panics in the dispatch path can never take down
 		// the api-server.
 		sc := security.NewRequestContextForSuperAdmin(logger, tracer, meter)
@@ -350,22 +346,22 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Error("github webhook: panic in dispatch goroutine",
-						"resolution_id", resolutionID, "recover", r)
+						"pr_url", prURL, "recover", r)
 				}
 			}()
 			bgCtx, cancel := context.WithTimeout(context.Background(), githubWebhookDispatchTimeout)
 			defer cancel()
 			boundedSc := security.NewRequestContext(bgCtx, sc.GetSecurityContext(),
 				sc.GetLogger(), sc.GetTracer(), sc.GetMeter())
-			if err := account.ProcessOpenPRResolution(boundedSc, resolutionID, tableName); err != nil {
-				logger.Error("github webhook: ProcessOpenPRResolution failed",
-					"resolution_id", resolutionID, "table", tableName, "error", err)
+			if err := account.ProcessOpenPRFollowup(boundedSc, prURL); err != nil {
+				logger.Error("github webhook: ProcessOpenPRFollowup failed",
+					"pr_url", prURL, "error", err)
 			}
 		}()
 
 		c.JSON(200, map[string]any{
-			"status":        "queued",
-			"resolution_id": resolutionID,
+			"status": "queued",
+			"pr_url": prURL,
 		})
 	}
 }

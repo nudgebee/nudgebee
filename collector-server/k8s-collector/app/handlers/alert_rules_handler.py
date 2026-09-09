@@ -2,8 +2,15 @@ from typing import Any, Dict, List, Tuple
 
 from db import database
 
+# Must name exactly the columns of event_rules_account_tenant_source_alert_key
+# (migration V873). Postgres infers the arbiter index by exact column match, so a
+# stale target raises 42P10 "no unique or exclusion constraint matching the ON
+# CONFLICT specification" at plan time — before any conflict exists — which fails
+# the whole batch and silently stops rule ingestion for every account.
+EVENT_RULE_CONFLICT_COLUMNS = ("account_id", "tenant_id", "source", "alert")
+
 event_rule_on_conflict = (
-    "ON CONFLICT(account_id,tenant_id,alert) DO UPDATE SET alert=EXCLUDED.alert, "
+    f"ON CONFLICT({','.join(EVENT_RULE_CONFLICT_COLUMNS)}) DO UPDATE SET alert=EXCLUDED.alert, "
     "expr=EXCLUDED.expr, annotations=EXCLUDED.annotations, duration=EXCLUDED.duration, "
     "severity=EXCLUDED.severity, source=EXCLUDED.source, category=EXCLUDED.category, "
     "namespace=EXCLUDED.namespace, name=EXCLUDED.name"
@@ -13,10 +20,13 @@ event_rule_on_conflict = (
 def _dedup_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Deduplicate by unique-constraint keys so a single batch INSERT with
     ON CONFLICT DO UPDATE doesn't hit PostgreSQL's 'cannot affect row a
-    second time' error. Last-seen rule wins, matching prior sequential behavior."""
-    seen: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    second time' error. Last-seen rule wins, matching prior sequential behavior.
+
+    Keyed on the same columns as EVENT_RULE_CONFLICT_COLUMNS — a narrower key
+    would collapse rows the arbiter treats as distinct."""
+    seen: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     for r in rules:
-        seen[(r["account_id"], r["tenant_id"], r["alert"])] = r
+        seen[tuple(r[c] for c in EVENT_RULE_CONFLICT_COLUMNS)] = r
     return list(seen.values())
 
 

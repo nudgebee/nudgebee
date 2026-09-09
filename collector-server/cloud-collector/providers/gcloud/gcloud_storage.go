@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -183,7 +184,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 		if len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_storage_no_labels",
+				RuleName:     constants.GCPStorageNoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{
@@ -204,7 +205,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			if strings.Contains(meta, "public") || strings.Contains(meta, "allUsers") {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategorySecurity,
-					RuleName:     "gcp_storage_public_access",
+					RuleName:     constants.GCPStoragePublicAccess,
 					Severity:     providers.RecommendationSeverityHigh,
 					Savings:      0,
 					Data: map[string]any{
@@ -227,7 +228,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			if enabled, ok := meta["Enabled"].(bool); !ok || !enabled {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategoryConfiguration,
-					RuleName:     "gcp_storage_no_versioning",
+					RuleName:     constants.GCPStorageNoVersioning,
 					Severity:     providers.RecommendationSeverityMedium,
 					Savings:      0,
 					Data: map[string]any{
@@ -249,7 +250,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			if rules, ok := meta["Rules"].([]interface{}); !ok || len(rules) == 0 {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategoryConfiguration,
-					RuleName:     "gcp_storage_no_lifecycle",
+					RuleName:     constants.GCPStorageNoLifecycle,
 					Severity:     providers.RecommendationSeverityMedium,
 					Savings:      0,
 					Data: map[string]any{
@@ -271,7 +272,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			if storageClass == "STANDARD" {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategoryRightSizing,
-					RuleName:     "gcp_storage_class_optimization",
+					RuleName:     constants.GCPStorageClassOptimization,
 					Severity:     providers.RecommendationSeverityMedium,
 					Savings:      0,
 					Data: map[string]any{
@@ -295,7 +296,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			if defaultKMSKeyName, ok := meta["DefaultKMSKeyName"].(string); !ok || defaultKMSKeyName == "" {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategorySecurity,
-					RuleName:     "gcp_storage_no_cmek",
+					RuleName:     constants.GCPStorageNoCMEK,
 					Severity:     providers.RecommendationSeverityLow,
 					Savings:      0,
 					Data: map[string]any{
@@ -410,13 +411,13 @@ func (s *cloudStorageService) ApplyRecommendation(ctx providers.CloudProviderCon
 	bucket := client.Bucket(bucketName)
 
 	switch recommendation.RuleName {
-	case "gcp_storage_no_labels":
+	case constants.GCPStorageNoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or gsutil")
 
-	case "gcp_storage_public_access":
+	case constants.GCPStoragePublicAccess:
 		return fmt.Errorf("automatic access control modification requires careful review - please update bucket ACLs manually via GCP console")
 
-	case "gcp_storage_no_versioning":
+	case constants.GCPStorageNoVersioning:
 		// Enable versioning
 		attrs := storage.BucketAttrsToUpdate{
 			VersioningEnabled: true,
@@ -429,13 +430,13 @@ func (s *cloudStorageService) ApplyRecommendation(ctx providers.CloudProviderCon
 		ctx.GetLogger().Info("successfully enabled versioning", "bucket", bucketName)
 		return nil
 
-	case "gcp_storage_no_lifecycle":
+	case constants.GCPStorageNoLifecycle:
 		return fmt.Errorf("automatic lifecycle configuration requires custom rules - please configure lifecycle manually via GCP console")
 
-	case "gcp_storage_class_optimization":
+	case constants.GCPStorageClassOptimization:
 		return fmt.Errorf("storage class optimization requires analyzing access patterns - please review and update manually")
 
-	case "gcp_storage_no_cmek":
+	case constants.GCPStorageNoCMEK:
 		return fmt.Errorf("CMEK configuration requires KMS key setup - please configure CMEK manually via GCP console")
 
 	case "gcp_storage_no_ubla":

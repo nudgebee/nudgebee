@@ -24,7 +24,10 @@ const getCurrencySymbol = (currency: string): string => {
   }
 };
 
-export function useSummaryData() {
+// accountId scopes the headline savings total. The findings list is filtered
+// client-side, so without this the card keeps showing the tenant-wide figure
+// while the list beneath it shows one account.
+export function useSummaryData(accountId?: string | null) {
   const [accounts, setAccounts] = useState<Record<string, { account_name: string; cloud_provider: string }>>({});
   // Whether the accounts fetch has settled (success OR failure). `accounts` being
   // empty alone can't tell "still loading" from "loaded, none" (upstream down /
@@ -125,7 +128,8 @@ export function useSummaryData() {
     (async () => {
       try {
         const rows: any = await recommendationApi.getK8sRecommendationSummaryByRuleName({
-          accountId: '',
+          // Empty string means every account, which is what the unfiltered view wants.
+          accountId: accountId ?? '',
           category: NON_SECURITY_CATEGORIES as any,
           excludeRuleName: UPGRADE_PLANNER_RULES,
           status: DEFAULT_STATUS,
@@ -141,7 +145,7 @@ export function useSummaryData() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accountId]);
 
   const insights = useMemo(() => {
     if (rawApiRows.length === 0) return [];

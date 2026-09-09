@@ -249,3 +249,90 @@ func TestMergeToolResponseMetadata_FallsBackHardWhenMetadataIsNil(t *testing.T) 
 	assert.Error(t, err, "no Metadata to fall back to + AD marshal-fail must surface an error")
 	assert.Nil(t, blob)
 }
+
+func TestMergeToolResponseMetadataWithAction_EmptyInputRemainsNil(t *testing.T) {
+	blob, err := mergeToolResponseMetadataWithAction(nil, nil, NBAgentPlannerToolAction{})
+	assert.NoError(t, err)
+	assert.Nil(t, blob, "single-action calls without telemetry must preserve NULL metadata")
+}
+
+func TestMergeToolResponseMetadataWithAction_PersistsExecutionBatch(t *testing.T) {
+	action := NBAgentPlannerToolAction{
+		PlannerIteration:          2,
+		ExecutionBatchID:          "batch-1",
+		ExecutionMode:             executionModeParallelDispatch,
+		ExecutionBatchSize:        3,
+		ExecutionParallelismLimit: 2,
+	}
+	blob, err := mergeToolResponseMetadataWithAction(&toolcore.NBToolResponseMetadata{
+		ExecutionDurationMs: 125,
+	}, map[string]any{
+		"execution_batch_id": "tool-supplied-value",
+		"custom_metric":      "kept",
+	}, action)
+	assert.NoError(t, err)
+
+	var got map[string]any
+	assert.NoError(t, json.Unmarshal(blob, &got))
+	assert.Equal(t, "batch-1", got["execution_batch_id"], "executor metadata must override tool-supplied collisions")
+	assert.EqualValues(t, 2, got["planner_iteration"])
+	assert.Equal(t, executionModeParallelDispatch, got["execution_mode"])
+	assert.Equal(t, float64(3), got["execution_batch_size"])
+	assert.Equal(t, float64(2), got["execution_parallelism_limit"])
+	assert.Equal(t, float64(125), got["execution_duration_ms"])
+	assert.Equal(t, "kept", got["custom_metric"])
+}
+
+func TestMergeToolResponseMetadataWithAction_PersistsSingleToolIteration(t *testing.T) {
+	blob, err := mergeToolResponseMetadataWithAction(nil, nil, NBAgentPlannerToolAction{PlannerIteration: 3})
+	assert.NoError(t, err)
+
+	var got map[string]any
+	assert.NoError(t, json.Unmarshal(blob, &got))
+	assert.EqualValues(t, 3, got["planner_iteration"])
+	_, hasBatchID := got["execution_batch_id"]
+	assert.False(t, hasBatchID)
+}
+
+func TestMergeToolResponseMetadataWithAction_PersistsSequentialFallback(t *testing.T) {
+	action := NBAgentPlannerToolAction{
+		ExecutionBatchID:         "batch-2",
+		ExecutionMode:            executionModeSequentialDispatch,
+		ExecutionBatchSize:       4,
+		SequentialFallbackReason: "unresolved_tool_config",
+	}
+	blob, err := mergeToolResponseMetadataWithAction(nil, nil, action)
+	assert.NoError(t, err)
+
+	var got map[string]any
+	assert.NoError(t, json.Unmarshal(blob, &got))
+	assert.Equal(t, "batch-2", got["execution_batch_id"])
+	assert.Equal(t, executionModeSequentialDispatch, got["execution_mode"])
+	assert.Equal(t, float64(4), got["execution_batch_size"])
+	assert.Equal(t, "unresolved_tool_config", got["sequential_fallback_reason"])
+	_, hasLimit := got["execution_parallelism_limit"]
+	assert.False(t, hasLimit, "sequential batches must not advertise unused parallelism")
+}
+
+func TestMergeToolResponseMetadataWithAction_BadToolTelemetryKeepsExecutionBatch(t *testing.T) {
+	action := NBAgentPlannerToolAction{
+		ExecutionBatchID:   "batch-3",
+		ExecutionMode:      executionModeParallelDispatch,
+		ExecutionBatchSize: 2,
+	}
+	blob, err := mergeToolResponseMetadataWithAction(&toolcore.NBToolResponseMetadata{
+		ExecutionDurationMs: 50,
+	}, map[string]any{
+		"unmarshalable_ch": make(chan int),
+	}, action)
+	assert.NoError(t, err)
+
+	var got map[string]any
+	assert.NoError(t, json.Unmarshal(blob, &got))
+	assert.Equal(t, "batch-3", got["execution_batch_id"])
+	assert.Equal(t, executionModeParallelDispatch, got["execution_mode"])
+	assert.Equal(t, float64(2), got["execution_batch_size"])
+	assert.Equal(t, float64(50), got["execution_duration_ms"])
+	_, hasBadValue := got["unmarshalable_ch"]
+	assert.False(t, hasBadValue)
+}

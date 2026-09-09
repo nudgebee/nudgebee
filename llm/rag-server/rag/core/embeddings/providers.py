@@ -5,7 +5,7 @@ Each provider implements the Embeddings ABC using native SDK calls.
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from rag.core.types import Embeddings
 
@@ -297,7 +297,7 @@ class OllamaEmbeddings(Embeddings):
         # Some Ollama configurations / gateways return a 200 with an error field.
         if "error" in data:
             raise ValueError(f"Ollama embedding error: {data['error']}")
-        return data["embeddings"]
+        return cast(List[List[float]], data["embeddings"])
 
     def embed_query(self, text: str) -> List[float]:
         return self.embed_documents([text])[0]

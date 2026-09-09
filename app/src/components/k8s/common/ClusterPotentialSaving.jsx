@@ -6,7 +6,7 @@ import Text from '@shared/format/Text';
 import ThreeDotLoader from '@shared/ThreeDotLoader';
 import { ds } from '@utils/colors';
 
-const ClusterPotentialSaving = ({ savingPotentialSummary = {}, loading = false }) => {
+const ClusterPotentialSaving = ({ savingPotentialSummary = {}, loading = false, currencySymbol = '$' }) => {
   return (
     <Box
       sx={{
@@ -33,6 +33,7 @@ const ClusterPotentialSaving = ({ savingPotentialSummary = {}, loading = false }
               sxPrefix={{ fontSize: 'var(--ds-text-title)' }}
               sxSuffix={{ fontSize: 'var(--ds-text-body-lg)' }}
               value={savingPotentialSummary?.yearly_recommendation_saving ?? '-'}
+              prefix={currencySymbol}
               suffix='/yr'
               isSavingPotential={true}
               recommendationLabel='Some of cluster recommendations'
@@ -46,6 +47,7 @@ const ClusterPotentialSaving = ({ savingPotentialSummary = {}, loading = false }
                   ? (savingPotentialSummary.yearly_recommendation_saving / 12).toFixed(2)
                   : '-'
               }
+              prefix={currencySymbol}
               suffix='/mo'
               isSavingPotential={true}
               recommendationLabel='Some of cluster recommendations'
@@ -61,4 +63,6 @@ export default ClusterPotentialSaving;
 
 ClusterPotentialSaving.propTypes = {
   savingPotentialSummary: PropTypes.any,
+  loading: PropTypes.bool,
+  currencySymbol: PropTypes.string,
 };

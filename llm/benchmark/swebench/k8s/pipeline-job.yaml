@@ -1,0 +1,101 @@
+# The whole SWE-bench run as one in-cluster Job.
+#
+# Replaces an earlier predict-only Job that left grading and scoring to a
+# developer's shell. Everything the run needs is in the image
+# (scripts, dataset, frozen lists, kubectl, the official swebench package) and
+# its authority comes from the swebench-runner ServiceAccount, so nothing here
+# depends on a laptop staying awake.
+#
+# Apply k8s/rbac.yaml first.
+#
+#   kubectl -n nudgebee apply -f k8s/rbac.yaml
+#   kubectl -n nudgebee apply -f k8s/pipeline-job.yaml
+#   kubectl -n nudgebee logs -f job/swebench-pipeline
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: swebench-results
+  namespace: nudgebee
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    # 4Gi is the hyperdisk-balanced minimum; a smaller request is rejected
+    # outright rather than rounded up.
+    requests: { storage: 4Gi }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: swebench-pipeline
+  namespace: nudgebee
+  labels: { app: swebench-pipeline }
+spec:
+  # One attempt. A retry would re-run every LLM conversation in the set, which
+  # costs real money and silently doubles the bill on a transient failure.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: swebench-pipeline }
+    spec:
+      serviceAccountName: swebench-runner
+      # No imagePullSecrets, and none needed: the swebench-runner package is
+      # public. Note `nudgebee-registry-secret` would NOT have helped — it only
+      # covers the internal registry, not ghcr. If the package is ever made
+      # private again this needs a dedicated ghcr pull secret (PAT with
+      # read:packages), or the pod fails ImagePullBackOff.
+      restartPolicy: Never
+      # Keep the driver off spot. It holds an hour of paid LLM conversations that
+      # cannot be resumed once the pod dies, and backoffLimit is 0, so a single
+      # preemption throws away the whole run's spend.
+      #
+      # Expressed as DoesNotExist, not `gke-spot: "false"` — GKE labels spot nodes
+      # only, so matching on a "false" value selects nothing and silently schedules
+      # anywhere.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cloud.google.com/gke-spot
+                    operator: DoesNotExist
+      containers:
+        - name: pipeline
+          # Dated tag, not :latest. A benchmark result is only meaningful with
+          # the thing that produced it pinned — a floating tag makes "the score
+          # moved" and "the runner changed" indistinguishable after the fact.
+          image: ghcr.io/nudgebee/swebench-runner:2026-08-21.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FROZEN
+              value: /app/frozen_stratified.txt
+            - name: MODEL_NAME
+              # Must name the model actually serving code_analyzer. A score with
+              # the wrong model attached is not comparable to anything, including
+              # our own earlier runs.
+              value: nubi-code-analyzer
+            - name: OUT_DIR
+              value: /results
+            - name: NUBI_URL
+              value: "http://llm-server.nudgebee.svc.cluster.local:8000"
+            - name: NUBI_TOKEN
+              valueFrom: { secretKeyRef: { name: swebench-nubi, key: token } }
+            - name: NUBI_ACCOUNT_ID
+              valueFrom: { secretKeyRef: { name: swebench-nubi, key: account_id } }
+            - name: NUBI_TENANT_ID
+              valueFrom: { secretKeyRef: { name: swebench-nubi, key: tenant_id } }
+            - name: APP_DATABASE_URL
+              # Single key, not envFrom on the `nudgebee` secret: that secret
+              # holds 268 keys and injecting all of them would hand every
+              # platform credential to a benchmark runner.
+              valueFrom: { secretKeyRef: { name: nudgebee, key: APP_DATABASE_URL } }
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - { name: results, mountPath: /results }
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "2Gi" }
+      volumes:
+        - name: results
+          persistentVolumeClaim: { claimName: swebench-results }

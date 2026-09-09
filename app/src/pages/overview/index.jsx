@@ -57,13 +57,6 @@ const Overview = () => {
     if (accountKinds.vm) {
       sections.push({ id: 'vm-fleets', name: 'Self-hosted VMs' });
     }
-    if (accountKinds.k8s) {
-      sections.push(
-        { id: 'issues', name: 'Issues' },
-        { id: 'pod-exception', name: 'Pod Exception' },
-        { id: 'node-exception', name: 'Node Exception' }
-      );
-    }
     return [
       {
         name: 'Account Overview',
@@ -79,7 +72,7 @@ const Overview = () => {
 
   return (
     <>
-      <AnchorComponent manageRoute={true} filterOptions={filterOptions} />
+      <AnchorComponent manageRoute={true} filterOptions={filterOptions} hideParentTabs={true} />
       <ErrorBoundary>
         <Box>
           <AccountOverview />

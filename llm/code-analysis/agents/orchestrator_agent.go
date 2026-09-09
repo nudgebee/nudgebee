@@ -509,16 +509,34 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 					"workspace_dir": workDir,
 				})
 
-				// Add PR creation status if RaisePR was requested
-				if request.RaisePR {
-					var resultData map[string]any
-					if err := json.Unmarshal([]byte(specialistResult), &resultData); err == nil {
+				// Report the skip on EVERY path, not just when a PR was wanted.
+				//
+				// Without this, a propose-mode caller (mode=fix, raise_pr=false —
+				// the eager-fix flow and anything asking for a diff) gets back
+				// requires_fix=true with fixed_code populated from
+				// submit_analysis, an absent git_diff, and nothing saying the
+				// fixer never ran. That reads as "a fix was produced" and is
+				// indistinguishable from one. It took a benchmark and a log dig
+				// to notice; execution_status makes it a field.
+				// The nil check is load-bearing, not defensive noise: unmarshaling
+				// the literal `null` succeeds and yields a nil map, and writing to
+				// a nil map panics. A specialist returning "null" is unlikely but
+				// entirely possible, and this branch now runs on every request
+				// rather than only the raise_pr one, so the exposure is wider than
+				// it was.
+				var resultData map[string]any
+				if err := json.Unmarshal([]byte(specialistResult), &resultData); err == nil && resultData != nil {
+					resultData["execution_status"] = "skipped"
+					resultData["execution_summary"] = fmt.Sprintf(
+						"CodeFixer did not run: file_path %q was not found under the repository root. No changes were written and git_diff is empty; any fixed_code below is the specialist's proposal, not an applied change.",
+						filePath)
+					resultData["mode"] = mode
+					if request.RaisePR {
 						resultData["pr_creation_status"] = "skipped"
 						resultData["pr_creation_reason"] = fmt.Sprintf("file_path does not exist in repository: %s", filePath)
-						resultData["mode"] = mode
-						if modifiedJSON, err := json.Marshal(resultData); err == nil {
-							return string(modifiedJSON), nil
-						}
+					}
+					if modifiedJSON, err := json.Marshal(resultData); err == nil {
+						return string(modifiedJSON), nil
 					}
 				}
 
@@ -940,6 +958,9 @@ func (a *OrchestratorAgent) createSessionContext(request NBAgentRequest) (*sessi
 		}
 		if branch, ok := request.QueryConfig["branch"].(string); ok {
 			repoCtx.Branch = branch
+		}
+		if commit, ok := request.QueryConfig["commit"].(string); ok {
+			repoCtx.Commit = commit
 		}
 		if repoPath, ok := request.QueryConfig["repository_path"].(string); ok {
 			// Only set LocalPath if it's a real path, not "agent-managed"
@@ -1917,6 +1938,10 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		branchPointSHA = strings.TrimSpace(out)
 	}
 
+	if err := a.refusePRFromPinnedRevision(ctx, sessionCtx, actualRepoDir, baseBranch, branchPointSHA); err != nil {
+		return nil, err
+	}
+
 	if out, err := a.runGit(ctx, actualRepoDir, "checkout", "-b", branchName); err != nil {
 		return nil, fmt.Errorf("failed to create branch: %s: %w", strings.TrimSpace(out), err)
 	}
@@ -2848,6 +2873,62 @@ func looksLikeGitSHA(s string) bool {
 	return gitSHARegex.MatchString(s)
 }
 
+// refusePRFromPinnedRevision blocks opening a PR whose changes were written
+// against a revision that is not the tip of the base branch.
+//
+// A pinned analysis reads the code as it was — the commit a workload was
+// running when an incident fired. That is the right thing to READ and the wrong
+// thing to BASE A PR ON: the diff is cut from a tree that may be hundreds of
+// commits behind, so the PR either fails to apply or, worse, applies and quietly
+// reverts everything merged since. Failing here is strictly better than opening
+// that PR, because a green PR that reverts history is not visibly wrong.
+//
+// Two independent checks, because a revision can be pinned two ways and each
+// check covers a hole in the other:
+//
+//  1. The request pinned it (git_repository.commit). Deterministic, needs no
+//     remote ref, and works on the single-branch clones these runs use.
+//  2. The agent pinned it by passing `commit` to repo_clone off prompt text, so
+//     nothing upstream knows. Caught by comparing the branch point to the base
+//     tip — but only when that ref is actually present locally.
+//
+// When neither can be established the PR proceeds: this guards a known-bad
+// combination, it is not a general "is this diff still applicable" check.
+func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sessionCtx *session.SessionContext, repoDir, baseBranch, branchPointSHA string) error {
+	pinned := ""
+	if sessionCtx != nil && sessionCtx.RepoContext != nil {
+		pinned = strings.TrimSpace(sessionCtx.RepoContext.Commit)
+	}
+	if pinned != "" {
+		return fmt.Errorf(
+			"refusing to open a PR from a pinned revision: the analysis ran against commit %s, "+
+				"so a fix branch cut from it would revert everything merged into %s since. "+
+				"Use raise_pr=false to get the diff, or omit the commit to fix at the branch tip",
+			pinned, baseBranch)
+	}
+
+	// The agent may have pinned via repo_clone without the request saying so.
+	// Only meaningful when the base tip is resolvable locally; single-branch
+	// clones often will not have it, and an unresolvable ref is not evidence
+	// of anything.
+	if branchPointSHA == "" || baseBranch == "" {
+		return nil
+	}
+	out, err := a.runGit(ctx, repoDir, "rev-parse", "--verify", "--quiet", "origin/"+baseBranch)
+	if err != nil {
+		return nil
+	}
+	baseTip := strings.TrimSpace(out)
+	if baseTip == "" || baseTip == branchPointSHA {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to open a PR from a stale revision: the fix was written against %s but "+
+			"origin/%s is now at %s, so the PR would revert intervening commits. "+
+			"Use raise_pr=false to get the diff, or re-run against the branch tip",
+		branchPointSHA, baseBranch, baseTip)
+}
+
 // seedRepoCloneBranch tells the repo_clone tool which branch to check out when an
 // invocation omits an explicit `branch`. It uses the request's target/base branch
 // (RepoContext.Branch) — the branch the PR will target — so the working tree and any
@@ -2872,6 +2953,16 @@ func seedRepoCloneBranch(tool *tools.RepoCloneTool, sessionCtx *session.SessionC
 		branch = ""
 	}
 	tool.SetDefaultBranch(branch)
+
+	// A pinned commit rides alongside the branch rather than replacing it: the
+	// branch still governs PR targeting (`gh pr create --base` rejects a SHA),
+	// while the commit governs what gets checked out. Reset to "" when absent so
+	// a long-lived tool does not leak the previous request's commit.
+	commit := ""
+	if sessionCtx != nil && sessionCtx.RepoContext != nil {
+		commit = sessionCtx.RepoContext.Commit
+	}
+	tool.SetDefaultCommit(commit)
 }
 
 // instructionsRequireWrite reports whether any entry in
@@ -2908,6 +2999,22 @@ func instructionsRequireWrite(factsData map[string]any) bool {
 // pre-flight existence check consistent with them.
 func repoRelativeFilePath(workDir, filePath string) string {
 	if workDir == "" || filePath == "" {
+		return filePath
+	}
+	// A path that already resolves is returned untouched. The strip below is a
+	// heuristic for ripgrep-relative paths, and it is actively wrong whenever a
+	// repository contains a top-level directory named after the repository
+	// itself — astropy/astropy, django/django, sympy/sympy, requests/requests,
+	// which is the ordinary Python layout. There the prefix is a real segment,
+	// removing it makes the caller's existence check fail, and CodeFixer is
+	// skipped for a file_path that was correct all along. The run still returns
+	// fixed_code from submit_analysis, so the response looks like it carries a
+	// fix while git_diff is empty and nothing was ever written.
+	//
+	// Measured on SWE-bench Verified: 414 of 500 instances (83%) have a gold
+	// file path beginning with the repository name, so the heuristic misfired
+	// far more often than it helped.
+	if _, err := os.Stat(filepath.Join(workDir, filePath)); err == nil {
 		return filePath
 	}
 	repoName := filepath.Base(workDir)

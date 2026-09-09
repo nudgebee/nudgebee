@@ -3,6 +3,7 @@ package aws
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -55,8 +56,10 @@ func (a *awsTrustedAdvisor) GetRecommendations(ctx providers.CloudProviderContex
 			ctx.GetLogger().Info("trusted advisor not available (requires Business/Enterprise support plan)")
 			return recommendations, nil
 		}
-		ctx.GetLogger().Warn("failed to list trusted advisor checks", "error", err)
-		return recommendations, nil
+		// Anything other than a missing support plan is a failed scan, not an
+		// empty one. Reporting it as empty archives every Trusted Advisor
+		// recommendation the account has.
+		return nil, fmt.Errorf("list trusted advisor checks: %w", err)
 	}
 
 	// Filter to cost optimization and performance checks (most relevant for recommendations)
@@ -77,8 +80,15 @@ func (a *awsTrustedAdvisor) GetRecommendations(ctx providers.CloudProviderContex
 			CheckId: check.Id,
 		})
 		if err != nil {
-			ctx.GetLogger().Warn("failed to get trusted advisor check result", "checkId", *check.Id, "error", err)
-			continue
+			// Not being entitled to a particular check is a stable condition, not
+			// a failed scan — skip it as the check list itself does. Anything else
+			// means we cannot tell whether this check's recommendations still
+			// apply, and reporting them as absent would archive them.
+			if isAccessDeniedError(err) {
+				ctx.GetLogger().Info("trusted advisor check not available", "checkId", aws.ToString(check.Id))
+				continue
+			}
+			return nil, fmt.Errorf("get trusted advisor check result %s: %w", aws.ToString(check.Id), err)
 		}
 
 		if resultOutput.Result == nil {
@@ -205,14 +215,45 @@ func extractTASavings(data map[string]any) float64 {
 	}
 	for _, key := range savingsKeys {
 		if v, ok := data[key]; ok {
-			if s, ok := v.(string); ok {
-				if val, err := parseFloat64(s); err == nil {
-					return val
+			switch val := v.(type) {
+			case float64:
+				return val
+			case string:
+				if parsed, err := parseMoneyString(val); err == nil {
+					return parsed
 				}
 			}
 		}
 	}
 	return 0
+}
+
+var (
+	// currencyAmountPattern matches an amount tied to a currency symbol, with the
+	// sign allowed on either side of the symbol ("-$5.00" and "$-5.00").
+	currencyAmountPattern = regexp.MustCompile(`-?\s*[$€£₹]\s*-?[\d,]*\.?\d+`)
+	// bareNumberPattern matches the first signed decimal number in a string.
+	bareNumberPattern   = regexp.MustCompile(`-?[\d,]*\.?\d+`)
+	moneySymbolStripper = strings.NewReplacer(",", "", " ", "", "$", "", "€", "", "£", "", "₹", "")
+)
+
+// parseMoneyString parses Trusted Advisor's display-formatted money cells.
+// The metadata is presentation text, not raw numbers: values arrive as
+// "$36.14", "1,234.56" or "$1,234.56", all of which strconv.ParseFloat rejects,
+// which silently zeroed every Trusted Advisor cost finding.
+//
+// A currency-marked amount wins over any other number in the cell, so a stray
+// leading figure ("(20%) of $100.00") cannot be mistaken for the money value.
+// Only when the cell carries no currency symbol at all does the first number win.
+func parseMoneyString(s string) (float64, error) {
+	match := currencyAmountPattern.FindString(s)
+	if match == "" {
+		match = bareNumberPattern.FindString(s)
+	}
+	if match == "" {
+		return 0, fmt.Errorf("no numeric value in %q", s)
+	}
+	return parseFloat64(moneySymbolStripper.Replace(match))
 }
 
 func isAccessDeniedError(err error) bool {

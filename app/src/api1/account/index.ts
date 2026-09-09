@@ -58,6 +58,7 @@ mutation CreateAccount($object: cloud_accounts_insert_one_input!) {
       id
       access_key
       access_secret
+      warning
     }
   }
 `;

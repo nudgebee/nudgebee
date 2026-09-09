@@ -140,6 +140,73 @@ func ListDiscoveryDatasources(dbms *database.DatabaseManager) ([]DiscoveryDataso
 	return datasources, nil
 }
 
+// ListDiscoveryDatasourcesForAccount is ListDiscoveryDatasources scoped to a
+// single account, used by the manual account-wide scan trigger so one
+// account's scan request doesn't have to list every tenant's datasources
+// first.
+//
+// A datasource matches accountID when it explicitly targets that account
+// (link_role='discovery_target'), or — only when it has no explicit target —
+// when it runs in that account (link_role='own'). The 'own' fallback is what
+// makes the manual button consistent with the daily cron
+// (ListDiscoveryDatasources, which sweeps every enabled discovery datasource
+// regardless of an explicit target): an auto-registered forager discovery
+// datasource that has not yet had a target defaulted onto it (the relay's
+// UpsertAgentDatasources does that on the next agent reconnect) would
+// otherwise be rejected with "no discovery agent is configured to scan this
+// account" even though the cron would happily scan it.
+//
+// The target, when present, wins outright: a datasource with own=A and an
+// explicit target=B scans and files findings for B (see
+// ScanDiscoveryDatasource → resolveTargets against ds.TargetAccountID), so it
+// must match a scan request for B, never one for A — matching it for A would
+// both mis-scan (A left untouched, B's findings rewritten) and let a caller
+// with access to A only trigger a scan on B.
+func ListDiscoveryDatasourcesForAccount(dbms *database.DatabaseManager, accountID string) ([]DiscoveryDatasource, error) {
+	var rows []struct {
+		IntegrationID   string         `db:"integration_id"`
+		TenantID        string         `db:"tenant_id"`
+		AccountID       string         `db:"account_id"`
+		TargetAccountID sql.NullString `db:"target_account_id"`
+		Labels          string         `db:"labels"`
+	}
+	err := dbms.Db.Select(&rows, `
+		SELECT i.id::text AS integration_id, i.tenant_id::varchar AS tenant_id,
+		       own.cloud_account_id::varchar AS account_id,
+		       target.cloud_account_id::varchar AS target_account_id,
+		       i.labels::text AS labels
+		FROM integrations i
+		JOIN integrations_cloud_accounts own ON own.integration_id = i.id AND own.link_role = 'own'
+		LEFT JOIN (
+			SELECT DISTINCT ON (integration_id) integration_id, cloud_account_id
+			FROM integrations_cloud_accounts
+			WHERE link_role = 'discovery_target'
+			ORDER BY integration_id, id DESC
+		) target ON target.integration_id = i.id
+		WHERE i.type = 'discovery' AND i.status = 'enabled'
+		  AND (target.cloud_account_id = $1
+		       OR (target.cloud_account_id IS NULL AND own.cloud_account_id = $1))`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("vmpackage: list discovery datasources for account %s: %w", accountID, err)
+	}
+
+	datasources := make([]DiscoveryDatasource, 0, len(rows))
+	for _, r := range rows {
+		labels, ok := eligibleDiscoveryLabels(r.Labels)
+		if !ok {
+			continue
+		}
+		datasources = append(datasources, DiscoveryDatasource{
+			IntegrationID:   r.IntegrationID,
+			TenantID:        r.TenantID,
+			AccountID:       r.AccountID,
+			TargetAccountID: r.TargetAccountID.String,
+			Labels:          labels,
+		})
+	}
+	return datasources, nil
+}
+
 // GetDiscoveryDatasourceByID re-resolves a single discovery datasource by
 // integration+account id, for the queue consumer to pick up current labels
 // right before scanning rather than trusting a possibly-stale copy carried

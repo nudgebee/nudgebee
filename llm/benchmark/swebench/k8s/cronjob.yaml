@@ -1,0 +1,110 @@
+# Weekly SWE-bench run against the frozen 16-instance stratified set.
+#
+# Weekly, not nightly. At n=16 the 95% interval is roughly ±24 points, so a
+# nightly cannot resolve any change worth acting on — it would spend ~$64 a night
+# to redraw the same interval.
+#
+# This is a TRACKING number, not a gate. Do not alert on the rate. The useful
+# trigger is a run per code-analysis PR: that attributes a change to a diff,
+# which a calendar schedule never can.
+#
+# Run-to-run agent variance is UNMEASURED. An earlier 8/16 -> 12/16 comparison
+# looked like variance but was not: those runs used different payloads, one
+# entering via k8s_orchestrator and one directly into code_analyzer. Establishing
+# a variance figure needs two runs with identical payloads, which we do not have.
+#
+#   kubectl -n nudgebee apply -f k8s/rbac.yaml
+#   kubectl -n nudgebee apply -f k8s/cronjob.yaml
+#   kubectl -n nudgebee create job --from=cronjob/swebench-weekly swebench-manual   # ad-hoc
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: swebench-weekly
+  namespace: nudgebee
+  labels: { app: swebench-pipeline }
+spec:
+  # Mondays 02:00 UTC — off the working week so a ~70 minute run and its 16
+  # grading Jobs are not competing with anyone for nodes.
+  schedule: "0 2 * * 1"
+  timeZone: Etc/UTC
+  # Suspended. Enabling starts spending ~$64 a week, so flip it deliberately —
+  # not as a side effect of re-applying this file.
+  #
+  # Still open before this is worth running unattended:
+  #   - the agent can still reach the real fix (git log --all, git show <sha>,
+  #     and gh api .../pulls/<n>, which no local ref pruning can close). Audited
+  #     2026-08-21: 1 of 44 conversations did this and produced no diff, so no
+  #     reported rate is affected — but the route is open.
+  #   - only one valid measurement of code_analyzer exists (12/16). Two earlier
+  #     rates were retired for entering via k8s_orchestrator.
+  suspend: true
+  # A run takes over an hour and grading Jobs are keyed by a fixed label, so two
+  # overlapping runs would delete each other's Jobs mid-flight.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 8   # ~2 months of runs visible
+  failedJobsHistoryLimit: 4
+  jobTemplate:
+    spec:
+      # No retries. A retry re-runs every LLM conversation in the set and
+      # silently doubles the bill on a transient failure.
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 1209600
+      template:
+        metadata:
+          labels: { app: swebench-pipeline }
+        spec:
+          serviceAccountName: swebench-runner
+          restartPolicy: Never
+          # Keep the driver off spot: it holds an hour of paid, non-resumable LLM
+          # conversations and backoffLimit is 0, so one preemption discards the
+          # whole run's spend.
+          #
+          # DoesNotExist, not `gke-spot: "false"` — GKE labels spot nodes only, so
+          # matching a "false" value selects nothing and schedules anywhere.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: cloud.google.com/gke-spot
+                        operator: DoesNotExist
+          containers:
+            - name: pipeline
+              # Pinned, never :latest. A floating tag makes "the score moved" and
+              # "the runner changed" indistinguishable after the fact.
+              image: ghcr.io/nudgebee/swebench-runner:2026-08-21.1
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: FROZEN
+                  # 16 instances across 8 repos. Changing this file breaks
+                  # comparability with every run before it — treat a change as
+                  # starting a new series, not continuing this one.
+                  value: /app/frozen_stratified.txt
+                - name: MODEL_NAME
+                  value: nubi-code-analyzer
+                - name: OUT_DIR
+                  value: /results
+                - name: NUBI_URL
+                  value: "http://llm-server.nudgebee.svc.cluster.local:8000"
+                - name: NUBI_TOKEN
+                  valueFrom: { secretKeyRef: { name: swebench-nubi, key: token } }
+                - name: NUBI_ACCOUNT_ID
+                  valueFrom: { secretKeyRef: { name: swebench-nubi, key: account_id } }
+                - name: NUBI_TENANT_ID
+                  valueFrom: { secretKeyRef: { name: swebench-nubi, key: tenant_id } }
+                - name: APP_DATABASE_URL
+                  # Single key, not envFrom on the `nudgebee` secret: that secret
+                  # holds 268 keys and injecting all of them would hand every
+                  # platform credential to a benchmark runner.
+                  valueFrom: { secretKeyRef: { name: nudgebee, key: APP_DATABASE_URL } }
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+              volumeMounts:
+                - { name: results, mountPath: /results }
+              resources:
+                requests: { cpu: "200m", memory: "512Mi" }
+                limits:   { cpu: "1",    memory: "2Gi" }
+          volumes:
+            - name: results
+              persistentVolumeClaim: { claimName: swebench-results }

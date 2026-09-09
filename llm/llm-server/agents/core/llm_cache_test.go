@@ -241,7 +241,7 @@ func TestGoogleAICacheProvider_ZeroLatencyHitPath(t *testing.T) {
 
 	cacheable, _ := identifyCacheableMessages(messages, CacheScopeAccount)
 	cacheable = padMessagesIfRequired(cacheable, CacheScopeAccount)
-	contentHash := hashContent(cacheable)
+	contentHash := hashContent(cacheable, nil)
 	credsFp := credsFingerprint("", "", "", "", "", "", "")
 	cacheKey := generateCacheKey(CacheScopeAccount, "acc-hit-test", "", "test_agent", "gemini-2.5-flash", credsFp)
 

@@ -114,3 +114,25 @@ func ValidateBranchName(branch string) error {
 	}
 	return nil
 }
+
+// ValidateCommitSHA accepts only a hexadecimal object name.
+//
+// Deliberately stricter than ValidateBranchName: a commit reaches git as a
+// checkout target and as a fetch argument, so anything that is not plainly a
+// SHA — a ref name, a rev expression like "HEAD~3", an option-looking string —
+// is refused rather than interpreted. Abbreviated SHAs are allowed from 7
+// characters, matching git's own minimum for unambiguous short names.
+func ValidateCommitSHA(commit string) error {
+	if commit == "" {
+		return fmt.Errorf("commit is empty")
+	}
+	if len(commit) < 7 || len(commit) > 40 {
+		return fmt.Errorf("commit %q must be between 7 and 40 hex characters", commit)
+	}
+	for _, r := range commit {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return fmt.Errorf("commit %q is not a lowercase hexadecimal object name", commit)
+		}
+	}
+	return nil
+}

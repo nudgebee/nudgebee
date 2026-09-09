@@ -30,7 +30,8 @@ import { Checkbox } from '@ui/Checkbox';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
 import CopyButton from '@shared/buttons/CopyButton';
-import AccountEnvToggle, { ACCOUNT_ENV_PROD, ACCOUNT_ENV_TOOLTIP, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import AccountEnvToggle, { ACCOUNT_ENV_TOOLTIP, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import AccountEnvText from '@shared/format/AccountEnvText';
 
 // Agents connect asynchronously minutes after an account is created, so the
 // health columns are still empty on the fetch that follows install. Poll to
@@ -198,7 +199,7 @@ const K8sIntegrationTile = () => {
                 component: <Label text={item.status} />,
               },
               {
-                text: item.account_env === ACCOUNT_ENV_PROD ? 'Production' : 'Non-production',
+                component: <AccountEnvText accountName={item.account_name} accountEnv={item.account_env} />,
               },
               {
                 component: <Datetime value={item.created_at} />,

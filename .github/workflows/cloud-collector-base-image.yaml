@@ -1,159 +1,143 @@
-name: nudgebee-cloud-collector base image
-
-# Builds and publishes the OSS cloud-collector base image —
-# ghcr.io/<owner>/nudgebee-cloud-collector-base (Alpine + aws-cli / azure-cli /
-# gcloud SDK) that cloud-collector-server builds FROM (RUNTIME_BASE).
-#
-# Why this workflow exists: same gap as the python base. The enterprise infra
-# pipeline publishes this base to ECR only, so the public GHCR tag was pushed
-# once and never refreshed — its Alpine OS packages went stale (and the base was
-# on the now-EOL alpine:3.19). This gives the GHCR base a real, repeatable build.
-#
-# Freshness: the Dockerfile runs `apk upgrade` on a current alpine, so every
-# rebuild picks up the latest patches. The weekly `schedule` rebuilds even when
-# the Dockerfile hasn't changed, so the base can't silently go stale again.
-#
-# Tags (on push to main / schedule / manual dispatch):
-#   :latest                immutable-enough rolling tag for auto-fresh patches
-#   :<YYYYMMDD>-<sha7>      immutable snapshot for reproducible RUNTIME_BASE pins
-# PRs build both arches to validate, but do not push.
-#
-# Runners mirror edge.yaml: amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm.
-# cloud-collector-server is multi-arch, so the base must be too.
-#
-# Note on visibility: a new GHCR package defaults to *private*. After the first
-# push, flip ghcr.io/<owner>/nudgebee-cloud-collector-base to public in
-# Settings -> Packages.
+name: Build and Push Cloud Collector Base Image
 
 on:
   workflow_dispatch:
-  schedule:
-    # Weekly, Monday 06:30 UTC — refresh OS security patches even with no change.
-    - cron: "30 6 * * 1"
   push:
-    branches: ["main"]
+    branches: ['main']
     paths:
-      - deploy/kubernetes/nudgebee-cloud-collector-base-image/**
-      - .github/workflows/cloud-collector-base-image.yaml
+      - 'deploy/kubernetes/nudgebee-cloud-collector-base-image/**'
+      - '.github/workflows/cloud-collector-base-image.yaml'
   pull_request:
-    branches: ["main"]
+    branches: ['main']
     paths:
-      - deploy/kubernetes/nudgebee-cloud-collector-base-image/**
-      - .github/workflows/cloud-collector-base-image.yaml
+      - 'deploy/kubernetes/nudgebee-cloud-collector-base-image/**'
+      - '.github/workflows/cloud-collector-base-image.yaml'
+
+env:
+  IMAGE_REPO: ${{ secrets.DEV_AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/nudgebee-cloud-collector-base
+  ECR_REGISTRY: ${{ secrets.DEV_AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE: nudgebee-cloud-collector-base
-  CONTEXT: deploy/kubernetes/nudgebee-cloud-collector-base-image
-
+# Job 1: Generate shared tag
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  tag:
+    runs-on: self-hosted
     outputs:
-      namespace: ${{ steps.v.outputs.namespace }}
-      date: ${{ steps.v.outputs.date }}
-      sha_short: ${{ steps.v.outputs.sha_short }}
-      push: ${{ steps.v.outputs.push }}
+      tag: ${{ steps.date.outputs.tag }}
     steps:
-      - id: v
+      - name: Generate tag
+        id: date
         run: |
-          set -euo pipefail
-          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
-          {
-            echo "namespace=$ns"
-            echo "date=$(date -u +%Y%m%d)"
-            echo "sha_short=${GITHUB_SHA:0:7}"
-            echo "push=$push"
-          } >> "$GITHUB_OUTPUT"
-          echo "nudgebee-cloud-collector-base push=$push -> ${REGISTRY}/$ns/${IMAGE}"
+          echo "tag=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
-  # One cell per arch, built on its native runner (no QEMU). On push the per-arch
-  # image is published as :<date>-<sha7>-<arch>; merge-manifest stitches them.
-  build:
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
-          - { platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        if: needs.prepare.outputs.push == 'true'
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build ${{ matrix.arch }} (push=${{ needs.prepare.outputs.push }})
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ env.CONTEXT }}
-          push: ${{ needs.prepare.outputs.push == 'true' }}
-          platforms: ${{ matrix.platform }}
-          tags: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ env.IMAGE }}:${{ needs.prepare.outputs.date }}-${{ needs.prepare.outputs.sha_short }}-${{ matrix.arch }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=${{ env.IMAGE }}
-          cache-from: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3}', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
-          cache-to: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
-
-  # Stitch the per-arch images into one multi-arch manifest and apply the
-  # canonical tags. Skipped on PRs (nothing was pushed to merge).
-  merge-manifest:
-    needs: [prepare, build]
-    if: needs.prepare.outputs.push == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+# Job 2: Build & push amd64 image
+  build-amd64:
+    if: github.ref == 'refs/heads/main'
+    needs: tag
+    runs-on: [self-hosted, X64]
     env:
-      REPO: ghcr.io/${{ needs.prepare.outputs.namespace }}/nudgebee-cloud-collector-base
-      DATE: ${{ needs.prepare.outputs.date }}
-      SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}
+      TAG: ${{ needs.tag.outputs.tag }}
+
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v3
 
-      - uses: docker/login-action@v3
+      - uses: unfor19/install-aws-cli-action@master
+
+      - uses: aws-actions/configure-aws-credentials@v1
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-      - name: Create multi-arch manifest
+      - name: Login to Amazon ECR
         run: |
-          set -euo pipefail
-          SNAP="${DATE}-${SHA_SHORT}"
-          # STABLE is the version-rolling tag consumers pin (mirrors the python
-          # base's :3.12). It tracks the Alpine major.minor the base is built on,
-          # so weekly rebuilds roll security patches WITHIN alpine 3.22 but never
-          # silently jump to a new major (which would risk breaking tooling).
-          # Bump this in lockstep with the FROM alpine:X.Y in the base Dockerfile.
-          STABLE="alpine3.22"
-          echo "Merging ${REPO}:${SNAP} (+ :${STABLE} + :latest) from per-arch images"
-          docker buildx imagetools create \
-            -t "${REPO}:${STABLE}" \
-            -t "${REPO}:latest" \
-            -t "${REPO}:${SNAP}" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
-            --annotation "index:org.opencontainers.image.title=${IMAGE}" \
-            "${REPO}:${SNAP}-amd64" \
-            "${REPO}:${SNAP}-arm64"
+          aws ecr get-login-password --region us-east-1 | docker login \
+            --username AWS \
+            --password-stdin $ECR_REGISTRY
 
-          docker buildx imagetools inspect "${REPO}:${STABLE}" || true
+      - name: Build & push amd64 image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t $IMAGE_REPO:$TAG-amd64 \
+            -f deploy/kubernetes/nudgebee-cloud-collector-base-image/Dockerfile \
+            deploy/kubernetes/nudgebee-cloud-collector-base-image
+
+          docker push $IMAGE_REPO:$TAG-amd64
+
+# Job 3: Build & push arm64 image
+  build-arm64:
+    if: github.ref == 'refs/heads/main'
+    needs: tag
+    runs-on: [self-hosted, arm64]
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install AWS CLI
+        run: |
+          curl -sL https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip -o awscliv2.zip
+          unzip -q awscliv2.zip
+          sudo ./aws/install --update
+          rm -rf awscliv2.zip aws
+
+      - uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region us-east-1 | docker login \
+            --username AWS \
+            --password-stdin $ECR_REGISTRY
+
+      - name: Build & push arm64 image
+        run: |
+          docker build \
+            --platform linux/arm64 \
+            -t $IMAGE_REPO:$TAG-arm64 \
+            -f deploy/kubernetes/nudgebee-cloud-collector-base-image/Dockerfile \
+            deploy/kubernetes/nudgebee-cloud-collector-base-image
+
+          docker push $IMAGE_REPO:$TAG-arm64
+
+# Job 4: Create & push multi-arch manifest
+  manifest:
+    if: github.ref == 'refs/heads/main'
+    needs: [tag, build-amd64, build-arm64]
+    runs-on: [self-hosted, X64]
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+
+    steps:
+      - uses: unfor19/install-aws-cli-action@master
+
+      - uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region us-east-1 | docker login \
+            --username AWS \
+            --password-stdin $ECR_REGISTRY
+
+      - name: Create & push multi-arch manifest
+        run: |
+          docker manifest create $IMAGE_REPO:$TAG \
+            --amend $IMAGE_REPO:$TAG-amd64 \
+            --amend $IMAGE_REPO:$TAG-arm64
+
+          docker manifest push $IMAGE_REPO:$TAG

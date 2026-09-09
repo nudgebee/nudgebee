@@ -10,13 +10,19 @@ how they chunk leftover plain text and how they issue the actual send call.
 
 import json
 import logging
+import time
 from typing import Any, Callable, List, Optional, Sequence
 
 from slack_sdk.errors import SlackApiError
 
-from notifications_server.message_templates.blocks import BaseBlock, MarkdownBlock
+from notifications_server.message_templates.blocks import BaseBlock, MarkdownBlock, SlackFileImageBlock
 from notifications_server.utils.markdown_table import render_table, split_table_segments
-from notifications_server.utils.mermaid_chart import render_mermaid_code, split_mermaid_segments
+from notifications_server.utils.mermaid_chart import (
+    ImageUploader,
+    is_graph_diagram,
+    render_mermaid_code,
+    split_mermaid_segments,
+)
 from notifications_server.utils.nb_chart import render_nb_chart, split_nb_chart_segments
 from notifications_server.utils.transformer import MAX_BLOCK_CHARS, Transformer
 
@@ -29,6 +35,14 @@ PlainTextRenderer = Callable[[str], List[SlackBlock]]
 # than a transient/systemic failure (rate limit, expired token, network
 # blip) - only these are worth bisecting and retrying in halves.
 SLACK_BISECTABLE_ERRORS = {"invalid_blocks", "invalid_blocks_format", "msg_too_long"}
+
+# A just-uploaded image's slack_file reference can get rejected with
+# invalid_blocks before Slack finishes propagating the upload - bisecting
+# still recovers, but splits one answer into two messages for a transient
+# race. Retry the same list first instead.
+_STALE_SLACK_FILE_ERROR_MARKER = "slack_file"
+_STALE_SLACK_FILE_RETRY_DELAY_SECONDS = 1.0
+_STALE_SLACK_FILE_MAX_RETRIES = 3
 
 # Slack's hard cap on blocks in a single message is 50; batch_slack_groups
 # groups atomic content groups (one chart, one table, one text chunk) up to
@@ -49,16 +63,40 @@ def render_rich_segments(
     text: str,
     render_plain_text: PlainTextRenderer,
     view_url: Optional[str] = None,
+    upload_image: Optional[ImageUploader] = None,
 ) -> List[List[SlackBlock]]:
     """Split `text` into Mermaid / nb-chart / GFM-table / plain-markdown
     segments and render each into one atomic group of Slack block dicts (one
     diagram, one chart, one table, or whatever `render_plain_text` returns
     for a leftover plain chunk - each dict it returns becomes its own group).
+
+    Passing `upload_image` (see mermaid_chart.ImageUploader) turns on the
+    Image tier for flowchart/graph diagrams: the PNG is uploaded and embedded
+    inline as a native Slack image block, right in this same return value -
+    no separate upload step or follow-up message needed, since the block
+    itself just references an already-uploaded file. Callers with no way to
+    upload a file (e.g. generic.py's workflow-notification path) simply pass
+    nothing and get the existing code-block fallback instead.
     """
     groups: List[List[SlackBlock]] = []
-    for mermaid_segment in split_mermaid_segments(text):
+    mermaid_segments = split_mermaid_segments(text)
+
+    graph_diagram_count = (
+        sum(1 for seg in mermaid_segments if seg.is_mermaid and is_graph_diagram(seg.text))
+        if upload_image is not None
+        else 0
+    )
+    next_diagram_number = 1
+
+    for mermaid_segment in mermaid_segments:
         if mermaid_segment.is_mermaid:
-            groups.append(to_slack_dicts(render_mermaid_code(mermaid_segment.text, view_url)))
+            diagram_number = next_diagram_number if graph_diagram_count > 1 else None
+            blocks = render_mermaid_code(
+                mermaid_segment.text, view_url, upload_image=upload_image, diagram_number=diagram_number
+            )
+            if any(isinstance(b, SlackFileImageBlock) for b in blocks):
+                next_diagram_number += 1
+            groups.append(to_slack_dicts(blocks))
             continue
         groups.extend(_render_non_mermaid_segment(mermaid_segment.text, render_plain_text, view_url))
     return groups
@@ -116,6 +154,9 @@ def batch_slack_groups(
     return messages
 
 
+_FENCE_OVERHEAD = len("```\n\n```")
+
+
 def fallback_slack_block(block: SlackBlock) -> List[SlackBlock]:
     """Best-effort plain-text substitute for one Slack block that Slack
     rejected outright (e.g. a data_visualization/table payload shape it
@@ -129,7 +170,9 @@ def fallback_slack_block(block: SlackBlock) -> List[SlackBlock]:
         raw = json.dumps(block.get("chart", {}), indent=2)
     elif block_type == "table":
         notice = "_This table couldn't be displayed here._"
-        raw = json.dumps(block.get("rows", []), indent=2)
+        raw, truncated = _dump_rows_within_budget(block.get("rows", []), MAX_BLOCK_CHARS - _FENCE_OVERHEAD)
+        if truncated:
+            notice += " _(further truncated to fit)_"
     else:
         return [
             {
@@ -145,7 +188,44 @@ def fallback_slack_block(block: SlackBlock) -> List[SlackBlock]:
     ]
 
 
-def send_blocks_with_fallback(blocks: List[SlackBlock], send_fn: Callable[[List[SlackBlock]], Any]) -> None:
+def _dump_rows_within_budget(rows: List[Any], max_chars: int) -> tuple[str, bool]:
+    """json.dumps `rows`, dropping rows from the tail (keeping the header)
+    until it fits max_chars, so a fallback dump that's still too big ends on
+    a clean row boundary instead of Transformer.apply_length_limit slicing
+    the JSON string mid-token into something unparseable.
+
+    Binary search over the prefix length: dumped length only grows as more
+    rows are kept, so this finds the longest fitting prefix in O(log N)
+    json.dumps calls instead of shrinking one row at a time."""
+    dumped = json.dumps(rows, indent=2)
+    if len(dumped) <= max_chars or len(rows) <= 1:
+        return dumped, False
+
+    best_dumped = json.dumps(rows[:1], indent=2)
+    low, high = 1, len(rows) - 1
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = json.dumps(rows[:mid], indent=2)
+        if len(candidate) <= max_chars:
+            best_dumped = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best_dumped, True
+
+
+def _is_stale_slack_file_rejection(error_code: Optional[str], response_data: dict) -> bool:
+    """True only for invalid_blocks whose detail names a slack_file
+    reference, not any other shape of invalid_blocks."""
+    if error_code != "invalid_blocks":
+        return False
+    errors = response_data.get("errors") or []
+    return any(_STALE_SLACK_FILE_ERROR_MARKER in str(err) for err in errors)
+
+
+def send_blocks_with_fallback(
+    blocks: List[SlackBlock], send_fn: Callable[[List[SlackBlock]], Any], _stale_file_retries: int = 0
+) -> None:
     """Send `blocks` as one Slack message via `send_fn(blocks)`. If Slack
     rejects it for a reason specific to this exact block shape
     (SLACK_BISECTABLE_ERRORS, raised by `send_fn` as a SlackApiError), bisect
@@ -160,6 +240,11 @@ def send_blocks_with_fallback(blocks: List[SlackBlock], send_fn: Callable[[List[
     request up to ~3x the original block count, worsening exactly the outage
     causing it. Those propagate to the caller unchanged.
 
+    One case is retried before bisection: a stale slack_file reference (see
+    _is_stale_slack_file_rejection) gets up to _STALE_SLACK_FILE_MAX_RETRIES
+    retries of the same, un-bisected `blocks` list first - once exhausted,
+    it falls through to the normal path below.
+
     `send_fn` must raise SlackApiError on rejection (not swallow it) for
     bisection to trigger - see the module docstring."""
     if not blocks:
@@ -168,7 +253,21 @@ def send_blocks_with_fallback(blocks: List[SlackBlock], send_fn: Callable[[List[
         send_fn(blocks)
         return
     except SlackApiError as e:
-        error_code = e.response.data.get("error") if e.response is not None else None
+        response_data = e.response.data if e.response is not None else {}
+        error_code = response_data.get("error")
+
+        if _stale_file_retries < _STALE_SLACK_FILE_MAX_RETRIES and _is_stale_slack_file_rejection(
+            error_code, response_data
+        ):
+            LOG.info(
+                "Slack rejected a just-uploaded file reference (propagation lag) - retrying (%d/%d)",
+                _stale_file_retries + 1,
+                _STALE_SLACK_FILE_MAX_RETRIES,
+            )
+            time.sleep(_STALE_SLACK_FILE_RETRY_DELAY_SECONDS)
+            send_blocks_with_fallback(blocks, send_fn, _stale_file_retries=_stale_file_retries + 1)
+            return
+
         if error_code not in SLACK_BISECTABLE_ERRORS:
             raise
 

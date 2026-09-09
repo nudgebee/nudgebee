@@ -113,6 +113,95 @@ var ssmManagedInstanceSchema = core.SpecificTypeSchema{
 
 func init() { core.RegisterSpecificTypeSchema(ssmManagedInstanceSchema) }
 
+// collapseComputeInstanceDuplicates folds the several inventory rows AWS reports for
+// one physical instance onto a single ComputeInstance node.
+//
+// The same EC2 instance arrives from more than one collector path — EC2 describe
+// (type `compute-instance`, name = the Name tag) and Systems Manager inventory
+// (type `managedinstance`, name = the instance id) — and both map to
+// NodeTypeComputeInstance. The unique key is {source}:{account}:{region}:{type}:
+// {hierarchy}:{name}, so the differing name AND hierarchy (SSM rows carry no VPC)
+// produce two nodes for one machine, splitting its edges: the SSM node collected
+// the ALB's ROUTES_TO while the EC2 node collected the VPC-flow-log CALLS chain,
+// so a blast radius seeded on the load balancer dead-ended on a node with no
+// outgoing traffic edges.
+//
+// Collapsing here — before NewNodeLookup — is what makes lookup.ByResourceID
+// unambiguous, since every edge builder that resolves an instance target goes
+// through it (buildLBTargetEdges, createEKSNodeGroupEdges, autoscaling).
+// Deliberately NOT done by re-keying the node on resource_id: node IDs are a
+// UUIDv5 of the unique key (core.GenerateNodeID), so changing the key would
+// change the ID of every EC2 node in every AWS tenant, orphaning existing edges
+// and the node IDs persisted in kg_manual_dependencies.
+//
+// The first EC2Instance node wins; an instance SSM manages but EC2 describe does
+// not report (hybrid/on-prem activations) keeps its own node. Merging is
+// fill-only: a duplicate contributes only keys the survivor lacks, so the SSM
+// row's name (the instance id) and its Systems Manager ARN can never overwrite
+// the survivor's identity — which the unique key is still recomputed from in
+// propagateVPCNamesToResources.
+func collapseComputeInstanceDuplicates(nodes []*core.DbNode) []*core.DbNode {
+	survivors := make(map[string]*core.DbNode)
+	for _, node := range nodes {
+		if node == nil || node.NodeType != core.NodeTypeComputeInstance {
+			continue
+		}
+		resourceID, _ := core.GetNodePropertyString(node, "resource_id")
+		if resourceID == "" {
+			continue
+		}
+		existing, seen := survivors[resourceID]
+		if !seen {
+			survivors[resourceID] = node
+			continue
+		}
+		// Prefer the EC2-described node: it is the one carrying VPC, private IP
+		// and the Name tag, and therefore the one the flow-log IP index matched.
+		if existing.SpecificType != ec2InstanceSchema.SpecificType && node.SpecificType == ec2InstanceSchema.SpecificType {
+			fillMissingProperties(node, existing)
+			survivors[resourceID] = node
+		} else {
+			fillMissingProperties(existing, node)
+		}
+	}
+
+	if len(survivors) == 0 {
+		return nodes
+	}
+
+	kept := make([]*core.DbNode, 0, len(nodes))
+	for _, node := range nodes {
+		if node != nil && node.NodeType == core.NodeTypeComputeInstance {
+			if resourceID, _ := core.GetNodePropertyString(node, "resource_id"); resourceID != "" {
+				if survivors[resourceID] != node {
+					continue
+				}
+			}
+		}
+		kept = append(kept, node)
+	}
+	return kept
+}
+
+// fillMissingProperties copies properties from a collapsed duplicate onto the
+// surviving node without overwriting anything already set. core.MergeProperties
+// is deliberately not used here: it lets the second map win, which would let a
+// dropped SSM row rename the survivor and change the unique key derived from it.
+func fillMissingProperties(survivor, duplicate *core.DbNode) {
+	if survivor.Properties == nil {
+		survivor.Properties = make(map[string]interface{}, len(duplicate.Properties))
+	}
+	for key, value := range duplicate.Properties {
+		if value == nil || value == "" {
+			continue
+		}
+		if current, ok := survivor.Properties[key]; ok && current != nil && current != "" {
+			continue
+		}
+		survivor.Properties[key] = value
+	}
+}
+
 // extractComputeMetadata extracts essential fields for EC2 instances
 func (s *AWSSource) extractComputeMetadata(properties map[string]interface{}, metaMap map[string]interface{}) {
 	// Instance type (important for capacity)

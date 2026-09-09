@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -85,3 +85,48 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: ./api-server/services
         run: go vet -tags "relay_integration recommendation_integration" ./...
+
+  # The PR-lifecycle sweeps are plain SQL against recommendation_resolution /
+  # event_resolution, and their tests are written against throwaway tables. They
+  # were DB-gated with a skip, so on a runner with no database they skipped —
+  # which meant nothing checked them at all, and one of them sat asserting the
+  # wrong contract until it was first executed. Give them a database so they run.
+  #
+  # ubuntu-latest, not the self-hosted runner: service containers need Docker on
+  # the runner host, and this mirrors the postgres:15 service that
+  # migrations-validate.yaml already runs successfully.
+  pr-lifecycle-db-tests:
+    name: PR lifecycle sweeps (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: appdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: ./api-server/services/go.sum
+
+      # These tests create and drop their own throwaway tables, so an empty
+      # database is all they need — no migrations, no fixtures.
+      - name: Run PR-lifecycle DB tests
+        working-directory: ./api-server/services
+        env:
+          APP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+          # Turns an unreachable database into a failure in THIS job only, so the
+          # suite cannot quietly stop running here.
+          REQUIRE_DB_TESTS: "true"
+        run: go test ./account/adapter/ -run '_DB$' -v

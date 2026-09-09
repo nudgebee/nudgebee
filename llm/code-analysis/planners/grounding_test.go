@@ -55,11 +55,30 @@ func TestWasFileRead_SuffixMatch(t *testing.T) {
 
 func TestShouldAbstainForced_NoReads(t *testing.T) {
 	p := NewReActPlanner(nil, nil, 10)
+	p.goal = &Goal{Mode: "explore"}
 	if !p.shouldAbstainForced() {
-		t.Fatalf("expected abstain when no files were read")
+		t.Fatalf("expected abstain when no files were read (explore mode)")
 	}
 	p.recordFileRead("api/foo.go")
+	if !p.shouldAbstainForced() {
+		t.Fatalf("expected abstain once read but with no ledger citation to ground the answer (explore mode)")
+	}
+}
+
+// A mode with nothing to "abstain" from (e.g. "followup", which commits/pushes
+// edits it already knows about without ever calling file_view) must never hit
+// the insufficient-evidence path, no matter how few files were read. Before
+// this fix, every out-of-budget followup run was silently mislabeled as a
+// no-evidence investigative dead-end instead of "uncommitted work" — issue
+// #36634, reproduced via a direct probe of the commit-enforcement retry.
+func TestShouldAbstainForced_NonExploreModeNeverAbstains(t *testing.T) {
+	p := NewReActPlanner(nil, nil, 10)
 	if p.shouldAbstainForced() {
-		t.Fatalf("did not expect abstain once a file was read (non-explore mode)")
+		t.Fatalf("expected no abstain with a nil goal (no mode set)")
+	}
+
+	p.goal = &Goal{Mode: "followup"}
+	if p.shouldAbstainForced() {
+		t.Fatalf("expected no abstain in followup mode, even with zero file reads")
 	}
 }

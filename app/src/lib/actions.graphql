@@ -1015,9 +1015,11 @@ type EventGetImpactOutput {
   seed: ImpactSeedNode
   impacted: [ImpactedServiceNode]
   depends_on: [ImpactedServiceNode]
+  infrastructure_impacted: [ImpactedServiceNode]
   correlated_count: Int
   dependent_count: Int
   production_dependents: Int
+  infrastructure_count: Int
   coverage_confidence: String
   truncated: Boolean
   assembly: IncidentAssembly
@@ -1238,12 +1240,6 @@ type Mutation {
   cloud_setup_monitoring_webhook(
     object: SetupGcpMonitoringWebhookInput!
   ): SetupGcpMonitoringWebhookOutput
-}
-
-type Mutation {
-  gcp_get_onboard_pubsub_url(
-    object: GcpPubSubOnboardInput!
-  ): GcpPubSubOnboardOutput
 }
 
 type Mutation {
@@ -1806,6 +1802,12 @@ type Mutation {
   security_scan_vm(
     object: security_scan_vm_input!
   ): security_scan_vm_output
+}
+
+type Mutation {
+  security_scan_vm_account(
+    object: security_scan_vm_account_input!
+  ): security_scan_vm_account_output
 }
 
 type Mutation {
@@ -3286,6 +3288,10 @@ input security_scan_vm_input {
   cloud_resource_id: String!
 }
 
+input security_scan_vm_account_input {
+  account_id: String!
+}
+
 input tenant_user_roles_upsert_one_input {
   user_id: String!
   role: String!
@@ -4034,6 +4040,7 @@ input AIGetLogQueryRequest {
   user_id: String
   async: Boolean
   log_provider: String
+  index: String
 }
 
 input AiFeedbackCreateRequest {
@@ -5418,10 +5425,6 @@ input SetupGcpMonitoringWebhookInput {
   webhook_url: String!
 }
 
-input GcpPubSubOnboardInput {
-  account_id: String!
-}
-
 input NotificationRulesWhereRequest {
   _and: [NotificationRulesWhereRequest]
   _or: [NotificationRulesWhereRequest]
@@ -6100,14 +6103,6 @@ type SetupGcpMonitoringWebhookOutput {
   channel_name: String
 }
 
-type GcpPubSubOnboardOutput {
-  deployment_manager_url: String!
-  external_id: String!
-  pubsub_project_id: String!
-  subscription_name: String!
-  template_yaml_url: String!
-}
-
 type ValidateCloudCredentialsOutput {
   success: Boolean!
   provider: String!
@@ -6689,6 +6684,10 @@ type security_scan_image_output {
 }
 
 type security_scan_vm_output {
+  data: [jsonb]!
+}
+
+type security_scan_vm_account_output {
   data: [jsonb]!
 }
 
@@ -7839,6 +7838,7 @@ type AiConversationToolCall {
   references: String
   tool_id: String
   status: String
+  metadata: String
   created_at: timestamptz!
   updated_at: timestamptz!
 }
@@ -12301,4 +12301,3 @@ type DashboardDeleteResponse {
 scalar Datetime
 
 scalar Json
-

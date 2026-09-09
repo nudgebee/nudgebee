@@ -12,7 +12,7 @@ export const DEFAULT_ACCOUNT_ENV = ACCOUNT_ENV_NON_PROD;
 /** Tooltip copy for the environment picker — exported so a caller that renders
  *  its own section title (label='') can surface the same explanation itself. */
 export const ACCOUNT_ENV_TOOLTIP =
-  'Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight. You can change this anytime later.';
+  'Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight, and workloads running in them count as production in blast-radius safety checks. You can change this anytime later.';
 
 /**
  * Environment picker shared by every account onboarding flow (K8s and cloud).

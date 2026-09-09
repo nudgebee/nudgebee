@@ -77,7 +77,7 @@ Notable columns / later migrations:
 - `current_value`, `anomaly_type`, `is_anomaly`, `evaluated_at`.
 - `pod_name` (V496), `training_end_time` (V650), `insights` JSONB (V665), `anomaly_status` (V667, spend OPEN/RESOLVED).
 
-Event dedup fingerprint: `anomaly-{account}-{type}-{name}-{namespace}`.
+Event dedup fingerprint (`anomalyFingerprint()` in `service.go`, also the `events.finding_id` for this event type): `anomaly|{account}|{type}|{name}|{namespace}`. Uses `|`, not `-` — account (UUID) and name/namespace (K8s DNS-1123 labels) routinely contain `-`, which makes a `-`-joined key ambiguous across different (name, namespace) pairs.
 
 ## RabbitMQ
 

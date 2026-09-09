@@ -1,13 +1,13 @@
 import { Box, Stack, Typography } from '@mui/material';
-import { useEffect, useState } from 'react';
-import recommendationApi, { RECOMMENDATION_STATUS } from '@api1/recommendation';
+import { useEffect, useRef, useState } from 'react';
+import recommendationApi, { getCisTicketReferenceId, RECOMMENDATION_STATUS } from '@api1/recommendation';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button as DsButton } from '@ui/Button';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Text from '@shared/format/Text';
 import WidgetCard from '@ui/WidgetCard';
 import Datetime from '@shared/format/Datetime';
@@ -15,30 +15,31 @@ import { hasWriteAccess } from '@lib/auth';
 import PropTypes from 'prop-types';
 import RecommendationJobDetails from '@components/k8s/common/RecommendationJobDetails';
 import { Divider } from '@ui/Divider';
-import { Card } from '@ui/Card';
-import { Skeleton } from '@ui/Skeleton';
 import { action } from 'src/utils/actionStyles';
 import { SeverityIcon } from '@ui/SeverityIcon';
-import CustomTable from '@shared/tables/CustomTable2';
+import { toSeverityLevel } from '@utils/common';
+import CustomTable from '@shared/tables/CustomTable';
 import { Link } from '@ui/Link';
+import TicketLink from '@shared/links/TicketLink';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { toast as snackbar } from '@ui/Toast';
-
-// CIS severity values come from the API as 'High' / 'Medium' / 'Low' / 'Info'.
-// ds/SeverityIcon's level enum is the lowercase 5-tier; normalize + map.
-const SEVERITY_TO_DS_LEVEL = {
-  critical: 'critical',
-  high: 'high',
-  medium: 'medium',
-  low: 'low',
-  info: 'info',
-};
-const toDsSeverityLevel = (s) => SEVERITY_TO_DS_LEVEL[String(s || '').toLowerCase()] || 'info';
+import CisRulePanel from './security/CisRulePanel';
 
 const CIS_HEADER = [
   { name: 'Rule', width: '25%' },
-  { name: 'Description', width: '35%' },
-  { name: 'Severity', width: '10%' },
+  { name: 'Description', width: '37%' },
+  { name: 'Severity', width: '8%' },
+  { name: 'Failures', width: '10%' },
+  { name: 'Updated At', width: '10%' },
+  { name: 'Actions', width: '5%' },
+];
+// Cross-account mode (the /optimise Security tab): the grouping is per
+// (cluster, rule), so lead with the cluster.
+const CIS_HEADER_MULTI = [
+  { name: 'Cluster', width: '12%' },
+  { name: 'Rule', width: '23%' },
+  { name: 'Description', width: '27%' },
+  { name: 'Severity', width: '8%' },
   { name: 'Failures', width: '10%' },
   { name: 'Updated At', width: '10%' },
   { name: 'Actions', width: '5%' },
@@ -46,7 +47,19 @@ const CIS_HEADER = [
 const KubernetesCisSecurity = (props) => {
   const kubernetesSecurityTable = 'kubernetesSecurityTable';
 
+  // Rows carry their own account_id. The page-level id is only a fallback, and
+  // in cross-account mode it is a list — with more than one account in scope
+  // there is no single right answer, so resolve to undefined and let the action
+  // fail rather than file a ticket against an arbitrary cluster.
+  const accountIdForRow = (item) => {
+    if (item?.account_id) return item.account_id;
+    const scope = props?.kubernetes?.id;
+    if (!Array.isArray(scope)) return scope;
+    return scope.length === 1 ? scope[0] : undefined;
+  };
+
   const [kubernetesSecurity, setKubernetesSecurity] = useState([]);
+  const rawSecurityRef = useRef([]);
   const [kubernetesSecurityCount, setKubernetesSecurityCount] = useState(0);
   const [totalKubernetesSecurityCount, setTotalKubernetesSecurityCount] = useState(0);
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
@@ -54,6 +67,9 @@ const KubernetesCisSecurity = (props) => {
   const [page, setPage] = useState(0);
   const [recommendationStatus, setRecommendationStatus] = useState('Open');
   const [loading, setLoading] = useState(false);
+  // The rule whose detail panel is open. Rules used to expand into an accordion;
+  // a rule is the unit you act on, so it opens the side panel instead.
+  const [panelRule, setPanelRule] = useState(null);
 
   const closeTicketCreateForm = () => {
     setIsTicketCreateFormOpen(false);
@@ -77,6 +93,59 @@ const KubernetesCisSecurity = (props) => {
     }
   };
 
+  const buildRow = (item) => {
+    const menuItems = [
+      {
+        icon: TicketsIcon,
+        label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create Ticket',
+        id: 'create-ticket',
+        disabled: !!item.ticket?.ticket_id,
+      },
+    ];
+    let data = [];
+    if (props?.accountsById) {
+      data.push({
+        component: <Text value={props.accountsById[item.account_id] || item.account_id} showAutoEllipsis />,
+        data: item.account_id,
+      });
+    }
+    data.push({
+      component: (
+        <Stack direction='column' spacing={0.5}>
+          <Link href={'https://www.cisecurity.org/benchmark/kubernetes'} openInNew>
+            {item.rule_id}
+          </Link>
+          <Text showAutoEllipsis lineClamp={2} value={item?.rule_name} />
+          {item.ticket && <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} showAutoEllipsis />}
+        </Stack>
+      ),
+      drilldownQuery: {
+        data: item,
+        rule: item,
+      },
+      data: item.rule_id,
+    });
+    data.push({
+      component: <Text showAutoEllipsis lineClamp={2} value={item?.rule_description} />,
+    });
+    data.push({
+      component: <SeverityIcon level={toSeverityLevel(item.severity)} aria-label={item.severity || '-'} />,
+      data: item.severity || '-',
+    });
+    data.push({
+      component: <Text value={item?.count} />,
+    });
+    data.push({ component: <Datetime value={item.updated_at} /> });
+    data.push({
+      component: (
+        <Box display={'flex'} flexDirection={'row'} alignItems={'space-between'} justifyContent={'flex-end'}>
+          <ThreeDotsMenu sx={{ ...action.primary }} menuItems={menuItems} data={item} onMenuClick={onMenuClick} />
+        </Box>
+      ),
+    });
+    return data;
+  };
+
   const listCisSecurityRecommendations = () => {
     if (!props?.kubernetes?.id) {
       return;
@@ -87,53 +156,13 @@ const KubernetesCisSecurity = (props) => {
       .getK8sSecurityCISRecommendationGroups({
         accountId: props?.kubernetes?.id,
         status: recommendationStatus,
+        fetchTicket: true,
       })
       .then((res) => {
         setLoading(false);
-        let MENU_ITEMS = [
-          {
-            icon: TicketsIcon,
-            label: 'Create Ticket',
-            id: 'create-ticket',
-          },
-        ];
-        let k8sRecommendationData = res?.data?.recommendation.map((item) => {
-          let data = [];
-          data.push({
-            component: (
-              <Stack direction='column' spacing={0.5}>
-                <Link href={'https://www.cisecurity.org/benchmark/kubernetes'} openInNew>
-                  {item.rule_id}
-                </Link>
-                <Text showAutoEllipsis lineClamp={2} value={item?.rule_name} />
-              </Stack>
-            ),
-            drilldownQuery: {
-              data: item,
-            },
-            data: item.rule_id,
-          });
-          data.push({
-            component: <Text showAutoEllipsis lineClamp={2} value={item?.rule_description} />,
-          });
-          data.push({
-            component: <SeverityIcon level={toDsSeverityLevel(item.severity)} aria-label={item.severity || '-'} />,
-            data: item.severity || '-',
-          });
-          data.push({
-            component: <Text value={item?.count} />,
-          });
-          data.push({ component: <Datetime value={item.updated_at} /> });
-          data.push({
-            component: (
-              <Box display={'flex'} flexDirection={'row'} alignItems={'space-between'} justifyContent={'flex-end'}>
-                <ThreeDotsMenu sx={{ ...action.primary }} menuItems={MENU_ITEMS} data={item} onMenuClick={onMenuClick} />
-              </Box>
-            ),
-          });
-
-          return data;
-        });
+        const rows = res?.data?.recommendation ?? [];
+        rawSecurityRef.current = rows;
+        const k8sRecommendationData = rows.map(buildRow);
         setKubernetesSecurity(k8sRecommendationData);
         setKubernetesSecurityCount(k8sRecommendationData?.length ?? 0);
       })
@@ -162,8 +191,16 @@ const KubernetesCisSecurity = (props) => {
       });
   }, [props?.kubernetes?.id]);
 
-  const handleTicketSuccess = () => {
-    listCisSecurityRecommendations();
+  const handleTicketSuccess = ({ ticketId, url } = {}) => {
+    const referenceId = getCisTicketReferenceId(accountIdForRow(ticketData), ticketData?.rule_id);
+    const idx = rawSecurityRef.current.findIndex((item) => getCisTicketReferenceId(item.account_id, item.rule_id) === referenceId);
+    if (idx === -1) return;
+    rawSecurityRef.current[idx] = { ...rawSecurityRef.current[idx], ticket: { ticket_id: ticketId, url } };
+    setKubernetesSecurity((prev) => {
+      const next = [...prev];
+      next[idx] = buildRow(rawSecurityRef.current[idx]);
+      return next;
+    });
   };
 
   const handleTicketFailure = (res) => {
@@ -186,12 +223,24 @@ const KubernetesCisSecurity = (props) => {
         ticketData={{
           subject: 'CIS Compliance Issue - ' + ticketData.rule_name,
           description: getTicketDescription(ticketData),
-          accountId: props?.kubernetes?.id,
+          accountId: accountIdForRow(ticketData),
         }}
         ticketUrl={{}}
         reference={{
-          id: props?.kubernetes?.id + ':Security:k8s-cis-1.23:' + ticketData.rule_id,
+          id: getCisTicketReferenceId(accountIdForRow(ticketData), ticketData.rule_id),
           type: 'kubernetes',
+        }}
+      />
+      <CisRulePanel
+        open={Boolean(panelRule)}
+        onClose={() => setPanelRule(null)}
+        rule={panelRule}
+        accountName={props?.accountsById?.[panelRule?.account_id] || undefined}
+        accountsById={props?.accountsById}
+        scopeAccountId={props?.kubernetes?.id}
+        onCreateTicket={(rule) => {
+          setTicketData(rule);
+          setIsTicketCreateFormOpen(true);
         }}
       />
       {!props?.disableInfographic && (
@@ -215,7 +264,7 @@ const KubernetesCisSecurity = (props) => {
               <RecommendationJobDetails jobName={'kube_bench_scan'} />
               <Divider orientation='vertical' color={'var(--ds-gray-200)'} sx={{ mx: 'var(--ds-space-2)', my: 1 }} />
               <DownloadButton onClick={() => ({ tableId: kubernetesSecurityTable })} />
-              {hasWriteAccess(props?.kubernetes?.id) && (
+              {!Array.isArray(props?.kubernetes?.id) && hasWriteAccess(props?.kubernetes?.id) && (
                 <DsButton
                   id='triggerRecommendation'
                   tone='secondary'
@@ -230,6 +279,7 @@ const KubernetesCisSecurity = (props) => {
             </>
           }
         >
+          {props?.leadingFilters}
           {(props?.enableFilters?.includes('status') ?? true) && (
             <FilterDropdown
               id='cis-filter-status'
@@ -246,24 +296,15 @@ const KubernetesCisSecurity = (props) => {
         <ListingLayout.Body>
           <CustomTable
             id={kubernetesSecurityTable}
-            showExpandable
-            headers={CIS_HEADER}
+            headers={props?.accountsById ? CIS_HEADER_MULTI : CIS_HEADER}
             tableData={kubernetesSecurity}
             rowsPerPage={kubernetesSecurityCount}
             totalRows={kubernetesSecurityCount}
             onPageChange={undefined}
             pageNumber={page + 1}
-            stickyColumnIndex='6'
+            stickyColumnIndex={props?.accountsById ? '7' : '6'}
             showUpdatedEmptyData={props.showUpdatedEmptyData}
-            expandable={{
-              tabs: [
-                {
-                  text: 'Details',
-                  value: 0,
-                  componentFn: KubernetesCisSecurityFailureInfoFn,
-                },
-              ],
-            }}
+            onRowClick={(query) => query?.rule && setPanelRule(query.rule)}
             loading={loading}
             tableHeadingCenter={['Actions', 'Severity']}
           />
@@ -273,161 +314,9 @@ const KubernetesCisSecurity = (props) => {
   );
 };
 
-function KubernetesCisSecurityFailureInfoFn(opt, drilldown, _row) {
-  return <KubernetesCisSecurityFailureInfo account_id={drilldown?.data?.account_id} rule_id={drilldown?.data?.rule_id} />;
-}
-
-function KubernetesCisSecurityFailureInfo(props) {
-  const [recommendations, setRecommendations] = useState([]);
-  const [references, setReferences] = useState([]);
-  const [resolution, setResolution] = useState('');
-
-  const [infoRowsPerPage, setInfoRowsPerPage] = useState(5);
-  const [infoPage, setInfoPage] = useState(0);
-  const [totalRows, setTotalRows] = useState(0);
-  const [infoLoading, setInfoLoading] = useState(false);
-  useEffect(() => {
-    setInfoLoading(true);
-    recommendationApi
-      .getK8sRecommendation({
-        accountId: props.account_id,
-        category: 'Security',
-        ruleName: 'k8s-cis-1.23',
-        recommendation: {
-          Id: props.rule_id,
-        },
-        limit: infoRowsPerPage,
-        offset: infoPage * infoRowsPerPage,
-      })
-      .then((res) => {
-        let tableData = res.data?.recommendation?.flatMap((item) => {
-          let targets = item.recommendation.Target.split('/');
-          return item.recommendation.Misconfigurations.map((misconfig) => {
-            return [
-              {
-                component: (
-                  <Text
-                    value={targets[0]}
-                    sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' }}
-                  />
-                ),
-              },
-              {
-                component: <Text showAutoEllipsis value={targets[1]} />,
-              },
-              {
-                component: <Text showAutoEllipsis value={misconfig.Message} />,
-              },
-            ];
-          });
-        });
-        if (res.data?.recommendation?.length > 0) {
-          setReferences(res.data?.recommendation[0]?.recommendation?.Misconfigurations[0]?.References || []);
-          setResolution(res.data?.recommendation[0]?.recommendation?.Misconfigurations[0]?.Resolution);
-        }
-        setRecommendations(tableData);
-        setTotalRows(res.data?.recommendation_aggregate.aggregate.count);
-        setInfoLoading(false);
-      });
-  }, [props?.account_id, props?.rule_id, infoPage, infoRowsPerPage]);
-
-  const changeInfoPage = (page, limit) => {
-    setInfoPage(page - 1);
-    setInfoRowsPerPage(limit);
-  };
-
-  return (
-    <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--ds-space-4)' }}>
-        <Card
-          size='sm'
-          elevation='flat'
-          header={
-            infoLoading ? (
-              <Skeleton shape='text' size='title' width='50%' />
-            ) : (
-              <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
-                Resolution
-              </Typography>
-            )
-          }
-        >
-          {infoLoading ? (
-            <Stack spacing={1}>
-              {Array.from({ length: 3 }).map((_, j) => (
-                <Skeleton key={j} shape='text' size='text' width={j === 2 ? '70%' : '100%'} />
-              ))}
-            </Stack>
-          ) : resolution ? (
-            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-600)' }}>{resolution}</Typography>
-          ) : (
-            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-400)', fontStyle: 'italic' }}>No resolution found</Typography>
-          )}
-        </Card>
-
-        <Card
-          size='sm'
-          elevation='flat'
-          header={
-            infoLoading ? (
-              <Skeleton shape='text' size='title' width='50%' />
-            ) : (
-              <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
-                References
-              </Typography>
-            )
-          }
-        >
-          {infoLoading ? (
-            <Stack spacing={1}>
-              {Array.from({ length: 3 }).map((_, j) => (
-                <Skeleton key={j} shape='text' size='text' width={j === 2 ? '70%' : '100%'} />
-              ))}
-            </Stack>
-          ) : references.length > 0 ? (
-            <Box component='ul' sx={{ m: 0, pl: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-              {references.map((item) => (
-                <li key={item}>
-                  <Link href={item} openInNew>
-                    {item}
-                  </Link>
-                </li>
-              ))}
-            </Box>
-          ) : (
-            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-400)', fontStyle: 'italic' }}>No references found</Typography>
-          )}
-        </Card>
-      </Box>
-
-      <ListingLayout id='impacted-resources'>
-        <ListingLayout.Toolbar title='Impacted Resources' />
-        <ListingLayout.Body>
-          <CustomTable
-            tableData={recommendations}
-            headers={[
-              { name: 'ResourceType', width: '20%' },
-              { name: 'Resource', width: '20%' },
-              { name: 'Message', width: '50%' },
-            ]}
-            pageNumber={infoPage + 1}
-            totalRows={totalRows}
-            rowsPerPage={infoRowsPerPage}
-            onPageChange={changeInfoPage}
-            loading={infoLoading}
-          />
-        </ListingLayout.Body>
-      </ListingLayout>
-    </Box>
-  );
-}
-
-KubernetesCisSecurityFailureInfo.propTypes = {
-  account_id: PropTypes.string,
-  rule_id: PropTypes.string,
-};
-
 KubernetesCisSecurity.propTypes = {
+  accountsById: PropTypes.object,
+  leadingFilters: PropTypes.node,
   heading: PropTypes.string,
   kubernetes: PropTypes.object,
   disableInfographic: PropTypes.bool,

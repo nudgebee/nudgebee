@@ -1,5 +1,6 @@
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { decisionsRecord } from '@api1/memory';
+import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { ShareIconBlue } from '@assets';
 import Chart from '@ui/Chart';
 import Text from '@shared/format/Text';
@@ -1081,7 +1082,7 @@ const KubernetesLLMRequestResponse = (props) => {
       // question instead recorded decisions like "hi: user thumbs-up on RCA".
       // Fire-and-forget — feedback is the user-facing success path.
       const isPositive = createFeedbackObject.type == 'thumbs_up';
-      if (props.toolCall?.id) {
+      if (props.toolCall?.id && !isOSSDeploymentMode()) {
         decisionsRecord({
           decisionType: isPositive ? 'root_cause_agreed' : 'root_cause_disagreed',
           rationale: isPositive ? 'user thumbs-up on RCA' : createFeedbackObject.message || 'user thumbs-down on RCA',

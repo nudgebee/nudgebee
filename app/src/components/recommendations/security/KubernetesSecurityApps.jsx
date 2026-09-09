@@ -41,6 +41,14 @@ const KubernetesSecurityApps = (props) => {
         if (cancelled) return;
         const securityAppsTableData = res?.recommendation_security_groupings_v2?.rows?.map((item) => {
           const data = [];
+          // Cross-account mode (the /optimise Security tab): rows span clusters,
+          // so lead with the cluster and scope the drill-down to the row's account.
+          if (props?.accountsById) {
+            data.push({
+              component: <Text value={props.accountsById[item.account_id] || item.account_id} showAutoEllipsis />,
+              drilldownQuery: { account_id: item.account_id },
+            });
+          }
           // A scanned-but-clean app (all its images are clean) comes back with every
           // severity count at 0. Flag it so it reads as "Clean" rather than a blank
           // 0/0/0/0 row. count_severity_info excludes Info/Unknown-only images.
@@ -150,8 +158,9 @@ const KubernetesSecurityApps = (props) => {
         tableData={tableData}
         resetPage={props?.resetPage || ''}
         headers={[
-          { name: 'Application', width: '25%' },
-          { name: 'Images count', width: '15%' },
+          ...(props?.accountsById ? [{ name: 'Cluster', width: '15%' }] : []),
+          { name: 'Application', width: props?.accountsById ? '20%' : '25%' },
+          { name: 'Images count', width: props?.accountsById ? '10%' : '15%' },
           {
             component: (
               <Box display={'flex'} justifyContent={'center'}>
@@ -196,7 +205,7 @@ const KubernetesSecurityApps = (props) => {
                 return (
                   <KubernetesSecurityDetails
                     disableInfographic
-                    kubernetes={props?.kubernetes}
+                    kubernetes={drilldownQuery?.account_id ? { id: drilldownQuery.account_id } : props?.kubernetes}
                     query={{
                       workload_name: drilldownQuery?.workload_name,
                       namespace: drilldownQuery?.namespace,
@@ -223,6 +232,7 @@ export default KubernetesSecurityApps;
 
 KubernetesSecurityApps.propTypes = {
   kubernetes: PropTypes.object,
+  accountsById: PropTypes.object,
   query: PropTypes.object,
   tableId: PropTypes.string,
   disableInfographic: PropTypes.bool,

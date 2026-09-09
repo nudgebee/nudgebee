@@ -7,7 +7,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import Text from '@shared/format/Text';
 import ConversationCollapsableCard from '@components/llm/common/ConversationCollapsableCardV2';
 import KubernetesLLMRequestResponse from './KubernetesLLMRequestResponseV2';
-import { AskNudgebeeErrorIcon, AskNudgebeeInProgressIcon, AskNudgebeeSkipIcon, AskNudgebeeSuccessIcon, AskNudgebeeWaitingIcon } from '@assets';
+import { AskNudgebeeErrorIcon, AskNudgebeeInProgressIcon, AskNudgebeeSkipIcon, AskNudgebeeSuccessIcon, RunningIcon } from '@assets';
 import capitalize from 'lodash/capitalize';
 import { ds } from '@utils/colors';
 import { Button } from '@ui/Button';
@@ -15,7 +15,6 @@ import ReferencesPopover from './common/ReferencesModal';
 import ResponseMetaRail from './common/ResponseMetaRail';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
-import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useTenantBranding, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { Modal } from '@ui/Modal';
 
@@ -30,7 +29,7 @@ const getStatusIcon = (status) => {
     return { icon: AskNudgebeeSkipIcon, label: 'Skipped' };
   }
   if (s === 'waiting') {
-    return { icon: AskNudgebeeWaitingIcon, label: 'Waiting' };
+    return { icon: RunningIcon, label: 'Waiting' };
   }
   if (s === 'in_progress') {
     return { icon: AskNudgebeeInProgressIcon, label: 'In-Progress' };
@@ -146,7 +145,6 @@ const MessageItem = ({
   // (which doesn't pass it) rendered flat, unchanged.
   indentDepth = 0,
   hideTimeline = false,
-  stepCount,
   collapsed,
 }) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = React.useState(null);
@@ -253,6 +251,21 @@ const MessageItem = ({
           Details
         </Button>
       </Box>
+    );
+  }
+
+  let expanderNode = null;
+  if (collapsed !== undefined) {
+    expanderNode = (
+      <ExpandMoreRoundedIcon
+        sx={{
+          fontSize: 18,
+          color: 'var(--ds-gray-500)',
+          flexShrink: 0,
+          transition: 'transform 0.2s ease',
+          transform: `rotate(${collapsed ? 0 : 180}deg)`,
+        }}
+      />
     );
   }
 
@@ -378,10 +391,10 @@ const MessageItem = ({
                   }
                   placement='top'
                 >
-                  <Box sx={{ width: '100%', ...(stepCount ? { display: 'flex', alignItems: 'baseline', gap: ds.space[1], flexWrap: 'wrap' } : {}) }}>
+                  <Box sx={{ width: '100%' }}>
                     <Box
                       sx={{
-                        width: stepCount ? 'auto' : '100%',
+                        width: '100%',
                         minWidth: 0,
                         // Clip the question to ~6 lines worth of height when collapsed.
                         // max-height (rather than -webkit-line-clamp) is used because the
@@ -425,29 +438,6 @@ const MessageItem = ({
                         showAutoEllipsis={!isQuestion}
                       />
                     </Box>
-                    {stepCount ? (
-                      <Box
-                        component='span'
-                        sx={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: ds.space[0],
-                          fontSize: 'var(--ds-text-caption)',
-                          color: 'var(--ds-gray-500)',
-                          fontFamily: ds.font.sans,
-                          whiteSpace: 'nowrap',
-                          flexShrink: 0,
-                        }}
-                      >
-                        · {stepCount} {stepCount === 1 ? 'step' : 'steps'}
-                        {collapsed !== undefined &&
-                          (collapsed ? (
-                            <ChevronRightRoundedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-500)' }} />
-                          ) : (
-                            <ExpandMoreRoundedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-500)' }} />
-                          ))}
-                      </Box>
-                    ) : null}
                   </Box>
                 </Tooltip>
                 {isQuestion && Array.isArray(message.attachments) && message.attachments.length > 0 && (
@@ -502,9 +492,7 @@ const MessageItem = ({
                     })}
                   </Box>
                 )}
-                {/* Container-header rows (stepCount set) stay minimal — icon + name + "· N steps" only,
-                    like the acknowledgment row — so the status/sources sub-line is suppressed for them. */}
-                {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && !stepCount && (
+                {!['question', 'response', 'followup-question', 'acknowledgment'].includes(messageType) && (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>
                     <Tooltip title={statusIcon.label} placement='top'>
                       <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
@@ -612,6 +600,7 @@ const MessageItem = ({
             conversationCreatedAt={message?.created_at}
             conversationUpdatedAt={message?.updated_at}
             headerActions={headerActionsNode}
+            expander={expanderNode}
           />
         </Box>
       </Box>
@@ -690,7 +679,6 @@ MessageItem.propTypes = {
   groupIndex: PropTypes.number,
   indentDepth: PropTypes.number,
   hideTimeline: PropTypes.bool,
-  stepCount: PropTypes.number,
   collapsed: PropTypes.bool,
   responseMeta: PropTypes.shape({
     taskCount: PropTypes.number,

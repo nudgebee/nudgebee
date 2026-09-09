@@ -114,7 +114,7 @@ export function useThemeProvider(): { theme: Theme; isReady: boolean } {
  * Generate a CSS string of critical above-the-fold design tokens for SSR.
  * Injected as inline <style> in _document.tsx to prevent FOUC.
  */
-export function getCriticalCssTokens(): string {
+export function getCriticalCssTokens(host?: string | null): string {
   // Only include the most commonly used above-the-fold tokens
   const criticalKeys = [
     '--nb-color-primary',
@@ -176,8 +176,9 @@ export function getCriticalCssTokens(): string {
   ];
 
   // SSR branding tokens come from the optional server branding provider
-  // (EE-only). In OSS this is null, so critical CSS is the neutral defaults.
-  const brandingTokens = resolveServerBranding()?.colorTokens || null;
+  // (EE-only), resolved for the request host so a partner hostname gets its own
+  // palette. In OSS this is null, so critical CSS is the neutral defaults.
+  const brandingTokens = resolveServerBranding(host)?.colorTokens || null;
   const tokens = brandingTokens ? { ...DEFAULT_CSS_TOKENS, ...brandingTokens } : DEFAULT_CSS_TOKENS;
 
   const declarations = criticalKeys

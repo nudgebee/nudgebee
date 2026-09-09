@@ -49,6 +49,9 @@ export class WorkflowLocators extends CommonLocators {
   readonly dialogContent: Locator;
   readonly integrationIdDropdown: Locator;
   readonly projectKeyDropdown: Locator;
+  readonly assigneeDropdown: Locator;
+  readonly assigneeSearchInput: Locator;
+  readonly assigneeOptions: Locator;
   readonly account_id_input: Locator;
   readonly project_id_input: Locator;
   readonly ticket_id_input: Locator;
@@ -115,6 +118,18 @@ export class WorkflowLocators extends CommonLocators {
     this.dialogContent = page.locator("div.MuiDialog-container .MuiDialogContent-root");
     this.integrationIdDropdown = page.locator("div.MuiDialog-container #auto-complete-integration-id");
     this.projectKeyDropdown = page.locator("div.MuiDialog-container #auto-complete-project-key");
+    this.assigneeDropdown = page
+      .locator('div.MuiDialog-container [data-testid="options-source-assignee"]')
+      .getByRole("button")
+      .or(page.locator("div.MuiDialog-container #auto-complete-assignee"))
+      .first();
+    // the options popup portals outside the dialog, so the page-level match is the working fallback
+    this.assigneeSearchInput = page
+      .locator("div.MuiDialog-container")
+      .getByPlaceholder("Search or type assignee...")
+      .or(page.getByPlaceholder("Search or type assignee..."))
+      .first();
+    this.assigneeOptions = page.locator('[role="option"]');
     this.account_id_input = page.locator("div.MuiDialog-container").getByRole("combobox").first();
     this.project_id_input = page.getByPlaceholder("Select project");
     this.ticket_id_input = page.getByRole("textbox", { name: "Ticket ID to retrieve" });

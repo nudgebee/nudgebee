@@ -4,6 +4,11 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import PropTypes from 'prop-types';
 import { ds } from '@utils/colors';
 
+// Permission labels the backend uses for the two cost-only checks
+// (cloud_credential_validator_aws.go). Kept as a list so a failure in either
+// one still reads as "cost is unavailable" rather than a generic permission gap.
+const COST_PERMISSIONS = ['Cost & Usage Report (CUR) Discovery', 'CUR S3 Bucket Access'];
+
 const ValidationResultBanner = ({ result }) => {
   if (!result) {
     return null;
@@ -23,11 +28,20 @@ const ValidationResultBanner = ({ result }) => {
     return null;
   }
 
-  const hasMissing = details.some((d) => !d.hasAccess);
+  const failed = details.filter((d) => !d.hasAccess);
+  const hasMissing = failed.length > 0;
+  // A cost-only gap has a specific, actionable consequence, so name it instead
+  // of the generic "certain features may not work". Everything except spend
+  // keeps working, and the CUR can be attached later without re-onboarding.
+  const costOnly = hasMissing && failed.every((d) => COST_PERMISSIONS.includes(d.permission));
   const severity = hasMissing ? 'warning' : 'success';
-  const title = hasMissing
-    ? 'Some permission checks failed. You can still create the account, but certain features may not work until resolved.'
-    : 'All permission checks passed.';
+  let title = 'All permission checks passed.';
+  if (costOnly) {
+    title =
+      'No usable Cost & Usage Report was found. You can still create the account — spend, rightsizing and cost recommendations will stay empty until a CUR is attached via Edit Billing Config.';
+  } else if (hasMissing) {
+    title = 'Some permission checks failed. You can still create the account, but certain features may not work until resolved.';
+  }
 
   return (
     <Alert severity={severity} sx={{ mt: ds.space[2], mb: ds.space[2] }}>

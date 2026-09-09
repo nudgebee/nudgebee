@@ -26,9 +26,8 @@ type appConfig struct {
 	ClickhousePassword string `mapstructure:"clickhouse_password"`
 	ClickhouseDatabase string `mapstructure:"clickhouse_database"`
 
-	Env          string `mapstructure:"env"`
-	Port         int    `mapstructure:"port"`
-	DBSslEnabled bool   `mapstructure:"nudgebee_db_ssl_enabled"`
+	Env  string `mapstructure:"env"`
+	Port int    `mapstructure:"port"`
 
 	MlServiceUrl   string `mapstructure:"ml_service_url"`
 	GPTToken       string `mapstructure:"gpt_token"`
@@ -82,7 +81,6 @@ func init() {
 
 	viper.SetDefault("env", "production")
 	viper.SetDefault("port", 8080)
-	viper.SetDefault("nudgebee_db_ssl_enabled", "true")
 	viper.SetDefault("service_api_server_url", "http://services-server:8000")
 	viper.SetDefault("gpt_token", "default")
 	viper.SetDefault("openai_endpoint", "https://api.openai.com/v1")

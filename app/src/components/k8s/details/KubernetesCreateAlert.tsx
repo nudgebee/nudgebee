@@ -11,7 +11,7 @@ import { Button as DsButton } from '@ui/Button';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Select } from '@ui/Select';
 import { toast as snackbar } from '@ui/Toast';
-import LinearLoader from '@components/k8s/common/LinearLoader';
+import { ProgressLinear } from '@ui/ProgressLinear';
 import DynamicForm from '@shared/forms/DynamicForm';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { Accordion } from '@ui/Accordion';
@@ -825,7 +825,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       {isSubmitting && (
         <Box sx={{ width: '100%', position: 'absolute', top: 0, left: 0 }}>
-          <LinearLoader />
+          <ProgressLinear surface='page-top' />
         </Box>
       )}
       <CustomStepper

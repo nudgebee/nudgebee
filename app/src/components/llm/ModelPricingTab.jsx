@@ -23,14 +23,16 @@ import { isTenantAdmin } from '@lib/auth';
 // to two lines is what makes the row look ragged. Hence the "/ 1M" moves out of
 // the headers into one caption above the table.
 const HEADERS = [
-  { name: 'Model', width: '22%' },
-  { name: 'Provider', width: '12%' },
-  { name: 'Input', width: '9%' },
-  { name: 'Output', width: '9%' },
-  { name: 'Cached', width: '9%' },
-  { name: 'Long context', width: '15%' },
-  { name: 'Source', width: '12%' },
-  { name: '', width: '12%' },
+  { name: 'Model', width: '18%' },
+  { name: 'Provider', width: '10%' },
+  { name: 'Input', width: '7%' },
+  { name: 'Output', width: '7%' },
+  { name: 'Cached', width: '7%' },
+  { name: 'Tiered rate', width: '12%' },
+  { name: 'Max output', width: '10%' },
+  { name: 'Context window', width: '12%' },
+  { name: 'Source', width: '9%' },
+  { name: '', width: '8%' },
 ];
 
 // Providers a price row can legitimately carry. This is the api-server's
@@ -78,6 +80,8 @@ const EMPTY_DRAFT = {
   threshold: '',
   inputLong: '',
   outputLong: '',
+  maxOutput: '',
+  maxContext: '',
 };
 
 /**
@@ -189,6 +193,8 @@ const ModelPricingTab = ({ stickyTable = false }) => {
       threshold: row.context_threshold_tokens != null ? String(row.context_threshold_tokens) : '',
       inputLong: row.cost_per_million_input_tokens_long_ctx != null ? String(row.cost_per_million_input_tokens_long_ctx) : '',
       outputLong: row.cost_per_million_output_tokens_long_ctx != null ? String(row.cost_per_million_output_tokens_long_ctx) : '',
+      maxOutput: row.max_output_tokens != null ? String(row.max_output_tokens) : '',
+      maxContext: row.max_context_tokens != null ? String(row.max_context_tokens) : '',
     });
   }, []);
 
@@ -219,6 +225,21 @@ const ModelPricingTab = ({ stickyTable = false }) => {
       if (value === '') continue;
       const n = Number(value);
       if (!Number.isFinite(n) || n < 0) return `${label} must be zero or a positive number.`;
+    }
+
+    // Ceilings are optional, but a zero would silently floor every call on the
+    // model — "unknown" is expressed by leaving the field blank.
+    for (const [value, label] of [
+      [draft.maxOutput, 'Max output tokens'],
+      [draft.maxContext, 'Context window'],
+    ]) {
+      if (value === '') continue;
+      const n = Number(value);
+      // Upper bound mirrors the server's int4 columns, so a typo fails here
+      // instead of as an API error.
+      if (!Number.isInteger(n) || n <= 0 || n > 2147483647) {
+        return `${label} must be a positive whole number of tokens (up to 2,147,483,647).`;
+      }
     }
 
     const filled = [draft.threshold, draft.inputLong, draft.outputLong].filter((v) => v !== '').length;
@@ -257,6 +278,10 @@ const ModelPricingTab = ({ stickyTable = false }) => {
         price.cost_per_million_input_tokens_long_ctx = Number(draft.inputLong);
         price.cost_per_million_output_tokens_long_ctx = Number(draft.outputLong);
       }
+      // Explicit null (not omission) when cleared, so the full-row upsert
+      // unambiguously erases a previously stored ceiling.
+      price.max_output_tokens = draft.maxOutput !== '' ? Number(draft.maxOutput) : null;
+      price.max_context_tokens = draft.maxContext !== '' ? Number(draft.maxContext) : null;
       const res = await apiAskNudgebee.upsertModelPricing([price]);
       if (res?.errors?.length) {
         snackbar.error(res.errors[0]?.message || 'Could not save pricing.');
@@ -347,6 +372,34 @@ const ModelPricingTab = ({ stickyTable = false }) => {
             ) : (
               <span>—</span>
             ),
+          },
+          {
+            // Output ceiling (V878): what llm-server requests as max_tokens.
+            // Unset is not harmless — the model falls to a conservative 4k cap.
+            component:
+              row.max_output_tokens != null ? (
+                <Tooltip title={`llm-server caps responses at ${Number(row.max_output_tokens).toLocaleString()} output tokens.`}>
+                  <span>{tokens(Number(row.max_output_tokens))}</span>
+                </Tooltip>
+              ) : (
+                <Tooltip title='No output ceiling set — responses fall back to a conservative 4,096-token cap.'>
+                  <span>—</span>
+                </Tooltip>
+              ),
+          },
+          {
+            // Catalog default for the context window. A per-account value on the
+            // LLM config (Advanced options) still wins over this.
+            component:
+              row.max_context_tokens != null ? (
+                <Tooltip title={`llm-server assumes a ${Number(row.max_context_tokens).toLocaleString()}-token context window.`}>
+                  <span>{tokens(Number(row.max_context_tokens))}</span>
+                </Tooltip>
+              ) : (
+                <Tooltip title='No catalog value — context falls back to the per-account LLM config field, then the built-in model map.'>
+                  <span>—</span>
+                </Tooltip>
+              ),
           },
           {
             component: row.is_built_in ? (
@@ -537,6 +590,21 @@ const ModelPricingTab = ({ stickyTable = false }) => {
               type='number'
               value={draft.outputLong}
               onChange={(v) => setDraft({ ...draft, outputLong: v })}
+            />
+
+            <Box sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 500, color: 'var(--ds-gray-700)' }}>Token limits (optional)</Box>
+            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+              What llm-server requests as max output tokens and assumes as the context window. Leave blank to use the conservative fallbacks (4,096
+              output / built-in context map) — too low for reasoning models, which spend output tokens thinking.
+            </Box>
+            <Input label='Max output tokens' size='sm' type='number' value={draft.maxOutput} onChange={(v) => setDraft({ ...draft, maxOutput: v })} />
+            <Input
+              label='Context window (tokens)'
+              size='sm'
+              type='number'
+              value={draft.maxContext}
+              onChange={(v) => setDraft({ ...draft, maxContext: v })}
+              help='A per-account value set on the LLM config (Advanced options) still wins over this catalog default.'
             />
 
             {droppingTier && (

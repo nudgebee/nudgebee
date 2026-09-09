@@ -46,11 +46,18 @@ if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
 import handlers.event_handler as eh  # noqa: E402
+import handlers.upgrade_handler as uh  # noqa: E402
+
+# The archive predicate is only half the invariant. The upsert that follows it
+# must not reclaim status from EXCLUDED, or a row the archive just tombstoned
+# comes straight back as Open. Both halves are asserted below, because fixing
+# either one alone leaves the finding reopening.
+STATUS_GUARD = "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')"
 
 
 class TestRecommendationArchivePredicate(unittest.TestCase):
-    def _captured_sql(self, fn, *args):
-        with mock.patch.object(eh.database, "run_query") as run_query:
+    def _captured_sql(self, fn, *args, module=eh):
+        with mock.patch.object(module.database, "run_query") as run_query:
             fn(*args)
         self.assertTrue(run_query.called, "archive helper must issue a query")
         return run_query.call_args[0][0]
@@ -72,6 +79,59 @@ class TestRecommendationArchivePredicate(unittest.TestCase):
         sql = self._captured_sql(eh.archive_existing_recommendation, "acct", "tenant")
         self.assertIn("status = 'Open'", sql)
         self.assertNotIn("not in", sql)
+
+    # upgrade_handler keeps its own copies of these helpers, which is how they
+    # were missed when the event_handler twins were fixed. The EKS and k8s
+    # version writers all route through them.
+
+    def test_upgrade_multi_rule_archive_tombstones_open_only(self):
+        sql = self._captured_sql(
+            uh.archive_existing_recommendations_multi_rule,
+            "acct",
+            "tenant",
+            "InfraUpgrade",
+            ["a", "b"],
+            module=uh,
+        )
+        self.assertIn("status = 'Open'", sql)
+        self.assertNotIn("not in ('Archive')", sql)
+
+    def test_upgrade_with_rule_archive_tombstones_open_only(self):
+        sql = self._captured_sql(
+            uh.archive_existing_with_rule,
+            "acct",
+            "tenant",
+            "InfraUpgrade",
+            "eks_cluster_upgrade",
+            module=uh,
+        )
+        # This helper previously had no status filter at all, so it archived
+        # every row for the rule regardless of who owned its state.
+        self.assertIn("status = 'Open'", sql)
+
+
+class TestRecommendationUpsertGuard(unittest.TestCase):
+    """The upsert must never move a row out of a user-owned state."""
+
+    def test_shared_upgrade_conflict_clause_is_guarded(self):
+        self.assertIn(STATUS_GUARD, uh.ON_CONFLICT_RECOMMENDATION)
+        self.assertNotIn("status=EXCLUDED.status", uh.ON_CONFLICT_RECOMMENDATION)
+
+    def test_event_handler_conflict_clauses_are_guarded(self):
+        # These are built inline rather than shared, so assert over the source:
+        # every ON CONFLICT on the recommendation table has to carry the guard.
+        with open(eh.__file__) as handle:
+            source = handle.read()
+        self.assertNotIn(
+            "status=EXCLUDED.status",
+            source,
+            "an inline ON CONFLICT still reclaims status, which reopens dismissed findings",
+        )
+        self.assertGreaterEqual(
+            source.count(STATUS_GUARD),
+            5,
+            "fewer guarded upserts than expected; a producer may have been added without the guard",
+        )
 
 
 if __name__ == "__main__":

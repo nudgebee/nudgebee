@@ -27,6 +27,11 @@ const SUBTYPE_LABELS = {
   memory_soul: 'Soul',
   memory_session: 'Session',
   knowledge_base: 'Knowledge Base',
+  kb_document: 'Knowledge Base',
+  nb_document: 'NB Doc',
+  account_document: 'Unlinked Doc',
+  tenant_document: 'Unlinked Doc',
+  skill: 'Skill',
   context_state: 'Context State',
 };
 const CATEGORY_ORDER = ['memory', 'knowledge_base', 'context_state', 'other'];
@@ -51,8 +56,91 @@ const SUBTYPE_HUE = {
   memory_soul: 'pink',
   memory_session: 'teal',
   knowledge_base: 'blue',
+  kb_document: 'blue',
+  nb_document: 'cyan',
+  account_document: 'amber',
+  tenant_document: 'teal',
+  skill: 'violet',
   context_state: 'slate',
 };
+// Subtype for the Level-2 pills. Three different writers persist rows with
+// reference_type 'knowledge_base' — documents attributed to a knowledge base,
+// documents from collections that have no KB row (product docs), and skills
+// loaded mid-run via load_skills. They are indistinguishable by `type` alone,
+// so a conversation that injected no KB content still looked grounded. The
+// backend now stamps `metadata.kind`; rows written before that default to
+// kb_document, which is what the overwhelming majority of them were.
+const KB_KINDS = new Set(['kb_document', 'nb_document', 'account_document', 'tenant_document', 'skill']);
+const refSubtype = (ref) => {
+  if (ref?.type !== 'knowledge_base') return ref?.type;
+  const kind = ref?.metadata?.kind;
+  return KB_KINDS.has(kind) ? kind : 'kb_document';
+};
+
+// Qdrant collections carry a `module` naming the subsystem that owns them:
+// knowledge_base for KB + product docs, and one per agent/tool surface
+// (prometheus, loki, kubectl, elastic_search, events, planner, ...). A row from
+// an agent collection is not a "document" in any useful sense to the reader —
+// it is that agent's indexed knowledge — so name it after the agent instead of
+// the generic kind label.
+const MODULE_LABELS = {
+  prometheus: 'Prometheus',
+  loki: 'Loki',
+  kubectl: 'Kubectl',
+  elastic_search: 'Elasticsearch',
+  events: 'Events',
+  planner: 'Planner',
+  recommendations: 'Recommendations',
+  k8s_debug_react: 'K8s Debug',
+};
+// A synced knowledge base reads differently to a hand-written one, so name the
+// integration rather than showing every KB row as the same generic label.
+const KB_SOURCE_LABELS = {
+  confluence: 'Confluence',
+  servicenow: 'ServiceNow',
+};
+
+// Documents whose knowledge base no longer exists still carry their origin in
+// the url — the "account" collection on dev is 107 Confluence pages synced
+// before tenant scoping. Labelling those "Account Doc" describes our storage
+// layout, not the content, so name the host the reader recognises and keep the
+// scope as a secondary badge.
+const HOST_LABELS = [
+  [/(^|\.)atlassian\.net$/i, 'Confluence'],
+  [/(^|\.)service-now\.com$/i, 'ServiceNow'],
+  [/(^|\.)nudgebee\.com$/i, 'NB Doc'],
+];
+const labelFromUrl = (url) => {
+  if (typeof url !== 'string' || !url) return null;
+  try {
+    const { hostname } = new URL(url);
+    for (const [re, label] of HOST_LABELS) {
+      if (re.test(hostname)) return label;
+    }
+    return hostname;
+  } catch {
+    return null;
+  }
+};
+const refDisplayLabel = (ref) => {
+  const subtype = refSubtype(ref);
+  const mod = ref?.metadata?.module;
+  if (mod && mod !== 'knowledge_base') {
+    return MODULE_LABELS[mod] || mod;
+  }
+  if (subtype === 'kb_document') {
+    const src = ref?.metadata?.kb_source;
+    if (src) return KB_SOURCE_LABELS[src] || src;
+    // kb_source is NULL for manual KBs, so kb_type is what identifies them.
+    if (ref?.metadata?.kb_type === 'manual') return 'User KB';
+    return SUBTYPE_LABELS[subtype] || subtype;
+  }
+  if (subtype === 'nb_document' || subtype === 'account_document' || subtype === 'tenant_document') {
+    return labelFromUrl(ref?.metadata?.url) || SUBTYPE_LABELS[subtype] || subtype;
+  }
+  return SUBTYPE_LABELS[subtype] || subtype;
+};
+
 const categorizeRef = (type) => {
   if (typeof type !== 'string') return 'other';
   if (type === 'memory' || type.startsWith('memory_')) return 'memory';
@@ -126,7 +214,8 @@ const ReferencesDrawerContent = ({ references = [] }) => {
       if (!acc[cat]) acc[cat] = { total: 0, usedCount: 0, bySubtype: {}, rows: [] };
       acc[cat].total += 1;
       if (ref.used) acc[cat].usedCount += 1;
-      acc[cat].bySubtype[ref.type] = (acc[cat].bySubtype[ref.type] || 0) + 1;
+      const subtype = refSubtype(ref);
+      acc[cat].bySubtype[subtype] = (acc[cat].bySubtype[subtype] || 0) + 1;
       acc[cat].rows.push(ref);
     }
     return acc;
@@ -155,14 +244,18 @@ const ReferencesDrawerContent = ({ references = [] }) => {
       return activeBucket.rows
         .filter((r) => r.used)
         .sort((a, b) => {
-          if (a.type !== b.type) return a.type < b.type ? -1 : 1;
+          const [sa, sb] = [refSubtype(a) ?? '', refSubtype(b) ?? ''];
+          // localeCompare, not < / > : refSubtype returns ref?.type for non-KB rows
+          // and that can be undefined, which makes both compare(a,b) and
+          // compare(b,a) return 1 and breaks the ordering contract.
+          if (sa !== sb) return sa.localeCompare(sb);
           return (a?.metadata?.rank ?? 0) - (b?.metadata?.rank ?? 0);
         });
     }
     if (activeSubtype !== 'all') {
       // Single-subtype view: scope to the picked subtype, then order by
       // rank so compose's rerank position is preserved.
-      return activeBucket.rows.filter((r) => r.type === activeSubtype).sort((a, b) => (a?.metadata?.rank ?? 0) - (b?.metadata?.rank ?? 0));
+      return activeBucket.rows.filter((r) => refSubtype(r) === activeSubtype).sort((a, b) => (a?.metadata?.rank ?? 0) - (b?.metadata?.rank ?? 0));
     }
     // "All" view: group by subtype (same order as the pill row —
     // largest bucket first), then by rank within each subtype. Without this,
@@ -174,8 +267,8 @@ const ReferencesDrawerContent = ({ references = [] }) => {
       .map(([subtype], idx) => [subtype, idx]);
     const subtypeRank = Object.fromEntries(subtypeOrder);
     return [...activeBucket.rows].sort((a, b) => {
-      const sa = subtypeRank[a.type] ?? Number.MAX_SAFE_INTEGER;
-      const sb = subtypeRank[b.type] ?? Number.MAX_SAFE_INTEGER;
+      const sa = subtypeRank[refSubtype(a)] ?? Number.MAX_SAFE_INTEGER;
+      const sb = subtypeRank[refSubtype(b)] ?? Number.MAX_SAFE_INTEGER;
       if (sa !== sb) return sa - sb;
       return (a?.metadata?.rank ?? 0) - (b?.metadata?.rank ?? 0);
     });
@@ -319,8 +412,8 @@ const ReferencesDrawerContent = ({ references = [] }) => {
                     </TableCell>
                     <TableCell sx={{ py: 0.5 }}>
                       <Stack direction='row' spacing={0.5} sx={{ alignItems: 'center' }}>
-                        <Chip variant='tag' size='xs' hue={SUBTYPE_HUE[ref.type] || 'slate'}>
-                          {SUBTYPE_LABELS[ref.type] || ref.type}
+                        <Chip variant='tag' size='xs' hue={SUBTYPE_HUE[refSubtype(ref)] || 'slate'}>
+                          {refDisplayLabel(ref)}
                         </Chip>
                         {ref.used && (
                           <Chip

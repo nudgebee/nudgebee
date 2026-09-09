@@ -1,0 +1,2 @@
+-- No-op: the pre-migration FIRING status and prior nb_status values are not
+-- recoverable from the row itself once overwritten.

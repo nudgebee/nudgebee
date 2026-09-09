@@ -9,7 +9,7 @@ from server.recommendation.vertical_rightsizing.models.allocations import Resour
 from server.utils.utils import DatabaseEngine
 from sqlalchemy import text
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
 
 
 class ClusterService:

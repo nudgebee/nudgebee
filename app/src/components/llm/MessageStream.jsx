@@ -12,13 +12,9 @@ import useMessageAdditionalData from '@hooks/useMessageAdditionalData';
 import WatchesTab from './WatchesTab';
 import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
+import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
-
-// Hoisted to module scope so the polling effect's identity check is a
-// constant-time comparison against a shared array, not a fresh one
-// re-allocated on every parent render.
-const TERMINAL_WATCH_STATUSES = ['COMPLETED', 'EXPIRED', 'FAILED', 'CANCELLED'];
 
 const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, showFullText, setShowFullText, itemProps }) => {
   // Primary right drawer — Tasks list, Contexts table, Memories, or (for inline rows) Tool Details.
@@ -79,13 +75,23 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
   // surfaced via /api/public/app_config). When off, llm-server never mounts the
   // /v1/watches route, so we skip the poll entirely instead of 404-ing on it.
   const watchFeatureEnabled = useWatchFeatureEnabled();
-  // Per-watch status snapshot from the previous poll, scoped to this
-  // conversation's lifetime. Lets us detect non-terminal → terminal
-  // transitions so we can trigger ONE conversation-history re-fetch —
-  // the responder appends a markdown block to the parent message's
-  // `response` column when a watch terminates, and the UI's local copy
-  // of that message is otherwise stale until a hard refresh.
-  const prevWatchStatusesRef = useRef(new Map());
+  // Watches that have gone terminal but whose follow-up block has not shown
+  // up in the loaded messages yet: watch id -> deadline (epoch ms). Drives
+  // both the re-fetch trigger and whether the poller keeps ticking. See
+  // ./utils/watchFollowup for why a terminal status is not enough on its own.
+  const pendingFollowupsRef = useRef(new Map());
+  // Mirror of `messages`, for the same reason as onWatchTerminalRef below: the
+  // 5s tick closure has to read the latest bodies without `messages` being an
+  // effect dep, which would tear down and re-arm the poller on every re-render
+  // — including the ones our own re-fetch causes.
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  // Which conversation pendingFollowupsRef currently describes. The poll effect
+  // also re-runs on isProcessing changes, and those must NOT clear deadlines
+  // that are still counting down.
+  const pendingFollowupsCidRef = useRef(null);
   // Mirror itemProps.onWatchTerminal into a ref so the polling effect's
   // closure can always invoke the latest version without re-creating the
   // poller on every parent re-render. Without this, either (a) we'd put
@@ -98,9 +104,14 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
   }, [itemProps.onWatchTerminal]);
   useEffect(() => {
     const cid = itemProps.conversationId;
+    // Deadlines are scoped to one conversation — a switch must not carry the
+    // previous conversation's pending follow-ups in.
+    if (pendingFollowupsCidRef.current !== cid) {
+      pendingFollowupsCidRef.current = cid;
+      pendingFollowupsRef.current = new Map();
+    }
     if (!cid || !watchFeatureEnabled) {
       setWatchCount(0);
-      prevWatchStatusesRef.current = new Map();
       return undefined;
     }
     let aborted = false;
@@ -110,6 +121,9 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
     // for the live-watch-on-settled-conversation case (chat is no longer
     // processing but a watch is still polling).
     let lastKnownHasLiveWatch = false;
+    // Set on each successful tick so a transient watch-list 5xx cannot strand a
+    // follow-up that is still on its way.
+    let awaitingFollowup = false;
     // Exponential backoff on consecutive errors (5s → 10s → 20s, cap 30s)
     // so a persistent backend outage doesn't hammer at the steady 5s
     // cadence — and a recovery returns to 5s as soon as one fetch lands.
@@ -126,37 +140,31 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
           errorBackoffMs = RESET_BACKOFF_MS; // success → reset backoff
           setWatchCount(rows?.length || 0);
 
-          // Detect any non-terminal → terminal transitions for THIS poll.
-          // The responder writes a markdown `Watch update` block to the
-          // parent message's `response` text on terminal — but the UI's
-          // copy of `messages` is loaded once on chat open and never
-          // re-fetched on a timer. Without this trigger, the user has to
-          // hard-refresh to see the block; the chip status flips live but
-          // the inline body stays stale.
+          // The responder writes a markdown `Watch update` block into the
+          // parent message's `response` text when a watch terminates, but the
+          // UI's copy of `messages` is loaded on chat open and never re-fetched
+          // on a timer. Without a trigger here the user has to hard-refresh to
+          // see it — the chip flips live while the inline body stays stale.
           //
-          // We fire onWatchTerminal AT MOST ONCE per transition by
-          // comparing against the prev-poll snapshot. Same watch flipping
-          // status multiple times (shouldn't happen — terminal is
-          // immutable in DB) or two distinct watches terminating on the
-          // same tick both produce a single re-fetch, not N. The parent
-          // de-bounces its own fetchConversation, so even if we did fire
-          // twice it would be safe.
-          const prev = prevWatchStatusesRef.current;
-          const next = new Map();
-          let anyJustTerminated = false;
-          (rows || []).forEach((r) => {
-            next.set(r.id, r.status);
-            const wasStatus = prev.get(r.id);
-            const wasTerminal = wasStatus && TERMINAL_WATCH_STATUSES.includes(wasStatus);
-            const isTerminal = TERMINAL_WATCH_STATUSES.includes(r.status);
-            // wasStatus undefined = first observation; only fire on transition
-            // FROM a known non-terminal state, never on the first sighting.
-            if (wasStatus && !wasTerminal && isTerminal) {
-              anyJustTerminated = true;
-            }
+          // Firing once on the status transition is not enough: llm-server
+          // commits the terminal status BEFORE the summarizer LLM call that
+          // produces the block, so that single re-fetch reads the message back
+          // seconds before the block exists, and then the poller stops. Keep
+          // re-fetching until the responder's marker actually shows up instead,
+          // bounded by WATCH_FOLLOWUP_BUDGET_MS. Keying on the marker rather
+          // than on a transition also covers opening a conversation
+          // mid-summarize, where the watch is already terminal on first
+          // sighting and a transition never fires at all.
+          const now = Date.now();
+          pendingFollowupsRef.current = reconcilePendingFollowups({
+            rows,
+            messages: messagesRef.current,
+            pending: pendingFollowupsRef.current,
+            now,
+            budgetMs: WATCH_FOLLOWUP_BUDGET_MS,
           });
-          prevWatchStatusesRef.current = next;
-          if (anyJustTerminated && typeof onWatchTerminalRef.current === 'function') {
+          awaitingFollowup = countAwaitingFollowups(pendingFollowupsRef.current, now) > 0;
+          if (awaitingFollowup && typeof onWatchTerminalRef.current === 'function') {
             onWatchTerminalRef.current();
           }
 
@@ -164,7 +172,7 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
           lastKnownHasLiveWatch = hasLiveWatch;
           // Keep polling as long as the chat is processing or there's still a live watch.
           // A settled chat with all-terminal watches → stop scheduling further fetches.
-          if (isProcessing || hasLiveWatch) {
+          if (isProcessing || hasLiveWatch || awaitingFollowup) {
             timer = setTimeout(tick, 5000);
           }
         })
@@ -176,7 +184,10 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
           if (aborted) {
             return;
           }
-          if (isProcessing || lastKnownHasLiveWatch) {
+          // Re-read the deadlines rather than reusing the last successful
+          // tick's flag: while the endpoint is failing nothing refreshes them,
+          // and a stale `true` would keep retrying long past the budget.
+          if (isProcessing || lastKnownHasLiveWatch || countAwaitingFollowups(pendingFollowupsRef.current, Date.now()) > 0) {
             timer = setTimeout(tick, errorBackoffMs);
             errorBackoffMs = Math.min(errorBackoffMs * 2, MAX_BACKOFF_MS);
           }

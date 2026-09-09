@@ -17,7 +17,7 @@ export interface GatewaySessionsData {
 
 export function useGatewaySessions(
   filters: { startDate: string; endDate: string },
-  opts: { userId?: string; search?: string; limit: number; offset: number }
+  opts: { userId?: string; search?: string; model?: string; sort?: string; order?: string; limit: number; offset: number }
 ): GatewaySessionsData {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -28,6 +28,9 @@ export function useGatewaySessions(
     endDate: filters.endDate,
     userId: opts.userId ?? '',
     search: opts.search ?? '',
+    model: opts.model ?? '',
+    sort: opts.sort ?? '',
+    order: opts.order ?? '',
     limit: opts.limit,
     offset: opts.offset,
   });
@@ -46,6 +49,9 @@ export function useGatewaySessions(
             endDate: `${filters.endDate}T23:59:59.999Z`,
             userId: opts.userId,
             search: opts.search,
+            model: opts.model,
+            sort: opts.sort,
+            order: opts.order,
             limit: opts.limit,
             offset: opts.offset,
           },

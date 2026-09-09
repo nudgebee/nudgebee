@@ -143,14 +143,31 @@ func persistFindings(tenantID, cloudAccountID, cloudResourceID string, findings 
 		return fmt.Errorf("vmpackage: db: %w", err)
 	}
 
-	rows, vulnRows, vulnKeys := buildFindingRows(tenantID, cloudAccountID, cloudResourceID, findings, pkgsByKey, time.Now())
+	// One timestamp for both the archive UPDATE and the upsert, so the retired
+	// and refreshed rows carry the same updated_at within the transaction.
+	now := time.Now()
+	rows, vulnRows, vulnKeys := buildFindingRows(tenantID, cloudAccountID, cloudResourceID, findings, pkgsByKey, now)
+
+	// Retire only the findings that vanished from this scan, keyed on the scan's
+	// keep-set rather than every row for this VM. A finding that is still present
+	// must keep whatever status its user gave it, and the upsert's CASE guard
+	// below can only preserve that if the archive has not already overwritten it.
+	// Closed rows are left as a terminal record.
+	keepObjectIDs := make([]string, 0, len(rows))
+	for i := range rows {
+		if rows[i].AccountObjectId != nil {
+			keepObjectIDs = append(keepObjectIDs, *rows[i].AccountObjectId)
+		}
+	}
 
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
 		if _, err := tx.Exec(
 			`UPDATE recommendation SET status = 'Archive', updated_at = $1
 			 WHERE tenant_id = $2 AND cloud_account_id = $3 AND category = $4 AND rule_name = $5
-			   AND resource_id = $6 AND status != 'Archive'`,
-			time.Now(), tenantID, cloudAccountID, recommendationCategory, recommendationRuleName, cloudResourceID,
+			   AND resource_id = $6 AND status NOT IN ('Archive', 'Closed')
+			   AND NOT (account_object_id = ANY($7))`,
+			now, tenantID, cloudAccountID, recommendationCategory, recommendationRuleName, cloudResourceID,
+			pq.Array(keepObjectIDs),
 		); err != nil {
 			return nil, fmt.Errorf("vmpackage: archive existing findings: %w", err)
 		}
@@ -178,7 +195,8 @@ func persistFindings(tenantID, cloudAccountID, cloudResourceID string, findings 
 				    :finops_score, :finops_band, :finops_score_breakdown, :vulnerability_id)
 				 ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
 				 DO UPDATE SET recommendation = EXCLUDED.recommendation,
-				               status = EXCLUDED.status,
+				               status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+				                             THEN recommendation.status ELSE EXCLUDED.status END,
 				               updated_at = EXCLUDED.updated_at,
 				               severity = EXCLUDED.severity,
 				               recommendation_action = EXCLUDED.recommendation_action,
@@ -307,7 +325,7 @@ func buildVulnerabilityRow(pkg Package, f vulnmatcher.Finding) models.Vulnerabil
 		PackageType:  nonEmptyPtr(pkg.Type),
 		FixedVersion: nonEmptyPtr(f.FixedVersion),
 		Severity:     &severity,
-		CVSSScore:    &f.CVSSv3Score,
+		CVSSScore:    f.CVSSv3Score,
 		CVSSVector:   nonEmptyPtr(f.CVSSv3Vector),
 		Description:  nonEmptyPtr(f.Description),
 		DataSource:   nonEmptyPtr(f.DataSource),

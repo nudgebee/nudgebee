@@ -6,7 +6,8 @@ import { ds } from 'src/utils/colors';
 import apiKubernetes from '@api1/kubernetes';
 import CollapsableCard from '@shared/widgets/CollapsableCard';
 import InvestigateSidebar from '@components/k8s/investigate/InvestigateSidebar';
-import { safeJSONParse } from 'src/utils/common';
+import { safeJSONParse, parseHttpResponseBodyMessage } from 'src/utils/common';
+import { buildEventSubjectHref } from 'src/utils/eventSubjectLink';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import TicketIcon from '@assets/TicketIcon';
 import Text from '@shared/format/Text';
@@ -19,6 +20,17 @@ import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { Label } from '@ui/Label';
+import Datetime from '@shared/format/Datetime';
+import {
+  describeResolution,
+  describeActionKind,
+  describeActionEffect,
+  describeUndo,
+  describeActionTitle,
+  describeUndoTarget,
+} from '@components/k8s/investigate/resolutionStatus';
+import UndoConfirmDialog from '@components/k8s/investigate/UndoConfirmDialog';
+import RecurrenceSince from '@components/k8s/investigate/RecurrenceSince';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
 import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
@@ -71,7 +83,7 @@ import FeedbackVote from '@ui/FeedbackVote';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import SignozDatadogLogCard from '@components/k8s/investigate/cards/SignozDatadogLogCard';
 import apiKubernetes1 from '@api1/kubernetes1';
-import { SUBJECT_STATUS, SUBJECT_TYPE, AGGREGATION_KEY, RESOLVABLE_ALERT_KEYS, RCA_STATUS } from '@data/investigateConstants';
+import { SUBJECT_STATUS, SUBJECT_TYPE, RESOLVABLE_ALERT_KEYS, RCA_STATUS } from '@data/investigateConstants';
 import { List } from '@ui/List';
 import ExecutePrometheus from '@components/k8s/investigate/cards/ExecutePrometheus';
 import GithubReview from '@components/k8s/investigate/cards/GithubReview';
@@ -252,6 +264,29 @@ const EVENT_RESOLUTIONS_POLL_GRACE_MS = 60000;
 // A resolution (workflow run, deployment resource change, PR, etc.) is "live"
 // while InProgress; used to decide whether to keep polling event resolutions
 // for a status change.
+// Name a past run the way the operator recognises it: the card that offered it, else the
+// resolution type. card_id is the only link back to the action, and older rows predate it.
+const REMEDIATION_TYPE_LABELS = {
+  DeploymentChange: 'Workload change',
+  PullRequest: 'Pull request',
+  CommandExecution: 'Command',
+  WorkflowExecution: 'Automation',
+  Ticket: 'Ticket',
+};
+
+const remediationRunLabel = (run, options = []) => {
+  const data = typeof run?.data === 'string' ? safeJSONParse(run.data) : run?.data;
+  const cardId = data?.data?.card_id;
+  if (cardId) {
+    const card = options.find((option) => option?.id === cardId);
+    if (card?.text) return card.text;
+    // The card is not on this event any more (rules change, evidence ages out); fall back to a
+    // readable form of its id rather than showing the raw "MemoryAllocationCard".
+    return cardId.replace(/Card$/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+  }
+  return REMEDIATION_TYPE_LABELS[run?.type] || run?.type || 'Run';
+};
+
 const hasInProgressResolution = (resolutions) => Array.isArray(resolutions) && resolutions.some((r) => r?.status === 'InProgress');
 
 const Investigate = () => {
@@ -357,6 +392,18 @@ const Investigate = () => {
 
   const isK8s = source === 'kubernetes';
   const isCloud = source === 'cloud';
+
+  // Whether `source` above is an answer or its fallback. It defaults to 'kubernetes'
+  // until the account list loads, so a cloud investigation reports isK8s on its first
+  // renders. Consumers that would ask a backend the wrong question in the meantime --
+  // ownership resolves the k8s or the cloud chain, and they are not interchangeable --
+  // should wait for this rather than act on the default.
+  const sourceKnown = useMemo(() => {
+    if (selectedCluster?.cloud_provider) return true;
+    const accountId = router.query.accountId;
+    if (accountId && allCluster?.length > 0 && allCluster.find((c) => c.value === accountId)?.cloud_provider) return true;
+    return ['cloud', 'cloud-account', 'kubernetes'].includes(router.query.source);
+  }, [selectedCluster?.cloud_provider, allCluster, router.query.accountId, router.query.source]);
 
   const [row, setRow] = useState({});
   const [queryParam, setQueryParam] = useState({
@@ -987,7 +1034,7 @@ const Investigate = () => {
     const withLink = (list) => list.find((r) => typeof r?.type_reference_id === 'string' && /^https?:\/\//.test(r.type_reference_id));
     const notFailed = prs.filter((r) => r?.status !== 'Failed');
     return withLink(notFailed) || notFailed[0] || withLink(prs) || prs[0];
-  }, [eventResolutions]);
+  }, [eventResolutions, matchedOptions]);
 
   // Pause polling when the tab is hidden; resume on return if a run is still live.
   useEffect(() => {
@@ -1261,7 +1308,13 @@ const Investigate = () => {
             const card = new CloudLog(d, i);
             if (await card.canRenderContent()) pushCard(card);
           }
-          if (actionType == 'cloud_traces') {
+          // 'traces' as well as 'cloud_traces': the GCP enricher writes its span
+          // evidence under the plain 'traces' action (Cloud SQL, GKE), and that
+          // name was only mapped inside the isK8s branch above. A GCP account
+          // resolves to source 'cloud', so every one of those events carried a
+          // full trace payload the UI then dropped. Only Cloud Run rendered,
+          // because it happens to use the 'cloud_traces' name.
+          if (actionType == 'cloud_traces' || actionType == 'traces') {
             const card = new TracesCard(d, row, i);
             if (await card.canRenderContent()) pushCard(card);
           }
@@ -1286,6 +1339,18 @@ const Investigate = () => {
           }
           if (actionType == 'cloud_service_map' || d.type == 'service_map' || d.format == 'service_map') {
             const card = new ServiceMapCard(d, row, i);
+            if (await card.canRenderContent()) pushCard(card);
+          }
+          // The knowledge-graph card was registered only for Kubernetes events, so
+          // on a cloud alarm the one piece of evidence holding real traffic
+          // dependencies was collected and never drawn. What rendered instead was
+          // cloud_service_map, which for AWS carries containment only — a VPC, a
+          // security group and the resource itself — making a database alarm look
+          // like it had no callers when the same event already carried the
+          // "instance CALLS database" edge from VPC flow logs. The card reads
+          // nodes/edges straight off the evidence and is provider-agnostic.
+          if (actionType === 'knowledge_graph' || actionType === 'knowledge_graph_service_map' || d.type === 'knowledge_graph') {
+            const card = new KnowledgeGraphCard(d, row, i);
             if (await card.canRenderContent()) pushCard(card);
           }
           if (actionType == 'cloud_performance_insights') {
@@ -1353,8 +1418,12 @@ const Investigate = () => {
           result.canTracesRender = canTracesRender;
           if (await card.canRenderContent(result, row)) {
             if (isGenCancelled()) break;
-            await safeDelay(2000);
-            if (isGenCancelled()) break;
+            // Demo mode only: stage the cards in one at a time so the investigation reads as
+            // live work. Everywhere else they land as soon as they can render.
+            if (showDemoMessage) {
+              await safeDelay(2000);
+              if (isGenCancelled()) break;
+            }
             safeSetState(setMatchedOptions, (old) => {
               const cardExists = old.some((existingCard) => existingCard.id === card.id);
               if (cardExists) return old;
@@ -1469,14 +1538,13 @@ const Investigate = () => {
     });
   }, []);
 
-  // Also fires when a Fix-it form inside a CollapsableCard closes (submit or
-  // cancel) — refetch so a just-created InProgress resolution replaces the
-  // "Fix it" button with a live status label without waiting for a poll tick.
+  // Also fires when the "Take action to fix it" form closes (submit or cancel) —
+  // refetch so a just-created InProgress resolution shows a live status without
+  // waiting for a poll tick.
   const handleCloseResolveComponent = useCallback(() => {
     setOpenResolveComponentId(null);
     refetchEventResolutions();
   }, [refetchEventResolutions]);
-  const handleOpenResolveComponent = useCallback((id) => setOpenResolveComponentId(id), []);
 
   const handleInsightClick = (text) => {
     const tasksCards = matchedOptions.filter((option) => option?.id !== 'AskAiCard' && option?.id !== 'RCACard');
@@ -1497,13 +1565,22 @@ const Investigate = () => {
     }
   };
 
-  const handlePodClick = () => {
-    if (row?.subject_type === SUBJECT_TYPE.POD && row?.cloud_resource_id) {
-      router.push(`podDetails/${row?.cloud_resource_id}`);
-    } else if (row?.aggregation_key === AGGREGATION_KEY.ANOMALY) {
-      router.push(
-        `/kubernetes/details/${row?.cloud_account_id}?namespace=${row?.subject_namespace}&workloadName=${row?.subject_name}#kubernetes/applications`
-      );
+  const handlePodClick = async () => {
+    const accountId = row?.cloud_account_id || router.query.accountId;
+    let resources = [];
+    if (row?.cloud_resource_id || row?.subject_type === SUBJECT_TYPE.POD) {
+      resources = await apiKubernetes.getEventSubjectResources({
+        resourceId: row?.cloud_resource_id,
+        // Only a pod subject needs the by-name lookup; a workload subject is
+        // already the resource the event is linked to.
+        podName: row?.subject_type === SUBJECT_TYPE.POD ? row?.subject_name : undefined,
+        namespace: row?.subject_namespace,
+        accountId,
+      });
+    }
+    const href = buildEventSubjectHref(row, resources, router.query.accountId);
+    if (href) {
+      router.push(href);
     }
   };
 
@@ -1681,6 +1758,103 @@ const Investigate = () => {
     // "Take action to fix it" bar here.
     return option?.id !== 'AskAiCard' && (option.resolveButton || option.ResolveComponent) && hasWriteAccess(router.query.accountId);
   };
+
+  // How many ways there are to act on this event right now. Drives the tab badge and the
+  // signpost at the end of the analysis, so both agree without recomputing the filter.
+  const remediationActionCount = matchedOptions.filter(shouldShowResolveButton).length;
+
+  // Undo dispatches through the same apply endpoint as everything else, so it is recorded, audited
+  // and polled exactly like the action it reverses — an undo is an action, not a special case.
+  const [undoingCardId, setUndoingCardId] = useState(null);
+  const [pendingUndo, setPendingUndo] = useState(null);
+  // Mirrors the account currently on screen, so an undo that resolves after a shallow re-route can
+  // tell whether its result still belongs to what the operator is looking at.
+  const undoAccountRef = useRef(row?.cloud_account_id || router.query.accountId);
+  useEffect(() => {
+    undoAccountRef.current = row?.cloud_account_id || router.query.accountId;
+  }, [row?.cloud_account_id, router.query.accountId]);
+  const handleUndo = useCallback(
+    async (cardId, payload) => {
+      // The page re-routes shallowly (see the router.push with { shallow: true } above), so the
+      // account can change underneath an in-flight undo without this component ever unmounting.
+      // Capture the account the request was sent for and drop the result if it has moved on, rather
+      // than reporting one account's outcome while another is on screen.
+      const requestAccountId = row?.cloud_account_id || router.query.accountId;
+      setUndoingCardId(cardId);
+      try {
+        const res = await apiRecommendations.applyRecommendation(requestAccountId, row?.id, payload, 'kubernetes', {}, 'event');
+        if (undoAccountRef.current !== requestAccountId) return;
+        if (res?.errors) {
+          snackbar.error(`Undo failed: ${parseHttpResponseBodyMessage(res) || 'the request was rejected'}`);
+        } else {
+          snackbar.success('Undo started');
+          // The new attempt is InProgress, so this restarts the poll that renders its outcome.
+          refetchEventResolutions();
+        }
+      } catch (err) {
+        if (undoAccountRef.current !== requestAccountId) return;
+        snackbar.error(`Undo failed: ${err?.message || 'the request could not be sent'}`);
+      } finally {
+        setUndoingCardId(null);
+      }
+    },
+    [row?.cloud_account_id, row?.id, router.query.accountId, refetchEventResolutions]
+  );
+
+  // Every resolution on this event, newest first — the fixes still offered above show only their
+  // latest attempt, and an action that is no longer offered (or was started by Nubi or an
+  // automation) would otherwise leave no trace on the page at all.
+  // Repeated attempts at the same thing collapse into one row with a count. Four identical
+  // failures printed in full is four copies of one fact, and it buries anything that differs.
+  // Section headers orient the reader; they should not compete with the rows for weight.
+  const remediationSectionSx = {
+    fontSize: ds.text.small,
+    fontWeight: ds.weight.semibold,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    color: ds.gray[600],
+  };
+
+  // How many times each card's action has been attempted on this event. Repeating a failing action
+  // is the pattern worth interrupting, and the count is already implicit in the resolutions we hold.
+  const attemptsByCard = useMemo(() => {
+    const counts = {};
+    for (const run of Array.isArray(eventResolutions) ? eventResolutions : []) {
+      const data = typeof run?.data === 'string' ? safeJSONParse(run.data) : run?.data;
+      const cardId = data?.data?.card_id;
+      if (cardId) counts[cardId] = (counts[cardId] || 0) + 1;
+    }
+    return counts;
+  }, [eventResolutions]);
+
+  const previousRuns = useMemo(() => {
+    // The newest attempt per card is already rendered on its action row with its state, actor and
+    // time. Repeating it verbatim under History made one attempt look like two.
+    const shownOnActionRow = new Set(
+      matchedOptions
+        .filter(shouldShowResolveButton)
+        .map((option) => getResolutionForCard(option.id)?.id)
+        .filter(Boolean)
+    );
+    const rows = (Array.isArray(eventResolutions) ? eventResolutions : []).filter((run) => !shownOnActionRow.has(run?.id));
+    const grouped = [];
+    for (const run of rows) {
+      // Prefer the label of the card that offered the action. Without this the same fix reads as
+      // "Check if Resource allocation is sufficient" in the action list and "Memory Allocation" in
+      // the history, which makes one action look like two.
+      const label = remediationRunLabel(run, matchedOptions);
+      const last = grouped[grouped.length - 1];
+      // Only consecutive runs collapse, so the list still reads as a chronology.
+      if (last && last.label === label && last.run.status === run.status && last.run.status_message === run.status_message) {
+        last.count += 1;
+        last.oldest = run;
+        continue;
+      }
+      grouped.push({ key: run.id, label, run, count: 1, oldest: run });
+    }
+    return grouped;
+    // matchedOptions supplies each run's label, so a late-arriving card must re-label the history.
+  }, [eventResolutions, matchedOptions]);
 
   const aiAnalysisFeedback = () => {
     const askAiCardObject = matchedOptions.find((option) => option?.id === 'AskAiCard');
@@ -1923,6 +2097,7 @@ const Investigate = () => {
             queryParam={queryParam}
             isK8s={isK8s}
             isCloud={isCloud}
+            sourceKnown={sourceKnown}
             onPodClick={handlePodClick}
             onCreateTicket={(r) => {
               setTicketData(r);
@@ -2033,7 +2208,10 @@ const Investigate = () => {
                             <Tab
                               label={
                                 <Box component='span' sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-                                  Tasks
+                                  {/* Renamed from "Tasks": this panel renders the investigation's evidence
+                                      cards. Nothing in it is a task, and the honest name frees "Remediation"
+                                      for the tab that actually acts on the event. */}
+                                  Evidence
                                   <Box
                                     component='span'
                                     sx={{ fontWeight: 'var(--ds-font-weight-regular)', color: ds.gray[600], fontSize: 'var(--ds-text-small)' }}
@@ -2048,6 +2226,23 @@ const Investigate = () => {
                             {!isGeneratingCards && matchedOptions.some((option) => option?.id === 'RCACard') && (
                               <Tab label='RCA Report' {...a11yProps(2)} value={2} />
                             )}
+                            {/* One home for acting on the event. Every way of fixing it lives here —
+                                known fixes, the generated plan, automations — instead of being spread
+                                across the analysis footer, a mid-page panel and the toolbar. */}
+                            <Tab
+                              label={
+                                <Box component='span' sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                                  Remediation
+                                  {remediationActionCount > 0 && (
+                                    <Box component='span' sx={{ fontWeight: ds.weight.regular, color: ds.gray[600], fontSize: ds.text.small }}>
+                                      ({remediationActionCount})
+                                    </Box>
+                                  )}
+                                </Box>
+                              }
+                              {...a11yProps(3)}
+                              value={3}
+                            />
                           </Tabs>
                         </Box>
                         <Box sx={{ display: 'flex', alignItems: 'center', pb: 'var(--ds-space-2)' }}>
@@ -2124,21 +2319,6 @@ const Investigate = () => {
                               </Box>
                             ) : null}
                           </Box>
-                          {/* Run Automation */}
-                          {(() => {
-                            const automationAccountId = row?.cloud_account_id || router.query.accountId;
-                            if (!row?.id) return null;
-                            return (
-                              <RunAutomationMenu
-                                accountId={automationAccountId}
-                                eventId={row.id}
-                                canView={hasReadAccess(automationAccountId)}
-                                canRun={hasWriteAccess(automationAccountId)}
-                                onCreateAutomation={() => setShowTemplatesModal(true)}
-                                onTriggered={handleAutomationTriggered}
-                              />
-                            );
-                          })()}
                           {/* Generate RCA */}
                           {hasWriteAccess(router.query.accountId) && hasRcaFeatureAccess && generateRcaVisible ? (
                             <Box sx={{ mr: 'var(--ds-space-2)' }}>
@@ -2374,103 +2554,355 @@ const Investigate = () => {
                               <AIOrRcaCard key={`ai-card-${option.id}-${option?.refreshRenderId || 0}`} option={option} noPadding />
                             ))}
 
-                          {(() => {
-                            const askAi = matchedOptions.find((option) => option?.id === 'AskAiCard');
-                            const remediationEventId = row.id || router.query.id;
-                            return isK8s && askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
-                              // Key on eventId + refreshRenderId so the panel (and its generated plan) resets
-                              // when the event changes or Refresh Investigation re-runs, matching the AI card above.
-                              <RemediationPanel
-                                key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
-                                accountId={row.cloud_account_id || router.query.accountId}
-                                eventId={remediationEventId}
-                                nbStatus={row?.nb_status}
-                              />
-                            ) : null;
-                          })()}
-
                           {isK8s && !currentInvestigation?.text && matchedOptions.length > 0 && (
                             <Box sx={{ display: 'flex', flexDirection: 'column' }}>{showReferenceLinks()}</Box>
                           )}
-                          {aiAnalysisFeedback()}
-                          {matchedOptions.filter(shouldShowResolveButton).length > 0 && (
+                          {/* The analysis ends by pointing at the fix rather than offering it here — one
+                              button, not a label beside a ghost button, and placed above the feedback
+                              prompt so it is not the last thing under a question already answered.
+                              Deliberately not a copy of the actions: duplicating them would re-fragment
+                              the very thing the Remediation tab consolidates. */}
+                          {remediationActionCount > 0 && (
                             <>
                               <Divider />
-                              <Text
-                                value={'Take action to fix it'}
-                                sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-medium)', mb: 'var(--ds-space-3)' }}
-                              />
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
-                                {matchedOptions.filter(shouldShowResolveButton).map((resolvableOption) => {
-                                  const resolution = isK8s ? getResolutionForCard(resolvableOption.id) : undefined;
-                                  const baseLabel = resolvableOption.id === 'AskAiCard' ? 'Raise PR' : `Fix ${resolvableOption.text}`;
-                                  // A fix already ran (or is running) for this card — show its status
-                                  // instead of a re-clickable "Fix" button so the user can tell it was
-                                  // already applied. Failed still gets a button, relabeled "Retry".
-                                  if (resolution && resolution.status !== 'Failed') {
+                              <Box sx={{ display: 'flex', mt: ds.space[3], mb: ds.space[2] }}>
+                                <Button tone='primary' size='md' trailingAccent={<ArrowForwardRoundedIcon />} onClick={() => setTabValue(3)}>
+                                  {`See ${remediationActionCount} way${remediationActionCount === 1 ? '' : 's'} to fix this`}
+                                </Button>
+                              </Box>
+                            </>
+                          )}
+                          {aiAnalysisFeedback()}
+                        </TabPanel>
+                        <TabPanel value={tabValue} index={3} className='custom-panel'>
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[6] }}>
+                            {remediationActionCount === 0 && previousRuns.length === 0 && (
+                              <Text value='No fixes are available for this event yet.' sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }} />
+                            )}
+
+                            {remediationActionCount > 0 && (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                                <Text value='What you can do' sx={remediationSectionSx} />
+                                {/* One bordered list, one row per action, so a fix that is ready to run and
+                                    one that already ran read as the same kind of thing. Previously a heavy
+                                    button sat inline beside plain status text and they looked unrelated. */}
+                                <Box
+                                  sx={{
+                                    border: `1px solid ${ds.gray[200]}`,
+                                    borderRadius: ds.radius.sm,
+                                    overflow: 'hidden',
+                                  }}
+                                >
+                                  {matchedOptions.filter(shouldShowResolveButton).map((resolvableOption, actionIndex) => {
+                                    const resolution = isK8s ? getResolutionForCard(resolvableOption.id) : undefined;
+                                    const outcome = resolution ? describeResolution(resolution) : null;
+                                    const settled = resolution && resolution.status !== 'Failed';
                                     const prUrl =
-                                      resolution.type === 'PullRequest' &&
-                                      typeof resolution.type_reference_id === 'string' &&
+                                      resolution?.type === 'PullRequest' &&
+                                      typeof resolution?.type_reference_id === 'string' &&
                                       /^https?:\/\//.test(resolution.type_reference_id)
                                         ? resolution.type_reference_id
                                         : null;
                                     return (
                                       <Box
-                                        key={`fix-status-${resolvableOption.id}`}
-                                        sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}
+                                        key={`action-${resolvableOption.id}`}
+                                        sx={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'space-between',
+                                          gap: ds.space[4],
+                                          flexWrap: 'wrap',
+                                          p: ds.space[4],
+                                          borderTop: actionIndex === 0 ? 'none' : `1px solid ${ds.gray[200]}`,
+                                        }}
                                       >
-                                        <Label
-                                          text={`${resolvableOption.text}: ${(resolution.status === 'InProgress'
-                                            ? 'In Progress'
-                                            : resolution.status
-                                          ).toUpperCase()}`}
-                                          height={ds.space[5]}
-                                        />
-                                        {prUrl && (
-                                          <Link
-                                            href={prUrl}
-                                            openInNew
-                                            style={{
-                                              fontSize: 'var(--ds-text-small)',
-                                              fontWeight: 'var(--ds-font-weight-semibold)',
-                                              whiteSpace: 'nowrap',
-                                              flexShrink: 0,
-                                            }}
-                                          >
-                                            View PR
-                                          </Link>
-                                        )}
+                                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: 0 }}>
+                                          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+                                            <Text
+                                              value={describeActionTitle(resolvableOption.id, resolvableOption.text)}
+                                              sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium }}
+                                            />
+                                            {/* Whether this removes the cause or only restores service —
+                                                the distinction the remediation panel already draws for
+                                                Nubi's actions, applied to these too. */}
+                                            {(() => {
+                                              const kind = describeActionKind(resolvableOption.id);
+                                              return kind ? <Label tone={kind.tone} text={kind.text} size='sm' tooltip={kind.help} /> : null;
+                                            })()}
+                                          </Box>
+                                          {/* What it will do, before it is done — the confirmation dialog
+                                              shows a diff but never mentions the rolling restart. */}
+                                          {!settled && describeActionEffect(resolvableOption.id) && (
+                                            <Text
+                                              value={describeActionEffect(resolvableOption.id)}
+                                              sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
+                                            />
+                                          )}
+                                          {outcome?.isSlow && (
+                                            <Text
+                                              value='Taking longer than expected — it may still complete.'
+                                              sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
+                                            />
+                                          )}
+                                          {resolution?.status === 'Failed' && (
+                                            <Text
+                                              value={
+                                                attemptsByCard[resolvableOption.id] > 1
+                                                  ? `Tried ${
+                                                      attemptsByCard[resolvableOption.id]
+                                                    } times on this event, most recently failed — the reason is in the history below.`
+                                                  : 'Last attempt failed — the reason is in the history below.'
+                                              }
+                                              sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
+                                            />
+                                          )}
+                                          {/* "Done" says the action ran, not that the problem stopped. This
+                                              is the only evidence available without asking a human. */}
+                                          {resolution?.status === 'Success' && (
+                                            <RecurrenceSince
+                                              accountId={row?.cloud_account_id || router.query.accountId}
+                                              fingerprint={row?.fingerprint}
+                                              since={resolution.updated_at || resolution.created_at}
+                                            />
+                                          )}
+                                        </Box>
+
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexShrink: 0 }}>
+                                          {/* A settled action shows what happened instead of a button; a failed
+                                              one keeps its button so the retry is one click, not a hunt. */}
+                                          {settled ? (
+                                            <>
+                                              <Label tone={outcome.tone} text={outcome.label} size='sm' />
+                                              <Text
+                                                value={<Datetime value={resolution.updated_at || resolution.created_at} />}
+                                                sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
+                                              />
+                                              {outcome.actor && (
+                                                <Text value={`· ${outcome.actor}`} sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />
+                                              )}
+                                              {prUrl && (
+                                                <Link href={prUrl} openInNew style={{ fontSize: ds.text.small, whiteSpace: 'nowrap' }}>
+                                                  View PR
+                                                </Link>
+                                              )}
+                                              {/* Only shown where the attempt recorded how to put things back. An action
+                                                  that recorded nothing — a restart, a PVC resize — offers no button rather
+                                                  than one that would fail. */}
+                                              {(() => {
+                                                const undoable = describeUndo(resolution, resolvableOption.id, resolvableOption);
+                                                return undoable ? (
+                                                  <Button
+                                                    tone='secondary'
+                                                    size='sm'
+                                                    loading={undoingCardId === resolvableOption.id}
+                                                    disabled={!!undoingCardId}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      // Opens the review step rather than mutating the workload — an undo
+                                                      // is a rollout, and one click was too few to ask for it.
+                                                      setPendingUndo({
+                                                        cardId: resolvableOption.id,
+                                                        actionTitle: describeActionTitle(resolvableOption.id, resolvableOption.text),
+                                                        target: describeUndoTarget(resolvableOption, row),
+                                                        ...undoable,
+                                                      });
+                                                    }}
+                                                  >
+                                                    {undoable.label}
+                                                  </Button>
+                                                ) : null;
+                                              })()}
+                                            </>
+                                          ) : (
+                                            <Button
+                                              tone='primary'
+                                              size='sm'
+                                              trailingAccent={<ArrowForwardRoundedIcon />}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setOpenResolveComponentId(resolvableOption.id);
+                                              }}
+                                            >
+                                              {resolution?.status === 'Failed' ? 'Retry' : 'Review & run'}
+                                            </Button>
+                                          )}
+                                        </Box>
                                       </Box>
                                     );
-                                  }
-                                  return (
-                                    <Button
-                                      key={`fix-${resolvableOption.id}`}
-                                      tone='primary'
-                                      size='sm'
-                                      trailingAccent={<ArrowForwardRoundedIcon />}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenResolveComponentId(resolvableOption.id);
-                                      }}
-                                    >
-                                      {resolution?.status === 'Failed'
-                                        ? `Retry ${resolvableOption.id === 'AskAiCard' ? 'Raise PR' : resolvableOption.text}`
-                                        : baseLabel}
-                                    </Button>
-                                  );
-                                })}
+                                  })}
+                                </Box>
                               </Box>
-                            </>
-                          )}
-                          {matchedOptions
-                            .filter((option) => option.id === openResolveComponentId)
-                            .map((option) => {
-                              const ResolveComponent = option?.getResolveComponent?.();
-                              return ResolveComponent ? (
-                                <ResolveComponent key={`resolve-${option.id}`} open={true} onCloseComponent={handleCloseResolveComponent} />
+                            )}
+
+                            {/* Automations are remediation too: running one changes the system and
+                                writes a WorkflowExecution resolution, so it appears in History
+                                alongside everything else. Its own section, not a row inside the card
+                                fixes: gating it on remediationActionCount hid every saved workflow on
+                                events that have no card fix, which the toolbar entry point it replaced
+                                never did. */}
+                            {row?.id && (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                                <Text value='Run an automation' sx={remediationSectionSx} />
+                                <Box
+                                  sx={{
+                                    border: `1px solid ${ds.gray[200]}`,
+                                    borderRadius: ds.radius.sm,
+                                    overflow: 'hidden',
+                                  }}
+                                >
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      gap: ds.space[4],
+                                      flexWrap: 'wrap',
+                                      p: ds.space[4],
+                                    }}
+                                  >
+                                    <Text value='Your saved workflows, run against this event' sx={{ fontSize: ds.text.body, color: ds.gray[600] }} />
+                                    <Box sx={{ flexShrink: 0 }}>
+                                      <RunAutomationMenu
+                                        accountId={row?.cloud_account_id || router.query.accountId}
+                                        eventId={row.id}
+                                        canView={hasReadAccess(row?.cloud_account_id || router.query.accountId)}
+                                        canRun={hasWriteAccess(row?.cloud_account_id || router.query.accountId)}
+                                        onCreateAutomation={() => setShowTemplatesModal(true)}
+                                        onTriggered={handleAutomationTriggered}
+                                      />
+                                    </Box>
+                                  </Box>
+                                </Box>
+                              </Box>
+                            )}
+
+                            {/* Filing a ticket routes the problem to a person; it does not change the
+                                system. Same tab so there is one place to act, separate group so it never
+                                reads as a fix while someone is scanning for one. */}
+                            {hasReadAccess(router.query.accountId) && !ticketData?.ticket_id && (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                                <Text value='Hand it on' sx={remediationSectionSx} />
+                                <Box
+                                  sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: ds.space[4],
+                                    flexWrap: 'wrap',
+                                    p: ds.space[4],
+                                    border: `1px solid ${ds.gray[200]}`,
+                                    borderRadius: ds.radius.sm,
+                                  }}
+                                >
+                                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: 0 }}>
+                                    <Text value='Create a ticket' sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium }} />
+                                    <Text
+                                      value='Track this event outside Nudgebee. Does not change the system.'
+                                      sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
+                                    />
+                                  </Box>
+                                  <Button tone='secondary' size='sm' onClick={() => setIsTicketCreateFormOpen(true)}>
+                                    Create ticket
+                                  </Button>
+                                </Box>
+                              </Box>
+                            )}
+
+                            {/* The generated plan: hypotheses with runnable commands. It used to sit
+                                midway down the Analysis tab, a second remediation surface competing with
+                                the fixes below it. */}
+                            {(() => {
+                              const askAi = matchedOptions.find((option) => option?.id === 'AskAiCard');
+                              const remediationEventId = row?.id || router.query.id;
+                              // Not gated on isK8s: the panel shipped K8s-only, but generate is
+                              // provider-agnostic (it reuses the investigation text, which cloud events
+                              // have too) and #35503 gave execute a credentialed path for aws/az/gcloud.
+                              // The gate was the only thing keeping cloud accounts off the feature.
+                              return askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                                  <Text value='Suggested by Nubi' sx={remediationSectionSx} />
+                                  <RemediationPanel
+                                    key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
+                                    accountId={row?.cloud_account_id || router.query.accountId}
+                                    eventId={remediationEventId}
+                                    nbStatus={row?.nb_status}
+                                  />
+                                </Box>
                               ) : null;
-                            })}
+                            })()}
+
+                            {previousRuns.length > 0 && (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                                <Text value={`History (${previousRuns.reduce((n, g) => n + g.count, 0)})`} sx={remediationSectionSx} />
+                                <Box
+                                  sx={{
+                                    border: `1px solid ${ds.gray[200]}`,
+                                    borderRadius: ds.radius.sm,
+                                    overflow: 'hidden',
+                                  }}
+                                >
+                                  {previousRuns.map(({ key, label, run, count }, runIndex) => {
+                                    const outcome = describeResolution(run);
+                                    const runLink =
+                                      typeof run.type_reference_id === 'string' && /^https?:\/\//.test(run.type_reference_id)
+                                        ? run.type_reference_id
+                                        : null;
+                                    const message = run.status_message === 'Configuring' ? '' : run.status_message;
+                                    return (
+                                      <Box
+                                        key={`run-${key}`}
+                                        sx={{
+                                          display: 'flex',
+                                          alignItems: 'flex-start',
+                                          gap: ds.space[3],
+                                          p: ds.space[4],
+                                          borderTop: runIndex === 0 ? 'none' : `1px solid ${ds.gray[200]}`,
+                                        }}
+                                      >
+                                        <Box sx={{ flexShrink: 0, pt: '2px' }}>
+                                          <Label tone={outcome.tone} text={outcome.label} size='sm' />
+                                        </Box>
+                                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: 0, flex: 1 }}>
+                                          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+                                            <Text value={label} sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold }} />
+                                            {/* Repeating a failing action is the pattern this list exists to
+                                                interrupt, so the count is stated rather than implied by rows. */}
+                                            {count > 1 && (
+                                              <Text value={`tried ${count} times`} sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />
+                                            )}
+                                            {runLink && (
+                                              <Link href={runLink} openInNew style={{ fontSize: ds.text.small, whiteSpace: 'nowrap' }}>
+                                                Open
+                                              </Link>
+                                            )}
+                                          </Box>
+                                          {message && (
+                                            <Text value={message} showAutoEllipsis sx={{ fontSize: ds.text.caption, color: ds.gray[700] }} />
+                                          )}
+                                        </Box>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexShrink: 0 }}>
+                                          <Text
+                                            value={<Datetime value={run.updated_at || run.created_at} />}
+                                            sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
+                                          />
+                                          {outcome.actor && <Text value={outcome.actor} sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />}
+                                        </Box>
+                                      </Box>
+                                    );
+                                  })}
+                                </Box>
+                              </Box>
+                            )}
+
+                            {matchedOptions
+                              .filter((option) => option.id === openResolveComponentId)
+                              .map((option) => {
+                                const ResolveComponent = option?.getResolveComponent?.();
+                                return ResolveComponent ? (
+                                  <ResolveComponent key={`resolve-${option.id}`} open={true} onCloseComponent={handleCloseResolveComponent} />
+                                ) : null;
+                              })}
+                          </Box>
                         </TabPanel>
                         <TabPanel value={tabValue} index={1} className='custom-panel'>
                           <Box sx={{ display: 'flex', flexDirection: 'column' }}>
@@ -2482,20 +2914,14 @@ const Investigate = () => {
                                     idx={index}
                                     icon={option?.icon}
                                     text={option?.text}
-                                    resolveButton={option?.resolveButton}
                                     highlightsData={option?.getHighLightsData?.() ?? []}
                                     contentComponents={option?.getContentComponents?.() ?? []}
                                     onCardClick={handleCardClick}
                                     collapsedObj={collapsedObj}
                                     isCollapsed={collapsedObj[index]}
                                     expandedCardIndex={openCardIndex}
-                                    resolveButtonClick={option?.resolveButton ? option?.handleResolveButtonClick : null}
-                                    ResolveComponent={option?.resolveButton ? option?.getResolveComponent?.() ?? null : null}
                                     isBeta={option?.isBeta}
                                     newUI
-                                    openResolveComponent={option.id === openResolveComponentId}
-                                    onCloseResolveComponent={handleCloseResolveComponent}
-                                    onOpenResolveComponent={handleOpenResolveComponent}
                                     maxWidth='100%'
                                     eventResolution={isK8s ? getResolutionForCard(option?.id) : undefined}
                                   />
@@ -2608,6 +3034,20 @@ const Investigate = () => {
           </>
         )}
       </Box>
+      <UndoConfirmDialog
+        open={!!pendingUndo}
+        onClose={() => setPendingUndo(null)}
+        loading={!!undoingCardId}
+        label={pendingUndo?.label}
+        actionTitle={pendingUndo?.actionTitle}
+        target={pendingUndo?.target}
+        preview={pendingUndo?.preview}
+        onConfirm={() => {
+          const pending = pendingUndo;
+          setPendingUndo(null);
+          if (pending) handleUndo(pending.cardId, pending.payload);
+        }}
+      />
     </>
   );
 };

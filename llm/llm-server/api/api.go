@@ -47,7 +47,6 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleConversationApis(r, tracer, meter)
 	handleKnowledgebaseApis(r, tracer, meter)
 	handleMemoryApis(r, tracer, meter)
-	handleMemoryV2Apis(r, tracer, meter)
 	handleGlobalContextApis(r, tracer, meter)
 	handleWorkspaceApis(r, tracer, meter)
 	handleLLMConfigTestApis(r, tracer, meter)

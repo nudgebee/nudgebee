@@ -1309,7 +1309,14 @@ func TestUnmarshal_DropsWaitingStepsOnResume(t *testing.T) {
 			},
 		},
 		currentAction: []NBAgentPlannerToolAction{
-			{ToolID: "pending-1", Tool: "github_execute", ToolInput: "gh issue create ..."},
+			{
+				ToolID:           "pending-1",
+				Tool:             "github_execute",
+				ToolInput:        "gh issue create ...",
+				DisplayID:        "E2",
+				TurnID:           "turn-2",
+				ThoughtSignature: []byte{0x01, 0x02, 0xfe, 0xff},
+			},
 		},
 		toolCallCache: turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
 	}
@@ -1343,7 +1350,11 @@ func TestUnmarshal_DropsWaitingStepsOnResume(t *testing.T) {
 	// currentAction is the source of truth for what to re-run on resume;
 	// it must be preserved.
 	assert.Len(t, restored.currentAction, 1)
-	assert.Equal(t, "pending-1", restored.currentAction[0].ToolID)
+	restoredAction := restored.currentAction[0]
+	assert.Equal(t, "pending-1", restoredAction.ToolID)
+	assert.Equal(t, "E2", restoredAction.DisplayID)
+	assert.Equal(t, "turn-2", restoredAction.TurnID)
+	assert.Equal(t, []byte{0x01, 0x02, 0xfe, 0xff}, restoredAction.ThoughtSignature)
 }
 
 // TestGetToolInvocations_SkipsWaitingSteps is the defense-in-depth check:
@@ -1810,4 +1821,64 @@ func TestDoIterationParallel_ConcurrentStatusAccess(t *testing.T) {
 		// against in-flight workers (e.g. mu held across the semaphore acquire).
 		t.Fatal("doIterationParallel did not complete — possible deadlock in status locking")
 	}
+}
+
+// Resume rebuilds each NBAgentPlannerToolAction FIELD BY FIELD, so any field the
+// reconstruction forgets is silently dropped on every resume — and resume is not
+// an edge case, it is the write-approval path.
+//
+// For react_4 three fields are load-bearing. Without ThoughtSignature a replayed
+// Gemini functionCall is rejected outright ("missing a thought_signature"), so an
+// approved write would resume into a dead conversation. Without TurnID a parallel
+// batch splits into separate assistant messages, which strips the signature from
+// every sibling but the first — the same failure by a different route. DisplayID
+// keeps citations ([E3]) pointing at the same step across the pause.
+func TestUnmarshal_PreservesReAct4ActionFieldsOnResume(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+	mockAgent := &MockAgent{}
+	planner := &mockNBAgentPlanner{}
+
+	original := &plannerExecutor{
+		ctx:          ctx,
+		agent:        mockAgent,
+		agentPlanner: planner,
+		stepKeys:     map[string]bool{},
+		steps: []NBAgentPlannerToolActionStep{
+			{
+				Action: NBAgentPlannerToolAction{
+					ToolID:           "call-1",
+					Tool:             "kubectl_execute",
+					ToolInput:        `{"command":"get pods"}`,
+					Log:              "checking pods",
+					DisplayID:        "E3",
+					TurnID:           "t7-2",
+					ThoughtSignature: []byte{0x01, 0x02, 0xfe, 0xff},
+				},
+				Observation: "pod running",
+				Status:      ToolStatusSuccess,
+			},
+		},
+		toolCallCache: turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
+	}
+	original.stepKeys["call-1"] = true
+
+	state, err := original.Marshal()
+	assert.NoError(t, err)
+
+	restored := &plannerExecutor{
+		ctx:           ctx,
+		agent:         mockAgent,
+		agentPlanner:  planner,
+		stepKeys:      map[string]bool{},
+		toolCallCache: turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
+	}
+	assert.NoError(t, restored.Unmarshal(state))
+	assert.Len(t, restored.steps, 1)
+
+	got := restored.steps[0].Action
+	assert.Equal(t, "E3", got.DisplayID, "citations must still resolve after a resume")
+	assert.Equal(t, "t7-2", got.TurnID, "batch grouping must survive or siblings replay unsigned")
+	assert.Equal(t, []byte{0x01, 0x02, 0xfe, 0xff}, got.ThoughtSignature,
+		"the signature is base64 in JSON and must be decoded back to bytes, "+
+			"or every replayed tool call after a write approval is rejected")
 }

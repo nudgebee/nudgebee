@@ -36,6 +36,7 @@ beautifulsoup4==4.15.0
     # via
     #   ragserver (pyproject.toml)
     #   atlassian-python-api
+    #   markdownify
     #   unstructured
 black==26.5.1
     # via ragserver (pyproject.toml)
@@ -227,6 +228,8 @@ lxml==6.1.1
     # via unstructured
 markdown-it-py==4.2.0
     # via rich
+markdownify==1.2.0
+    # via ragserver (pyproject.toml)
 markupsafe==3.0.3
     # via jinja2
 marshmallow==3.26.2
@@ -547,6 +550,7 @@ six==1.17.0
     #   html5lib
     #   kubernetes
     #   langdetect
+    #   markdownify
     #   pysnow
     #   python-dateutil
 sniffio==1.3.1

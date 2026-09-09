@@ -4,6 +4,29 @@ __pycache__/
 # terminal-bench trial outputs (regenerated on every run)
 runs/
 
+# Harbor venv (harness dependency, deliberately kept out of pyproject/uv.lock)
+.venv-harbor/
+jobs/
+
+# SWE-bench: the 500-task dataset is downloadable (`harbor datasets download
+# swe-bench/swe-bench-verified`) and every run regenerates its own artifacts.
+# The dataset also carries solution/solve.sh (the gold patch) per task, which has
+# no business in git.
+swebench/dataset/
+swebench/*results*.json
+# Per-run outputs: predictions, the runner's raw results, and the official
+# report. Regenerated every run and persisted to llm_benchmark_* in Postgres —
+# committing them means each run dirties the tree.
+swebench/predictions*.jsonl
+swebench/swebench_*.json
+swebench/nubi-code-analyzer.*.json
+swebench/logs/
+swebench/stratified16.txt
+# Generated run reports. The README carries the standing result; a
+# point-in-time report goes stale the next time the number moves.
+swebench/REPORT-*.md
+swebench/REPORT-*.pdf
+
 # benchmark eval reports (regenerated on every run; persisted in DB)
 **/report/*.json
 

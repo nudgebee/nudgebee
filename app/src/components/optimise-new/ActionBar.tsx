@@ -14,7 +14,7 @@ import { toast } from '@ui/Toast';
 import AlarmCreationModal from '@components/cloudaccount/AlarmCreationModal';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import { hasWriteAccess, hasPermission, missingPermissionMessage } from '@lib/auth';
-import { safeParseJSON } from './utils';
+import { safeParseJSON, panelActionBarSx } from './utils';
 
 interface ActionBarProps {
   fullRecommendation: any;
@@ -67,20 +67,7 @@ const ActionBar = ({ fullRecommendation: rec, provider, onCreateTicket, onResolv
 
   return (
     <>
-      <Box
-        sx={{
-          borderTop: `1px solid ${ds.gray[200]}`,
-          backgroundColor: ds.background[100],
-          flexShrink: 0,
-          px: ds.space[4],
-          py: ds.space.mul(0, 6),
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: ds.space[2],
-        }}
-        data-testid='action-bar'
-      >
+      <Box sx={panelActionBarSx} data-testid='action-bar'>
         {/* Primary actions */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
           {isK8sRightSizing && canWrite && (

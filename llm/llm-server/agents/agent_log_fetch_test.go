@@ -405,20 +405,20 @@ func TestEscapeShellSingleQuoted(t *testing.T) {
 	}
 }
 
-// TestFlattenLogsToJSONL pins the JSONL conversion: a Loki-shaped envelope
+// TestFlattenLogsToTabSeparated pins the conversion: a Loki-shaped envelope
 // becomes one entry per line in `<timestamp>\t<message>` form so grep can
 // localise matches. Non-envelope inputs (kubectl text, placeholders, malformed
 // JSON) pass through verbatim. This is the contract `agent_log.go`'s prompt
 // relies on when it tells the LLM to run `grep ... | head -20`.
-func TestFlattenLogsToJSONL(t *testing.T) {
-	t.Run("loki envelope becomes JSONL", func(t *testing.T) {
+func TestFlattenLogsToTabSeparated(t *testing.T) {
+	t.Run("loki envelope becomes tab-separated records", func(t *testing.T) {
 		input := `{"logs":[` +
 			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:10Z","message":"{\"level\":\"ERROR\",\"error\":\"ConnectionError\"}"},` +
 			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:20Z","message":"{\"level\":\"INFO\",\"message\":\"Job ok\"}"}` +
 			`]}`
-		got := flattenLogsToJSONL(input)
+		got := flattenLogsToTabSeparated(input)
 		lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
-		assert.Len(t, lines, 2, "expected two JSONL lines, got %d: %q", len(lines), got)
+		assert.Len(t, lines, 2, "expected two tab-separated lines, got %d: %q", len(lines), got)
 		assert.Contains(t, lines[0], "2026-05-06T03:00:10Z")
 		assert.Contains(t, lines[0], "ERROR")
 		assert.Contains(t, lines[0], "ConnectionError")
@@ -429,37 +429,37 @@ func TestFlattenLogsToJSONL(t *testing.T) {
 
 	t.Run("kubectl text passthrough", func(t *testing.T) {
 		input := "2026-05-06T03:00:10Z stderr F ERROR Cannot connect to upstream\n2026-05-06T03:00:20Z stdout F INFO heartbeat ok\n"
-		got := flattenLogsToJSONL(input)
+		got := flattenLogsToTabSeparated(input)
 		assert.Equal(t, input, got, "kubectl text logs must pass through unchanged")
 	})
 
 	t.Run("no-logs-found placeholder passthrough", func(t *testing.T) {
 		input := `No logs found for Loki query: {namespace="ns",pod="p"} (time range: ...). The query executed successfully but returned no results.`
-		got := flattenLogsToJSONL(input)
+		got := flattenLogsToTabSeparated(input)
 		assert.Equal(t, input, got)
 	})
 
 	t.Run("envelope with zero entries passthrough", func(t *testing.T) {
 		input := `{"logs":[]}`
-		got := flattenLogsToJSONL(input)
+		got := flattenLogsToTabSeparated(input)
 		assert.Equal(t, input, got, "empty envelope should not be flattened")
 	})
 
 	t.Run("malformed JSON passthrough", func(t *testing.T) {
 		input := `{"logs": broken`
-		got := flattenLogsToJSONL(input)
+		got := flattenLogsToTabSeparated(input)
 		assert.Equal(t, input, got)
 	})
 
 	t.Run("empty input passthrough", func(t *testing.T) {
-		assert.Equal(t, "", flattenLogsToJSONL(""))
-		assert.Equal(t, "   ", flattenLogsToJSONL("   "))
+		assert.Equal(t, "", flattenLogsToTabSeparated(""))
+		assert.Equal(t, "   ", flattenLogsToTabSeparated("   "))
 	})
 
 	t.Run("entry without timestamp still emits message", func(t *testing.T) {
 		input := `{"logs":[{"message":"just a message"}]}`
-		got := flattenLogsToJSONL(input)
-		assert.Equal(t, "just a message\n", got)
+		got := flattenLogsToTabSeparated(input)
+		assert.Equal(t, "\tjust a message\n", got)
 	})
 
 	t.Run("grep shape — head -N means N entries", func(t *testing.T) {
@@ -474,7 +474,7 @@ func TestFlattenLogsToJSONL(t *testing.T) {
 			sb.WriteString(`{"timestamp":"2026-05-06T00:00:00Z","message":"line"}`)
 		}
 		sb.WriteString(`]}`)
-		got := flattenLogsToJSONL(sb.String())
+		got := flattenLogsToTabSeparated(sb.String())
 		assert.Equal(t, 50, strings.Count(got, "\n"))
 	})
 }
@@ -633,7 +633,7 @@ func TestLooksLikeFetchError(t *testing.T) {
 // <file_ref>` before it could filter:
 //
 //   - the preview is now of the SAME representation written to the file
-//     (flattenLogsToJSONL), so a filter can be written straight from it;
+//     (flattenLogsToTabSeparated), so a filter can be written straight from it;
 //   - `complete` states outright whether file_ref holds anything extra, rather
 //     than leaving the model to infer it from an absent truncation marker.
 func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
@@ -651,7 +651,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToJSONL(bigLogs), "logs_loki_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToTabSeparated(bigLogs), "logs_loki_1.txt", "", nil))
 		assert.Equal(t, "logs_loki_1.txt", str(env, "file_ref"))
 		assert.Less(t, len(str(env, "logs")), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
@@ -671,7 +671,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 
 	t.Run("file_ref present but logs already small: inlined unchanged and complete", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToJSONL(small), "logs_loki_2.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToTabSeparated(small), "logs_loki_2.txt", "", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), small),
 			"the log content itself must be inlined unchanged")
 		assert.Contains(t, str(env, "logs"), "complete —",
@@ -681,24 +681,46 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("preview format matches the file format, not the raw backend payload", func(t *testing.T) {
-		// The saved file is flattenLogsToJSONL(logs): "<timestamp>\t<message>"
+		// The saved file is flattenLogsToTabSeparated(logs): "<timestamp>\t<message>"
 		// per entry. Previewing the raw Loki envelope instead made it impossible
 		// to write a working grep from the preview, which is what forced the
 		// extra `head` turn. Both must now be byte-identical for a payload that
 		// fits inline.
 		raw := `{"logs":[{"timestamp":"2026-08-12T10:00:00Z","message":"{\"level\":\"ERROR\",\"msg\":\"boom\"}"}]}`
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToJSONL(raw), "logs_loki_4.txt", "", nil))
-		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToJSONL(raw)),
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", "", nil))
+		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToTabSeparated(raw)),
 			"the inline preview must be the same representation that was written to file_ref")
 		assert.NotContains(t, str(env, "logs"), `{"logs":[`,
 			"the raw backend envelope must not leak into the preview")
+		assert.Equal(t, "timestamp_tab_message", str(env, "logs_format"))
+		assert.Contains(t, str(env, "logs_format_hint"), "split once on TAB")
+		assert.Contains(t, str(env, "logs_format_hint"), "never JSON-decode the whole file")
+	})
+
+	t.Run("passthrough format avoids claiming a structured schema", func(t *testing.T) {
+		const raw = "plain kubectl log line\nsecond line"
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_kubectl_1.txt", "", nil))
+		assert.Equal(t, "passthrough", str(env, "logs_format"))
+		assert.Contains(t, str(env, "logs_format_hint"), "preview demonstrates that format")
 	})
 
 	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
 		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
-		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", flattenLogsToJSONL("tiny"), "logs_loki_3.txt", sig, nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", flattenLogsToTabSeparated("tiny"), "logs_loki_3.txt", sig, nil))
 		assert.Equal(t, sig, str(env, "bundle_signal"),
 			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
+	})
+
+	t.Run("loki envelope: inline preview is flattened tab-separated records, not raw escaped JSON", func(t *testing.T) {
+		raw := `{"logs":[` +
+			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:10Z","message":"{\"level\":\"ERROR\",\"error\":\"ConnectionError\"}"},` +
+			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:20Z","message":"{\"level\":\"INFO\",\"message\":\"Job ok\"}"}` +
+			`]}`
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", "", nil))
+		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToTabSeparated(raw)),
+			"inline preview must match the same one-entry-per-line form saved to file_ref")
+		assert.NotContains(t, env["logs"], `"logs":[`,
+			"inline preview must not be the raw Loki envelope — that's what pushed the model to a follow-up shell_execute peek")
 	})
 }
 

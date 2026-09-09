@@ -1,15 +1,23 @@
 package aws
 
 import (
+	"fmt"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/computeoptimizer"
 	cotypes "github.com/aws/aws-sdk-go-v2/service/computeoptimizer/types"
+	"github.com/samber/lo"
 )
 
 const ServiceNameComputeOptimizer = "ComputeOptimizer"
+
+// coPageSize is the per-call ceiling Compute Optimizer accepts on every
+// recommendation API. Without it the SDK asks for one default-sized page and
+// silently drops the rest of the account.
+const coPageSize = 100
 
 type awsComputeOptimizer struct {
 	DefaultAwsServiceImpl
@@ -32,13 +40,19 @@ func (a *awsComputeOptimizer) GetRecommendations(ctx providers.CloudProviderCont
 		return nil, err
 	}
 
-	client := computeoptimizer.NewFromConfig(cfg)
-
-	// Check enrollment status first
-	enrollmentOutput, err := client.GetEnrollmentStatus(ctx.GetContext(), &computeoptimizer.GetEnrollmentStatusInput{})
+	// Enrollment is an account-wide opt-in, so the account's own region answers
+	// for every region we go on to query.
+	enrollmentOutput, err := computeoptimizer.NewFromConfig(cfg).GetEnrollmentStatus(ctx.GetContext(), &computeoptimizer.GetEnrollmentStatusInput{})
 	if err != nil {
-		ctx.GetLogger().Warn("failed to check compute optimizer enrollment status", "error", err)
-		return recommendations, nil
+		// Not being permitted to ask is a settled answer — the account is not
+		// using Compute Optimizer. Any other failure leaves enrollment unknown,
+		// and answering "no recommendations" to an unknown would archive every
+		// Compute Optimizer recommendation the account has.
+		if isAccessDeniedError(err) {
+			ctx.GetLogger().Info("compute optimizer enrollment not readable, skipping")
+			return recommendations, nil
+		}
+		return nil, fmt.Errorf("check compute optimizer enrollment status: %w", err)
 	}
 
 	if enrollmentOutput.Status != cotypes.StatusActive {
@@ -46,32 +60,81 @@ func (a *awsComputeOptimizer) GetRecommendations(ctx providers.CloudProviderCont
 		return recommendations, nil
 	}
 
-	ec2Recs := a.getEC2Recommendations(ctx, client, account)
-	recommendations = append(recommendations, ec2Recs...)
+	// Compute Optimizer is a regional service: a client built from the account's
+	// own region only ever answers for that region. Querying every region the
+	// account has resources in is what the RDS producer already does.
+	for _, region := range regionsFromResources(existingResources, cfg.Region) {
+		regionalCfg := cfg.Copy()
+		regionalCfg.Region = region
+		client := computeoptimizer.NewFromConfig(regionalCfg)
 
-	lambdaRecs := a.getLambdaRecommendations(ctx, client, account)
-	recommendations = append(recommendations, lambdaRecs...)
-
-	ebsRecs := a.getEBSRecommendations(ctx, client, account)
-	recommendations = append(recommendations, ebsRecs...)
-
-	ecsRecs := a.getECSRecommendations(ctx, client, account)
-	recommendations = append(recommendations, ecsRecs...)
+		for _, get := range []func(providers.CloudProviderContext, *computeoptimizer.Client, providers.Account) ([]providers.Recommendation, error){
+			a.getEC2Recommendations,
+			a.getLambdaRecommendations,
+			a.getEBSRecommendations,
+			a.getECSRecommendations,
+		} {
+			recs, err := get(ctx, client, account)
+			if err != nil {
+				// A region the account opted into but where Compute Optimizer has
+				// no working endpoint carries no recommendations to lose, and the
+				// condition is permanent — skip it rather than failing the sync
+				// forever. Everything else means we cannot tell whether this
+				// region's recommendations still apply, and returning the partial
+				// set would read as "they no longer do": the sync archives every
+				// recommendation for this service that the scan did not return.
+				if isRegionEndpointMissing(err) || isRegionUnreachable(err) || isServiceUnavailableInRegion(err) {
+					ctx.GetLogger().Info("compute optimizer not available in region, skipping", "region", region)
+					break
+				}
+				return nil, fmt.Errorf("compute optimizer in %s: %w", region, err)
+			}
+			recommendations = append(recommendations, recs...)
+		}
+	}
 
 	ctx.GetLogger().Info("fetched compute optimizer recommendations", "count", len(recommendations))
 	return recommendations, nil
 }
 
-func (a *awsComputeOptimizer) getEC2Recommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) []providers.Recommendation {
+// regionsFromResources returns the distinct regions the account has resources
+// in, always including defaultRegion. Keeping the default in the set means this
+// can only ever query more than the single-region behaviour it replaces, even
+// when discovery has not run or does not record the resource type in question.
+func regionsFromResources(existingResources []providers.Resource, defaultRegion string) []string {
+	regions := []string{}
+	if defaultRegion != "" {
+		regions = append(regions, defaultRegion)
+	}
+	for _, resource := range existingResources {
+		if resource.Region != "" {
+			regions = append(regions, resource.Region)
+		}
+	}
+	return lo.Uniq(regions)
+}
+
+func (a *awsComputeOptimizer) getEC2Recommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
-	output, err := client.GetEC2InstanceRecommendations(ctx.GetContext(), &computeoptimizer.GetEC2InstanceRecommendationsInput{})
-	if err != nil {
-		ctx.GetLogger().Warn("failed to get compute optimizer EC2 recommendations", "error", err)
-		return recommendations
+	instanceRecommendations := []cotypes.InstanceRecommendation{}
+	var nextToken *string
+	for {
+		output, err := client.GetEC2InstanceRecommendations(ctx.GetContext(), &computeoptimizer.GetEC2InstanceRecommendationsInput{
+			NextToken:  nextToken,
+			MaxResults: aws.Int32(coPageSize),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get EC2 instance recommendations: %w", err)
+		}
+		instanceRecommendations = append(instanceRecommendations, output.InstanceRecommendations...)
+		if output.NextToken == nil || *output.NextToken == "" {
+			break
+		}
+		nextToken = output.NextToken
 	}
 
-	for _, rec := range output.InstanceRecommendations {
+	for _, rec := range instanceRecommendations {
 		if normCOFinding(rec.Finding) == normFindingOptimized {
 			continue
 		}
@@ -137,19 +200,30 @@ func (a *awsComputeOptimizer) getEC2Recommendations(ctx providers.CloudProviderC
 		})
 	}
 
-	return recommendations
+	return recommendations, nil
 }
 
-func (a *awsComputeOptimizer) getLambdaRecommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) []providers.Recommendation {
+func (a *awsComputeOptimizer) getLambdaRecommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
-	output, err := client.GetLambdaFunctionRecommendations(ctx.GetContext(), &computeoptimizer.GetLambdaFunctionRecommendationsInput{})
-	if err != nil {
-		ctx.GetLogger().Warn("failed to get compute optimizer Lambda recommendations", "error", err)
-		return recommendations
+	functionRecommendations := []cotypes.LambdaFunctionRecommendation{}
+	var nextToken *string
+	for {
+		output, err := client.GetLambdaFunctionRecommendations(ctx.GetContext(), &computeoptimizer.GetLambdaFunctionRecommendationsInput{
+			NextToken:  nextToken,
+			MaxResults: aws.Int32(coPageSize),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get Lambda function recommendations: %w", err)
+		}
+		functionRecommendations = append(functionRecommendations, output.LambdaFunctionRecommendations...)
+		if output.NextToken == nil || *output.NextToken == "" {
+			break
+		}
+		nextToken = output.NextToken
 	}
 
-	for _, rec := range output.LambdaFunctionRecommendations {
+	for _, rec := range functionRecommendations {
 		if rec.Finding == cotypes.LambdaFunctionRecommendationFindingOptimized {
 			continue
 		}
@@ -204,19 +278,30 @@ func (a *awsComputeOptimizer) getLambdaRecommendations(ctx providers.CloudProvid
 		})
 	}
 
-	return recommendations
+	return recommendations, nil
 }
 
-func (a *awsComputeOptimizer) getEBSRecommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) []providers.Recommendation {
+func (a *awsComputeOptimizer) getEBSRecommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
-	output, err := client.GetEBSVolumeRecommendations(ctx.GetContext(), &computeoptimizer.GetEBSVolumeRecommendationsInput{})
-	if err != nil {
-		ctx.GetLogger().Warn("failed to get compute optimizer EBS recommendations", "error", err)
-		return recommendations
+	volumeRecommendations := []cotypes.VolumeRecommendation{}
+	var nextToken *string
+	for {
+		output, err := client.GetEBSVolumeRecommendations(ctx.GetContext(), &computeoptimizer.GetEBSVolumeRecommendationsInput{
+			NextToken:  nextToken,
+			MaxResults: aws.Int32(coPageSize),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get EBS volume recommendations: %w", err)
+		}
+		volumeRecommendations = append(volumeRecommendations, output.VolumeRecommendations...)
+		if output.NextToken == nil || *output.NextToken == "" {
+			break
+		}
+		nextToken = output.NextToken
 	}
 
-	for _, rec := range output.VolumeRecommendations {
+	for _, rec := range volumeRecommendations {
 		if rec.Finding == cotypes.EBSFindingOptimized {
 			continue
 		}
@@ -279,19 +364,30 @@ func (a *awsComputeOptimizer) getEBSRecommendations(ctx providers.CloudProviderC
 		})
 	}
 
-	return recommendations
+	return recommendations, nil
 }
 
-func (a *awsComputeOptimizer) getECSRecommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) []providers.Recommendation {
+func (a *awsComputeOptimizer) getECSRecommendations(ctx providers.CloudProviderContext, client *computeoptimizer.Client, account providers.Account) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
-	output, err := client.GetECSServiceRecommendations(ctx.GetContext(), &computeoptimizer.GetECSServiceRecommendationsInput{})
-	if err != nil {
-		ctx.GetLogger().Warn("failed to get compute optimizer ECS recommendations", "error", err)
-		return recommendations
+	serviceRecommendations := []cotypes.ECSServiceRecommendation{}
+	var nextToken *string
+	for {
+		output, err := client.GetECSServiceRecommendations(ctx.GetContext(), &computeoptimizer.GetECSServiceRecommendationsInput{
+			NextToken:  nextToken,
+			MaxResults: aws.Int32(coPageSize),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get ECS service recommendations: %w", err)
+		}
+		serviceRecommendations = append(serviceRecommendations, output.EcsServiceRecommendations...)
+		if output.NextToken == nil || *output.NextToken == "" {
+			break
+		}
+		nextToken = output.NextToken
 	}
 
-	for _, rec := range output.EcsServiceRecommendations {
+	for _, rec := range serviceRecommendations {
 		if rec.Finding == cotypes.ECSServiceRecommendationFindingOptimized {
 			continue
 		}
@@ -361,7 +457,7 @@ func (a *awsComputeOptimizer) getECSRecommendations(ctx providers.CloudProviderC
 		})
 	}
 
-	return recommendations
+	return recommendations, nil
 }
 
 func mapCOFindingToSeverity(finding cotypes.Finding) providers.RecommendationSeverity {

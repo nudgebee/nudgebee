@@ -829,6 +829,9 @@ func RecommendationResolve(ctx *security.RequestContext, input RecommendationRes
 		Resolution struct {
 			ID string `json:"id"`
 		} `json:"resolution"`
+		Data []struct {
+			Message string `json:"message"`
+		} `json:"data"`
 	}
 
 	if err := common.UnmarshalJson(jsonBody, &response); err != nil {
@@ -839,9 +842,17 @@ func RecommendationResolve(ctx *security.RequestContext, input RecommendationRes
 		return RecommendationResolveResult{}, fmt.Errorf("got %s from service server for PR request", response.Status)
 	}
 
+	// The api-server returns one entry carrying the human-readable outcome; older
+	// builds and non-PR resolutions may return none, which reads as "no comment".
+	var message string
+	if len(response.Data) > 0 {
+		message = response.Data[0].Message
+	}
+
 	return RecommendationResolveResult{
 		ID:       response.Resolution.ID,
 		PRAction: response.PRAction,
+		Message:  message,
 	}, nil
 }
 
@@ -1178,6 +1189,61 @@ func InvestigateEvent(tenantId string, events []Event) ([]string, error) {
 	}
 
 	return nil, errors.New("events: unable to process request")
+}
+
+// AddEventEvidence appends evidences to an event that already exists, via the
+// `add_event_evidence` RPC action.
+//
+// InvestigateEvent (used by events.store) cannot do this: for an existing
+// finding it takes a duplicate branch that deliberately leaves evidences
+// untouched, so an automation attaching its output to the event that triggered
+// it would silently lose the data. api-server performs the append as a single
+// atomic jsonb concatenation, because the playbook enricher pipeline writes the
+// same column concurrently.
+func AddEventEvidence(tenantId string, eventId string, evidences []any) error {
+	if eventId == "" {
+		return errors.New("event_id is required")
+	}
+	if len(evidences) == 0 {
+		return errors.New("at least one evidence is required")
+	}
+
+	serviceRequest := map[string]any{
+		"action": map[string]any{
+			"name": "add_event_evidence",
+		},
+		"input": map[string]any{
+			"event_id":  eventId,
+			"evidences": evidences,
+		},
+	}
+
+	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/event", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
+		"Content-Type":   contentTypeJson,
+		"Accept":         contentTypeJson,
+		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+		"x-tenant-id":    tenantId,
+	}), common.HttpWithJsonBody(serviceRequest))
+	if err != nil {
+		return fmt.Errorf("unable to add event evidence: %v", err)
+	}
+
+	defer func() {
+		if resp.Body != nil {
+			if err := resp.Body.Close(); err != nil {
+				slog.Info("services_server: failed to close response body", "error", err)
+			}
+		}
+	}()
+
+	jsonBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("unable to add event evidence: %v", string(jsonBody))
+	}
+	return nil
 }
 
 // FetchLogGroup invokes the RPC `log_group` action (handler:

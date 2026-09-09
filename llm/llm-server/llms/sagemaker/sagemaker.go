@@ -143,7 +143,7 @@ func (s *SagemakerLLM) Call(ctx context.Context, prompt string, options ...llms.
 
 	generatedResponse = extractMessageResponse(generatedResponse)
 
-	return generatedResponse, fmt.Errorf("unexpected response format: %v", response)
+	return generatedResponse, nil
 }
 
 // Generate calls the SageMaker endpoint with multiple prompts.

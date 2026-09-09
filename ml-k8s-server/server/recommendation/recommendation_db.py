@@ -90,7 +90,7 @@ class DBRecommendation(Recommendation):
                     # Written Open, not InProgress. InProgress means "a resolution is in flight"
                     # everywhere else in the system, and every retirement path exempts it
                     # (clearRecommendationData, archiveRecommendationsForInactiveResources, the
-                    # KRR and PVC archivers) — a row written InProgress can never be retired.
+                    # rightsizing and PVC archivers) — a row written InProgress can never be retired.
                     # Use parameterized query to prevent SQL injection (was f-string interpolation)
                     query = psql.SQL(
                         "INSERT INTO public.{table}(id, created_at, updated_at, tenant_id, cloud_account_id,"

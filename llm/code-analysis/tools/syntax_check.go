@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -104,10 +105,11 @@ func CheckEditedFileSyntax(absPath string) SyntaxCheckResult {
 		}
 		return SyntaxCheckResult{Status: SyntaxCheckPassed, Checker: checker}
 	}
+	// Kept whole. Truncation happens at presentation (AppendToObservation) so
+	// that CheckEditedFileSyntaxDelta compares complete finding sets — cutting
+	// here made two runs of the same file differ purely because their temp paths
+	// were different lengths, and every finding past the cut looked new.
 	detail := strings.TrimSpace(string(out))
-	if len(detail) > syntaxCheckMaxDetail {
-		detail = detail[:syntaxCheckMaxDetail] + "\n[... truncated]"
-	}
 	if detail == "" {
 		// Non-zero exit with no diagnostics — can't attribute to the edit.
 		return SyntaxCheckResult{Status: SyntaxCheckNotChecked, Checker: checker}
@@ -159,7 +161,22 @@ func checkPythonUndefinedNames(absPath string) SyntaxCheckResult {
 		var findings []string
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			l := strings.ToLower(line)
+			// "'from x import *' used; unable to detect undefined names" is a
+			// CAPABILITY NOTICE, not a finding — pyflakes saying it cannot judge
+			// this file. It contains the substring "undefined names", so a naive
+			// match reports it as a defect. That is what fired on astropy's
+			// builtin_frames/__init__.py and told the agent it had broken syntax
+			// it never touched. Exclude it before matching anything else.
+			if strings.Contains(l, "unable to detect undefined names") {
+				continue
+			}
+			// Under a star import pyflakes hedges to "'x' may be undefined, or
+			// defined from star imports" instead of "undefined name 'x'". Without
+			// this the real finding is silently dropped in exactly the files where
+			// the notice above is loudest — a false negative paired with a false
+			// positive.
 			if strings.Contains(l, "undefined name") || strings.Contains(l, "undefined local") ||
+				strings.Contains(l, "may be undefined") ||
 				strings.Contains(l, "referenced before assignment") || strings.Contains(l, "f821") || strings.Contains(l, "f823") {
 				findings = append(findings, strings.TrimSpace(line))
 			}
@@ -169,15 +186,8 @@ func checkPythonUndefinedNames(absPath string) SyntaxCheckResult {
 			// (or produced no parseable diagnostics) — not this gate's call.
 			return SyntaxCheckResult{Status: SyntaxCheckPassed, Checker: c.checker}
 		}
-		detail := strings.Join(findings, "\n")
-		if len(detail) > syntaxCheckMaxDetail {
-			cut := syntaxCheckMaxDetail
-			for cut > 0 && !utf8.RuneStart(detail[cut]) {
-				cut--
-			}
-			detail = detail[:cut] + "\n[... truncated]"
-		}
-		return SyntaxCheckResult{Status: SyntaxCheckFailed, Checker: c.checker, Detail: detail}
+		// Whole, for the same reason — see the note at the compile-based site.
+		return SyntaxCheckResult{Status: SyntaxCheckFailed, Checker: c.checker, Detail: strings.Join(findings, "\n")}
 	}
 	return SyntaxCheckResult{Status: SyntaxCheckNotChecked}
 }
@@ -188,10 +198,174 @@ func checkPythonUndefinedNames(absPath string) SyntaxCheckResult {
 func (r SyntaxCheckResult) AppendToObservation(obs string) string {
 	switch r.Status {
 	case SyntaxCheckFailed:
-		return fmt.Sprintf("%s\n\n⚠ POST-EDIT SYNTAX CHECK FAILED (%s) — your edit likely broke the file's syntax. Fix this before proceeding:\n%s", obs, r.Checker, r.Detail)
+		return fmt.Sprintf("%s\n\n⚠ POST-EDIT SYNTAX CHECK FAILED (%s) — your edit likely broke the file's syntax. Fix this before proceeding:\n%s", obs, r.Checker, truncateDetail(r.Detail))
 	case SyntaxCheckPassed:
 		return fmt.Sprintf("%s\n[syntax OK: %s]", obs, r.Checker)
 	default:
 		return obs
 	}
+}
+
+// --- before/after attribution -------------------------------------------------
+//
+// CheckEditedFileSyntax answers "does this file have undefined-name findings?"
+// and the observation then tells the agent "your edit likely broke the file's
+// syntax". Those are different questions whenever the file already had findings.
+//
+// astropy's `builtin_frames/__init__.py` carries a long-standing
+// `'from .ecliptic import *' unable to detect undefined names`. Editing one
+// unrelated line there produced the full "YOUR EDIT LIKELY BROKE THE FILE'S
+// SYNTAX. Fix this before proceeding" banner attached to a successful edit.
+// With no runtime in the workspace, that is the strongest signal the agent
+// gets, so it edits again — SWE-bench astropy-13398 burned 6 edits and 12
+// minutes that way and ended with a genuinely broken import.
+//
+// Comparing against the pre-edit content answers the question actually being
+// asked. Findings are matched on message text, not path:line:col, because an
+// edit shifts line numbers and would otherwise make every pre-existing finding
+// look new.
+
+// findingMessageRe strips the "path:line:col: " prefix from a checker finding,
+// leaving the message — the part that is stable across an edit.
+var findingMessageRe = regexp.MustCompile(`^[^:]+:\d+:(?:\d+:)?\s*`)
+
+// tracebackLineRe matches the line number inside a Python traceback frame:
+//
+//	File "/path/to/mod.py", line 12
+//
+// A compile error's detail is a traceback, not a "path:line:col:" finding, so
+// findingMessageRe does not touch it and the raw text is compared. An edit ABOVE
+// a pre-existing SyntaxError shifts that number — baseline says line 10, the
+// edited file says line 12 — and the identical, pre-existing error would be
+// reported as introduced. Masked for comparison only.
+var tracebackLineRe = regexp.MustCompile(`(, line )\d+`)
+
+// newFindings returns the findings in after whose message does not already
+// appear in before, preserving order and multiplicity: a second copy of an
+// existing message is genuinely new.
+func newFindings(after, before string) []string {
+	// Comparison key: message text with traceback line numbers masked. Both are
+	// things an unrelated edit can move without changing what the finding says.
+	key := func(line string) string {
+		k := strings.TrimSpace(findingMessageRe.ReplaceAllString(strings.TrimSpace(line), ""))
+		return tracebackLineRe.ReplaceAllString(k, "${1}N")
+	}
+	baseline := map[string]int{}
+	for _, l := range strings.Split(before, "\n") {
+		if m := key(l); m != "" {
+			baseline[m]++
+		}
+	}
+	var out []string
+	for _, l := range strings.Split(after, "\n") {
+		line := strings.TrimSpace(l)
+		if line == "" {
+			continue
+		}
+		msg := key(line)
+		if msg != "" && baseline[msg] > 0 {
+			baseline[msg]--
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// CheckEditedFileSyntaxDelta reports only what the edit introduced.
+//
+// before is the file's content prior to the edit; nil means no baseline could
+// be captured (a newly created file, or an unreadable one), in which case this
+// degrades to the plain post-edit check — every finding is attributable,
+// because there was nothing there before.
+func CheckEditedFileSyntaxDelta(absPath string, before []byte) SyntaxCheckResult {
+	after := CheckEditedFileSyntax(absPath)
+	if after.Status != SyntaxCheckFailed || before == nil {
+		return after
+	}
+
+	baseline, baselinePath, ok := checkContentAsFile(absPath, before)
+	if !ok || baseline.Status != SyntaxCheckFailed {
+		// Either the baseline could not be established, or the file was clean
+		// before this edit. Both mean the finding is the edit's to answer for.
+		return after
+	}
+
+	// Compare with paths neutralised. A compile error's detail is a Python
+	// traceback that embeds the file path — `File "/tmp/.../baseline.py", line 3`
+	// versus `File "/work/.../cds.py", line 3` — so an identical pre-existing
+	// SyntaxError would never match and would be reported as introduced. Only the
+	// comparison is normalised; the findings handed back keep their real paths.
+	introduced := newFindings(
+		normalizeDetailPaths(after.Detail, absPath),
+		normalizeDetailPaths(baseline.Detail, baselinePath),
+	)
+	introduced = denormalizeDetailPaths(introduced, absPath)
+	if len(introduced) == 0 {
+		// Every finding predates the edit. Saying nothing is the whole point:
+		// an advisory that fires on someone else's code is worse than silence.
+		return SyntaxCheckResult{Status: SyntaxCheckPassed, Checker: after.Checker}
+	}
+	return SyntaxCheckResult{Status: SyntaxCheckFailed, Checker: after.Checker, Detail: strings.Join(introduced, "\n")}
+}
+
+// checkContentAsFile runs the same check over content written to a throwaway
+// file that keeps origPath's extension, so checker selection is unchanged.
+func checkContentAsFile(origPath string, content []byte) (SyntaxCheckResult, string, bool) {
+	dir, err := os.MkdirTemp("", "syntax-baseline-")
+	if err != nil {
+		return SyntaxCheckResult{}, "", false
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	tmp := filepath.Join(dir, "baseline"+filepath.Ext(origPath))
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		return SyntaxCheckResult{}, "", false
+	}
+	return CheckEditedFileSyntax(tmp), tmp, true
+}
+
+// detailPathPlaceholder stands in for a file path while two check results are
+// compared, so that the same finding on the same content matches regardless of
+// where the file happened to live.
+const detailPathPlaceholder = "\x00FILE\x00"
+
+// normalizeDetailPaths replaces a checker's references to path — full path first,
+// then bare base name, since pyflakes prints what it was given while a traceback
+// may print either.
+func normalizeDetailPaths(detail, path string) string {
+	if path == "" || detail == "" {
+		return detail
+	}
+	out := strings.ReplaceAll(detail, path, detailPathPlaceholder)
+	if base := filepath.Base(path); base != "" && base != "." && base != string(filepath.Separator) {
+		out = strings.ReplaceAll(out, base, detailPathPlaceholder)
+	}
+	return out
+}
+
+// denormalizeDetailPaths restores the real path in findings that will be shown.
+func denormalizeDetailPaths(lines []string, path string) []string {
+	if path == "" {
+		return lines
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, strings.ReplaceAll(l, detailPathPlaceholder, path))
+	}
+	return out
+}
+
+// truncateDetail bounds a finding list for display. Applied only when rendering
+// an observation: SyntaxCheckResult.Detail itself stays whole so before/after
+// comparison is exact.
+func truncateDetail(detail string) string {
+	if len(detail) <= syntaxCheckMaxDetail {
+		return detail
+	}
+	cut := syntaxCheckMaxDetail
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	return detail[:cut] + "\n[... truncated]"
 }

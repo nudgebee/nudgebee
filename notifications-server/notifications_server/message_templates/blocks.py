@@ -162,6 +162,30 @@ class ChartBlock(BaseBlock):
         super().__init__(title=title, chart=chart)
 
 
+class SlackFileImageBlock(BaseBlock):
+    """
+    A native Slack Block Kit ``image`` block backed by a file already
+    uploaded to Slack (via ``files_upload_v2`` with no ``channel``, so the
+    upload itself doesn't post anywhere), referenced by ``slack_file.id``.
+    Unlike a plain FileBlock, this renders inline in the message that
+    includes it, at whatever position it's placed. See:
+    https://docs.slack.dev/reference/block-kit/blocks/image-block/
+    """
+
+    slack_file_id: str
+    alt_text: str
+    title: str
+
+    def __init__(self, slack_file_id: str, alt_text: str, title: str):
+        """
+        :param title: shown above the image, and as the label on the
+            collapsed-image row (e.g. "diagram-1.png") when a reader
+            collapses it - Slack has no API control over collapse/expand
+            itself, only what that collapsed row displays.
+        """
+        super().__init__(slack_file_id=slack_file_id, alt_text=alt_text, title=title)
+
+
 class GridTableBlock(BaseBlock):
     """
     A native Slack Block Kit ``table`` block: a bordered grid with an

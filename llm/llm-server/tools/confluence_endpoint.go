@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strings"
 )
 
@@ -96,4 +97,31 @@ func confluenceConfigComplete(config map[string]string) bool {
 		return true
 	}
 	return config["username"] != ""
+}
+
+// confluenceScopeCQL narrows a live search to what the RAG scraper indexes for
+// the same integration: the configured space, and the configured page trees.
+// CQL's ancestor operator excludes the root page itself, hence the id clause.
+// page_trees holds only numeric IDs (api-server resolves URLs at save); anything
+// else is dropped rather than interpolated into the query.
+func confluenceScopeCQL(namespace, pageTrees string) string {
+	var clauses []string
+	if key := strings.TrimSpace(namespace); key != "" {
+		clauses = append(clauses, fmt.Sprintf(`space="%s"`, strings.ReplaceAll(key, `"`, `\"`)))
+	}
+	var ids []string
+	for _, entry := range strings.Split(pageTrees, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" && strings.Trim(entry, "0123456789") == "" {
+			ids = append(ids, entry)
+		}
+	}
+	if len(ids) > 0 {
+		list := strings.Join(ids, ",")
+		clauses = append(clauses, fmt.Sprintf("(ancestor in (%s) OR id in (%s))", list, list))
+	}
+	if len(clauses) == 0 {
+		return ""
+	}
+	return " AND " + strings.Join(clauses, " AND ")
 }

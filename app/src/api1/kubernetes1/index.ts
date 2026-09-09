@@ -274,18 +274,6 @@ mutation AzureEventGridOnboard($object: AzureEventGridOnboardInput!) {
 }
 `;
 
-export const GCP_PUBSUB_ONBOARD = `
-mutation GcpPubSubOnboard($object: GcpPubSubOnboardInput!) {
-  gcp_get_onboard_pubsub_url(object: $object) {
-    deployment_manager_url
-    external_id
-    pubsub_project_id
-    subscription_name
-    template_yaml_url
-  }
-}
-`;
-
 export const GET_SLO_CONFIGS = `
 query GetSLOConfigs {
   slo_config_v2(where: __WHERE__) {
@@ -715,18 +703,6 @@ const apiKubernetes1 = {
       return response;
     } catch (error) {
       console.error('failed to get azure arm template url-', error);
-      return error;
-    }
-  },
-  async getGcpDeploymentManagerURL(accountId: string) {
-    try {
-      if (accountId === 'demo') return null;
-      const response = await queryGraphQL(GCP_PUBSUB_ONBOARD, 'GcpPubSubOnboard', {
-        object: { account_id: accountId },
-      });
-      return response;
-    } catch (error) {
-      console.error('failed to get gcp deployment manager url-', error);
       return error;
     }
   },
@@ -1717,9 +1693,11 @@ const apiKubernetes1 = {
         seed { node_id name namespace type }
         impacted { name node_type namespace environment hops_away relationship alerting active_alerts { event_id title priority source starts_at } }
         depends_on { name node_type namespace hops_away relationship }
+        infrastructure_impacted { name node_type namespace hops_away relationship alerting active_alerts { event_id title priority source starts_at } }
         correlated_count
         dependent_count
         production_dependents
+        infrastructure_count
         coverage_confidence
         truncated
         assembly {
@@ -2080,6 +2058,158 @@ const apiKubernetes1 = {
       );
     } catch (err) {
       console.error('Error in briefingAggregates:', err);
+      throw err;
+    }
+  },
+  // Aggregates for the Troubleshoot > Analytics tab.
+  //
+  // The briefing above the tab answers "what did Nubi do to this window" — a
+  // snapshot. This answers "are we improving" and "what keeps coming back",
+  // which need a previous window to compare against and per-chain recurrence.
+  //
+  // Every count is DISTINCT fingerprint, not raw rows: the issue unit is the
+  // fingerprint chain (one alert firing 1,797 times is one issue, not 1,797),
+  // which is also what keeps this tab agreeing with the briefing directly above.
+  analyticsAggregates: async function (data: {
+    startDate: string;
+    endDate: string;
+    prevStartDate: string;
+    prevEndDate: string;
+    accountId?: string[] | string;
+  }) {
+    const DISTINCT_ISSUES = '[{name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
+    // date_unit -> date_trunc(day, created_at) in the query engine
+    // (query/sql.go generateColumnExpression).
+    const DAILY = '[{name: "created_at", expr: "date_unit", args: ["day"]}, {name: "event_count", expr: "distinct", args: ["fingerprint"]}]';
+
+    // window_issues is the whole-window distinct count and is NOT the sum of
+    // daily_volume: a fingerprint that fires on Monday and again on Thursday is
+    // one issue but lands in two day buckets, so summing the buckets over-counts.
+    //
+    // chains groups by fingerprint ONLY — never by computed_priority or
+    // subject_name. Both vary within a single chain (triage rescores over time; a
+    // chain spans every pod that hit the same problem), so grouping by them
+    // splits one issue into several rows that are visibly the same issue with
+    // different labels. Priority comes from latest_computed_priority (the most
+    // recent verdict) and the workload count from count_subject_name.
+    //
+    // chains is capped: it feeds the "what keeps coming back" list, which only
+    // ever shows the worst offenders, and an uncapped per-fingerprint scan on a
+    // large tenant is a very different query. The cap is deliberately larger
+    // than the list so the client can filter to recurring-only and still fill it.
+    const ANALYTICS_AGGREGATES = `
+    query TroubleshootAnalyticsAggregates {
+      window_issues: event_groupings_v2(
+        where: __WHERE__, group_by: [], column_transformations: ${DISTINCT_ISSUES}, columns: ["event_count", "count_analysed_issues", "minutes_to_first_analysis"]
+      ) {
+        rows {
+          event_count
+          count_analysed_issues
+          minutes_to_first_analysis
+        }
+      }
+
+      eligible_issues: event_groupings_v2(
+        where: __WHERE_ELIGIBLE__, group_by: [], column_transformations: ${DISTINCT_ISSUES}, columns: ["event_count", "count_analysed_issues"]
+      ) {
+        rows {
+          event_count
+          count_analysed_issues
+        }
+      }
+
+      prev_issues: event_groupings_v2(
+        where: __WHERE_PREV__, group_by: [], column_transformations: ${DISTINCT_ISSUES}, columns: ["event_count"]
+      ) {
+        rows {
+          event_count
+        }
+      }
+
+      by_rank: event_groupings_v2(
+        where: __WHERE__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+      ) {
+        rows {
+          computed_priority
+          event_count
+        }
+      }
+
+      prev_by_rank: event_groupings_v2(
+        where: __WHERE_PREV__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+      ) {
+        rows {
+          computed_priority
+          event_count
+        }
+      }
+
+      daily_volume: event_groupings_v2(
+        where: __WHERE__, group_by: ["created_at"], column_transformations: ${DAILY}, columns: ["created_at", "event_count"]
+      ) {
+        rows {
+          created_at
+          event_count
+        }
+      }
+
+      chains: event_groupings_v2(
+        where: __WHERE__,
+        group_by: ["fingerprint", "aggregation_key"],
+        columns: ["fingerprint", "aggregation_key", "latest_computed_priority", "count_subject_name", "distinct_subject_name", "fingerprint_event_count", "fingerprint_first_seen_at", "event_count"],
+        order_by: [{column: "fingerprint_event_count", order: desc}],
+        limit: 200
+      ) {
+        rows {
+          fingerprint
+          aggregation_key
+          latest_computed_priority
+          count_subject_name
+          distinct_subject_name
+          fingerprint_event_count
+          fingerprint_first_seen_at
+          event_count
+        }
+      }
+    }
+    `;
+
+    // Same display filter the briefing and the Events list apply, so the tab's
+    // totals reconcile with the briefing rendered directly above it.
+    const excludeKeys = { aggregation_key: { _not_in: EXCLUDED_TRIAGE_AGGREGATION_KEYS } };
+    const accountIds = Array.isArray(data.accountId) ? data.accountId.filter(Boolean) : data.accountId ? [data.accountId] : [];
+    const accountFilter = accountIds.length > 0 ? { account_id: { _in: accountIds } } : {};
+    const base: any = { ...accountFilter, ...excludeKeys };
+
+    const request = { _and: [{ created_at: { _gte: data.startDate } }, { created_at: { _lte: data.endDate } }], ...base };
+    // The comparison window is the same length immediately before this one, so
+    // "up 12%" means up against a like-for-like period rather than an arbitrary
+    // fixed lookback.
+    const requestPrev = { _and: [{ created_at: { _gte: data.prevStartDate } }, { created_at: { _lt: data.prevEndDate } }], ...base };
+
+    // Mirrors the auto-analysis gate in api-server's ProcessEvent: non-duplicate,
+    // source priority HIGH/CRITICAL, minus the two aggregation keys it skips
+    // outright. Coverage over ALL problems answers a question nobody asked — we
+    // never attempt most of them — so the tile divides by what we actually try
+    // to explain. If the gate changes, this filter has to change with it; that
+    // coupling is the cost of reporting a number the gate defines.
+    const requestEligible = {
+      ...request,
+      priority: { _in: ['HIGH', 'CRITICAL'] },
+      nb_status: { _neq: 'DUPLICATE' },
+      aggregation_key: { _not_in: [...EXCLUDED_TRIAGE_AGGREGATION_KEYS, 'HighErrorCriticalLogs', 'Anomaly'] },
+    };
+
+    try {
+      return await queryGraphQL(
+        ANALYTICS_AGGREGATES.replaceAll('__WHERE__', gqlStringify(request))
+          .replaceAll('__WHERE_PREV__', gqlStringify(requestPrev))
+          .replaceAll('__WHERE_ELIGIBLE__', gqlStringify(requestEligible)),
+        'TroubleshootAnalyticsAggregates',
+        {}
+      );
+    } catch (err) {
+      console.error('Error in analyticsAggregates:', err);
       throw err;
     }
   },

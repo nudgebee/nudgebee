@@ -33,9 +33,11 @@ func TestLLMGateway_ConfigSchema(t *testing.T) {
 	// Visible for every provider (incl. custom) — otherwise required_when alone hides it.
 	assert.Equal(t, map[string]any{"provider": []any{"openai", "anthropic", "gemini", "custom"}}, schema.Properties["api_key"].ShowWhen)
 
-	// base_url is custom-only; models is shared by custom + vertex_openai (both matched by model).
+	// base_url is custom-only; optional model mappings are available for every provider.
 	assert.Equal(t, map[string]any{"provider": "custom"}, schema.Properties["base_url"].ShowWhen)
-	assert.Equal(t, map[string]any{"provider": []any{"custom", "vertex_openai"}}, schema.Properties["models"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": []any{"openai", "anthropic", "gemini", "vertex", "vertex_openai", "bedrock", "custom"}}, schema.Properties["models"].ShowWhen)
+	assert.Equal(t, map[string]any{"provider": []any{"custom", "vertex_openai"}}, schema.Properties["models"].RequiredWhen)
+	assert.Equal(t, "model_alias_list", schema.Properties["models"].Widget)
 
 	// No account binding — the gateway resolves per tenant, not per account.
 	assert.NotContains(t, schema.Properties, "account_id")
@@ -73,6 +75,12 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 
 	// Known provider: only api_key is required.
 	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "openai", "api_key": "sk-x"}), ""))
+	assert.Empty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "openai", "api_key": "sk-x", "models": "fast=gpt-5-mini, smart=gpt-5",
+	}), ""), "native providers may define multiple optional model mappings")
+	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{
+		"provider": "openai", "api_key": "sk-x", "models": "fast=",
+	}), ""), "native-provider model mappings use the same validation contract")
 	errs := g.ValidateConfig(nil, cv(map[string]string{"provider": "openai"}), "")
 	assert.NotEmpty(t, errs, "openai without api_key must error")
 
@@ -159,4 +167,30 @@ func TestLLMGateway_ValidateConfig(t *testing.T) {
 	// Missing / unsupported provider.
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"api_key": "sk-x"}), ""), "missing provider must error")
 	assert.NotEmpty(t, g.ValidateConfig(nil, cv(map[string]string{"provider": "groq", "api_key": "x"}), ""), "unsupported provider must error")
+}
+
+func TestValidateTenantModelClientNames(t *testing.T) {
+	existing := []core.IntegrationDto{
+		{
+			Name: "team-openai",
+			Configs: []core.IntegrationConfigValue{
+				{Name: "models", Value: "fast=gpt-5-mini, Qwen/Qwen3.6-35B-A3B-FP8"},
+			},
+		},
+		{
+			Name: "team-vertex",
+			Configs: []core.IntegrationConfigValue{
+				{Name: "models", Value: "vertex-qwen=Qwen/Qwen3.6-35B-A3B-FP8"},
+			},
+		},
+	}
+
+	assert.Error(t, validateTenantModelClientNames("new-account", "fast=gemini-2.5-flash", existing),
+		"an explicit client name must be unique across the tenant")
+	assert.Error(t, validateTenantModelClientNames("new-account", "Qwen/Qwen3.6-35B-A3B-FP8", existing),
+		"a bare model id is itself a client-facing name and must be unique")
+	assert.NoError(t, validateTenantModelClientNames("team-openai", "fast=gpt-5", existing),
+		"editing an account must exclude its own existing names")
+	assert.NoError(t, validateTenantModelClientNames("new-account", "other-qwen=Qwen/Qwen3.6-35B-A3B-FP8", existing),
+		"different aliases may intentionally select different accounts serving the same upstream model")
 }

@@ -138,6 +138,9 @@ def _build_body_blocks(message: str, is_approval: bool, max_blocks: int = MAX_BL
     # table/diagram blocks instead of degrading to plain joined text. A
     # message with none of that content reduces to a single plain segment,
     # producing output identical to the old plain-markdown path.
+    # Doesn't pass upload_image: this path has no Slack app/installation
+    # context to upload a rendered image with, so flowchart diagrams here
+    # keep using the existing code-block fallback.
     groups = render_rich_segments(message, _plain_markdown_leaf)
     blocks = [block for group in groups for block in group]
     return blocks[:max_blocks]

@@ -19,6 +19,39 @@ import { FiArrowRight } from 'react-icons/fi';
 import { useConversationSuggestions } from '@hooks/useConversationSuggestions';
 import { safeJSONParse } from '@utils/common';
 
+// The model returns prose with single newlines between paragraphs, which markdown
+// collapses into one run-on paragraph, so a blank line is inserted between them.
+// That rewrite must not touch a markdown table or a fenced code block: a blank
+// line between two table rows ends the table, and every row after it renders as
+// literal '| Attribute | Value |' text (issue: the Event Details table in the
+// Investigation Analysis card). Fenced blocks are passed through untouched and
+// table rows are joined to their neighbours.
+const isTableRow = (line) => line.trimStart().startsWith('|');
+
+export function expandParagraphBreaks(text) {
+  if (!text) {
+    return '';
+  }
+  // Odd-indexed segments are fenced code blocks — left exactly as written.
+  return text
+    .split(/(```[\s\S]*?```)/g)
+    .map((segment, index) => {
+      if (index % 2 === 1) {
+        return segment;
+      }
+      const lines = segment.split('\n');
+      return lines.reduce((acc, line, i) => {
+        if (i === 0) {
+          return line;
+        }
+        const previous = lines[i - 1];
+        const keepTight = line.trim() === '' || previous.trim() === '' || (isTableRow(line) && isTableRow(previous));
+        return acc + (keepTight ? '\n' : '\n\n') + line;
+      }, '');
+    })
+    .join('');
+}
+
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
 class AskAiCard {
@@ -645,7 +678,7 @@ class AskAiCard {
         if (finalContent.startsWith('```markdown')) {
           finalContent = finalContent.replace(/^```markdown\s*/, '').replace(/```$/, '');
         }
-        finalContent = finalContent.replace(/(?<!\n)\n(?!\n)/g, '\n\n');
+        finalContent = expandParagraphBreaks(finalContent);
         return DOMPurify.sanitize(finalContent);
       };
 

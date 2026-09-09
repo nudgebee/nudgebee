@@ -40,6 +40,32 @@ const MAX_TABLE_ROWS = 100;
 const MAX_CHART_DATASETS = 20;
 const MAX_CHART_DATA_POINTS = 500;
 
+// A metric series can hold values JSON cannot carry as numbers: +Inf and -Inf from a
+// ratio query whose denominator hit zero, NaN from 0/0, or something the provider sent
+// that was not a number at all. The backend sends each of those points as null and
+// reports what it was per series in `non_finite`, so the chart gap can be explained
+// instead of leaving the reader to guess whether data is missing or broken.
+const NON_FINITE_LABELS: Record<string, string> = {
+  nan: 'undefined (NaN)',
+  '+inf': 'infinite (+Inf)',
+  '-inf': 'negative infinite (-Inf)',
+  unparseable: 'not numeric',
+};
+
+const summariseNonFinite = (results: any[]): Record<string, number> => {
+  const totals: Record<string, number> = {};
+  results?.forEach((result: any) => {
+    result?.payload?.forEach((series: any) => {
+      Object.entries(series?.non_finite || {}).forEach(([kind, count]) => {
+        if (typeof count === 'number' && count > 0) {
+          totals[kind] = (totals[kind] || 0) + count;
+        }
+      });
+    });
+  });
+  return totals;
+};
+
 interface QueryMetricsProps {
   accountId: string;
   showDrilldown: boolean;
@@ -93,6 +119,9 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
   const [queryKeys, setQueryKeys] = useState(['']);
   const [solarwindsRequest, setSolarwindsRequest] = useState<any>(null);
   const [esIndex, setEsIndex] = useState<string>('');
+  // ES Code-tab query language ('dsl' | 'kql'), mirrored from QueryModeSwitcher.
+  // Builder mode ignores it — that path sends the cross-provider builder shape.
+  const [esQueryType, setEsQueryType] = useState<string>('dsl');
   const [llmQueryResponse, setLlmQueryResponse] = useState('');
   const [instant, setInstant] = useState(false);
   const [promqlItems, setPromqlItems] = useState<Array<{ key: string; query: string; title?: string }>>([]);
@@ -106,6 +135,11 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     chartDatasets?: { total: number; shown: number };
     chartDataPoints?: { total: number; shown: number };
   }>({});
+  // Counts of samples the provider returned that cannot be plotted, keyed by what
+  // they were ("nan", "+inf", "-inf", "unparseable"). The backend sends those points
+  // as null so the gap lands at the right time; without this the chart would show an
+  // unexplained hole and the reader could not tell a divide-by-zero from bad data.
+  const [nonFiniteCounts, setNonFiniteCounts] = useState<Record<string, number>>({});
 
   const deleteDataOnQueryBlockDeletion = (query_key: string) => {
     setData((prevData) => prevData.filter((item) => item.query_key !== query_key));
@@ -156,6 +190,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     setIsAiLoading(false);
     setLoading(false);
     setTruncationWarnings({});
+    setNonFiniteCounts({});
   };
 
   // Execute queries from URL parameters when router is ready and metrics provider is prometheus
@@ -284,6 +319,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
       setData(tableData);
       setChartData(graphData);
       setTruncationWarnings(truncationInfo);
+      setNonFiniteCounts(summariseNonFinite(preparedEvidences));
       setLoading(false);
     }
   }, [preparedEvidences]);
@@ -581,16 +617,6 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     };
   };
 
-  const createUserHistory = async (query: string, status: string, duration: number) => {
-    await observability.createUserHistory({
-      account_id: accountId,
-      data: query,
-      duration: duration,
-      module: `metrics_query_${metricsProvider}`,
-      status: status,
-    });
-  };
-
   const handleSubmit = (
     query = '',
     queryKeys = [''],
@@ -601,7 +627,14 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
   ) => {
     if (!query && (!queriesToExecute || queriesToExecute.length === 0)) {
       if (fromOnSubmit) {
-        snackbar.error('Please enter a query before submitting');
+        // In Builder mode there is no query box to type into — the query is empty
+        // because no label filter was added. Match the logs builder's wording and
+        // severity (KubernetesLogs) rather than telling the user to type a query.
+        if (qLEditor === 'build') {
+          snackbar.warning('Please select at least one label filter');
+        } else {
+          snackbar.error('Please enter a query before submitting');
+        }
       }
       return;
     }
@@ -609,8 +642,8 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     setData([]);
     setChartData([]);
     setTruncationWarnings({});
+    setNonFiniteCounts({});
 
-    const now = new Date().getTime();
     const queryBlocks = query
       .replace(/^;+|;+$/g, '')
       .split(';')
@@ -634,16 +667,32 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     setQueryKeys(newQueryKeys);
     setLlmQueryResponse(llmQueryResponse);
 
+    // The provider-native query the backend actually executed, keyed like `promqls`.
+    // ES sends the cross-provider builder shape and the backend renders it into an
+    // _search body, so echoing what we sent showed a query that never ran.
+    const executedQueries: Record<string, string> = {};
+
+    // KQL is translated to DSL server-side, so the executed query is unreadable
+    // next to what was typed. Surface the source too — but only for KQL: in
+    // Builder mode the sent string is the internal `_binary` shape, which is
+    // exactly what this chip stopped showing.
+    const showSourceQuery = metricsProvider === 'ES' && qLEditor === 'code' && esQueryType === 'kql';
+
     const getQueryByKey = (key: string) => {
-      const entry: any = promqls[key];
+      // `||`, not `??`: Datadog/Splunk-O11y/Chronosphere/CloudWatch never set Query,
+      // so the value arrives as '' and must still fall back to the string we sent.
+      const entry: any = executedQueries[key] || promqls[key];
+      const sourceQuery = showSourceQuery && promqls[key] !== entry ? promqls[key] : '';
       return entry
         ? {
             query: entry,
+            sourceQuery,
             title: '',
             query_key: key,
           }
         : {
             query: '',
+            sourceQuery: '',
             title: '',
             query_key: key,
           };
@@ -657,13 +706,25 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
       instant: instant,
       ...(metricsProvider !== null && metricsProvider !== undefined ? { metric_provider: metricsProvider } : {}),
       ...(metricsProvider === 'solarwinds' && solarwindsRequest ? { request: solarwindsRequest } : {}),
-      ...(metricsProvider === 'ES' && esIndex ? { request: { metric_name: esIndex, ...(qLEditor === 'code' ? { query_type: 'dsl' } : {}) } } : {}),
+      ...(metricsProvider === 'ES' && esIndex
+        ? { request: { metric_name: esIndex, ...(qLEditor === 'code' ? { query_type: esQueryType || 'dsl' } : {}) } }
+        : {}),
+      // The backend records query history; this flag distinguishes a real submit
+      // from the date-range/instant-toggle re-runs that reuse this same path.
+      // See FetchMetricsRequest.RecordHistory.
+      record_history: fromOnSubmit,
     };
 
     observability
       .metricsQuery(requestBody)
       .then((res) => {
         const results = res?.data?.data?.metrics_list?.results || [];
+
+        results.forEach((result: any) => {
+          if (result?.query_key && result?.query) {
+            executedQueries[result.query_key] = result.query;
+          }
+        });
 
         const resultsWithErrors = results.filter((result: any) => result.error);
 
@@ -675,22 +736,19 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
           const displayMessage =
             errorMessages.length > 0 ? errorMessages.join('\n') : 'Invalid query: No data returned. Please check your query syntax.';
           snackbar.error(displayMessage);
-          fromOnSubmit && createUserHistory(query, 'FAILED', new Date().getTime() - now);
         } else if (results?.length) {
           const { tableData, graphData, truncationInfo } = processEvidenceDataKeys(results, getQueryByKey);
           setData(tableData);
           setChartData(graphData);
           setTruncationWarnings(truncationInfo);
-          fromOnSubmit && createUserHistory(query, 'SUCCESS', new Date().getTime() - now);
+          setNonFiniteCounts(summariseNonFinite(results));
         } else if (res?.data?.errors?.length) {
           setData([]);
           setChartData([]);
           snackbar.error(`failed to query metrics ${parseHttpResponseBodyMessage(res?.data)}`);
-          fromOnSubmit && createUserHistory(query, 'FAILED', new Date().getTime() - now);
         } else {
           setData([]);
           setChartData([]);
-          fromOnSubmit && createUserHistory(query, 'SUCCESS', new Date().getTime() - now);
         }
         if (type == 'ai') {
           aiCreateFeedback(true, query, llmQueryResponse);
@@ -698,7 +756,6 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
       })
       .catch(() => {
         snackbar.error('Failed to fetch the Data');
-        fromOnSubmit && createUserHistory(query, 'FAILED', new Date().getTime() - now);
       })
       .finally(() => {
         setLoading(false);
@@ -728,6 +785,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
         setData(tableData);
         setChartData(graphData);
         setTruncationWarnings(truncationInfo);
+        setNonFiniteCounts(summariseNonFinite([{ payload: metricsData }]));
       }
     }
   }, [llmQueryResponse]);
@@ -740,6 +798,42 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
   };
 
   // Truncation warning component for large datasets
+  const NonFiniteNotice = () => {
+    const kinds = Object.entries(nonFiniteCounts).filter(([, count]) => count > 0);
+
+    if (kinds.length === 0) {
+      return null;
+    }
+
+    const total = kinds.reduce((sum, [, count]) => sum + count, 0);
+    const described = kinds.map(([kind, count]) => `${count} ${NON_FINITE_LABELS[kind] || kind}`).join(', ');
+
+    return (
+      <Box
+        sx={{
+          padding: 'var(--ds-space-2) var(--ds-space-4)',
+          backgroundColor: 'var(--ds-amber-100)',
+          border: '1px solid var(--ds-amber-200)',
+          borderRadius: 'var(--ds-radius-sm)',
+          marginTop: 'var(--ds-space-4)',
+          marginBottom: 'var(--ds-space-2)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--ds-space-2)',
+        }}
+        data-testid='metrics-non-finite-notice'
+      >
+        <InfoIcon sx={{ color: 'var(--ds-amber-700)', fontSize: 'var(--ds-text-title)' }} />
+        <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-amber-700)' }}>
+          <strong>
+            {total} data {total === 1 ? 'point' : 'points'} could not be plotted:
+          </strong>{' '}
+          {described}. They appear as gaps at the time they occurred.
+        </Typography>
+      </Box>
+    );
+  };
+
   const TruncationWarning = () => {
     const warnings: string[] = [];
 
@@ -846,7 +940,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
                       )}
                     </>
                   )}
-                  <UserHistoryButton accountId={accountId} module={`metrics_query_${metricsProvider}`} />
+                  <UserHistoryButton accountId={accountId} module={`metrics_query_${metricsProvider?.toLowerCase()}`} />
                 </>
               )}
               {showDateTime && (
@@ -944,6 +1038,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
                 setQueryKeys(e.queryKeys);
                 setSolarwindsRequest(e.solarwindsRequest || null);
                 if (e.index !== undefined) setEsIndex(e.index);
+                if (e.queryType !== undefined) setEsQueryType(e.queryType);
               }}
               queryItems={promqlItems as any}
               setQueryItems={setPromqlItems}
@@ -996,6 +1091,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
           )}
           <Box sx={{ width: '100%', maxWidth: '100%', marginTop: 'var(--ds-space-4)' }}>
             <TruncationWarning />
+            <NonFiniteNotice />
             {loading ? (
               <Skeleton shape='rect' height='400px' width='98%' />
             ) : showChartView ? (
@@ -1030,6 +1126,12 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
                           wordBreak: 'break-word',
                         }}
                       >
+                        {cd.sourceQuery && (
+                          <>
+                            KQL: {cd.sourceQuery}
+                            <br />
+                          </>
+                        )}
                         Query: {cd.query}
                       </Typography>
                     </Box>
@@ -1099,6 +1201,12 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
                           wordBreak: 'break-word',
                         }}
                       >
+                        {cd.sourceQuery && (
+                          <>
+                            KQL: {cd.sourceQuery}
+                            <br />
+                          </>
+                        )}
                         Query: {cd.query}
                       </Typography>
                     </Box>
