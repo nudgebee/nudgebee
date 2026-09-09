@@ -537,6 +537,8 @@ func (s *DatadogTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, fe
 			return nil, fmt.Errorf("failed to unmarshal datadog traces: %w", err)
 		}
 
+		common.LogDatadogShapeDrift(ctx.GetLogger(), "QueryTracesHeatmap", ddTrace.Data)
+
 		otelTraces = common.MapDatadogToOpenTelemetryHeatMap(ddTrace)
 		return otelTraces, nil
 	}
@@ -980,6 +982,8 @@ func (s *DatadogTraceSource) QueryTraces(sc *security.RequestContext, tracesRequ
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal datadog traces: %w", err)
 		}
+
+		common.LogDatadogShapeDrift(sc.GetLogger(), "QueryTraces", ddTrace.Data)
 
 		otelTraces = common.MapDatadogToOpenTelemetry(ddTrace)
 		return otelTraces, nil

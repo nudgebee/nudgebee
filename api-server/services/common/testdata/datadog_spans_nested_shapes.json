@@ -1,0 +1,312 @@
+{
+  "data": [
+    {
+      "attributes": {
+        "custom": {
+          "cluster": "demo-cluster",
+          "db": {
+            "statement": {
+              "text": "\n\t\tSELECT p.id, p.name, p.description, p.picture, \n\t\t       p.price_currency_code, p.price_units, p.price_nanos, p.categories\n\t\tFROM catalog.products p\n\t\tWHERE p.id = $1\n\t"
+            },
+            "system": {
+              "name": "postgresql"
+            }
+          },
+          "duration": 436676,
+          "http": {
+            "server_name": "astronomy-db"
+          },
+          "k8s": {
+            "deployment": {
+              "name": "product-catalog"
+            },
+            "namespace": {
+              "name": "demo"
+            },
+            "node": {
+              "name": "node-1"
+            },
+            "pod": {
+              "name": "product-catalog-0",
+              "start_time": "2026-09-07T22:31:37Z",
+              "uid": "00000000-0000-4000-8000-000000000001"
+            }
+          },
+          "otel": {
+            "library": {
+              "name": "github.com/XSAM/otelsql",
+              "version": "0.43.0"
+            },
+            "status_code": "Unset",
+            "trace_id": "00000000000000000000000000000000"
+          },
+          "peer": {
+            "hostname": "astronomy-db"
+          },
+          "service": {
+            "criticality": "high",
+            "namespace": "opentelemetry-demo",
+            "version": "3.0.0"
+          },
+          "span": {
+            "kind": "client"
+          },
+          "version": "3.0.0"
+        },
+        "end_timestamp": "2026-09-09T08:43:11.564Z",
+        "env": "none",
+        "error": null,
+        "host": "redacted",
+        "ingestion_reason": "",
+        "operation_name": "client.request",
+        "parent_id": "00000000000000000000",
+        "resource_hash": "0000000000000000",
+        "resource_name": "sql.conn.query",
+        "retained_by": "diversity_sampling",
+        "service": "product-catalog",
+        "single_span": false,
+        "span_id": "00000000000000000000",
+        "start_timestamp": "2026-09-09T08:43:11.564Z",
+        "status": "ok",
+        "tags": [
+          "ingestion_reason:probabilistic",
+          "kube_namespace:demo",
+          "kube_deployment:product-catalog",
+          "issue_type:gateway_hostname_mismatch",
+          "pod_name:product-catalog-0",
+          "source:apm"
+        ],
+        "trace_id": "00000000000000000000000000000000",
+        "type": "http"
+      },
+      "id": "request-id",
+      "type": "spans"
+    },
+    {
+      "attributes": {
+        "custom": {
+          "cluster": "demo-cluster",
+          "demo": {
+            "product": {
+              "id": "0PUK6V6EV0",
+              "name": "Solar System Color Imager"
+            }
+          },
+          "duration": 1155776,
+          "events": "[{\"time_unix_nano\":0000000000000000000,\"name\":\"feature_flag.evaluation\",\"attributes\":{\"feature_flag.key\":\"productCatalogFailure\",\"feature_flag.provider.name\":\"flagd\",\"feature_flag.result.value\":false,\"feature_flag.result.variant\":\"off\",\"feature_flag.result.reason\":\"targeting_match\",\"feature_flag.context.id\":\"\"}},{\"time_unix_nano\":0000000000000000000,\"name\":\"Product Found\"}]",
+          "http": {
+            "server_name": "10.0.0.1"
+          },
+          "k8s": {
+            "deployment": {
+              "name": "product-catalog"
+            },
+            "namespace": {
+              "name": "demo"
+            },
+            "node": {
+              "name": "node-1"
+            },
+            "pod": {
+              "name": "product-catalog-0",
+              "start_time": "2026-09-07T22:31:37Z",
+              "uid": "00000000-0000-4000-8000-000000000001"
+            }
+          },
+          "otel": {
+            "library": {
+              "name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+              "version": "0.69.0"
+            },
+            "status_code": "Unset",
+            "trace_id": "00000000000000000000000000000000"
+          },
+          "rpc": {
+            "method": "oteldemo.ProductCatalogService/GetProduct",
+            "response": {
+              "status_code": "OK"
+            },
+            "system": {
+              "name": "grpc"
+            }
+          },
+          "server": {
+            "port": 8080
+          },
+          "service": {
+            "criticality": "high",
+            "namespace": "opentelemetry-demo",
+            "version": "3.0.0"
+          },
+          "span": {
+            "kind": "server"
+          },
+          "span_events": "2",
+          "version": "3.0.0"
+        },
+        "end_timestamp": "2026-09-09T08:43:11.564Z",
+        "env": "none",
+        "error": null,
+        "host": "redacted",
+        "ingestion_reason": "",
+        "operation_name": "server.request",
+        "parent_id": "0000000000000000000",
+        "resource_hash": "0000000000000000",
+        "resource_name": "oteldemo.ProductCatalogService/GetProduct",
+        "retained_by": "diversity_sampling",
+        "service": "product-catalog",
+        "single_span": false,
+        "span_id": "00000000000000000000",
+        "start_timestamp": "2026-09-09T08:43:11.563Z",
+        "status": "ok",
+        "tags": [
+          "ingestion_reason:probabilistic",
+          "kube_namespace:demo",
+          "kube_deployment:product-catalog",
+          "issue_type:gateway_hostname_mismatch",
+          "pod_name:product-catalog-0",
+          "source:apm"
+        ],
+        "trace_id": "00000000000000000000000000000000",
+        "type": "web"
+      },
+      "id": "request-id",
+      "type": "spans"
+    },
+    {
+      "attributes": {
+        "custom": {
+          "cloud": {
+            "account": {
+              "id": "demo"
+            },
+            "platform": "gcp_kubernetes_engine",
+            "provider": "gcp",
+            "region": "us-central1"
+          },
+          "cluster": "demo-cluster",
+          "duration": 1771751,
+          "host": {
+            "arch": "amd64",
+            "id": "000000000000000000",
+            "name": "frontend-0"
+          },
+          "k8s": {
+            "cluster": {
+              "name": "demo"
+            },
+            "deployment": {
+              "name": "frontend"
+            },
+            "namespace": {
+              "name": "demo"
+            },
+            "node": {
+              "name": "node-1"
+            },
+            "pod": {
+              "name": "frontend-0",
+              "start_time": "2026-08-29T02:47:50Z",
+              "uid": "00000000-0000-4000-8000-000000000000"
+            }
+          },
+          "language": "nodejs",
+          "net": {
+            "peer": {
+              "name": "product-catalog",
+              "port": 8080
+            }
+          },
+          "os": {
+            "type": "linux",
+            "version": "6.8.0-1055-gke"
+          },
+          "otel": {
+            "library": {
+              "name": "@opentelemetry/instrumentation-grpc",
+              "version": "0.220.0"
+            },
+            "status_code": "Unset",
+            "trace_id": "00000000000000000000000000000000"
+          },
+          "peer": {
+            "hostname": "product-catalog",
+            "rpc": {
+              "service": "oteldemo.productcatalogservice",
+              "system": "grpc"
+            },
+            "service": "product-catalog"
+          },
+          "process": {
+            "command": "/app/server.js",
+            "command_args": "[\"/nodejs/bin/node\",\"--require=./Instrumentation.js\",\"/app/server.js\"]",
+            "executable": {
+              "name": "/nodejs/bin/node",
+              "path": "/nodejs/bin/node"
+            },
+            "pid": "1",
+            "runtime": {
+              "description": "Node.js",
+              "name": "nodejs",
+              "version": "24.18.0"
+            }
+          },
+          "rpc": {
+            "grpc": {
+              "status_code": 0
+            },
+            "method": "GetProduct",
+            "service": "oteldemo.ProductCatalogService",
+            "system": "grpc"
+          },
+          "service": {
+            "criticality": "critical",
+            "namespace": "opentelemetry-demo",
+            "version": "3.0.0"
+          },
+          "span": {
+            "kind": "client"
+          },
+          "telemetry": {
+            "sdk": {
+              "language": "nodejs",
+              "name": "opentelemetry",
+              "version": "2.9.0"
+            }
+          },
+          "version": "3.0.0"
+        },
+        "end_timestamp": "2026-09-09T08:43:11.563Z",
+        "env": "none",
+        "error": null,
+        "host": "frontend-0.demo",
+        "ingestion_reason": "",
+        "operation_name": "grpc.client.request",
+        "parent_id": "00000000000000000000",
+        "resource_hash": "0000000000000000",
+        "resource_name": "GetProduct oteldemo.ProductCatalogService",
+        "retained_by": "diversity_sampling",
+        "service": "frontend",
+        "single_span": false,
+        "span_id": "0000000000000000000",
+        "start_timestamp": "2026-09-09T08:43:11.562Z",
+        "status": "ok",
+        "tags": [
+          "ingestion_reason:probabilistic",
+          "kube_namespace:demo",
+          "cloud_provider:gcp",
+          "pod_name:frontend-0",
+          "region:us-central1",
+          "kube_deployment:frontend",
+          "issue_type:gateway_hostname_mismatch",
+          "kube_cluster_name:demo",
+          "source:apm"
+        ],
+        "trace_id": "00000000000000000000000000000000",
+        "type": "http"
+      },
+      "id": "request-id",
+      "type": "spans"
+    }
+  ]
+}

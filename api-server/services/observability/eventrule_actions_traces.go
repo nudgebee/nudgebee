@@ -1997,6 +1997,8 @@ func getDatadogTracesForAction(sc *security.RequestContext, apiKey, appKey, site
 			return nil, event.EventEvidence{}, fmt.Errorf("failed to unmarshal datadog traces: %w", err)
 		}
 
+		common.LogDatadogShapeDrift(sc.GetLogger(), "getDatadogTracesForAction", ddTrace.Data)
+
 		otelTraces := common.MapDatadogToOpenTelemetry(ddTrace)
 		payload := map[string]any{
 			"data": otelTraces,
