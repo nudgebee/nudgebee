@@ -29,6 +29,14 @@ jobs:
 
       - name: Install libatomic1
         run: |
+          # libatomic1 comes from the Ubuntu archive, but the hosted runner image
+          # also ships Google's Chrome apt repo, and `apt-get update` fails the whole
+          # step if ANY configured source has a bad index. On 2026-09-09 that repo
+          # served a corrupt Packages.gz ("Hash Sum mismatch" on dl.google.com) and
+          # took this job down for hours, before eslint ever ran — a third-party CDN
+          # gating our lint results. Chrome is already installed in the image;
+          # dropping the source list only stops apt from re-fetching its index.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list
           sudo apt-get update
           sudo apt-get install -y libatomic1
 
