@@ -638,7 +638,7 @@ Be decisive. Only fail if there's a clear mismatch between the issue's subject a
 	}
 
 	result := strings.TrimSpace(response.Choices[0].Content)
-	if strings.HasPrefix(strings.ToUpper(result), "PASS") {
+	if gateVerdictPassed(result) {
 		return AnalysisResult{Passed: true, Issues: ""}
 	}
 
@@ -753,6 +753,39 @@ type AnalysisResult struct {
 	Issues string
 }
 
+// gateVerdictPassed reports whether a focused-pass LLM response ends in a PASS
+// verdict. The gate prompts tell the model to reason step by step and *then*
+// answer "PASS: ..." / "FAIL: ...", so the verdict is the last such line, not
+// the prefix of the reply — a plain prefix check misreads a PASS that follows
+// the reasoning as a rejection. Scanning bottom-up also lets a later FAIL
+// override an earlier tentative PASS. Anything without a verdict line is treated
+// as not-passed, so each caller keeps its existing fail-closed default.
+func gateVerdictPassed(response string) bool {
+	lines := strings.Split(response, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		switch {
+		case lineStartsWithVerdict(lines[i], "PASS"):
+			return true
+		case lineStartsWithVerdict(lines[i], "FAIL"):
+			return false
+		}
+	}
+	return false
+}
+
+// lineStartsWithVerdict reports whether line begins with verdict as a standalone
+// word, tolerating surrounding markdown emphasis, list/quote markers and
+// punctuation ("**PASS:**", "**PASS**:", "- FAIL", "PASS." all match). The
+// word-boundary check keeps "Passing ..." / "Failure ..." prose from matching.
+func lineStartsWithVerdict(line, verdict string) bool {
+	token := strings.ToUpper(strings.Trim(line, " \t*_>#-\"'`."))
+	if !strings.HasPrefix(token, verdict) {
+		return false
+	}
+	rest := token[len(verdict):]
+	return rest == "" || (rest[0] < 'A' || rest[0] > 'Z')
+}
+
 // performScopeAnalysis performs focused variable scope analysis
 func (a *CodeReviewAgent) performScopeAnalysis(ctx context.Context, gitDiff string, fileContext map[string]string) AnalysisResult {
 	scopePrompt := `You are a variable scope analyzer. Your ONLY job is to check if variables are used before they are defined.
@@ -781,7 +814,7 @@ If all variables are properly defined before use, return "PASS: Variable scope v
 	}
 
 	result := strings.TrimSpace(response.Choices[0].Content)
-	if strings.HasPrefix(strings.ToUpper(result), "PASS") {
+	if gateVerdictPassed(result) {
 		return AnalysisResult{Passed: true, Issues: ""}
 	}
 
@@ -822,7 +855,7 @@ If syntax is correct, return "PASS: Syntax validated"`
 	}
 
 	result := strings.TrimSpace(response.Choices[0].Content)
-	if strings.HasPrefix(strings.ToUpper(result), "PASS") {
+	if gateVerdictPassed(result) {
 		return AnalysisResult{Passed: true, Issues: ""}
 	}
 
@@ -1062,7 +1095,7 @@ Be thorough but fair - focus on actual problems, not style preferences.`
 	}
 
 	result := strings.TrimSpace(response.Choices[0].Content)
-	if strings.HasPrefix(strings.ToUpper(result), "PASS") {
+	if gateVerdictPassed(result) {
 		return AnalysisResult{Passed: true, Issues: ""}
 	}
 
