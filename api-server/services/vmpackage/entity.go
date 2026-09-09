@@ -22,6 +22,18 @@ type ScanResponse struct {
 	Data []map[string]any `json:"data" mapstructure:"data"`
 }
 
+// ScanAccountRequest is the manual account-wide trigger's input: scan every
+// instance reachable by the account's discovery datasource(s).
+type ScanAccountRequest struct {
+	AccountId string `json:"account_id" mapstructure:"account_id" validate:"required"`
+}
+
+// ScanAccountResponse acknowledges that scans were queued for the account's
+// discovery datasource(s). The work runs asynchronously via the VM scan queue.
+type ScanAccountResponse struct {
+	Data []map[string]any `json:"data" mapstructure:"data"`
+}
+
 // Package types accepted by vuln-matcher-server for this slice — apk and
 // Windows packages are out of scope until forager collects them.
 const (
