@@ -12,11 +12,18 @@ import (
 	"sync"
 	"time"
 
-	"nudgebee/llm/common"
+	nbcommon "nudgebee/llm/common"
 	"nudgebee/llm/config"
 )
 
-//go:embed all:default
+// The "default" tree holds the baseline prompts every deployment falls back
+// to. The "models" tree holds per-model overrides, one subdirectory per
+// model key (see modelResolutionBases) -- new model overrides need only a new
+// directory under prompts/models/, never a change to this embed directive.
+// models/.gitkeep guarantees the pattern always matches at least one file, so
+// the build doesn't fail when no model override exists yet.
+//
+//go:embed all:default all:models
 var embeddedFS embed.FS
 
 var (
@@ -41,7 +48,7 @@ func InitializeGlobalLoader() {
 		InitMetrics()
 
 		// Get database manager — unavailability is non-fatal, loader works from embedded FS
-		dbManager, err := common.GetDatabaseManager(common.Metastore)
+		dbManager, err := nbcommon.GetDatabaseManager(nbcommon.Metastore)
 		if err != nil {
 			slog.Warn("prompts: failed to get database manager, running without DB", "error", err)
 			dbManager = nil
@@ -99,16 +106,13 @@ func SetGlobalLoaderForTesting(l *PromptLoader) {
 func (l *PromptLoader) GetPrompt(ctx context.Context, req PromptRequest) (*PromptResponse, error) {
 	startTime := time.Now()
 
-	// Normalize provider to "default" if empty
+	// Normalize model name (lowercase, trim, and default to "default" if empty)
 	// Use a separate variable to avoid mutating input parameter
-	provider := req.Provider
-	if provider == "" {
-		provider = "default"
-	}
+	model := NormalizeModelName(req.Model)
 
 	// Create normalized request for downstream use
 	normalizedReq := req
-	normalizedReq.Provider = provider
+	normalizedReq.Model = model
 
 	// Validate request
 	if err := l.validateRequest(normalizedReq); err != nil {
@@ -121,7 +125,7 @@ func (l *PromptLoader) GetPrompt(ctx context.Context, req PromptRequest) (*Promp
 		return cached, nil
 	}
 
-	// Resolve configuration (version + provider + source)
+	// Resolve configuration (version + model + source)
 	config, err := l.resolveConfig(ctx, normalizedReq)
 	if err != nil {
 		return nil, err
@@ -131,7 +135,7 @@ func (l *PromptLoader) GetPrompt(ctx context.Context, req PromptRequest) (*Promp
 	// matched -- may differ from config.Version when the requested version
 	// (DB experiment/config, or a local PROMPTS_VERSION pin) has no file for
 	// this specific prompt and the loader fell through to v1.
-	content, servedVersion, err := l.loadPromptFile(normalizedReq.Name, normalizedReq.Category, config.Provider, config.Version)
+	content, servedVersion, err := l.loadPromptFile(normalizedReq.Name, normalizedReq.Category, config.Model, config.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +163,7 @@ func (l *PromptLoader) GetPrompt(ctx context.Context, req PromptRequest) (*Promp
 		Content: content,
 		Metadata: PromptMetadata{
 			Version:        servedVersion,
-			Provider:       config.Provider,
+			Model:          config.Model,
 			Category:       normalizedReq.Category,
 			ConfigSource:   config.ConfigSource,
 			ExperimentID:   config.ExperimentID,
@@ -186,8 +190,8 @@ func (l *PromptLoader) validateRequest(req PromptRequest) error {
 	if req.Category == "" {
 		return fmt.Errorf("category is required")
 	}
-	if req.Provider == "" {
-		return fmt.Errorf("provider is required (should be normalized by caller)")
+	if req.Model == "" {
+		return fmt.Errorf("model is required (should be normalized by caller)")
 	}
 
 	// Validate category
@@ -214,10 +218,18 @@ func (l *PromptLoader) validateRequest(req PromptRequest) error {
 // (A "3. defaults.json" step was listed here previously; defaults.json has
 // zero references anywhere in the tree, so that line was stale and is
 // removed rather than replaced.)
+//
+// DB lookups (priorities 1-2) match on model twice: the exact resolved model
+// string first, then its canonicalized form. This lets a stored row target
+// either an exact deployment string ("qwen3-235b-vertex") or a canonical
+// family name that also matches deployment-specific variants (a Bedrock
+// cross-region id and its short name both canonicalize the same way).
 func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*ResolvedConfig, error) {
+	canonicalModel := nbcommon.CanonicalModelID(req.Model)
+
 	// Priority 1: Check for active experiment
 	if l.db != nil && req.AccountID != "" {
-		experiments, err := l.db.GetActiveExperiments(ctx, req.Name, req.Category, req.Provider, req.AccountID)
+		experiments, err := l.db.GetActiveExperiments(ctx, req.Name, req.Category, req.Model, canonicalModel, req.AccountID)
 		if err != nil {
 			slog.Warn("prompts: failed to check experiments, continuing with fallback",
 				"error", err)
@@ -231,7 +243,7 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 				slog.Warn("prompts: multiple active experiments found, using most recent",
 					"prompt", req.Name,
 					"account", req.AccountID,
-					"provider", req.Provider,
+					"model", req.Model,
 					"count", len(experiments),
 					"experiments", expNames,
 					"selected", experiments[0].Name)
@@ -247,7 +259,7 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 
 			return &ResolvedConfig{
 				Version:        exp.TestVersion,
-				Provider:       req.Provider,
+				Model:          req.Model,
 				ConfigSource:   ConfigSourceExperiment,
 				ExperimentID:   &exp.ID,
 				ExperimentName: &exp.Name,
@@ -257,7 +269,7 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 
 	// Priority 2: Check database configuration
 	if l.db != nil {
-		config, err := l.db.GetConfig(ctx, req.Name, req.Category, req.Provider, req.AccountID)
+		config, err := l.db.GetConfig(ctx, req.Name, req.Category, req.Model, canonicalModel, req.AccountID)
 		if err != nil {
 			slog.Warn("prompts: failed to check database config, continuing with fallback",
 				"prompt", req.Name, "error", err)
@@ -265,19 +277,19 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 			slog.Info("prompts: using database config",
 				"prompt", req.Name,
 				"version", config.ActiveVersion,
-				"provider", config.Provider,
+				"model", config.Model,
 				"account_id", req.AccountID)
 
 			return &ResolvedConfig{
 				Version:      config.ActiveVersion,
-				Provider:     config.Provider,
+				Model:        config.Model,
 				ConfigSource: ConfigSourceDatabase,
 			}, nil
 		} else {
 			slog.Info("prompts: no database config found",
 				"prompt", req.Name,
 				"category", req.Category,
-				"provider", req.Provider,
+				"model", req.Model,
 				"account_id", req.AccountID)
 		}
 	} else {
@@ -298,7 +310,7 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 
 		return &ResolvedConfig{
 			Version:      forced,
-			Provider:     req.Provider,
+			Model:        req.Model,
 			ConfigSource: ConfigSourceForcedDev,
 		}, nil
 	}
@@ -310,7 +322,7 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 
 	return &ResolvedConfig{
 		Version:      "v1",
-		Provider:     req.Provider,
+		Model:        req.Model,
 		ConfigSource: ConfigSourceDefault,
 	}, nil
 }
@@ -366,12 +378,12 @@ type promptFileBase struct {
 // The returned version is the one actually matched (see promptFileBase),
 // which the caller must use for response metadata -- it can differ from the
 // requested version when that version has no file for this specific prompt.
-func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, provider string, version string) (string, string, error) {
-	// Try bases in order:
-	// 1. {provider}/{version}/{category}/{name}
-	// 2. default/{version}/{category}/{name}
-	// 3. {provider}/v1/{category}/{name}
-	// 4. default/v1/{category}/{name}
+func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, model string, version string) (string, string, error) {
+	// Try bases in order, most specific first:
+	// 1. models/{model}/{version}/{category}/{name}           -- exact resolved model
+	// 2. models/{canonicalModel}/{version}/{category}/{name}  -- only if it differs from {model}
+	// 3. default/{version}/{category}/{name}                  -- only if {model} isn't already "default"
+	// then the same three again pinned to v1 if {version} != "v1".
 	//
 	// processIncludes must resolve each file's @include directives against
 	// the version it was actually FOUND at, not the originally-requested
@@ -381,20 +393,21 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 	// naming a version that has no matching fragment files) and fail a load
 	// that the v1 baseline -- guaranteed include-clean by MustResolveAll --
 	// would have served just fine.
-	bases := []promptFileBase{
-		{fmt.Sprintf("%s/%s/%s/%s", provider, version, category, name), version},
-		{fmt.Sprintf("default/%s/%s/%s", version, category, name), version},
+	modelBases := modelResolutionBases(model)
+
+	var bases []promptFileBase
+	for _, base := range modelBases {
+		bases = append(bases, promptFileBase{fmt.Sprintf("%s/%s/%s/%s", base, version, category, name), version})
 	}
-	// Bases 3-4 are identical to 1-2 when version is already "v1" -- the
-	// overwhelmingly common case, since every prompt without an
-	// experiment/DB-config/dev-pin resolves through the hardcoded v1
-	// default. Skip the duplicates rather than probing the same two paths
-	// twice.
+	// The v1-pinned repeat is identical to the tier above when version is
+	// already "v1" -- the overwhelmingly common case, since every prompt
+	// without an experiment/DB-config/dev-pin resolves through the
+	// hardcoded v1 default. Skip the duplicates rather than probing the
+	// same paths twice.
 	if version != "v1" {
-		bases = append(bases,
-			promptFileBase{fmt.Sprintf("%s/v1/%s/%s", provider, category, name), "v1"},
-			promptFileBase{fmt.Sprintf("default/v1/%s/%s", category, name), "v1"},
-		)
+		for _, base := range modelBases {
+			bases = append(bases, promptFileBase{fmt.Sprintf("%s/v1/%s/%s", base, category, name), "v1"})
+		}
 	}
 
 	// recordErr keeps the most useful failure rather than the most recent one. Paths are
@@ -449,7 +462,7 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 			// a missing fragment must not take down a prompt whose default/v1 baseline
 			// is intact. MustResolveAll runs this same path over default/v1 at startup,
 			// so the end of the chain is guaranteed include-clean.
-			content, err := l.processIncludes(body, provider, base.version, 0)
+			content, err := l.processIncludes(body, model, base.version, 0)
 			if err != nil {
 				slog.Error("prompts: failed to process includes, falling through to the next resolution path",
 					"prompt", name, "path", path, "error", err)
@@ -464,8 +477,74 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 		}
 	}
 
-	return "", "", fmt.Errorf("prompt not found: %s (category: %s, provider: %s, version: %s): %w",
-		name, category, provider, version, lastErr)
+	return "", "", fmt.Errorf("prompt not found: %s (category: %s, model: %s, version: %s): %w",
+		name, category, model, version, lastErr)
+}
+
+// modelFamilyPatterns maps a substring found in a (lowercased) model name to
+// the shared family override folder for it. Ordered; first match wins.
+// Deliberately coarser than the exact/canonical tiers in modelResolutionBases
+// -- see modelFamily. Mirrors the same "match the whole model line, not one
+// deployment string" pattern already used for token-limit lookup
+// (agents/core/llm_tokencount.go's strings.Contains(n, "qwen") case).
+var modelFamilyPatterns = []struct {
+	substr string
+	family string
+}{
+	{"qwen", "qwen"},
+}
+
+// modelFamily returns the shared family override folder for model (e.g.
+// "qwen" for any of "qwen3-235b-vertex", "qwen/qwen3-vl-235b-a22b-instruct",
+// "Qwen/Qwen3.6-35B-A3B-FP8"), or "" if no known family matches.
+func modelFamily(model string) string {
+	lower := strings.ToLower(model)
+	for _, p := range modelFamilyPatterns {
+		if strings.Contains(lower, p.substr) {
+			return p.family
+		}
+	}
+	return ""
+}
+
+// modelResolutionBases returns the ordered, deduplicated list of embedded-FS
+// directory prefixes to try for a given resolved model: the exact model
+// string under models/, then its canonicalized form (only if different),
+// then its family override (only if different from both -- see modelFamily),
+// then the shared "default" tree (only if model isn't already "default").
+// Shared by loadPromptFile and processIncludes so a file and its fragment
+// includes resolve through the same specificity ladder. A model override
+// lives at "models/<model>/<version>/...", never at the tree root, so new
+// overrides never need a change to the //go:embed directive above.
+func modelResolutionBases(model string) []string {
+	// "default" IS the shared tree, not a model override to look up under
+	// models/ -- the overwhelmingly common case (no override configured for
+	// this request) must resolve straight to the real default/ root. Callers
+	// normalize via NormalizeModelName before reaching here today, so "" never
+	// actually arrives -- guarded anyway since this is a shared internal
+	// helper with several call sites, one caller forgetting to normalize
+	// shouldn't construct a bogus "models/" lookup.
+	if model == "" || model == "default" {
+		return []string{"default"}
+	}
+	bases := []string{"models/" + model}
+	// Pre-seeded with "default": canonical/family are free-form derivations
+	// of an arbitrary model string, so nothing stops one from coincidentally
+	// equaling "default" -- without this, that would append a nonsensical
+	// "models/default" probe (default/ is never nested under models/).
+	seen := map[string]bool{model: true, "default": true}
+
+	if canonical := nbcommon.CanonicalModelID(model); canonical != "" && !seen[canonical] {
+		bases = append(bases, "models/"+canonical)
+		seen[canonical] = true
+	}
+	if family := modelFamily(model); family != "" && !seen[family] {
+		bases = append(bases, "models/"+family)
+		seen[family] = true
+	}
+
+	bases = append(bases, "default")
+	return bases
 }
 
 // replaceIdentityPlaceholders substitutes {{@assistant_name}} and {{@assistant_company}}
@@ -478,9 +557,10 @@ func replaceIdentityPlaceholders(content string) string {
 
 // processIncludes resolves {{@include <relative_path>}} directives in prompt content.
 // It replaces each directive with the content of the referenced file from the embedded FS.
-// Include paths are resolved with provider/version fallback (provider → default).
+// Include paths are resolved through the same model-key ladder as loadPromptFile
+// (exact model → canonical model → default).
 // Recursion is limited to maxIncludeDepth to prevent infinite loops.
-func (l *PromptLoader) processIncludes(content string, provider string, version string, depth int) (string, error) {
+func (l *PromptLoader) processIncludes(content string, model string, version string, depth int) (string, error) {
 	if depth >= maxIncludeDepth {
 		return "", fmt.Errorf("include depth limit exceeded (%d)", maxIncludeDepth)
 	}
@@ -502,15 +582,14 @@ func (l *PromptLoader) processIncludes(content string, provider string, version 
 
 		includePath := strings.TrimSpace(submatches[1])
 
-		// Try bases in order: provider/version, then default/version. Each is tried
-		// verbatim first (legacy includes such as `_persona/nubi_persona.txt` carry
-		// their own extension) and then with the prompt-file extensions appended, so
-		// a fragment can be referenced as `_fragments/time_handling_rules`.
+		// Try bases in order: models/{model}/version, models/{canonicalModel}/version,
+		// then default/version. Each is tried verbatim first (legacy includes such as
+		// `_persona/nubi_persona.txt` carry their own extension) and then with the
+		// prompt-file extensions appended, so a fragment can be referenced as
+		// `_fragments/time_handling_rules`.
 		var paths []string
-		for _, base := range []string{
-			fmt.Sprintf("%s/%s/%s", provider, version, includePath),
-			fmt.Sprintf("default/%s/%s", version, includePath),
-		} {
+		for _, modelBase := range modelResolutionBases(model) {
+			base := fmt.Sprintf("%s/%s/%s", modelBase, version, includePath)
 			paths = append(paths, base)
 			for _, ext := range promptFileExtensions {
 				paths = append(paths, base+ext)
@@ -556,7 +635,7 @@ func (l *PromptLoader) processIncludes(content string, provider string, version 
 		}
 
 		// Recursively process includes in the included content
-		resolved, err := l.processIncludes(includeBody, provider, version, depth+1)
+		resolved, err := l.processIncludes(includeBody, model, version, depth+1)
 		if err != nil {
 			processErr = err
 			return match
@@ -594,7 +673,7 @@ func (l *PromptLoader) recordMetrics(req PromptRequest, resp *PromptResponse, er
 		RecordPromptLoad(
 			req.Name,
 			string(req.Category),
-			req.Provider,
+			req.Model,
 			resp.Metadata.Version,
 			float64(resp.Metadata.LoadTimeMs)/1000.0,
 			resp.Metadata.CacheHit,
@@ -626,7 +705,7 @@ func (l *PromptLoader) recordMetrics(req PromptRequest, resp *PromptResponse, er
 	metrics := &DBMetrics{
 		PromptName:     req.Name,
 		Category:       req.Category,
-		Provider:       req.Provider,
+		Model:          req.Model,
 		Version:        resp.Metadata.Version,
 		AccountID:      accountID,
 		LoadTimeMs:     &loadTimeMs,
@@ -676,37 +755,22 @@ func (l *PromptLoader) GetCacheSize() int {
 	return l.cache.Size()
 }
 
-// GetAvailableVersions returns all available versions for a prompt
-func (l *PromptLoader) GetAvailableVersions(name string, category PromptCategory, provider string) []string {
+// GetAvailableVersions returns all available versions for a prompt, checking
+// the model's own directory (exact, then canonical) plus default.
+func (l *PromptLoader) GetAvailableVersions(name string, category PromptCategory, model string) []string {
 	versions := make(map[string]bool)
+	normalizedModel := NormalizeModelName(model)
 
-	// Check provider-specific versions
-	providerPath := provider
-	entries, err := fs.ReadDir(l.fs, providerPath)
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), "v") {
-				// Check if the prompt file exists in this version, in any supported format
-				for _, ext := range promptFileExtensions {
-					filePath := fmt.Sprintf("%s/%s/%s/%s%s", providerPath, entry.Name(), category, name, ext)
-					if _, err := fs.Stat(l.fs, filePath); err == nil {
-						versions[entry.Name()] = true
-						break
-					}
-				}
-			}
+	for _, base := range modelResolutionBases(normalizedModel) {
+		entries, err := fs.ReadDir(l.fs, base)
+		if err != nil {
+			continue
 		}
-	}
-
-	// Check default versions
-	defaultPath := "default"
-	entries, err = fs.ReadDir(l.fs, defaultPath)
-	if err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() && strings.HasPrefix(entry.Name(), "v") {
 				// Check if the prompt file exists in this version, in any supported format
 				for _, ext := range promptFileExtensions {
-					filePath := fmt.Sprintf("%s/%s/%s/%s%s", defaultPath, entry.Name(), category, name, ext)
+					filePath := fmt.Sprintf("%s/%s/%s/%s%s", base, entry.Name(), category, name, ext)
 					if _, err := fs.Stat(l.fs, filePath); err == nil {
 						versions[entry.Name()] = true
 						break

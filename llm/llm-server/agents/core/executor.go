@@ -516,19 +516,19 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		request.PreviousState = previousState
 	}
 
-	// Attach the provider that will actually serve this agent's LLM calls, so
-	// prompt resolution (provider-specific files, provider-scoped DB config,
-	// provider-targeted experiments) matches it. Without this, prompt loads fall
-	// back to the deployment-wide LLM_PROVIDER env var, which per-account model
+	// Attach the model that will actually serve this agent's LLM calls, so
+	// prompt resolution (model-specific files, model-scoped DB config,
+	// model-targeted experiments) matches it. Without this, prompt loads fall
+	// back to the deployment-wide LLM_MODEL env var, which per-account model
 	// configuration, pinned sources, and conversation overrides can all disagree
 	// with. Resolution failure keeps the env fallback — same behavior as before.
 	// Rebind ctx locally instead of ctx.SetContext: sub-agents in a parallel
 	// action batch share the caller's RequestContext pointer, so an in-place
-	// mutation would race and leak one agent's provider into its siblings.
+	// mutation would race and leak one agent's model into its siblings.
 	if ctx != nil {
-		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Provider != "" {
+		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Model != "" {
 			ctx = security.NewRequestContext(
-				nbprompts.WithRequestProvider(ctx.GetContext(), res.Provider),
+				nbprompts.WithRequestModel(ctx.GetContext(), res.Model),
 				ctx.GetSecurityContext(),
 				ctx.GetLogger(),
 				ctx.GetTracer(),

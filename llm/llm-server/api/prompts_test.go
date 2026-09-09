@@ -43,7 +43,7 @@ func TestGetPromptConfig_Success(t *testing.T) {
 	// Note: This test requires the prompt loader to be initialized
 	// In real tests, you'd mock the loader or ensure it's initialized
 
-	req, _ := http.NewRequest("GET", "/api/admin/prompts/config?name=k8s_debug&category=agents&provider=default", nil)
+	req, _ := http.NewRequest("GET", "/api/admin/prompts/config?name=k8s_debug&category=agents&model=default", nil)
 	req.Header.Set("Authorization", "test-admin-token")
 
 	w := httptest.NewRecorder()

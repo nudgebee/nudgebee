@@ -23,18 +23,20 @@ func NewPromptDB(db *common.DatabaseManager) *PromptDB {
 	return &PromptDB{db: db}
 }
 
-// GetActiveExperiments retrieves all active experiments for a given prompt, account, and provider
+// GetActiveExperiments retrieves all active experiments for a given prompt, account, and model.
+// modelExact and modelCanonical are both checked against the experiment's models array (NULL/empty
+// = all models); pass the same value for both if canonicalization isn't relevant to the caller.
 // Returns experiments ordered by created_at DESC (most recent first)
 // NOTE: Multiple experiments may be returned if there are overlaps. The validation in CreateExperiment
 // should prevent new overlaps, but existing data may still have them. Callers should use the first result.
 // TODO: Consider adding a database exclusion constraint to prevent overlaps at the schema level:
 //
-//	EXCLUDE USING gist (prompt_name WITH =, category WITH =, target_accounts WITH &&, providers WITH &&, tstzrange(start_date, end_date, '[]') WITH &&)
-func (p *PromptDB) GetActiveExperiments(ctx context.Context, promptName string, category PromptCategory, provider string, accountID string) ([]DBExperiment, error) {
+//	EXCLUDE USING gist (prompt_name WITH =, category WITH =, target_accounts WITH &&, models WITH &&, tstzrange(start_date, end_date, '[]') WITH &&)
+func (p *PromptDB) GetActiveExperiments(ctx context.Context, promptName string, category PromptCategory, modelExact string, modelCanonical string, accountID string) ([]DBExperiment, error) {
 	query := `
 		SELECT
 			id, name, prompt_name, category, test_version, control_version,
-			target_accounts, providers, start_date, end_date, enabled,
+			target_accounts, models, start_date, end_date, enabled,
 			description, created_at, created_by, updated_at, updated_by
 		FROM llm_prompt_experiments
 		WHERE prompt_name = $1
@@ -43,19 +45,20 @@ func (p *PromptDB) GetActiveExperiments(ctx context.Context, promptName string, 
 			AND $3 = ANY(target_accounts)
 			AND (start_date IS NULL OR start_date <= NOW())
 			AND (end_date IS NULL OR end_date >= NOW())
-			AND (providers IS NULL OR cardinality(providers) = 0 OR $4 = ANY(providers))
+			AND (models IS NULL OR cardinality(models) = 0 OR $4 = ANY(models) OR $5 = ANY(models))
 		ORDER BY created_at DESC
 	`
 
 	var experiments []DBExperiment
-	err := p.db.QueryAndScan(&experiments, query, promptName, category, accountID, provider)
+	err := p.db.QueryAndScan(&experiments, query, promptName, category, accountID, modelExact, modelCanonical)
 	if err != nil {
 		// Log as debug - caller will handle gracefully with fallback
 		slog.Debug("prompts: database query failed, caller will use fallback",
 			"prompt", promptName,
 			"category", category,
 			"account_id", accountID,
-			"provider", provider,
+			"model_exact", modelExact,
+			"model_canonical", modelCanonical,
 			"error", err)
 		return nil, err
 	}
@@ -63,40 +66,48 @@ func (p *PromptDB) GetActiveExperiments(ctx context.Context, promptName string, 
 	return experiments, nil
 }
 
-// GetConfig retrieves the configuration for a prompt
-// Priority order:
-// 1. account_id = specific + provider = specific
-// 2. account_id = specific + provider = default
-// 3. account_id = NULL + provider = specific
-// 4. account_id = NULL + provider = default
-func (p *PromptDB) GetConfig(ctx context.Context, promptName string, category PromptCategory, provider string, accountID string) (*DBConfig, error) {
+// GetConfig retrieves the configuration for a prompt.
+// modelExact and modelCanonical are the exact resolved model string and its
+// canonicalized form (pass the same value for both if canonicalization isn't
+// relevant to the caller). Priority order:
+// 1. account_id = specific + model = exact
+// 2. account_id = specific + model = canonical
+// 3. account_id = specific + model = default
+// 4. account_id = NULL + model = exact
+// 5. account_id = NULL + model = canonical
+// 6. account_id = NULL + model = default
+func (p *PromptDB) GetConfig(ctx context.Context, promptName string, category PromptCategory, modelExact string, modelCanonical string, accountID string) (*DBConfig, error) {
 	query := `
 		SELECT
-			id, prompt_name, category, provider, active_version, account_id,
+			id, prompt_name, category, model, active_version, account_id,
 			enabled, priority, notes, updated_at, updated_by
 		FROM llm_prompt_configuration
 		WHERE prompt_name = $1
 			AND category = $2
 			AND enabled = TRUE
 			AND (
-				(account_id = $3 AND provider = $4) OR
-				(account_id = $3 AND provider = 'default') OR
-				(account_id IS NULL AND provider = $4) OR
-				(account_id IS NULL AND provider = 'default')
+				(account_id = $3 AND model = $4) OR
+				(account_id = $3 AND model = $5) OR
+				(account_id = $3 AND model = 'default') OR
+				(account_id IS NULL AND model = $4) OR
+				(account_id IS NULL AND model = $5) OR
+				(account_id IS NULL AND model = 'default')
 			)
 		ORDER BY
 			CASE
-				WHEN account_id = $3 AND provider = $4 THEN 1
-				WHEN account_id = $3 AND provider = 'default' THEN 2
-				WHEN account_id IS NULL AND provider = $4 THEN 3
-				WHEN account_id IS NULL AND provider = 'default' THEN 4
+				WHEN account_id = $3 AND model = $4 THEN 1
+				WHEN account_id = $3 AND model = $5 THEN 2
+				WHEN account_id = $3 AND model = 'default' THEN 3
+				WHEN account_id IS NULL AND model = $4 THEN 4
+				WHEN account_id IS NULL AND model = $5 THEN 5
+				WHEN account_id IS NULL AND model = 'default' THEN 6
 			END,
 			priority DESC
 		LIMIT 1
 	`
 
 	var config DBConfig
-	err := p.db.QueryRowAndScan(&config, query, promptName, category, accountID, provider)
+	err := p.db.QueryRowAndScan(&config, query, promptName, category, accountID, modelExact, modelCanonical)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil // No configuration found
@@ -106,7 +117,8 @@ func (p *PromptDB) GetConfig(ctx context.Context, promptName string, category Pr
 			"prompt", promptName,
 			"category", category,
 			"account_id", accountID,
-			"provider", provider,
+			"model_exact", modelExact,
+			"model_canonical", modelCanonical,
 			"error", err)
 		return nil, err
 	}
@@ -118,9 +130,9 @@ func (p *PromptDB) GetConfig(ctx context.Context, promptName string, category Pr
 func (p *PromptDB) UpsertConfig(ctx context.Context, config *DBConfig) error {
 	query := `
 		INSERT INTO llm_prompt_configuration
-			(prompt_name, category, provider, active_version, account_id, enabled, priority, notes, updated_by)
+			(prompt_name, category, model, active_version, account_id, enabled, priority, notes, updated_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (prompt_name, category, provider, account_id)
+		ON CONFLICT (prompt_name, category, model, account_id)
 		DO UPDATE SET
 			active_version = EXCLUDED.active_version,
 			enabled = EXCLUDED.enabled,
@@ -134,7 +146,7 @@ func (p *PromptDB) UpsertConfig(ctx context.Context, config *DBConfig) error {
 	err := p.db.QueryRowAndScan(config, query,
 		config.PromptName,
 		config.Category,
-		config.Provider,
+		config.Model,
 		config.ActiveVersion,
 		config.AccountID,
 		config.Enabled,
@@ -155,7 +167,7 @@ func (p *PromptDB) UpsertConfig(ctx context.Context, config *DBConfig) error {
 }
 
 // CreateExperiment creates a new experiment
-// Returns an error if there are overlapping active experiments for the same prompt/accounts/providers
+// Returns an error if there are overlapping active experiments for the same prompt/accounts/models
 func (p *PromptDB) CreateExperiment(ctx context.Context, exp *DBExperiment) error {
 	// Validate: Check for overlapping active experiments
 	if exp.Enabled {
@@ -173,7 +185,7 @@ func (p *PromptDB) CreateExperiment(ctx context.Context, exp *DBExperiment) erro
 			}
 			return fmt.Errorf(
 				"cannot create experiment '%s': overlaps with %d existing active experiment(s): %v. "+
-					"Disable conflicting experiments or adjust target_accounts/providers/dates",
+					"Disable conflicting experiments or adjust target_accounts/models/dates",
 				exp.Name, len(overlaps), overlapNames)
 		}
 	}
@@ -181,7 +193,7 @@ func (p *PromptDB) CreateExperiment(ctx context.Context, exp *DBExperiment) erro
 	query := `
 		INSERT INTO llm_prompt_experiments
 			(name, prompt_name, category, test_version, control_version,
-			 target_accounts, providers, start_date, end_date, enabled,
+			 target_accounts, models, start_date, end_date, enabled,
 			 description, created_by, updated_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, created_at, updated_at
@@ -194,7 +206,7 @@ func (p *PromptDB) CreateExperiment(ctx context.Context, exp *DBExperiment) erro
 		exp.TestVersion,
 		exp.ControlVersion,
 		pq.Array(exp.TargetAccounts),
-		pq.Array(exp.Providers),
+		pq.Array(exp.Models),
 		exp.StartDate,
 		exp.EndDate,
 		exp.Enabled,
@@ -217,7 +229,7 @@ func (p *PromptDB) CreateExperiment(ctx context.Context, exp *DBExperiment) erro
 // Two experiments overlap if they:
 // 1. Target the same prompt_name and category
 // 2. Have overlapping target_accounts (any common account)
-// 3. Have overlapping providers (nil/empty = all providers, or any common provider)
+// 3. Have overlapping models (nil/empty = all models, or any common model)
 // 4. Have overlapping time ranges (start_date and end_date)
 //
 // Uses a single efficient query with PostgreSQL's array overlap operator (&&) to avoid N+1 queries
@@ -226,7 +238,7 @@ func (p *PromptDB) findOverlappingExperiments(ctx context.Context, exp *DBExperi
 	// Use PostgreSQL's array overlap operator (&&) for efficient array comparisons
 	query := `
 		SELECT id, name, prompt_name, category, test_version, control_version,
-		       target_accounts, providers, start_date, end_date, enabled,
+		       target_accounts, models, start_date, end_date, enabled,
 		       description, created_at, created_by, updated_at, updated_by
 		FROM llm_prompt_experiments
 		WHERE enabled = TRUE
@@ -235,12 +247,13 @@ func (p *PromptDB) findOverlappingExperiments(ctx context.Context, exp *DBExperi
 		  AND name != $3
 		  AND target_accounts && $4
 		  AND (
-		      -- Either this experiment targets all providers (empty array)
-		      -- or the new experiment targets all providers (empty array)
-		      -- or their provider arrays overlap
-		      cardinality(providers) = 0
+		      -- Either this experiment targets all models (NULL or empty array)
+		      -- or the new experiment targets all models (empty array)
+		      -- or their model arrays overlap
+		      models IS NULL
+		      OR cardinality(models) = 0
 		      OR $5 = 0
-		      OR providers && $6
+		      OR models && $6
 		  )
 		  AND (
 		      -- Check for date range overlap
@@ -253,8 +266,8 @@ func (p *PromptDB) findOverlappingExperiments(ctx context.Context, exp *DBExperi
 
 	// Prepare parameters
 	targetAccounts := exp.TargetAccounts
-	providers := exp.Providers
-	providersCount := len(providers)
+	models := exp.Models
+	modelsCount := len(models)
 
 	// Convert time.Time pointers to sql-compatible values
 	var startDate, endDate interface{}
@@ -272,8 +285,8 @@ func (p *PromptDB) findOverlappingExperiments(ctx context.Context, exp *DBExperi
 		exp.Category,             // $2
 		exp.Name,                 // $3 - exclude same experiment for updates
 		pq.Array(targetAccounts), // $4 - array overlap check
-		providersCount,           // $5 - check if new exp targets all providers
-		pq.Array(providers),      // $6 - array overlap check
+		modelsCount,              // $5 - check if new exp targets all models
+		pq.Array(models),         // $6 - array overlap check
 		startDate,                // $7 - start date for range check
 		endDate,                  // $8 - end date for range check
 	)
@@ -293,7 +306,7 @@ func (p *PromptDB) GetExperiment(ctx context.Context, name string) (*DBExperimen
 	query := `
 		SELECT
 			id, name, prompt_name, category, test_version, control_version,
-			target_accounts, providers, start_date, end_date, enabled,
+			target_accounts, models, start_date, end_date, enabled,
 			description, created_at, created_by, updated_at, updated_by
 		FROM llm_prompt_experiments
 		WHERE name = $1
@@ -319,7 +332,7 @@ func (p *PromptDB) GetExperimentByID(ctx context.Context, id uuid.UUID) (*DBExpe
 	query := `
 		SELECT
 			id, name, prompt_name, category, test_version, control_version,
-			target_accounts, providers, start_date, end_date, enabled,
+			target_accounts, models, start_date, end_date, enabled,
 			description, created_at, created_by, updated_at, updated_by
 		FROM llm_prompt_experiments
 		WHERE id = $1
@@ -426,7 +439,7 @@ func (p *PromptDB) ListActiveExperiments(ctx context.Context, filters map[string
 	query := `
 		SELECT
 			id, name, prompt_name, category, test_version, control_version,
-			target_accounts, providers, start_date, end_date, enabled,
+			target_accounts, models, start_date, end_date, enabled,
 			description, created_at, created_by, updated_at, updated_by
 		FROM llm_prompt_experiments
 		WHERE enabled = TRUE
@@ -471,7 +484,7 @@ func (p *PromptDB) ListActiveExperiments(ctx context.Context, filters map[string
 func (p *PromptDB) CreateAuditLog(ctx context.Context, log *DBAuditLog) error {
 	query := `
 		INSERT INTO llm_prompt_config_audit
-			(prompt_name, category, provider, account_id, action,
+			(prompt_name, category, model, account_id, action,
 			 old_version, new_version, experiment_id, changed_by, reason, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, changed_at
@@ -480,7 +493,7 @@ func (p *PromptDB) CreateAuditLog(ctx context.Context, log *DBAuditLog) error {
 	err := p.db.QueryRowAndScan(log, query,
 		log.PromptName,
 		log.Category,
-		log.Provider,
+		log.Model,
 		log.AccountID,
 		log.Action,
 		log.OldVersion,
@@ -506,7 +519,7 @@ func (p *PromptDB) CreateAuditLog(ctx context.Context, log *DBAuditLog) error {
 func (p *PromptDB) GetAuditLogs(ctx context.Context, filters map[string]any, limit int) ([]DBAuditLog, error) {
 	query := `
 		SELECT
-			id, prompt_name, category, provider, account_id, action,
+			id, prompt_name, category, model, account_id, action,
 			old_version, new_version, experiment_id, changed_by,
 			changed_at, reason, metadata
 		FROM llm_prompt_config_audit
@@ -567,7 +580,7 @@ func (p *PromptDB) GetAuditLogs(ctx context.Context, filters map[string]any, lim
 func (p *PromptDB) RecordMetrics(ctx context.Context, metrics *DBMetrics) error {
 	query := `
 		INSERT INTO llm_prompt_usage_metrics
-			(prompt_name, category, provider, version, account_id,
+			(prompt_name, category, model, version, account_id,
 			 conversation_id, agent_name, load_time_ms, cache_hit,
 			 config_source, experiment_id, experiment_name, error, error_message)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
@@ -584,7 +597,7 @@ func (p *PromptDB) RecordMetrics(ctx context.Context, metrics *DBMetrics) error 
 	err := p.db.QueryRowAndScan(metrics, query,
 		metrics.PromptName,
 		metrics.Category,
-		metrics.Provider,
+		metrics.Model,
 		metrics.Version,
 		metrics.AccountID,
 		metrics.ConversationID,

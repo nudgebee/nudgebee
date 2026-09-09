@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
 	"nudgebee/llm/prompts"
 
 	"github.com/gin-gonic/gin"
@@ -132,7 +133,7 @@ func createExperiment(c *gin.Context) {
 		TestVersion:    req.TestVersion,
 		ControlVersion: req.ControlVersion,
 		TargetAccounts: req.TargetAccounts,
-		Providers:      req.Providers,
+		Models:         req.Models,
 		StartDate:      startDate,
 		EndDate:        endDate,
 		Enabled:        true,
@@ -349,17 +350,18 @@ func updateActiveVersion(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Get existing config to track old version
-	provider := req.Provider
-	if provider == "" {
-		provider = "default"
+	model := req.Model
+	if model == "" {
+		model = "default"
 	}
+	canonicalModel := common.CanonicalModelID(model)
 
 	accountID := ""
 	if req.AccountID != nil {
 		accountID = *req.AccountID
 	}
 
-	oldConfig, _ := db.GetConfig(ctx, req.PromptName, prompts.PromptCategory(req.Category), provider, accountID)
+	oldConfig, _ := db.GetConfig(ctx, req.PromptName, prompts.PromptCategory(req.Category), model, canonicalModel, accountID)
 	var oldVersion *string
 	if oldConfig != nil {
 		oldVersion = &oldConfig.ActiveVersion
@@ -370,7 +372,7 @@ func updateActiveVersion(c *gin.Context) {
 	config := &prompts.DBConfig{
 		PromptName:    req.PromptName,
 		Category:      prompts.PromptCategory(req.Category),
-		Provider:      provider,
+		Model:         model,
 		ActiveVersion: req.NewVersion,
 		AccountID:     req.AccountID,
 		Enabled:       true,
@@ -388,7 +390,7 @@ func updateActiveVersion(c *gin.Context) {
 	_ = db.CreateAuditLog(ctx, &prompts.DBAuditLog{
 		PromptName: req.PromptName,
 		Category:   prompts.PromptCategory(req.Category),
-		Provider:   &provider,
+		Model:      &model,
 		AccountID:  req.AccountID,
 		Action:     "VERSION_CHANGE",
 		OldVersion: oldVersion,
@@ -433,9 +435,9 @@ func getPromptConfig(c *gin.Context) {
 		return
 	}
 
-	provider := c.Query("provider")
-	if provider == "" {
-		provider = "default"
+	model := c.Query("model")
+	if model == "" {
+		model = "default"
 	}
 
 	accountID := c.Query("account_id")
@@ -449,7 +451,7 @@ func getPromptConfig(c *gin.Context) {
 	req := prompts.PromptRequest{
 		Name:      promptName,
 		Category:  prompts.PromptCategory(category),
-		Provider:  provider,
+		Model:     model,
 		AccountID: accountID,
 	}
 
@@ -461,7 +463,7 @@ func getPromptConfig(c *gin.Context) {
 	}
 
 	// Get available versions
-	versions := loader.GetAvailableVersions(promptName, prompts.PromptCategory(category), provider)
+	versions := loader.GetAvailableVersions(promptName, prompts.PromptCategory(category), model)
 
 	// Get preview of content (first 100 chars)
 	contentPreview := resp.Content
@@ -472,7 +474,7 @@ func getPromptConfig(c *gin.Context) {
 	response := gin.H{
 		"prompt_name":        promptName,
 		"category":           category,
-		"provider":           provider,
+		"model":              model,
 		"version":            resp.Metadata.Version,
 		"config_source":      resp.Metadata.ConfigSource,
 		"available_versions": versions,

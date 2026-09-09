@@ -90,14 +90,14 @@ func InitMetrics() {
 
 // RecordPromptLoad records a successful prompt load.
 // latencySeconds is the load latency in seconds.
-func RecordPromptLoad(name, category, provider, version string, latencySeconds float64, cacheHit bool, configSource string, experimentName string, accountID string) {
+func RecordPromptLoad(name, category, model, version string, latencySeconds float64, cacheHit bool, configSource string, experimentName string, accountID string) {
 	InitMetrics()
 	ctx := context.Background()
 
 	attrs := []attribute.KeyValue{
 		attribute.String("prompt_name", name),
 		attribute.String("category", category),
-		attribute.String("provider", provider),
+		attribute.String("model", model),
 		attribute.String("version", version),
 	}
 
