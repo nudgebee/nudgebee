@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Box, Typography, Grid, Button, Tooltip } from '@mui/material';
+import { Box, Typography, Grid, Button } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { Input } from '@ui/Input';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { ListingLayout } from '@ui/ListingLayout';

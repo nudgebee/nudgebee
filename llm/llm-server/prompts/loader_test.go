@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"nudgebee/llm/config"
 )
 
 // newTestLoader creates a PromptLoader backed by embeddedFS with no DB or cache warming.
@@ -270,6 +272,109 @@ func TestGetAvailableVersions(t *testing.T) {
 	assert.Contains(t, versions, "v1")
 }
 
+// --- forcedVersionFor ---
+
+func TestForcedVersionFor(t *testing.T) {
+	t.Run("nothing set returns empty", func(t *testing.T) {
+		t.Setenv("PROMPTS_VERSION", "")
+
+		assert.Equal(t, "", forcedVersionFor("some_prompt"))
+	})
+
+	t.Run("global PROMPTS_VERSION applies to any prompt", func(t *testing.T) {
+		t.Setenv("PROMPTS_VERSION", "v3")
+
+		assert.Equal(t, "v3", forcedVersionFor("some_prompt"))
+	})
+
+	t.Run("per-prompt env var takes precedence over global", func(t *testing.T) {
+		t.Setenv("PROMPTS_VERSION", "v3")
+		t.Setenv("PROMPTS_VERSION_K8S_LEAN", "v1")
+
+		assert.Equal(t, "v1", forcedVersionFor("k8s_lean"), "per-prompt pin should win over the global value")
+		assert.Equal(t, "v3", forcedVersionFor("other_prompt"), "prompts without a per-prompt override still get the global value")
+	})
+
+	t.Run("hyphenated prompt name normalizes to underscore for the env key", func(t *testing.T) {
+		t.Setenv("PROMPTS_VERSION", "")
+		// No registered prompt name has a hyphen today, but env vars can't
+		// carry one in most shells -- PROMPTS_VERSION_K8S-LEAN isn't a
+		// settable variable, so the lookup key must normalize it.
+		t.Setenv("PROMPTS_VERSION_K8S_LEAN", "v2")
+
+		assert.Equal(t, "v2", forcedVersionFor("k8s-lean"))
+	})
+}
+
+// --- PROMPTS_VERSION / PROMPTS_VERSION_<NAME> dev override ---
+
+func TestResolveConfig_ForcedVersionDevOverride_GlobalAppliesAcrossPrompts(t *testing.T) {
+	t.Setenv("PROMPTS_VERSION", "v3")
+
+	testFS := fstest.MapFS{
+		"default/v1/agents/foo.yaml": &fstest.MapFile{Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: foo\ncategory: agents\ninputs: {}\nbody: |2\n  v1 content\n")},
+		"default/v3/agents/foo.yaml": &fstest.MapFile{Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: foo\ncategory: agents\ninputs: {}\nbody: |2\n  v3 content\n")},
+	}
+	loader := &PromptLoader{fs: testFS, cache: NewPromptCache(1 * time.Hour)}
+
+	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
+		Name:     "foo",
+		Category: CategoryAgents,
+		Provider: "default",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "v3", resp.Metadata.Version)
+	assert.Equal(t, ConfigSourceForcedDev, resp.Metadata.ConfigSource)
+	assert.Contains(t, resp.Content, "v3 content")
+}
+
+func TestResolveConfig_ForcedVersionDevOverride_PerPromptPinsDownBelowGlobal(t *testing.T) {
+	t.Setenv("PROMPTS_VERSION", "v3")
+	t.Setenv("PROMPTS_VERSION_FOO", "v1")
+
+	testFS := fstest.MapFS{
+		"default/v1/agents/foo.yaml": &fstest.MapFile{Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: foo\ncategory: agents\ninputs: {}\nbody: |2\n  v1 content\n")},
+		"default/v3/agents/foo.yaml": &fstest.MapFile{Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: foo\ncategory: agents\ninputs: {}\nbody: |2\n  v3 content\n")},
+	}
+	loader := &PromptLoader{fs: testFS, cache: NewPromptCache(1 * time.Hour)}
+
+	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
+		Name:     "foo",
+		Category: CategoryAgents,
+		Provider: "default",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "v1", resp.Metadata.Version, "the per-prompt pin holds foo at v1 even though a v3 exists and the global default is v3")
+	assert.Contains(t, resp.Content, "v1 content")
+}
+
+func TestResolveConfig_ForcedVersionDevOverride_MissingVersionFallsThroughToV1(t *testing.T) {
+	t.Setenv("PROMPTS_VERSION", "v9") // no v9 file exists anywhere for k8s_lean
+
+	// loadPromptFile's resolution chain ({provider}/{v} -> default/{v} ->
+	// {provider}/v1 -> default/v1) still applies after a forced version is
+	// chosen, so a typo'd/nonexistent PROMPTS_VERSION degrades to v1 content
+	// rather than failing the request -- the same graceful fallback every
+	// other resolution path already relies on, not a new failure mode.
+	loader := newTestLoader()
+	resp, err := loader.GetPrompt(context.Background(), PromptRequest{
+		Name:     "k8s_lean",
+		Category: CategoryAgents,
+		Provider: "default",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Content)
+	// The reported version must reflect what was actually served (v1), not
+	// the requested-but-nonexistent v9 -- a typo'd pin must not be able to
+	// report "using forced version v9" while silently serving v1 content.
+	assert.Equal(t, "v1", resp.Metadata.Version)
+}
+
+func TestResolveConfig_ForcedVersionDevOverride_OffByDefault(t *testing.T) {
+	assert.Equal(t, "", config.Config.PromptsVersion,
+		"must default to empty -- production behavior depends on this never being set unless explicitly configured")
+}
+
 // --- SplitPromptLines ---
 
 func TestSplitPromptLines(t *testing.T) {
@@ -336,6 +441,27 @@ func TestPromptCache_Expiration(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	_, hit = cache.Get(req)
 	assert.False(t, hit, "entry should have expired")
+}
+
+// --- loadPromptFile version fallback ---
+
+func TestLoadPromptFile_FallbackToV1ResolvesIncludesAtV1NotRequestedVersion(t *testing.T) {
+	// A request for a version that has no file at all for this prompt falls
+	// through to the default/v1 base -- but that v1 body still has an
+	// unresolved {{@include ...}}. It must resolve against v1 (where the
+	// match actually happened), not against the originally-requested
+	// version (which has no fragment file and would otherwise fail the
+	// whole load even though a perfectly good v1 body + fragment exist).
+	testFS := fstest.MapFS{
+		"default/v1/agents/foo.yaml":     &fstest.MapFile{Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: foo\ncategory: agents\ninputs: {}\nbody: |2-\n  before {{@include _fragments/bar}} after\n")},
+		"default/v1/_fragments/bar.yaml": &fstest.MapFile{Data: []byte("apiVersion: nudgebee.dev/prompt/v1\nname: bar\ninputs: {}\nbody: |2-\n  BAR\n")},
+	}
+	loader := &PromptLoader{fs: testFS, cache: NewPromptCache(1 * time.Hour)}
+
+	content, servedVersion, err := loader.loadPromptFile("foo", CategoryAgents, "default", "v9")
+	require.NoError(t, err)
+	assert.Equal(t, "before BAR after", content)
+	assert.Equal(t, "v1", servedVersion, "must report the version actually served, not the requested v9")
 }
 
 // --- Include processing ---
@@ -434,7 +560,7 @@ func TestProcessIncludes_V2PromptFilesResolve(t *testing.T) {
 
 	for _, p := range prompts {
 		t.Run(p.name, func(t *testing.T) {
-			content, err := loader.loadPromptFile(p.name, CategoryUtilities, "default", "v2")
+			content, _, err := loader.loadPromptFile(p.name, CategoryUtilities, "default", "v2")
 			require.NoError(t, err)
 			assert.Contains(t, content, p.contains,
 				"resolved prompt should contain persona content")
@@ -499,7 +625,7 @@ func TestLoadPromptFile_KeepsMostDescriptiveError(t *testing.T) {
 	}
 	loader := &PromptLoader{fs: testFS, cache: NewPromptCache(1 * time.Hour)}
 
-	_, err := loader.loadPromptFile("broken", CategoryAgents, "googleai", "v1")
+	_, _, err := loader.loadPromptFile("broken", CategoryAgents, "googleai", "v1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decoding prompt file",
 		"the malformed override must be reported, not the later file-not-found misses")

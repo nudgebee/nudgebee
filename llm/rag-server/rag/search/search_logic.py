@@ -72,6 +72,16 @@ def _search_single_collection_by_vector(
             # propagated the request's `metadata` dict into per-point payload.
             if isinstance(metadata, dict) and not metadata.get("_id"):
                 metadata = {**metadata, "_id": str(point.id)}
+            # Stamp the source collection so callers can attribute a hit back to
+            # the knowledge base it owns. The name IS the identity - `kb_<kb_id>`
+            # for manual KBs, `<integration_id>_knowledge_base` for synced ones,
+            # anything else is a global collection with no llm_knowledgebases row
+            # (product docs). Nothing in the point payload carries a kb id, so
+            # without this the caller has to re-derive ownership by matching text
+            # against Postgres, which fails silently and drops the audit row for
+            # a document that still reached the prompt.
+            if isinstance(metadata, dict) and not metadata.get("collection"):
+                metadata = {**metadata, "collection": collection_name}
             docs.append({"page_content": page_content, "metadata": metadata, "score": normalized_score})
         return docs
     except Exception as e:

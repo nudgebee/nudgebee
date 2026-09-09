@@ -75,12 +75,18 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 			   - Use 'sequenceDiagram' for step-by-step service interactions.
 			   - Use 'classDiagram' or 'stateDiagram-v2' for code/state modeling.
 			   - Use 'gantt' or 'timeline' for sequences of events.
-			4. **Clarity:** Keep node IDs concise and strictly alphanumeric (e.g., S1, DB1). Put all descriptive or special-character text inside the quoted label.
-			5. **Arrow Notation:** If the input provided is in "Arrow Notation" (e.g., A -> B -> C), convert it into a professional Mermaid diagram.
-			6. **Comments (CRITICAL):** ALWAYS use double percent signs (%%) for comments. NEVER use a single percent sign (%), as it is invalid syntax.
+			4. **Node IDs (CRITICAL):** Node IDs MUST be strictly alphanumeric/underscore only - NEVER copy a real resource, service, or host name into the ID, since those commonly contain hyphens and dots. Put the real name in the quoted label instead.
+			   - Correct: llmGateway["llm-gateway"] or SVC1["logging.googleapis.com"]
+			   - Incorrect: llm-gateway["llm-gateway"]  (hyphen in the ID)
+			   - Incorrect: logging.googleapis.com["External Logging"]  (dots in the ID)
+			5. **Arrow Labels (CRITICAL):** A labeled edge is "SourceID -->|Label| TargetID". The label is closed by a SINGLE '|' immediately followed by the target node - NEVER add a '>' after that closing '|'.
+			   - Correct: A -->|"Calls"| B
+			   - Incorrect: A -->|"Calls"|> B  (stray '>' after the closing '|')
+			6. **Arrow Notation:** If the input provided is in "Arrow Notation" (e.g., A -> B -> C), convert it into a professional Mermaid diagram.
+			7. **Comments (CRITICAL):** ALWAYS use double percent signs (%%) for comments. NEVER use a single percent sign (%), as it is invalid syntax.
 			     - Correct: %% This is a comment
 			     - Incorrect: % This is a comment
-			7. **XYChart Arrays (CRITICAL):** For 'xychart' or 'xychart-beta', ALL array definitions (x-axis, y-axis, bar, line) MUST be on a single line. Multi-line arrays will cause syntax errors.
+			8. **XYChart Arrays (CRITICAL):** For 'xychart' or 'xychart-beta', ALL array definitions (x-axis, y-axis, bar, line) MUST be on a single line. Multi-line arrays will cause syntax errors.
 			   - **Numeric Data:** 'bar' and 'line' arrays MUST contain ONLY numeric values (no quotes, NO 'null' values). Use 0 for missing data points if necessary.
 			     - Correct: bar "Requests/sec" [10.5, 0, 15.2]
 			     - Incorrect: bar "Requests/sec" [10.5, null, 15.2]
@@ -95,17 +101,17 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 			     - Correct: bar "api-server (requests/s)" [50, 60, 85]
 			     - Incorrect: line [10.5, 12.1, 15.2]  (missing label)
 			     - Incorrect: bar [50, 60, 85]  (missing label)
-			8. **Multiline Labels:** Use ` + "`" + `<br/>` + "`" + ` for line breaks inside standard quoted labels, or use Markdown strings (quoted backticks) if styling is needed.
+			9. **Multiline Labels:** Use ` + "`" + `<br/>` + "`" + ` for line breaks inside standard quoted labels, or use Markdown strings (quoted backticks) if styling is needed.
 			     - Standard: ID["Line1<br/>Line2"]
 			     - Markdown: ID["` + "`" + `**Bold**\n_Italic_` + "`" + `"]
-			9. **Grounding (CRITICAL):** Do not invent services, connections, or data points that are not present in the input description. Ground all diagram elements strictly in the provided text. If information is missing, do not guess; visualize only what is explicitly stated.
-			10. **Pie Charts:** Do NOT use negative values in pie charts. If a value is negative (e.g., a credit), use 0 or the absolute value and note it in the label, or exclude it.
+			10. **Grounding (CRITICAL):** Do not invent services, connections, or data points that are not present in the input description. Ground all diagram elements strictly in the provided text. If information is missing, do not guess; visualize only what is explicitly stated.
+			11. **Pie Charts:** Do NOT use negative values in pie charts. If a value is negative (e.g., a credit), use 0 or the absolute value and note it in the label, or exclude it.
 		</instructions>
 		<examples>
 			<example type="graph">
 				graph TD
 				    subgraph "Service Mesh"
-				        S1["API Gateway"] --> S2["Auth Service"]
+				        S1["API Gateway"] -->|"Routes to"| S2["Auth Service"]
 				        S2 --> DB1[("User DB")]
 				    end
 			</example>

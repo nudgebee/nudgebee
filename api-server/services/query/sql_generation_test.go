@@ -870,6 +870,31 @@ func TestSQLGen_RealTable_EventGroupings(t *testing.T) {
 	assert.NotContains(t, sql, "event_duplicates")
 }
 
+// events.subject_owner is written as the empty string (never NULL) when the
+// subject has no owning workload, so the fallback to subject_name has to be
+// NULL-ified first. A plain COALESCE over subject_owner stops at the empty
+// string and the grouped-events view renders a blank Application column for
+// every node, cloud resource, and owner-less alert.
+func TestSQLGen_RealTable_EventGroupings_SubjectOwnerFallsBackOnEmptyString(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+
+	req := QueryRequest{
+		Table:   "event_groupings_v2",
+		Columns: cols("subject_owner", "event_count"),
+		Where: QueryWhereClause{
+			Binary: BinaryWhereClause{
+				"tenant_id": {Eq: "t1"},
+			},
+		},
+		Limit: 10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	assert.Contains(t, sql, "COALESCE(NULLIF(subject_owner, ''), subject_name, '')")
+}
+
 func TestSQLGen_RealTable_EventGroupings_WithFingerprintJoin(t *testing.T) {
 	td, ok := GetTableMetadata("event_groupings_v2")
 	require.True(t, ok)
@@ -889,6 +914,97 @@ func TestSQLGen_RealTable_EventGroupings_WithFingerprintJoin(t *testing.T) {
 
 	// SHOULD include event_duplicates JOIN since we reference fingerprint_event_count
 	assert.Contains(t, sql, "event_duplicates")
+}
+
+func TestSQLGen_RealTable_EventGroupings_WithAnalysisJoin(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+
+	req := QueryRequest{
+		Table:   "event_groupings_v2",
+		Columns: cols("account_id", "event_count", "count_analysed_issues", "minutes_to_first_analysis"),
+		Where: QueryWhereClause{
+			Binary: BinaryWhereClause{
+				"tenant_id": {Eq: "t1"},
+			},
+		},
+		Limit: 10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	// The analysis join is PRE-AGGREGATED. event_log_analysis holds one row per
+	// analysis_type per event, so joining it raw multiplies every event row by
+	// its stage count and inflates event_count alongside it. Assert on the
+	// GROUP BY inside the subquery, not just the table name, because that is
+	// the part that makes the join safe.
+	assert.Contains(t, sql, "event_log_analysis")
+	assert.Contains(t, sql, "GROUP BY event_id, cloud_account_id")
+	assert.Contains(t, sql, "AS count_analysed_issues")
+	assert.Contains(t, sql, "AS minutes_to_first_analysis")
+	// Coverage numerator and denominator must share the issue unit, or callers
+	// divide a per-event count by a per-chain count.
+	assert.Contains(t, sql, "count(DISTINCT CASE WHEN ela.first_analysed_at IS NOT NULL THEN events.fingerprint END)")
+}
+
+func TestSQLGen_RealTable_EventGroupings_NoAnalysisJoinWhenUnreferenced(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+
+	req := QueryRequest{
+		Table:   "event_groupings_v2",
+		Columns: cols("account_id", "status", "event_count"),
+		Where: QueryWhereClause{
+			Binary: BinaryWhereClause{
+				"tenant_id": {Eq: "t1"},
+			},
+		},
+		Limit: 10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	// Every existing caller must keep the plan it had. The join is opt-in via
+	// analysisDependentColumns precisely so adding these columns cannot change
+	// the cost or the results of queries that never asked for them.
+	assert.NotContains(t, sql, "event_log_analysis")
+}
+
+func TestSQLGen_RealTable_EventGroupings_IncidentGroupLeaderIsGroupAnchor(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+
+	req := QueryRequest{
+		Table:   "event_groupings_v2",
+		Columns: cols("account_id", "latest_event_id", "incident_group_size", "incident_group_leader_id"),
+		Where: QueryWhereClause{
+			Binary: BinaryWhereClause{
+				"tenant_id": {Eq: "t1"},
+			},
+		},
+		Limit: 10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	// The Triage Inbox reads the GROUPED badge from incident_group_size and
+	// opens the Grouped Alerts panel on incident_group_leader_id. Those two
+	// must describe the SAME group, so the leader id has to be a group ANCHOR,
+	// not the row's newest event: a recurring fingerprint leads its group from
+	// its OLDEST event, so latest_event_id is usually neither leader nor
+	// member and the panel renders "no related alerts" under a GROUPED badge.
+	assert.Contains(t, sql, "AS incident_group_leader_id")
+	// A row that LEADS resolves to its own biggest leader event...
+	assert.Contains(t, sql, "array_agg(events.id::text ORDER BY ecc.incident_member_count DESC, events.created_at DESC) FILTER (WHERE ecc.incident_member_count > 0)")
+	// ...and only a row that merely BELONGS to one falls back to the link.
+	assert.Contains(t, sql, "array_agg(ecl.related_event_id::text ORDER BY events.created_at DESC) FILTER (WHERE ecl.related_event_id IS NOT NULL)")
+	// max() over the link alone cannot resolve a leading row at all, and picks
+	// arbitrarily between leaders when a row holds more than one.
+	assert.NotContains(t, sql, "max(ecl.related_event_id::text)")
+	// Both joins are required: the anchor reads member counts (ecc) as well as
+	// the child link (ecl).
+	assert.Contains(t, sql, ") ecl")
+	assert.Contains(t, sql, ") ecc")
 }
 
 func TestSQLGen_RealTable_SpendGroupings(t *testing.T) {
@@ -1011,4 +1127,85 @@ func TestSQLGen_Where_EqF(t *testing.T) {
 	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
 	require.NoError(t, err)
 	assert.Contains(t, sql, "name = account_id")
+}
+
+// ---- Cross-account security pushdown tests ----
+
+// The cross-account Security tab queries these tables with an account _in list
+// and a tenant filter that the security layer appends as an _and clause. The
+// account and tenant copies must be pushed into the pod/recommendation
+// subqueries as planner hints, while the outer WHERE keeps enforcing tenant.
+
+func securityCrossAccountWhere() QueryWhereClause {
+	return QueryWhereClause{
+		Binary: BinaryWhereClause{
+			"account_id": {In: []any{"acc-1", "acc-2"}},
+			"status":     {Eq: "Open"},
+		},
+		And: []QueryWhereClause{
+			{Binary: BinaryWhereClause{"tenant_id": {Eq: "t1"}}},
+		},
+	}
+}
+
+func TestSQLGen_RealTable_SecurityV2_CrossAccountPushdown(t *testing.T) {
+	td, ok := GetTableMetadata("recommendation_security_v2")
+	require.True(t, ok)
+
+	req := QueryRequest{
+		Table:   "recommendation_security_v2",
+		Columns: cols("id", "severity", "status", "image", "account_id"),
+		Where:   securityCrossAccountWhere(),
+		Limit:   10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	assert.Contains(t, sql, "pc.cloud_account_id IN ('acc-1','acc-2')")
+	assert.Contains(t, sql, "rec.cloud_account_id IN ('acc-1','acc-2')")
+	assert.Contains(t, sql, "pc.tenant_id = 't1'")
+	assert.Contains(t, sql, "rec.tenant_id = 't1'")
+	// Two pushed copies plus the outer WHERE: the _and tenant filter must survive.
+	assert.GreaterOrEqual(t, strings.Count(sql, "tenant_id = 't1'"), 3,
+		"outer tenant filter must still be enforced alongside the pushed-down hints")
+}
+
+func TestSQLGen_RealTable_SecurityGroupings_HeavyPath_CrossAccountPushdown(t *testing.T) {
+	td, ok := GetTableMetadata("recommendation_security_groupings_v2")
+	require.True(t, ok)
+
+	// image + count reference non-pod columns, forcing the pod_container LATERAL path.
+	req := QueryRequest{
+		Table:   "recommendation_security_groupings_v2",
+		Columns: cols("account_id", "image", "count"),
+		Where:   securityCrossAccountWhere(),
+		Limit:   10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	assert.Contains(t, sql, "pod_container")
+	assert.Contains(t, sql, "cr.cloud_account_id IN ('acc-1','acc-2')")
+	assert.Contains(t, sql, "cr.tenant_id = 't1'")
+	assert.GreaterOrEqual(t, strings.Count(sql, "tenant_id = 't1'"), 2,
+		"outer tenant filter must still be enforced alongside the pushed-down hint")
+}
+
+func TestSQLGen_RealTable_SecurityGroupings_LightPath_CrossAccountPushdown(t *testing.T) {
+	td, ok := GetTableMetadata("recommendation_security_groupings_v2")
+	require.True(t, ok)
+
+	// Pod-level columns only, so the cheaper pod_images EXISTS path is taken.
+	req := QueryRequest{
+		Table:   "recommendation_security_groupings_v2",
+		Columns: cols("namespace", "workload_name", "account_id"),
+		Where:   securityCrossAccountWhere(),
+		Limit:   10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	assert.Contains(t, sql, "pod_images")
+	assert.Contains(t, sql, "cr.cloud_account_id IN ('acc-1','acc-2')")
+	assert.Contains(t, sql, "cr.tenant_id = 't1'")
 }

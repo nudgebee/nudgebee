@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -210,6 +212,41 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 // downstream S3/DB call can't leak the consumer worker indefinitely.
 const costBackfillTimeout = 30 * time.Minute
 
+// StartHistoricalBackfill runs the historical backfill detached from the caller,
+// on its own bounded context.
+//
+// The onboarding consumer can afford to run runHistoricalBackfill inline because
+// it is a queue worker. The HTTP onboarding path cannot: discovery plus a month
+// at a time of report processing routinely outlasts any sane request timeout, so
+// holding the request open would either time out the caller or tie up the
+// handler for up to costBackfillTimeout.
+//
+// Best-effort by the same rules as the consumer's call: the requested month has
+// already been stored by the time this runs, so a failure here costs history,
+// not the current month.
+func StartHistoricalBackfill(ctx *security.RequestContext, accountId, tenantId string, processedMonth time.Month, processedYear int) {
+	logger := ctx.GetLogger()
+	if logger == nil {
+		logger = slog.Default()
+	}
+	tracer, meter := ctx.GetTracer(), ctx.GetMeter()
+	go func() {
+		// The consumer's inline call to runHistoricalBackfill is covered by the
+		// MQ consumer's recover; a bare goroutine has no such umbrella, so a
+		// panic anywhere downstream would take the whole collector process down
+		// rather than costing one account its history.
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("usagereport: historical backfill panicked", "panic", r, "accountId", accountId, "stack", string(debug.Stack()))
+			}
+		}()
+		backfillCtx, cancel := context.WithTimeout(context.Background(), costBackfillTimeout)
+		defer cancel()
+		backfillJobCtx := security.NewRequestContext(backfillCtx, security.NewSecurityContextForSuperAdminWithTenant(tenantId), logger, tracer, meter)
+		runHistoricalBackfill(backfillJobCtx, accountId, tenantId, processedMonth, processedYear)
+	}()
+}
+
 // postReportProcessingTimeout bounds a single post-report job safely under the
 // RabbitMQ consumer_timeout (30m default). Staying under it means a slow account
 // returns a retriable error through the normal retry path, instead of running
@@ -277,6 +314,42 @@ func runHistoricalBackfill(ctx *security.RequestContext, accountId, tenantId str
 	ctx.GetLogger().Info("usagereport: historical backfill complete", "accountId", accountId, "discovered", len(periods), "processed", processed, "maxMonths", maxMonths)
 }
 
+// isBenignCostOutcome reports whether a spend-sync error is a steady state
+// rather than a fault:
+//
+//   - ErrCostNotConfigured — no Cost & Usage Report or billing export attached.
+//     Onboarding accepts this, so the account can sit here indefinitely.
+//   - ErrUnsupported — the provider has no billing concept at all.
+//
+// Neither can be fixed by retrying, so the queue must ACK rather than
+// dead-letter, and the agent must not be reported disconnected for it.
+//
+// This is the single definition of "benign" — both decisions call it. Keeping
+// two copies is how the sts:ExternalId drift happened (#37513): one caller was
+// updated and the other silently kept the old behaviour.
+func isBenignCostOutcome(err error) bool {
+	return errors.Is(err, errors.ErrUnsupported) || errors.Is(err, providers.ErrCostNotConfigured)
+}
+
+// agentStatusForUsageSync decides whether a spend-sync outcome should mark the
+// whole agent disconnected.
+//
+// A genuine failure does. A benign outcome does not: onboarding accepts an
+// account with no Cost & Usage Report, so that account is working as intended
+// and everything except spend syncs normally. Reporting it as disconnected puts
+// a red "The Agent is not connected" banner above a feature table where every
+// row reads Connected, and trips agent-health alerting for a supported
+// configuration.
+//
+// The error is still recorded either way, so the reason reaches the Spends
+// error column.
+func agentStatusForUsageSync(err error) AgentStatus {
+	if err != nil && !isBenignCostOutcome(err) {
+		return AgentStatusDisconnected
+	}
+	return AgentStatusConnected
+}
+
 func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month, year int) (StoreUsageReportResponse, error) {
 	// Capture month-of-call before any defers so the post-report publish is
 	// stable across mid-run month rollovers.
@@ -317,10 +390,7 @@ func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month
 		if err != nil {
 			msg = err.Error()
 		}
-		agentStatus := AgentStatusConnected
-		if err != nil {
-			agentStatus = AgentStatusDisconnected
-		}
+		agentStatus := agentStatusForUsageSync(err)
 		connectionStatus := map[string]any{
 			"account_number": account.AccountNumber,
 			"spends": map[string]any{
@@ -358,9 +428,21 @@ func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month
 	usageReport, account1, err := getUsageDataInternal(ctx, accountId, month, year)
 	account = account1
 	if err != nil {
-		if errors.Is(err, errors.ErrUnsupported) {
+		// Two benign cases the queue must not retry or dead-letter:
+		//   ErrUnsupported       — the provider has no billing concept at all.
+		//   ErrCostNotConfigured — the account has no CUR / billing export
+		//                          attached. Cost is optional at onboarding, so
+		//                          an account can sit here indefinitely.
+		// Both are steady states, so retrying cannot help and dead-lettering
+		// would poison one message per account per day, forever. Everything
+		// else (revoked permissions, an unreadable bucket, a BigQuery error) is
+		// a real fault that should still surface in the DLQ.
+		switch {
+		case errors.Is(err, errors.ErrUnsupported):
 			ctx.GetLogger().Debug("usagereport: service does not support usage reports", "accountId", accountId)
-		} else {
+		case errors.Is(err, providers.ErrCostNotConfigured):
+			ctx.GetLogger().Info("usagereport: no cost reporting configured for account", "accountId", accountId)
+		default:
 			ctx.GetLogger().Error("usagereport: unable to fetch usage report", "error", err)
 		}
 		// A spend/billing fetch failure must NOT zero out the rest of the account.
@@ -369,12 +451,17 @@ func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month
 		// the same way the no-billing-data path below does. Otherwise one misconfigured
 		// or unreadable billing export (wrong table, bad schema, revoked BigQuery
 		// access) silently blocks resource inventory, recommendations, and
-		// event-to-resource linkage for the whole account. The error is still
-		// returned so the agent-status defer records spends as disconnected.
+		// event-to-resource linkage for the whole account.
 		shouldPublishPostReport = true
 		usageReportResponse = StoreUsageReportResponse{
 			Count:    0,
 			Duration: time.Since(t0),
+		}
+		// `err` stays set either way so the agent-status defer above still
+		// records spends as disconnected with the reason — only the value
+		// handed back to the queue differs.
+		if isBenignCostOutcome(err) {
+			return usageReportResponse, nil
 		}
 		return usageReportResponse, err
 	}

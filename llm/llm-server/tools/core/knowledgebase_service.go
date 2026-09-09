@@ -31,6 +31,78 @@ const CacheNamespaceLlmKbMapping = "llm_kb_mapping"
 // Declared here (in tools/core) so KB update/delete paths can invalidate it.
 const CacheNamespaceLlmSkillContent = "llm_skill_content"
 
+// KB cache entries carry no TTL under the redis cache provider: common.CacheSet
+// only attaches an expiration when the caller passes one, and the
+// CacheNamespaceWithExpiration options in init() configure the in-memory store
+// only. A missed invalidation is therefore permanent, not a 15/30-minute
+// window — every create, update and delete must clear both the per-name skill
+// bodies and the per-agent skill menus.
+
+// invalidateSkillContentCache drops the cached body of each supplied name.
+// Callers must pass every name the KB has been known by: load_skills keys on
+// the name the model asks for, not the KB id, so after a rename it is the OLD
+// name's entry that keeps serving stale content.
+func invalidateSkillContentCache(accountId string, names ...string) {
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		key := fmt.Sprintf("skill:%s:%s", accountId, name)
+		if err := common.CacheDelete(CacheNamespaceLlmSkillContent, key); err != nil {
+			slog.Warn("kb: failed to invalidate skill content cache", "error", err, "key", key)
+		}
+	}
+}
+
+// invalidateKBMappingCache drops the cached per-agent skill menu (the
+// `<skill-lists>` block built from ListAgentKBs) for each supplied agent.
+func invalidateKBMappingCache(accountId string, agentIds ...string) {
+	for _, agentId := range agentIds {
+		if agentId == "" {
+			continue
+		}
+		key := fmt.Sprintf("kb_mapping:%s:%s", accountId, agentId)
+		if err := common.CacheDelete(CacheNamespaceLlmKbMapping, key); err != nil {
+			slog.Warn("kb: failed to invalidate KB mapping cache", "error", err, "key", key)
+		}
+	}
+}
+
+// kbMappedAgentIds returns the agents a KB is mapped to. ok is false when the
+// lookup fails, so callers can fall back to a namespace-wide clear instead of
+// leaving a menu pinned to a name that no longer exists. Read it before
+// deleting the KB — the mapping rows go with it.
+func kbMappedAgentIds(dbms *common.DatabaseManager, accountId, kbId string) ([]string, bool) {
+	var agentIds []string
+	if err := dbms.Db.Select(&agentIds,
+		`SELECT agent_id FROM llm_kb_agent_mappings WHERE kb_id = $1 AND account_id = $2`,
+		kbId, accountId); err != nil {
+		slog.Error("kb: failed to list mapped agents for cache invalidation", "error", err, "kb_id", kbId)
+		return nil, false
+	}
+	return agentIds, true
+}
+
+// invalidateKBCaches clears every cached view of one KB: the skill bodies under
+// each supplied name, and the skill menu of every agent it is mapped to.
+func invalidateKBCaches(dbms *common.DatabaseManager, accountId, kbId string, names ...string) {
+	invalidateSkillContentCache(accountId, names...)
+	if kbId == "" {
+		return
+	}
+	agentIds, ok := kbMappedAgentIds(dbms, accountId, kbId)
+	if !ok {
+		if err := common.CacheClear(CacheNamespaceLlmKbMapping); err != nil {
+			slog.Error("kb: failed to clear KB mapping cache", "error", err)
+		}
+		return
+	}
+	invalidateKBMappingCache(accountId, agentIds...)
+}
+
 func init() {
 	workerCount := 3 // Default worker count for KB embeddings
 	if config.Config.AsyncApiWorkerCount > 0 {
@@ -311,6 +383,10 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 	_ = kbEmbeddingWorkerPool.Submit(submissionCtx, func() {
 		processKBEmbeddingsAsync(sc, accountId, createdKB.Id, kb.Data, kb.DataFormat)
 	})
+
+	// A KB recreated under a name that existed before would otherwise be served
+	// from the previous KB's cached body.
+	invalidateKBCaches(dbms, accountId, createdKB.Id, createdKB.Name)
 
 	// Create audit entry
 	auditReq := &audit.AuditRequest{
@@ -638,19 +714,19 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		return err
 	}
 
-	// If data changed, update embeddings asynchronously and invalidate skill content cache.
+	// If data changed, update embeddings asynchronously.
 	if dataChanged {
 		submissionCtx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Config.AsyncOperationTimeoutSeconds)*time.Second)
 		defer cancel()
 		_ = kbEmbeddingWorkerPool.Submit(submissionCtx, func() {
 			processKBUpdateEmbeddingsAsync(sc, accountId, kbId, updates.Data, updates.DataFormat, "user_update")
 		})
-		// Invalidate cached skill content so the updated content is served immediately.
-		skillCacheKey := fmt.Sprintf("skill:%s:%s", accountId, strings.ToLower(updates.Name))
-		if err := common.CacheDelete(CacheNamespaceLlmSkillContent, skillCacheKey); err != nil {
-			slog.Warn("kb: failed to invalidate skill content cache", "error", err, "key", skillCacheKey)
-		}
 	}
+
+	// Invalidate on every update, not only when the data changed: a name-only
+	// edit is exactly the case that left load_skills serving the previous body
+	// under the previous name, and the agent's skill menu advertising it.
+	invalidateKBCaches(dbms, accountId, kbId, existingKB.Name, updates.Name)
 
 	// Create audit entry
 	auditReq := &audit.AuditRequest{
@@ -716,6 +792,10 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 		return errors.New(errKBIntegrationDelete)
 	}
 
+	// Read the mappings before the DELETE — the rows go with the KB, and the
+	// per-agent skill menus keyed on them still have to be invalidated after.
+	mappedAgentIds, mappedAgentsOk := kbMappedAgentIds(dbms, accountId, kbId)
+
 	// Delete the vector collection first. Manual KBs own a kb_<id> collection;
 	// an archived integration KB's documents live in the shared
 	// <integration_id>_knowledge_base collection. Continue with DB deletion
@@ -765,12 +845,11 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 	}
 
 	// Invalidate caches
-	if err := common.CacheClear(CacheNamespaceLlmKbMapping); err != nil {
+	invalidateSkillContentCache(accountId, kb.Name)
+	if mappedAgentsOk {
+		invalidateKBMappingCache(accountId, mappedAgentIds...)
+	} else if err := common.CacheClear(CacheNamespaceLlmKbMapping); err != nil {
 		slog.Error("kb: failed to clear KB mapping cache", "error", err)
-	}
-	skillCacheKey := fmt.Sprintf("skill:%s:%s", accountId, strings.ToLower(kb.Name))
-	if err := common.CacheDelete(CacheNamespaceLlmSkillContent, skillCacheKey); err != nil {
-		slog.Warn("kb: failed to invalidate skill content cache", "error", err, "key", skillCacheKey)
 	}
 
 	// Create audit entry

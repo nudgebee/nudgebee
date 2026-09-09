@@ -3,14 +3,15 @@ import { useRouter } from 'next/router';
 import { v4 as uuidv4 } from 'uuid';
 import { md5 } from '@lib/encode';
 import SafeIcon from '@shared/icons/SafeIcon';
+import Loader from '@shared/Loader';
 import { Box } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import dynamic from 'next/dynamic';
-const KubernetesTable2 = dynamic(() => import('@components/k8s/common/KubernetesTable2'));
+const KubernetesTable = dynamic(() => import('@components/k8s/common/KubernetesTable'));
 import FilterDropdown from '@ui/FilterDropdown';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import Text from '@shared/format/Text';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
@@ -27,18 +28,19 @@ import WidgetCard from '@ui/WidgetCard';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { isAtMost70PercentDifferent, parseHttpResponseBodyMessage, safeJSONParse, snakeToTitleCase } from 'src/utils/common';
 import { useData } from '@context/DataContext';
-import useTicketFilter from '@hooks/useTicketFilter';
+import useTicketFliter from '@hooks/useTicketFliter';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import observability from '@api1/observability';
 import apiAccount from '@api1/account';
 import ticketsApi from '@api1/tickets';
-import CustomTicketLink from '@shared/CustomTicketLink';
+import TicketLink from '@shared/links/TicketLink';
 import cache from '@lib/cache';
 import { TicketsIcon } from '@assets';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import { Info as InfoIcon, KeyboardArrowDown as KeyboardArrowDownIcon } from '@mui/icons-material';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import { ds } from '@utils/colors';
+import KubernetesWorkloadRelayLogs from './KubernetesWorkloadRelayLogs';
 
 interface TimeRange {
   [x: string]: number;
@@ -48,6 +50,20 @@ interface TimeRange {
 }
 
 const k8sLogs = 'k8sLogs';
+
+// Providers whose Builder mode maps filters through the Pinot/Hive operator table rather
+// than reusing the query string the builder already produced.
+const STRUCTURED_BUILDER_PROVIDERS = ['pinot', 'hive'];
+
+// Case-normalized: logProvider can arrive from the provider cache or the agent-reported
+// connection string, so it is not guaranteed to match the backend's lowercase spelling.
+const isStructuredBuilderProvider = (provider: string) => STRUCTURED_BUILDER_PROVIDERS.includes(provider?.toLowerCase());
+
+// Workload kinds `kubectl logs <kind>/<name>` can actually resolve to a pod (used by the
+// relay-fallback below). CronJob has no pods of its own — only the Jobs it spawns do — and
+// Rollout is an Argo CRD kubectl has no built-in selector logic for, so both are excluded
+// rather than firing a relay call that's guaranteed to fail.
+const KUBECTL_LOGGABLE_WORKLOAD_KINDS = ['deployment', 'statefulset', 'daemonset', 'replicaset', 'job'];
 
 // Builder chips carry either a UI operator token ('=', 'CONTAINS', 'is_one_of') or an
 // already-normalized backend token ('_eq'), depending on whether the chip came from
@@ -113,6 +129,56 @@ const buildStructuredQueryFromItems = (items: any[]): any[] =>
     };
   });
 
+// Builder "Operations" carry either a backend token from the provider's
+// supported_operator_descriptors (_contains, _regex, …) or a legacy UI string.
+// Mirrors lineOperatorMap in QueryModeSwitcher.jsx / LogGenerateQuery.js — the two
+// other places the same conversion runs (Code-mode preview and query-string gen).
+const LINE_OPERATOR_MAP: Record<string, string> = {
+  CONTAINS: '_contains',
+  'NOT CONTAINS': '_nlike',
+  ICONTAINS: '_icontains',
+  'NOT ICONTAINS': '_nlike',
+  LIKE: '_like',
+  ILIKE: '_ilike',
+  'NOT LIKE': '_nlike',
+  REGEX: '_regex',
+  'NOT REGEX': '_nregex',
+  _contains: '_contains',
+  _icontains: '_icontains',
+  _nicontains: '_nlike',
+  _like: '_like',
+  _ilike: '_ilike',
+  _nlike: '_nlike',
+  _regex: '_regex',
+  _nregex: '_nregex',
+};
+
+/**
+ * Converts Builder-mode "Operations" (line filters) into `query_request.where._and`
+ * clauses. They target the log message rather than a stream label, so each becomes a
+ * `content` pseudo-field clause — the key every log source maps to a line filter
+ * (LokiSource maps `content` → LogQL `|=` / `|~`). Empty-value and unmapped-operator
+ * rows are skipped, matching the Code-mode preview path.
+ */
+export const buildStructuredQueryFromOperations = (operations: any[]): any[] =>
+  (operations || [])
+    .filter((op) => op.value != null && String(op.value).trim() !== '')
+    .map((op) => {
+      const backendOp = LINE_OPERATOR_MAP[op.op];
+      if (!backendOp) {
+        console.warn(`Unsupported line operation operator: ${op.op}`);
+        return null;
+      }
+      return {
+        _binary: {
+          content: {
+            [backendOp]: op.value,
+          },
+        },
+      };
+    })
+    .filter(Boolean);
+
 interface KubernetesLogProps {
   accountId: string;
   showTrend: boolean;
@@ -123,6 +189,13 @@ interface KubernetesLogProps {
   showDateFilter?: boolean;
   showPlusMinusTab?: boolean;
   nubiAboveModal?: boolean;
+  // Workload identity for the relay (kubectl) fallback used when no log
+  // provider is configured — see the `!logProvider` branch below. Only the
+  // Applications/workload Logs tab passes these; other callers of this
+  // component leave them unset and keep the plain "No Logs Available" card.
+  namespaceName?: string;
+  workloadName?: string;
+  workloadType?: string;
 }
 
 const KubernetesLogs: React.FC<KubernetesLogProps> = ({
@@ -134,6 +207,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   showDateFilter = true,
   showPlusMinusTab = true,
   nubiAboveModal = false,
+  namespaceName = '',
+  workloadName = '',
+  workloadType = '',
 }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
@@ -155,6 +231,11 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   const [defaultIndex, setDefaultIndex] = useState('');
   const [availableProviders, setAvailableProviders] = useState<any[]>([]);
   const [runInitialQuery, setRunInitialQuery] = useState(false);
+  // Distinguishes "still checking which provider is configured" (logProvider
+  // is '' transiently while the getDefaultProvider call is in flight) from
+  // "checked, and there truly is none" — only the latter should trigger the
+  // relay (kubectl) fallback below.
+  const [providerCheckDone, setProviderCheckDone] = useState(false);
   const [time, setTime] = useState<any>(
     dateTime || {
       startTime: Number(router.query.startTime) || (router.query.start ? Number(router.query.start) / 1000000 : 0),
@@ -193,7 +274,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     getTicketReferenceId,
     handleTicketSuccess,
     handleTicketFailure,
-  } = useTicketFilter();
+  } = useTicketFliter();
 
   const [rawLogs, setRawLogs] = useState<any[]>([]);
   const [ticketReferenceMap, setTicketReferenceMap] = useState<Map<string, any>>(new Map());
@@ -403,7 +484,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                 />
                 {existingTicket && (
                   <Box sx={{ mt: 'var(--ds-space-1)' }}>
-                    <CustomTicketLink ticketURL={existingTicket.url} ticketID={existingTicket.ticket_id} />
+                    <TicketLink ticketURL={existingTicket.url} ticketID={existingTicket.ticket_id} />
                   </Box>
                 )}
               </Box>
@@ -444,16 +525,6 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     ]
   );
 
-  const createUserHistory = async (query: string, status: string, duration: number) => {
-    await observability.createUserHistory({
-      account_id: accountId,
-      data: query,
-      duration: duration,
-      module: `log_query_${logProvider?.toLowerCase()}`,
-      status: status,
-    });
-  };
-
   const aiCreateFeedback = async (executedQuery: string) => {
     if (llmQueryResponse && llmQueryResponse !== executedQuery && isAtMost70PercentDifferent(llmQueryResponse, executedQuery)) {
       await apiAskNudgebee.createAiFeedback({
@@ -481,7 +552,6 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         setLoading(true);
       }
 
-      const now = new Date().getTime();
       const effectiveQuery = logQuery;
 
       // Only send log_provider when the user has switched away from the account
@@ -515,6 +585,10 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               query_type: 'dsl',
               checkMapper,
             },
+            // The backend records query history; this flag is how it tells a real
+            // submit apart from polling, initial load and dashboard panels, which
+            // all reach the same action. See FetchLogRequest.RecordHistory.
+            record_history: fromOnSubmit,
           };
           const response = await observability.fetchLogs(requestBody);
           const error = response?.error || response?.data?.errors || '';
@@ -527,7 +601,6 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           fetchTicketsForLogs(allResults);
           formatLogResults(allResults);
           setLoading(false);
-          fromOnSubmit && createUserHistory(JSON.stringify(queryRequestFromProps), 'SUCCESS', new Date().getTime() - now);
           return;
         }
 
@@ -547,9 +620,11 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           limit: logLimit,
           offset: 0,
           ...(providerOverride ? { log_provider: providerOverride } : {}),
+          // See the drilldown branch above: opts this call into a user_history row.
+          record_history: fromOnSubmit,
         };
 
-        if ((logProvider === 'pinot' || logProvider === 'hive') && qLEditor === 'build') {
+        if (isStructuredBuilderProvider(logProvider) && qLEditor === 'build') {
           if (!logQueryItems || logQueryItems.length === 0) {
             setLoading(false);
             if (fromOnSubmit) {
@@ -585,13 +660,15 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
           delete requestBody.query;
           requestBody.query_request = {
-            where: { _and: buildStructuredQueryFromItems(logQueryItems) },
+            where: {
+              _and: [...buildStructuredQueryFromItems(logQueryItems), ...buildStructuredQueryFromOperations(logOperations)],
+            },
           };
           requestBody.query = '';
         } else if (logProvider !== 'ES' && qLEditor === 'build') {
           // Builder mode for every remaining provider (loki, signoz, openobserve, …).
-          // The selected chips live in logQueryItems — logQuery holds the provider-native
-          // query string and is only meaningful in Code mode.
+          // The selected chips live in logQueryItems and the line filters in logOperations —
+          // logQuery holds the provider-native query string and is only meaningful in Code mode.
           if (!logQueryItems || logQueryItems.length === 0) {
             setLoading(false);
             if (fromOnSubmit) {
@@ -602,7 +679,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
           delete requestBody.query;
           requestBody.query_request = {
-            where: { _and: buildStructuredQueryFromItems(logQueryItems) },
+            where: {
+              _and: [...buildStructuredQueryFromItems(logQueryItems), ...buildStructuredQueryFromOperations(logOperations)],
+            },
           };
           requestBody.query = '';
         } else if (logProvider == 'ES' && qLEditor == 'code') {
@@ -680,19 +759,18 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         }
 
         const allResults = response?.data?.data?.logs_list?.logs || [];
+        const resolvedQuery = response?.data?.data?.logs_list?.query || '';
         setRawLogs(allResults);
-        setExecutedQuery(response?.data?.data?.logs_list?.query || '');
+        setExecutedQuery(resolvedQuery);
         fetchTicketsForLogs(allResults);
         formatLogResults(allResults);
         setLoading(false);
 
         llmQueryResponse && aiCreateFeedback(effectiveQuery);
-        fromOnSubmit && createUserHistory(effectiveQuery, 'SUCCESS', new Date().getTime() - now);
       } catch (err: any) {
         const errMsg = err.message || 'Error fetching logs';
         snackbar.error(`Error: ${errMsg}`);
         setLoading(false);
-        fromOnSubmit && createUserHistory(effectiveQuery, 'FAILED', new Date().getTime() - now);
       }
     },
     [
@@ -723,10 +801,12 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
       setDefaultProvider('');
       setDefaultIndex('');
       setAvailableProviders([]);
+      setProviderCheckDone(false);
       resetStates();
       if (accountId === 'demo') {
         setLogProvider('loki');
         setDefaultProvider('loki');
+        setProviderCheckDone(true);
         return;
       }
 
@@ -742,6 +822,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         setAvailableProviders(cached.available_providers || []);
         setDefaultIndex(cached.default_index || '');
         setEsIndex(cached.default_index || '');
+        setProviderCheckDone(true);
         return;
       }
 
@@ -782,6 +863,8 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         );
       } catch (error: any) {
         snackbar.error(error.message || 'Failed to fetch default provider');
+      } finally {
+        setProviderCheckDone(true);
       }
     };
 
@@ -962,7 +1045,16 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     }
   }, [logProvider]);
 
+  if (!providerCheckDone) {
+    return <Loader style={{ paddingTop: 'var(--ds-space-6)', width: '100%' }} />;
+  }
+
   if (!logProvider) {
+    const hasConnectedAgent = selectedCluster?.agent?.status === 'CONNECTED';
+    const isKubectlLoggableKind = workloadType ? KUBECTL_LOGGABLE_WORKLOAD_KINDS.includes(workloadType.toLowerCase()) : false;
+    if (hasConnectedAgent && isKubectlLoggableKind && workloadName && namespaceName && workloadType) {
+      return <KubernetesWorkloadRelayLogs accountId={accountId} namespace={namespaceName} workloadName={workloadName} workloadType={workloadType} />;
+    }
     return (
       <WidgetCard sx={{ maxWidth: ds.space.mul(0, 250), mx: 'auto', textAlign: 'center' }}>
         <Text
@@ -1041,7 +1133,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
                       disabled={isAiLoading || (qLEditor === 'ai' && !logQuery)}
                     />
                   </Box>
-                  {logProvider !== 'ES' && qLEditor !== 'build' && (
+                  {logProvider !== 'ES' && (
                     <UserHistoryButton key={'user-history-button'} accountId={accountId} module={`log_query_${logProvider?.toLowerCase()}`} />
                   )}
                 </>
@@ -1198,7 +1290,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               </Box>
             </Box>
           )}
-          <KubernetesTable2
+          <KubernetesTable
             id={k8sLogs}
             totalRows={data.length}
             data={data}

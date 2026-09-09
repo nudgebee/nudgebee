@@ -252,10 +252,12 @@ func (s *ChronosphereMetricSource) FetchMetricsQuery(
 						continue
 					}
 
+					values, unreadable := toFloat64Slice(valuesData)
 					results = append(results, Result{
 						Metric:     toStringMap(metricData),
 						Timestamps: toInt64Slice(timestampsData),
-						Values:     toFloat64Slice(valuesData),
+						Values:     values,
+						NonFinite:  unreadableSamples(unreadable),
 					})
 				}
 				output.Results = append(output.Results, QueryResult{

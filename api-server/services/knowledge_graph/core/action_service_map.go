@@ -1,12 +1,15 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 )
@@ -119,8 +122,73 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 			nodeIDs, err = findServiceNodes(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), lbName, "")
 		}
 		if err != nil || len(nodeIDs) == 0 {
+			// Same mismatch as the load balancer above, for every other cloud
+			// resource: the alarm names its subject by the provider id
+			// ("i-0dcee3621b8456783") while the node is named from its Name tag
+			// ("orders-api"). The id is not in query_attributes, so the name
+			// lookups above cannot match it, and an EC2 alarm produced no
+			// knowledge_graph evidence at all - which silently removed it from
+			// correlation, because correlation walks that evidence and had
+			// nothing to walk.
+			nodeIDs, err = findServiceNodesByResourceID(dbManager, ctx.GetTenantId(), ctx.GetAccountId(), serviceName)
+		}
+		if err != nil || len(nodeIDs) == 0 {
 			logger.Info("knowledge_graph_service_map: no matching service nodes found",
 				"service", serviceName, "namespace", namespace)
+			// Returning no evidence here removes the event from correlation and
+			// from analysis, and nothing downstream can tell that happened - the
+			// alarm, the event and the graph all look fine. Two days of this
+			// looked like "correlation is broken on AWS" when the truth was
+			// "one lookup could not name a resource". Record the near-miss so
+			// an unresolvable subject is reviewable instead of invisible.
+			//
+			// Off the caller's path entirely. Recording is best-effort, this
+			// branch runs on every unresolvable event, and a slow metastore
+			// would otherwise add its timeout to event processing at exactly
+			// the moment things are already going wrong. Request-scoped values
+			// are read here, not inside the goroutine, so a pooled or reused
+			// context cannot race with it.
+			tenantID := ctx.GetTenantId()
+			accountID := ctx.GetAccountId()
+			// A panic in a goroutine takes the whole process down — it is not
+			// caught by the HTTP layer's recovery, which only wraps the
+			// request's own stack. This one runs on every unresolvable event,
+			// so an input that panics the recorder would not be a single failed
+			// request but a crash loop on the busiest path.
+			//
+			// The logger is resolved here rather than inside: ctx is
+			// request-scoped, and reading it after the request has returned is
+			// the kind of thing that would itself panic in the handler meant to
+			// report a panic.
+			recLogger := logger
+			if recLogger == nil {
+				recLogger = slog.Default()
+			}
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						recLogger.Error("panic recording uncertain classification",
+							"recover", r, "stack", string(debug.Stack()))
+					}
+				}()
+				recCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				RecordUncertainClassification(recCtx, dbManager, UncertainClassificationCandidate{
+					TenantID:           tenantID,
+					Source:             "knowledge_graph_service_map",
+					ClassificationKind: "node_match",
+					CandidateName:      serviceName,
+					CandidateNamespace: namespace,
+					ReasonCode:         "no_node_for_event_subject",
+					ReasonDescription: "event subject matched no graph node by name, " +
+						"namespace-less name, load-balancer dimension, resource_id or arn",
+					Evidence: map[string]interface{}{
+						"account_id": accountID,
+						"subject":    serviceName,
+						"namespace":  namespace,
+					},
+				})
+			}()
 			return nil, nil
 		}
 	}
@@ -169,7 +237,7 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	}
 
 	return &KnowledgeGraphServiceMapResponse{
-		Nodes:          toEvidenceNodes(graph.Nodes),
+		Nodes:          ToEvidenceNodes(graph.Nodes),
 		Edges:          graph.Edges,
 		TargetService:  serviceName,
 		Namespace:      namespace,
@@ -182,37 +250,58 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 // knowledge_graph_service_map evidence block. A full KgNode is a copy of the
 // stored graph row — every property a source wrote, including the k8s
 // annotations map, which alone accounted for ~31% of one measured block
-// (22,539 of 72,671 bytes) via kubectl's last-applied-configuration. None of
-// the consumers of this evidence read those fields: the investigate UI renders
-// id / node_type / properties.name / properties.namespace (unique_key as the
-// name fallback), and triage's dependency parser needs the same set plus the
-// edges. Projecting here keeps the evidence to what is read instead of
-// filtering noisy keys one at a time.
+// (22,539 of 72,671 bytes) via kubectl's last-applied-configuration.
+//
+// Two consumers read this block. The investigate UI renders id / node_type /
+// properties.name / properties.namespace (unique_key as the name fallback).
+// triage's dependency parser needs that set plus the edges — and, for cloud
+// nodes, properties.resource_id / properties.arn, which are how it matches an
+// event to the node the event is about. Projecting here keeps the evidence to
+// what is read instead of filtering noisy keys one at a time; the cost of
+// getting the allowlist wrong is that a consumer degrades silently, so add to
+// evidenceNodeProperties rather than trimming it on size grounds alone.
 type KgEvidenceNode struct {
 	ID           string         `json:"id"`
 	NodeType     NodeType       `json:"node_type"`
 	SpecificType string         `json:"specific_type,omitempty"`
 	UniqueKey    string         `json:"unique_key"`
 	Properties   map[string]any `json:"properties"`
+	// LogoID is the icon identifier the frontend renders for this node, resolved
+	// here rather than in the UI so evidence nodes carry the same logo the
+	// knowledge-graph view already gets from KgNode.LogoID.
+	LogoID string `json:"logo_id,omitempty"`
 }
 
 // evidenceNodeProperties is the property allowlist for KgEvidenceNode: what
-// the node is (name, namespace, cluster, kind, engine, role, region) and
-// whether it is healthy (phase, status, state, ready). Everything a service
-// map is asked — which neighbours surround the alerting resource, of what
-// kind, in what shape — is answerable from these; the rest (annotations,
-// container images, resource requests/limits, ARNs, timestamps) is reachable
-// from the KG APIs when an investigation actually needs it.
+// the node is (name, namespace, cluster, kind, engine, role, region), how to
+// identify it (resource_id, arn) and whether it is healthy (phase, status,
+// state, ready). The rest — annotations, container images, resource
+// requests/limits, timestamps — is reachable from the KG APIs when an
+// investigation actually needs it.
+//
+// resource_id and arn are here because the card has a second consumer besides
+// the UI. Correlation parses it to build its dependency graph, and it joins an
+// event to a node by the event's subject. A cloud event names its subject by
+// provider id (i-0dcee3621b8456783); a node is named from its Name tag
+// (nudgebee-scenario-services-order). Without an identifier on the node there
+// is nothing to join on, so correlation saw the right topology and still scored
+// every pair at distance 0.
+//
+// Excluding ARNs was a deliberate choice when this card was only read by
+// humans, for whom they are noise. It is two strings per node, and dropping
+// them silently disables cross-resource correlation for every cloud provider —
+// which is not a trade the size saving is worth.
 var evidenceNodeProperties = []string{
 	"name", "namespace", "cluster",
 	"kind", "engine", "role", "region",
+	"resource_id", "arn",
 	"phase", "status", "state", "ready",
 }
 
-// toEvidenceNodes projects each node onto KgEvidenceNode. Absent and nil
+// ToEvidenceNodes projects each node onto KgEvidenceNode. Absent and nil
 // properties are skipped rather than emitted as nulls, so a node contributes
 // only the keys its source actually populated.
-func toEvidenceNodes(nodes []KgNode) []KgEvidenceNode {
+func ToEvidenceNodes(nodes []KgNode) []KgEvidenceNode {
 	evidenceNodes := make([]KgEvidenceNode, 0, len(nodes))
 	for i := range nodes {
 		properties := make(map[string]any, len(evidenceNodeProperties))
@@ -227,6 +316,9 @@ func toEvidenceNodes(nodes []KgNode) []KgEvidenceNode {
 			SpecificType: nodes[i].SpecificType,
 			UniqueKey:    nodes[i].UniqueKey,
 			Properties:   properties,
+			// Computed from the full property map, not the trimmed allowlist above:
+			// ComputeLogoID reads engine/kind/service_name, which the allowlist drops.
+			LogoID: ComputeLogoID(nodes[i].NodeType, nodes[i].SpecificType, nodes[i].Source, nodes[i].Properties),
 		})
 	}
 	return evidenceNodes
@@ -266,6 +358,92 @@ var serviceMapNeighbourTypes = []NodeType{
 // while cloud nodes carry no namespace at all, so filtering on it can only ever
 // fail. Kubernetes callers must keep passing it — a workload name is unique only
 // within its namespace.
+// findServiceNodesByResourceID resolves a node by the provider's own identifier
+// (instance id, ARN) rather than its display name. Cloud alarms identify their
+// subject by id, while nodes are named from the Name tag, so the name-based
+// lookups miss every resource whose tag differs from its id - which is most of
+// them. resource_id is not indexed into query_attributes, so this reads
+// properties directly; it runs only after the name lookups have failed.
+func findServiceNodesByResourceID(dbManager *database.DatabaseManager, tenantID, accountID, resourceID string) ([]string, error) {
+	return findNodesByProviderIdentifierInTable(dbManager, "knowledge_graph_node", tenantID, accountID, resourceID)
+}
+
+// ResolveNodeByProviderIdentifier resolves the single graph node a cloud event's
+// subject names, when that subject is a provider identifier (instance id, ARN)
+// rather than the display name the node carries.
+//
+// This exists because the same mismatch has now been fixed three times in three
+// layers - the evidence lookup, the evidence property projection, and the blast
+// radius seed - each time by a different one-off. An event says
+// i-0dcee3621b8456783; the node is named nudgebee-scenario-services-order from
+// its Name tag. Any lookup that matches on name alone silently resolves nothing,
+// and every caller degrades quietly rather than erroring: no evidence, no
+// correlation, "no service map for this one".
+//
+// Callers that resolve a subject to a node should use this after their
+// name-based attempts fail, so a fourth layer cannot reintroduce the same gap.
+//
+// Exactly one match counts. Two nodes sharing an identifier means we cannot say
+// which resource the event is about, and guessing seeds a blast radius on the
+// wrong one - the same rule the name-based path applies.
+func (s *Service) ResolveNodeByProviderIdentifier(tenantID, accountID, identifier string) (string, bool) {
+	ids, err := findServiceNodesByResourceID(s.dbManager, tenantID, accountID, identifier)
+	if err != nil {
+		s.logger.Warn("resolve node by provider identifier failed",
+			"identifier", identifier, "error", err)
+		return "", false
+	}
+	if len(ids) != 1 {
+		return "", false
+	}
+	return ids[0], true
+}
+
+// findNodesByProviderIdentifierInTable is the SQL, with the table as a parameter
+// so a DB test can run it against a throwaway table instead of needing the real
+// graph and its foreign keys (the convention pr_lifecycle_*_test.go established).
+// The table name is never caller-supplied at runtime - production passes a
+// constant.
+func findNodesByProviderIdentifierInTable(dbManager *database.DatabaseManager, table, tenantID, accountID, resourceID string) ([]string, error) {
+	if resourceID == "" {
+		return nil, nil
+	}
+	query := `
+		SELECT id FROM ` + table + `
+		WHERE tenant_id = $1
+		  AND (properties->>'resource_id' = $2 OR properties->>'arn' = $2)
+		  AND node_type = ANY($3)
+		  AND level = 'Tenant'
+		  AND is_active = true
+	`
+	args := []interface{}{tenantID, resourceID, pq.Array(seedNodeTypeNames)}
+	if accountID != "" {
+		query += " AND cloud_account_id = $4"
+		args = append(args, accountID)
+	}
+	query += " LIMIT 5"
+
+	rows, err := dbManager.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query service nodes by resource id: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("failed to close rows", "error", closeErr)
+		}
+	}()
+
+	var nodeIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan node id: %w", err)
+		}
+		nodeIDs = append(nodeIDs, id)
+	}
+	return nodeIDs, rows.Err()
+}
+
 func findServiceNodes(dbManager *database.DatabaseManager, tenantID, accountID, name, namespace string) ([]string, error) {
 	query := `
 		SELECT id FROM knowledge_graph_node

@@ -9,6 +9,17 @@ import { safeJSONParse } from 'src/utils/common';
 import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
 import { ds } from '@utils/colors';
 
+// The dialog used to title itself with event.subject_name — the POD, which the revert restarts as a
+// side effect rather than the object it changes. resource_name carries the real target as
+// "deployment/<namespace>/<name>.yaml"; show the workload name, falling back to the raw value when
+// the shape is not that triple.
+const revertTargetName = (resourceName) => {
+  if (typeof resourceName !== 'string' || !resourceName) return '';
+  const withoutExt = resourceName.replace(/\.yaml$/i, '');
+  const parts = withoutExt.split('/');
+  return parts[parts.length - 1] || withoutExt;
+};
+
 class LastDeploymentCard {
   constructor(evidenceData, event, index) {
     this.id = `LastDeploymentCard_${index}`;
@@ -232,7 +243,7 @@ class LastDeploymentCard {
         width='md'
         open={props.open}
         handleClose={props.onCloseComponent}
-        title={`Revert Development of ${this.event?.subject_name}`}
+        title={`Revert the Deployment of ${revertTargetName(this.diff?.data?.resource_name) || this.event?.subject_name}`}
         loader={false}
       >
         <InvestigateResolution

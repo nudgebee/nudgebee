@@ -1166,7 +1166,9 @@ class CommonService:
                 raise ValueError("Unable to get user info. Please check your Slack app configuration and permissions.")
         return None
 
-    def slack_reply_in_thread(self, channel_id, team_id, message_ts, message, transform_to_markdown=True):
+    def slack_reply_in_thread(
+        self, channel_id, team_id, message_ts, message, transform_to_markdown=True, unfurl_links=True
+    ):
         bot = self.get_slack_installation(team_id)
         if transform_to_markdown:
             output_blocks = Transformer.to_slack(MarkdownBlock(text=message))
@@ -1180,6 +1182,8 @@ class CommonService:
             response_type="in_channel",
             replace_original=True,
             blocks=output_blocks,
+            unfurl_links=unfurl_links,
+            unfurl_media=unfurl_links,
         )
 
     def slack_reply_in_thread_with_context(
@@ -1220,7 +1224,25 @@ class CommonService:
         )
         return response.get("ts") if response else None
 
-    def update_slack_message(self, channel_id, team_id, message_ts, new_text, blocks=None):
+    def upload_file_for_inline_embed(self, team_id, filename, contents):
+        """Upload a file (e.g. a rendered diagram image) to Slack WITHOUT
+        posting it anywhere - no `channel`, so nothing shows up on its own.
+        Returns the resulting Slack file id, for embedding inline via a
+        Block Kit `image` block's `slack_file` field in a message the caller
+        builds and sends itself (see mermaid_chart.py's SlackFileImageBlock
+        / rich_text_blocks.py's render_rich_segments). Returns None if the
+        upload didn't return a usable file id."""
+        bot = self.get_slack_installation(team_id)
+        response = self.slack_app.client.file_upload(
+            token=bot.token,
+            title=filename,
+            fname=contents,
+            filename=filename,
+        )
+        file_info = response.get("file") or (response.get("files") or [{}])[0]
+        return file_info.get("id")
+
+    def update_slack_message(self, channel_id, team_id, message_ts, new_text, blocks=None, unfurl_links=True):
         """Update an existing Slack message with new content."""
         try:
             bot = self.get_slack_installation(team_id)
@@ -1232,6 +1254,8 @@ class CommonService:
                 ts=message_ts,
                 text=new_text,
                 blocks=blocks,
+                unfurl_links=unfurl_links,
+                unfurl_media=unfurl_links,
             )
             return True
         except Exception as e:
@@ -1780,7 +1804,7 @@ class CommonService:
                 parts.append(f"({footer})")
 
     # Marker for selection-confirmation messages ("I asked: ...") emitted by
-    # get_account_selected_with_context / get_followup_selection_confirmation.
+    # get_followup_selection_confirmation.
     # These are UX scaffolding, not conversation content, so skip them even on first read.
     _SELECTION_CONFIRMATION_PREFIX = "> _I asked:_"
 

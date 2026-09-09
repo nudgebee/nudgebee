@@ -440,11 +440,11 @@
 - name: pr-lifecycle-check
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   # Backstop only. Primary trigger is /api/webhooks/github (GitHub App
-  # webhooks fan out to ProcessOpenPRResolution within seconds). This
-  # hourly sweep catches missed deliveries and runs the 6h recovery clause
-  # for iteration-capped rows. Matches the 60-min per-row cooldown in
-  # adapter/pr_lifecycle.go.
-  schedule: '0 * * * *'
+  # webhooks fan out to ProcessOpenPRResolution within seconds). This 6h
+  # sweep catches missed deliveries; each sweep also retires followups left
+  # open past followupStaleAfter (adapter/pr_lifecycle.go). 6h rather than
+  # hourly bounds an unmerged auto-PR at ~12 lifetime followups, not ~72 (#37472).
+  schedule: '0 */6 * * *'
   payload: {}
   headers:
     - name: X-ACTION-TOKEN

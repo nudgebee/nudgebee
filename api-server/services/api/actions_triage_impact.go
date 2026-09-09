@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -101,13 +103,41 @@ func impactKey(ns, name string) string {
 	return strings.ToLower(strings.TrimSpace(ns)) + "\x00" + strings.ToLower(strings.TrimSpace(name))
 }
 
+// topologyLostItsDependents reports the shape every identity bug in this
+// subsystem has taken: the graph returned dependents, and none of them survived
+// into the map the tiers are assembled against. No error, an empty list, and a
+// believable explanation on screen. Four of those were found by a person reading
+// a screenshot; this is so the fifth arrives as data.
+//
+// It compares against the RAW graph result, not the scoped lists the map is
+// built from. Comparing against those is a tautology — they are the map's own
+// input, so an empty map implies they were empty too and the condition can never
+// fire. The first version of this guard did exactly that and was dead code,
+// which is the same silent no-op it exists to catch.
+//
+// What survives between the two is namespace scoping (scopeAndNormalize) and
+// keying, so this fires when a resource has dependents in the graph that were
+// all scoped away or all keyed under identities no alert can carry.
+func topologyLostItsDependents(dependsOnMap map[string][]string, impact *core.ImpactSummary) bool {
+	if impact == nil || len(dependsOnMap) > 0 {
+		return false
+	}
+	return len(impact.Dependents) > 0 || len(impact.InfrastructureDependents) > 0
+}
+
 // resolveEventSubjectNodeID maps an event's subject to a single knowledge-graph
 // Workload/Service node. Pod and ReplicaSet subjects resolve to their owning workload —
 // owner reference first, then the hash-stripped subject name. A non-unique or absent
 // match returns ok=false so the caller reports "coverage unknown" rather than guessing a
 // blast radius. Resolution robustness (namespace-blind collapse, empty service_key) is
 // tracked separately in #34569 / #34570 and deliberately not solved here.
-func resolveEventSubjectNodeID(kg *core.Service, tenantID, accountID, name, namespace, subjType, owner, ownerKind string) (string, bool) {
+//
+// namespaced reports whether the seed was matched inside the event's namespace.
+// It is false for every cloud seed, because a cloud event carries the provider's
+// service code (AmazonRDS, AWSELB) where a namespace would go and cloud nodes
+// carry no namespace at all. Callers need it for the same reason this function
+// does: filtering a cloud seed's neighbours by that value discards all of them.
+func resolveEventSubjectNodeID(kg *core.Service, tenantID, accountID, name, namespace, subjType, owner, ownerKind string) (nodeID string, namespaced bool, ok bool) {
 	candidates := make([]string, 0, 3)
 	add := func(s string) {
 		s = strings.TrimSpace(s)
@@ -165,11 +195,28 @@ func resolveEventSubjectNodeID(kg *core.Service, tenantID, accountID, name, name
 			}
 			res, err := kg.SearchNodes(tenantID, params)
 			if err == nil && res != nil && len(res.Nodes) == 1 {
-				return res.Nodes[0].ID, true
+				return res.Nodes[0].ID, group.namespaced, true
 			}
 		}
 	}
-	return "", false
+
+	// Every candidate above is a name. A cloud alarm names its subject by the
+	// provider's identifier - i-0dcee3621b8456783 - while the node is named from
+	// its Name tag, so none of them can match and the blast radius came back
+	// "we don't have a service map for this one" for any resource whose tag
+	// differs from its id, which is most of them. Measured on dev: 0 nodes are
+	// named by instance id, 3 carry it as properties.resource_id.
+	//
+	// Last resort, after every name attempt, so a resource that genuinely is
+	// named by its id still resolves through the cheaper indexed path first.
+	// namespaced is false: cloud nodes carry no namespace, and claiming one
+	// makes the seed key disagree with the topology map keyed without it.
+	for _, cand := range candidates {
+		if nodeID, ok := kg.ResolveNodeByProviderIdentifier(tenantID, accountID, cand); ok {
+			return nodeID, false, true
+		}
+	}
+	return "", false, false
 }
 
 // seedNodeTypeGroup is one attempt at resolving a subject: a node type plus
@@ -228,7 +275,14 @@ func seedNodeTypeGroups() []seedNodeTypeGroup { return seedGroups }
 // event-correlation engine cannot produce — it links the root to the *actual* downstream
 // alerts it caused, using the knowledge graph (which works) instead of the dead topology-
 // walk in the correlation scorer. Dependents with no alert remain as potential impact.
-func annotateImpactedWithActiveAlerts(db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, impacted []core.ImpactedService) ([]impactedNode, int) {
+// namespaceBlind says the dependents were resolved from a namespace-blind (cloud)
+// seed, so they carry no namespace. Alerts still record one — a cloud alarm puts
+// the provider's service code in subject_namespace (AWSELB, AmazonRDS) — so
+// without indexing them under the empty namespace too, the lookup key
+// ("\x00nb-demo-web") could never match the index key
+// ("amazonec2\x00nb-demo-web") and a cloud dependent could never be reported as
+// alerting, whatever it was doing.
+func annotateImpactedWithActiveAlerts(db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, impacted []core.ImpactedService, namespaceBlind bool) ([]impactedNode, int) {
 	out := make([]impactedNode, len(impacted))
 	for i, s := range impacted {
 		out[i] = impactedNode{ImpactedService: s}
@@ -258,6 +312,17 @@ func annotateImpactedWithActiveAlerts(db *sqlx.DB, accountID, rootEventID string
 	defer func() { _ = rows.Close() }()
 
 	byKey := map[string][]alertRef{}
+	// index files an alert under the event's own namespace and, for a
+	// namespace-blind seed, under the empty namespace the graph nodes use.
+	// Defined once outside the loop and taking the alert as an argument: closing
+	// over a per-row variable would force a fresh closure allocation on each of
+	// the up-to-1000 rows.
+	index := func(ns, key string, ref alertRef) {
+		byKey[impactKey(ns, key)] = append(byKey[impactKey(ns, key)], ref)
+		if namespaceBlind && ns != "" {
+			byKey[impactKey("", key)] = append(byKey[impactKey("", key)], ref)
+		}
+	}
 	for rows.Next() {
 		var id, sname, sns, sowner, title, prio, source string
 		var startsAt sql.NullTime
@@ -269,16 +334,16 @@ func annotateImpactedWithActiveAlerts(db *sqlx.DB, accountID, rootEventID string
 			ref.StartsAt = startsAt.Time.UTC().Format(time.RFC3339)
 		}
 		if sname != "" {
-			byKey[impactKey(sns, sname)] = append(byKey[impactKey(sns, sname)], ref)
+			index(sns, sname, ref)
 			// Dependent names arrive workload-normalized (scopeAndNormalize), so an
 			// ownerless event whose subject is itself a ReplicaSet must be indexed under
 			// its workload too, or it can never be matched back.
 			if wn := triage.WorkloadName(sname); wn != strings.ToLower(strings.TrimSpace(sname)) {
-				byKey[impactKey(sns, wn)] = append(byKey[impactKey(sns, wn)], ref)
+				index(sns, wn, ref)
 			}
 		}
 		if sowner != "" && !strings.EqualFold(sowner, sname) {
-			byKey[impactKey(sns, sowner)] = append(byKey[impactKey(sns, sowner)], ref)
+			index(sns, sowner, ref)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -288,6 +353,14 @@ func annotateImpactedWithActiveAlerts(db *sqlx.DB, accountID, rootEventID string
 	correlated := 0
 	for i := range out {
 		alerts := byKey[impactKey(out[i].Namespace, out[i].Name)]
+		// Fall back to the provider's own id. A cloud alarm names its subject by
+		// that — an EC2 CPU alarm fires on "i-0f568ef22d52139bb" — while the graph
+		// node is named by its Name tag ("nb-demo-web"), so matching on name alone
+		// can never connect an instance's alarm to the instance the graph says is
+		// a dependent.
+		if len(alerts) == 0 && out[i].ResourceID != "" {
+			alerts = byKey[impactKey(out[i].Namespace, out[i].ResourceID)]
+		}
 		if len(alerts) == 0 {
 			continue
 		}
@@ -356,8 +429,18 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	dependsOnMap := map[string][]string{}
 
 	kg := core.NewService(ctx, ctx.GetLogger(), dbms)
-	nodeID, ok := resolveEventSubjectNodeID(kg, tenantID, accountID, name, namespace,
+	nodeID, seedNamespaced, ok := resolveEventSubjectNodeID(kg, tenantID, accountID, name, namespace,
 		derefStr(ev.SubjectType), derefStr(ev.SubjectOwner), derefStr(ev.SubjectOwnerKind))
+	// The seed identity keys the incident assembly's topology map, and the other
+	// side of that map is built from graph nodes — which carry no namespace for a
+	// cloud resource. Leaving the event's service code (AmazonRDS) on the seed
+	// makes triage.SubjectKey produce "amazonrds|nb-demo-db" against a topology
+	// keyed "|nb-demo-db", so the seed can never find its own dependencies and the
+	// cause/impact tiers come back empty. Same normalisation the response scoping
+	// below applies, for the same reason.
+	if ok && !seedNamespaced {
+		seedIdentity.SubjectNamespace = ""
+	}
 	if !ok {
 		// Subject not resolvable to a single graph node: report unknown coverage rather
 		// than an empty blast radius that would read as "nothing impacted". The
@@ -370,13 +453,13 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 			"correlated_count":    0,
 			"dependent_count":     0,
 			"coverage_confidence": string(core.CoverageNone),
-			"assembly":            buildIncidentAssembly(ctx.GetLogger(), dbms.Db, accountID, eventID, rootTime, seedIdentity, dependsOnMap),
+			"assembly":            buildIncidentAssembly(ctx.GetLogger(), dbms.Db, accountID, eventID, rootTime, seedIdentity, dependsOnMap, false),
 		})
 		return
 	}
 	seed["node_id"] = nodeID
 
-	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 2)
+	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 0)
 	if err != nil || impact == nil {
 		ctx.GetLogger().Error("Failed to compute blast radius", "error", err, "event_id", eventID, "node_id", nodeID)
 		c.JSON(400, common.ErrorActionBadRequest("failed to compute blast radius"))
@@ -385,8 +468,19 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 
 	// Scope to the subject's namespace and collapse the graph's duplicate ReplicaSet-named
 	// copies onto the workload identity the event side uses — see scopeAndNormalize.
-	deps := scopeAndNormalize(impact.Dependents, namespace)
-	dependsOn := scopeAndNormalize(impact.DownstreamDependencies, namespace)
+	//
+	// Only a Kubernetes seed gets namespace-scoped. A cloud seed carries the
+	// provider's service code (AmazonRDS, AWSELB) where the namespace would be
+	// while its neighbours carry no namespace at all, so scoping by it discards
+	// every one of them — which is why a load-balancer alarm reported nothing it
+	// depends on even once the graph traversal found the backend. Same reasoning
+	// as infrastructure_impacted below, which has always passed "".
+	scopeNamespace := ""
+	if seedNamespaced {
+		scopeNamespace = namespace
+	}
+	deps := scopeAndNormalize(impact.Dependents, scopeNamespace)
+	dependsOn := scopeAndNormalize(impact.DownstreamDependencies, scopeNamespace)
 
 	// Topology for the tiering: the subject depends on its downstream dependencies
 	// (cause side); its dependents depend on it (impact side). Keys go through
@@ -396,20 +490,97 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	// can ever have. scopeAndNormalize has already stripped it; this keeps the two in
 	// agreement even if a caller passes an unnormalized list.
 	seedKey := triage.SubjectKey(seedIdentity)
-	topoKey := func(s core.ImpactedService) string {
-		return triage.SubjectKey(triage.AlertIdentity{SubjectNamespace: s.Namespace, SubjectName: s.Name})
+
+	// A cloud resource has two spellings and the tiers are matched on the one the
+	// EVENT carries. An alarm's subject is the provider id (i-0dcee3621b8456783);
+	// the graph node is named from its Name tag (nudgebee-scenario-services-order).
+	// Keying the topology by name alone left AssembleTiers comparing
+	// "|nudgebee-scenario-services-order" against candidates keyed
+	// "|i-0dcee3621b8456783", so the impact tier came back empty on every cloud
+	// event — and the UI, which reads that tier rather than the alerting flags,
+	// said "none of them alerted" on the same response that reported two
+	// dependents alerting.
+	//
+	// Both spellings are registered so a k8s node (where the two are the same) is
+	// unaffected and a cloud node matches whichever the alert used.
+	topoKeys := func(s core.ImpactedService) []string {
+		keys := []string{triage.SubjectKey(triage.AlertIdentity{SubjectNamespace: s.Namespace, SubjectName: s.Name})}
+		if s.ResourceID != "" && !strings.EqualFold(s.ResourceID, s.Name) {
+			keys = append(keys, triage.SubjectKey(triage.AlertIdentity{
+				SubjectNamespace: s.Namespace, SubjectName: s.ResourceID}))
+		}
+		return keys
 	}
+
+	// Infrastructure dependents belong in the topology map, not only in the
+	// alerting annotation below. On a VM stack every dependent is a
+	// ComputeInstance and so lands in this list rather than in deps, which left
+	// the map empty for exactly the topology being investigated. The same
+	// omission was already found and fixed for the alerting path a few lines
+	// down; the map was missed.
+	infraDeps := scopeAndNormalize(impact.InfrastructureDependents, "")
+
 	for _, u := range dependsOn {
-		dependsOnMap[seedKey] = append(dependsOnMap[seedKey], topoKey(u))
+		dependsOnMap[seedKey] = append(dependsOnMap[seedKey], topoKeys(u)...)
 	}
-	for _, d := range deps {
-		dk := topoKey(d)
-		dependsOnMap[dk] = append(dependsOnMap[dk], seedKey)
+	for _, group := range [][]core.ImpactedService{deps, infraDeps} {
+		for _, d := range group {
+			for _, dk := range topoKeys(d) {
+				dependsOnMap[dk] = append(dependsOnMap[dk], seedKey)
+			}
+		}
 	}
 
 	// Topology-driven correlation: which dependents are actually alerting in the window.
-	impacted, correlatedCount := annotateImpactedWithActiveAlerts(dbms.Db, accountID, eventID, rootTime, deps)
-	assembly := buildIncidentAssembly(ctx.GetLogger(), dbms.Db, accountID, eventID, rootTime, seedIdentity, dependsOnMap)
+	impacted, correlatedCount := annotateImpactedWithActiveAlerts(dbms.Db, accountID, eventID, rootTime, deps, !seedNamespaced)
+	// Infrastructure dependents get the same treatment. Skipping them made the
+	// alerting count structurally zero on a VM stack, where every dependent is a
+	// ComputeInstance and so lands here rather than in deps: the database's callers
+	// could be alarming loudly and the incident still reported nothing impacted.
+	infrastructure, infraCorrelated := annotateImpactedWithActiveAlerts(dbms.Db, accountID, eventID, rootTime,
+		infraDeps, !seedNamespaced)
+	correlatedCount += infraCorrelated
+	assembly := buildIncidentAssembly(ctx.GetLogger(), dbms.Db, accountID, eventID, rootTime, seedIdentity, dependsOnMap, !seedNamespaced)
+
+	if topologyLostItsDependents(dependsOnMap, impact) {
+		tenantForRec, accountForRec := tenantID, accountID
+		seedName, seedNs := derefStr(ev.SubjectName), derefStr(ev.SubjectNamespace)
+		// A panic here takes the process down: gin's recovery middleware wraps
+		// the request's own stack, not one spawned off it. This runs on the
+		// investigate path, so a subject that panicked the recorder would crash
+		// services-server every time anyone opened that event.
+		//
+		// The logger is resolved before the goroutine starts. ctx is
+		// request-scoped, and reading it after the handler has returned is
+		// exactly the kind of thing that would panic inside the handler meant to
+		// report a panic.
+		recLogger := ctx.GetLogger()
+		if recLogger == nil {
+			recLogger = slog.Default()
+		}
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					recLogger.Error("panic recording uncertain classification",
+						"recover", r, "stack", string(debug.Stack()), "event_id", eventID)
+				}
+			}()
+			recCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			core.RecordUncertainClassification(recCtx, dbms, core.UncertainClassificationCandidate{
+				TenantID:           tenantForRec,
+				Source:             "event_get_impact",
+				ClassificationKind: "node_match",
+				CandidateName:      seedName,
+				CandidateNamespace: seedNs,
+				ReasonCode:         "topology_empty_for_resolved_seed",
+				ReasonDescription: "the event's subject resolved to a graph node and that node has " +
+					"dependents, but none of them keyed into the topology map, so every tier is " +
+					"empty and the UI reports nothing was affected",
+				Evidence: map[string]interface{}{"account_id": accountForRec, "event_id": eventID},
+			})
+		}()
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"event_id":              eventID,
@@ -420,6 +591,7 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		"depends_on":            dependsOn,       // what the subject depends on = possible cause
 		"dependent_count":       impact.DependentCount,
 		"production_dependents": impact.ProductionDependents,
+		"environment_resolved":  impact.EnvironmentResolved,
 		// Dependents that were traversed but are not application-level types.
 		// Reported separately because "not a service that breaks" assumes a
 		// Kubernetes-shaped split between infrastructure and workloads: on a VM
@@ -431,11 +603,17 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		// are cluster- or account-scoped and carry no namespace (a cloud resource
 		// has none at all, a k8s Node is cluster-wide), so scoping them by the
 		// event's namespace discards every one of them.
-		"infrastructure_impacted": scopeAndNormalize(impact.InfrastructureDependents, ""),
+		"infrastructure_impacted": infrastructure,
 		"infrastructure_count":    impact.InfrastructureCount,
-		"coverage_confidence":     string(impact.CoverageConfidence),
-		"truncated":               impact.Truncated,
-		"assembly":                assembly, // four-tier incident story (#34658)
+		// Live pod-placement rollup for instance/node seeds: the workloads
+		// scheduled on the machine, with per-workload pod counts. Reported
+		// separately from impacted for the same reason the KG keeps them out
+		// of DependentCount — hosted workloads reschedule rather than break.
+		"hosted_workloads":      impact.HostedWorkloads,
+		"hosted_workload_count": impact.HostedWorkloadCount,
+		"coverage_confidence":   string(impact.CoverageConfidence),
+		"truncated":             impact.Truncated,
+		"assembly":              assembly, // four-tier incident story (#34658)
 	})
 }
 
@@ -481,7 +659,7 @@ type windowRow struct {
 // any DB error it returns an empty-but-valid assembly so the rest of the panel
 // response is unaffected. Runs for unresolved seeds too (empty topology →
 // same_incident + seed config-changes only).
-func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, seed triage.AlertIdentity, dependsOn map[string][]string) gin.H {
+func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, seed triage.AlertIdentity, dependsOn map[string][]string, namespaceBlind bool) gin.H {
 	windowMeta := gin.H{"lead_in_s": 7200, "core_s": 7200, "impact_s": 7200}
 	empty := gin.H{
 		"root_identity":    triage.SubjectKey(seed),
@@ -497,7 +675,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		return empty
 	}
 
-	wr, truncated := fetchWindowRows(log, db, accountID, rootEventID, rootTime)
+	wr, truncated := fetchWindowRows(log, db, accountID, rootEventID, rootTime, namespaceBlind)
 	if len(wr) == 0 {
 		return empty
 	}
@@ -609,7 +787,13 @@ const windowFetchLimit = 1000
 // them) and returns each row's fingerprint (for the rarity count) and its offset
 // from the root. Errors are logged and yield an empty slice so assembly degrades to
 // empty, not a failed response. The bool reports whether the LIMIT was hit.
-func fetchWindowRows(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time) ([]windowRow, bool) {
+// namespaceBlind drops the namespace from every candidate identity, and must be
+// set whenever the seed's was dropped. The three identifier spaces the assembly
+// joins — the seed, these candidates, and the topology map built from graph
+// nodes — have to agree, and a cloud resource has no namespace in the graph.
+// Normalising only the seed makes it match the topology and stop matching the
+// alerts, which silently empties the same-subject tier.
+func fetchWindowRows(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, namespaceBlind bool) ([]windowRow, bool) {
 	const winQ = `
 		SELECT id::text, COALESCE(fingerprint,''), COALESCE(subject_name,''), COALESCE(subject_namespace,''),
 		       COALESCE(subject_owner,''), COALESCE(subject_type,''), COALESCE(aggregation_key,''),
@@ -647,6 +831,9 @@ func fetchWindowRows(log *slog.Logger, db *sqlx.DB, accountID, rootEventID strin
 		if startsAt.Valid {
 			sa = startsAt.Time
 			dt = int(sa.Sub(rootTime).Seconds())
+		}
+		if namespaceBlind {
+			sns = ""
 		}
 		wr = append(wr, windowRow{
 			id: triage.AlertIdentity{

@@ -392,6 +392,18 @@ type RecommendationResolutionRequest struct {
 // (the run's completion notification).
 type RecommendationResolveResult struct {
 	ID string
+	// Message is the guard's own words for what it decided — "already open",
+	// "still within the change threshold", "recommendation has changed ...;
+	// updating it". Carried so a run that generated a task and then changed
+	// nothing can say why.
+	//
+	// It is needed because the two sides measure different things: the generator
+	// compares the recommendation against the LIVE cluster allocation, which does
+	// not move while a pull request sits unmerged, so it reports a large change
+	// every run; the guard compares against the values already on that pull
+	// request. Without this the same run records "big change" and "did nothing"
+	// with no way to reconcile them.
+	Message string
 	// PRAction is "created", "refreshed", "unchanged", or "" — the last from an
 	// api-server that predates the field, which reads as "not unchanged" and so
 	// keeps the previous behaviour. Values are named in internal/model, next to

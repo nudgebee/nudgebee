@@ -1,10 +1,12 @@
-import { Html, Head, Main, NextScript } from 'next/document';
+import { Html, Head, Main, NextScript, type DocumentContext } from 'next/document';
 import { getCriticalCssTokens } from '@hooks/useThemeProvider';
-import { resolveServerBranding } from '@lib/serverBranding';
+import { brandHostFromHeaders, resolveServerBranding } from '@lib/serverBranding';
 
-export default function Document() {
-  const criticalCss = getCriticalCssTokens();
-  const branding = resolveServerBranding();
+type DocumentProps = { brandHost?: string | null };
+
+export default function Document({ brandHost }: DocumentProps) {
+  const criticalCss = getCriticalCssTokens(brandHost);
+  const branding = resolveServerBranding(brandHost);
   const faviconUrl = branding?.faviconUrl || '/favicon.ico';
   const title = branding?.title || 'Nudgebee';
 
@@ -32,3 +34,20 @@ export default function Document() {
     </Html>
   );
 }
+
+// Carries the request host into the head so favicon / og:title / critical-CSS
+// tokens follow the partner brand for that hostname.
+//
+// Only pages rendered per request get a host here — `signin`, `signup` and the
+// other getServerSideProps pages. Pages Next.js statically optimizes are
+// prerendered at build time, where there is no request: `brandHost` is null,
+// branding falls back to the deployment-wide default, and the client repaints
+// from /api/public/app_config after hydration. That is the same limit those
+// pages already had with a single TENANT_BRANDING_FILE — the head has never
+// varied per deployment on a prerendered page — so this adds no new gap. Signin
+// being request-rendered is what matters: it is the first page a partner's users
+// see.
+Document.getInitialProps = async (ctx: DocumentContext) => {
+  const initialProps = await ctx.defaultGetInitialProps(ctx);
+  return { ...initialProps, brandHost: brandHostFromHeaders(ctx.req?.headers) };
+};

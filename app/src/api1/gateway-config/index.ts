@@ -85,9 +85,26 @@ export interface GatewayRateLimit {
   enabled: boolean;
 }
 
-/** Provider enum for match/target forms. Empty = "any" (match) / addressed (target). */
+/** Provider enum for the substitution TARGET / tier-mapping forms. Empty = "any"
+ * (match) / addressed (target). These are the cross-provider translation targets a
+ * rule may substitute or a tier may map to — kept narrow because targeting a
+ * vllm/vertex/bedrock lane isn't wired yet (the proxy can only translate to these). */
 export type GatewayProvider = 'anthropic' | 'openai' | 'gemini';
 export const GATEWAY_PROVIDERS: GatewayProvider[] = ['anthropic', 'openai', 'gemini'];
+
+/** Runtime provider lanes a request can arrive on — the set a routing rule may MATCH.
+ * Broader than GATEWAY_PROVIDERS: matching only selects which requests a rule applies
+ * to, so it needs no translation support. Custom and Vertex-OpenAI endpoints both route
+ * on the "vllm" lane, so that one value matches either. `value` is the exact runtime
+ * provider string the gateway matches on; `label` is the human-facing name. */
+export const GATEWAY_MATCH_PROVIDER_OPTIONS: { value: string; label: string }[] = [
+  { value: 'anthropic', label: 'anthropic' },
+  { value: 'openai', label: 'openai' },
+  { value: 'gemini', label: 'gemini' },
+  { value: 'vllm', label: 'custom / vertex-openai' },
+  { value: 'vertex', label: 'vertex' },
+  { value: 'bedrock', label: 'bedrock' },
+];
 
 /** Target endpoint routing affinity. */
 export type GatewayAffinity = 'single' | 'prefix_hash';

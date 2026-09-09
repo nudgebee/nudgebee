@@ -9,6 +9,11 @@ from notifications_server.models.models import MessagingPlatform
 
 LOG = logging.getLogger(__name__)
 
+# Bounds the WATCH/retry loop in update_event_entry against another writer
+# repeatedly touching the same key — a handful of attempts is enough to ride
+# out real contention without risking a busy-retry loop under sustained load.
+_UPDATE_EVENT_ENTRY_MAX_RETRIES = 5
+
 
 class Cache:
     _redis_client = None
@@ -174,23 +179,43 @@ class Cache:
         raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
     def update_event_entry(self, thread_ts, **kwargs):
+        """Merge `kwargs` into the cached entry. Safe against concurrent callers
+        updating different fields on the same entry (e.g. the Slack progress
+        poller's own thread claiming stream_ts while the request's main thread
+        writes channel_context_used) — WATCH detects a conflicting write between
+        our read and write and retries with a fresh copy, instead of silently
+        clobbering it with a stale merge."""
         self._ensure_connection()
         if not self.redis_client:
             return False
         key = f"chat_event:{thread_ts}"
-        with self.redis_client.pipeline() as pipe:
+        updates = {k: v for k, v in kwargs.items() if v is not None}
+        for _ in range(_UPDATE_EVENT_ENTRY_MAX_RETRIES):
             try:
-                event_json = self.redis_client.get(key)
-                if event_json:
+                with self.redis_client.pipeline() as pipe:
+                    pipe.watch(key)
+                    event_json = pipe.get(key)
+                    if not event_json:
+                        pipe.unwatch()
+                        return False
                     event_entry = json.loads(event_json)
-                    event_entry.update({k: v for k, v in kwargs.items() if v is not None})
+                    event_entry.update(updates)
                     event_entry["timestamp"] = time.time()
+                    pipe.multi()
                     pipe.set(key, json.dumps(event_entry, default=self._json_serializable))
                     pipe.expire(key, settings.redis.conversation_cache_expiration_minutes * 60)
                     pipe.execute()
                     return True
+            except redis.WatchError:
+                continue
             except redis.RedisError as e:
                 LOG.exception(f"Error updating event entry {thread_ts}: {e}")
+                return False
+        LOG.warning(
+            "Giving up updating event entry %s after %d retries (concurrent writer contention)",
+            thread_ts,
+            _UPDATE_EVENT_ENTRY_MAX_RETRIES,
+        )
         return False
 
     def remove_event_keys(self, thread_ts, keys):

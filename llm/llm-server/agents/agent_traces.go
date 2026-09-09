@@ -183,7 +183,7 @@ func (f *fallbackTracesAgent) Execute(ctx *security.RequestContext, query core.N
 			Ctx:            ctx,
 			AccountId:      f.accountId,
 			ConversationId: query.ConversationId,
-			ParentAgentId:  query.ParentAgentId,
+			ParentAgentId:  nestedAgentParentID(query),
 			MessageId:      query.MessageId,
 			QueryContext:   query.QueryContext,
 			QueryConfig:    query.QueryConfig,
@@ -396,10 +396,15 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 	}
 
 	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, input)
-	if err != nil {
+	preambleResponse, preambleErr, handled := handleNestedAgentCallPreamble(nbRequestContext, resp, err, TracesAgentName)
+	if preambleErr != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to process events request", "error", err, "input", input)
-		return toolcore.NBToolResponse{}, err
+		return preambleResponse, preambleErr
 	}
+	if handled {
+		return preambleResponse, nil
+	}
+	additionalDetails := preambleResponse.AdditionalDetails
 
 	if len(resp.Response) > 0 {
 		traceData := resp.Response[0]
@@ -438,13 +443,14 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 		}
 
 		return toolcore.NBToolResponse{
-			Data:             traceData,
-			Type:             toolcore.NBToolResponseTypeText,
-			Status:           toolcore.NBToolResponseStatusSuccess,
-			References:       references,
-			SubAgentEvidence: core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, TracesAgentName, resp.AgentStepResponse),
+			Data:              traceData,
+			Type:              toolcore.NBToolResponseTypeText,
+			Status:            toolcore.NBToolResponseStatusSuccess,
+			References:        references,
+			SubAgentEvidence:  core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, TracesAgentName, resp.AgentStepResponse),
+			AdditionalDetails: additionalDetails,
 		}, nil
 	}
 
-	return toolcore.NBToolResponse{}, toolcore.ErrUnableToFetchData
+	return toolcore.NBToolResponse{AdditionalDetails: additionalDetails, References: resp.References}, toolcore.ErrUnableToFetchData
 }

@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,10 @@ import (
 	"net/http"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/internal/database"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,38 +58,106 @@ func isRetryableError(err error) bool {
 	return errors.As(err, &netErr)
 }
 
-func ExecutePrometheus(accountId string, startTime time.Time, endTime time.Time, queriesMap map[string]string, instant bool) (map[string]any, error) {
+const metricsProviderCacheTTL = 10 * time.Minute
 
-	promsqlQueries := make([]map[string]any, 0, len(queriesMap))
-	for key, query := range queriesMap {
-		promsqlQueries = append(promsqlQueries, map[string]any{
-			"key":   key,
-			"query": query,
-		})
+type metricsProviderCacheEntry struct {
+	value     string
+	expiresAt time.Time
+}
+
+// metricsProviderCache memoizes nonAgentMetricsProvider per account.
+// ExecutePrometheus is invoked per node inside knowledge-graph / discovery
+// loops, so an uncached lookup would be one extra Metastore round-trip per
+// call. An entry is stale for up to metricsProviderCacheTTL after an account
+// changes its default metrics provider; that only delays the agent-vs-skip
+// decision, it never breaks a request.
+var metricsProviderCache = struct {
+	sync.RWMutex
+	entries map[string]metricsProviderCacheEntry
+}{entries: make(map[string]metricsProviderCacheEntry)}
+
+// nonAgentMetricsProvider returns the account's configured default metrics
+// provider when it is a user-integrated backend (Datadog, Dynatrace, Splunk,
+// OpenObserve, Elasticsearch, ...) rather than the agent's Prometheus AND the
+// agent has no Prometheus connection of its own. ExecutePrometheus can only
+// reach the agent's prometheus_queries_enricher action, so for those accounts
+// the call can only fail ("not in light-action allowlist"). When the agent does
+// report a Prometheus connection it can still answer these internal enrichers,
+// so the agent path is kept even though a user provider is the default.
+// Empty string means "use the agent path".
+func nonAgentMetricsProvider(accountId string) string {
+	metricsProviderCache.RLock()
+	if entry, ok := metricsProviderCache.entries[accountId]; ok && time.Now().Before(entry.expiresAt) {
+		metricsProviderCache.RUnlock()
+		return entry.value
+	}
+	metricsProviderCache.RUnlock()
+
+	providerType := queryNonAgentMetricsProvider(accountId)
+
+	metricsProviderCache.Lock()
+	metricsProviderCache.entries[accountId] = metricsProviderCacheEntry{
+		value:     providerType,
+		expiresAt: time.Now().Add(metricsProviderCacheTTL),
+	}
+	metricsProviderCache.Unlock()
+	return providerType
+}
+
+func queryNonAgentMetricsProvider(accountId string) string {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		slog.Error("relay: metrics provider lookup: no database manager", "account_id", accountId, "error", err)
+		return ""
+	}
+	var providerType string
+	err = dbms.QueryRowAndScan(&providerType, `
+		SELECT i.type
+		FROM integrations_cloud_accounts ica
+		JOIN integrations i ON i.id = ica.integration_id
+		WHERE ica.cloud_account_id = $1
+			AND ica.default_metrics_provider = true
+			AND i.source = 'user'
+			AND i.type <> 'prometheus'
+			AND NOT EXISTS (
+				SELECT 1 FROM agent a
+				WHERE a.cloud_account_id = ica.cloud_account_id
+					AND a.type <> 'proxy'
+					AND a.connection_status->>'prometheusConnection' = 'true'
+			)
+		LIMIT 1`, accountId)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("relay: metrics provider lookup failed", "account_id", accountId, "error", err)
+		}
+		return ""
+	}
+	return providerType
+}
+
+func ExecutePrometheus(accountId string, startTime time.Time, endTime time.Time, queriesMap map[string]string, instant bool) (map[string]any, error) {
+	return ExecutePrometheusWithStep(accountId, startTime, endTime, queriesMap, instant, 0)
+}
+
+// ExecutePrometheusWithStep is ExecutePrometheus with the range query's step, in
+// seconds. Zero leaves the agent on its own default (60s), which is what every
+// existing caller gets through ExecutePrometheus. A caller that knows how many
+// points it can use — a dashboard panel a few hundred pixels wide — sends one so
+// a 7-day range is ~200 points per series rather than 10k.
+func ExecutePrometheusWithStep(accountId string, startTime time.Time, endTime time.Time, queriesMap map[string]string, instant bool, stepSeconds int) (map[string]any, error) {
+
+	if provider := nonAgentMetricsProvider(accountId); provider != "" {
+		slog.Warn("relay: skipping prometheus_queries_enricher; account uses a non-agent metrics provider",
+			"account_id", accountId, "metrics_provider", provider)
+		return map[string]any{}, fmt.Errorf("relay: metrics provider %q is not the agent Prometheus; prometheus_queries_enricher not applicable", provider)
 	}
 
-	// The relay/agent interpret these timestamps as actual UTC. time.Now()
-	// returns local time, and Format("...UTC") only appends a literal "UTC"
-	// label — it doesn't convert the value. Without the explicit .UTC()
-	// conversion, a host in IST sends "18:17 UTC" when it means "12:47 UTC",
-	// putting the query 5.5h in the future and causing Prometheus to return
-	// an empty result set. Reproduces locally when api-server runs outside a
-	// UTC container (every flow-source resolver that calls ExecutePrometheus
-	// silently degrades to no resolution).
 	relayResponse, err := Execute(RelayExecuteRequest{
 		Body: ActionExecuteBody{
-			AccountID:  accountId,
-			ActionName: "prometheus_queries_enricher",
-			ActionParams: map[string]any{
-				"duration": map[string]any{
-					"ends_at":   endTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-					"starts_at": startTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-				},
-				"promql_query":   "",
-				"promql_queries": promsqlQueries,
-				"instant":        instant,
-			},
-			Origin: "services-server",
+			AccountID:    accountId,
+			ActionName:   "prometheus_queries_enricher",
+			ActionParams: prometheusActionParams(startTime, endTime, queriesMap, instant, stepSeconds),
+			Origin:       "services-server",
 		},
 		NoSinks: true,
 		Cache:   false,
@@ -206,6 +278,43 @@ func ExecutePrometheus(accountId string, startTime time.Time, endTime time.Time,
 	}
 
 	return dataMap, nil
+}
+
+// prometheusActionParams is the body of a prometheus_queries_enricher call.
+//
+// The relay/agent interpret these timestamps as actual UTC. time.Now()
+// returns local time, and Format("...UTC") only appends a literal "UTC"
+// label — it doesn't convert the value. Without the explicit .UTC()
+// conversion, a host in IST sends "18:17 UTC" when it means "12:47 UTC",
+// putting the query 5.5h in the future and causing Prometheus to return
+// an empty result set. Reproduces locally when api-server runs outside a
+// UTC container (every flow-source resolver that calls ExecutePrometheus
+// silently degrades to no resolution).
+//
+// `steps`, not `step`: the agent's prometheus_queries_enricher reads that key
+// (its sibling prometheus_enricher reads `step`). Omitted at zero so the
+// agent's default applies rather than a literal "0".
+func prometheusActionParams(startTime, endTime time.Time, queriesMap map[string]string, instant bool, stepSeconds int) map[string]any {
+	promsqlQueries := make([]map[string]any, 0, len(queriesMap))
+	for key, query := range queriesMap {
+		promsqlQueries = append(promsqlQueries, map[string]any{
+			"key":   key,
+			"query": query,
+		})
+	}
+	params := map[string]any{
+		"duration": map[string]any{
+			"ends_at":   endTime.UTC().Format("2006-01-02 15:04:05 UTC"),
+			"starts_at": startTime.UTC().Format("2006-01-02 15:04:05 UTC"),
+		},
+		"promql_query":   "",
+		"promql_queries": promsqlQueries,
+		"instant":        instant,
+	}
+	if stepSeconds > 0 {
+		params["steps"] = strconv.Itoa(stepSeconds)
+	}
+	return params
 }
 
 func ExecuteAndExtractResponse(relayRequest RelayExecuteRequest) (map[string]any, map[string]any, error) {

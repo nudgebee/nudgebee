@@ -125,6 +125,41 @@ func TestValidate_RejectsUnknownTargetProvider(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown target.provider")
 }
 
+func TestValidate_AllowsRuntimeLaneMatchProviders(t *testing.T) {
+	// A rule may MATCH any runtime lane a request can arrive on — custom & Vertex-OpenAI
+	// endpoints route as "vllm", plus native "vertex"/"bedrock". Matching needs no
+	// translation, so these are valid match.provider values (target stays narrow).
+	for _, p := range []string{"vllm", "vertex", "bedrock"} {
+		assert.NoError(t, Validate([]Rule{{
+			ID:     "match-" + p,
+			Match:  Match{Provider: p, Model: "some-model"},
+			Target: Target{Endpoint: Endpoint{Model: "some-model"}}, // keep addressed provider
+		}}), "match.provider %q must be accepted", p)
+	}
+
+	// An unknown match provider is still rejected.
+	err := Validate([]Rule{{
+		ID:    "bogus-match",
+		Match: Match{Provider: "not-a-provider"},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown match.provider")
+}
+
+func TestValidate_RejectsRuntimeLaneAsTarget(t *testing.T) {
+	// The match side accepts these lanes, but substituting TO them isn't wired yet —
+	// so they must stay rejected as target.provider (guards the raw-JSON path too).
+	for _, p := range []string{"vllm", "vertex", "bedrock"} {
+		err := Validate([]Rule{{
+			ID:     "tgt-" + p,
+			Match:  Match{Provider: "anthropic"},
+			Target: Target{Endpoint: Endpoint{Provider: p, Model: "x"}},
+		}})
+		require.Error(t, err, "target.provider %q must be rejected", p)
+		assert.Contains(t, err.Error(), "unknown target.provider")
+	}
+}
+
 func TestResolve_CrossProviderSubstitution(t *testing.T) {
 	e := NewEngine([]Rule{{
 		ID: "sub", Enabled: true,

@@ -15,14 +15,15 @@ import (
 // Tier 1 — tool-call structure
 // ============================================================
 
-// NoTools asserts the agent answered directly without invoking any tool.
-// Use for direct-answer queries the planner should resolve without
-// reaching for external state.
+// NoTools asserts the agent answered directly without reaching for external
+// state. Planner bookkeeping (see controlTools — e.g. update_notebook) does not
+// count: it touches nothing outside the planner and is invisible under ReAct3.
 func NoTools(t *testing.T, resp core.NBAgentResponse) bool {
 	t.Helper()
-	return assert.Empty(t, resp.AgentStepResponse,
-		"expected no tool invocations, got %d (tools=%v)",
-		len(resp.AgentStepResponse), toolNames(resp))
+	invs := investigationTools(resp)
+	return assert.Empty(t, invs,
+		"expected no investigation tool invocations, got %d (tools=%v; control tools ignored, all=%v)",
+		len(invs), investigationToolNames(resp), toolNames(resp))
 }
 
 // MinToolCalls asserts the agent made at least n tool calls. This is the
@@ -31,9 +32,10 @@ func NoTools(t *testing.T, resp core.NBAgentResponse) bool {
 // question.
 func MinToolCalls(t *testing.T, resp core.NBAgentResponse, n int) bool {
 	t.Helper()
-	return assert.GreaterOrEqual(t, len(resp.AgentStepResponse), n,
-		"expected at least %d tool calls, got %d (tools=%v)",
-		n, len(resp.AgentStepResponse), toolNames(resp))
+	invs := investigationTools(resp)
+	return assert.GreaterOrEqual(t, len(invs), n,
+		"expected at least %d investigation tool calls, got %d (tools=%v)",
+		n, len(invs), investigationToolNames(resp))
 }
 
 // MaxToolCalls asserts the agent made at most n tool calls. Use for
@@ -41,17 +43,19 @@ func MinToolCalls(t *testing.T, resp core.NBAgentResponse, n int) bool {
 // should resolve in ≤3 calls).
 func MaxToolCalls(t *testing.T, resp core.NBAgentResponse, n int) bool {
 	t.Helper()
-	return assert.LessOrEqual(t, len(resp.AgentStepResponse), n,
-		"expected at most %d tool calls, got %d (tools=%v)",
-		n, len(resp.AgentStepResponse), toolNames(resp))
+	invs := investigationTools(resp)
+	return assert.LessOrEqual(t, len(invs), n,
+		"expected at most %d investigation tool calls, got %d (tools=%v)",
+		n, len(invs), investigationToolNames(resp))
 }
 
 // ExactToolCount asserts the agent made exactly n tool calls.
 func ExactToolCount(t *testing.T, resp core.NBAgentResponse, n int) bool {
 	t.Helper()
-	return assert.Equal(t, n, len(resp.AgentStepResponse),
-		"expected exactly %d tool calls, got %d (tools=%v)",
-		n, len(resp.AgentStepResponse), toolNames(resp))
+	invs := investigationTools(resp)
+	return assert.Equal(t, n, len(invs),
+		"expected exactly %d investigation tool calls, got %d (tools=%v)",
+		n, len(invs), investigationToolNames(resp))
 }
 
 // ToolUsed asserts the named tool appears at least once in the invocation

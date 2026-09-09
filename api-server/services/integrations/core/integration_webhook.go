@@ -792,7 +792,26 @@ func convertSliceAnyToSliceInterface(evidences []eventtypes.EventEvidence) []any
 // Tenant-scoped so the finding_id predicate can use events_cloudaccount_findingid,
 // whose leading column is tenant. Verified on a real dataset: both predicates
 // resolve through a BitmapOr of index scans, no sequential scan.
-const resolveEventQuery = `update events set status = $4 where tenant = $1 and cloud_account_id = $2 and (fingerprint = $3 or finding_id = $3) and status != $4 returning id`
+//
+// ends_at is written alongside status. Closing without it leaves a row that is
+// CLOSED but open-ended, and every consumer that measures how long an alert ran
+// counts only `ends_at IS NOT NULL AND ends_at > starts_at` — so such rows read
+// as "never resolved". triage.computeAlertQuality then scores the rule
+// resolution_rate = 0 and classifies it "broken", which is how a healthy
+// webhook-sourced alert ends up recommended for manual review. COALESCE keeps
+// any end time the ingest path already recorded.
+const resolveEventQuery = `update events set status = $4, ends_at = COALESCE(ends_at, $5) where tenant = $1 and cloud_account_id = $2 and (fingerprint = $3 or finding_id = $3) and status != $4 returning id`
+
+// resolveEndsAt is the end time to stamp on an event a resolve delivery closes:
+// the end time the integration reported, or the delivery time when it reported
+// none (PagerDuty's incident.resolved, ServiceNow, and the generic webhook all
+// leave EventEndsAt zero).
+func resolveEndsAt(reported time.Time) time.Time {
+	if !reported.IsZero() {
+		return reported
+	}
+	return time.Now().UTC()
+}
 
 func resolveEvent(sc *security.RequestContext, tenantId, accountId string, source string, event EventIncomingWebhook) error {
 	if accountId == "" || accountId == uuid.Nil.String() {
@@ -810,7 +829,7 @@ func resolveEvent(sc *security.RequestContext, tenantId, accountId string, sourc
 	}
 	// The status guard in resolveEventQuery makes repeated resolve webhooks no-ops,
 	// so only a genuine open→closed transition publishes the resolved notification.
-	rows, err := dbms.Query(resolveEventQuery, tenantId, accountId, fingerPrint, "CLOSED")
+	rows, err := dbms.Query(resolveEventQuery, tenantId, accountId, fingerPrint, "CLOSED", resolveEndsAt(event.EventEndsAt))
 	if err != nil {
 		return err
 	}

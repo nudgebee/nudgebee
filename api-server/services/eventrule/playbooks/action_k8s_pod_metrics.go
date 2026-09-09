@@ -270,15 +270,12 @@ func (a *podMetricAction) Execute(ctx PlaybookActionContext, rawParams map[strin
 }
 
 func (a *podMetricAction) executePrometheusQueries(ctx PlaybookActionContext, promqlQueries []NamedQuery, durationMinutes int) (map[string]any, error) {
-	endTime := time.Now()
-	startTime := endTime.Add(-time.Duration(durationMinutes) * time.Minute)
-
-	if ctx.GetEvent().StartedAt != nil {
-		startTime = *ctx.GetEvent().StartedAt
-	}
-	if ctx.GetEvent().EndedAt != nil {
-		endTime = *ctx.GetEvent().EndedAt
-	}
+	// Anchor on the event, floored at durationMinutes. Taking StartedAt/EndedAt raw made
+	// the range a few seconds wide for a still-firing alert, which yields one sample per
+	// series — a flat line where the card should show the run-up to the alert. (It is not
+	// what leaves 28.7% of these evidences with an empty series array: those are pods that
+	// never ran, or namespaces cAdvisor is not scraping.)
+	startTime, endTime := ctx.GetEvent().ResolveQueryWindow(durationMinutes)
 
 	// Separate queries into range queries (metrics) and instant queries (requests/limits)
 	rangeQueries := []NamedQuery{}

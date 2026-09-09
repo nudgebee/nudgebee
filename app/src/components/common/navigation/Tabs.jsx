@@ -5,6 +5,7 @@ import { Chip } from '@ui/Chip';
 import { ds } from '@utils/colors';
 
 import SafeIcon from '@shared/icons/SafeIcon';
+import Tooltip from '@ui/Tooltip';
 import { BetaIcon } from '@assets';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
@@ -49,7 +50,10 @@ const Tabs = ({
 
     const update = () => {
       const selected = flex.querySelector('.MuiTab-root.Mui-selected');
-      if (!selected) return;
+      if (!selected) {
+        flex.style.setProperty('--ct-indicator-width', '0px');
+        return;
+      }
       const containerRect = flex.getBoundingClientRect();
       const tabRect = selected.getBoundingClientRect();
       flex.style.setProperty('--ct-indicator-x', `${tabRect.left - containerRect.left}px`);
@@ -67,7 +71,7 @@ const Tabs = ({
   const router = useRouter();
   const selectedOption = options?.tabOptions?.find((opt) => opt.value === value);
   const showBottomMargin = selectedOption?.showBottomMargin || false;
-  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && opt.value === value) ? value : false;
+  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && !opt.disabled && opt.value === value) ? value : false;
 
   const getTabUrl = (opt) => {
     // 1. Get the current resolved path (e.g., "/kubernetes/details/123?tab=1")
@@ -144,8 +148,11 @@ const Tabs = ({
         stroke: 'var(--ds-gray-600)',
       },
     },
-    '&:hover:not(.Mui-selected)': {
-      // soft hover on idle tabs; selected tab is highlighted by the sliding pill, no hover needed
+    // Soft hover on idle tabs; selected tab is highlighted by the sliding pill,
+    // and disabled tabs (native or soft-disabled) must stay visually inert —
+    // the aria-disabled guard covers soft-disabled tabs, which keep pointer
+    // events for their tooltip.
+    '&:hover:not(.Mui-selected):not([aria-disabled="true"])': {
       backgroundColor: 'var(--ds-gray-100)',
       color: 'var(--ds-tab-active, var(--ds-brand-700))',
     },
@@ -242,7 +249,11 @@ const Tabs = ({
           <MuiTabs
             ref={tabsRootRef}
             value={safeValue}
-            onChange={(_event, newValue) => onChange(newValue)}
+            onChange={(_event, newValue) => {
+              const target = options?.tabOptions?.find((opt) => opt.value === newValue);
+              if (target?.disabled) return;
+              onChange(newValue);
+            }}
             aria-label={ariaLabel}
             variant='scrollable'
             TabIndicatorProps={{ style: { display: 'none' } }}
@@ -305,79 +316,85 @@ const Tabs = ({
           >
             {options.tabOptions
               ?.filter((opt) => !opt.hidden)
-              .map((opt, _idx) => (
-                <Tab
-                  key={opt.value}
-                  disableRipple
-                  disableFocusRipple
-                  label={
-                    <Box display='flex' alignItems='center' gap={ds.space.mul(0, 3)}>
-                      {opt.icon && (
-                        <SafeIcon
-                          src={opt.icon}
-                          alt={opt.text}
-                          className='tab-icon'
-                          {...(opt.iconSize && {
-                            width: opt.iconSize,
-                            height: opt.iconSize,
-                            style: { width: opt.iconSize, height: opt.iconSize },
-                          })}
-                        />
-                      )}
-                      <span>{opt.text}</span>
-                      {opt.trailingIcon && (
-                        <Box
-                          component='span'
-                          sx={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            color: opt.value === value ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-500)',
-                            '& svg': { fontSize: 16 },
-                          }}
-                        >
-                          {opt.trailingIcon}
-                        </Box>
-                      )}
-                      {opt.betaIcon && (
-                        <Box
-                          component='span'
-                          sx={{
-                            display: 'inline-flex',
-                            marginTop: ds.space.mul(0, -5),
-                          }}
-                        >
-                          <SafeIcon src={BetaIcon} alt='Beta icon' style={{ height: ds.space.mul(0, 10), width: ds.space.mul(0, 12) }} />
-                        </Box>
-                      )}
-                    </Box>
-                  }
-                  component={behavior === 'router' ? Link : 'button'}
-                  value={opt.value}
-                  icon={
-                    opt.count ? (
-                      <Chip variant='count' size='2xs' tone={opt.value === value ? 'info' : 'neutral'}>
-                        {opt.count > 99 ? '99+' : opt.count}
-                      </Chip>
-                    ) : null
-                  }
-                  iconPosition={opt.iconPosition || 'start'}
-                  disabled={opt.disabled || false}
-                  {...a11yProps(opt.value, opt.id)}
-                  {...(behavior === 'router' ? { href: getTabUrl(opt), scroll: false } : {})}
-                  sx={{
-                    '&.MuiTab-root': {
-                      display: 'inline-flex !important',
-                      flexDirection: 'row-reverse',
-                      alignItems: 'center',
-                    },
-                    '& .MuiTab-iconWrapper': {
-                      margin: 0,
-                    },
-                    textTransform: 'none',
-                    ...(opt.disabled ? { opacity: 0.5 } : {}),
-                  }}
-                />
-              ))}
+              .map((opt, _idx) => {
+                const softDisabled = Boolean(opt.disabled && opt.disabledTooltip);
+                const label = (
+                  <Box display='flex' alignItems='center' gap={ds.space.mul(0, 3)}>
+                    {opt.icon && (
+                      <SafeIcon
+                        src={opt.icon}
+                        alt={opt.text}
+                        className='tab-icon'
+                        {...(opt.iconSize && {
+                          width: opt.iconSize,
+                          height: opt.iconSize,
+                          style: { width: opt.iconSize, height: opt.iconSize },
+                        })}
+                      />
+                    )}
+                    <span>{opt.text}</span>
+                    {opt.trailingIcon && (
+                      <Box
+                        component='span'
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          color: opt.value === value ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-500)',
+                          '& svg': { fontSize: 16 },
+                        }}
+                      >
+                        {opt.trailingIcon}
+                      </Box>
+                    )}
+                    {opt.betaIcon && (
+                      <Box
+                        component='span'
+                        sx={{
+                          display: 'inline-flex',
+                          marginTop: ds.space.mul(0, -5),
+                        }}
+                      >
+                        <SafeIcon src={BetaIcon} alt='Beta icon' style={{ height: ds.space.mul(0, 10), width: ds.space.mul(0, 12) }} />
+                      </Box>
+                    )}
+                  </Box>
+                );
+                return (
+                  <Tab
+                    key={opt.value}
+                    disableRipple
+                    disableFocusRipple
+                    label={softDisabled ? <Tooltip title={opt.disabledTooltip}>{label}</Tooltip> : label}
+                    component={behavior === 'router' && !softDisabled ? Link : 'button'}
+                    value={opt.value}
+                    icon={
+                      opt.count ? (
+                        <Chip variant='count' size='2xs' tone={opt.value === value ? 'info' : 'neutral'}>
+                          {opt.count > 99 ? '99+' : opt.count}
+                        </Chip>
+                      ) : null
+                    }
+                    iconPosition={opt.iconPosition || 'start'}
+                    disabled={(opt.disabled && !softDisabled) || false}
+                    aria-disabled={opt.disabled || undefined}
+                    {...a11yProps(opt.value, opt.id)}
+                    {...(behavior === 'router' && !softDisabled ? { href: getTabUrl(opt), scroll: false } : {})}
+                    sx={{
+                      '&.MuiTab-root': {
+                        display: 'inline-flex !important',
+                        flexDirection: 'row-reverse',
+                        alignItems: 'center',
+                      },
+                      '& .MuiTab-iconWrapper': {
+                        margin: 0,
+                      },
+                      textTransform: 'none',
+                      ...(opt.disabled ? { opacity: 0.5 } : {}),
+                      ...(softDisabled ? { cursor: 'not-allowed' } : {}),
+                    }}
+                  />
+                );
+              })}
           </MuiTabs>
         </Box>
       )}

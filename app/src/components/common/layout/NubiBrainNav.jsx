@@ -57,7 +57,7 @@ const RailButton = ({ label, testId, iconComponent, iconSx, color, onClick }) =>
       '&:focus-visible': { outline: '2px solid var(--ds-brand-400)', outlineOffset: '2px' },
     }}
   >
-    <SafeIcon src={iconComponent} width={20} height={20} sx={iconSx} />
+    <SafeIcon src={iconComponent} alt='' width={20} height={20} sx={iconSx} />
     <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-medium)', color, textAlign: 'center', lineHeight: 1 }}>
       {label}
     </Typography>

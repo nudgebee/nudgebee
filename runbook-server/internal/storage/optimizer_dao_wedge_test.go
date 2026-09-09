@@ -50,11 +50,24 @@ func (n nearNow) Match(v driver.Value) bool {
 }
 
 // TestGetActiveResolutions_TreatsForeignOpenPRAsActive covers a pull request the
-// auto optimize does not own: status Failed, but a real PR URL and a lifecycle
-// the api-server's open-PR guard still counts as open. The optimizer must return
-// it, so the run skips rather than executing into the duplicate that caused the
-// wedge (#34943). We do not rewrite a pull request a person raised by hand, so
-// for these there is nothing to do but wait.
+// auto optimize does not own and that is genuinely still open: a real URL, still
+// InProgress, and retired from followups by the stale sweep. The optimizer must
+// return it, so the run skips rather than executing into the duplicate that
+// caused the wedge (#34943). We do not rewrite a pull request a person raised by
+// hand, so for these there is nothing to do but wait.
+//
+// This originally seeded status Failed, on the premise that the stale sweep flips
+// an open PR to Failed. It does not — markStaleResolutions sets
+// pr_lifecycle_state = 'stale' and leaves status InProgress. Blocking on a Failed
+// row was not protective, it was the bug: api-server's guard requires InProgress,
+// so a Failed row is invisible there and no code path can ever release it, which
+// stranded workflow-server on dev for five months behind a pull request closed in
+// March (#34959 follow-up).
+//
+// Note what this test can and cannot do: sqlmock returns the canned rows below
+// whatever the WHERE clause says, so this pins the query's vocabulary and the
+// scan, NOT the predicate. The predicate is covered against a real database in
+// optimizer_dao_blocking_pg_test.go.
 func TestGetActiveResolutions_TreatsForeignOpenPRAsActive(t *testing.T) {
 	dao, mock, cleanup := newMockDao(t)
 	defer cleanup()
@@ -67,7 +80,7 @@ func TestGetActiveResolutions_TreatsForeignOpenPRAsActive(t *testing.T) {
 		"resolver_type", "resolver_id", "created_at", "updated_at", "status_message",
 		"pr_iteration_count", "pr_lifecycle_state", "last_pr_check_at",
 	}).AddRow(
-		uuid.New(), recID, "PullRequest", nil, "Failed", prURL,
+		uuid.New(), recID, "PullRequest", nil, "InProgress", prURL,
 		"User", uuid.New(), time.Now().UTC(), nil, "stale sweep",
 		5, "stale", nil,
 	)
@@ -80,7 +93,7 @@ func TestGetActiveResolutions_TreatsForeignOpenPRAsActive(t *testing.T) {
 	got, err := dao.GetActiveResolutionsForRecommendations(context.Background(), []uuid.UUID{recID})
 	require.NoError(t, err)
 
-	require.Len(t, got[recID], 1, "an open PR whose row says Failed must still count as active")
+	require.Len(t, got[recID], 1, "a foreign pull request still open must count as active")
 	assert.Equal(t, prURL, got[recID][0].TypeReferenceID)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

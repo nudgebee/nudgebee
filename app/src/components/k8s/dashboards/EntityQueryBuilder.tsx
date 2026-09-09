@@ -18,6 +18,7 @@ import {
   operatorTakesList,
   operatorTakesValue,
   operatorsFor,
+  selectableColumns,
   type EntityQuery,
   type EntityQueryDraft,
   type EntityTable,
@@ -82,9 +83,13 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
     };
   });
 
-  const columnOptions = table.columns.map((c) => ({ label: c.label, value: c.name }));
-  // Traces filter through named API parameters, so only some columns can carry
-  // a filter — offering the rest would build panels that ignore them.
+  // Filter-only columns are left out: a trace grouping can be NARROWED by a
+  // column its fixed response never returns, but selecting or sorting by one
+  // would render a blank column.
+  const columnOptions = selectableColumns(table).map((c) => ({ label: c.label, value: c.name }));
+  // On the query-engine tables this is every column: a filter on an aggregate
+  // is routed into a HAVING rather than being refused. The traces tables have no
+  // HAVING surface, so theirs are the subset the span store can filter on.
   const filterColumns = filterableColumns(table);
   const filterColumnOptions = filterColumns.map((c) => ({ label: c.label, value: c.name }));
 
@@ -185,8 +190,9 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
                       value={filter.column}
                       options={filterColumnOptions}
                       onChange={(v: string) => {
-                        // The operator list is per column TYPE, so a carried-over
-                        // operator can be one the new column does not support.
+                        // The operator list is per column TYPE (and per table —
+                        // traces drop `_is_null`), so a carried-over operator can
+                        // be one the new column does not support.
                         const next = operatorsFor(table, v);
                         patchFilter(index, { column: v, operator: next.some((o) => o.value === filter.operator) ? filter.operator : next[0].value });
                       }}

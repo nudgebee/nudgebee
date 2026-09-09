@@ -30,6 +30,12 @@ type getUsageRequest struct {
 	AccountId string     `json:"account_id" validate:"required"`
 	Month     time.Month `json:"month" validate:"required"`
 	Year      int        `json:"year" validate:"required"`
+	// Backfill asks for the account's already-available historical billing
+	// periods to be ingested as well, not just the requested month. Set when an
+	// account is first connected — without it a mid-month onboarding leaves the
+	// account with only a partial current month and no history to trend or
+	// baseline against.
+	Backfill bool `json:"backfill"`
 }
 
 type getRecommendationRequest struct {
@@ -175,6 +181,11 @@ type validateCredentialsRequest struct {
 	AccessKey    string `json:"access_key,omitempty"`
 	AccessSecret string `json:"access_secret,omitempty"`
 	Region       string `json:"region,omitempty"`
+
+	// AWS CUR selection (optional — narrows discovery to one named report).
+	// Sent by Edit Billing Config; empty during onboarding, which auto-picks.
+	CurReportName string `json:"cur_report_name,omitempty"`
+	CurS3Bucket   string `json:"cur_s3_bucket,omitempty"`
 }
 
 func buildContextFromGin(c *gin.Context, logger *slog.Logger, tracer *trace.Tracer, meter *metric.Meter, account string) (*security.RequestContext, context.CancelFunc, error) {
@@ -367,6 +378,13 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 			c.JSON(500, buildApiResponse(nil, err))
 			return
 		}
+
+		// Detached: the requested month is already stored, and the historical
+		// sweep takes far longer than this request should stay open.
+		if request.Backfill {
+			account.StartHistoricalBackfill(ctx, request.AccountId, ctx.GetSecurityContext().GetTenantId(), month, year)
+		}
+
 		c.JSON(200, buildApiResponse(resp))
 	})
 
@@ -1304,11 +1322,13 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 			result = common.ValidateGCPCredentials(c.Request.Context(), creds)
 		case "AWS":
 			creds := common.AWSCredentials{
-				AssumeRole:   request.AssumeRole,
-				ExternalId:   request.ExternalID,
-				AccessKey:    request.AccessKey,
-				AccessSecret: request.AccessSecret,
-				Region:       request.Region,
+				AssumeRole:    request.AssumeRole,
+				ExternalId:    request.ExternalID,
+				AccessKey:     request.AccessKey,
+				AccessSecret:  request.AccessSecret,
+				Region:        request.Region,
+				CurReportName: request.CurReportName,
+				CurS3Bucket:   request.CurS3Bucket,
 			}
 			result = common.ValidateAWSCredentials(c.Request.Context(), creds)
 		default:

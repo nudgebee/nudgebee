@@ -29,7 +29,8 @@ type ScanAccountRequest struct {
 }
 
 // ScanAccountResponse acknowledges that scans were queued for the account's
-// discovery datasource(s). The work runs asynchronously via the VM scan queue.
+// discovery datasource(s). Same ack-only contract as ScanResponse — the
+// sweep/inventory/match work happens asynchronously via the VM scan queue.
 type ScanAccountResponse struct {
 	Data []map[string]any `json:"data" mapstructure:"data"`
 }

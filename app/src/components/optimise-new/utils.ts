@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from 'react';
 import { ds } from 'src/utils/colors';
 import { recommendationDetails } from '@api1/recommendation/data';
 
@@ -60,6 +61,13 @@ export const CATEGORY_RULE_LABELS: Record<string, Record<string, string>> = {
 };
 
 export const NON_SECURITY_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'];
+
+// What the Recommendations tab covers now that Configuration has its own tab:
+// the savings-bearing categories. Deliberately NOT the same as
+// NON_SECURITY_CATEGORIES, which stays the full set and is what the Summary tab
+// still reports on — Summary is a portfolio view and is updated separately, so
+// until then its totals legitimately exceed this tab's.
+export const RECOMMENDATION_CATEGORIES = ['RightSizing', 'InfraUpgrade', 'K8sSpotRecommendation'];
 export const DEFAULT_STATUS = ['Open', 'InProgress'];
 
 // Options for the Status filter. An empty selection means DEFAULT_STATUS, so the
@@ -477,4 +485,57 @@ export const getRecommendationBrief = (rec: any): string => {
     default:
       return getGenericBrief(data);
   }
+};
+
+// ─── Stat-card tabs ───
+
+/**
+ * Shared chrome for the clickable stat-card tabs above a listing: the active
+ * card carries the same blue border + tint the Troubleshoot summary widgets use
+ * for their active drill-down; zero-count cards render muted and inert.
+ */
+export const cardTabSx = (pressed: boolean, muted: boolean) => ({
+  flex: 1,
+  minWidth: 0,
+  mt: 0,
+  padding: `${ds.space[3]} ${ds.space[4]}`,
+  ...(muted
+    ? { opacity: 0.5 }
+    : {
+        cursor: 'pointer',
+        // Stat and Chip pin their own `cursor: default`, which would otherwise leave
+        // the hand pointer showing only on the card's bare padding. `&&` outranks them.
+        '&& *': { cursor: 'pointer' },
+        transition: `border-color ${ds.motion.micro} ${ds.motion.ease}, background-color ${ds.motion.micro} ${ds.motion.ease}`,
+        // Re-assert the blue border on hover for the active card — the gray hover
+        // border would otherwise mask its highlight while hovering.
+        '&:hover': { borderColor: pressed ? ds.blue[400] : ds.gray[400] },
+      }),
+  ...(pressed ? { borderColor: ds.blue[400], backgroundColor: ds.blue[100] } : {}),
+});
+
+/** Enter/Space activation so the card tabs work as buttons for keyboard users. */
+export const cardKeyDown = (activate: () => void) => (e: KeyboardEvent) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    activate();
+  }
+};
+
+/**
+ * Chrome for a detail panel's sticky footer action bar — the bar that holds what
+ * you can DO about the thing the panel is describing. Shared so the resolution
+ * panel's footer sits at the same height, tone and rhythm as the recommendation
+ * panel's, rather than approximating it.
+ */
+export const panelActionBarSx = {
+  borderTop: `1px solid ${ds.gray[200]}`,
+  backgroundColor: ds.background[100],
+  flexShrink: 0,
+  px: ds.space[4],
+  py: ds.space.mul(0, 6),
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: ds.space[2],
 };

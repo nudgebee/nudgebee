@@ -7,7 +7,9 @@ attachment. Legacy (non-blocks) attachments matter: Slack stamps an
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import parse_qs, urlparse
 
+from notifications_server.configs.settings import settings
 from notifications_server.message_templates.slack.batched_findings import (
     BatchedFinding,
     BatchedFindingsPayload,
@@ -278,10 +280,48 @@ class TestGroupedAnomaly:
         colors = [a["color"] for a in msg["attachments"]]
         assert colors == ["#D97A2B"]  # item stripe; no filler footer attachment
 
+    def test_no_overflow_has_no_view_all_button(self):
+        # Every shown item already has its own Details button; nothing was
+        # left out, so "View All Anomalies" would be redundant.
+        msg = get_grouped_anomaly_alerts_template([_anomaly(0), _anomaly(1)])
+        assert not [b for b in _buttons(msg) if b["text"] == "View All Anomalies"]
+
     def test_overflow_footer_attachment_is_neutral(self):
         msg = get_grouped_anomaly_alerts_template([_anomaly(i) for i in range(8)])
         assert msg["attachments"][-1]["color"] == "#94A3B8"
         assert "+3 more anomalies detected" in msg["attachments"][-1]["text"]
+
+    def test_single_account_footer_links_troubleshoot_events(self):
+        msg = get_grouped_anomaly_alerts_template([_anomaly(i) for i in range(8)])
+        view_all = [b for b in _buttons(msg) if b["text"] == "View All Anomalies"]
+        assert len(view_all) == 1
+        url = view_all[0]["url"]
+        assert "/troubleshoot" in url and "accountIds=acc-1" in url
+        assert "source=anomaly" in url
+        assert url.endswith("#all-events/all")
+
+    def test_multi_account_footer_links_all_accounts(self):
+        alerts = [_anomaly(i) for i in range(8)]
+        alerts[1].cloud_account_id = "acc-2"
+        msg = get_grouped_anomaly_alerts_template(alerts)
+        view_all = [b for b in _buttons(msg) if b["text"] == "View All Anomalies"]
+        assert len(view_all) == 1
+        assert "accountIds=acc-1%2Cacc-2" in view_all[0]["url"]
+
+    def test_footer_pins_a_window_covering_the_flush_delay(self):
+        # Window must cover grouped_flush_delay_seconds, else the link can miss
+        # events on an unpinned page falling back to a stale persisted range.
+        before = int(datetime.now(timezone.utc).timestamp() * 1000)
+        msg = get_grouped_anomaly_alerts_template([_anomaly(i) for i in range(8)])
+        after = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        url = [b for b in _buttons(msg) if b["text"] == "View All Anomalies"][0]["url"]
+        params = parse_qs(urlparse(url).query)
+        start_ms, end_ms = int(params["start_time"][0]), int(params["end_time"][0])
+
+        assert before <= end_ms <= after
+        flush_delay_ms = settings.notifications.grouped_flush_delay_seconds * 1000
+        assert end_ms - start_ms >= flush_delay_ms
 
     def test_started_at_is_inline_date_token(self):
         msg = get_grouped_anomaly_alerts_template([_anomaly(0)])

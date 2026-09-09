@@ -37,6 +37,21 @@ type appConfig struct {
 
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
 
+	// Credential the server chart generates for the in-cluster agent it bundles
+	// (agent.enabled). The same key/secret is handed to the agent itself, so
+	// the server's only job is to create the matching account and agent rows.
+	// Empty on every install that does not bundle the agent, which makes the
+	// reconcile a no-op.
+	// Admin address used to provision the first admin and their tenant at
+	// install time, so a fresh deployment is complete before anyone signs in.
+	// Optional: empty means skip, and setup falls back to first login.
+	// Enterprise leaves it empty and the licence's own address is used.
+	AdminEmail string `mapstructure:"admin_email"`
+
+	LocalAgentAccessKey    string `mapstructure:"local_agent_access_key"`
+	LocalAgentAccessSecret string `mapstructure:"local_agent_access_secret"`
+	LocalAgentClusterName  string `mapstructure:"local_agent_cluster_name"`
+
 	ClickhouseHost     string `mapstructure:"clickhouse_host"`
 	ClickhouseUser     string `mapstructure:"clickhouse_user"`
 	ClickhousePassword string `mapstructure:"clickhouse_password"`
@@ -63,8 +78,7 @@ type appConfig struct {
 	RabbitMqHost     string `mapstructure:"rabbit_mq_host"`
 	RabbitMqPort     int    `mapstructure:"rabbit_mq_port"`
 
-	Env          string `mapstructure:"env"`
-	DBSslEnabled bool   `mapstructure:"nudgebee_db_ssl_enabled"`
+	Env string `mapstructure:"env"`
 
 	MlServiceUrl string `mapstructure:"ml_service_url"`
 
@@ -129,10 +143,6 @@ type appConfig struct {
 	AwsEventBridgeAddonTemplateURL  string `mapstructure:"aws_eventbridge_addon_template_url"`
 
 	AzureARMTemplateURL string `mapstructure:"azure_arm_template_url"`
-
-	GcpPubSubTemplateURL                  string `mapstructure:"gcp_pubsub_template_url"`
-	GcpProjectID                          string `mapstructure:"gcp_project_id"`
-	CloudCollectorGcpPubSubSubscriptionID string `mapstructure:"cloud_collector_gcp_pubsub_subscription_id"`
 
 	CloudCollectorServerToken       string `mapstructure:"cloud_collector_server_token"`
 	CloudCollectorServerUrl         string `mapstructure:"cloud_collector_server_url"`
@@ -225,8 +235,13 @@ type appConfig struct {
 	CacheRedisServerHost    string `mapstructure:"redis_server_host"`
 	CacheRedisServerPort    int    `mapstructure:"redis_server_port"`
 
-	FeatureEventAutoAiSummaryEnabled bool   `mapstructure:"feature_event_auto_ai_summary_enabled"`
-	ServerName                       string `mapstructure:"services_server_name"`
+	ServerName string `mapstructure:"services_server_name"`
+
+	// When true, events that describe a moment rather than a recoverable condition
+	// (configuration_change) are stored already CLOSED at ingestion — no closer
+	// will ever reach them otherwise (issue #36597). Default on: the current
+	// always-open behavior is the bug.
+	FeatureEventPointInTimeCloseEnabled bool `mapstructure:"feature_event_point_in_time_close_enabled"`
 
 	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
 	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
@@ -338,8 +353,14 @@ func init() {
 	viper.SetDefault("ml_service_url", "http://localhost:9000")
 
 	viper.SetDefault("env", "")
-	viper.SetDefault("nudgebee_db_ssl_enabled", "true")
 	viper.SetDefault("service_api_server_url", "http://services-server:8000")
+
+	// Bundled in-cluster agent. Empty key/secret means the install does not
+	// bundle an agent and the reconcile stays inert.
+	viper.SetDefault("admin_email", "")
+	viper.SetDefault("local_agent_access_key", "")
+	viper.SetDefault("local_agent_access_secret", "")
+	viper.SetDefault("local_agent_cluster_name", "in-cluster")
 
 	// viper requires default values or bind.. else Unmarshal skips fields with no default values
 	viper.SetDefault("action_api_server_token", "")
@@ -387,10 +408,6 @@ func init() {
 	viper.SetDefault("aws_eventbridge_addon_template_url", "")
 
 	viper.SetDefault("azure_arm_template_url", "")
-
-	viper.SetDefault("gcp_pubsub_template_url", "")
-	viper.SetDefault("gcp_project_id", "")
-	viper.SetDefault("cloud_collector_gcp_pubsub_subscription_id", "")
 
 	viper.SetDefault("cloud_collector_server_url", "http://cloud-collector-servert:8000")
 	viper.SetDefault("cloud_collector_server_token", "")
@@ -453,7 +470,7 @@ func init() {
 	viper.SetDefault("nb_anomaly_training_days", 7)
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
 
-	viper.SetDefault("feature_event_auto_ai_summary_enabled", true)
+	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
 	viper.SetDefault("webhook_async_execution", true)
 
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")

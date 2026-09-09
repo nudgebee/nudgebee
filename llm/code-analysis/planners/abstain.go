@@ -30,7 +30,18 @@ func (p *ReActPlanner) sortedReadFiles() []string {
 // shouldAbstainForced reports whether a forced (out-of-budget) termination should
 // abstain rather than fabricate. It fires on the clear no-evidence cases and
 // leaves grounded flows (which have real reads to summarize) untouched.
+//
+// Scoped to explore mode only: "insufficient evidence" is specifically about
+// answering a code question without a grounded citation. Other modes — e.g.
+// "followup", which commits/pushes edits it already knows about without ever
+// needing file_view — have nothing to abstain from. Applying the neverRead
+// check unconditionally used to mask every out-of-budget followup run as a
+// fake investigative dead-end instead of what it actually was: uncommitted
+// work silently discarded when the workspace was torn down (issue #36634).
 func (p *ReActPlanner) shouldAbstainForced() bool {
+	if p.goal == nil || p.goal.Mode != "explore" {
+		return false
+	}
 	p.mu.Lock()
 	neverRead := len(p.readFiles) == 0
 	p.mu.Unlock()
@@ -38,9 +49,9 @@ func (p *ReActPlanner) shouldAbstainForced() bool {
 		// Never opened a file: any "root cause in code" would be invented.
 		return true
 	}
-	// Explore mode: if the ledger can't produce a grounded answer+citation, don't
-	// ask the LLM to synthesize one from scratch.
-	if p.goal != nil && p.goal.Mode == "explore" && !p.canTerminateFromLedger() {
+	// If the ledger can't produce a grounded answer+citation, don't ask the
+	// LLM to synthesize one from scratch.
+	if !p.canTerminateFromLedger() {
 		return true
 	}
 	return false

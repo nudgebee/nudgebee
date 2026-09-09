@@ -395,10 +395,7 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 	// and then filtered out by the dedup check (finding_id already exists),
 	// leaving them stuck as CLOSED.
 	currentFindingIds := lo.Map(events.Items, func(event providers.Event, _ int) string {
-		if event.FindingId != "" {
-			return event.FindingId
-		}
-		return fmt.Sprintf("%s-%d", event.EventId, event.Date.Unix())
+		return event.FiringFindingID()
 	})
 
 	// Collect fingerprints of RESOLVED events so their existing FIRING counterparts
@@ -553,10 +550,7 @@ func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager,
 
 	// 1. Compute per-firing finding_ids for incoming events.
 	findingIds := lo.Map(events, func(event providers.Event, _ int) string {
-		if event.FindingId != "" {
-			return event.FindingId
-		}
-		return fmt.Sprintf("%s-%d", event.EventId, event.Date.Unix())
+		return event.FiringFindingID()
 	})
 
 	// 2. Find which of these finding_ids already exist (processed firings)
@@ -594,11 +588,7 @@ func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		}
 		// finding_id must be unique per firing. Use source-native ID if provided,
 		// otherwise combine fingerprint (EventId) with timestamp.
-		if event.FindingId != "" {
-			eventMap["finding_id"] = event.FindingId
-		} else {
-			eventMap["finding_id"] = fmt.Sprintf("%s-%d", event.EventId, event.Date.Unix())
-		}
+		eventMap["finding_id"] = event.FiringFindingID()
 
 		eventMap["created_at"] = currentTimeForBatch
 		if eventMap["id"] == nil {
@@ -651,8 +641,19 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 		resolvedAt := re.Date.UTC()
 
 		var rows []resolvedRow
+		// priority is deliberately NOT written here. Severity describes what fired,
+		// not what the row's current state is — `status = 'RESOLVED'` already carries
+		// "it's over". This UPDATE used to also set priority = 'INFO', a leftover from
+		// when the OK transition inserted its own row (whose severity template renders
+		// Info for an OK state, correctly, because that row WAS the recovery notice).
+		// Once this path switched to updating the firing row in place, that Info landed
+		// on the incident itself and destroyed the source severity — irrecoverably, since
+		// nothing else records it. A HIGH alarm that self-recovered then read as INFO,
+		// which hid it from the Triage Inbox (it excludes DEBUG/INFO) and made the
+		// briefing's Nubi-vs-source severity comparison measure this UPDATE rather than
+		// the source.
 		err := dbms.QueryAndScan(&rows,
-			`UPDATE events SET status = 'RESOLVED', updated_at = $3, ends_at = $3, priority = 'INFO'
+			`UPDATE events SET status = 'RESOLVED', updated_at = $3, ends_at = $3
 			 WHERE cloud_account_id = $1 AND fingerprint = $2
 			 AND status NOT IN ('CLOSED', 'RESOLVED')
 			 RETURNING id::text, tenant::text, cloud_account_id::text, fingerprint`,
@@ -857,14 +858,14 @@ func StoreEventRules(ctx *security.RequestContext, accountId string) (providers.
 	currentTime := time.Now().UTC().Format(time.RFC3339)
 	args := []map[string]any{}
 
-	// Use a map to deduplicate rules by (account_id, tenant_id, alert) to avoid
+	// Use a map to deduplicate rules by (account_id, tenant_id, source, alert) to avoid
 	// "ON CONFLICT DO UPDATE command cannot affect row a second time" error
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	seenRules := make(map[string]bool)
 
 	for _, rule := range rules.Items {
 		// Create a unique key for deduplication based on the conflict clause
-		ruleKey := fmt.Sprintf("%s:%s:%s", accountId, tenantId, rule.Name)
+		ruleKey := fmt.Sprintf("%s:%s:%s:%s", accountId, tenantId, rule.Source, rule.Name)
 		if seenRules[ruleKey] {
 			ctx.GetLogger().Warn("skipping duplicate rule in batch", "accountId", accountId, "tenantId", tenantId, "alert", rule.Name)
 			continue
@@ -914,7 +915,10 @@ func StoreEventRules(ctx *security.RequestContext, accountId string) (providers.
 
 	result, err := dbms.NamedExec(`insert into event_rules (id, created_at, updated_at, tenant_id, account_id, alert, annotations, expr, duration, labels, source, category, severity, enabled)
 		values (:id, :created_at, :updated_at, :tenant_id, :account_id, :alert, :annotations, :expr, :duration, :labels, :source, :category, :severity, :enabled)
-		on conflict (account_id, tenant_id, alert)
+		-- Must name exactly the columns of event_rules_account_tenant_source_alert_key
+		-- (migration V873). Postgres infers the arbiter index by exact column match, so a
+		-- stale target raises 42P10 at plan time and fails the whole batch.
+		on conflict (account_id, tenant_id, source, alert)
 		do update set updated_at = excluded.updated_at, alert = excluded.alert, annotations = excluded.annotations, expr = excluded.expr, duration = excluded.duration, labels = excluded.labels, source = excluded.source, category = excluded.category, severity = excluded.severity`,
 		args,
 	)

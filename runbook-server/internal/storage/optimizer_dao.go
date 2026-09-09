@@ -621,8 +621,71 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 			AND cr.status = 'Active'
 			AND r.category = ANY($2)
 			AND r.rule_name = $3
-			AND r.status = 'Open'
 			AND r.is_dismissed = false
+			AND (
+				r.status = 'Open'
+				OR (
+					-- A recommendation whose only blocker is the pull request THIS
+					-- auto optimize raised itself. Raising that pull request flips the
+					-- recommendation to InProgress, so on 'Open' alone the workload is
+					-- never recomputed again and the api-server's refresh guard is
+					-- never reached — which is the whole of #34959: "nobody merges it,
+					-- the recommendation underneath keeps moving". Nothing else frees
+					-- it either; reopenOrphanedInProgressRecommendations only reopens
+					-- rows with NO resolutions at all.
+					--
+					-- Deliberately narrow. InProgress for any other reason — a ticket
+					-- in flight, a pull request a person raised, a deployment change
+					-- mid-apply — stays excluded, because re-running those would
+					-- duplicate work that is genuinely still happening.
+					r.status = 'InProgress'
+					AND EXISTS (
+						SELECT 1 FROM recommendation_resolution own
+						WHERE own.recommendation_id = r.id
+						  AND own.type = 'PullRequest'
+						  AND own.status = 'InProgress'
+						  AND own.resolver_type = $4
+						  AND own.type_reference_id LIKE 'http%'
+						  AND (own.pr_lifecycle_state IS NULL
+						       OR own.pr_lifecycle_state <> ALL($5))
+						  -- The cooldown lives HERE, not downstream. The generator's
+						  -- change_pct cannot throttle this: it compares against the
+						  -- live cluster allocation, which by construction does not
+						  -- change while the pull request sits unmerged, so it would
+						  -- report a large change on every single run forever. Without
+						  -- this clause every open pull request becomes a standing
+						  -- hourly generate-execute-apply cycle that decides to do
+						  -- nothing.
+						  -- (now() AT TIME ZONE 'UTC') because the column is a
+						  -- timestamp without time zone holding naive UTC; bare now()
+						  -- is timestamptz and Postgres would reinterpret the stored
+						  -- value in the session timezone, shrinking this cooldown by
+						  -- the offset. make_interval rather than a Go duration string
+						  -- so the unit is explicit rather than relying on Postgres to
+						  -- parse Go's "6h0m0s" formatting.
+						  AND (own.last_value_refresh_at IS NULL
+						       OR own.last_value_refresh_at
+						            < (now() AT TIME ZONE 'UTC') - make_interval(secs => $6))
+						  -- The cap is mirrored for the same reason as the cooldown. Once
+						  -- the budget is spent the guard refuses at valueRefreshBlocked
+						  -- BEFORE claiming, so nothing re-stamps last_value_refresh_at:
+						  -- the stamp ages past the cooldown, reads as "due" forever, and
+						  -- the exhausted workload is reselected on every run for the rest
+						  -- of that pull request's life.
+						  AND own.value_refresh_count < $7
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM recommendation_resolution other
+						WHERE other.recommendation_id = r.id
+						  AND other.status = 'InProgress'
+						  AND NOT (
+							other.type = 'PullRequest'
+							AND other.resolver_type = $4
+							AND other.type_reference_id LIKE 'http%'
+						  )
+					)
+				)
+			)
 		`
 	var dbRecs []struct {
 		ID                   uuid.UUID  `db:"id"`
@@ -652,7 +715,11 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 		UpdatedBy            *uuid.UUID `db:"updated_by"`
 	}
 
-	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, pq.Array(recommendationCategories), recommendationRuleName); err != nil {
+	if err := d.db.SelectContext(ctx, &dbRecs, query, accountID, pq.Array(recommendationCategories), recommendationRuleName,
+		string(model.RecommendationResolutionResolverTypeAutoOptimize),
+		pq.Array(model.PRLifecycleTerminalStates),
+		model.ValueRefreshCooldown.Seconds(),
+		model.ValueRefreshCap); err != nil {
 		return nil, err
 	}
 
@@ -1116,10 +1183,35 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 // the run no longer aborts on a duplicate resolution id (the UNIQUE constraint was
 // dropped in V818), the task now always records a terminal status, and a stale
 // Scheduled task no longer blocks its recommendation — all of #34943.
+//
+// BOTH arms must stay reachable by the reconciler, or they block forever. The
+// binding rule: this predicate may only block on a row that api-server's
+// findOpenPRResolution would ALSO return. Whenever the two disagree, the row in
+// the gap is unreleasable — nothing can ever advance it, and its recommendation
+// is skipped for good:
+//
+//   - the terminal-state guard on the first arm. Without it a creation the
+//     reconciler already gave up on ('unresolvable') keeps blocking. Observed on
+//     dev: resolution 6204dca2, "PR creation in progress" with no URL since
+//     2026-03-06, blocking ml-k8s-server for five months.
+//   - the status guard on the second arm. Without it a resolution whose pull
+//     request closed months ago keeps blocking, because the reconciler only ever
+//     selects status = 'InProgress' and so never terminalises it. Observed on
+//     dev: resolution fae6ace9, pinned to a pull request closed on 2026-03-13,
+//     blocking workflow-server for five months.
+//
+// #35523 narrowed findOpenPRResolution to InProgress and its commit message
+// claimed to close this class — but it only changed api-server's copy of the
+// predicate and left this one alone, which is what let the second case above
+// survive. That is the third recurrence (#34943, #35523, this); the two copies
+// are collapsed into one definition in the follow-up, and until then any edit
+// here has to be mirrored there by hand.
 func (d *OptimizerDao) GetActiveResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error) {
 	return d.getResolutions(ctx, recommendationIDs,
-		`((status = $2 AND type_reference_id NOT LIKE 'http%')
+		`((status = $2 AND type_reference_id NOT LIKE 'http%'
+				AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state <> ALL($4)))
 			OR (type = $3 AND type_reference_id LIKE 'http%'
+				AND status = $2
 				AND resolver_type <> $5
 				AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state <> ALL($4))))`,
 		string(model.RecommendationResolutionStatusInProgress),

@@ -44,6 +44,15 @@ type RetryConfig struct {
 // reformat prompt.
 var ErrParseFailure = errors.New("unable to parse LLM response: no action, final answer, or clarification")
 
+// reactCritiquerInputVariables is shared by every ReAct planner because they
+// render the same react_critiquer prompt. Keeping one declaration prevents a
+// new runtime input from silently disabling critique in only one planner.
+var reactCritiquerInputVariables = []string{
+	"input", "scratchpad", "final_answer", "question_type", "tool_names",
+	"tool_descriptions", "tools_invoked", "hypothesis_mode_enabled",
+	"sdg_grounding_enabled", "premise_verification_enabled", "notebook", "today",
+}
+
 // ErrNotebookOnlyTurn signals that the LLM output was a VALID notebook update
 // (the model "remembering" a finding) with no accompanying tool action or final
 // answer. It is deliberately distinct from ErrParseFailure: the turn is not

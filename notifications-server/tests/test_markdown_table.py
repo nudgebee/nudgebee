@@ -113,7 +113,17 @@ class TestRenderTable:
     def test_pads_short_rows_to_header_width(self):
         text = "| A | B | C |\n|---|---|---|\n| 1 | 2 |\n"
         blocks = render_table(text)
-        assert blocks[0].rows[1] == [_text_cell("1"), _text_cell("2"), _text_cell("")]
+        assert blocks[0].rows[1] == [_text_cell("1"), _text_cell("2"), _text_cell("-")]
+
+    def test_blank_cell_becomes_a_dash_not_empty_string(self):
+        # Slack's table block schema rejects a raw_text cell outright with
+        # "must be more than 0 characters" - confirmed live against the real
+        # Slack API. A deliberately blank cell (e.g. a "merged" visual
+        # grouping where a repeated value is left blank on later rows) must
+        # not produce "".
+        text = "| Deployment | Pod |\n|---|---|\n| api | api-1 |\n|  | api-2 |\n"
+        blocks = render_table(text)
+        assert blocks[0].rows[2][0] == _text_cell("-")
 
     def test_truncates_long_rows_to_header_width(self):
         text = "| A | B |\n|---|---|\n| 1 | 2 | 3 |\n"
@@ -365,6 +375,18 @@ class TestRenderTable:
         link_element = link_cell["elements"][0]["elements"][0]
         assert link_element["url"] == long_url  # untouched, however long
         assert link_element["text"] == "view details"  # short label, unaffected
+
+    def test_blank_cells_count_toward_the_aggregate_char_budget(self):
+        # A blank cell becomes "-" (_BLANK_CELL_PLACEHOLDER), not an
+        # invisible "" - _build_cell runs before the char-budget loop sums
+        # grid_rows, so the dash must be included like any other cell text,
+        # not silently free against _MAX_TABLE_CHARS.
+        rows = "\n".join("|  |" for _ in range(50))
+        text = f"| A |\n|---|\n{rows}\n"
+        blocks = render_table(text)
+
+        total_chars = sum(len(row[0]["text"]) for row in blocks[0].rows)
+        assert total_chars == len("A") + 50 * len("-")
 
     def test_drops_rows_to_stay_under_aggregate_char_limit(self):
         # Each data row is ~190 chars (under the per-cell 200 cap, so it

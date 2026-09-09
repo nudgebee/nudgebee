@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"nudgebee/llm/tools/core"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -107,6 +108,40 @@ func TestKubectlNamespace(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, kubectlNamespace(tc.command))
+		})
+	}
+}
+
+func TestInferKubectlVerbType(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  core.ToolRequestType
+	}{
+		{"incomplete describe remains read", "kubectl describe pods -n nudgebee -l", core.ToolRequestTypeRead},
+		{"json wrapped describe", `{"command":"kubectl describe pods -n nudgebee -l"}`, core.ToolRequestTypeRead},
+		{"global flags before read verb", "kubectl --context prod -n nudgebee get pods", core.ToolRequestTypeRead},
+		{"create", "kubectl create deployment api --image=nginx", core.ToolRequestTypeCreate},
+		{"update", "kubectl scale deployment api --replicas=2", core.ToolRequestTypeUpdate},
+		{"delete", "kubectl delete pod api-123 -n nudgebee", core.ToolRequestTypeDelete},
+		{"mutating command help is read", "kubectl delete pod --help", core.ToolRequestTypeRead},
+		{"quoted help token does not turn update into read", `kubectl annotate pod api note='run -h now'`, core.ToolRequestTypeUpdate},
+		{"context-dependent exec falls through", "kubectl exec api-123 -- touch /tmp/x", ""},
+		{"exec payload help flag still falls through", "kubectl exec api-123 -- sh -h", ""},
+		{"unknown verb falls through", "kubectl frobnicate pods", ""},
+		{"missing kubectl prefix falls through", "describe pods -n nudgebee", ""},
+		{"other shell command falls through", "rm -rf /tmp/work", ""},
+		{"pipeline falls through", "kubectl get pods | grep api", ""},
+		{"compound read then delete falls through", "kubectl get pods && kubectl delete pod api", ""},
+		{"redirect falls through", "kubectl get pods > pods.txt", ""},
+		{"command substitution falls through", "kubectl get pods -l \"app=$(cat selector)\"", ""},
+		{"quoted jsonpath operator remains read", `kubectl get pods -o 'jsonpath={.items[?(@.status.phase=="Running")]}'`, core.ToolRequestTypeRead},
+		{"quoted pipe remains read", `kubectl get pods -o 'jsonpath={.items[*].metadata.name}{"|"}'`, core.ToolRequestTypeRead},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, inferKubectlVerbType(extractCommandFromToolInput(tt.input)))
 		})
 	}
 }
@@ -394,4 +429,37 @@ func TestWrapKubectlError_EnvelopeShape(t *testing.T) {
 		wrapped := wrapKubectlError("", "kubectl get pods")
 		assert.Equal(t, "", wrapped)
 	})
+}
+
+// TestKubectlBlockMessageGivesTheAgentARepairPath pins that a rejection names the
+// offending construct and states the accepted grammar. The fixture is the exact
+// command an agent sent in a real investigation: the old message said only that
+// the command was "blocked", and the agent abandoned the step rather than
+// retrying with one kubectl call per namespace.
+func TestKubectlBlockMessageGivesTheAgentARepairPath(t *testing.T) {
+	realWorldCommand := `kubectl get namespaces --no-headers -o custom-columns='NAME:.metadata.name' | ` +
+		`grep -i nudgebee | while read ns; do printf '%s\t' "$ns"; ` +
+		`kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l; done`
+
+	err := validateKubectlCommandAccess(realWorldCommand)
+	require.Error(t, err)
+	// Names what was wrong...
+	require.Contains(t, err.Error(), "blocked because")
+	// ...and what to send instead, or the agent has nothing to act on.
+	require.Contains(t, err.Error(), "exactly one kubectl command")
+	require.Contains(t, err.Error(), "one kubectl call per target")
+
+	for _, tc := range []struct{ command, wants string }{
+		{`kubectl get pods > /tmp/out`, "a redirection"},
+		{`kubectl get pods; rm -rf /`, "a shell operator"},
+		{`kubectl get pods $(whoami)`, "a subshell or command group"},
+		{`kubectl get pods | awk '{print $1}'`, `"awk" is not an allowed filter`},
+		{`kubectl get pods | grep 'unterminated`, "unbalanced quote"},
+		{`helm list`, "does not start with kubectl"},
+	} {
+		err := validateKubectlCommandAccess(tc.command)
+		require.Error(t, err, tc.command)
+		require.Contains(t, err.Error(), tc.wants, tc.command)
+		require.Contains(t, err.Error(), "exactly one kubectl command", tc.command)
+	}
 }

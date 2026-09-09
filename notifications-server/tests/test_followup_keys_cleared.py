@@ -42,6 +42,18 @@ class _FakePipeline:
     def __exit__(self, *exc):
         return False
 
+    def watch(self, key):
+        pass
+
+    def unwatch(self):
+        pass
+
+    def multi(self):
+        pass
+
+    def get(self, key):
+        return self._store.get(key)
+
     def set(self, key, value):
         self._store[key] = value
 

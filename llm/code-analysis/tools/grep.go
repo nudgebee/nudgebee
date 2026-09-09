@@ -188,14 +188,14 @@ func (t *GrepTool) Execute(ctx context.Context, input map[string]any) core.NBToo
 	}
 
 	// Strategy 1: git grep first (authoritative in a git repo).
-	result := t.tryGitGrep(pattern, include, caseInsensitive, lineNumbers, int(maxResults))
+	result := t.tryGitGrep(ctx, pattern, include, caseInsensitive, lineNumbers, int(maxResults))
 	if result.Status == "success" {
 		return result
 	}
 
 	// Strategy 2: system grep fallback (rg is the primary/recommended search
 	// tool; grep is a single fallback for non-git or rg-less environments).
-	return t.trySystemGrep(pattern, searchPath, include, caseInsensitive, lineNumbers, int(maxResults))
+	return t.trySystemGrep(ctx, pattern, searchPath, include, caseInsensitive, lineNumbers, int(maxResults))
 }
 
 // isNoMatchExit reports whether an exec error is grep's "no lines selected"
@@ -207,7 +207,7 @@ func isNoMatchExit(err error) bool {
 	return false
 }
 
-func (t *GrepTool) tryGitGrep(pattern, include string, caseInsensitive, lineNumbers bool, maxResults int) core.NBToolResponse {
+func (t *GrepTool) tryGitGrep(ctx context.Context, pattern, include string, caseInsensitive, lineNumbers bool, maxResults int) core.NBToolResponse {
 	args := []string{"grep"}
 
 	if lineNumbers {
@@ -223,7 +223,7 @@ func (t *GrepTool) tryGitGrep(pattern, include string, caseInsensitive, lineNumb
 		args = append(args, "--", fmt.Sprintf(":%s", include))
 	}
 
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = t.workspaceDir
 
 	output, err := cmd.CombinedOutput() // Capture both stdout and stderr
@@ -241,7 +241,7 @@ func (t *GrepTool) tryGitGrep(pattern, include string, caseInsensitive, lineNumb
 	return t.formatResults("git grep", string(output), maxResults)
 }
 
-func (t *GrepTool) trySystemGrep(pattern, searchPath, include string, caseInsensitive, lineNumbers bool, maxResults int) core.NBToolResponse {
+func (t *GrepTool) trySystemGrep(ctx context.Context, pattern, searchPath, include string, caseInsensitive, lineNumbers bool, maxResults int) core.NBToolResponse {
 	args := []string{"-r"}
 
 	if lineNumbers {
@@ -257,7 +257,7 @@ func (t *GrepTool) trySystemGrep(pattern, searchPath, include string, caseInsens
 
 	args = append(args, pattern, searchPath)
 
-	cmd := exec.Command("grep", args...)
+	cmd := exec.CommandContext(ctx, "grep", args...)
 	output, err := cmd.CombinedOutput() // Capture both stdout and stderr
 	if err != nil {
 		if isNoMatchExit(err) {

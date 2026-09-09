@@ -193,6 +193,16 @@ func getAwsConfigFromAccount(ctx context.Context, account providers.Account) (aw
 		stsClient := sts.NewFromConfig(baseCfg)
 		assumeRoleProvider := stscreds.NewAssumeRoleProvider(stsClient, *account.AssumeRole, func(o *stscreds.AssumeRoleOptions) {
 			o.RoleSessionName = "nudgebee-cloud-collector"
+			// Must match what the onboarding validator sends
+			// (buildAWSConfigForValidation). A trust policy carrying an
+			// sts:ExternalId condition rejects a call that omits it, so
+			// dropping it here made accounts validate green and then fail
+			// every sync with AccessDenied.
+			if account.ExternalId != nil {
+				if extID := strings.TrimSpace(*account.ExternalId); extID != "" {
+					o.ExternalID = aws.String(extID)
+				}
+			}
 		})
 		opts = append(opts, config.WithCredentialsProvider(aws.NewCredentialsCache(assumeRoleProvider)))
 	}

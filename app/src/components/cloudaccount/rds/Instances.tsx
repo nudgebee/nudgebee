@@ -28,15 +28,17 @@ import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { ds } from '@utils/colors';
+import { getInstanceCompute } from './instanceCompute';
 
 const INSTANCE_HEADER = [
-  { name: 'Instance Name', width: '22%' },
-  { name: 'State', width: '9%' },
-  { name: 'Engine', width: '12%' },
-  { name: 'Launch Time', width: '13%' },
-  { name: 'Storage', width: '10%' },
-  { name: 'Tags', width: '17%' },
-  { name: 'Storage Type', width: '11%' },
+  { name: 'Instance Name', width: '20%' },
+  { name: 'State', width: '8%' },
+  { name: 'Engine', width: '11%' },
+  { name: 'vCPU / Memory', width: '10%' },
+  { name: 'Launch Time', width: '12%' },
+  { name: 'Storage', width: '9%' },
+  { name: 'Tags', width: '14%' },
+  { name: 'Storage Type', width: '10%' },
   { name: '', width: '6%' },
 ];
 const RDS_HEADER = [
@@ -846,6 +848,10 @@ const InstancesView = (props: {
           });
           data.push({
             component: <CustomText text1={getEngine(item)} subtext1={getEngineVersion(item)} />,
+          });
+          const compute = getInstanceCompute(item);
+          data.push({
+            component: <CustomText text1={compute.cpu || '-'} subtext1={compute.memory || undefined} />,
           });
           data.push({
             component: <Datetime value={getCreateTime(item)} />,

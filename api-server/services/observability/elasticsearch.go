@@ -248,8 +248,25 @@ func extractRelayError(resp map[string]interface{}) error {
 }
 
 // QueryLabels implements [LogSource].
+// QueryLabels returns the queryable FIELDS of the resolved index. Every provider's
+// QueryLabels answers the same question — which names a where-clause may reference — and
+// for Elasticsearch that answer comes from the index mapping. The index TARGETS a query
+// can run against are a different concept with a different consumer (the index pickers);
+// see queryIndexTargets.
+//
+// This used to return index names, which is what made "validate the caller's field names
+// against QueryLabels" quietly compare fields to indices and reject every correct field.
 func (e *ElasticSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabel, error) {
+	fields, err := e.QueryIndexFields(ctx, fetchLogRequest)
+	if err != nil {
+		return nil, err
+	}
+	return LabelsFromIndexFields(fields), nil
+}
 
+// queryIndexTargets lists the index / data-stream names this account can query, for the
+// logs_list_labels fetch_index branch that feeds the UI index pickers.
+func (e *ElasticSource) queryIndexTargets(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]string, error) {
 	relayRequest := relay.ActionExecuteBody{
 		AccountID:    fetchLogRequest.AccountId,
 		ActionName:   "query_es_indices",
@@ -269,18 +286,15 @@ func (e *ElasticSource) QueryLabels(ctx *security.RequestContext, fetchLogReques
 		return nil, relayErr
 	}
 
-	data3, err := e.ExtractIndexNamesAny(resp)
+	names, err := e.ExtractIndexNamesAny(resp)
 	if err != nil {
 		return nil, err
 	}
 
-	var output []OutputLogLabel
-	for _, v := range data3 {
+	var output []string
+	for _, v := range names {
 		if str, ok := v.(string); ok {
-			output = append(output, OutputLogLabel{
-				Label:      str,
-				Attributes: map[string]interface{}{},
-			})
+			output = append(output, str)
 		}
 	}
 	return output, nil

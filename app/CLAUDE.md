@@ -186,6 +186,8 @@ When generating UI components with clickable elements or navigation buttons, alw
 <Link href="/settings" id="nav-settings-link">Settings</Link>
 ```
 
+These IDs are a contract with the Playwright suite in `app-e2e-tests/`, not decoration — see [Keeping app-e2e-tests in sync](#keeping-app-e2e-tests-in-sync-required) before renaming or removing one.
+
 ## Environment Variables
 
 Required for local development (create `.env.local`):
@@ -266,6 +268,56 @@ Whenever a PR adds, renames, or removes a `fragment` in any page's `filterOption
 
 The sidebar's hover flyout (`menuItems[].subItems` in [`src/components/common/layout/index.jsx`](src/components/common/layout/index.jsx)) is the second hand-maintained copy of the same tab list — it carries only the **top-level** tabs of each page. Adding, renaming, or removing a top-level `fragment` means updating it too. Sub-tabs never appear there, so a sub-tab-only change doesn't.
 
+## Keeping app-e2e-tests in sync (REQUIRED)
+
+**Rule: no change under `app/` is done until the e2e suite has been reconciled against it, in the same PR.**
+
+`app-e2e-tests/` is a separate Playwright project that drives this app through a contract that lives in `app/` source — element ids, testids, visible text, accessible names, placeholders, routes, and the conditions under which any of those render. Nothing in `app/`'s validation can see that contract: `lint2`, `type-check` and `npm test` all pass while the suite is broken. It fails later, on a run nobody traces back to the PR that caused it. So reconciling is a step you perform, not a thing you notice.
+
+The rule is three passes, in order. The first is mechanical, the second is judgement, the third is evidence.
+
+### Pass 1 — mechanical sweep (always, no exceptions)
+
+```bash
+cd app-e2e-tests && node scripts/e2e-impact.js [base-ref]   # default base: enterprise/main
+```
+
+It reads every static selector the suite requires, reads what each changed `app/` file provided before and after your diff, and reports the intersection: strings the tests need that your diff deleted or reworded, each with the app file that dropped it and the spec line that needs it. It reads the **working tree**, so run it while the change is still uncommitted — you do not have to commit first to find out. It also prints which spec areas cover the files you touched. Exit 1 means at least one selector is broken.
+
+Comparing against the pre-diff version is what keeps it quiet — a selector the app composes at runtime (`toKebabCase(field.display_name)`) is never a literal in either version, so it is never flagged. It reports its own blind spots too: the count of dynamic locators (regex / template-literal) it could not check statically.
+
+### Pass 2 — judgement pass (what no script can see)
+
+A selector that still exists in source can still be unreachable. Static text matching cannot catch any of these, so read your own diff and ask:
+
+- **Did an element become conditional?** `{options.length > 8 && <Search/>}` removes no string and breaks the suite completely. This is the most common miss, and the one that looks safest in review.
+- **Did a default change?** Page size, initial tab, default filter, collapsed-vs-expanded, sort order. Tests that use `.first()` / `.nth(n)` bind to order, and a row that moved to page 2 is a row that no longer exists.
+- **Did something become async, slower, or lazier?** Deferred loading, a new skeleton, a request behind a queue — every one of them invalidates a wait that used to be sufficient.
+- **Did the accessible name or role change?** Swapping a `<Button>` for a `<Link>`, or moving text into an `aria-label`, changes `getByRole` without changing any visible copy.
+- **Did a form gain a required field, a confirm step, or a new modal?** A flow test that filled 4 fields and clicked Save now stops on validation.
+- **Did a route, hash fragment or redirect change?** `goto` and `waitForURL` bind to those.
+
+If your diff does any of these, find the e2e path for that element **by behaviour, not by name** — grep the spec area the script printed and read the helper.
+
+### Pass 3 — evidence
+
+Run the spec areas the script named, against dev:
+
+```bash
+cd app-e2e-tests && npm run test:dev -- tests/<area>
+```
+
+Put the result in the PR body. If you concluded a change has no e2e impact, prove it with the command that shows it (`node scripts/e2e-impact.js` output, or the grep that returns nothing) rather than leaving reviewers to take it on faith.
+
+### Fixing what you find
+
+Selectors are centralised per area in `app-e2e-tests/tests/**/[Ll]ocators*.ts` (`GlobalLocators.ts`, `CloudAccountLocators.ts`, `ClusterDetailsLocators.ts`, `OptimizeLocators.ts`, `TroubleshootLocators.ts`, `admin/*/…Locators.ts`, `nubiLocators.ts`, `workflowlocators.ts`) — a hit is usually one line in one of those files, not scattered through the specs. Shared flow helpers live beside them (e.g. `tests/admin/Integrations/util.ts`).
+
+Two rules for the fix itself:
+
+- **Handle both shapes, not the one your data produces.** When behaviour became conditional, the helper must cope with the condition being either way — probe for the element, branch, and take the other path when it is absent. A helper that assumes the branch your dev environment happens to hit is the same bug with a new owner.
+- **Prefer making the app stable over making the test clever.** Keeping an `id` and changing only the label costs nothing; the suite leans on ids far more than on text. **Adding** an `id`/`data-testid` is always safe — **renaming or deleting one is a breaking change to another repo.**
+
 ## Key Libraries Reference
 
 | Library                    | Usage                                  |
@@ -277,3 +329,13 @@ The sidebar's hover flyout (`menuItems[].subItems` in [`src/components/common/la
 | react-hook-form + yup      | Form handling and validation           |
 | dayjs / date-fns           | Date manipulation                      |
 | lodash                     | Utility functions                      |
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

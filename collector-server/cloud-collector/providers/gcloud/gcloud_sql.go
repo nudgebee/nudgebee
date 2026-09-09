@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -212,7 +213,7 @@ func (s *cloudSQLService) GetRecommendations(ctx providers.CloudProviderContext,
 		if len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_sql_no_labels",
+				RuleName:     constants.GCPSQLNoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{
@@ -254,7 +255,7 @@ func (s *cloudSQLService) GetRecommendations(ctx providers.CloudProviderContext,
 			if enabled, ok := meta["enabled"].(bool); ok && !enabled {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategoryConfiguration,
-					RuleName:     "gcp_sql_no_backup",
+					RuleName:     constants.GCPSQLNoBackup,
 					Severity:     providers.RecommendationSeverityHigh,
 					Savings:      0,
 					Data: map[string]any{
@@ -425,7 +426,7 @@ func (s *cloudSQLService) ApplyRecommendation(ctx providers.CloudProviderContext
 	}
 
 	switch recommendation.RuleName {
-	case "gcp_sql_no_labels":
+	case constants.GCPSQLNoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or gcloud CLI")
 
 	case "gcp_sql_inactive_instance":
@@ -438,7 +439,7 @@ func (s *cloudSQLService) ApplyRecommendation(ctx providers.CloudProviderContext
 		ctx.GetLogger().Info("successfully initiated SQL instance deletion", "instance", instanceName, "operation", op.Name)
 		return nil
 
-	case "gcp_sql_no_backup":
+	case constants.GCPSQLNoBackup:
 		// Enable automated backups
 		// This requires updating the instance settings
 		return fmt.Errorf("automatic backup configuration not yet implemented - please enable backups manually via GCP console")
@@ -615,13 +616,29 @@ func (s *cloudSQLService) GetLogFilter(ctx providers.CloudProviderContext, accou
 	if resourceId == "" {
 		return `resource.type="cloudsql_database"`
 	}
-	// GCP Cloud SQL database_id label format is "project_id:instance_name"
-	session, err := getGcloudSessionFromAccount(ctx, account)
-	if err != nil {
-		ctx.GetLogger().Warn("failed to get gcloud session for log filter, falling back to broad filter", "error", err)
-		return `resource.type="cloudsql_database"`
+	// GCP Cloud SQL database_id label format is "project_id:instance_name".
+	//
+	// Callers disagree on which half they hold. The resource inventory passes a
+	// bare instance name ("sample-db"), but a monitoring alert's
+	// gcp_event_instance label is already the full database_id
+	// ("example-project:sample-db"). Prepending unconditionally produced
+	// database_id="example-project:example-project:sample-db", which matches no
+	// log entry — so every plain Cloud SQL metric alert (CPU, memory, disk) got
+	// an empty log result and no evidence card at all. Log-based metric alerts
+	// were unaffected only because they set log_group_name, which skips this
+	// path entirely.
+	//
+	// An instance name cannot contain a colon, so a colon means the caller
+	// already handed us a full database_id.
+	databaseId := resourceId
+	if !strings.Contains(resourceId, ":") {
+		session, err := getGcloudSessionFromAccount(ctx, account)
+		if err != nil {
+			ctx.GetLogger().Warn("failed to get gcloud session for log filter, falling back to broad filter", "error", err)
+			return `resource.type="cloudsql_database"`
+		}
+		databaseId = fmt.Sprintf("%s:%s", session.ProjectId, resourceId)
 	}
-	databaseId := fmt.Sprintf("%s:%s", session.ProjectId, resourceId)
 	return fmt.Sprintf(`resource.type="cloudsql_database" resource.labels.database_id="%s"`, databaseId)
 }
 

@@ -504,6 +504,58 @@ func (s *IntegrationTestSuite) TestApprovalWorkflow() {
 	}
 }
 
+// A gate on a cancelled run must not report SCHEDULED (the UI keeps offering approve/reject
+// on a closed workflow) nor COMPLETED (nobody approved anything) — #36358.
+func (s *IntegrationTestSuite) TestCancelWorkflowExecutionWhileAwaitingApproval() {
+	s.T().Log("Running TestCancelWorkflowExecutionWhileAwaitingApproval...")
+
+	workflow := s.loadWorkflowFromFile("testdata/test-approval-workflow.yaml")
+	createdWorkflow, _, err := s.createAndActivateWorkflow(workflow)
+	s.Require().NoError(err, "Failed to create approval workflow")
+
+	runID, err := s.executeWorkflow(createdWorkflow.ID, nil)
+	s.Require().NoError(err, "Failed to execute approval workflow")
+
+	// Cancel must land while the run is genuinely waiting on a human.
+	temporalId, err := s.resolveTemporalWorkflowID(context.Background(), createdWorkflow.ID, runID)
+	s.Require().NoError(err)
+	s.Require().Eventually(func() bool {
+		desc, err := s.temporalClient.DescribeWorkflowExecution(context.Background(), temporalId, runID)
+		s.Require().NoError(err)
+		for _, activity := range desc.PendingActivities {
+			if activity.ActivityType.Name == "core.approval" {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 1*time.Second, "Approval activity never became pending")
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/workflows/%s/runs/%s/cancel", apiBaseURL, createdWorkflow.ID, runID), nil)
+	s.Require().NoError(err, "Failed to create request for canceling workflow")
+	s.addRequestHeaders(req)
+
+	resp, err := http.DefaultClient.Do(req)
+	s.Require().NoError(err, "Failed to send request for canceling workflow")
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode, "Expected 200 OK for cancel workflow")
+
+	var executionDetails *model.WorkflowExecutionDetails
+	s.Require().Eventually(func() bool {
+		executionDetails = s.getWorkflowExecutionDetails(createdWorkflow.ID, runID)
+		return executionDetails.Status == model.WorkflowExecutionStatusCanceled
+	}, 30*time.Second, 1*time.Second, "Workflow execution should have been canceled")
+
+	var approvalTask *model.TaskExecutionDetails
+	for i := range executionDetails.Tasks {
+		if executionDetails.Tasks[i].ID == "wait-for-approval" {
+			approvalTask = &executionDetails.Tasks[i]
+			break
+		}
+	}
+	s.Require().NotNil(approvalTask, "Approval task should be present in the execution details")
+	s.Assert().Equal(model.TaskStatusCanceled, approvalTask.Status, "Approval task of a canceled run must be CANCELED, not %s", approvalTask.Status)
+}
+
 func (s *IntegrationTestSuite) TestApprovalIMWorkflow() {
 	s.T().Log("Running TestApprovalIMWorkflow...")
 

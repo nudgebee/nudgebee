@@ -94,6 +94,13 @@ func archiveRecommendationsForInactiveResources(ctx *security.RequestContext, db
 	return nil
 }
 
+// upsertRecommendationData UPSERTs a producer's rows. The status column is
+// guarded by a CASE: a re-scan may move a row between the scanner-owned
+// Open/Archive states, but never out of a user-owned one (Dismissed/snoozed,
+// InProgress, Closed). Without it a re-scan reopened findings the user had
+// dismissed. clearRecommendationData tombstones Open rows only, which is the
+// other half of the same invariant; retiring user-owned rows whose resource is
+// gone belongs to archiveRecommendationsForInactiveResources, not to this path.
 func upsertRecommendationData(ctx *security.RequestContext, dbms *database.DatabaseManager, accountId string, data []map[string]any) error {
 	if len(data) == 0 {
 		return nil
@@ -109,7 +116,10 @@ func upsertRecommendationData(ctx *security.RequestContext, dbms *database.Datab
 		(status, tenant_id, cloud_account_id, recommendation, severity, category, rule_name, estimated_savings, recommendation_action, resource_id, account_object_id, updated_at, finops_score, finops_band, finops_score_breakdown)
 		values (:status, :tenant_id, :cloud_account_id, :recommendation, :severity, :category, :rule_name, :estimated_savings, :recommendation_action, :resource_id, :account_object_id, :updated_at, :finops_score, :finops_band, :finops_score_breakdown)
 		ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
-		DO UPDATE SET recommendation = (EXCLUDED.recommendation), status = (EXCLUDED.status), updated_at = (EXCLUDED.updated_at), estimated_savings = (EXCLUDED.estimated_savings) `, data)
+		DO UPDATE SET recommendation = (EXCLUDED.recommendation),
+		              status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+		                            THEN recommendation.status ELSE EXCLUDED.status END,
+		              updated_at = (EXCLUDED.updated_at), estimated_savings = (EXCLUDED.estimated_savings) `, data)
 	if err != nil {
 		ctx.GetLogger().Error("error upserting recommendation data", "error", err)
 		return err
@@ -953,8 +963,9 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 		// for Prometheus-backed clusters is gone with the Robusta agent
 		// deprecation, so before this change non-Datadog accounts produced
 		// zero pv_rightsize recommendations even with the agent connected.
-		if !tenant.IsFeatureEnabledByDefault(accountCtx, acc.TenantId, tenant.FEATURE_VERTICAL_RIGHTSIZING) {
-			accountCtx.GetLogger().Debug("volume rightsizing: feature disabled for tenant", "tenant_id", acc.TenantId)
+		if !tenant.IsFeatureEnabledByDefaultForAccount(accountCtx, acc.TenantId, accountId, tenant.FEATURE_VERTICAL_RIGHTSIZING) {
+			accountCtx.GetLogger().Debug("volume rightsizing: disabled for this scope, skipping",
+				"tenant_id", acc.TenantId, "account_id", accountId)
 		} else {
 			request := ml.VolumeRightsizingRequest{
 				AccountId:             accountId,

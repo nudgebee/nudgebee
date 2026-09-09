@@ -28,12 +28,14 @@ const CF_INSTRUCTIONS = `### Step 1. Give Account Name
 const ROLE_INSTRUCTIONS = `### IAM Role ARN
   Use this flow if you already have a cross-account IAM role that Nudgebee can assume.
   The role must allow \`sts:AssumeRole\`, \`cur:DescribeReportDefinitions\`, and \`s3:GetBucketLocation\` / \`s3:ListBucket\` on the CUR bucket.
-  Click **Validate** before connecting — we will probe STS, Cost & Usage Report discovery, and CUR S3 access upfront.`;
+  Click **Validate** before connecting — we will probe STS, Cost & Usage Report discovery, and CUR S3 access upfront.
+  Only the STS check is required: without a usable CUR the account still connects, but cost data stays empty until you attach one via **Edit Billing Config**.`;
 
 const KEYS_INSTRUCTIONS = `### Access Keys
   Use this flow when you cannot grant a cross-account role (segregated billing accounts, dev/test, etc.).
   Create an IAM user with the same CUR + read-only permissions as the CloudFormation template, then paste the **Access Key ID** and **Secret Access Key** below.
-  Click **Validate** before connecting — we will probe STS, Cost & Usage Report discovery, and CUR S3 access upfront.`;
+  Click **Validate** before connecting — we will probe STS, Cost & Usage Report discovery, and CUR S3 access upfront.
+  Only the STS check is required: without a usable CUR the account still connects, but cost data stays empty until you attach one via **Edit Billing Config**.`;
 
 const POLL_INTERVAL_MS = 7000;
 const ROLE_ARN_REGEX = /^arn:aws:iam::\d{12}:role\/.+$/;
@@ -186,6 +188,19 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       });
   };
 
+  // CreateAccount returns a non-fatal `warning` when the account was created
+  // but something degraded — today, an AWS account with no usable CUR. Nothing
+  // surfaced this field before, so the equivalent Azure cost-management warning
+  // was silently dropped too.
+  const notifyCreateResult = (res, accountName) => {
+    const warning = res?.data?.data?.accounts_create?.warning;
+    if (warning) {
+      snackbar.warning(warning);
+      return;
+    }
+    snackbar.success(`AWS Account "${accountName}" connected successfully.`);
+  };
+
   const handleValidate = async () => {
     if (activeTab === TAB_ROLE_ARN) {
       if (!ROLE_ARN_REGEX.test(roleArn)) {
@@ -263,7 +278,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       .createAccount(payload)
       .then((res) => {
         if (res?.data?.status === 'SUCCESS') {
-          snackbar.success(`AWS Account "${accountNameValue}" connected successfully.`);
+          notifyCreateResult(res, accountNameValue);
           handleCloseModal(true);
         } else {
           snackbar.error(res?.data?.message || 'Failed to connect account');
@@ -295,7 +310,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       })
       .then((res) => {
         if (res?.data?.status === 'SUCCESS') {
-          snackbar.success(`AWS Account "${accountNameValue}" connected successfully.`);
+          notifyCreateResult(res, accountNameValue);
           handleCloseModal(true);
         } else {
           snackbar.error(res?.data?.message || 'Failed to connect account');

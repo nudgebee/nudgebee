@@ -1,6 +1,25 @@
 import getMockData from '@api1/mock';
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
 
+/**
+ * A where clause the caller builds itself, merged on top of the named
+ * parameters below.
+ *
+ * Those parameters each hard-code their operator — `span_name` is always `_eq`,
+ * `resource` always `_like '%…%'`, `duration_ns` always `_gte` — which is the
+ * only question the traces listings ask. The dashboard's filter builder lets an
+ * author PICK the operator, so it passes the clause itself rather than a bare
+ * value whose operator is decided here. Merged per column, so the two can be
+ * combined; the caller's operators win on a collision.
+ */
+export type TraceWhereClause = Record<string, Record<string, unknown>>;
+
+function mergeWhere(binary: Record<string, any>, where?: TraceWhereClause) {
+  for (const [column, operators] of Object.entries(where || {})) {
+    binary[column] = { ...(binary[column] || {}), ...operators };
+  }
+}
+
 interface TraceV2Params {
   accountId: string;
   namespace: string[];
@@ -32,6 +51,9 @@ interface TraceV2Params {
   // ES-only: the trace index chosen in the Traces tab index picker. Sent as
   // request.index so the backend queries it (else it uses the per-account default).
   esIndex?: string;
+  // Operator-carrying filters, for callers that author their own (the dashboard
+  // filter builder). See TraceWhereClause.
+  where?: TraceWhereClause;
 }
 
 const apiTrace = {
@@ -61,6 +83,7 @@ const apiTrace = {
       fromWorkload = false,
       byTrace = false,
       esIndex,
+      where,
       cols = [
         'trace_id',
         'span_id',
@@ -157,6 +180,8 @@ const apiTrace = {
     } else if (typeof traceId === 'string' && traceId) {
       query['trace_id'] = { _eq: traceId };
     }
+    mergeWhere(query, where);
+
     const trace_request = {
       account_id: accountId,
       query: '',
@@ -329,7 +354,8 @@ const apiTrace = {
     spanType: string,
     sortCol: string,
     sortOrder: string,
-    esIndex?: string
+    esIndex?: string,
+    where?: TraceWhereClause
   ) {
     if (accountId === 'demo') {
       const tracesMock = await getMockData('k8s-traces');
@@ -392,6 +418,8 @@ const apiTrace = {
     } else if (spanType == 'query') {
       binary['span_name'] = { _eq: 'query' };
     }
+    mergeWhere(binary, where);
+
     const trace_group_request = {
       account_id: accountId,
       query: '',

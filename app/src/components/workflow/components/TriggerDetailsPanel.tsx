@@ -321,7 +321,7 @@ const TriggerDetailsPanel: React.FC<TriggerDetailsPanelProps> = ({
                 e.preventDefault();
                 router.push(investigateHref);
               }}
-              icon={<SafeIcon src={InvestigateHomeIcon} width={13} height={13} />}
+              icon={<SafeIcon src={InvestigateHomeIcon} alt='' width={13} height={13} />}
             >
               Investigation
             </Button>

@@ -89,3 +89,24 @@ func TestConfluenceConfigComplete(t *testing.T) {
 		"host":      "https://wiki.acme.internal",
 	}))
 }
+
+func TestConfluenceScopeCQL(t *testing.T) {
+	cases := []struct {
+		name      string
+		namespace string
+		pageTrees string
+		want      string
+	}{
+		{name: "no scope", want: ""},
+		{name: "space only", namespace: " SRE ", want: ` AND space="SRE"`},
+		{name: "trees only", pageTrees: "100, 200", want: " AND (ancestor in (100,200) OR id in (100,200))"},
+		{name: "space and trees", namespace: "SRE", pageTrees: "100", want: ` AND space="SRE" AND (ancestor in (100) OR id in (100))`},
+		{name: "non-numeric entries are dropped", pageTrees: `100,https://x/pages/5/t,7 OR 1=1`, want: " AND (ancestor in (100) OR id in (100))"},
+		{name: "quotes in space key are escaped", namespace: `A"B`, want: ` AND space="A\"B"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, confluenceScopeCQL(tc.namespace, tc.pageTrees))
+		})
+	}
+}

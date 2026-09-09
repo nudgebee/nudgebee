@@ -19,7 +19,8 @@
  */
 
 import React, { ReactNode } from 'react';
-import { Box, Tooltip, Typography, SxProps, Theme } from '@mui/material';
+import { Box, Typography, SxProps, Theme } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import { SlackIcon, MSTeamsIcon, GChatIcon, DiscordIcon, jiraIcon, serviceNowIcon, freshdeskIcon, PagerDutyIcon } from '@assets';
 import { colors } from 'src/utils/colors';

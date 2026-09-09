@@ -54,6 +54,10 @@ func startScheduler() error {
 
 	localScheduler.Start()
 	leaderScheduler.Start()
+	slog.Info("scheduler: leader eligibility resolved",
+		"eligible", config.IsSchedulerLeaderEligible(),
+		"in_cluster", config.IsInCluster(),
+		"worker_name", config.Config.ServerName)
 	return nil
 }
 
@@ -201,7 +205,24 @@ func registerOrUpdateWorker() error {
 		return err
 	}
 
-	updatedRows, err := dbms.Db.Exec(`update nb_workers 
+	// Ineligible processes still register and heartbeat — they own conversation
+	// messages and must stay visible as live workers — but never claim leadership.
+	// The demotion is not redundant: a process that held the flag before becoming
+	// ineligible (this guard shipping, or the operator flipping it) would otherwise
+	// keep it forever, because only a *new* leader ever clears another's flag.
+	if !config.IsSchedulerLeaderEligible() {
+		_, err = dbms.Db.Exec(`update nb_workers
+			set is_leader=false, updated_at = timezone('utc',now())
+			where worker_type=$1 and worker_name=$2 and is_leader=true
+		`, config.SERVICE_NAME, config.Config.ServerName)
+		if err != nil {
+			slog.Error("scheduler: failed to demote ineligible worker", "error", err)
+			return err
+		}
+		return nil
+	}
+
+	updatedRows, err := dbms.Db.Exec(`update nb_workers
 			set is_leader=true, updated_at = timezone('utc',now())
 			where worker_type=$1 and worker_name=$2 
 				and not exists(select * from nb_workers where worker_type=$1 and is_leader = true and updated_at > timezone('utc',now()) - ($3)::interval)

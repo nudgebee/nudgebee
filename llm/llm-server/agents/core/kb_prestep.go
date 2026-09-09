@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -287,12 +288,57 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 	// rank order.
 	kept = dedupRAGDocs(kept)
 
-	refs := attributeKBReferences(ctx, request.AccountId, kept, mergeAccountIntegrationKBs(ctx, request.AccountId, kbs))
+	// Log what RAG actually returned, per document, before attribution runs.
+	// Identity lives in these fields alone (there is no kb id on a hit), so when
+	// a document ends up unattributable this is the only record of what it was.
+	// Content is not logged - only its size - to keep customer text out of logs.
+	for i, d := range kept {
+		url, _ := d.Metadata["url"].(string)
+		src, _ := d.Metadata["source"].(string)
+		title, _ := d.Metadata["title"].(string)
+		docID, _ := d.Metadata["_id"].(string)
+		ctx.GetLogger().Info("kb_prestep: rag document",
+			"rank", i, "score", d.SimilarityScore, "chars", len(d.Document),
+			"url", url, "source", src, "title", title, "doc_id", docID,
+			"metadata_keys", metadataKeys(d.Metadata))
+	}
+
+	candidates := mergeAccountIntegrationKBs(ctx, request.AccountId, kbs)
+	for _, kb := range candidates {
+		src := ""
+		if kb.KBSource != nil {
+			src = *kb.KBSource
+		}
+		ctx.GetLogger().Info("kb_prestep: attribution candidate",
+			"kb_id", kb.Id, "name", kb.Name, "status", kb.Status,
+			"kb_type", kb.KBType, "kb_source", src)
+	}
+	// Only worth a WARN when the account HAS knowledge bases but none of them
+	// resolved to a usable candidate. An account with no KBs configured is the
+	// normal case and must not warn on every request.
+	if len(kbs) > 0 && len(candidates) == 0 {
+		// Un-owned documents do not need a candidate — they are recorded from
+		// their own url/source — so this is not "everything is dropped".
+		ctx.GetLogger().Warn("kb_prestep: knowledge bases exist but none resolved to an attribution candidate - "+
+			"only un-owned documents can be kept",
+			"account_id", request.AccountId, "mapped_kbs", len(kbs))
+	}
+
+	refs, attributed, dropped := attributeKBReferences(ctx, request.AccountId, kept, candidates)
+	// Fail CLOSED: only content we can attribute reaches the prompt. An
+	// unattributable document would otherwise influence the answer with no
+	// reference row, so the user sees an answer citing a source the Additional
+	// Contexts panel cannot show — and no log they can read. Dropping it keeps
+	// "injected" and "recorded" the same set.
+	if dropped > 0 {
+		ctx.GetLogger().Warn("kb_prestep: dropping unattributable documents from the prompt",
+			"kept", len(kept), "attributed", len(attributed), "dropped", dropped)
+	}
 	ctx.GetLogger().Info("kb_prestep: retrieval complete",
 		"result_count", len(docs), "kept", len(kept),
-		"kbs_matched", len(refs), "query_chars", len(query))
+		"kbs_matched", len(refs), "injected", len(attributed), "query_chars", len(query))
 
-	return formatRetrievedKBBlock(kept), refs
+	return formatRetrievedKBBlock(attributed), refs
 }
 
 // kbPrestepTimeout resolves the pre-step's RAG timeout from config, falling
@@ -307,15 +353,22 @@ func kbPrestepTimeout() time.Duration {
 
 // dedupRAGDocs collapses duplicate documents (same source url, else identical
 // text) keeping the first — highest-scored — instance, preserving rank order.
+// ragDocDedupKey identifies a retrieved page: its url, else its own text.
+// attributeKBReferences re-checks this key defensively, and that check is only
+// dead code for as long as it derives the key the same way dedupRAGDocs does —
+// so both call this rather than each spelling it out.
+func ragDocDedupKey(doc toolcore.RAGSearchResult) string {
+	if url, _ := doc.Metadata["url"].(string); strings.TrimSpace(url) != "" {
+		return strings.TrimSpace(url)
+	}
+	return strings.TrimSpace(doc.Document)
+}
+
 func dedupRAGDocs(docs toolcore.RAGSearchResults) toolcore.RAGSearchResults {
 	seen := make(map[string]struct{}, len(docs))
 	out := make(toolcore.RAGSearchResults, 0, len(docs))
 	for _, doc := range docs {
-		key, _ := doc.Metadata["url"].(string)
-		key = strings.TrimSpace(key)
-		if key == "" {
-			key = strings.TrimSpace(doc.Document)
-		}
+		key := ragDocDedupKey(doc)
 		if _, dup := seen[key]; dup {
 			continue
 		}
@@ -370,9 +423,104 @@ func mergeAccountIntegrationKBs(ctx *security.RequestContext, accountId string, 
 // text is contained in that KB's stored data, and to an integration KB when
 // its `source` metadata matches the KB's kb_source. Documents that match no
 // candidate are simply not referenced.
-func attributeKBReferences(ctx *security.RequestContext, accountId string, docs toolcore.RAGSearchResults, kbs []toolcore.Knowledgebase) []AgentReference {
-	if len(docs) == 0 || len(kbs) == 0 {
+// metadataKeys lists the metadata field names on a RAG hit. Logged so a miss
+// shows what rag-server actually returned - the payload carries no kb id, and
+// which keys are present decides which attribution rule can even apply.
+func metadataKeys(md map[string]any) []string {
+	if len(md) == 0 {
 		return nil
+	}
+	keys := make([]string, 0, len(md))
+	for k := range md {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// docCollection returns the Qdrant collection rag-server reports on a hit, and
+// whether it was present. The collection name IS the document's identity:
+//
+//	kb_<kb_id>                    -> a manual knowledge base
+//	<integration_id>_knowledge_base -> a synced integration knowledge base
+//	anything else                 -> a global collection (product docs), which
+//	                                 has no llm_knowledgebases row by design
+//
+// Nothing in the point payload carries a kb id, so this is the only identity
+// available. Absent on hits from a rag-server predating the stamp; callers then
+// fall back to the text/source rules in matchKB.
+func docCollection(doc toolcore.RAGSearchResult) (string, bool) {
+	name, _ := doc.Metadata["collection"].(string)
+	name = strings.TrimSpace(name)
+	return name, name != ""
+}
+
+// classifyCollection splits a collection name into (kbID, integrationID). Both
+// empty means the collection is global — not backed by any knowledge base.
+func classifyCollection(name string) (kbID, integrationID string) {
+	switch {
+	case strings.HasPrefix(name, "kb_"):
+		return strings.TrimPrefix(name, "kb_"), ""
+	case strings.HasSuffix(name, "_knowledge_base"):
+		return "", strings.TrimSuffix(name, "_knowledge_base")
+	default:
+		return "", ""
+	}
+}
+
+// unownedName labels an un-owned document's origin for the references panel.
+// doc.Metadata["source"] is the natural name ("nudgebee_docs"), but not every
+// indexed page carries one — a legacy per-account collection has no source tag,
+// and the row then rendered with a blank name. Fall back to the scope, then the
+// collection itself, so the panel always names where the content came from.
+func unownedName(docSource, scope, collection string) string {
+	if s := strings.TrimSpace(docSource); s != "" {
+		return s
+	}
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "account":
+		return "Account documents"
+	case "tenant":
+		return "Tenant documents"
+	case "global":
+		return "NudgeBee documentation"
+	}
+	if c := strings.TrimSpace(collection); c != "" {
+		return c
+	}
+	return "Unknown source"
+}
+
+// unownedKindForScope names the origin of a document from a collection with no
+// knowledge-base row. "External" alone was ambiguous: it covered NudgeBee's own
+// product docs, a customer's tenant-level user KB, and legacy per-account
+// collections, so the panel could label customer content as a NudgeBee doc.
+func unownedKindForScope(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "account":
+		return AgentReferenceKindAccountDocument
+	case "tenant":
+		return AgentReferenceKindTenantDocument
+	default:
+		return AgentReferenceKindNBDocument
+	}
+}
+
+// scopeOrDefault labels a reference row with the collection scope rag-server
+// reported, defaulting to "global" for older payloads that carry no scope.
+func scopeOrDefault(scope string) string {
+	if s := strings.TrimSpace(scope); s != "" {
+		return s
+	}
+	return "global"
+}
+
+// The third return is the number of documents dropped as unattributable. It is
+// counted at the drop site rather than inferred from len(docs)-len(attributed),
+// so the caller's warning stays exact even if this is ever handed duplicates.
+func attributeKBReferences(ctx *security.RequestContext, accountId string, docs toolcore.RAGSearchResults, kbs []toolcore.Knowledgebase) ([]AgentReference, toolcore.RAGSearchResults, int) {
+	if len(docs) == 0 {
+		return nil, nil, 0
 	}
 	dataByKB := fetchKBData(ctx, accountId, kbs)
 
@@ -388,15 +536,36 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 			return toolcore.Knowledgebase{}, false
 		}
 		docSource, _ := doc.Metadata["source"].(string)
+		// Identity first: when rag-server reports the collection, the owning KB
+		// is known exactly — no text or category guessing.
+		if name, ok := docCollection(doc); ok {
+			kbID, integrationID := classifyCollection(name)
+			for _, kb := range kbs {
+				if kb.Id == "" || kb.Status != "active" {
+					continue
+				}
+				if kbID != "" && strings.EqualFold(kbID, kb.Id) {
+					return kb, true
+				}
+				if integrationID != "" && kb.IntegrationId != nil &&
+					strings.EqualFold(integrationID, *kb.IntegrationId) {
+					return kb, true
+				}
+			}
+		}
+		owns := func(kb toolcore.Knowledgebase) bool {
+			if data := dataByKB[kb.Id]; data != "" && strings.Contains(data, content) {
+				return true
+			}
+			return kb.KBType == "integration" && kb.KBSource != nil && docSource != "" &&
+				strings.EqualFold(*kb.KBSource, docSource)
+		}
+		// Active only. An archived KB must never credit — nor supply — content.
 		for _, kb := range kbs {
-			if kb.Status != "active" || kb.Id == "" {
+			if kb.Id == "" || kb.Status != "active" {
 				continue
 			}
-			if data := dataByKB[kb.Id]; data != "" && strings.Contains(data, content) {
-				return kb, true
-			}
-			if kb.KBType == "integration" && kb.KBSource != nil && docSource != "" &&
-				strings.EqualFold(*kb.KBSource, docSource) {
+			if owns(kb) {
 				return kb, true
 			}
 		}
@@ -405,26 +574,119 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 
 	seenDocs := make(map[string]struct{})
 	var refs []AgentReference
+	var attributed toolcore.RAGSearchResults
+	dropped := 0
 	for _, doc := range docs {
 		kb, ok := matchKB(doc)
 		if !ok {
+			// The doc reached the prompt budget but no KB owns it, so it is
+			// dropped entirely (fail-closed). Log every input the two rules
+			// consult so the miss is diagnosable without a debugger: the doc's
+			// source tag, whether any candidate had a body to substring-match,
+			// and how many candidates were even eligible.
+			docSource, _ := doc.Metadata["source"].(string)
+			// Trimmed to match the owned path's dedup key — an untrimmed url
+			// here would let the same page be recorded twice.
+			url, _ := doc.Metadata["url"].(string)
+			url = strings.TrimSpace(url)
+			activeCandidates, withBody := 0, 0
+			for _, kb := range kbs {
+				if kb.Status == "active" && kb.Id != "" {
+					activeCandidates++
+					if dataByKB[kb.Id] != "" {
+						withBody++
+					}
+				}
+			}
+			// Global collections have no KB row to attribute to, so record them
+			// from the document's own identity (url + source) rather than
+			// dropping content the product ships on purpose. The invariant is
+			// "nothing enters the prompt unrecorded" — not "everything must map
+			// to a knowledge base".
+			collectionName, stamped := docCollection(doc)
+			// rag-server classifies the owning collection from ITS OWN metadata
+			// and reports whether an llm_knowledgebases row can exist for it.
+			// Not KB-backed covers three cases — the global product-docs
+			// collection, the tenant-level user KB, and legacy per-account
+			// collections — none of which can ever be attributed to a KB.
+			// Demanding one drops content that is legitimately un-owned, so
+			// record it from the document's own identity instead.
+			scope, _ := doc.Metadata["collection_scope"].(string)
+			kbBacked, stampedBacked := doc.Metadata["collection_kb_backed"].(bool)
+			unowned := stampedBacked && !kbBacked
+			if unowned && url != "" {
+				// Same key as dedupRAGDocs, which already ran over these docs,
+				// so this cannot drop a distinct chunk — only a re-run copy.
+				if _, dup := seenDocs[ragDocDedupKey(doc)]; dup {
+					continue
+				}
+				seenDocs[ragDocDedupKey(doc)] = struct{}{}
+				collectionModule, _ := doc.Metadata["collection_module"].(string)
+				metadata := map[string]any{
+					// kind is what the UI switches on: these rows share
+					// reference_type "knowledge_base" with attributed KB
+					// documents and with loaded skills, and are otherwise
+					// indistinguishable in the Additional Contexts panel.
+					"kind":   unownedKindForScope(scope),
+					"name":   unownedName(docSource, scope, collectionName),
+					"via":    "kb_prestep",
+					"scope":  scopeOrDefault(scope),
+					"module": collectionModule,
+					"url":    url,
+				}
+				if title, ok := doc.Metadata["title"].(string); ok && strings.TrimSpace(title) != "" {
+					metadata["subject"] = strings.TrimSpace(title)
+				} else if line := firstLine(doc.Document, kbRefSubjectMaxChars); line != "" {
+					metadata["subject"] = line
+				}
+				if snippet := strings.TrimSpace(doc.Document); snippet != "" {
+					metadata["content"] = TruncateHead(snippet, kbRefSnippetMaxChars)
+				}
+				attributed = append(attributed, doc)
+				refs = append(refs, AgentReference{
+					Type: AgentReferenceTypeKB,
+					// Non-UUID by construction, so the DAO's llm_knowledgebases
+					// join misses and the row renders from metadata instead.
+					ReferenceID: fmt.Sprintf("global:%s:%x", docSource, sha256.Sum256([]byte(url))),
+					Metadata:    metadata,
+				})
+				ctx.GetLogger().Info("kb_prestep: un-owned collection document recorded",
+					"url", url, "doc_source", docSource, "collection", collectionName,
+					"collection_scope", scope, "kb_backed", kbBacked)
+				continue
+			}
+			dropped++
+			ctx.GetLogger().Warn("kb_prestep: document not attributable - dropping",
+				"url", url, "doc_source", docSource, "chars", len(strings.TrimSpace(doc.Document)),
+				"candidates", len(kbs), "active_candidates", activeCandidates,
+				"candidates_with_body", withBody, "collection", collectionName,
+				"collection_stamped", stamped, "collection_scope", scope,
+				"kb_backed", kbBacked)
 			continue
 		}
-		// Dedup key: page url when present, else the doc text itself.
-		key, _ := doc.Metadata["url"].(string)
-		key = strings.TrimSpace(key)
-		if key == "" {
-			key = strings.TrimSpace(doc.Document)
-		}
+		ctx.GetLogger().Info("kb_prestep: document attributed",
+			"kb_id", kb.Id, "kb_name", kb.Name, "kb_type", kb.KBType, "kb_status", kb.Status)
+		// Already collapsed by dedupRAGDocs upstream; re-checked so this
+		// function stays correct if it is ever called with raw results.
+		key := ragDocDedupKey(doc)
 		if _, dup := seenDocs[key]; dup {
 			continue
 		}
 		seenDocs[key] = struct{}{}
 
 		metadata := map[string]any{
-			"name":  kb.Name,
-			"kb_id": kb.Id,
-			"via":   "kb_prestep",
+			"kind":      AgentReferenceKindKBDocument,
+			"name":      kb.Name,
+			"kb_id":     kb.Id,
+			"via":       "kb_prestep",
+			"kb_status": kb.Status,
+			// kb_type/kb_source let the panel say WHERE a knowledge base's
+			// content came from — a synced Confluence space reads differently to
+			// a hand-written KB, and "Knowledge Base" alone hides that.
+			"kb_type": kb.KBType,
+		}
+		if kb.KBSource != nil && strings.TrimSpace(*kb.KBSource) != "" {
+			metadata["kb_source"] = strings.TrimSpace(*kb.KBSource)
 		}
 		if url, ok := doc.Metadata["url"].(string); ok && strings.TrimSpace(url) != "" {
 			metadata["url"] = url
@@ -444,6 +706,7 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 		if snippet := strings.TrimSpace(doc.Document); snippet != "" {
 			metadata["content"] = TruncateHead(snippet, kbRefSnippetMaxChars)
 		}
+		attributed = append(attributed, doc)
 		refs = append(refs, AgentReference{
 			Type: AgentReferenceTypeKB,
 			// Distinct per document — SaveAgentReferences dedups on
@@ -454,7 +717,7 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 			Metadata:    metadata,
 		})
 	}
-	return refs
+	return refs, attributed, dropped
 }
 
 // firstLine returns the first non-empty line of s, trimmed and capped, for use
@@ -508,7 +771,7 @@ func formatRetrievedKBBlock(docs toolcore.RAGSearchResults) string {
 
 	var sb strings.Builder
 	sb.WriteString("<retrieved_knowledge>\n")
-	sb.WriteString("The following knowledge base content was retrieved for this request. Use it as authoritative reference while analyzing the issue. When a retrieved document prescribes investigation steps (a runbook or SOP), FOLLOW its steps in order. When your findings rely on any of this knowledge, cite its Source url.\n")
+	sb.WriteString("The following knowledge base content was retrieved for this request. Use this content as a supporting reference while analyzing the issue — this content is guidance, not verified fact, and may be stale or only partly relevant. Prefer live evidence from tools when the retrieved content and tool evidence disagree, and report the mismatch rather than treating the mismatch as a blocker. When a retrieved document prescribes investigation steps (a runbook or SOP), FOLLOW its steps in order. When your findings rely on any of this knowledge, cite its Source url.\n")
 	// Divisor counts only docs that will actually render — an empty doc
 	// skipped below must not shrink the shares of the real ones.
 	nonEmpty := 0

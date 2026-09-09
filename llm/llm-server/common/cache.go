@@ -103,6 +103,14 @@ func CacheCreateNamespace(namespace string, options ...CacheNamespaceOption) {
 	cacheManagers[namespace] = cacheNamespaceOptions
 }
 
+// cacheNamespaceExpiration returns the TTL a namespace was registered with, or
+// 0 when the namespace is unknown.
+func cacheNamespaceExpiration(namespace string) time.Duration {
+	syncCacheManagers.Lock()
+	defer syncCacheManagers.Unlock()
+	return cacheManagers[namespace].Expiration
+}
+
 func cacheGetManager(namespace string) (*cache.Cache[any], error) {
 	if _, ok := cacheManagers[namespace]; ok {
 		return cacheManager, nil
@@ -160,6 +168,15 @@ func CacheSet(namespace string, key string, value []byte, options ...CacheSetOpt
 	cacheOption := cacheSetOptions{}
 	for _, option := range options {
 		option(&cacheOption)
+	}
+	if cacheOption.Expiration == 0 {
+		// Fall back to the TTL the namespace was registered with. Without this
+		// the redis provider stores entries with no expiry at all: gocache
+		// passes the expiration straight through to SET, where 0 means "keep
+		// forever", and CacheCreateNamespace's expiration only ever reaches the
+		// in-memory store's LifeWindow. Every missed invalidation then became
+		// permanent instead of bounded by the declared TTL.
+		cacheOption.Expiration = cacheNamespaceExpiration(namespace)
 	}
 	if cacheOption.Expiration > 0 {
 		storeOptions = append(storeOptions, store.WithExpiration(cacheOption.Expiration))

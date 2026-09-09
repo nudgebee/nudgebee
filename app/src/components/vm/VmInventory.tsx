@@ -12,6 +12,7 @@ import { hasWriteAccess } from '@lib/auth';
 import apiVm, { VmResource } from '@api1/vm';
 import { CellText, SeverityCounts, useLatestRequest } from './common';
 import ScanVmDialog from './ScanVmDialog';
+import ScanAccountDialog from './ScanAccountDialog';
 import VmPackages from './VmPackages';
 import VmVulnerabilities from './VmVulnerabilities';
 import { ds } from '@utils/colors';
@@ -49,6 +50,7 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [scanTarget, setScanTarget] = useState<VmResource | null>(null);
+  const [showAccountScan, setShowAccountScan] = useState(false);
   const { page, rowsPerPage, changePage, setPage } = usePagination();
   const beginVmsRequest = useLatestRequest();
   const beginEnrichmentRequest = useLatestRequest();
@@ -149,7 +151,18 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
   return (
     <Box sx={{ px: ds.space[5], pb: ds.space[5] }}>
       <ListingLayout id='vm-inventory'>
-        <ListingLayout.Toolbar actions={<DownloadButton id={`${TABLE_ID}-download`} onClick={() => ({ tableId: TABLE_ID })} />}>
+        <ListingLayout.Toolbar
+          actions={
+            <Box sx={{ display: 'flex', gap: ds.space[2] }}>
+              {canScan && (
+                <Button id='vm-scan-account' tone='secondary' size='sm' onClick={() => setShowAccountScan(true)}>
+                  Scan
+                </Button>
+              )}
+              <DownloadButton id={`${TABLE_ID}-download`} onClick={() => ({ tableId: TABLE_ID })} />
+            </Box>
+          }
+        >
           <SearchInput
             id='vm-inventory-search'
             label='Search By Name Or Resource ID'
@@ -208,6 +221,15 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
           setScanTarget(null);
           // A scan that just started has not written anything yet; refresh the
           // enrichment anyway so a scan finished a moment ago is picked up.
+          if (started) fetchEnrichment();
+        }}
+      />
+
+      <ScanAccountDialog
+        open={showAccountScan}
+        accountId={accountId}
+        onClose={(started: boolean) => {
+          setShowAccountScan(false);
           if (started) fetchEnrichment();
         }}
       />

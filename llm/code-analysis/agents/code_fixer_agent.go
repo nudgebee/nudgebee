@@ -431,7 +431,6 @@ func (a *CodeFixerAgent) buildTemplatePrompt(auditFindings map[string]any, sessi
 		"OriginalQuery":        sessionCtx.OriginalQuery,
 		"InvestigationHistory": sessionCtx.GetScratchpad(),
 		"BuildConfig":          sessionCtx.BuildConfig,
-		"BuildVerifyEnabled":   a.config.Agent.BuildVerifyEnabled,
 		"HarnessVerify":        a.config.Agent.HarnessVerify,
 		"RepoFacts":            sessionCtx.RepoFacts,
 		"Skills":               sessionCtx.SkillsContext,

@@ -22,6 +22,7 @@ from psycopg2.extras import RealDictCursor
 from apis.model.runbook import ExecuteRunbookActionSubmitResponse, LLMActionResponse
 from config import Configs
 from db import database, clickhouse
+from handlers.storage_pricing import get_k8s_provider, resolve_storage_pricing
 from handlers.upgrade_handler import handle_k8s_version_upgrade_report
 from middleware.utils import parse_size_to_gb, round_bytes_to_gb
 from rabbitmq import rabbitmq_client
@@ -2306,9 +2307,13 @@ def handle_abandoned_pv(raw_content: dict, tenant: str, cloud_account_id: str, a
     logging.info("Processing pv report report for tenant {} , account id {}".format(tenant, cloud_account_id))
     report = json.loads(raw_content["evidence"][0]["data"])[0]
     recommendations = []
+    provider = get_k8s_provider(cloud_account_id)
     for r in report["data"]:
         for pv in r["content"]:
-            saving = 0.10 * parse_size_to_gb(pv["spec"]["capacity"]["storage"])
+            # Deleting an unused disk saves its full monthly cost.
+            pricing = resolve_storage_pricing(pv, provider=provider)
+            saving = pricing["price_per_gb"] * parse_size_to_gb(pv["spec"]["capacity"]["storage"])
+            pv["pricing"] = pricing
             recommendation = {
                 "cloud_account_id": cloud_account_id,
                 "tenant_id": tenant,
@@ -2334,6 +2339,7 @@ def handle_pv_rightsize(raw_content: dict, tenant: str, cloud_account_id: str, a
     logging.info("Processing pv right sizing report for tenant {} , account id {}".format(tenant, cloud_account_id))
     report = json.loads(raw_content["evidence"][0]["data"])[0]
     recommendations = []
+    provider = get_k8s_provider(cloud_account_id)
     for r in report["data"]:
         for pv in r["content"]:
             usage_ = pv.get("usage")
@@ -2346,11 +2352,13 @@ def handle_pv_rightsize(raw_content: dict, tenant: str, cloud_account_id: str, a
             )
             last_30_days_usage_metric = float(usage_["7_days"]["value"][1]) if usage_.get("7_days") else None
             capacity = parse_size_to_gb(pv["spec"]["capacity"]["storage"]) * 1024 * 1024 * 1024
+            pricing = resolve_storage_pricing(pv, provider=provider)
+            price_per_gb = pricing["price_per_gb"]
             recommended_volume_size = 0
             if (current_usage_metric / capacity) > 0.9:
                 # pvc is already 90 percent full
                 recommended_volume_size = round_bytes_to_gb(capacity * 1.2)
-                saving = -(round_bytes_to_gb(capacity) * 0.2 * 0.10)
+                saving = -(round_bytes_to_gb(capacity) * 0.2 * price_per_gb)
             elif last_30_days_usage_metric is not None:
                 current_free_storage = capacity - current_usage_metric
                 free_storage_space7_days_ago = capacity - last_30_days_usage_metric
@@ -2366,13 +2374,14 @@ def handle_pv_rightsize(raw_content: dict, tenant: str, cloud_account_id: str, a
                 if recommended_volume_size <= 0:
                     continue
 
-                saving = 0.10 * storage_size_save
+                saving = price_per_gb * storage_size_save
             if recommended_volume_size:
+                pv["pricing"] = pricing
                 pv["recommendation"] = {
                     "capacity": capacity,
                     "usage": {"before_30_days": last_30_days_usage_metric, "current": current_usage_metric},
                     "recommend_size": recommended_volume_size,
-                    "price_per_gb": 0.10,
+                    "price_per_gb": price_per_gb,
                 }
                 recommendation = {
                     "cloud_account_id": cloud_account_id,
@@ -2539,7 +2548,9 @@ def handle_certificate_scanner_report(content, tenant, cloud_account_id, account
 
         on_conflict = (
             "ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO UPDATE SET "
-            "recommendation = EXCLUDED.recommendation, status=EXCLUDED.status"
+            "recommendation = EXCLUDED.recommendation, "
+            "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+            "THEN recommendation.status ELSE EXCLUDED.status END"
         )
 
         try:
@@ -2594,7 +2605,9 @@ def handle_helm_chart_upgrade_report(content, tenant, cloud_account_id, account_
 
         on_conflict = (
             "ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO UPDATE SET "
-            "recommendation = EXCLUDED.recommendation, status=EXCLUDED.status"
+            "recommendation = EXCLUDED.recommendation, "
+            "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+            "THEN recommendation.status ELSE EXCLUDED.status END"
         )
 
         try:
@@ -2697,7 +2710,9 @@ def handle_k8s_helm_compatibility_report(content, tenant, cloud_account_id, acco
 
         on_conflict = (
             "ON CONFLICT (cloud_account_id, rule_name, resource_id, category, account_object_id) DO UPDATE SET "
-            "recommendation = EXCLUDED.recommendation, status=EXCLUDED.status"
+            "recommendation = EXCLUDED.recommendation, "
+            "status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive') "
+            "THEN recommendation.status ELSE EXCLUDED.status END"
         )
 
         try:

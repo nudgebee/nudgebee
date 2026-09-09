@@ -102,6 +102,11 @@ func TestBuildPrometheusNodeQueries(t *testing.T) {
 			expected: `count(karpenter_nodes_total_pod_requests{ __CLUSTER__ provisioner_name="",resource_type="pods"}) by (zone)`,
 		},
 		{
+			name:     "active_nodes is a static kube_node_info query with no substitution",
+			metric:   "active_nodes",
+			expected: `kube_node_info{__CLUSTER__}`,
+		},
+		{
 			name:     "node_pool_pod_trend is a static karpenter query",
 			metric:   "node_pool_pod_trend",
 			expected: `sum by (nodepool)(karpenter_pods_state{__CLUSTER__})`,

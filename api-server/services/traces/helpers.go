@@ -793,7 +793,13 @@ func (t *TraceServiceMapBuilder) filterAndExtractAttributes(rawAttrs map[string]
 // detectApplicationType intelligently detects application type based on telemetry data.
 // The returned TypeEvidence records the span and matched attribute that produced the
 // type, so a misclassification can be traced back to the exact span that caused it.
-func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *SpanAttributes, rawAttrs map[string]string, labels map[string]string) (string, *TypeEvidence) {
+//
+// The third return value, *UncertainMatch, is populated when a confidence
+// guard (below) excluded a pattern that would otherwise have matched — even
+// though no type is returned in that case, the near-miss is worth capturing
+// for later review (see core.RecordUncertainClassification). It's only
+// surfaced if nothing more confident is found anywhere else in the function.
+func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *SpanAttributes, rawAttrs map[string]string, labels map[string]string) (string, *TypeEvidence, *UncertainMatch) {
 	// NOTE: db.system and messaging.system indicate what the service is CONNECTING TO, not what the service itself is
 	// Prioritize language/runtime detection over infrastructure attributes
 
@@ -805,6 +811,16 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 			Timestamp:    span.Timestamp,
 			MatchedKey:   matchedKey,
 			MatchedValue: matchedValue,
+		}
+	}
+
+	var uncertain *UncertainMatch
+	captureUncertain := func(reasonCode, matchedKey, matchedValue string) {
+		if uncertain == nil {
+			uncertain = &UncertainMatch{
+				TypeEvidence: *evidence(matchedKey, matchedValue),
+				ReasonCode:   reasonCode,
+			}
 		}
 	}
 
@@ -821,19 +837,19 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	if sdkLang, ok := labels["telemetry.sdk.language"]; ok && sdkLang != "" {
 		switch strings.ToLower(sdkLang) {
 		case "java":
-			return "java", evidence("telemetry.sdk.language", sdkLang)
+			return "java", evidence("telemetry.sdk.language", sdkLang), nil
 		case "python":
-			return "python", evidence("telemetry.sdk.language", sdkLang)
+			return "python", evidence("telemetry.sdk.language", sdkLang), nil
 		case "javascript", "nodejs", "node":
-			return "nodejs", evidence("telemetry.sdk.language", sdkLang)
+			return "nodejs", evidence("telemetry.sdk.language", sdkLang), nil
 		case "go", "golang":
-			return "golang", evidence("telemetry.sdk.language", sdkLang)
+			return "golang", evidence("telemetry.sdk.language", sdkLang), nil
 		case "dotnet", "csharp", "c#":
-			return "dotnet", evidence("telemetry.sdk.language", sdkLang)
+			return "dotnet", evidence("telemetry.sdk.language", sdkLang), nil
 		case "php":
-			return "php", evidence("telemetry.sdk.language", sdkLang)
+			return "php", evidence("telemetry.sdk.language", sdkLang), nil
 		case "ruby":
-			return "ruby", evidence("telemetry.sdk.language", sdkLang)
+			return "ruby", evidence("telemetry.sdk.language", sdkLang), nil
 		}
 	}
 
@@ -841,19 +857,19 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	if runtimeName, ok := labels["process.runtime.name"]; ok && runtimeName != "" {
 		switch strings.ToLower(runtimeName) {
 		case "node", "nodejs":
-			return "nodejs", evidence("process.runtime.name", runtimeName)
+			return "nodejs", evidence("process.runtime.name", runtimeName), nil
 		case "python":
-			return "python", evidence("process.runtime.name", runtimeName)
+			return "python", evidence("process.runtime.name", runtimeName), nil
 		case "go":
-			return "golang", evidence("process.runtime.name", runtimeName)
+			return "golang", evidence("process.runtime.name", runtimeName), nil
 		case "java":
-			return "java", evidence("process.runtime.name", runtimeName)
+			return "java", evidence("process.runtime.name", runtimeName), nil
 		case "dotnet", ".net":
-			return "dotnet", evidence("process.runtime.name", runtimeName)
+			return "dotnet", evidence("process.runtime.name", runtimeName), nil
 		case "php":
-			return "php", evidence("process.runtime.name", runtimeName)
+			return "php", evidence("process.runtime.name", runtimeName), nil
 		case "ruby":
-			return "ruby", evidence("process.runtime.name", runtimeName)
+			return "ruby", evidence("process.runtime.name", runtimeName), nil
 		}
 	}
 
@@ -862,19 +878,19 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	if language != "" {
 		switch strings.ToLower(language) {
 		case "java":
-			return "java", evidence("language", language)
+			return "java", evidence("language", language), nil
 		case "python":
-			return "python", evidence("language", language)
+			return "python", evidence("language", language), nil
 		case "javascript", "nodejs", "node":
-			return "nodejs", evidence("language", language)
+			return "nodejs", evidence("language", language), nil
 		case "go", "golang":
-			return "golang", evidence("language", language)
+			return "golang", evidence("language", language), nil
 		case "dotnet", "csharp", "c#":
-			return "dotnet", evidence("language", language)
+			return "dotnet", evidence("language", language), nil
 		case "php":
-			return "php", evidence("language", language)
+			return "php", evidence("language", language), nil
 		case "ruby":
-			return "ruby", evidence("language", language)
+			return "ruby", evidence("language", language), nil
 		}
 	}
 
@@ -887,18 +903,24 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 		if strings.Contains(serviceName, msgSystem) {
 			switch msgSystem {
 			case "kafka":
-				return "kafka", evidence("messaging.system", msgSystem)
+				return "kafka", evidence("messaging.system", msgSystem), nil
 			case "rabbitmq":
-				return "rabbitmq", evidence("messaging.system", msgSystem)
+				return "rabbitmq", evidence("messaging.system", msgSystem), nil
 			case "activemq":
-				return "activemq", evidence("messaging.system", msgSystem)
+				return "activemq", evidence("messaging.system", msgSystem), nil
 			case "nats":
-				return "nats", evidence("messaging.system", msgSystem)
+				return "nats", evidence("messaging.system", msgSystem), nil
 			case "pulsar":
-				return "pulsar", evidence("messaging.system", msgSystem)
+				return "pulsar", evidence("messaging.system", msgSystem), nil
 			case "rocketmq":
-				return "rocketmq", evidence("messaging.system", msgSystem)
+				return "rocketmq", evidence("messaging.system", msgSystem), nil
 			}
+		} else {
+			// messaging.system is present but doesn't match this service's own
+			// name — near-miss: the service USES this messaging system, but
+			// that's not evidence of its own identity. Worth reviewing later
+			// rather than silently discarding.
+			captureUncertain("messaging_system_name_mismatch", "messaging.system", msgSystem)
 		}
 	}
 
@@ -917,7 +939,7 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 
 	for pattern, appType := range dbPatterns {
 		if strings.Contains(serviceName, pattern) {
-			return appType, evidence("service_name", pattern)
+			return appType, evidence("service_name", pattern), nil
 		}
 	}
 
@@ -942,7 +964,7 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 
 	for pattern, appType := range patterns {
 		if strings.Contains(serviceName, pattern) {
-			return appType, evidence("service_name", pattern)
+			return appType, evidence("service_name", pattern), nil
 		}
 	}
 
@@ -956,30 +978,80 @@ func (t *TraceServiceMapBuilder) detectApplicationType(span TraceSpan, attrs *Sp
 	// alongside CLIENT/PRODUCER because consuming from a queue is just as much
 	// an outbound interaction with an external system as producing to one —
 	// neither describes the consuming service's own identity.
+	//
+	// span.kind isn't always populated (observed in live data: a real service's
+	// "rabbitmq.consume" spans carried no span.kind at all, so the check above
+	// never excluded them). When kind is absent, a span name still carrying an
+	// operation verb (consume/process/receive/send/produce/publish — the same
+	// vocabulary isConsumerOperation uses to infer message-flow direction) is
+	// self-describing an interaction, not an identity, and must not be trusted
+	// either — unless kind is definitively SERVER, meaning this service really
+	// is the one being addressed as the destination.
 	spanName := strings.ToLower(span.SpanName)
-	if !strings.EqualFold(attrs.SpanKind, "CLIENT") && !strings.EqualFold(attrs.SpanKind, "PRODUCER") && !strings.EqualFold(attrs.SpanKind, "CONSUMER") {
+	isOutboundKind := strings.EqualFold(attrs.SpanKind, "CLIENT") ||
+		strings.EqualFold(attrs.SpanKind, "PRODUCER") ||
+		strings.EqualFold(attrs.SpanKind, "CONSUMER")
+	isServerKind := strings.EqualFold(attrs.SpanKind, "SERVER")
+	looksLikeOperation := strings.Contains(spanName, "consume") || strings.Contains(spanName, "process") ||
+		strings.Contains(spanName, "receive") || strings.Contains(spanName, "send") ||
+		strings.Contains(spanName, "produce") || strings.Contains(spanName, "publish")
+
+	if !isOutboundKind && (isServerKind || !looksLikeOperation) {
+		matchedSpanNamePattern := ""
+		matchedSpanNameType := ""
 		for pattern, appType := range patterns {
 			if strings.Contains(spanName, pattern) {
-				return appType, evidence("span_name", pattern)
+				matchedSpanNamePattern = pattern
+				matchedSpanNameType = appType
+				break
+			}
+		}
+		if matchedSpanNameType != "" {
+			return matchedSpanNameType, evidence("span_name", matchedSpanNamePattern), nil
+		}
+	} else {
+		// The span name was not trusted as an identity signal — either the span
+		// describes an outbound call (CLIENT/PRODUCER/CONSUMER), or its name
+		// carries an operation verb with no SERVER kind to confirm this service
+		// is the destination. Either way the name describes the operation being
+		// invoked, not this service's own identity. Still worth recording as a
+		// near-miss if the name happens to match a known pattern, since that's
+		// exactly the signal that would otherwise silently vanish. The two
+		// guards get distinct reason codes so a review row says which one fired.
+		reasonCode := "operation_verb_span_name"
+		if isOutboundKind {
+			reasonCode = "outbound_span_kind"
+		}
+		for pattern := range patterns {
+			if strings.Contains(spanName, pattern) {
+				captureUncertain(reasonCode, "span_name", pattern)
+				break
 			}
 		}
 	}
 
 	// AWS Service detection
 	if strings.Contains(serviceName, "rds") || strings.Contains(serviceName, "aws-rds") {
-		return "aws-rds", evidence("service_name", "rds")
+		return "aws-rds", evidence("service_name", "rds"), nil
 	}
 	if strings.Contains(serviceName, "elasticache") || strings.Contains(serviceName, "aws-elasticache") {
-		return "aws-elasticache", evidence("service_name", "elasticache")
+		return "aws-elasticache", evidence("service_name", "elasticache"), nil
 	}
 
 	// Protocol-based detection as fallback
 	if attrs.HTTPStatusCode > 0 || strings.Contains(spanName, "http") {
 		// This is likely an HTTP service, determine language if possible
-		return t.detectHTTPServiceType(span, labels, rawAttrs)
+		httpType, httpEvidence := t.detectHTTPServiceType(span, labels, rawAttrs)
+		if httpType != "" {
+			// Confident classification found here (e.g. via http.server_name
+			// matching nginx/envoy) — any near-miss captured earlier in this
+			// call must not be surfaced, per the function's own contract.
+			return httpType, httpEvidence, nil
+		}
+		return httpType, httpEvidence, uncertain
 	}
 
-	return "", nil // Unknown
+	return "", nil, uncertain // Unknown, but may still carry a near-miss
 }
 
 // detectHTTPServiceType tries to detect the application type for HTTP services

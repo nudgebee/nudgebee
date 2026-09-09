@@ -64,15 +64,18 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 	// leaders participate — re-fires stay collapsed inside their dedup chain, so
 	// a group member stands for its whole chain. Additive: a failure here must
 	// never fail triage.
+	isIncidentChild := false
 	if occurrence == 1 && incidentGroupingEnabled() {
-		if err := attachSameSubjectIncident(ctx, db, event); err != nil {
+		attached, err := attachSameSubjectIncident(ctx, db, event)
+		if err != nil {
 			slog.ErrorContext(ctx, "Failed same-subject incident attach", "error", err, "event_id", event.Id)
 		}
+		isIncidentChild = attached
 	}
 
 	// Step 4: Compute and save score (target: < 50ms)
 	// Apply any score adjustments from rules
-	result, err := ComputeScore(ctx, db, event, occurrence, corrType, corrScore)
+	result, err := ComputeScore(ctx, db, event, occurrence, corrType, corrScore, isIncidentChild)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to compute score", "error", err, "event_id", event.Id)
 		// Continue processing - don't fail entire triage on scoring error
@@ -85,7 +88,8 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 			result.Score = clamp(result.Score+ruleResult.ScoreAdjustment.Adjustment, 0, 100)
 			// Re-assert the LLM verdict's priority band: an additive rule must not push the score
 			// past the ceiling the model chose (a dev disk alert capped at P1 must not land at P0).
-			// No-op for legacy-scored events (no band in factors).
+			// No-op for legacy-scored events (no band in factors). ComputeScore re-clamps after
+			// its own correlation term for the same reason.
 			result.Score = clampToBand(result.Score, result.Factors)
 			result.Priority = scoreToPriority(result.Score)
 			slog.InfoContext(ctx, "Applied score adjustment from rule",
@@ -188,6 +192,17 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 
 	// Query event_duplicates to find existing chain for this fingerprint
 	// Also fetch the first event's nb_status to check if we should start a new chain
+	//
+	// Ordered by the chain member's own start time, NOT by occurrence_number. Ordering by
+	// occurrence_number was correct while chains were immortal, since the number only ever
+	// grew — but the dedup window below resets it to 1 on every new chain, so the highest
+	// occurrence for a fingerprint is the PRE-BREAK peak, not the latest occurrence. Reading
+	// that stale row makes every subsequent event measure its gap against an event from
+	// before the break, exceed the window, and open yet another chain at occurrence 1: once
+	// a chain breaks, it can never grow past 1 again. Observed on test as 12 consecutive
+	// hourly re-fires of one deployment all stuck at occurrence_number = 1, which is also
+	// what silently disables event_triage_rules.match_occurrence_greater_than. Inside an
+	// unbroken chain both orderings pick the same row, so the normal path is unchanged.
 	chainQuery := `
 		SELECT
 			ed.first_event_id,
@@ -203,7 +218,7 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 		WHERE ed.fingerprint = $1
 		  AND ed.cloud_account_id = $2
 		  AND ed.event_id != $3
-		ORDER BY ed.occurrence_number DESC
+		ORDER BY latest_e.starts_at DESC, ed.occurrence_number DESC
 		LIMIT 1
 	`
 

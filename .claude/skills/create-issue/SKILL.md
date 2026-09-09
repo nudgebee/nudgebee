@@ -25,7 +25,11 @@ Create a GitHub issue using the repository's issue templates. Optional argument:
 
 ## Audience & Tone (read this first)
 
+**Binding style contract: [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md).** Read it before drafting. The rules below are its issue-specific application; where they seem to disagree, that file wins.
+
 Issues are read by a **mixed audience**: PMs, support, QA, and engineers. Most readers skim the title and the first paragraph before deciding whether to care. Write the top of every issue for that reader, not for the engineer who will eventually fix it.
+
+**Budget: the form fields above `## Technical Details` total ≤ 200 words.** `Technical Details` has no limit — over-budget prose gets *demoted* there, never trimmed to nothing. If the top of the issue does not fit one screen, it is not finished.
 
 **Two-layer structure for every issue:**
 1. **Top half — plain language.** Title + description + impact + reproduction described in terms of what a *user of the product* sees or does. Anyone in the company should understand it.
@@ -39,6 +43,8 @@ Issues are read by a **mixed audience**: PMs, support, QA, and engineers. Most r
 - **DON'T** put internal symbol names, library names, file paths, struct fields, error messages, or commit SHAs in the **title**.
 - **DON'T** use internal jargon in the description without a one-line plain-English gloss first.
 - **DON'T** assume the reader knows the codebase. Service names are fine; internal struct names, DAO methods, and migration filenames are not (those go in Technical Details).
+- **DON'T** pad. Delete any sentence that restates its own heading, hedges, or exists to look thorough. If deleting it costs no meaning, it should stay deleted.
+- **DON'T** write `None` / `N/A` / `Negligible` under a heading — delete the heading instead.
 
 ### Title — symptom-first, plain language
 
@@ -271,7 +277,9 @@ Before showing the user the draft, re-read your own title and first paragraph an
 1. **Title test** — Could a PM who doesn't read code tell from the title alone what users will notice? If not, rewrite.
 2. **Jargon test** — Does the description contain any of: a struct name, a library version, a migration filename, a SQL error message, a commit SHA, a function name? If yes, move it to Technical Details.
 3. **Impact test** — Can a reader tell who is affected and how badly within the first two paragraphs? If not, add an Impact section.
-4. **Reproduction test** — Could someone reproduce this without reading source code? If not, say so explicitly and put the developer-level repro under Technical Details.
+4. **Reproduction test** — Could QA or support follow the steps without reading source code, and does each step say what they should *see*? If the bug has no user-visible surface, write exactly one line saying so and put the developer-level probe (SQL, `kubectl`, log query) under Technical Details. Never invent a UI flow to fill the field.
+5. **Slop test** — Delete every sentence that restates a heading, hedges, or pads. Did the meaning survive? Then leave it deleted.
+6. **Budget test** — `wc -w` on everything above `## Technical Details` must be ≤ 200. Over budget means demote into Technical Details, not compress into vagueness.
 
 If any test fails, fix it before Step 5.
 

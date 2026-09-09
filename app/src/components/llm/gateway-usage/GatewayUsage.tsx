@@ -313,7 +313,16 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           onExpandRange={onExpandRange}
         />
       )}
-      {tab === 'sessions' && <SessionsView filters={filters} onDrillSession={onDrillSession} />}
+      {tab === 'sessions' && (
+        <SessionsView
+          filters={filters}
+          metrics={metrics}
+          metricsLoading={loading}
+          userFilter={selectedUser}
+          onChangeUser={onChangeUser}
+          onDrillSession={onDrillSession}
+        />
+      )}
       {tab === 'tools' && <ToolsView metrics={metrics} loading={loading} error={error} onSelectTool={onSelectTool} />}
       {tab === 'governance' && <GovernanceView metrics={metrics} filters={filters} loading={loading} error={error} onDrill={onDrillGov} />}
     </Box>

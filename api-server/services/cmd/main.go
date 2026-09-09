@@ -14,9 +14,11 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nudgebee/services/api"
+	"nudgebee/services/bootstrap"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/localagent"
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -205,6 +207,33 @@ func main() {
 	var meter = otel.Meter(config.SERVICE_NAME)
 
 	api.RunEEBootstrapHooks(logger)
+
+	// Adopt the credential the chart generated for the bundled in-cluster agent.
+	// Inert unless LOCAL_AGENT_ACCESS_KEY/SECRET are set. Logged, not fatal: a
+	// server that cannot register its own agent must still serve.
+	//
+	// Synchronous, matching RunEEBootstrapHooks above and its documented "must
+	// complete before requests arrive" contract, but bounded — the liveness and
+	// readiness probes declare no initialDelaySeconds, so an unbounded query
+	// against an unresponsive database would burn the probe budget and get the
+	// pod killed before it ever served. 10s mirrors the license feature-flag
+	// reconcile's own bound.
+	bootCtx, cancelBoot := context.WithTimeout(context.Background(), 10*time.Second)
+
+	// Provision the first admin and tenant, so a fresh install is complete
+	// before anyone signs in. Inert unless an admin address is configured or
+	// carried by the licence; those installs provision at first login instead.
+	// This runs first because it registers the bundled cluster as part of the
+	// same call, which makes the reconcile below a no-op on a fresh install.
+	if err := bootstrap.Provision(bootCtx, logger); err != nil {
+		logger.Error("first-run provisioning failed; the deployment will fall back to provisioning at first login", "error", err)
+	}
+
+	if err := localagent.Reconcile(bootCtx, logger); err != nil {
+		logger.Error("local agent registration failed; the bundled cluster will not appear until this is resolved", "error", err)
+	}
+	cancelBoot()
+
 	api.ConfigureRoutes(r, &tracer, &meter, logger)
 
 	port := os.Getenv("PORT")

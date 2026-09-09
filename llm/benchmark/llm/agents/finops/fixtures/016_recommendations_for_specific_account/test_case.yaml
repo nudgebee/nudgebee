@@ -7,7 +7,7 @@ expected_output:
     should name the account, its current monthly spend in dollars, and list
     the top open recommendations with savings estimates and a risk
     assessment. Total potential savings for that account should be summed.
-    Cite both [spend_summary] and [recommendations].
+    Cite both [spend_summary] and [recommendations] / [recommendation_execute].
 tags:
   - optimization
   - account

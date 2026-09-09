@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"nudgebee/llm-gateway/auth"
 	"nudgebee/llm-gateway/edgeerr"
+	"nudgebee/llm-gateway/routing"
 )
 
 // embeddingsPath is the canonical path recorded for generic-endpoint embedding requests.
@@ -50,25 +52,24 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 	identity := auth.FromContext(c)
 
 	requestedModel, _ := parseBody(body) // embeddings are never streamed
-	// A tenant's explicitly-configured custom upstream (matched by the exact model id) wins
-	// over the built-in provider-alias heuristic — same precedence as the chat path (see
-	// generic.go). customKey is that upstream's per-request credential (carries its base URL),
-	// injected as a DirectKey so the request routes on the vLLM lane. Tier aliases don't apply
-	// to embeddings, so (unlike chat) there's no tier fallback here.
+	// A tenant's explicit model mapping selects its exact account before the built-in
+	// provider heuristic, matching the chat path. Tier aliases don't apply to embeddings.
 	var provider schemas.ModelProvider
 	var model string
-	var customKey *schemas.Key
-	if cp, key, path, isCustom := resolveCustomProvider(identity.TenantID, requestedModel); isCustom {
+	var mappedKey *schemas.Key
+	var mappedModel string
+	if mp, key, served, path, mapped := resolveModelMapping(identity.TenantID, requestedModel); mapped {
 		// A non-empty path override means a vertex_openai upstream, whose path is
 		// chat-completions-specific — embeddings aren't supported for it in this release.
 		if path != "" {
 			edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
 				"embeddings are not supported for this Vertex (OpenAI-compatible) endpoint")
-			h.recordReject(identity, cp, requestedModel, c.Request.Method, embeddingsPath, http.StatusBadRequest, "unsupported_embeddings", start)
+			h.recordReject(identity, mp, requestedModel, c.Request.Method, embeddingsPath, http.StatusBadRequest, "unsupported_embeddings", start)
 			return
 		}
-		provider, model = cp, requestedModel
-		customKey = &key
+		provider, model = mp, requestedModel
+		mappedKey = &key
+		mappedModel = served
 	} else if p, m, known := resolveModelProvider(requestedModel); known {
 		provider, model = p, m
 	} else {
@@ -85,8 +86,9 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
 		Identity: identity, Provider: provider,
 		Model: model, Path: embeddingsPath, Body: body, Streaming: false,
-		DirectKey: customKey,
+		DirectKey: mappedKey,
 	}
+	rc.MappedModel = mappedModel
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		slog.Error("proxy: embeddings pipeline error", "error", err, "provider", provider, "model", model)
 		edgeerr.Write(c, edgeerr.OpenAI, http.StatusInternalServerError, "gateway_error", "request pipeline error")
@@ -96,17 +98,19 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 		h.recordRejectPipeline(rc, c.Writer.Status(), start) // a stage already wrote the rejection (429 / no-creds 403)
 		return
 	}
+	// The generic endpoint already uses OpenAI's embedding schema for every provider, so a
+	// cross-provider substitution needs no request re-encoding. Dispatch and meter against
+	// the resolved target; resolverStage has already selected that target's credential.
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		c.Writer.Header().Set("x-nb-llm-substituted",
+			fmt.Sprintf("%s->%s", rc.Decision.RequestedProvider, rc.Decision.ResolvedProvider))
+		rc.Provider = schemas.ModelProvider(rc.Decision.ResolvedProvider)
+		rc.Model = rc.Decision.ResolvedModel
+	}
 
-	// Forward + meter the served name when the tenant aliased this model (models: "alias=served");
-	// ResolveCustom put it on the key's ModelName. Bare entries leave served == alias (no-op).
-	// Read from rc.DirectKey (the key that will actually be dialed), not the pre-pipeline local.
-	// Guard on rc.Provider == VLLM: if a pipeline rule redirected this custom model to a
-	// well-known provider, the stale DirectKey must not overwrite the model with the custom
-	// served name (wrong provider + corrupted metering).
-	if rc.Provider == schemas.VLLM {
-		if k := rc.DirectKey; k != nil && k.VLLMKeyConfig != nil && k.VLLMKeyConfig.ModelName != "" {
-			rc.Model = k.VLLMKeyConfig.ModelName
-		}
+	// Apply the served name selected for either the original request or its routed target.
+	if rc.MappedModel != "" {
+		rc.Model = rc.MappedModel
 	}
 
 	rm := &reqMeta{

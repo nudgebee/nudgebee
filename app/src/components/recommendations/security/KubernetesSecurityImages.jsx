@@ -44,6 +44,14 @@ const KubernetesSecurityImages = (props) => {
       .then((res) => {
         const securityAppsTableData = res?.recommendation_security_groupings_v2?.rows?.map((item) => {
           const data = [];
+          // Cross-account mode (the /optimise Security tab): rows span clusters,
+          // so lead with the cluster and scope the drill-down to the row's account.
+          if (props?.accountsById) {
+            data.push({
+              component: <Text value={props.accountsById[item.account_id] || item.account_id} showAutoEllipsis />,
+              drilldownQuery: { account_id: item.account_id },
+            });
+          }
           // An image with no CVEs comes back with every severity count at 0. Such a
           // row is flagged by its scan outcome (max_scan_status from the
           // image_scan_summary row) instead of a blank 0/0/0/0 row: "Clean" when it
@@ -173,6 +181,7 @@ const KubernetesSecurityImages = (props) => {
         id={props.tableId}
         loading={loading}
         headers={[
+          ...(props?.accountsById ? [{ name: 'Cluster', width: '12%' }] : []),
           'Image',
           'Package ID',
           {
@@ -224,7 +233,7 @@ const KubernetesSecurityImages = (props) => {
               componentFn: function (e, drilldownQuery) {
                 return (
                   <KubernetesSecurityDetails
-                    kubernetes={props?.kubernetes}
+                    kubernetes={drilldownQuery?.account_id ? { id: drilldownQuery.account_id } : props?.kubernetes}
                     query={{
                       workload_name: drilldownQuery?.workload_name,
                       namespace: drilldownQuery?.namespace,
@@ -248,6 +257,7 @@ export default KubernetesSecurityImages;
 
 KubernetesSecurityImages.propTypes = {
   kubernetes: PropTypes.object,
+  accountsById: PropTypes.object,
   query: PropTypes.object,
   tableId: PropTypes.string,
   disableInfographic: PropTypes.bool,

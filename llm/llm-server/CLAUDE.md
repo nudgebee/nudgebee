@@ -37,9 +37,24 @@ The LLM Server depends on services running in Kubernetes that must be port-forwa
 | cloud-collector-server | 8000 | `kubectl port-forward -n nudgebee svc/cloud-collector-server 8000:8000` |
 | services-server (api-server) | 8120 | `kubectl port-forward -n nudgebee svc/api-server 8120:8000` |
 | rag-server | 8700 | `kubectl port-forward -n nudgebee svc/rag-server 8700:8700` |
-| relay-server | 8110 | `kubectl port-forward -n nudgebee svc/relay-server 8110:8110` |
+| relay-server | 8006 | `kubectl port-forward -n nudgebee svc/relay-server 8006:8080` |
 
-Verify with: `curl http://localhost:<port>/health` for each service.
+Verify with: `curl http://localhost:<port>/health` for each service. The relay
+serves `/request`, not `/health`, so a 404 there means it is alive.
+
+> **Relay gotcha — this silently breaks every tool call.** `RELAY_SERVER_ENDPOINT`
+> is NOT set by default, and `config/config.go` falls back to
+> `http://127.0.0.1:52832` — a port nothing forwards to. The symptom is not a
+> startup error: the server comes up fine and every kubectl/CLI tool call fails
+> at execution time with `unable to access relay server ... connection refused`,
+> which the agent then reports as a findings-level failure. Set
+> `RELAY_SERVER_ENDPOINT=http://127.0.0.1:8006` in `.env` (it is present but
+> commented out in `.env.example`) to match the forward above.
+>
+> `kubectl port-forward` also drops on pod restarts and network blips, and each
+> drop breaks tool calls until it is restarted. When running the e2e suites,
+> check the run for `unable to access relay server` before trusting any result —
+> a dropped forward produces failures that look like agent regressions.
 
 ### Environment Configuration
 

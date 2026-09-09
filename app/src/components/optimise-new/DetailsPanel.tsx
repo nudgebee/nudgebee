@@ -1,10 +1,9 @@
-import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip } from '@mui/material';
+import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
 import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
 import { ds } from 'src/utils/colors';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
-import DragHandleIcon from '@mui/icons-material/DragHandle';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
 import TipsAndUpdatesOutlinedIcon from '@mui/icons-material/TipsAndUpdatesOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -29,10 +28,21 @@ import {
   proximityLabel,
   provenanceLabel,
   isProdEnvironment,
+  formatEnvironment,
+  prodChipState,
+  dependentCountNoun,
+  nodeTypeLabel,
+  impactSignalSources,
+  getChangeClass,
+  changeClassLabel,
+  changeClassTone,
+  CHANGE_CLASS_HELP,
   coverageTone,
   coverageSubtitle,
   coverageExplainer,
   COVERAGE_HELP,
+  PROD_CHIP_HELP,
+  ENV_UNKNOWN_HELP,
   type DependentRef,
 } from './safetyBand';
 import { Banner } from '@ui/Banner';
@@ -43,6 +53,7 @@ import { hasWriteAccess } from '@lib/auth';
 import InterpretationPanel from './interpretation/InterpretationPanel';
 import { buildInterpretation } from './interpretation/buildInterpretation';
 import { extractContainerData, summarizeCloudRightSizing, formatCloudTargetSpec } from './rightSizingData';
+import { ResourceChangeCell } from './ResourceChangeCell';
 import ConfigIssuesList, { summarizeConfigIssues, LEVEL_TONE, LEVEL_NAME } from './evidence/configIssues';
 
 interface DetailsPanelProps {
@@ -95,8 +106,8 @@ const BLAST_RADIUS_HELP =
 const SAFETY_BAND_HELP: Record<string, string> = {
   safe: 'No dependents were found and the graph is well-observed. Generally safe to apply.',
   review:
-    'Either dependents exist but none look production, or none were found but graph coverage is limited. Safe to apply after a quick human check.',
-  risky: 'Production dependents would be affected, or the blast radius is very large. Review carefully before applying.',
+    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. Safe to apply after a quick human check.',
+  risky: 'Production dependents would be affected, the blast radius is very large, or the change is irreversible. Review carefully before applying.',
   unknown: "This resource isn't in the dependency graph, so its impact can't be measured — don't assume it's safe.",
 };
 
@@ -116,13 +127,13 @@ const deriveVerdict = (
   return { tone: 'success', title: 'Contained blast radius' };
 };
 
-// Wraps a chip so MUI Tooltip gets a ref-holding element (Label doesn't forward refs).
+// Wraps a chip so the tooltip gets a ref-holding element (Label doesn't forward refs).
 const ChipTip = ({ title, children }: { title: string; children: ReactNode }) => (
-  <Tooltip title={title} arrow>
+  <DsTooltip title={title} placement='bottom'>
     <Box component='span' sx={{ display: 'inline-flex' }}>
       {children}
     </Box>
-  </Tooltip>
+  </DsTooltip>
 );
 
 // DependentRow — one blast-radius entry: identity line plus categorization
@@ -163,9 +174,9 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
         </Box>
       </Typography>
       <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[1] }}>
-        {dep.node_type && (
+        {nodeTypeLabel(dep.node_type) && (
           <Label size='sm' tone='neutral'>
-            {dep.node_type}
+            {nodeTypeLabel(dep.node_type)}
           </Label>
         )}
         {proximity && (
@@ -191,10 +202,59 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
         )}
         {dep.environment && (
           <Label size='sm' tone={isProdEnvironment(dep.environment) ? 'critical' : 'neutral'}>
-            {dep.environment}
+            {formatEnvironment(dep.environment)}
+          </Label>
+        )}
+        {(dep.pod_count ?? 0) > 0 && (
+          <Label size='sm' tone='neutral'>
+            {`${dep.pod_count} pod${dep.pod_count === 1 ? '' : 's'} here`}
           </Label>
         )}
       </Box>
+    </Box>
+  );
+};
+
+// DependentGroup — a titled, collapsible list of DependentRows for the
+// non-caller neighbourhoods (hosted workloads, attached infrastructure). The
+// two original lists (impacted workloads, depends-on) keep their bespoke
+// rendering; this component exists so each additional group doesn't re-clone it.
+const DependentGroup = ({
+  title,
+  tooltip,
+  deps,
+  direction,
+}: {
+  title: string;
+  tooltip: string;
+  deps: DependentRef[];
+  direction: 'upstream' | 'downstream';
+}) => {
+  const [showAll, setShowAll] = useState(false);
+  if (deps.length === 0) return null;
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
+      <DsTooltip title={tooltip} placement='bottom'>
+        <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium, alignSelf: 'flex-start' }}>{title}</Typography>
+      </DsTooltip>
+      {(showAll ? deps : deps.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
+        <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction={direction} />
+      ))}
+      {deps.length > DEP_COLLAPSE_LIMIT && (
+        <Typography
+          onClick={() => setShowAll((v) => !v)}
+          sx={{
+            fontSize: ds.text.small,
+            color: ds.blue[600],
+            fontWeight: ds.weight.medium,
+            cursor: 'pointer',
+            mt: ds.space[1],
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          {showAll ? 'Show less' : `Show more (${deps.length - DEP_COLLAPSE_LIMIT})`}
+        </Typography>
+      )}
     </Box>
   );
 };
@@ -205,10 +265,14 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
 const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const band = rec?.safety_band as string | undefined;
   const impact = getImpactSummary(rec);
+  const changeClass = getChangeClass(rec);
   const [showAllDeps, setShowAllDeps] = useState(false);
   const [showAllDownstream, setShowAllDownstream] = useState(false);
   const downstream = impact?.downstream_dependencies || [];
+  const hostedWorkloads = impact?.hosted_workloads || [];
+  const attachedInfrastructure = impact?.infrastructure_dependents || [];
   const explainer = coverageExplainer(impact?.coverage_confidence, impact?.dependent_count);
+  const signalSources = impactSignalSources(impact);
   const hasImpactData = !!(
     impact &&
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
@@ -260,17 +324,42 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             message={impact?.safety_reason || 'Blast radius assessed from the dependency graph.'}
           />
         )}
+        {changeClass && (
+          <SafetyRow label='Change severity'>
+            <ChipTip title={CHANGE_CLASS_HELP[changeClass]}>
+              <Label size='sm' tone={changeClassTone(changeClass)}>
+                {changeClassLabel(changeClass)}
+              </Label>
+            </ChipTip>
+          </SafetyRow>
+        )}
         {impact?.dependent_count != null && (
-          <SafetyRow label='Dependent services'>
+          <SafetyRow label={dependentCountNoun(impact.dependents)}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
               <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.semibold }}>
                 {impact.dependent_count}
                 {impact.truncated ? '+' : ''}
               </Typography>
-              {impact.production_dependents != null && (
-                <Label size='sm' tone={impact.production_dependents > 0 ? 'critical' : 'success'}>
-                  {`${impact.production_dependents} Prod`}
-                </Label>
+              {prodChipState(impact) === 'prod' && (
+                <ChipTip title={PROD_CHIP_HELP}>
+                  <Label size='sm' tone='critical'>
+                    {`${impact.production_dependents} Prod`}
+                  </Label>
+                </ChipTip>
+              )}
+              {prodChipState(impact) === 'verified-zero' && (
+                <ChipTip title={PROD_CHIP_HELP}>
+                  <Label size='sm' tone='success'>
+                    0 Prod
+                  </Label>
+                </ChipTip>
+              )}
+              {prodChipState(impact) === 'unknown' && (
+                <ChipTip title={ENV_UNKNOWN_HELP}>
+                  <Label size='sm' tone='neutral'>
+                    Env unknown
+                  </Label>
+                </ChipTip>
               )}
             </Box>
           </SafetyRow>
@@ -285,11 +374,28 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
                   </Label>
                 </Box>
               </DsTooltip>
-              {coverageSubtitle(impact.coverage_confidence) && (
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
-                  {coverageSubtitle(impact.coverage_confidence)}
-                </Typography>
-              )}
+              {coverageSubtitle(impact.coverage_confidence) &&
+                (signalSources.length > 0 ? (
+                  // Typography forwards refs, so it can take the Tooltip directly.
+                  <DsTooltip variant='explainer' title='Corroborating signals' desc={signalSources.join(' · ')}>
+                    <Typography
+                      sx={{
+                        fontSize: ds.text.small,
+                        color: ds.gray[500],
+                        whiteSpace: 'nowrap',
+                        cursor: 'help',
+                        textDecoration: 'underline dotted',
+                        textUnderlineOffset: '3px',
+                      }}
+                    >
+                      {coverageSubtitle(impact.coverage_confidence)}
+                    </Typography>
+                  </DsTooltip>
+                ) : (
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
+                    {coverageSubtitle(impact.coverage_confidence)}
+                  </Typography>
+                ))}
             </Box>
           </SafetyRow>
         )}
@@ -323,14 +429,14 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
             {/* Typography forwards refs (and renders a <p>, which can't sit
                 inside ChipTip's span), so it takes the Tooltip directly. */}
-            <Tooltip
+            <DsTooltip
               title='What this resource itself calls, publishes to, or subscribes to. Context only — these are not at risk from the change and do not affect the safety band.'
-              arrow
+              placement='bottom'
             >
               <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium, alignSelf: 'flex-start' }}>
                 Depends on
               </Typography>
-            </Tooltip>
+            </DsTooltip>
             {(showAllDownstream ? downstream : downstream.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
               <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='downstream' />
             ))}
@@ -351,6 +457,18 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             )}
           </Box>
         )}
+        <DependentGroup
+          title='Runs on this machine'
+          tooltip='Workloads currently scheduled on this instance, rolled up from live pod placement. They reschedule if the machine changes — reported separately because they are not callers that break, but an irreversible change stays Risky while anything is still running here.'
+          deps={hostedWorkloads}
+          direction='upstream'
+        />
+        <DependentGroup
+          title='Attached infrastructure'
+          tooltip='Infrastructure directly attached to this resource (e.g. the instance a volume backs). Not counted as dependent services, but an irreversible change stays Risky while anything is still attached.'
+          deps={attachedInfrastructure}
+          direction='upstream'
+        />
         {explainer && (
           <Box sx={{ mt: ds.space[1] }}>
             <Banner
@@ -1072,54 +1190,6 @@ const InstanceBadge = ({ label, value, variant }: { label: string; value: string
 // Right-sizing container parsing is shared with the interpretation adapter.
 
 // Memory values from the K8s collector are always in bytes
-const formatMemValue = (val: number | null | undefined): string => {
-  if (val == null) return '—';
-  const mi = val / (1024 * 1024);
-  if (mi >= 1024) return (mi / 1024).toFixed(1) + ' Gi';
-  return Math.round(mi) + ' Mi';
-};
-
-const formatCpuValue = (val: number | null | undefined): string => {
-  if (val == null) return '—';
-  if (val < 1) return Math.round(val * 1000) + 'm';
-  return Number(val).toFixed(3);
-};
-
-const ResourceChangeCell = ({ current, recommended, isMem }: { current: number | null; recommended: number | null; isMem: boolean }) => {
-  const fmt = isMem ? formatMemValue : formatCpuValue;
-  const isChanged = current != null && recommended != null && current !== recommended;
-  const pct = current != null && recommended != null && Math.abs(current) > 1e-10 ? Math.round(((current - recommended) / current) * 100) : null;
-
-  return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexWrap: 'nowrap' }}>
-      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>{fmt(current)}</Typography>
-      {isChanged ? (
-        <ArrowForwardIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[400], flexShrink: 0 }} />
-      ) : (
-        <DragHandleIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[400], flexShrink: 0 }} />
-      )}
-      <Typography
-        sx={{
-          fontSize: ds.text.small,
-          fontWeight: isChanged ? ds.weight.semibold : ds.weight.regular,
-          color: ds.gray[700],
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {fmt(recommended)}
-      </Typography>
-      {pct != null && pct !== 0 && (
-        <Typography
-          sx={{ fontSize: ds.text.caption, color: pct > 0 ? ds.green[600] : ds.red[600], fontWeight: ds.weight.medium, whiteSpace: 'nowrap' }}
-        >
-          {pct > 0 ? '-' : '+'}
-          {Math.abs(pct)}%
-        </Typography>
-      )}
-    </Box>
-  );
-};
-
 // ─── Fallback content extraction from recommendation JSONB ───
 
 interface FallbackContent {

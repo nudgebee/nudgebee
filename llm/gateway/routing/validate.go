@@ -2,8 +2,21 @@ package routing
 
 import "fmt"
 
-// knownProviders are the provider families the gateway mounts. A rule's providers
-// must be one of these (or empty = the addressed provider).
+// knownMatchProviders are the runtime provider lanes a request can arrive on, so a
+// rule's match.provider may be any of them. This is broader than knownProviders
+// (the substitution targets) because matching only selects which requests a rule
+// applies to — it needs no translation support. Custom and Vertex-OpenAI endpoints
+// both route on the "vllm" lane, so that one value matches either.
+var knownMatchProviders = map[string]bool{
+	"anthropic": true, "openai": true, "gemini": true,
+	"vllm": true, "vertex": true, "bedrock": true,
+}
+
+// knownProviders are the providers a rule may substitute/fallback TO. This stays the
+// cross-provider-translation set (P2 substitution): the proxy can translate a request
+// into these targets' schema and the response back. Targeting a vllm/vertex/bedrock
+// lane is not wired yet, so those are deliberately absent here even though a rule may
+// MATCH them above.
 var knownProviders = map[string]bool{"anthropic": true, "openai": true, "gemini": true}
 
 // Validate checks a rule set. A target (or fallback) provider may differ from the
@@ -22,7 +35,7 @@ func Validate(rules []Rule) error {
 		}
 		seen[r.ID] = true
 
-		if r.Match.Provider != "" && !knownProviders[r.Match.Provider] {
+		if r.Match.Provider != "" && !knownMatchProviders[r.Match.Provider] {
 			return fmt.Errorf("routing rule %q: unknown match.provider %q", r.ID, r.Match.Provider)
 		}
 		if r.Target.Affinity != "" && r.Target.Affinity != AffinitySingle && r.Target.Affinity != AffinityPrefixHash {

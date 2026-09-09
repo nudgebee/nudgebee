@@ -26,7 +26,9 @@ var summarizationCtxKey = summarizationCtxKeyType{}
 func summarizationChunkSize(maxTokens int, model string) int {
 	outputReserve := GetLlmMaxOutputTokens(model)
 	if outputReserve <= 0 {
-		outputReserve = 4096
+		// Must track the wire floor: budgeting for a smaller reserve than the
+		// request may actually emit lets the prompt+completion overrun the window.
+		outputReserve = DefaultMaxOutputTokensFloor
 	}
 	if outputReserve >= maxTokens {
 		outputReserve = maxTokens / 2 // tiny windows: never reserve the whole thing
@@ -426,6 +428,29 @@ func truncateToTokenLimit(text string, maxTokens int, provider string, model str
 	return truncated
 }
 
+// truncateToTokenLimitHeadTail keeps the beginning AND the end of the text,
+// unlike truncateToTokenLimit which keeps only the head. The pre-flight cap uses
+// it because a ReAct scratchpad is ordered oldest-first: a head-only cut keeps
+// stale early observations and discards the recent ones the next step depends
+// on, and when the trimmed message is the user's turn it discards everything
+// after the question. Same token->char estimate as truncateToTokenLimit so the
+// two size identically.
+func truncateToTokenLimitHeadTail(text string, maxTokens int, provider string, model string) string {
+	currentTokens, err := CountTokens(provider, model, text)
+	if err != nil || currentTokens <= maxTokens {
+		return text
+	}
+	charsPerToken := float64(len(text)) / float64(currentTokens)
+	// currentTokens > maxTokens is guaranteed above, so this is always below
+	// len(text); SmartTruncateToolOutput returns the text untouched whenever the
+	// 100-char floor lands above it.
+	targetChars := int(float64(maxTokens) * charsPerToken * 0.95)
+	if targetChars < 100 {
+		targetChars = 100
+	}
+	return SmartTruncateToolOutput(text, targetChars)
+}
+
 // preflightContextTrimMargin keeps the trimmed prompt below the window, absorbing
 // tokenizer + chat-template overhead (the Qwen3 "32769" off-by-one).
 const preflightContextTrimMargin = 256
@@ -482,11 +507,31 @@ func applyPreflightContextWindowCap(ctx *security.RequestContext, messages []llm
 		counts[j] = t
 	}
 
+	// The user's turn carries the question (and, under ReAct, the scratchpad
+	// appended to it), so it is excluded from the trim until nothing else is
+	// left. Session f1a7ddd5 is what this guards: a 50KB tool result made that
+	// turn the largest message, it absorbed the whole overshoot, hit the 256
+	// floor, and the model answered a question it could no longer see.
+	userTurn := lastHumanTextMessageIndex(result)
+
 	const maxTrimIterations = 12
 	for i := 0; i < maxTrimIterations && total > budget; i++ {
-		idx, idxTokens := largestTextMessageIndex(result, counts)
+		protect := userTurn
+		idx, idxTokens := largestTextMessageIndex(result, counts, protect)
 		if idx < 0 || idxTokens <= 0 {
-			break // nothing trimmable — hand off to the reactive backstop
+			// Everything else is already at its floor. Trimming the user's turn
+			// is worse than not trimming, but sending an over-budget prompt is
+			// worse still — the provider 4xxs and handleTokenLimitError re-enters
+			// with real summarization. Take the turn, head+tail, so the question
+			// at the top survives even now.
+			protect = -1
+			idx, idxTokens = largestTextMessageIndex(result, counts, protect)
+			if idx < 0 || idxTokens <= 0 {
+				break // nothing trimmable — hand off to the reactive backstop
+			}
+			ctx.GetLogger().Warn("Pre-flight context-window cap: no trimmable message left except the user turn; "+
+				"trimming it head+tail — the prompt is structurally too large for this model window",
+				"agent", agentName, "userTurnIndex", idx, "budget", budget)
 		}
 		// Trim the first text part, wherever it sits (largestTextMessageIndex implies one).
 		textPartIdx, textContent := -1, llms.TextContent{}
@@ -503,7 +548,7 @@ func applyPreflightContextWindowCap(ctx *security.RequestContext, messages []llm
 		if targetTokens < 256 {
 			targetTokens = 256
 		}
-		trimmed := truncateToTokenLimit(textContent.Text, targetTokens, provider, model)
+		trimmed := truncateToTokenLimitHeadTail(textContent.Text, targetTokens, provider, model)
 		if trimmed == textContent.Text {
 			break // already at/under target — no progress, avoid an infinite loop
 		}

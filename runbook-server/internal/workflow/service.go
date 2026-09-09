@@ -3088,21 +3088,11 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	for _, pa := range describeResp.GetPendingActivities() {
 		pendingActivityIDs[pa.GetActivityId()] = struct{}{}
 	}
-	for i := range workflowDetails.Tasks {
-		t := &workflowDetails.Tasks[i]
-		if t.Type != "core.approval" || t.Status != model.TaskStatusScheduled {
-			continue
-		}
-		if _, stillPending := pendingActivityIDs[t.ID]; !stillPending {
-			// Resolved approval that replay left stuck at SCHEDULED — demote so the
-			// frontend's `status === 'SCHEDULED'` pending-approval filter clears it.
-			// The decision (approved/rejected) isn't recoverable here; COMPLETED is
-			// the closest non-pending state. The happy path is untouched: when the
-			// terminal event is in history, processWorkflowHistory already set the
-			// accurate status before this runs.
-			t.Status = model.TaskStatusCompleted
-		}
-	}
+	reconcileApprovalTaskStatuses(
+		workflowDetails.Tasks,
+		pendingActivityIDs,
+		workflowDetails.Status != model.WorkflowExecutionStatusRunning,
+	)
 
 	// For non-persisted (inline/dry-run) workflows the history reconstruction
 	// is the only source of truth for the definition itself — keep it.
@@ -3119,6 +3109,26 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	}
 
 	return workflowDetails, nil
+}
+
+// reconcileApprovalTaskStatuses demotes core.approval tasks (any depth) left at SCHEDULED
+// by replay: CANCELED if the run is terminal (#36358), COMPLETED if it moved on (#32891).
+func reconcileApprovalTaskStatuses(tasks []model.TaskExecutionDetails, pendingActivityIDs map[string]struct{}, execTerminal bool) {
+	for i := range tasks {
+		t := &tasks[i]
+		reconcileApprovalTaskStatuses(t.Children, pendingActivityIDs, execTerminal)
+		if t.Type != "core.approval" || t.Status != model.TaskStatusScheduled {
+			continue
+		}
+		if _, stillPending := pendingActivityIDs[t.ID]; stillPending {
+			continue
+		}
+		if execTerminal {
+			t.Status = model.TaskStatusCanceled
+		} else {
+			t.Status = model.TaskStatusCompleted
+		}
+	}
 }
 
 // toInt coerces interface{} values from Temporal Memo deserialization into an
@@ -3188,6 +3198,12 @@ func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, stat
 	if accountID != "" && workflowID != "" && runID != "" && taskID != "" {
 		details, err := s.GetDetailedWorkflowExecution(ctx, accountID, workflowID, runID)
 		if err == nil && details != nil {
+			// Slack/email buttons stay clickable after the run ends. Without this the caller
+			// gets "already been processed" — a decision that was never made (#36358).
+			if details.Status != model.WorkflowExecutionStatusRunning {
+				return common.Error{Code: 409, Message: fmt.Sprintf("execution is no longer running (%s); approval cannot be recorded", details.Status)}
+			}
+
 			var targetTask *model.TaskExecutionDetails
 			for i := range details.Tasks {
 				if details.Tasks[i].ID == taskID {
@@ -3304,6 +3320,16 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 	temporalID, err := s.ResolveTemporalWorkflowID(ctx, accountID, workflowID, executionID)
 	if err != nil {
 		return err
+	}
+
+	// A closed run has nothing to approve; the query below would only fail with an opaque
+	// "failed to resolve approval token" (#36358).
+	describeResp, err := s.temporalClient.DescribeWorkflowExecution(ctx.GetContext(), temporalID, executionID)
+	if err != nil {
+		return fmt.Errorf("describe workflow execution: %w", err)
+	}
+	if status := mapTemporalStatusToModelStatus(describeResp.GetWorkflowExecutionInfo().GetStatus()); status != model.WorkflowExecutionStatusRunning {
+		return common.Error{Code: 409, Message: fmt.Sprintf("execution is no longer running (%s); approval cannot be recorded", status)}
 	}
 
 	queryResp, err := s.temporalClient.QueryWorkflow(ctx.GetContext(), temporalID, executionID, "getApprovalToken", taskID)
@@ -4095,6 +4121,27 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 					} else {
 						task.Error = "Timeout (no failure details)"
 					}
+				}
+			}
+
+		// Cancel abandons the waiting activity. With WaitForCancellation false, history
+		// often carries only CANCEL_REQUESTED, so handle both or replay keeps SCHEDULED (#36358).
+		case enums.EVENT_TYPE_ACTIVITY_TASK_CANCEL_REQUESTED:
+			attrs := event.GetActivityTaskCancelRequestedEventAttributes()
+			if taskID, ok := scheduledEventIdToTaskIdMap[attrs.GetScheduledEventId()]; ok {
+				if task, ok := taskMap[taskID]; ok {
+					task.Status = model.TaskStatusCanceled
+					task.EndTime = timestampPBToTimestamp(event.GetEventTime())
+				}
+			}
+
+		case enums.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
+			attrs := event.GetActivityTaskCanceledEventAttributes()
+			if taskID, ok := scheduledEventIdToTaskIdMap[attrs.GetScheduledEventId()]; ok {
+				if task, ok := taskMap[taskID]; ok {
+					task.Status = model.TaskStatusCanceled
+					task.CompletedEventID = event.GetEventId()
+					task.EndTime = timestampPBToTimestamp(event.GetEventTime())
 				}
 			}
 

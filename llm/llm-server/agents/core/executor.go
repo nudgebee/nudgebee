@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/llms/googleai"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -78,6 +79,17 @@ func sanitizeErrorForUser(err error) string {
 		return ""
 	}
 	errStr := err.Error()
+
+	// "no LLM configuration found" (see selectAccountLLMIntegration,
+	// llm_common.go) means the account has enabled LLM integrations but none
+	// flagged as the default — a real, actionable account misconfiguration,
+	// not an internal fault. Left unhandled, this fell through to the raw
+	// `errStr` return below and leaked an internal account UUID and agent
+	// name to the end user with no indication of what to actually do.
+	if strings.Contains(strings.ToLower(errStr), "no llm configuration found") {
+		return "This account has no default AI provider configured, so requests can't be processed. Ask an account admin to open Integrations → LLM Providers and mark one as the default."
+	}
+
 	// Check for common DB connection/timeout errors
 	// This list can be expanded based on observed errors
 	sensitivePatterns := []string{
@@ -898,7 +910,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if status == "" {
 		status = guessAgentStatusFromResponse(response)
 	}
-	ctx.GetLogger().Info("agentexecutor: operation metrics", "agent", agent.GetName(), "status", status)
+	ctx.GetLogger().Info("agentexecutor: operation metrics", "agent", agent.GetName(), "status", status, "duration_seconds", time.Since(start).Seconds())
 	switch status {
 	case AgentExecutionStatusFail:
 		common.MetricsAgentOperationsTotal(agentName, "fail", accountID)
@@ -1331,6 +1343,34 @@ func resolveEffectivePlannerType(declared AgentPlannerType) AgentPlannerType {
 	return declared
 }
 
+// useReAct4Engine decides whether a ReAct/Orchestrating agent should run under
+// the provider-native tool-calling planner (ReAct4) instead of ReAct3. It
+// resolves the agent's provider/model and defers the rule to shouldUseReAct4.
+//
+// The flag is checked first so the (potentially DB-backed) provider resolution
+// is skipped entirely when ReAct4 is disabled — the common case. See
+// docs/planner_react_4.md.
+func useReAct4Engine(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) bool {
+	// An agent may pin itself to ReAct4 (NBAgentReAct4Provider) so a mirror
+	// handle can be evaluated in a deployed environment without flipping the
+	// global flag. No agent implements this by default, so the flag remains the
+	// only path for every existing agent.
+	forced := false
+	if p, ok := agent.(NBAgentReAct4Provider); ok {
+		forced = p.PrefersReAct4()
+	}
+	if !config.Config.LlmServerReAct4Enabled && !forced {
+		return false
+	}
+	declared := agent.GetPlannerType()
+	if declared != AgentPlannerTypeReAct && declared != AgentPlannerTypeOrchestrating {
+		return false
+	}
+	provider := GetLLMProvider(ctx, request.AccountId, agent.GetName(), true, request.ConversationId)
+	model := GetLLMModelName(ctx, request.AccountId, provider, agent.GetName(), true, request.ConversationId)
+	return shouldUseReAct4(declared, config.Config.LlmServerReAct4Enabled, forced, provider, model)
+}
+
 func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, systemMessage string, messageHistoryFomatter []prompts.MessageFormatter, initialNotebook string) (NBAgentPlanner, error) {
 	var nbAgentPlanner NBAgentPlanner
 	var err error
@@ -1338,8 +1378,24 @@ func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBA
 	if agent.GetPlannerType() == AgentPlannerTypeTool {
 		nbAgentPlanner, err = NewPromptAgent(ctx, request, agent, systemMessage, messageHistoryFomatter)
 	} else if agent.GetPlannerType() == AgentPlannerTypeReAct || agent.GetPlannerType() == AgentPlannerTypeReAct3 || agent.GetPlannerType() == AgentPlannerTypeOrchestrating {
-		// Orchestrating, ReAct and ReAct3 all execute as react_3.
-		nbAgentPlanner, err = NewReActAgent3(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
+		// Orchestrating, ReAct and ReAct3 execute as react_3 by default, or as
+		// react_4 (provider-native tool calling) when LlmServerReAct4Enabled is
+		// set AND the resolved provider/model supports native tools
+		// (useReAct4Engine). Gated off by default. See docs/planner_react_4.md.
+		//
+		// react_4 receives the react_3-style agent systemMessage (built via the
+		// same GetPromptTemplate, which carries no XML action grammar — that
+		// lives in reActCreatePrompt3's base, which react_4 bypasses) and
+		// prepends its own react_4 base (planner_react_4_base.txt) inside
+		// NewReActAgent4. effectivePlannerType stays react_3 so the react-style
+		// response formatter/citation gates keep working unchanged.
+		if useReAct4Engine(ctx, agent, request) {
+			ctx.GetLogger().Info("createAgentPlanner: using react_4 native tool-calling planner",
+				"agent", agent.GetName(), "declared_type", agent.GetPlannerType())
+			nbAgentPlanner, err = NewReActAgent4(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
+		} else {
+			nbAgentPlanner, err = NewReActAgent3(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
+		}
 	} else if agent.GetPlannerType() == AgentPlannerTypeClassification {
 		classificationAgent, ok := agent.(NBClassificationAgent)
 		if !ok {
@@ -1454,6 +1510,19 @@ func recordConfigSelectionStrategy(queryConfig *toolcore.NBQueryConfig, toolName
 		"metadata", queryConfig.ToolConfigMetadata[toolName])
 }
 
+// ValidateNativeToolSchemas converts the given tools to provider-native tool
+// definitions and validates them against the strictest provider schema converter
+// (Google AI), returning the first conversion error. No API call is made.
+//
+// Exists so a build-time audit can assert every registered tool renders to a
+// provider-valid schema. Under ReAct3 tool schemas were rendered into the prompt
+// as XML text that nothing validated; under native tool calling they become
+// provider-validated API objects, so a latent malformed schema turns into a hard
+// 400 that fails EVERY request for any agent carrying that tool.
+func ValidateNativeToolSchemas(tools []toolcore.NBTool) error {
+	return googleai.ValidateTools(nbToolsToLlmTools(tools))
+}
+
 func nbToolsToLlmTools(tools []toolcore.NBTool) []llms.Tool {
 	llmTools := []llms.Tool{}
 	for _, t := range tools {
@@ -1461,7 +1530,13 @@ func nbToolsToLlmTools(tools []toolcore.NBTool) []llms.Tool {
 		properties := map[string]any{}
 		for k, p := range t.InputSchema().Properties {
 			prop := map[string]any{}
-			prop["type"] = p.Type
+			// string(p.Type), not p.Type: ToolSchemaType is a NAMED string type, and
+			// provider schema converters type-assert this value as a plain `string`
+			// (googleai.go convertSchemaRecursive: `ty.(string)`). A named type fails
+			// that assertion even though its underlying kind is string, producing
+			// "tool [N], property [X]: expected string for type" and failing the whole
+			// GenerateContent call before any tool runs.
+			prop["type"] = string(p.Type)
 			if p.Description != "" {
 				prop["description"] = p.Description
 			}
@@ -1470,6 +1545,16 @@ func nbToolsToLlmTools(tools []toolcore.NBTool) []llms.Tool {
 			}
 			if len(p.Items) > 0 {
 				prop["items"] = p.Items
+			} else if p.Type == toolcore.ToolSchemaTypeArray {
+				// Providers REQUIRE `items` on an array schema — Gemini rejects the
+				// whole request with "properties[x].items: missing field" (400
+				// INVALID_ARGUMENT). Because a native tool-calling planner advertises
+				// the agent's ENTIRE toolset in one request, a single array property
+				// that omits Items breaks every call for that agent, not just its own
+				// tool. Default to string items so one under-specified declaration
+				// cannot take down the request; tools with non-string arrays should
+				// still declare Items explicitly.
+				prop["items"] = map[string]any{"type": "string"}
 			}
 			properties[k] = prop
 		}

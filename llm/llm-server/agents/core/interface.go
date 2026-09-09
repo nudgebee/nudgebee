@@ -160,6 +160,10 @@ type NBAgentRequest struct {
 	// patterns, decisions, collective, plus the <memory_index> audit footer).
 	// Rendered as a reference-framed <user_memory> block in the human message.
 	MemoryContext string `json:"memory_context,omitempty"`
+	// ReplyRef is an opaque per-question correlator echoed back unchanged on
+	// the /llm/response webhook — see ConversationApiRequest.ReplyRef. Never
+	// read by any agent; carried only for sendReplyToNotificationServer.
+	ReplyRef string `json:"reply_ref,omitempty"`
 }
 
 // DO not use for API calls
@@ -206,6 +210,42 @@ type NBAgentPlannerToolAction struct {
 	DisplayID  string                            `json:"display_id,omitempty"`
 	Dependency []string                          `json:"dependency"`
 	Condition  NBAgentPlannerToolActionCondition `json:"condition"`
+	// TurnID groups the actions that the model emitted in a SINGLE completion
+	// (a parallel tool-call batch). react_4 flattens each action into its own
+	// step, so without this marker the rebuilt history splits one assistant turn
+	// into N separate assistant messages. That reshaping is not cosmetic for
+	// Gemini thinking models: they attach the reasoning signature to the FIRST
+	// functionCall part of a turn only, so siblings replayed as standalone
+	// messages arrive with no signature of their own and the request is rejected
+	// ("...missing a thought_signature..., position 2"). Empty for steps
+	// persisted before this field existed, which are then replayed one per
+	// message exactly as before.
+	TurnID string `json:"turn_id,omitempty"`
+	// ExecutionBatchID groups tool calls that were emitted in one multi-action
+	// planner turn. ExecutionMode records whether the shared executor actually
+	// dispatched that batch through its parallel or sequential path; this is a
+	// dispatch-strategy marker, not a claim that calls overlapped in wall-clock
+	// time. A safety pre-flight can downgrade a model-emitted batch to sequential.
+	ExecutionBatchID          string `json:"execution_batch_id,omitempty"`
+	ExecutionMode             string `json:"execution_mode,omitempty"`
+	ExecutionBatchSize        int    `json:"execution_batch_size,omitempty"`
+	ExecutionParallelismLimit int    `json:"execution_parallelism_limit,omitempty"`
+	SequentialFallbackReason  string `json:"sequential_fallback_reason,omitempty"`
+	PlannerIteration          int    `json:"planner_iteration,omitempty"`
+	// ThoughtSignature is the provider's opaque record of the reasoning that
+	// produced THIS tool call. Gemini 2.5/3.x thinking models return one with
+	// each native function call and require it replayed verbatim whenever that
+	// call reappears in history; on 3.x a replay without it fails the request
+	// with HTTP 400 ("Function call is missing a thought_signature in
+	// functionCall parts").
+	//
+	// It lives on the action rather than in planner-local state because react_4
+	// rebuilds its native message list from the persisted steps on every Plan()
+	// call — including after a suspend/resume — so anything not stored here is
+	// gone by the next turn. Only the originating provider can produce it: it is
+	// opaque, must never be synthesized, and is simply absent for planners and
+	// providers that do not use native tool calling.
+	ThoughtSignature []byte `json:"thought_signature,omitempty"`
 	// MemoryRefs is the LLM's self-attribution: which injected memory
 	// item(s) shaped THIS action. Populated when the model emits
 	//   <action>...<memory_used><ref n="N" note="..."/></memory_used></action>
@@ -408,6 +448,30 @@ const (
 // *NBReActPlanner3 concrete type) because prompt assembly and response formatting
 // must select react-style behavior before the planner instance is created.
 const AgentPlannerTypeReAct3 AgentPlannerType = "react_3"
+
+// AgentPlannerTypeReAct4 is the provider-native tool-calling ENGINE (also not a
+// declared type). Like ReAct3 it is produced at runtime, not returned by any
+// agent's GetPlannerType(): a ReAct/Orchestrating agent resolves to ReAct4 only
+// when LlmServerReAct4Enabled is set AND the resolved provider/model supports
+// native tool calling (see SupportsNativeTools / useReAct4Engine); otherwise it
+// falls back to ReAct3. See docs/planner_react_4.md.
+const AgentPlannerTypeReAct4 AgentPlannerType = "react_4"
+
+// NBAgentReAct4Provider is an opt-in marker. An agent implementing it with
+// PrefersReAct4() == true runs under the ReAct4 native tool-calling planner
+// regardless of LlmServerReAct4Enabled — but never bypasses the capability
+// gate: if the resolved provider/model lacks native tool support it still falls
+// back to ReAct3 (fail-closed, see useReAct4Engine).
+//
+// It exists so a ReAct4 mirror of an agent can be registered under its own
+// handle for side-by-side evaluation without flipping the global flag for every
+// account. An implementing agent keeps declaring its normal planner type
+// (Orchestrating/ReAct), so every gate keyed on the DECLARED type — query cap,
+// memory extraction, response formatting, DisplayID assignment — behaves
+// identically to the agent it mirrors. Only the planner engine differs.
+type NBAgentReAct4Provider interface {
+	PrefersReAct4() bool
+}
 
 type NBAgentPromptRagFormat string
 

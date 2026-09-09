@@ -29,6 +29,15 @@ const (
 	// before the circuit breaker forces the agent to try a different approach.
 	// Set to 5 to accommodate build verification retries (install deps, scope adjustments).
 	defaultMaxConsecutiveFailures = 5
+
+	// maxRepoAccessFailures is how many failed repo-fetching steps a run may
+	// accumulate while it still has no working tree before it is terminated with
+	// an honest "repository unavailable" answer. Three, not two: the model is
+	// allowed one genuine correction (a wrong URL or branch it can fix from the
+	// evidence) plus the nudge it gets after the first failure — but not the
+	// tool-rotation flail (repo_clone → cli git clone → gh) that otherwise eats
+	// the whole iteration budget.
+	maxRepoAccessFailures = 3
 )
 
 var (
@@ -93,14 +102,19 @@ type ReActPlanner struct {
 	// was granted; consecutive-failure counting restarts from there.
 	failureForgivenessIndex int
 
-	// repoAccessFailures counts steps that failed with an unrecoverable repo
-	// access error (repo not found / dead credentials), across ALL tools. The
-	// per-tool circuit breaker never trips on these because the agent rotates
-	// tools (repo_clone → cli git clone → gh), flailing for the whole iteration
-	// budget on a clone that can never succeed. First strike injects a hard
-	// stop-retrying instruction; second strike aborts the run with a clear,
-	// actionable error.
+	// repoAccessFailures counts steps that failed while the run still had no
+	// repository to analyze, across ALL tools. The per-tool circuit breaker never
+	// trips on these because the agent rotates tools (repo_clone → cli git clone
+	// → gh), flailing for the whole iteration budget on a clone that can never
+	// succeed. Early strikes inject a stop-retrying instruction carrying the real
+	// git error; maxRepoAccessFailures aborts the run with an honest answer.
 	repoAccessFailures int
+
+	// repoCloneSucceeded records that a repo_clone step completed in this run, so
+	// later failures of git/gh/cli are judged as ordinary tool failures. Tracked
+	// here because the orchestrator only refreshes RepositoryContext.LocalPath
+	// after the planner returns.
+	repoCloneSucceeded bool
 
 	// Tool invocation tracking
 	toolTracker *common.ToolInvocationTracker // Track all tool invocations
@@ -218,6 +232,7 @@ type ReActPlanner struct {
 type RepositoryContext struct {
 	URL           string   `json:"url"`                      // Git repository URL
 	Branch        string   `json:"branch"`                   // Current branch
+	Commit        string   `json:"commit,omitempty"`         // Pinned commit SHA, when the analysis targets a specific revision
 	DefaultBranch string   `json:"default_branch"`           // Default branch (main/master)
 	LocalPath     string   `json:"local_path"`               // Local repository path
 	GitHubRepo    string   `json:"git_repo,omitempty"`       // Extracted owner/repo for GitHub operations
@@ -728,6 +743,12 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	p.submitRetryCount = 0
 	p.forcedFallbackUsed = false
 	p.forcedFallbackReason = ""
+	// Repo-availability tracking is per-run: each Plan() gets its own iteration
+	// budget, so it gets its own strike budget. Without the reset a planner reused
+	// across phases (specialist → fixer) would carry strikes from the previous
+	// phase and abort the next one on its first repo-access failure.
+	p.repoAccessFailures = 0
+	p.repoCloneSucceeded = false
 	// Initialize the user's parallel message tracker
 	p.messages = []Message{
 		{Role: "user", Content: query},
@@ -921,41 +942,53 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 					})
 				}
 
-				// Fail fast on unrecoverable repo access: retrying (with any
-				// tool) cannot fix a missing repo or dead credentials.
-				if isUnrecoverableRepoAccess(s.Action, s.Observation+" "+s.Error) {
+				// Fail fast while the repository is still unavailable: without a
+				// working tree there is nothing to analyze, and the remaining
+				// iterations would be spent re-cloning and then answering from no
+				// code — the failure mode that produced confident findings about
+				// code the run never read.
+				if p.repoStillUnavailable(s.Action) {
 					p.repoAccessFailures++
+					gitErr := p.truncate(strings.TrimSpace(s.Error+" "+s.Observation), 300)
 					if p.logger != nil {
-						p.logger.Log(common.EventStepFailure, "Unrecoverable repository access error", map[string]any{
+						p.logger.Log(common.EventStepFailure, "Repository still unavailable after failed step", map[string]any{
 							"tool":                 s.Action,
 							"repo_access_failures": p.repoAccessFailures,
+							"error":                gitErr,
 						})
 					}
-					if p.repoAccessFailures >= 2 {
+					if p.repoAccessFailures >= maxRepoAccessFailures {
 						// Terminate with the honest-abstention answer instead of a raw
 						// failure: it passes the downstream result contract (a repo-
 						// inaccessible run has no citations to offer) and won't trigger
-						// upstream retry storms.
+						// upstream retry storms. The blocker quotes what git actually
+						// said — the cause is whatever the remote reported, and naming
+						// a guess here sends the user to fix the wrong thing.
 						if p.logger != nil {
-							p.logger.Log(common.EventPlanningComplete, "Terminating: unrecoverable repository access", map[string]any{
+							p.logger.Log(common.EventPlanningComplete, "Terminating: repository could not be made available", map[string]any{
 								"repo_access_failures": p.repoAccessFailures,
 							})
 						}
 						p.finalizeInsufficientEvidence(ctx, result, s.Number+1,
-							fmt.Sprintf("Repository access is unrecoverable (repository not found or credentials rejected; last failing tool: %s). Fix the repository URL/credentials and re-run the analysis.", s.Action))
+							fmt.Sprintf("The repository could not be made available after %d attempts, so there is no code to analyze. Last failure (tool: %s): %s", p.repoAccessFailures, s.Action, gitErr))
 						loopDone = true
 						break
 					}
 					llmConversation = append(llmConversation, llms.MessageContent{
 						Role: llms.ChatMessageTypeHuman,
-						Parts: []llms.ContentPart{llms.TextPart(
-							"[SYSTEM] Repository access failed with an UNRECOVERABLE error (repository not found or credentials rejected). " +
-								"Do NOT retry cloning or fetching with any tool (repo_clone, git, gh, glab, cli) — retries cannot succeed. " +
-								"Continue the analysis with files already available in the workspace, or call submit_analysis explaining that the repository is inaccessible.")},
+						Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf(
+							"[SYSTEM] The repository is still not available after a failed '%s' step: %s\n"+
+								"Repeating the same request with another tool (repo_clone, git, gh, glab, cli) will not change the remote's answer. "+
+								"Retry ONLY if you are changing something material (a different URL or branch that the evidence supports). "+
+								"Otherwise continue with files already in the workspace, or call submit_analysis reporting that the repository is unavailable and quoting the error above.",
+							s.Action, gitErr))},
 					})
 				}
 			case "completed":
 				p.consecutiveToolFailures[s.Action] = 0
+				if s.Action == "repo_clone" {
+					p.repoCloneSucceeded = true
+				}
 			}
 
 			// The repo-access abort above sets loopDone inside the switch, where
@@ -968,13 +1001,13 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 			if s.Action == "submit_analysis" {
 				// A repo-inaccessible run can never satisfy the submit contract —
 				// explore mode demands citations and there is no code to cite —
-				// so any rejected submit after an unrecoverable repo-access error
-				// (contract "failed" or grounding "retriable_failed") would just
-				// burn iterations. Finalize with the honest abstention carrying
-				// the blocker instead.
-				if s.Status != "completed" && p.repoAccessFailures > 0 {
+				// so any rejected submit after a repo-access failure (contract
+				// "failed" or grounding "retriable_failed") would just burn
+				// iterations. Finalize with the honest abstention carrying the
+				// blocker instead.
+				if s.Status != "completed" && p.repoAccessFailures > 0 && p.repoStillUnavailable("repo_clone") {
 					p.finalizeInsufficientEvidence(ctx, result, s.Number+1,
-						"Repository access is unrecoverable (repository not found or credentials rejected) — the analysis could not examine the code. Fix the repository URL/credentials and re-run.")
+						"The repository could not be made available, so the analysis never examined the code. Re-run once the repository is reachable.")
 					loopDone = true
 					break
 				}
@@ -1425,8 +1458,31 @@ func (p *ReActPlanner) repairTruncatedJSON(content string) string {
 	return ""
 }
 
-// isExplorationCommand checks if a command is exploratory (ls, find without specific purpose)
+// gitReadOnlySubcommands are the git_tool subcommands that only inspect state
+// (mirrors git_tool.go's Description()). Used by isExplorationCommand so a
+// run that repeatedly checks status/log/diff/branch/remote/fetch through the
+// git tool — instead of ls/find through cli — still gets forced to decide.
+var gitReadOnlySubcommands = map[string]bool{
+	"status": true, "log": true, "diff": true, "show": true,
+	"branch": true, "remote": true, "fetch": true, "blame": true,
+}
+
+// isExplorationCommand checks if a command is exploratory: ls/find without a
+// specific purpose (via the cli tool), or a read-only git subcommand (via the
+// git tool) repeated instead of acting. Without the git case, a run can loop
+// on git status/log/diff/branch/remote/fetch indefinitely and never trip this
+// limiter — observed burning a whole commit-enforcement retry's budget on
+// investigation with zero commit/push attempt (issue #36634).
 func (p *ReActPlanner) isExplorationCommand(action string, actionInput map[string]any) bool {
+	if action == "git" {
+		if args, ok := actionInput["args"].([]any); ok && len(args) > 0 {
+			if sub, ok := args[0].(string); ok {
+				return gitReadOnlySubcommands[strings.ToLower(strings.TrimSpace(sub))]
+			}
+		}
+		return false
+	}
+
 	if action != "cli" {
 		return false
 	}
@@ -1455,8 +1511,13 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 		p.mu.Unlock()
 		if explCount > p.explorationLimit {
 			step.Status = "failed"
-			step.Error = fmt.Sprintf("Too many consecutive exploration commands (%d). Instead of ls, try: 1) 'grep -r \"keyword\" .' to find relevant files, 2) 'find . -name \"*pattern*\" -type f' to locate specific files, or 3) directly analyze files you've already found.", p.consecutiveExplorationCount)
-			step.Observation = "Exploration limit exceeded. Use targeted search commands like grep or find instead of ls."
+			if step.Action == "git" {
+				step.Error = fmt.Sprintf("Too many consecutive read-only git commands (%d) without acting. You already have enough context — commit and push now (git add, git commit, git push), or discard with git checkout -- . if the changes are wrong. Do not run another status/log/diff/branch/remote/fetch.", p.consecutiveExplorationCount)
+				step.Observation = "Exploration limit exceeded. Stop inspecting state and either commit+push or discard the changes."
+			} else {
+				step.Error = fmt.Sprintf("Too many consecutive exploration commands (%d). Instead of ls, try: 1) 'grep -r \"keyword\" .' to find relevant files, 2) 'find . -name \"*pattern*\" -type f' to locate specific files, or 3) directly analyze files you've already found.", p.consecutiveExplorationCount)
+				step.Observation = "Exploration limit exceeded. Use targeted search commands like grep or find instead of ls."
+			}
 			if p.logger != nil {
 				p.logger.Log(common.EventStepFailure, "Exploration limit exceeded", map[string]any{
 					"consecutive_count": p.consecutiveExplorationCount,
@@ -1949,10 +2010,10 @@ func (p *ReActPlanner) addToolOutput(toolID string, output string) {
 // AI messages contain TextContent (thought) + ToolCall parts.
 // Tool results use ToolCallResponse parts (ChatMessageTypeTool).
 // No "nudge" messages — the tool result is sufficient for the model to continue.
-// repoAccessTools are the tools whose failures can carry a git remote-access
-// error. Restricting the unrecoverable-access check to these (and to FAILED
-// steps only) avoids false positives from e.g. a successful ripgrep whose
-// matches happen to contain the words "repository not found".
+// repoAccessTools are the tools a run can use to obtain a repository. A FAILED
+// step from one of these, while the run still has no working tree, is what the
+// repo-availability gate counts; failures of every other tool are ordinary tool
+// failures for the per-tool circuit breaker.
 var repoAccessTools = map[string]bool{
 	"repo_clone": true,
 	"git":        true,
@@ -1961,22 +2022,35 @@ var repoAccessTools = map[string]bool{
 	"cli":        true,
 }
 
-// isUnrecoverableRepoAccess reports whether a failed step's output indicates a
-// repository access error that no retry (with any tool) can fix: the repo does
-// not exist or the credentials are rejected. GitHub reports both a truly
-// missing repo and a private repo with bad auth as "Repository not found"; a
-// credential prompt in a non-interactive run surfaces as "could not read
-// Username".
-func isUnrecoverableRepoAccess(action, text string) bool {
+// repoStillUnavailable reports whether a failed step leaves the run with no
+// repository to analyze.
+//
+// It deliberately does NOT classify the error text. The previous version matched
+// a fixed list ("repository not found", "authentication failed", …), which meant
+// every git failure outside that list — an empty repository, a poisoned cached
+// clone, an LFS or proxy error, a disk problem — was treated as retriable, and
+// the run burned its whole budget re-cloning before answering from no code at
+// all. The set of ways git can refuse to hand over a repository is open-ended;
+// the state that matters is not.
+//
+// So the question asked here is the state one: this run wanted a repository, a
+// tool that fetches repositories failed, and there is still no working tree. Why
+// git said no is the model's problem to report, not this gate's to enumerate.
+// Once a working tree exists, later failures of these tools are ordinary tool
+// failures and belong to the per-tool circuit breaker.
+func (p *ReActPlanner) repoStillUnavailable(action string) bool {
 	if !repoAccessTools[action] {
 		return false
 	}
-	ls := strings.ToLower(text)
-	return strings.Contains(ls, "repository not found") ||
-		strings.Contains(ls, "could not read username") ||
-		strings.Contains(ls, "authentication failed") ||
-		strings.Contains(ls, "permission denied (publickey)") ||
-		strings.Contains(ls, "invalid username or token")
+	// A log-only run never expected a repository; its cli/git failures are
+	// ordinary tool failures.
+	if p.repositoryContext == nil || p.repositoryContext.URL == "" {
+		return false
+	}
+	if p.repoCloneSucceeded {
+		return false
+	}
+	return !p.repositoryContext.isRepositoryActuallyCloned()
 }
 
 // observationStub bounds: an observation longer than stubThreshold is aged to a

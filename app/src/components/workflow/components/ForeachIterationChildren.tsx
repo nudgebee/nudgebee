@@ -129,8 +129,22 @@ const ForeachIterationChildren: React.FC<ForeachIterationChildrenProps> = ({ ent
   const failed = iterations.filter((it) => String(it.status ?? '').toUpperCase() === 'FAILED').length;
 
   return (
-    <Box sx={{ marginTop: 'var(--ds-space-4)', padding: 'var(--ds-space-3)', borderTop: `1px solid ${ds.blue[300]}` }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', marginBottom: 'var(--ds-space-2)' }}>
+    // Bounded flex column: the section is content-sized for short loops but caps
+    // at half the panel so a long loop scrolls internally instead of overflowing
+    // the (clipped, non-scrolling) detail panel and squashing Input/Output to 0.
+    <Box
+      sx={{
+        marginTop: 'var(--ds-space-4)',
+        padding: 'var(--ds-space-3)',
+        borderTop: `1px solid ${ds.blue[300]}`,
+        display: 'flex',
+        flexDirection: 'column',
+        flex: '0 1 auto',
+        minHeight: 0,
+        maxHeight: '50%',
+      }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', marginBottom: 'var(--ds-space-2)', flexShrink: 0 }}>
         <Typography
           sx={{
             fontSize: 'var(--ds-text-small)',
@@ -145,12 +159,14 @@ const ForeachIterationChildren: React.FC<ForeachIterationChildrenProps> = ({ ent
           {completed} completed{failed > 0 ? `, ${failed} failed` : ''}
         </Typography>
       </Box>
-      {iterations.map((iteration) => (
-        <IterationCard key={iteration.id} iteration={iteration} copyToClipboard={copyToClipboard} />
-      ))}
-      {others.map((child) => (
-        <ChildTaskCard key={child.id} task={child} copyToClipboard={copyToClipboard} />
-      ))}
+      <Box className='custom-scrollbar' sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        {iterations.map((iteration) => (
+          <IterationCard key={iteration.id} iteration={iteration} copyToClipboard={copyToClipboard} />
+        ))}
+        {others.map((child) => (
+          <ChildTaskCard key={child.id} task={child} copyToClipboard={copyToClipboard} />
+        ))}
+      </Box>
     </Box>
   );
 };

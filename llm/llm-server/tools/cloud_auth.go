@@ -88,10 +88,19 @@ func BuildAwsAuth(ctx context.Context, creds CloudAccountCredentials) (*CloudAut
 		stsClient := sts.NewFromConfig(cfg)
 
 		roleArn := *creds.AssumeRole
-		assumeRoleOutput, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
+		assumeRoleInput := &sts.AssumeRoleInput{
 			RoleArn:         aws.String(roleArn),
 			RoleSessionName: aws.String("nudgebee-workspace-session"),
-		})
+		}
+		// Trust policies carrying an sts:ExternalId condition reject a call that
+		// omits it, so send the account's stored value the same way the
+		// onboarding validator and cloud-collector do.
+		if creds.ExternalId != nil {
+			if extID := strings.TrimSpace(*creds.ExternalId); extID != "" {
+				assumeRoleInput.ExternalId = aws.String(extID)
+			}
+		}
+		assumeRoleOutput, err := stsClient.AssumeRole(ctx, assumeRoleInput)
 		if err != nil {
 			errMsg := err.Error()
 			// STS 403/AccessDenied is a permanent credential error — do not retry.

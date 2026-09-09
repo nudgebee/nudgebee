@@ -46,6 +46,9 @@ type apiSessionsRequest struct {
 	EndDate   string `json:"end_date"`
 	UserID    string `json:"user_id"` // optional; scope to one user
 	Search    string `json:"search"`  // optional; session_id contains
+	Model     string `json:"model"`   // optional; sessions that touched this model
+	Sort      string `json:"sort"`    // optional; last_seen(default) | first_seen | cost | requests | tokens
+	Order     string `json:"order"`   // optional; asc | desc(default)
 	Limit     int    `json:"limit"`
 	Offset    int    `json:"offset"`
 }
@@ -142,7 +145,8 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		}
 		res, err := ListSessions(c.Request.Context(), db, ListSessionsRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: req.UserID, Search: req.Search,
+			UserID: req.UserID, Search: req.Search, Model: req.Model,
+			Sort: req.Sort, Order: req.Order,
 			CallerUserID:  c.GetHeader("x-user-id"),
 			CallerIsAdmin: rpc.IsTenantAdmin(c),
 			Limit:         req.Limit, Offset: req.Offset,

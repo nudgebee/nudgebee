@@ -15,6 +15,8 @@ allowed-tools:
 
 Create a pull request for the current branch, then watch it through to a green, review-clean state — polling CI and review threads, fixing what can be auto-fixed, and surfacing what only a human can resolve (Step 11). Optional argument: `$ARGUMENTS` (target base branch, defaults to `main`).
 
+**Before writing any prose — the PR body, review replies, the final report — read [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md).** It is the binding style contract for anything this skill posts to GitHub. A correct PR that nobody finishes reading has failed.
+
 ## Step 1: Gather Context
 
 Run these commands to understand the current state:
@@ -116,12 +118,12 @@ Read the diff in full and evaluate against these dimensions:
 Categorize each finding into one of three buckets:
 
 1. **Fix now.** Clear bugs, security issues, style violations, obvious over-engineering. Fix them in-place, re-run validation for the affected service, then **commit the fixes** (e.g., `git commit -am "chore: fix issues found during self-review"`). This commit will be squashed in Step 6. Do not push a PR with known issues that you could have fixed. **A clean working tree is required for the rebase in Step 5 — uncommitted changes will cause it to fail.**
-2. **Flag to reviewer.** Genuine judgment calls — design trade-offs, architectural questions, risks you mitigated but didn't eliminate. These go in the **Risks & Counterarguments** section of the PR body (see Step 8).
+2. **Flag to reviewer.** Genuine judgment calls — design trade-offs, architectural questions, risks you mitigated but didn't eliminate. These go in the **Risks** section of the PR body (see Step 8) — max 3 bullets, phrased for a reviewer who has not read the diff.
 3. **Ask the user.** Anything that requires product or business context the agent doesn't have. Surface these **before** pushing — do not ship a PR with open questions buried in the description.
 
 ### Adversarial Pass (for non-trivial PRs)
 
-If the PR touches shared contracts, DB schema, cross-service behavior, or any architectural decision, also run the logic from `/challenge` against the diff itself: what are the three strongest reasons this diff is wrong? Include the surviving counterarguments in the **Risks & Counterarguments** section of the PR body. Skip this sub-step for typo / docs / 1-line fixes.
+If the PR touches shared contracts, DB schema, cross-service behavior, or any architectural decision, also run the logic from `/challenge` against the diff itself: what are the three strongest reasons this diff is wrong? Include the surviving counterarguments in the **Risks** section of the PR body. Skip this sub-step for typo / docs / 1-line fixes.
 
 ## Step 5: Rebase on Base Branch
 
@@ -219,13 +221,17 @@ Based on the commits and diff, generate:
 | `revert` | Bug fix |
 | `release` | Chore |
 
-**Body MUST follow the repo's PR template (`.github/pull_request_template.md`) with review notes appended:**
+**Body MUST follow the repo's PR template (`.github/pull_request_template.md`), written to the
+rules in [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md) — read that file
+before drafting. The short version: one screen above the fold, everything else demoted into a
+`<details>` block, and "How Has This Been Tested?" answers *how the reader verifies this*, not
+*which commands you ran*.**
 
 ```markdown
 # Description
 
-{Summary of the changes and the related issue. Include relevant motivation and context.
-List any dependencies that are required for this change.}
+{THE LEAD — max 3 sentences, no symbol names, no file paths, no SHAs. What changed, who it
+affects, why it mattered. One number if you have one. A PM must be able to read this and stop.}
 
 Fixes #{issue_number}   ← MANDATORY for PRs to main (from Step 2; use "Part of #N" if the ticket stays open). Remove this line ONLY for PRs to test/prod.
 
@@ -235,46 +241,59 @@ Fixes #{issue_number}   ← MANDATORY for PRs to main (from Step 2; use "Part of
 
 # How Has This Been Tested?
 
-{Describe the tests that you ran to verify your changes. Provide instructions so we can reproduce.}
+{READER-SIDE STEPS. Numbered. What someone else does to confirm this works — where to click, what
+to run, what they should see, and what they'd have seen before. No internal symbols.
 
-- [x] {Test A description}
-- [x] {Test B description}
+If the change has no observable surface, write exactly one line saying so — e.g. "No user-visible
+surface; verified via unit tests and the log line in the fold below" — and put the developer probe
+in the fold. Do not invent a UI flow.}
 
----
+1. {step}
+2. {step — expected result}
 
-# Review Notes
+# Risks
 
-## 1. Changes Involved
-{Bullet list of what was added, modified, or removed — focus on behavior changes, not line counts.}
+{Max 3 bullets, only things a reviewer should actively evaluate: trade-offs accepted, risks
+mitigated but not eliminated, surviving counterarguments from Step 4.5 / `/challenge`. Each bullet:
+the risk, why it was accepted, what would trigger a revisit. DELETE THIS HEADING ENTIRELY if there
+is nothing real — do not write "None".}
 
-## 2. Files & Functions Changed
-| File | Function / Section | Change |
-|------|-------------------|--------|
-| `path/to/file.ts` | `functionName()` | {Brief description of what changed and why} |
+<details>
+<summary>Engineering detail</summary>
 
-## 3. Impact Analysis — Other Functions
-{List any upstream/downstream components, shared utilities, or API contracts affected by this change. State "None" if the change is self-contained.}
+{No length limit. Everything the fold exists to hold, in whatever structure fits:
 
-## 4. Impact Analysis — Performance
-{Note any render-cycle, memory, network, or bundle-size implications. Call out memoization, lazy loading, or caching changes. State "Negligible" if no meaningful impact.}
+- Root cause, with file:line, symbols, commit SHAs, migration ids.
+- Evidence you ran: validation commands and their output, test counts, benchmark numbers.
+- Measurements, comparison tables, per-model / per-service breakdowns.
+- Cross-service impact, performance, UX notes — only where non-obvious. Omit what doesn't apply.
+- "Not in this PR" — adjacent problems deliberately left alone, and where they're tracked.}
 
-## 5. Impact Analysis — UX
-{Describe user-facing changes: new interactions, visual updates, accessibility, empty/error states. State "None" if purely internal.}
-
-## 6. Risks & Counterarguments
-{Residual risks from the AI self-review in Step 4.5 — things that were considered and mitigated but not eliminated, plus any counterarguments from /challenge that the implementation accepted rather than resolved. Format as a bulleted list, each bullet stating: the risk, why it was accepted, and what would trigger a revisit. State "None — fully resolved during self-review" if there are no residual concerns. Do NOT put trivial concerns here; save this section for things a human reviewer should actively evaluate.}
+</details>
 ```
 
 **Rules for filling the template:**
 - Select the "Type of change" based on the semantic type → PR checkbox mapping above
 - Mark applicable types with `[x]` — only include the checked types, delete all unchecked options
-- The Description should explain **why** the change was made, not just what changed
-- Testing section should list concrete verification steps
+- **Above the fold: 200 words, hard cap.** Over budget means demote into the fold, never trim meaning
+- The lead explains **why**, not what — the diff already shows what
+- **No per-file / per-function change table.** GitHub renders the diff directly above your text; a table restating it is machine output pasted back at the reader
+- **Omit empty sections entirely.** No "None", no "Negligible", no "N/A" — an empty heading is worse than an absent one
 - For PRs to `main`: the issue link is **mandatory** — the number comes from Step 2; `Fixes #` closes the ticket on merge, `Part of #` keeps it open for multi-PR tickets
 - For PRs to `test`/`prod`: remove the `Fixes #` line entirely
-- Review Notes sections should be concise — one-liners per item, no filler
-- The Files & Functions table should cover every modified file
-- Impact sections should state "None" or "Negligible" explicitly when there is no impact, rather than omitting the section
+- Dependency-bump and other mechanical PRs get a lead and nothing else — no fold, no risks
+
+## Step 8.5: Reader Test (mandatory, before Step 9)
+
+Re-read your own draft and answer these four. Any failure is a rewrite, not a caveat — and the fix
+is almost always "move it into the fold", not "delete it".
+
+1. **Skim test** — reading only the first three lines, can a PM tell what changed and whether it's risky?
+2. **Jargon test** — is there a function name, file path, SHA, library version, migration id, or error string above the fold?
+3. **Reproduce test** — could QA follow "How Has This Been Tested?" without opening the codebase? If it lists only commands you ran, it is not written yet.
+4. **Slop test** — delete every sentence that restates the diff, hedges, or exists to look thorough. If the meaning survived the deletion, leave it deleted.
+
+Then check the budget: `wc -w` on everything above `<details>` must be ≤ 200.
 
 ## Step 9: Create the PR
 

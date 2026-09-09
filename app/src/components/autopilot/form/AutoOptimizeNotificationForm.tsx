@@ -62,10 +62,22 @@ const NotificationForm = ({
   const [connectedPlatforms, setConnectedPlatforms] = useState<string[] | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     apiAccount
       .listConnectedMessagingPlatforms()
-      .then((res) => setConnectedPlatforms(res?.data ?? []))
-      .catch(() => setConnectedPlatforms([]));
+      .then((res) => {
+        if (!cancelled) {
+          setConnectedPlatforms(res?.data ?? []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setConnectedPlatforms([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // A platform is selectable when it's installed — via the legacy messaging_platforms
@@ -108,7 +120,7 @@ const NotificationForm = ({
                 fullWidth
                 tone={notificationData?.slack ? 'primary' : 'secondary'}
                 size='md'
-                icon={<SafeIcon src={SlackIcon} width={18} height={18} />}
+                icon={<SafeIcon src={SlackIcon} alt='' width={18} height={18} />}
                 onClick={handleSlackButtonClick}
                 disabled={slackDisabled}
                 tooltip={slackDisabled && !reviewAutoOptimize ? 'Connect Slack in Integrations to enable notifications' : undefined}
@@ -146,7 +158,7 @@ const NotificationForm = ({
                 fullWidth
                 tone={notificationData?.teams ? 'primary' : 'secondary'}
                 size='md'
-                icon={<SafeIcon src={MsTeamsIcon} width={18} height={18} />}
+                icon={<SafeIcon src={MsTeamsIcon} alt='' width={18} height={18} />}
                 onClick={handleTeamsButtonClick}
                 disabled={teamsDisabled}
                 tooltip={teamsDisabled && !reviewAutoOptimize ? 'Connect MS Teams in Integrations to enable notifications' : undefined}
@@ -200,7 +212,7 @@ const NotificationForm = ({
                 fullWidth
                 tone={notificationData?.google_chat ? 'primary' : 'secondary'}
                 size='md'
-                icon={<SafeIcon src={GChatIcon} width={18} height={18} />}
+                icon={<SafeIcon src={GChatIcon} alt='' width={18} height={18} />}
                 onClick={handleGoogleChatButtonClick}
                 disabled={googleChatDisabled}
                 tooltip={googleChatDisabled && !reviewAutoOptimize ? 'Connect Google Chat in Integrations to enable notifications' : undefined}

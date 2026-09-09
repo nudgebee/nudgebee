@@ -144,6 +144,10 @@ func (t *WriteFileTool) Execute(_ context.Context, input map[string]any) core.NB
 		return core.CreateErrorResponse(fmt.Sprintf("Failed to create parent directories for '%s': %v", filePath, mkErr), "")
 	}
 
+	// Read before writing: the syntax gate reports only findings this write
+	// introduced. nil for a new file, where every finding is ours by definition.
+	beforeContent, _ := os.ReadFile(resolvedAbsPath)
+
 	if writeErr := os.WriteFile(resolvedAbsPath, []byte(content), 0o644); writeErr != nil {
 		return core.CreateErrorResponse(fmt.Sprintf("Failed to write '%s': %v", filePath, writeErr), "")
 	}
@@ -161,7 +165,7 @@ func (t *WriteFileTool) Execute(_ context.Context, input map[string]any) core.NB
 	// Post-edit syntax gate (advisory, parse-only, tri-state) — same as the
 	// replace tool: a freshly written file with broken syntax is caught here
 	// for free instead of by LLM review or CI.
-	observation = CheckEditedFileSyntax(resolvedAbsPath).AppendToObservation(observation)
+	observation = CheckEditedFileSyntaxDelta(resolvedAbsPath, beforeContent).AppendToObservation(observation)
 	return core.CreateSuccessResponse(observation, observation, map[string]any{
 		"file_path":     filePath,
 		"absolute_path": resolvedAbsPath,

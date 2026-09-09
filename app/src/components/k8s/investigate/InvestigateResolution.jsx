@@ -15,6 +15,9 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
   const [requestBody, setRequestBody] = useState({});
   const [selectedOption, setSelectedOption] = useState('');
   const [loading, setLoading] = useState(false);
+  // Kept in state (not just a toast) so the reason stays on screen next to the diff the user was
+  // reading. A toast disappears; the question "why did that fail?" does not.
+  const [submitError, setSubmitError] = useState('');
   const [validationError, setValidationError] = useState({
     imageChangeContainerName: '',
     imageNameWithTag: '',
@@ -71,24 +74,36 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
     const diff = row?.evidences.find((f) => f.type == 'diff')?.data ?? '';
     if (diff) {
       diffExists = true;
-      const oldData = yaml.load(diff.old);
-      const newData = yaml.load(diff.new);
-      revertChanges = diff.updated_paths.map((path) => {
-        const updatedPath = path.replace(/^(StatefulSet|DaemonSet|Deployment|ReplicaSet)\./, '');
-        const oldValue = getNestedValue(oldData, updatedPath);
-        const newValue = getNestedValue(newData, updatedPath);
-        return [
-          {
-            text: updatedPath,
-          },
-          {
-            text: JSON.stringify(oldValue) ?? '',
-          },
-          {
-            text: JSON.stringify(newValue) ?? '',
-          },
-        ];
-      });
+      const stripKind = (path) => path.replace(/^(StatefulSet|DaemonSet|Deployment|ReplicaSet|Rollout)\./, '');
+      // A value the change added has no "old" (and one it deleted has no "new").
+      // Render that as a dash rather than "" so the row doesn't read as "the
+      // field was an empty string".
+      const renderValue = (value) => (value === null || value === undefined || value === '' ? '—' : JSON.stringify(value));
+      // Prefer updated_values: it records old/new per path directly. Re-deriving
+      // them by walking diff.old/diff.new renders blanks whenever the field's
+      // YAML key differs from the path, because the snapshot is serialised
+      // snake_case while the paths are camelCase — e.g. the path
+      // spec.template.spec.initContainers[0].image has no match in a snapshot
+      // that spells it init_containers.
+      const updatedValues = Array.isArray(diff.updated_values) ? diff.updated_values : [];
+      if (updatedValues.length) {
+        revertChanges = updatedValues.map((change) => [
+          { text: stripKind(change?.path ?? '') },
+          { text: renderValue(change?.old) },
+          { text: renderValue(change?.new) },
+        ]);
+      } else {
+        const oldData = yaml.load(diff.old);
+        const newData = yaml.load(diff.new);
+        revertChanges = (diff.updated_paths ?? []).map((path) => {
+          const updatedPath = stripKind(path);
+          return [
+            { text: updatedPath },
+            { text: renderValue(getNestedValue(oldData, updatedPath)) },
+            { text: renderValue(getNestedValue(newData, updatedPath)) },
+          ];
+        });
+      }
     }
 
     if (isRevertTheDevelopment) {
@@ -286,10 +301,19 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
     return valid;
   };
 
+  // The dialog stays open on failure. Closing it discarded the diff the user was reading and left
+  // only a toast, so retrying meant navigating back to the event and reopening the dialog.
+  const showFailure = (reason) => {
+    const message = reason || 'The request was rejected and no reason was returned.';
+    setSubmitError(message);
+    updateInvestigateSuccessSnackBar('error', `Failed to apply resolution: ${message}`);
+  };
+
   const handleSubmit = () => {
     if (!validateValuesBeforeSubmit()) {
       return;
     }
+    setSubmitError('');
     setLoading(true);
     apiRecommendations
       .applyRecommendation(
@@ -308,22 +332,36 @@ const InvestigateResolution = ({ row, handleClose, updateInvestigateSuccessSnack
       .then((res) => {
         if (!res?.errors) {
           updateInvestigateSuccessSnackBar('success', 'Resolution applied successfully');
-        } else {
-          updateInvestigateSuccessSnackBar('error', `Failed to apply resolution ${parseHttpResponseBodyMessage(res)}`);
+          handleClose();
+          return;
         }
+        showFailure(parseHttpResponseBodyMessage(res));
       })
-      .catch(() => {
-        updateInvestigateSuccessSnackBar('error', 'Failed to apply resolution');
+      .catch((err) => {
+        // Transport and 5xx failures used to surface as a fixed string, so the actual reason never
+        // reached anyone — an apiserver rejection read the same as a network blip.
+        showFailure(parseHttpResponseBodyMessage(err?.response?.data) || err?.message);
       })
       .finally(() => {
         setLoading(false);
-        handleClose();
       });
   };
 
   return (
     <>
       <Box p={`${ds.space.mul(0, 10)} 0px`}>{renderConditionalFields()}</Box>
+      {submitError && (
+        <Box
+          sx={{
+            p: ds.space[3],
+            borderRadius: ds.radius.sm,
+            border: `1px solid ${ds.red[200]}`,
+            background: ds.red[100],
+          }}
+        >
+          <Typography sx={{ fontSize: ds.text.small, color: ds.red[700] }}>{submitError}</Typography>
+        </Box>
+      )}
       <Box
         display='flex'
         alignItems='center'

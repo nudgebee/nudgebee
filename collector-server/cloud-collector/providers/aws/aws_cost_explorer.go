@@ -5,6 +5,7 @@ import (
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/providers/constants"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -76,19 +77,28 @@ func (a *awsCostExplorer) GetRecommendations(ctx providers.CloudProviderContext,
 
 	client := costexplorer.NewFromConfig(cfg)
 
-	// Fetch RI recommendations for each supported service
-	riRecs := a.getReservedInstanceRecommendations(ctx, client, account)
+	// Fetch RI recommendations for each supported service. A partial result must
+	// not be reported as a complete one: the sync archives every recommendation
+	// for this service that the scan did not return, so swallowing a throttle
+	// here retires live commitment recommendations for a cycle.
+	riRecs, err := a.getReservedInstanceRecommendations(ctx, client, account)
+	if err != nil {
+		return nil, err
+	}
 	recommendations = append(recommendations, riRecs...)
 
 	// Fetch Savings Plans recommendations
-	spRecs := a.getSavingsPlanRecommendations(ctx, client, account)
+	spRecs, err := a.getSavingsPlanRecommendations(ctx, client, account)
+	if err != nil {
+		return nil, err
+	}
 	recommendations = append(recommendations, spRecs...)
 
 	ctx.GetLogger().Info("fetched cost explorer recommendations", "count", len(recommendations))
 	return recommendations, nil
 }
 
-func (a *awsCostExplorer) getReservedInstanceRecommendations(ctx providers.CloudProviderContext, client *costexplorer.Client, account providers.Account) []providers.Recommendation {
+func (a *awsCostExplorer) getReservedInstanceRecommendations(ctx providers.CloudProviderContext, client *costexplorer.Client, account providers.Account) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
 	for _, service := range ceRIServices {
@@ -97,8 +107,7 @@ func (a *awsCostExplorer) getReservedInstanceRecommendations(ctx providers.Cloud
 			AccountScope: cetypes.AccountScopeLinked,
 		})
 		if err != nil {
-			ctx.GetLogger().Warn("failed to get RI recommendation for service", "service", service, "error", err)
-			continue
+			return nil, fmt.Errorf("get RI recommendation for %s: %w", service, err)
 		}
 
 		for _, rec := range output.Recommendations {
@@ -151,7 +160,7 @@ func (a *awsCostExplorer) getReservedInstanceRecommendations(ctx providers.Cloud
 					Action:              providers.RecommendationActionModify,
 					Data:                data,
 					ResourceServiceName: riServiceName,
-					ResourceId:          fmt.Sprintf("ce-ri-%s-%d", service, i),
+					ResourceId:          riRecommendationId(service, data, i),
 					ResourceType:        resourceType,
 					ResourceRegion:      "us-east-1",
 					DedupeGroup:         fmt.Sprintf("aws_commitment:%s:%s", account.AccountNumber, riServiceName),
@@ -160,7 +169,41 @@ func (a *awsCostExplorer) getReservedInstanceRecommendations(ctx providers.Cloud
 		}
 	}
 
-	return recommendations
+	return recommendations, nil
+}
+
+// riAttributeKeys are the fields that identify which purchase a Reserved
+// Instance recommendation is for, in a fixed order so the derived id is stable.
+var riAttributeKeys = []string{
+	"region",
+	"instance_type",
+	"instance_class",
+	"instance_size",
+	"node_type",
+	"family",
+	"platform",
+	"database_engine",
+}
+
+// riRecommendationId derives a stable identity for a Reserved Instance purchase
+// recommendation. Cost Explorer returns no id of its own for these, and the
+// position in the response cannot stand in for one: the index restarts for
+// every element of output.Recommendations, so it collides within a single scan,
+// and AWS's ordering is not guaranteed between scans, so it silently re-points
+// an existing recommendation at a different purchase. Falling back to the index
+// keeps a recommendation that reports no identifying attributes at all
+// addressable, rather than dropping it.
+func riRecommendationId(service string, data map[string]any, index int) string {
+	parts := []string{}
+	for _, key := range riAttributeKeys {
+		if value, ok := data[key].(string); ok && value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("ce-ri-%s-%d", service, index)
+	}
+	return fmt.Sprintf("ce-ri-%s-%s", service, strings.Join(parts, ","))
 }
 
 func (a *awsCostExplorer) extractInstanceDetails(details *cetypes.InstanceDetails, data map[string]any) {
@@ -237,7 +280,7 @@ func (a *awsCostExplorer) extractInstanceDetails(details *cetypes.InstanceDetail
 	}
 }
 
-func (a *awsCostExplorer) getSavingsPlanRecommendations(ctx providers.CloudProviderContext, client *costexplorer.Client, account providers.Account) []providers.Recommendation {
+func (a *awsCostExplorer) getSavingsPlanRecommendations(ctx providers.CloudProviderContext, client *costexplorer.Client, account providers.Account) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
 	spTypes := []cetypes.SupportedSavingsPlansType{
@@ -260,8 +303,7 @@ func (a *awsCostExplorer) getSavingsPlanRecommendations(ctx providers.CloudProvi
 					AccountScope:         cetypes.AccountScopeLinked,
 				})
 				if err != nil {
-					ctx.GetLogger().Warn("failed to get savings plan recommendation", "type", spType, "error", err)
-					continue
+					return nil, fmt.Errorf("get savings plan recommendation (%s, %s, %s): %w", spType, term, payment, err)
 				}
 
 				if output.SavingsPlansPurchaseRecommendation == nil {
@@ -334,15 +376,39 @@ func (a *awsCostExplorer) getSavingsPlanRecommendations(ctx providers.CloudProvi
 		}
 	}
 
-	// Fetch Database Savings Plans recommendations
-	dbSpRecs := a.getDatabaseSavingsPlanRecommendations(ctx, client, account)
-	recommendations = append(recommendations, dbSpRecs...)
+	// Fetch Database Savings Plans recommendations. This one keeps swallowing its
+	// errors on purpose: DATABASE_SP is not in the SDK enum and the request fails
+	// outright where AWS has not shipped it, which is a probe result rather than
+	// a failed scan.
+	recommendations = append(recommendations, a.getDatabaseSavingsPlanRecommendations(ctx, client, account)...)
 
-	return recommendations
+	return recommendations, nil
 }
 
 func parseFloat64(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
+}
+
+// allUpfrontBreakEvenMonths reports how many months of equivalent on-demand
+// spend the upfront payment of an All Upfront savings plan represents. The
+// whole term is paid at once and nothing is paid monthly, so the payment is
+// recovered once that much on-demand spend has been avoided.
+//
+// Dividing by the monthly *savings* instead — as this did — asks a different
+// question: how many months of the discount alone repay the entire commitment.
+// That only lands inside the term when the savings exceed the commitment
+// itself, which is a discount above 50% and beyond what a database savings plan
+// reaches, so every All Upfront plan was judged non-viable and silently
+// dropped.
+//
+// Returns 0 when the on-demand cost is unknown, which reads as "pays for itself
+// immediately" and so surfaces the recommendation rather than hiding it.
+func allUpfrontBreakEvenMonths(hourlyCommitment, monthlyOnDemandCost, termMonths float64) float64 {
+	if hourlyCommitment <= 0 || monthlyOnDemandCost <= 0 {
+		return 0
+	}
+	upfrontCost := hourlyCommitment * hoursPerMonth * termMonths
+	return upfrontCost / monthlyOnDemandCost
 }
 
 // Cost Explorer purchase recommendations return cost totals for the request's
@@ -551,18 +617,12 @@ func (a *awsCostExplorer) getDatabaseSavingsPlanRecommendations(ctx providers.Cl
 				bestSavings = totalRISavings
 			}
 
-			// Calculate break-even point for All Upfront plans
-			// Break-even = Upfront Cost / Monthly Savings
-			// Monthly savings = what you save each month by using SP instead of on-demand
 			if payment == cetypes.PaymentOptionAllUpfront && summary.HourlyCommitmentToPurchase != nil {
 				hourlyCommitment, err := parseFloat64(*summary.HourlyCommitmentToPurchase)
 				if err != nil {
 					ctx.GetLogger().Warn("failed to parse hourly commitment for break-even", "error", err)
-				} else if hourlyCommitment > 0 && spSavings > 0 {
-					// For All Upfront: total upfront payment = hourly rate * hours in term
-					upfrontCost := hourlyCommitment * hoursPerMonth * termMonths
-					// spSavings is already the monthly savings amount from AWS API
-					breakEvenMonths = upfrontCost / spSavings
+				} else {
+					breakEvenMonths = allUpfrontBreakEvenMonths(hourlyCommitment, spOnDemandCost, termMonths)
 					breakEvenViable = breakEvenMonths <= termMonths
 
 					// Log warning if break-even exceeds term (indicates plan won't pay for itself)
@@ -572,7 +632,7 @@ func (a *awsCostExplorer) getDatabaseSavingsPlanRecommendations(ctx providers.Cl
 							"payment", payment,
 							"breakEvenMonths", breakEvenMonths,
 							"termMonths", termMonths,
-							"upfrontCost", upfrontCost,
+							"monthlyOnDemandCost", spOnDemandCost,
 							"monthlySavings", spSavings)
 					}
 				}

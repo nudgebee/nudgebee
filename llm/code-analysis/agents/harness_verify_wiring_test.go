@@ -18,7 +18,6 @@ func TestCodeFixerTemplateHarnessVerifyVariants(t *testing.T) {
 		"OriginalQuery":        "fix it",
 		"InvestigationHistory": "",
 		"BuildConfig":          nil,
-		"BuildVerifyEnabled":   true,
 		"Skills":               "",
 	}
 

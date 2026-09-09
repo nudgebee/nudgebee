@@ -67,6 +67,7 @@ func main() {
 		repoURL          = flag.String("repo", "", "Git repository URL")
 		logs             = flag.String("logs", "", "Application logs to analyze")
 		branch           = flag.String("branch", "main", "Git branch to analyze")
+		commit           = flag.String("commit", "", "Git commit SHA to analyze (optional). Pins the checkout to one revision — e.g. the commit that was deployed when an incident fired — instead of the tip of --branch.")
 		token            = flag.String("token", "", "GitHub token (or set GITHUB_TOKEN env var)")
 		prompt           = flag.String("prompt", defaultPrompt, "Analysis prompt")
 		agent            = flag.String("agent", "code_agent", "Agent to use (default: code_agent)")
@@ -143,7 +144,7 @@ func main() {
 		// this CLI analysis's logs carry the caller's trace_id.
 		common.SetGlobalTraceID(traceIDFromContext(traceparentFromEnv(context.Background())))
 
-		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *token, promptValue, *agent, *eventId, *recommendationId, *workflowId, *accountId, raisePR, *conversationId, *gitProvider, *mode)
+		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *commit, *token, promptValue, *agent, *eventId, *recommendationId, *workflowId, *accountId, raisePR, *conversationId, *gitProvider, *mode)
 		return
 	}
 
@@ -238,6 +239,15 @@ func main() {
 	gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
 	credHandler := credentials.NewCredentialHandler()
 
+	// Startup is the only point where an unconditional sweep is safe: no
+	// in-process analysis can own one of these temp workspaces yet.
+	handlers.SweepOrphanedAnalysisWorkspaces(0)
+	if reclaimed, err := handlers.CollectWorkspaceGarbage(cfg.Analysis.WorkspaceDir); err != nil {
+		log.Printf("WARN: workspace cache cleanup failed: %v", err)
+	} else if reclaimed > 0 {
+		log.Printf("INFO: workspace cache cleanup reclaimed %d bytes", reclaimed)
+	}
+
 	agenticHandler, err := handlers.NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
 	if err != nil {
 		// The agentic handler builds its LLM client per request from the
@@ -248,6 +258,22 @@ func main() {
 		initLogger.Error(common.EventAnalysisFailure, "Failed to initialize agentic handler", err, nil)
 		log.Fatalf("failed to initialize agentic handler: %v", err)
 	}
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			maxAge := cfg.Analysis.MaxProcessingTime + time.Hour
+			if maxAge < 2*time.Hour {
+				maxAge = 2 * time.Hour
+			}
+			handlers.SweepOrphanedAnalysisWorkspaces(maxAge)
+			if reclaimed, err := handlers.CollectWorkspaceGarbage(cfg.Analysis.WorkspaceDir); err != nil {
+				log.Printf("WARN: periodic workspace cache cleanup failed: %v", err)
+			} else if reclaimed > 0 {
+				log.Printf("INFO: periodic workspace cache cleanup reclaimed %d bytes", reclaimed)
+			}
+		}
+	}()
 
 	// Initialize execution handler
 	executionHandler := handlers.NewExecutionHandler(cfg)
@@ -260,6 +286,7 @@ func main() {
 	{
 		v1.POST("/analyze", agenticHandler.HandleAnalyze)
 		v1.GET("/status/*id", agenticHandler.HandleStatus)
+		v1.POST("/cancel/*id", agenticHandler.HandleCancel)
 		v1.POST("/execute", executionHandler.HandleExecute)
 
 		// File operations
@@ -276,6 +303,7 @@ func main() {
 	// Root routes
 	router.POST("/analyze", agenticHandler.HandleAnalyze)
 	router.GET("/status/*id", agenticHandler.HandleStatus)
+	router.POST("/cancel/*id", agenticHandler.HandleCancel)
 	router.POST("/execute", executionHandler.HandleExecute)
 
 	// Health check
@@ -431,7 +459,7 @@ func redactArgs(args []string) []string {
 	return safe
 }
 
-func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, agent, eventId, recommendationId, workflowId, accountId string, raisePR bool, conversationId, gitProvider, mode string) {
+func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, commit, token, prompt, agent, eventId, recommendationId, workflowId, accountId string, raisePR bool, conversationId, gitProvider, mode string) {
 	// Make logs optional for code correlation scenarios
 	if logs == "" && prompt == "Analyze the logs for errors" {
 		log.Fatal("Logs are required (--logs) for log analysis, or provide a specific --prompt for code correlation")
@@ -523,6 +551,7 @@ func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, ag
 			gitRepo = handlers.GitRepository{
 				URL:      normalizedURL,
 				Branch:   branch,
+				Commit:   commit,
 				Provider: gitProvider,
 			}
 			log.Printf("DEBUG CLI: Created remote GitRepository - URL='%s', Branch='%s', Provider='%s'", gitRepo.URL, gitRepo.Branch, gitRepo.Provider)

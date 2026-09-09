@@ -666,7 +666,8 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 	return resp.Data, nil
 }
 
-// makeFetchResponse returns {query, logs, file_ref, provider, complete, bundle_signal} so the
+// makeFetchResponse returns {query, logs, file_ref, provider, logs_complete,
+// logs_format, logs_format_hint, bundle_signal} so the
 // parent's scratchpad shows which query produced the data, where the raw
 // logs were saved, and — when the query wording indicates an error-content
 // investigation and the bundle flag is on — a pre-computed category-level
@@ -676,7 +677,7 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 // runAutoDiagnosticBundle for the gating logic.
 func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
 	// Preview the SAME representation that was written to file_ref, not the raw
-	// backend payload. saveLogsToWorkspace writes flattenLogsToJSONL(logs) —
+	// backend payload. saveLogsToWorkspace writes flattenLogsToTabSeparated(logs) —
 	// "<timestamp>\t<message>" per line — while this used to inline the raw
 	// Loki/ES envelope. Showing one format and handing over a file in another
 	// makes it impossible to write a working grep from the preview alone, so the
@@ -693,6 +694,7 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 		previewSource = logs
 	}
 	inlineLogs := previewSource
+	format := logsLayout(logs, previewSource)
 	logsComplete := true
 	if fileRef != "" && len(previewSource) > logInlinePreviewBytes {
 		logsComplete = false
@@ -717,6 +719,11 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 		"file_ref":      fileRef,
 		"provider":      providerFromLogs(logs),
 		"bundle_signal": bundleSignal,
+		// The saved artifact is deliberately not always a JSON document. Expose
+		// the already-known layout so consumers do not waste turns trying
+		// json.load(file_ref), inspecting its head, then rewriting the parser.
+		"logs_format":      format,
+		"logs_format_hint": logsFormatHint(format),
 		// logs_complete=true means every matching line is already inline and
 		// file_ref holds nothing extra — shelling out to read it is pure cost.
 		// Signalled explicitly because the previous "absence of a truncation
@@ -771,14 +778,17 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	if label == "" {
 		label = "kubectl"
 	}
-	body := flattenLogsToJSONL(logs)
+	body := flattenLogsToTabSeparated(logs)
 	filename := fmt.Sprintf("logs_%s_%d.txt", label, time.Now().UnixNano())
 	wm := workspace.NewWorkspaceManager()
-	if err := wm.SaveFile(ctx, accountId, conversationId, filename, body); err != nil {
-		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename)
+	saveStart := time.Now()
+	err := wm.SaveFile(ctx, accountId, conversationId, filename, body)
+	saveDuration := time.Since(saveStart)
+	if err != nil {
+		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename, "duration", saveDuration.String())
 		return "", body, nil
 	}
-	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", logsLayout(logs, body))
+	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", logsLayout(logs, body), "duration", saveDuration.String())
 	return filename, body, []toolcore.NBToolResponseReference{
 		{
 			Text:        filename,
@@ -789,7 +799,7 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	}
 }
 
-// flattenLogsToJSONL converts a Loki/Signoz/ES JSON envelope to one entry per
+// flattenLogsToTabSeparated converts a Loki/Signoz/ES JSON envelope to one entry per
 // line. Each output line is `<outer_timestamp>\t<message>` where <message> is
 // the application's emitted line (often itself JSON of the form
 // `{"timestamp":"...","level":"ERROR",...}`). grep then matches per-entry
@@ -799,7 +809,7 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 //   - it doesn't parse as the expected envelope (kubectl text, "No logs
 //     found" placeholder, Datadog alternate shapes)
 //   - the envelope has zero entries
-func flattenLogsToJSONL(raw string) string {
+func flattenLogsToTabSeparated(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return raw
@@ -830,10 +840,8 @@ func flattenLogsToJSONL(raw string) string {
 	for _, e := range doc.Logs {
 		ts := strings.TrimSpace(e.Timestamp)
 		msg := strings.TrimSpace(e.Message)
-		if ts != "" {
-			b.WriteString(ts)
-			b.WriteByte('\t')
-		}
+		b.WriteString(ts)
+		b.WriteByte('\t')
 		b.WriteString(msg)
 		b.WriteByte('\n')
 	}
@@ -847,7 +855,14 @@ func logsLayout(raw, body string) string {
 	if raw == body {
 		return "passthrough"
 	}
-	return "jsonl"
+	return "timestamp_tab_message"
+}
+
+func logsFormatHint(format string) string {
+	if format == "timestamp_tab_message" {
+		return "One record per line: <timestamp><TAB><message>. Parse line-by-line and split once on TAB; never JSON-decode the whole file. JSON-decode only the message field when it begins with an object or array."
+	}
+	return "The file is the same line-oriented passthrough representation shown in the logs preview. Filter it directly with grep/awk; only apply structured parsing when the preview demonstrates that format."
 }
 
 func errorResponse(agentName string, err error) core.NBAgentResponse {

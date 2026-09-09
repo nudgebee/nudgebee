@@ -161,10 +161,14 @@ func TestAttachSameSubjectIncident_DerivedSignalsNeverGroup(t *testing.T) {
 		SubjectOwner:     strPtr("web"),
 		StartsAt:         &time.Time{},
 	}
-	assert.NoError(t, attachSameSubjectIncident(context.Background(), nil, slo))
+	attached, err := attachSameSubjectIncident(context.Background(), nil, slo)
+	assert.NoError(t, err)
+	assert.False(t, attached)
 
 	slo.FindingType = strPtr("Anomaly")
-	assert.NoError(t, attachSameSubjectIncident(context.Background(), nil, slo))
+	attached, err = attachSameSubjectIncident(context.Background(), nil, slo)
+	assert.NoError(t, err)
+	assert.False(t, attached)
 }
 
 func TestIncidentGroupingEnabled(t *testing.T) {
@@ -253,25 +257,33 @@ func TestAttachSameSubjectIncident_E2E(t *testing.T) {
 	}
 
 	oom := mkEvent("KubeContainerOOMKilled", anchor)
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, oom))
+	oomChild, err := attachSameSubjectIncident(ctx, tx, oom)
+	require.NoError(t, err)
+	assert.False(t, oomChild, "first alert on the subject is an implicit group of one — not a child")
 	_, linked := leaderLinkOf(oom.Id)
 	assert.False(t, linked, "first alert on the subject is an implicit group of one — no link row")
 
 	crash := mkEvent("KubePodCrashLooping", anchor.Add(3*time.Minute))
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, crash))
+	crashChild, err := attachSameSubjectIncident(ctx, tx, crash)
+	require.NoError(t, err)
+	assert.True(t, crashChild, "attached under the leader — scored as a child")
 	leader, linked := leaderLinkOf(crash.Id)
 	require.True(t, linked)
 	assert.Equal(t, oom.Id, leader)
 
 	notReady := mkEvent("KubePodNotReady", anchor.Add(6*time.Minute))
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, notReady))
+	notReadyChild, err := attachSameSubjectIncident(ctx, tx, notReady)
+	require.NoError(t, err)
+	assert.True(t, notReadyChild, "attached under the leader — scored as a child")
 	leader, linked = leaderLinkOf(notReady.Id)
 	require.True(t, linked)
 	assert.Equal(t, oom.Id, leader, "third alert links to the leader, not to the second alert — star, not chain")
 
 	// A late alert after the attach window opens a new group instead.
 	late := mkEvent("KubeDeploymentReplicasMismatch", anchor.Add(6*time.Minute).Add(IncidentAttachWindow+time.Minute))
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, late))
+	lateChild, err := attachSameSubjectIncident(ctx, tx, late)
+	require.NoError(t, err)
+	assert.False(t, lateChild, "past the attach window it opens its own group — not a child")
 	_, linked = leaderLinkOf(late.Id)
 	assert.False(t, linked, "quiet gap past the attach window ends the group")
 }
@@ -344,12 +356,16 @@ func TestAttachTopologyIncident_E2E(t *testing.T) {
 
 	// checkout opens its group (lone leader — no link row yet).
 	checkoutErr := mkEvent("checkout", "HighErrorRate", anchor, "")
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, checkoutErr))
+	checkoutErrChild, err := attachSameSubjectIncident(ctx, tx, checkoutErr)
+	require.NoError(t, err)
+	assert.False(t, checkoutErrChild, "first alert opens the group — not a child")
 
 	// payments alerts 4 minutes later; its stored map says payments CALLS
 	// checkout — it must join checkout's group via topology.
 	paymentsErr := mkEvent("payments", "HighLatency", anchor.Add(4*time.Minute), kgEvidence)
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, paymentsErr))
+	paymentsErrChild, err := attachSameSubjectIncident(ctx, tx, paymentsErr)
+	require.NoError(t, err)
+	assert.True(t, paymentsErrChild, "joined checkout's group by topology — scored as a child")
 
 	var leader, reason string
 	err = tx.QueryRowContext(ctx, `
@@ -363,7 +379,9 @@ func TestAttachTopologyIncident_E2E(t *testing.T) {
 	// A later checkout alert still resolves the same star (transitivity via
 	// the edge-following leader resolution).
 	checkoutCrash := mkEvent("checkout", "CrashLoopBackOff", anchor.Add(6*time.Minute), "")
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, checkoutCrash))
+	checkoutCrashChild, err := attachSameSubjectIncident(ctx, tx, checkoutCrash)
+	require.NoError(t, err)
+	assert.True(t, checkoutCrashChild, "same-subject attach — scored as a child")
 	err = tx.QueryRowContext(ctx, `
 		SELECT related_event_id FROM event_correlations
 		WHERE event_id = $1 AND correlation_type = $2`, checkoutCrash.Id, SameIncidentCorrelationType).
@@ -373,10 +391,23 @@ func TestAttachTopologyIncident_E2E(t *testing.T) {
 
 	// No stored map on the seed and no same-subject group: no attach.
 	lonely := mkEvent("inventory", "DiskPressure", anchor.Add(5*time.Minute), "")
-	require.NoError(t, attachSameSubjectIncident(ctx, tx, lonely))
+	lonelyChild, err := attachSameSubjectIncident(ctx, tx, lonely)
+	require.NoError(t, err)
+	assert.False(t, lonelyChild, "no edge to the group — not a child")
 	var n int
 	require.NoError(t, tx.QueryRowContext(ctx, `
 		SELECT count(*) FROM event_correlations
 		WHERE event_id = $1 AND correlation_type = $2`, lonely.Id, SameIncidentCorrelationType).Scan(&n))
 	assert.Equal(t, 0, n, "no map, no same-subject members — stays lone")
+}
+
+func TestSubjectKey_OwnerHashStripped(t *testing.T) {
+	// Collectors disagree on the owner form for one workload: some report the
+	// Deployment ("postgres"), some the ReplicaSet ("postgres-78d9cffd68").
+	// Both must key to the same subject or same-incident attach misses
+	// (observed live: a Pods-Restarting alert 6 minutes inside an open window
+	// stayed unlinked because its owner carried the RS name).
+	deployment := AlertIdentity{SubjectNamespace: "namespace-104a", SubjectOwner: "postgres"}
+	replicaSet := AlertIdentity{SubjectNamespace: "namespace-104a", SubjectOwner: "postgres-78d9cffd68"}
+	assert.Equal(t, SubjectKey(deployment), SubjectKey(replicaSet))
 }

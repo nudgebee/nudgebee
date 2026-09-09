@@ -11,6 +11,7 @@ import requests
 from atlassian import Confluence
 from bs4 import BeautifulSoup, NavigableString
 from filelock import FileLock, Timeout
+from markdownify import MarkdownConverter  # type: ignore[import-untyped]
 from rag.core.documents.processing import (
     handle_updated_documents,
     process_documents,
@@ -101,25 +102,111 @@ def fetch_all_pages(confluence, space_key):
 
 
 def fetch_page(confluence, p_id):
-    """Fetch a page with its body and links, or None if it cannot be read."""
+    """Fetch a page with its body and links, or None if it cannot be read.
+
+    ``body.view`` — the server-rendered HTML — not ``body.storage``. Storage
+    format wraps every code block in ``<ac:structured-macro><![CDATA[...]]>``,
+    which no HTML parse surfaces as a ``pre``/``code`` element, so a storage-based
+    extraction drops 100% of the commands in a runbook no matter which tags it
+    asks for. View renders those macros to ordinary ``<pre>``. ``runbook_resolver``
+    on the llm-server side already reads ``body.view`` for the same reason.
+    """
     try:
-        return confluence.get_page_by_id(p_id, expand="body.storage")
+        return confluence.get_page_by_id(p_id, expand="body.view")
     except Exception as e:
         logger.warning(f"Failed to fetch page {p_id}: {e}")
         return None
 
 
 def page_body_html(page):
+    # The isinstance guard is about blast radius, not tidiness: this runs outside
+    # fetch_page's try, and the per-integration loop below has a finally but no
+    # except. One page that comes back as something other than a dict would raise
+    # here and take every remaining tenant in the sync run with it.
+    if not isinstance(page, dict):
+        return None
     body = page.get("body") or {}
-    storage = body.get("storage") or {}
-    return storage.get("value")
+    view = body.get("view") or {}
+    return view.get("value")
+
+
+class _IndexMarkdownConverter(MarkdownConverter):
+    """The markdown flavour we index.
+
+    Escaping off: this text is embedded and read by a model, never rendered by a
+    markdown parser, so escaping only turns ``cloud_collector_aws_eventbridge_sqs``
+    into ``cloud\\_collector\\_...`` and stops the identifier matching the term
+    someone searches for.
+    """
+
+    class Options(MarkdownConverter.Options):
+        heading_style = "ATX"
+        escape_underscores = False
+        escape_asterisks = False
+        escape_misc = False
+
+    def convert_img(self, el, text, parent_tags=None):
+        # Alt text can carry meaning ("architecture diagram"); the src never
+        # can. Confluence attachment and emoticon URLs are relative, so nothing
+        # downstream resolves them — they are tokens spent on a dead link.
+        return (el.attrs.get("alt") or "").strip()
+
+
+_MARKDOWN = _IndexMarkdownConverter()
+
+
+def collapse_blank_lines(text):
+    """Collapse 3+ newlines to 2, leaving fenced blocks byte-for-byte alone.
+
+    Whitespace inside a fence is content: an ASCII diagram or a heredoc means
+    something different after it has been reflowed. Rewriting it would be the
+    same silent mutation this module exists to stop, just smaller.
+    """
+    parts = re.split(r"(```.*?```)", text, flags=re.S)
+    return "".join(p if p.startswith("```") else re.sub(r"\n{3,}", "\n\n", p) for p in parts)
+
+
+def html_to_markdown(node, drop_page_furniture=False):
+    """Convert a parsed HTML node to the markdown we index.
+
+    Markdown rather than flat text because the structure IS content for the
+    agents reading this: a fenced block marks a command as runnable, and a table
+    that keeps its rows is a decision matrix instead of a column of loose cells.
+
+    Shared by every HTML source we ingest. The bug this replaced came from each
+    source growing its own tag whitelist, and each whitelist quietly deciding
+    which parts of a document an agent would never see.
+
+    ``drop_page_furniture`` is for callers handed a whole rendered page, where
+    ``nav``/``footer``/``aside`` are the site's chrome. It stays off for callers
+    handed a content fragment: there, an ``aside`` is a sidebar the author wrote
+    ("IMPORTANT: rotate the key first"), and deleting it is exactly the silent
+    loss this function replaced.
+    """
+    if drop_page_furniture:
+        for tag in node(["nav", "header", "footer", "aside"]):
+            tag.decompose()
+    for tag in node(["script", "style"]):
+        tag.decompose()
+    # Keep the link text, drop same-page anchors. A page is indexed as one
+    # document, so "[Architecture](#architecture)" points at itself: the target
+    # is already in the text being embedded. Confluence puts one per heading,
+    # which is 3% of the tokens on a typical runbook and buys nothing.
+    for anchor in node.find_all("a", href=True):
+        if anchor["href"].startswith("#"):
+            anchor.unwrap()
+    # Escaping off: this text is embedded and read by a model, never rendered by
+    # a markdown parser, so the only thing escaping achieves is turning
+    # ``cloud_collector_aws_eventbridge_sqs`` into ``cloud\_collector\_...`` —
+    # which stops the identifier matching the term someone searches for. That is
+    # the same class of defect as the concatenation this function replaced.
+    text = _MARKDOWN.convert_soup(node)
+    return collapse_blank_lines(text).strip()
 
 
 def extract_content(content_html):
-    soup = BeautifulSoup(content_html, "html.parser")
-    # Only unpack two values: text and soup
-    text = "\n".join([elem.get_text(strip=True) for elem in soup.find_all(["h1", "h2", "p", "li"])])
-    return text, soup
+    """Convert a rendered Confluence page to markdown."""
+    return html_to_markdown(BeautifulSoup(content_html, "html.parser"))
 
 
 def confluence_page_url(confluence, page):
@@ -139,7 +226,7 @@ def confluence_page_url(confluence, page):
     return f"{base}{webui}"
 
 
-def process_page_batch(page_queue, visited_pages, confluence, space_key, stats):
+def process_page_batch(page_queue, visited_pages, confluence, space_key, stats, tree_root=None):
     batch = []
 
     for _ in range(min(Config.embedding_batch_size, len(page_queue))):
@@ -155,28 +242,77 @@ def process_page_batch(page_queue, visited_pages, confluence, space_key, stats):
             stats["failed_pages"] += 1
             continue
 
-        html_content = page_body_html(page)
-        if not html_content:
-            continue
-
-        content, _ = extract_content(html_content)
-        if content:
-            page_url = confluence_page_url(confluence, page)
-            batch.append(Document(page_content=content, metadata={"page_id": page_id, "url": page_url}))
-
-        # Extract linked pages
+        # Children before body: a container page with an empty body still has
+        # a subtree beneath it, and in a page-tree scrape this walk is the only
+        # thing that finds it.
         try:
             child_pages = confluence.get_child_pages(page_id)
         except Exception as e:
             logger.warning(f"Failed to list child pages of {page_id}: {e}")
             stats["failed_pages"] += 1
-            continue
+            child_pages = []
         for child in child_pages:
             child_id = child.get("id")
             if child_id and child_id not in visited_pages:
                 page_queue.append(child_id)
 
+        html_content = page_body_html(page)
+        if html_content is None:
+            # Counted, not just logged: body.view is rendered server-side, so
+            # "the body did not render" (errored macro, Forge app, DC under
+            # load) is a real new failure mode. Left uncounted it would sink the
+            # page while the integration still reported a healthy sync.
+            #
+            # Absent, not empty. A container page whose body is "" is a normal
+            # part of a page tree — its job is to hold children — and counting
+            # those would report a failure on every tree that has one.
+            logger.warning(f"Confluence page {page_id} returned no rendered body; not indexed")
+            stats["failed_pages"] += 1
+            continue
+        if not html_content:
+            continue
+
+        content = extract_content(html_content)
+        if content:
+            page_url = confluence_page_url(confluence, page)
+            title = (page.get("title") or "").strip()
+            metadata = {"page_id": page_id, "url": page_url}
+            if title:
+                # The page title is the strongest retrieval token a runbook has
+                # and body.view does not contain it — Confluence keeps it as a
+                # separate field. Prepended and stamped, matching what the
+                # ServiceNow and product-docs loaders already do.
+                metadata["title"] = title
+                content = f"Title: {title}\n\n{content}"
+            if tree_root:
+                metadata["tree_root"] = tree_root
+            batch.append(Document(page_content=content, metadata=metadata))
+
     return batch
+
+
+def collect_confluence_tree_documents(confluence, root_id, stats):
+    """Walk one page tree — the root page and every page beneath it."""
+    if not fetch_page(confluence, root_id):
+        # A root that cannot be read is a permissions or configuration problem,
+        # not an empty tree, and must not pass as a healthy sync.
+        stats["failed_roots"] += 1
+        return []
+    visited_pages: set = set()
+    page_queue = [root_id]
+    documents: List[Document] = []
+    while page_queue:
+        documents.extend(process_page_batch(page_queue, visited_pages, confluence, None, stats, tree_root=root_id))
+    logger.info(f"Collected {len(documents)} Confluence page documents under page {root_id}")
+    return documents
+
+
+def configured_page_trees(config):
+    """Page IDs from the integration's ``page_trees`` value (comma-separated).
+
+    api-server resolves pasted URLs to IDs at save, so only IDs arrive here.
+    """
+    return [p.strip() for p in (config.get("page_trees") or "").split(",") if p.strip()]
 
 
 def collect_confluence_space_documents(confluence, space_key, stats):
@@ -238,20 +374,40 @@ def _process_integration(integration, tenant_id, embeddings, trigger_type="syste
     try:
         confluence = build_confluence_client(config)
         space_key = config.get("namespace")
-        space_keys = [space_key] if space_key else fetch_all_spaces(confluence)
+        tree_roots = configured_page_trees(config)
 
-        stats = {"failed_pages": 0, "empty_spaces": 0}
+        stats = {"failed_pages": 0, "empty_spaces": 0, "failed_roots": 0}
         documents: List[Document] = []
-        for sk in space_keys:
-            documents.extend(collect_confluence_space_documents(confluence, sk, stats))
-        if stats["failed_pages"] or stats["empty_spaces"]:
+        space_keys: List[str] = []
+        if tree_roots:
+            # Page trees replace the space walk: the space (if any) only scoped
+            # validation, and the trees are the whole of what gets indexed.
+            for root_id in tree_roots:
+                documents.extend(collect_confluence_tree_documents(confluence, root_id, stats))
+        else:
+            space_keys = [space_key] if space_key else fetch_all_spaces(confluence)
+            for sk in space_keys:
+                documents.extend(collect_confluence_space_documents(confluence, sk, stats))
+        if stats["failed_pages"] or stats["empty_spaces"] or stats["failed_roots"]:
             logger.warning(
-                "Confluence integration %s scraped with gaps: %s unreadable pages, " "%s of %s spaces returned nothing",
+                "Confluence integration %s scraped with gaps: %s unreadable pages, "
+                "%s of %s spaces returned nothing, %s of %s page trees unreadable",
                 integration_id,
                 stats["failed_pages"],
                 stats["empty_spaces"],
                 len(space_keys),
+                stats["failed_roots"],
+                len(tree_roots),
             )
+
+        if stats["failed_roots"]:
+            message = (
+                f"{stats['failed_roots']} of {len(tree_roots)} configured Confluence page trees could not be read. "
+                "Check that the pages still exist and that the account can read them."
+            )
+            logger.error(f"Confluence integration {integration_id}: {message}")
+            update_integration_kb_load_result(integration_id, "error", error_message=message)
+            return []
 
         # Spaces were discovered but not one page could be read. On-premise
         # instances restrict spaces per-account, so this is the shape a
@@ -776,10 +932,7 @@ def _extract_nudgebee_doc_content(html_content: str) -> tuple:
     if not article or isinstance(article, NavigableString):
         return "", title
 
-    text = "\n".join(
-        [elem.get_text(strip=True) for elem in article.find_all(["h1", "h2", "h3", "p", "li", "code", "pre"])]
-    )
-    return text, title
+    return html_to_markdown(article, drop_page_furniture=True), title
 
 
 def _get_section_from_url(page_url: str, base_url: str) -> str:

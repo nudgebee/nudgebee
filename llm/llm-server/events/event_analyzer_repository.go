@@ -136,6 +136,8 @@ type EventInfo struct {
 	ID             string
 	Fingerprint    string
 	AggregationKey string
+	// Freshness anchor for IsAnalysisStaleForEvent. Zero if the row had none.
+	CreatedAt time.Time
 }
 
 // EventAnalysis represents an event analysis record from the database.
@@ -159,7 +161,7 @@ type EventAnalysis struct {
 
 // GetEventInfo fetches basic event details (ID, fingerprint, aggregation key) from the database.
 func (r *EventAnalysisRepository) GetEventInfo(ctx *security.RequestContext, eventId string, accountId string) (*EventInfo, error) {
-	eventSqlQuery := `SELECT id, fingerprint, aggregation_key FROM events WHERE id = $1 and cloud_account_id = $2;`
+	eventSqlQuery := `SELECT id, fingerprint, aggregation_key, created_at FROM events WHERE id = $1 and cloud_account_id = $2;`
 	rows, err := r.dbManager.Db.Queryx(eventSqlQuery, eventId, accountId)
 	if err != nil {
 		ctx.GetLogger().Warn("analyzer: failed to get event from database", "error", err, "event_id", eventId)
@@ -172,8 +174,9 @@ func (r *EventAnalysisRepository) GetEventInfo(ctx *security.RequestContext, eve
 	}()
 
 	var dbEventId, dbEventFingerprint, dbEventAggregationKey sql.NullString
+	var dbEventCreatedAt sql.NullTime
 	if rows.Next() {
-		if err := rows.Scan(&dbEventId, &dbEventFingerprint, &dbEventAggregationKey); err != nil {
+		if err := rows.Scan(&dbEventId, &dbEventFingerprint, &dbEventAggregationKey, &dbEventCreatedAt); err != nil {
 			ctx.GetLogger().Warn("analyzer: failed to scan event from database", "error", err, "event_id", eventId)
 			return nil, err
 		}
@@ -184,6 +187,7 @@ func (r *EventAnalysisRepository) GetEventInfo(ctx *security.RequestContext, eve
 			ID:             dbEventId.String,
 			Fingerprint:    dbEventFingerprint.String,
 			AggregationKey: dbEventAggregationKey.String,
+			CreatedAt:      dbEventCreatedAt.Time,
 		}, nil
 	}
 	if err := rows.Err(); err != nil {
@@ -234,6 +238,26 @@ func (r *EventAnalysisRepository) GetAnalysisIdFromMapping(ctx *security.Request
 // fingerprint is fully analysed and days old.
 func (r *EventAnalysisRepository) IsAnalysisStale(writtenAt time.Time) bool {
 	return r.analysisFreshness > 0 && !writtenAt.IsZero() && time.Since(writtenAt) > r.analysisFreshness
+}
+
+// IsAnalysisStaleForEvent measures the analysis age against when the event
+// fired rather than against now, so "already investigated" can't lapse on a
+// wall-clock timer. Only executeEventInvestigation uses it; every other gate
+// keeps the now-based IsAnalysisStale.
+//
+// This does not reopen the dispatch-but-skip loop the IsAnalysisStale comment
+// warns about: a per-step cache skips only when the stage is inside the window
+// relative to now, which (an event can't fire in the future) means it is also
+// inside the window relative to eventCreatedAt -- so this gate would not have
+// dispatched. Falls back to the now-based bound when eventCreatedAt is zero.
+func (r *EventAnalysisRepository) IsAnalysisStaleForEvent(writtenAt, eventCreatedAt time.Time) bool {
+	if r.analysisFreshness <= 0 || writtenAt.IsZero() {
+		return false
+	}
+	if eventCreatedAt.IsZero() {
+		return time.Since(writtenAt) > r.analysisFreshness
+	}
+	return eventCreatedAt.Sub(writtenAt) > r.analysisFreshness
 }
 
 // GetEventAnalysis fetches an existing analysis from the database.
@@ -901,6 +925,43 @@ func (r *EventAnalysisRepository) GetKnowledgebase(ctx *security.RequestContext,
 // InsertRemediationExecution records that a remediation command was run against the event's cluster,
 // so the panel can show "already applied" on reload. type=CommandExecution, resolver NBLLM (attributed
 // to the acting user via resolver_id); type_reference_id is the command so the UI can match it to an action.
+// RecordRemediationVerification merges a verify result into the execute attempt it checked, under
+// data.verify. It updates the newest matching attempt rather than inserting a row: a verify is a
+// fact about an attempt, not an attempt of its own, and filing it separately counted one remediation
+// three times and listed a rollback as though it had resolved the event.
+//
+// jsonb_set on the existing data keeps every key the execute run wrote (command, exit_code,
+// success, exit_code_reported) — this is additive, so no migration.
+func (r *EventAnalysisRepository) RecordRemediationVerification(ctx *security.RequestContext, eventId, executeCommand string, verify map[string]any) error {
+	verifyJSON, err := json.Marshal(verify)
+	if err != nil {
+		return fmt.Errorf("RecordRemediationVerification: marshal: %w", err)
+	}
+	// type_reference_id holds the execute command, which is how an attempt is identified. Scoped to
+	// CommandExecution so a same-named reference on another resolution type cannot be hit.
+	res, err := r.dbManager.Db.Exec(
+		`UPDATE event_resolution
+		    SET data = jsonb_set(COALESCE(data, '{}'::jsonb), '{verify}', $3::jsonb, true),
+		        updated_at = NOW()
+		  WHERE id = (
+		        SELECT id FROM event_resolution
+		         WHERE event_id = $1 AND type = 'CommandExecution' AND type_reference_id = $2
+		         ORDER BY created_at DESC
+		         LIMIT 1
+		  )`,
+		eventId, executeCommand, string(verifyJSON))
+	if err != nil {
+		return fmt.Errorf("RecordRemediationVerification: %w", err)
+	}
+	// No matching attempt is not an error: the execute may have failed before it was recorded, or a
+	// verify may have been run on its own. Nothing to annotate, nothing to report.
+	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
+		ctx.GetLogger().Info("remediation: no execute attempt to attach verification to",
+			"event_id", eventId, "execute_command", executeCommand)
+	}
+	return nil
+}
+
 func (r *EventAnalysisRepository) InsertRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, dataJSON string, statusMessage string, success bool) error {
 	status := "Success"
 	if !success {

@@ -76,6 +76,7 @@ func TestGoogleAIGatewayCacheRoundTrip(t *testing.T) {
 		}},
 		10*time.Minute,
 		"nb-gateway-roundtrip-test",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("create cached content through gateway failed: %v", err)

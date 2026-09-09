@@ -125,6 +125,11 @@ func HandleGitOpsOrTicket(
 			// Carried through so the run's notification can tell a pull request this
 			// run raised or rewrote from one it was simply handed back.
 			result["pr_action"] = resolved.PRAction
+			// The guard's reason, so a run that generated a task and then left the
+			// pull request alone says why rather than just reading as "Complete".
+			if resolved.Message != "" {
+				result["pr_decision"] = resolved.Message
+			}
 			result["description"] = description
 		} else {
 			prInput := service.GitPushRequest{

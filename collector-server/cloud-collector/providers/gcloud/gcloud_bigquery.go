@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"sync"
 	"time"
 
@@ -485,7 +486,7 @@ func (s *bigQueryService) GetRecommendations(ctx providers.CloudProviderContext,
 		if resource.Type == "bigquery.googleapis.com/Dataset" && len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_bigquery_dataset_no_labels",
+				RuleName:     constants.GCPBigQueryDatasetNoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{
@@ -505,7 +506,7 @@ func (s *bigQueryService) GetRecommendations(ctx providers.CloudProviderContext,
 		if (resource.Type == "bigquery.googleapis.com/Table" || resource.Type == "bigquery.googleapis.com/View") && len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_bigquery_table_no_labels",
+				RuleName:     constants.GCPBigQueryTableNoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{
@@ -854,7 +855,10 @@ func (s *bigQueryService) ApplyRecommendation(ctx providers.CloudProviderContext
 	}()
 
 	switch recommendation.RuleName {
-	case "gcp_bigquery_dataset_no_labels", "gcp_bigquery_table_no_labels":
+	// GCPBigQueryDatasetNoLabels and GCPBigQueryTableNoLabels both map to the
+	// generic "missing_tags"; one case covers both (a second would be a Go
+	// duplicate-case error).
+	case constants.GCPBigQueryDatasetNoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or bq CLI")
 
 	case "gcp_bigquery_table_no_expiration":

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import k8sApi from '@api1/kubernetes';
-import { Box, Typography, Grid, Alert } from '@mui/material';
+import { Box, Typography, Grid } from '@mui/material';
+import { Banner } from '@ui/Banner';
 import Chart from '@ui/Chart';
 import { ds, resolveColor, resolveColors } from 'src/utils/colors';
 import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInfo';
@@ -312,7 +313,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
         <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]} sx={{ mb: ds.space[2] }}>
           Startup Metrics (first {STARTUP_WINDOW_MINUTES} min after pod creation)
         </Typography>
-        <Alert severity='info'>{infoMessage}</Alert>
+        <Banner tone='info' message={infoMessage} surface='section' />
       </Box>
     );
   }

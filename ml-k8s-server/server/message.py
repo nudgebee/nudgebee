@@ -155,8 +155,8 @@ class SyncRecommendationData(MlMessageAbstract):
         }
 
 
-class KrrMessageHandler(MlMessageAbstract):
-    """Ml server create krr message object
+class RightsizingMessageHandler(MlMessageAbstract):
+    """Ml server create rightsizing message object
     sample message
     {
     "account_id": "00000000-0000-0000-0000-000000000000",
@@ -177,8 +177,8 @@ class KrrMessageHandler(MlMessageAbstract):
     queue: str = QueueConfig.ML_RECOMMENDATION_EXCHANGE
 
     def process_message(self):
-        logger.info(f"Creating KRR for account {self.account_id} and tenant {self.tenant_id}")
-        with get_trace(__name__).start_as_current_span("Update_krr_recommendations"):
+        logger.info(f"Creating rightsizing for account {self.account_id} and tenant {self.tenant_id}")
+        with get_trace(__name__).start_as_current_span("Update_rightsizing_recommendations"):
             asyncio.run(
                 generate_and_process_recommendation(tenant_id=str(self.tenant_id), account_id=str(self.account_id))
             )
@@ -352,7 +352,7 @@ def ml_server_message_handler(body: str) -> None:
     parsed_message: Dict[str, Any] = json.loads(body)
     message_mapping: Dict[str, Type[MlMessageAbstract]] = {
         "ml_recomm_sync": SyncRecommendationData,
-        "vertical_rightsize_update": KrrMessageHandler,
+        "vertical_rightsize_update": RightsizingMessageHandler,
         "vertical_rightsizing_request": VerticalRightsizingRequest,
         "volume_rightsizing_request": VolumeRightsizingRequest,
     }

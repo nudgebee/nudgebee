@@ -1,9 +1,8 @@
-import hashlib
 import json
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List
 
 from apis.model.namespace_details import NamespaceDetails
@@ -142,6 +141,51 @@ def _safe_insert_cloud_resources(resources, on_conflict):
                     logging.exception("Failed to upsert cloud_resourses resource %s", resource.get("id"))
         else:
             raise
+
+
+def _collect_replicaset_owners(data):
+    """Map (namespace, replicaset_name) -> (owner_name, owner_kind) from the
+    batch's own ReplicaSet entries. ReplicaSets are skipped as resources, but
+    their ownerReferences name the real controller (Deployment or Rollout) —
+    exactly what pods whose owner stops at the RS need."""
+    owners = {}
+    for k8s_data in data:
+        if not (k8s_data.get("type") and k8s_data.get("type").lower() == "replicaset"):
+            continue
+        rs_owner = (k8s_data.get("config") or {}).get("owner") or []
+        if rs_owner and rs_owner[0] is not None and rs_owner[0].get("name"):
+            owners[(k8s_data.get("namespace") or "", k8s_data.get("name") or "")] = (
+                rs_owner[0].get("name") or "",
+                rs_owner[0].get("kind") or "",
+            )
+    return owners
+
+
+def _resolve_pod_owner(k8s_data, rs_owners):
+    """Resolve a pod's owner past an intermediate ReplicaSet.
+
+    The agent reports the pod's direct ownerReference; ~7% of pods arrive
+    still naming the RS ("postgres-78d9cffd68"), which fragments every
+    consumer keyed on workload_name. Tier 1: the batch's RS entries carry the
+    true controller (name AND kind — Rollouts stay Rollouts). Tier 2: strip
+    the pod-template-hash label suffix — set by the controller itself, so the
+    strip is exact, not a guess; kind defaults to Deployment (the only
+    mislabel risk is a Rollout RS split across batches, rare and cosmetic).
+    """
+    config_owner = (k8s_data.get("config") or {}).get("owner") or []
+    if not (config_owner and len(config_owner) > 0 and config_owner[0] is not None):
+        return None, None
+    owner_name = config_owner[0].get("name") or ""
+    owner_kind = config_owner[0].get("kind") or ""
+    if owner_kind.lower() != "replicaset" or not owner_name:
+        return owner_name, owner_kind
+    mapped = rs_owners.get((k8s_data.get("namespace") or "", owner_name))
+    if mapped and mapped[0]:
+        return mapped
+    template_hash = ((k8s_data.get("config") or {}).get("labels") or {}).get("pod-template-hash") or ""
+    if template_hash and owner_name.endswith("-" + template_hash):
+        return owner_name[: -(len(template_hash) + 1)], "Deployment"
+    return owner_name, owner_kind
 
 
 def _deduplicate_workloads_by_identity(workloads):
@@ -340,6 +384,9 @@ def run_service_discovery(
     workloads = []
     deleted_resources = {}
     seen_ids = set()
+    # Harvest RS -> controller owners before ReplicaSets are skipped below, so
+    # pods whose ownerReference stops at the RS resolve to the real workload.
+    rs_owners = _collect_replicaset_owners(data)
     for k8s_data in data:
         if k8s_data.get("type") and k8s_data.get("type").lower() == "replicaset":
             continue
@@ -354,7 +401,9 @@ def run_service_discovery(
         if k8s_data["deleted"]:
             deleted_resources[_id] = service_key
             continue
-        process_service_discovery(_id, cloud_account_id, k8s_data, pods, resources, service_key, tenant, workloads)
+        process_service_discovery(
+            _id, cloud_account_id, k8s_data, pods, resources, service_key, tenant, workloads, rs_owners
+        )
 
     # Stage this batch and decide whether to reconcile. For batched snapshots the
     # reconcile is gated on full-sequence completeness (order-independent, once per
@@ -396,7 +445,9 @@ def run_service_discovery(
     )
 
 
-def process_service_discovery(_id, cloud_account_id, k8s_data, pods, resources, service_key, tenant, workloads):
+def process_service_discovery(
+    _id, cloud_account_id, k8s_data, pods, resources, service_key, tenant, workloads, rs_owners=None
+):
     cloud_resource = {
         "id": _id,
         "region": "global",
@@ -467,10 +518,10 @@ def process_service_discovery(_id, cloud_account_id, k8s_data, pods, resources, 
             "restart_count": k8s_data.get("restart_count", 0),
             "status": k8s_data.get("status") or "UNKNOWN",
         }
-        config_owner = k8s_data.get("config", {}).get("owner", [])
-        if config_owner and len(config_owner) > 0 and config_owner[0] is not None:
-            pod_details["workload_name"] = config_owner[0].get("name", "")
-            pod_details["workload_type"] = config_owner[0].get("kind", "")
+        owner_name, owner_kind = _resolve_pod_owner(k8s_data, rs_owners or {})
+        if owner_name is not None:
+            pod_details["workload_name"] = owner_name
+            pod_details["workload_type"] = owner_kind
         pods.append(PodDetails(**pod_details))
     else:
         workload_details = {
@@ -735,15 +786,22 @@ def handle_active_resources_deletion(  # noqa: C901
             external_ids = [r[0] for r in active_resources]
             resource_ids = [r[1] for r in active_resources]
 
-            # Update cloud_resources based on resource type
+            # Update cloud_resources based on resource type. Each branch RETURNs the
+            # ids it just flipped active->inactive; those ids -- and only those -- drive
+            # the event close below.
+            deactivated_resource_ids = []
             if resource_type == "Pod":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND external_resource_id != ALL(%s) "
-                    "AND is_active IS NOT FALSE AND type = 'Pod'",
-                    [cloud_account_id, external_ids],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND external_resource_id != ALL(%s) "
+                        "AND is_active IS NOT FALSE AND type = 'Pod' "
+                        "RETURNING id",
+                        [cloud_account_id, external_ids],
+                    )
+                ]
                 # Only update k8s_pods for Pod resources
                 # Cast text array to uuid[] so the index on cloud_resource_id (uuid) is used
                 database.run_query(
@@ -754,14 +812,18 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant, external_ids],
                 )
             elif resource_type == "workload":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND external_resource_id != ALL(%s) "
-                    "AND is_active IS NOT FALSE "
-                    "AND type NOT IN ('Pod', 'node', 'Namespace', 'External')",
-                    [cloud_account_id, external_ids],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND external_resource_id != ALL(%s) "
+                        "AND is_active IS NOT FALSE "
+                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External') "
+                        "RETURNING id",
+                        [cloud_account_id, external_ids],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_workloads "
                     "SET is_active = false "
@@ -770,13 +832,17 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant, external_ids],
                 )
             elif resource_type == "Job":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND external_resource_id != ALL(%s) "
-                    "AND is_active IS NOT FALSE AND type = 'Job'",
-                    [cloud_account_id, external_ids],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND external_resource_id != ALL(%s) "
+                        "AND is_active IS NOT FALSE AND type = 'Job' "
+                        "RETURNING id",
+                        [cloud_account_id, external_ids],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_workloads "
                     "SET is_active = false "
@@ -793,13 +859,17 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant, resource_ids],
                 )
             elif resource_type == "node":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND external_resource_id != ALL(%s) "
-                    "AND is_active IS NOT FALSE AND type = 'node'",
-                    [cloud_account_id, external_ids],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND external_resource_id != ALL(%s) "
+                        "AND is_active IS NOT FALSE AND type = 'node' "
+                        "RETURNING id",
+                        [cloud_account_id, external_ids],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_nodes "
                     "SET is_active = false "
@@ -808,72 +878,48 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant, external_ids],
                 )
             else:  # service or other types
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND external_resource_id != ALL(%s) "
-                    "AND is_active IS NOT FALSE AND type != 'External'",
-                    [cloud_account_id, external_ids],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND external_resource_id != ALL(%s) "
+                        "AND is_active IS NOT FALSE AND type != 'External' "
+                        "RETURNING id",
+                        [cloud_account_id, external_ids],
+                    )
+                ]
 
-            # Close events where the resources are NOT in the active lists
-            # First get affected events to track history
-            select_query = """
-                SELECT id, tenant, cloud_account_id, status
-                FROM events
-                WHERE cloud_account_id = %s AND service_key != ALL(%s) AND status != 'CLOSED'
-            """
-            try:
-                affected_events = database.run_query(
-                    select_query, [cloud_account_id, resource_ids], cursor_factory=extras.RealDictCursor
-                )
-
-                # Batch insert history for all affected events (single query instead of N)
-                if affected_events:
-                    history_records = []
-                    meta_dict = {
+            # Close the events that belonged to the resources this pass just
+            # deactivated.
+            #
+            # Keyed on cloud_resource_id, NOT service_key. `events.service_key` and
+            # `active_resources.resourse_id` describe the same object in three mutually
+            # incompatible formats -- the agent's findings write "<ns>/<name>", discovery
+            # writes "<ns>/<Kind>/<name>", and the webhook subject mappers write
+            # "<ns>:<Kind>:<name>" -- so `service_key != ALL(active_ids)` was true for
+            # EVERY row and each pass closed the account's entire open event list,
+            # including events whose resource was alive and still firing (measured: 0
+            # key matches on every account, ~3.3k agent events closed per week with no
+            # resolve behind any of them). cloud_resource_id is the one identifier both
+            # sides already agree on.
+            #
+            # The ids come from the RETURNING clauses above, so the close is scoped to
+            # the resource type being reconciled and to resources that genuinely
+            # transitioned active -> inactive in this pass. A Job snapshot can no longer
+            # close a Pod's event, and a still-present resource is never touched.
+            if deactivated_resource_ids:
+                close_events_with_history(
+                    cloud_account_id=cloud_account_id,
+                    where_conditions="cloud_resource_id = ANY(%s::uuid[])",
+                    params=[deactivated_resource_ids],
+                    closing_reason="resource_inactive",
+                    metadata={
                         "method": "discovery_cleanup",
                         "resource_type": resource_type,
                         "trigger": "resource_inactive_or_deleted",
-                    }
-                    metadata_json = json.dumps(meta_dict)
-                    new_json = json.dumps("CLOSED")
-                    for event in affected_events:
-                        old_json = json.dumps(event.get("status", "FIRING"))
-                        fingerprint = f"{event['id']}|status|{old_json}|{new_json}"
-                        history_records.append(
-                            {
-                                "id": hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
-                                "event_id": event["id"],
-                                "tenant_id": event.get("tenant"),
-                                "cloud_account_id": event.get("cloud_account_id"),
-                                "change_type": "status",
-                                "old_value": old_json,
-                                "new_value": new_json,
-                                "change_reason": "resource_inactive",
-                                "metadata": metadata_json,
-                            }
-                        )
-                    try:
-                        database.insert_data(
-                            "event_history", history_records, on_conflict="ON CONFLICT (id) DO NOTHING"
-                        )
-                    except Exception:
-                        logging.exception("Failed to batch insert event history for resource cleanup")
-
-                # Now close the events
-                database.run_query(
-                    "UPDATE events "
-                    "SET status = 'CLOSED', ends_at = now() "
-                    "WHERE cloud_account_id = %s AND service_key != ALL(%s) "
-                    "AND status != 'CLOSED'",
-                    [cloud_account_id, resource_ids],
+                    },
                 )
-
-                logging.info(f"Closed {len(affected_events)} events for inactive resources ({resource_type})")
-            except Exception:
-                logging.exception("Failed to close events with history tracking for inactive resources")
-                raise
 
             logging.debug(f"Processed deleted resources against {len(active_resources)} active resources")
         else:
@@ -908,13 +954,18 @@ def handle_active_resources_deletion(  # noqa: C901
 
             # Only execute bulk cleanup if we're certain it's safe based on explicit zero count metadata
             # Mark all resources of this type as inactive since discovery explicitly reported zero resources
+            deactivated_resource_ids = []
             if resource_type == "Pod":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND is_active IS NOT FALSE AND type = 'Pod'",
-                    [cloud_account_id],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND is_active IS NOT FALSE AND type = 'Pod' "
+                        "RETURNING id",
+                        [cloud_account_id],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_pods "
                     "SET is_active = false "
@@ -922,13 +973,17 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant],
                 )
             elif resource_type == "workload":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND is_active IS NOT FALSE "
-                    "AND type NOT IN ('Pod', 'node', 'Namespace', 'External')",
-                    [cloud_account_id],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND is_active IS NOT FALSE "
+                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External') "
+                        "RETURNING id",
+                        [cloud_account_id],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_workloads "
                     "SET is_active = false "
@@ -936,12 +991,16 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant],
                 )
             elif resource_type == "Job":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND is_active IS NOT FALSE AND type = 'Job'",
-                    [cloud_account_id],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND is_active IS NOT FALSE AND type = 'Job' "
+                        "RETURNING id",
+                        [cloud_account_id],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_workloads "
                     "SET is_active = false "
@@ -949,12 +1008,16 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant],
                 )
             elif resource_type == "node":
-                database.run_query(
-                    "UPDATE cloud_resourses "
-                    "SET is_active = false, status = 'Inactive' "
-                    "WHERE account = %s AND is_active IS NOT FALSE AND type = 'node'",
-                    [cloud_account_id],
-                )
+                deactivated_resource_ids = [
+                    r[0]
+                    for r in database.run_query(
+                        "UPDATE cloud_resourses "
+                        "SET is_active = false, status = 'Inactive' "
+                        "WHERE account = %s AND is_active IS NOT FALSE AND type = 'node' "
+                        "RETURNING id",
+                        [cloud_account_id],
+                    )
+                ]
                 database.run_query(
                     "UPDATE k8s_nodes "
                     "SET is_active = false "
@@ -969,66 +1032,35 @@ def handle_active_resources_deletion(  # noqa: C901
                     [cloud_account_id, tenant],
                 )
 
-            # Close all related events since no resources of this type exist
-            # Track history for this bulk closure
-            select_query = """
-                SELECT id, tenant, cloud_account_id, status
-                FROM events
-                WHERE cloud_account_id = %s AND status != 'CLOSED'
-            """
-            try:
-                affected_events = database.run_query(
-                    select_query, [cloud_account_id], cursor_factory=extras.RealDictCursor
-                )
-
-                # Batch insert history for all affected events (single query instead of N)
-                if affected_events:
-                    history_records = []
-                    meta_dict = {
+            # Close the events of the resources this bulk pass deactivated.
+            #
+            # Same cloud_resource_id keying, and for the same reason, as the
+            # active-resource path above: this branch used to close every open event
+            # on the account whenever ONE resource type reported zero resources, so a
+            # cluster that simply runs no Jobs would clear its pod, node and webhook
+            # alerts on every Job snapshot. Scoping to the ids the deactivation
+            # UPDATEs just returned keeps the blast radius to the type being
+            # reconciled. Namespace passes touch no cloud_resourses rows and so close
+            # nothing, which is correct -- the resources inside a deleted namespace
+            # disappear in their own type's pass.
+            if deactivated_resource_ids:
+                close_events_with_history(
+                    cloud_account_id=cloud_account_id,
+                    where_conditions="cloud_resource_id = ANY(%s::uuid[])",
+                    params=[deactivated_resource_ids],
+                    closing_reason="all_resources_deleted",
+                    metadata={
                         "method": "discovery_cleanup",
                         "resource_type": resource_type,
                         "trigger": "all_resources_deleted",
                         "total_resources": 0,
-                    }
-                    metadata_json = json.dumps(meta_dict)
-                    new_json = json.dumps("CLOSED")
-                    for event in affected_events:
-                        old_json = json.dumps(event.get("status", "FIRING"))
-                        fingerprint = f"{event['id']}|status|{old_json}|{new_json}"
-                        history_records.append(
-                            {
-                                "id": hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
-                                "event_id": event["id"],
-                                "tenant_id": event.get("tenant"),
-                                "cloud_account_id": event.get("cloud_account_id"),
-                                "change_type": "status",
-                                "old_value": old_json,
-                                "new_value": new_json,
-                                "change_reason": "all_resources_deleted",
-                                "metadata": metadata_json,
-                            }
-                        )
-                    try:
-                        database.insert_data(
-                            "event_history", history_records, on_conflict="ON CONFLICT (id) DO NOTHING"
-                        )
-                    except Exception:
-                        logging.exception("Failed to batch insert event history for bulk cleanup")
-
-                # Now close all events
-                database.run_query(
-                    "UPDATE events SET status = 'CLOSED', ends_at = now() "
-                    "WHERE cloud_account_id = %s AND status != 'CLOSED'",
-                    [cloud_account_id],
+                    },
                 )
 
-                logging.warning(
-                    f"Closed ALL {len(affected_events)} events for {cloud_account_id} - "
-                    f"no resources of type {resource_type} exist"
-                )
-            except Exception:
-                logging.exception(f"Failed to close all events with history tracking for {cloud_account_id}")
-                raise
+            logging.warning(
+                f"Deactivated {len(deactivated_resource_ids)} {resource_type} resources for "
+                f"{cloud_account_id} and closed their events - discovery reported none of this type"
+            )
 
     except Exception:
         logging.exception(f"Failed to process deleted resources for {cloud_account_id}/{tenant}/{resource_type}")
@@ -1040,24 +1072,35 @@ def handle_full_load_deleted_resources(cloud_account_id, active_resources, tenan
 
         # Extract resource IDs for parameterized queries
         resource_keys = list(active_resources.keys())
-        service_values = list(active_resources.values())
 
         # Update cloud_resources where resources are not in the active list
-        database.run_query(
-            "UPDATE cloud_resourses "
-            "SET is_active = false, status = 'Inactive' "
-            "WHERE account = %s AND external_resource_id != ALL(%s) "
-            "AND is_active IS NOT FALSE AND \"type\" = 'External'",
-            [cloud_account_id, resource_keys],
-        )
+        deactivated_resource_ids = [
+            r[0]
+            for r in database.run_query(
+                "UPDATE cloud_resourses "
+                "SET is_active = false, status = 'Inactive' "
+                "WHERE account = %s AND external_resource_id != ALL(%s) "
+                "AND is_active IS NOT FALSE AND \"type\" = 'External' "
+                "RETURNING id",
+                [cloud_account_id, resource_keys],
+            )
+        ]
 
-        # Update events where the resources are not in the active list
-        database.run_query(
-            "UPDATE events "
-            "SET status = 'CLOSED' "
-            "WHERE cloud_account_id = %s AND service_key != ALL(%s) AND status != 'CLOSED'",
-            [cloud_account_id, service_values],
-        )
+        # Close the events of the resources this pass deactivated. Same
+        # cloud_resource_id keying as handle_active_resources_deletion -- see the
+        # comment there for why service_key can never be used for this.
+        if deactivated_resource_ids:
+            close_events_with_history(
+                cloud_account_id=cloud_account_id,
+                where_conditions="cloud_resource_id = ANY(%s::uuid[])",
+                params=[deactivated_resource_ids],
+                closing_reason="resource_inactive",
+                metadata={
+                    "method": "full_load_cleanup",
+                    "resource_type": "External",
+                    "trigger": "resource_inactive_or_deleted",
+                },
+            )
 
         # Update k8s_pods where resources are not in the active list
         database.run_query(
@@ -1087,6 +1130,99 @@ def process_services_updates(cloud_account_id, pods, workloads):
         deduped_workloads = _deduplicate_workloads_by_identity(workloads)
         _clean_stale_workloads(cloud_account_id, deduped_workloads[0].tenant_id, deduped_workloads)
         database.insert_data("k8s_workloads", [asdict(p) for p in deduped_workloads], on_conflict=workload_on_conflict)
+        close_events_for_recovered_workloads(cloud_account_id, deduped_workloads)
+
+
+def close_events_for_recovered_workloads(cloud_account_id: str, workloads: List[Any]):
+    """Close the agent's open events for workloads whose pods are all ready again.
+
+    This is the only recovery signal the agent's own findings have. Matchers like
+    report_crash_loop / pod_oom_killed are fire-and-forget: they re-fire at most once
+    an hour while the problem persists and never send a RESOLVED, so without this an
+    event stays open forever once the resource-deletion path stops closing it by
+    accident.
+
+    "Recovered" is `ready_pods == total_pods` on the workload the event is linked to,
+    with `total_pods > 0` so a scaled-to-zero workload does not read as healthy.
+    Deliberately NOT the pod phase: a pod stuck in CrashLoopBackOff reports
+    `status.phase = Running` between restarts, which is what made the legacy
+    status-diff path (run_status_update) close crashloop events on a live crashloop.
+
+    Scoped to `kubernetes_api_server`, the source whose findings are derived from
+    workload health and which has no resolve delivery of its own. Every other source
+    (prometheus, datadog, pagerduty, cloud alarms) sends its own resolve and owns its
+    own lifecycle; closing those here would overrule the producer.
+
+    Scoped further to `finding_type = 'issue'`. That source also carries
+    `configuration_change` findings ("this resource was changed"), which describe an
+    event in the past rather than a condition that can recover -- a healthy workload
+    is the NORMAL state for them, so recovery closed them within seconds of being
+    raised and they never appeared as open at all. Observed live after the first
+    deploy of this function: two config-change events closed 9 seconds and 0 seconds
+    after they were created.
+
+    Only events that START BEFORE the snapshot was taken are closed. `last_seen` is
+    the agent's own observation time (update_time on the wire), not the time this
+    batch was consumed, so a snapshot that sat in the queue cannot close an event
+    describing a failure that began after the snapshot was taken. A wall-clock grace
+    period cannot express that: the agent's 1h rate limit means a live crashloop's
+    event is routinely older than any grace window worth having, so a grace would
+    admit exactly the stale-snapshot close it was meant to stop. Workloads with no
+    usable observation time are skipped rather than closed on an unknown anchor.
+
+    Note the interaction with that same rate limit: if a workload recovers, we close,
+    and it breaks again inside the limiter's window, the agent will not re-fire until
+    the window expires -- so a recurrence can be invisible for up to an hour. That is
+    a property of the agent's limiter, not of this close (the sweep this replaces
+    closed the same events twice as often), but it is the reason to close on an
+    observed recovery only, never on the mere absence of a re-fire.
+    """
+    if not Configs.EVENT_CLOSE_ON_WORKLOAD_RECOVERY:
+        return
+    recovered = [w for w in workloads if w.total_pods > 0 and w.ready_pods == w.total_pods]
+    if not recovered:
+        return
+
+    observed_at = None
+    for w in recovered:
+        seen = w.last_seen
+        if isinstance(seen, str):
+            try:
+                seen = datetime.fromisoformat(seen)
+            except ValueError:
+                continue
+        if not isinstance(seen, datetime):
+            continue
+        # Normalise to naive UTC. utc_from_epoch_millis already produces naive UTC and
+        # events.starts_at is `timestamp` (no zone), so an aware value here would make
+        # Postgres reinterpret the naive column through the session TimeZone -- a silent
+        # offset -- and mixing an aware with a naive value would make min() raise.
+        if seen.tzinfo is not None:
+            seen = seen.astimezone(timezone.utc).replace(tzinfo=None)
+        # utc_from_epoch_millis(0) is the "agent sent no update_time" sentinel.
+        if seen.year <= 1970:
+            continue
+        observed_at = seen if observed_at is None else min(observed_at, seen)
+    if observed_at is None:
+        logging.warning(
+            "Skipping recovery close for %s: %d recovered workloads carry no observation time",
+            cloud_account_id,
+            len(recovered),
+        )
+        return
+
+    close_events_with_history(
+        cloud_account_id=cloud_account_id,
+        where_conditions=(
+            "cloud_resource_id = ANY(%s::uuid[]) "
+            "AND source = 'kubernetes_api_server' "
+            "AND finding_type = 'issue' "
+            "AND starts_at < %s"
+        ),
+        params=[[w.cloud_resource_id for w in recovered], observed_at],
+        closing_reason="workload_recovered",
+        metadata={"method": "discovery", "trigger": "all_pods_ready"},
+    )
 
 
 def process_deleted_resources(cloud_account_id, deleted_resources, tenant):
@@ -1493,13 +1629,22 @@ def run_job_discovery(
         if k8s_data["deleted"]:
             deleted_resources.append(_id)
             continue
+        # The agent names this value `updated_at` for Jobs and CronJobs but
+        # `update_time` for Deployments/StatefulSets/DaemonSets (jobDict vs
+        # serviceDict). Resolve it once, accept either name, and use it for both
+        # halves of the record -- they used to read different keys, so the
+        # cloud_resourses row was correct while the k8s_workloads row fell through
+        # to `or 0` and landed at 1970-01-01. On dev that was every Job (82) and
+        # every CronJob (4), while no other kind was affected. Accepting either
+        # name fixes agents that are already deployed.
+        seen_at_ms = k8s_data.get("update_time") or k8s_data.get("updated_at") or 0
         cloud_resource = {
             "id": _id,
             "region": "global",
             "arn": "k8s://" + k8s_data["service_key"],
             "tenant": tenant,
             "first_seen": k8s_data["created_at"],
-            "last_seen": utc_from_epoch_millis(k8s_data["updated_at"]).isoformat(),
+            "last_seen": utc_from_epoch_millis(seen_at_ms).isoformat(),
             "resourse_id": k8s_data["service_key"],
             "name": k8s_data["name"],
             "account": cloud_account_id,
@@ -1540,7 +1685,7 @@ def run_job_discovery(
             "labels": k8s_data.get("config", {}).get("labels", {}),
             "meta": meta,
             "name": k8s_data.get("name", ""),
-            "last_seen": utc_from_epoch_millis(k8s_data.get("update_time") or 0).isoformat(),
+            "last_seen": utc_from_epoch_millis(seen_at_ms).isoformat(),
             "kind": k8s_data.get("type", ""),
         }
         if _id not in resources:
@@ -2070,7 +2215,12 @@ def close_events_with_history(
 def run_status_update(data: Dict[str, Any], tenant: str, cloud_account_id: str):
     service_keys = []
     for value in data:
-        if "new_status" in value and value["new_status"].lower() in ["succeeded", "running"]:
+        # "running" is NOT a recovery signal: a pod stuck in CrashLoopBackOff reports
+        # phase=Running between restarts, so accepting it closed live crashloop events
+        # the moment the legacy agent reported a status change. "succeeded" is terminal
+        # and safe. Workload-level recovery is handled by
+        # close_events_for_recovered_workloads, which uses ready_pods/total_pods.
+        if "new_status" in value and value["new_status"].lower() == "succeeded":
             service_keys.append(value["service_key"])
 
     if len(service_keys) == 0:

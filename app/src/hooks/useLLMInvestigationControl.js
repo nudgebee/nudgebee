@@ -11,22 +11,82 @@ import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 
 const NULL_AGENT_ID = '00000000-0000-0000-0000-000000000000';
+const MAX_LEGACY_FORWARDED_RESPONSE_LENGTH = 16 * 1024;
+const asText = (value) => (value == null ? '' : String(value));
 
 const parseReferences = (raw) => {
   const parsed = typeof raw === 'string' ? safeJSONParse(raw) : raw;
   return Array.isArray(parsed) ? parsed : [];
 };
-const buildDrawerTasks = (agents, message) => {
+export const buildDrawerTasks = (agents, message) => {
   const list = (agents || []).filter((agent) => agent.agent_name !== 'router');
+  const agentIds = new Set(list.map((agent) => String(agent.id)));
 
-  // child agent id -> the tool call that spawned it, so a sub-agent nests under its invocation.
+  // child agent id -> its planner tool call, whose thought and execution metadata
+  // are rendered on the actual agent row instead of a duplicate wrapper row.
   const spawnerToolByChildAgent = new Map();
   list.forEach((agent) => {
     (agent.llm_conversation_tool_calls || []).forEach((t) => {
-      if (t.child_agent_id) {
-        spawnerToolByChildAgent.set(String(t.child_agent_id), String(t.id));
+      if (t.child_agent_id && agentIds.has(String(t.child_agent_id))) {
+        spawnerToolByChildAgent.set(String(t.child_agent_id), { toolCall: t, parentAgentId: String(agent.id) });
       }
     });
+  });
+
+  // Older and partially-persisted agent-as-tool calls may omit child_agent_id.
+  // Fall back only when the child has exactly one same-name tool call on its
+  // recorded parent agent; ambiguous matches remain as separate rows.
+  list.forEach((agent) => {
+    const agentId = String(agent.id);
+    if (spawnerToolByChildAgent.has(agentId)) {
+      return;
+    }
+    const parentAgentId = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? String(agent.parent_agent_id) : null;
+    if (!parentAgentId) {
+      return;
+    }
+    const parentAgent = list.find((candidate) => String(candidate.id) === parentAgentId);
+    const matches = (parentAgent?.llm_conversation_tool_calls || []).filter(
+      (toolCall) => !toolCall.child_agent_id && toolCall.tool_name === agent.agent_name
+    );
+    if (matches.length === 1) {
+      spawnerToolByChildAgent.set(agentId, { toolCall: matches[0], parentAgentId });
+    }
+  });
+  const spawnerToolIds = new Set([...spawnerToolByChildAgent.values()].map((spawner) => String(spawner.toolCall.id)));
+
+  // Some legacy nested agents were persisted with the orchestrator as parent
+  // even though a direct child agent forwarded their response unchanged. New
+  // calls carry explicit backend links; keep this fallback bounded and apply it
+  // only for one unique, small, byte-identical response match.
+  const forwardedParentByAgent = new Map();
+  list.forEach((agent) => {
+    const agentId = String(agent.id);
+    if (
+      spawnerToolByChildAgent.has(agentId) ||
+      !agent.response ||
+      typeof agent.response !== 'string' ||
+      agent.response.length > MAX_LEGACY_FORWARDED_RESPONSE_LENGTH
+    ) {
+      return;
+    }
+    const storedParentId = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? String(agent.parent_agent_id) : null;
+    if (!storedParentId) {
+      return;
+    }
+    const forwardingParents = list.filter((candidate) => {
+      const candidateSpawner = spawnerToolByChildAgent.get(String(candidate.id));
+      return (
+        candidateSpawner?.parentAgentId === storedParentId &&
+        typeof candidate.response === 'string' &&
+        candidate.response.length <= MAX_LEGACY_FORWARDED_RESPONSE_LENGTH &&
+        candidate.response === agent.response &&
+        String(candidate.id) !== agentId
+      );
+    });
+    if (forwardingParents.length === 1) {
+      forwardedParentByAgent.set(agentId, String(forwardingParents[0].id));
+    }
   });
 
   const tasks = [];
@@ -47,10 +107,15 @@ const buildDrawerTasks = (agents, message) => {
 
   list.forEach((agent) => {
     const toolCalls = agent.llm_conversation_tool_calls || [];
-    const agentReferences = toolCalls.flatMap((t) => parseReferences(t.references)).concat(parseReferences(agent.references));
+    const spawner = spawnerToolByChildAgent.get(String(agent.id));
+    const spawnerTool = spawner?.toolCall;
+    const agentReferences = toolCalls
+      .flatMap((t) => parseReferences(t.references))
+      .concat(parseReferences(agent.references), parseReferences(spawnerTool?.references));
     const parentAgentId = agent.parent_agent_id && agent.parent_agent_id !== NULL_AGENT_ID ? String(agent.parent_agent_id) : null;
-    const parentId = spawnerToolByChildAgent.get(String(agent.id)) || parentAgentId;
+    const parentId = spawner?.parentAgentId || forwardedParentByAgent.get(String(agent.id)) || parentAgentId;
     const isRootAgent = !parentId; // the top-level orchestrator — the drawer renders it as a container header
+    const thought = asText(agent.thought || spawnerTool?.thought);
     tasks.push({
       id: agent.id,
       tool_id: agent.id,
@@ -62,11 +127,13 @@ const buildDrawerTasks = (agents, message) => {
       text: isRootAgent ? agent.agent_name : undefined,
       response_status: agent.status,
       response_summary: agent.response_summary,
-      log: (agent.thought || '').split('\n\nAction:')[0],
-      thought: agent.thought,
+      log: thought.split('\n\nAction:')[0],
+      thought,
       query: agent.query,
       response: { type: 'tool_call_response', text: agent.response },
       references: agentReferences.length > 0 ? agentReferences : undefined,
+      metadata: spawnerTool?.metadata,
+      isPlannerAction: Boolean(spawnerTool),
       created_at: agent.created_at,
       updated_at: agent.updated_at,
     });
@@ -98,7 +165,7 @@ const buildDrawerTasks = (agents, message) => {
     });
 
     toolCalls.forEach((t) => {
-      if (!t.id || parentToolCallId(t)) {
+      if (!t.id || parentToolCallId(t) || spawnerToolIds.has(String(t.id))) {
         return; // sub-steps render under their parent, not as their own task
       }
       const toolRefs = parseReferences(t.references);
@@ -111,8 +178,8 @@ const buildDrawerTasks = (agents, message) => {
         type: 'tool_call',
         tool: t.tool_name,
         response_status: t.status,
-        log: (t.thought || '').split('\n\nAction:')[0],
-        thought: t.thought,
+        log: asText(t.thought).split('\n\nAction:')[0],
+        thought: asText(t.thought),
         text: t.parameters,
         toolParameters: safeJSONParse(t.parameters) || {},
         references: toolRefs.length > 0 ? toolRefs : undefined,
@@ -330,8 +397,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
                 // Carry the tool call's own reasoning so the card title and the
                 // Tool Details "Thought" box show the thought — not the parameters
                 // (those live in `toolParameters` and render as the "Query" box).
-                log: (t.thought || '').split('\n\nAction:')[0],
-                thought: t.thought,
+                log: asText(t.thought).split('\n\nAction:')[0],
+                thought: asText(t.thought),
                 // getCardTitle's in_progress branch reads `query`, not `text` — without
                 // this, the row renders an empty title (just "-") for every poll between
                 // this tool_call being created and its `child_agent_id` getting linked to
@@ -418,13 +485,13 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           response_text: agent.response,
           response_status: agent.status,
           response_summary: agent.response_summary,
-          log: (activeTool.thought || agent.thought || '').split('\n\nAction:')[0],
+          log: asText(activeTool.thought || agent.thought).split('\n\nAction:')[0],
           tool: activeTool.tool_name ?? agent.agent_name,
           tool_id: agent.id,
           created_at: agent.created_at,
           updated_at: agent.updated_at,
           agentName: agent.agent_name,
-          thought: agent.thought,
+          thought: asText(agent.thought),
           query: agent.query,
           parentAgents: parentAgentsList,
           plannerId: plannerIdChildMapping[agent.id],

@@ -161,6 +161,8 @@ function StartTime({ iso }: { iso: string }) {
   );
 }
 
+const MODEL_NAME_MAX = 32;
+
 function ModelBadges({ models, dense }: { models: ModelStat[]; dense?: boolean }) {
   if (!models.length)
     return (
@@ -170,17 +172,27 @@ function ModelBadges({ models, dense }: { models: ModelStat[]; dense?: boolean }
     );
   return (
     <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
-      {models.map((m) => (
-        <Chip key={m.model} size={dense ? '2xs' : 'xs'} variant='tag' tone='subtle'>
-          {m.model}
-          {/* List rows carry no per-model call/cost split — show just the name then. */}
-          {(m.calls > 0 || m.cost > 0) && (
-            <Box component='span' sx={{ ml: '3px', color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-              ({m.calls} · {fmtCost(m.cost)})
-            </Box>
-          )}
-        </Chip>
-      ))}
+      {models.map((m) => {
+        const truncated = m.model.length > MODEL_NAME_MAX;
+        const name = truncated ? (
+          <Tooltip title={m.model} placement='top'>
+            <Box component='span'>{`${m.model.slice(0, MODEL_NAME_MAX - 1)}…`}</Box>
+          </Tooltip>
+        ) : (
+          m.model
+        );
+        return (
+          <Chip key={m.model} size={dense ? '2xs' : 'xs'} variant='tag' tone='subtle'>
+            {name}
+            {/* List rows carry no per-model call/cost split — show just the name then. */}
+            {(m.calls > 0 || m.cost > 0) && (
+              <Box component='span' sx={{ ml: '3px', color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-regular)' }}>
+                ({m.calls} · {fmtCost(m.cost)})
+              </Box>
+            )}
+          </Chip>
+        );
+      })}
     </Box>
   );
 }

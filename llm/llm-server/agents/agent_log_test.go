@@ -76,6 +76,41 @@ func TestFetchLogsAgent_Registered(t *testing.T) {
 	assert.Equal(t, FetchLogsAgentName, agent.GetName())
 }
 
+func TestPrepareLogAgentInput_InjectsValidatedResolvedTargets(t *testing.T) {
+	input := toolcore.NBToolCallRequest{
+		Command: "investigate checkout logs",
+		Context: "existing context",
+		Arguments: map[string]any{
+			toolcore.ResolvedTargetsArgument: []any{map[string]any{
+				"domain": "kubernetes", "kind": "Deployment", "canonical_id": "checkout",
+				"scope":   map[string]any{"namespace": "prod"},
+				"members": []any{"checkout-7d9f6c8b5-x2abc"},
+			}},
+		},
+	}
+
+	got, err := prepareLogAgentInput(input)
+	require.NoError(t, err)
+	assert.Contains(t, got.Context, "existing context")
+	assert.Contains(t, got.Context, `<resolved_targets source="validated_tool_input">`)
+	assert.Contains(t, got.Context, `canonical_id="checkout"`)
+	assert.Contains(t, got.Context, `<member>checkout-7d9f6c8b5-x2abc</member>`)
+}
+
+func TestPrepareLogAgentInput_RejectsInvalidResolvedTargets(t *testing.T) {
+	_, err := prepareLogAgentInput(toolcore.NBToolCallRequest{Arguments: map[string]any{
+		toolcore.ResolvedTargetsArgument: []any{map[string]any{"domain": "kubernetes"}},
+	}})
+	assert.ErrorContains(t, err, "domain, kind, and canonical_id are required")
+}
+
+func TestLogAgentToolSchema_ExposesResolvedTargets(t *testing.T) {
+	prop, ok := (LogAgentTool{}).InputSchema().Properties[toolcore.ResolvedTargetsArgument]
+	require.True(t, ok)
+	assert.Equal(t, toolcore.ToolSchemaTypeArray, prop.Type)
+	assert.Contains(t, prop.Description, "confirmed|candidate")
+}
+
 func toolNamesForTest(ts []toolcore.NBTool) []string {
 	out := make([]string, 0, len(ts))
 	for _, t := range ts {
@@ -193,6 +228,11 @@ func TestSystemPrompt_NarrowsToOneMode(t *testing.T) {
 			wantMode: "INVESTIGATION",
 			mustHave: []string{
 				"MODE = INVESTIGATION",
+				"framework-generated `<resolved_targets>` block",
+				"A `candidate` target alone never suppresses discovery",
+				"Step 2a remains mandatory",
+				"logs_format_hint",
+				"never JSON-decode the whole file",
 				"last 24h, limit 5000",
 				"Mandatory diagnostic sweep",
 				"Time-window framing",
@@ -573,6 +613,23 @@ func TestBuildLogToolResponse_AdditionalDetails(t *testing.T) {
 		resp, err := buildLogToolResponse(nbCtx, fakeSummaryToolLogAgent{}, input, agentResp, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "the logs", resp.Data)
+		assertAdditionalDetails(t, resp)
+	})
+
+	t.Run("unified LogAgent returns its completed analysis instead of raw step output", func(t *testing.T) {
+		agentResp := core.NBAgentResponse{
+			AgentId:   wantAgentId,
+			MessageId: wantMessageId,
+			Status:    core.ConversationStatusCompleted,
+			Response:  []string{"synthesized analysis"},
+			AgentStepResponse: []core.ToolInvocation{
+				{Response: llms.ToolCallResponse{Content: "raw shell output"}},
+			},
+		}
+		resp, err := buildLogToolResponse(nbCtx, &LogAgent{}, input, agentResp, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "synthesized analysis", resp.Data)
+		assert.Equal(t, toolcore.NBToolResponseTypeText, resp.Type)
 		assertAdditionalDetails(t, resp)
 	})
 

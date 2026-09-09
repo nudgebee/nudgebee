@@ -55,10 +55,13 @@ func getEc2PricesBasedOnPriceList(region string, instanceType string) (float64, 
 	}
 
 	// Fallback: fetch from AWS Pricing API and persist to DB
+	// A failed lookup must surface as an error, never as a zero price: callers
+	// compare candidate prices against the current instance price, and a $0
+	// candidate wins every comparison and yields "100% savings".
 	cacheKey := region + ":" + instanceType
 	if expiry, ok := pricingFailureCache.Load(cacheKey); ok {
 		if time.Now().Before(expiry.(time.Time)) {
-			return 0, nil // skip — recently failed
+			return 0, fmt.Errorf("ec2 pricing: lookup for %s in %s failed recently, still in negative cache", instanceType, region)
 		}
 		pricingFailureCache.Delete(cacheKey)
 	}
@@ -68,7 +71,7 @@ func getEc2PricesBasedOnPriceList(region string, instanceType string) (float64, 
 	if fetchErr != nil {
 		slog.Warn("ec2 pricing: fallback fetch failed", "region", region, "instanceType", instanceType, "error", fetchErr)
 		pricingFailureCache.Store(cacheKey, time.Now().Add(pricingFailureCacheTTL))
-		return 0, nil
+		return 0, fmt.Errorf("ec2 pricing: fallback fetch failed for %s in %s: %w", instanceType, region, fetchErr)
 	}
 	return price, nil
 }
@@ -443,6 +446,13 @@ func (a *amazonEc2) GetResources(ctx providers.CloudProviderContext, account pro
 // GetResourcesByIds fetches specific EC2 instances by their IDs using server-side filtering.
 // This avoids the full DescribeInstances + per-instance DescribeAlarms scan that GetResources does.
 func (a *amazonEc2) GetResourcesByIds(ctx providers.CloudProviderContext, account providers.Account, region string, resourceIds []string) ([]providers.Resource, error) {
+	if len(resourceIds) == 0 {
+		// DescribeInstances with an empty InstanceIds describes every instance in
+		// the region — the full scan this method exists to avoid. Deliberately not
+		// ErrUnsupported: that would send ListResources back to GetResources.
+		return []providers.Resource{}, nil
+	}
+
 	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
 	if err != nil {
 		return nil, err
@@ -1166,7 +1176,7 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 											ctx.GetLogger().Warn("failed to fetch price for recommended instance type", "error", err, "instanceType", *instanceType.InstanceType, "resourceId", resource.Id)
 											continue // Skip if price fetch fails
 										}
-										if currentPrice > 0 && price < currentPrice { // Ensure currentPrice is valid
+										if currentPrice > 0 && price > 0 && price < currentPrice { // Ensure both prices are valid
 											instanceTypesPriceMap = append(instanceTypesPriceMap, map[string]any{
 												"instanceType": *instanceType.InstanceType,
 												"price":        price,
@@ -1280,7 +1290,7 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 											continue
 										}
 										// Only add if cheaper and different type
-										if currentPrice > 0 && price < currentPrice && *it.InstanceType != instanceTypeStr {
+										if currentPrice > 0 && price > 0 && price < currentPrice && *it.InstanceType != instanceTypeStr {
 											instanceTypesPriceMap = append(instanceTypesPriceMap, map[string]any{
 												"instanceType": *it.InstanceType,
 												"price":        price,
@@ -1386,7 +1396,7 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 									ctx.GetLogger().Warn("failed to fetch price for alternate instance type", "error", err, "instanceType", *it.InstanceType, "resourceId", resource.Id)
 									continue
 								}
-								if currentPrice > 0 && price < currentPrice {
+								if currentPrice > 0 && price > 0 && price < currentPrice {
 									altInstanceTypesPriceMap = append(altInstanceTypesPriceMap, map[string]any{
 										"instanceType": *it.InstanceType,
 										"price":        price,

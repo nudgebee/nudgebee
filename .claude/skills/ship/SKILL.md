@@ -141,7 +141,14 @@ the target base branch (`$ARGUMENTS`, default `main`). It already handles the is
 requirement, the template, self-review, and validation — do not duplicate that here.
 
 Seed the PR's intent/summary from the Step 1 intent so the human reviewer starts from the same
-anchor the pipeline used.
+anchor the pipeline used — the Step 1 one-liner is usually the best available draft of the PR lead,
+because it was written before the implementation detail piled up.
+
+The verify-stage evidence (Step 5) is *author-side proof* and belongs inside the PR body's
+`<details>` fold. What goes above the fold is how a **reviewer or QA** confirms the change — see
+[`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md), which `create-pr` enforces.
+If the pipeline never produced reader-side verification steps, say so in one honest line rather
+than dressing up the commands you ran as a test plan.
 
 Capture the PR number/URL from `create-pr` for the next step.
 

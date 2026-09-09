@@ -23,6 +23,7 @@ func getAccount(ctx *security.RequestContext, accountId string) (providers.Accou
 	query := `
 		SELECT
 			assume_role,
+			external_id,
 			access_key,
 			access_secret,
 			region,
@@ -42,13 +43,13 @@ func getAccount(ctx *security.RequestContext, accountId string) (providers.Accou
 	}
 
 	var (
-		assumeRole, accessKey, accessSecret, region, cloudProvider, accountNumber, accountName *string
-		data                                                                                   sql.NullString
-		accountTenant                                                                          string
-		parentAccountId                                                                        sql.NullString
+		assumeRole, externalId, accessKey, accessSecret, region, cloudProvider, accountNumber, accountName *string
+		data                                                                                               sql.NullString
+		accountTenant                                                                                      string
+		parentAccountId                                                                                    sql.NullString
 	)
 
-	err = r.Scan(&assumeRole, &accessKey, &accessSecret, &region, &data, &cloudProvider, &accountNumber, &accountName, &accountTenant, &parentAccountId)
+	err = r.Scan(&assumeRole, &externalId, &accessKey, &accessSecret, &region, &data, &cloudProvider, &accountNumber, &accountName, &accountTenant, &parentAccountId)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return providers.Account{}, "", fmt.Errorf("account with id %s not found", accountId)
@@ -95,6 +96,7 @@ func getAccount(ctx *security.RequestContext, accountId string) (providers.Accou
 	acnt := providers.Account{
 		ID:              accountId,
 		AssumeRole:      assumeRole,
+		ExternalId:      externalId,
 		AccessKey:       accessKey,
 		AccessSecret:    accessSecret,
 		Region:          region,

@@ -148,7 +148,7 @@ func (t *GHTool) Execute(ctx context.Context, input map[string]any) core.NBToolR
 		args = rewritten
 	}
 
-	cmd := exec.Command("gh", args...)
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = repoDir
 
 	// Set GITHUB_TOKEN environment variable for authenticated API calls

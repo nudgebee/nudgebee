@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -136,6 +138,20 @@ func TestIsCloudObservabilityProvider(t *testing.T) {
 // The seeded provider is deliberately NOT "k8s": on a cache miss the uncached
 // resolver returns the "k8s" default for a non-UUID account, so getting "loki"
 // back is unambiguous proof the cached value was served.
+func TestEffectiveLogProvider(t *testing.T) {
+	resolved := services_server.ObservabilityProvider{Provider: "loki", DefaultIndex: "logs-*"}
+
+	if got := EffectiveLogProvider(resolved, "  "); got.Provider != resolved.Provider || got.DefaultIndex != resolved.DefaultIndex {
+		t.Fatalf("empty override changed resolved provider: %#v", got)
+	}
+	if got := EffectiveLogProvider(resolved, "LOKI"); got.Provider != resolved.Provider || got.DefaultIndex != resolved.DefaultIndex {
+		t.Fatalf("equivalent override discarded resolved config: %#v", got)
+	}
+	if got := EffectiveLogProvider(resolved, " datadog "); got.Provider != "datadog" || got.DefaultIndex != "" {
+		t.Fatalf("override was not isolated to provider name: %#v", got)
+	}
+}
+
 func TestGetLogProvider_ServesCachedEntry(t *testing.T) {
 	acct := "cached-provider-" + t.Name()
 	seeded := services_server.ObservabilityProvider{
@@ -189,4 +205,93 @@ func TestGetLogProvider_IgnoresExpiredEntry(t *testing.T) {
 	got, err := GetLogProvider(acct)
 	require.NoError(t, err)
 	assert.NotEqual(t, "loki", got.Provider, "an expired entry must not be served")
+}
+
+func TestHasConnectedK8sAgent_InvalidUUID(t *testing.T) {
+	assert.False(t, hasConnectedK8sAgent(""), "empty account ID must return false")
+	assert.False(t, hasConnectedK8sAgent("not-a-uuid"), "non-UUID account ID must return false")
+}
+
+func TestHasConnectedK8sAgent_IgnoresCloudCollectorAgent(t *testing.T) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil || dbms == nil || dbms.Db == nil {
+		t.Skip("metastore DB not available in this test environment")
+	}
+
+	// Verify against an active AWS cloud account that has a CONNECTED AWS agent row in agent table.
+	// It must NOT be treated as having a connected K8s agent.
+	var awsAccountID string
+	err = dbms.Db.Get(&awsAccountID, `
+		SELECT cloud_account_id::text
+		FROM agent
+		WHERE status = 'CONNECTED' AND type = 'AWS'
+		LIMIT 1
+	`)
+	if err == nil && awsAccountID != "" {
+		assert.False(t, hasConnectedK8sAgent(awsAccountID),
+			"an account with only a cloud-collector agent (type=AWS) must not report hasConnectedK8sAgent=true")
+	}
+
+	// Verify that an account with a real connected K8s agent DOES report true.
+	var k8sAccountID string
+	err = dbms.Db.Get(&k8sAccountID, `
+		SELECT cloud_account_id::text
+		FROM agent
+		WHERE status = 'CONNECTED' AND lower(type) = 'k8s'
+		LIMIT 1
+	`)
+	if err == nil && k8sAccountID != "" {
+		assert.True(t, hasConnectedK8sAgent(k8sAccountID),
+			"an account with a connected K8s agent (type=k8s) must report hasConnectedK8sAgent=true")
+	}
+}
+
+func TestHasConnectedK8sAgentInDb_Sqlmock(t *testing.T) {
+	t.Run("returns false when no connected k8s agent exists", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		accountID := "00666e9f-3774-4f5d-b86c-60b201ae18c5"
+		mock.ExpectQuery(`select count\(\*\) from agent where status = 'CONNECTED' and lower\(type\) = 'k8s' and cloud_account_id = \$1`).
+			WithArgs(accountID).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+		sqlxDb := sqlx.NewDb(db, "sqlmock")
+		got := hasConnectedK8sAgentInDb(sqlxDb, accountID)
+		assert.False(t, got, "expected false when connected k8s agent count is 0")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("returns true when connected k8s agent exists", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		accountID := "21a3b9a9-8d4e-4a8f-9744-dcd61d828344"
+		mock.ExpectQuery(`select count\(\*\) from agent where status = 'CONNECTED' and lower\(type\) = 'k8s' and cloud_account_id = \$1`).
+			WithArgs(accountID).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+		sqlxDb := sqlx.NewDb(db, "sqlmock")
+		got := hasConnectedK8sAgentInDb(sqlxDb, accountID)
+		assert.True(t, got, "expected true when connected k8s agent count is > 0")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("fails closed on database error", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		accountID := "00666e9f-3774-4f5d-b86c-60b201ae18c5"
+		mock.ExpectQuery(`select count\(\*\) from agent where status = 'CONNECTED' and lower\(type\) = 'k8s' and cloud_account_id = \$1`).
+			WithArgs(accountID).
+			WillReturnError(assert.AnError)
+
+		sqlxDb := sqlx.NewDb(db, "sqlmock")
+		got := hasConnectedK8sAgentInDb(sqlxDb, accountID)
+		assert.True(t, got, "must fail closed (return true) when db query fails")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }

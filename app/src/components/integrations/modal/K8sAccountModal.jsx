@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Grid, Typography, Box, Stepper, Step, StepLabel, Divider, ButtonBase } from '@mui/material';
+import { Grid, Typography, Box, Divider, ButtonBase } from '@mui/material';
 import apiAccount from '@api1/account';
 import { Modal } from '@ui/Modal';
+import { Stepper } from '@ui/Stepper';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
@@ -363,14 +364,14 @@ helm repo update`;
     >
       <Box sx={{ px: 'var(--ds-space-5)', pb: 3 }}>
         <Box sx={{ mb: 2, mt: 'var(--ds-space-4)' }}>
-          <Stepper activeStep={currentStep - 1} orientation='horizontal'>
-            <Step>
-              <StepLabel>Set Account Name & Prerequisites</StepLabel>
-            </Step>
-            <Step>
-              <StepLabel>Finish Setup</StepLabel>
-            </Step>
-          </Stepper>
+          <Stepper
+            steps={[
+              { id: 'account-name', label: 'Set Account Name & Prerequisites' },
+              { id: 'finish-setup', label: 'Finish Setup' },
+            ]}
+            current={currentStep - 1}
+            orientation='horizontal'
+          />
         </Box>
         {currentStep === 1 && (
           <>

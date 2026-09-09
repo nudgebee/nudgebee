@@ -705,6 +705,25 @@
     "cross_account": true
   },
   {
+    "name": "k8s_pv_to_aws_ebs_volume_csi",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "PersistentVolume",
+    "target_node_type": "Storage",
+    "matching_rules": [
+      {
+        "source_property": "volume_name",
+        "target_property": "resource_id",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PROVIDES_STORAGE",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
     "name": "aws_loadbalancer_to_k8s_nodeport_service",
     "enabled": true,
     "source_type": "aws",

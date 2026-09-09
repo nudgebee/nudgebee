@@ -346,6 +346,7 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		resourceName      *string
 		resourceNamespace *string
 		resourceID        *string
+		changeClass       ChangeClass
 	}
 	var recs []recRow
 
@@ -387,7 +388,14 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 				WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
 				ELSE r.recommendation ->> 'namespace'
 			END AS resource_k8s_namespace,
-			r.resource_id
+			r.resource_id,
+			CASE
+				-- Only pod_right_sizing needs its payload (to read the request
+				-- deltas for change classification); every other rule classifies
+				-- from its name alone, and fetching JSONB for the whole Open set
+				-- would balloon this scan's memory for nothing.
+				WHEN r.rule_name = 'pod_right_sizing' THEN r.recommendation
+			END AS change_payload
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 		WHERE r.status = 'Open' AND r.created_at <= $1`
@@ -417,13 +425,17 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		for rows.Next() {
 			var r recRow
 			var createdAt time.Time
+			var changePayload []byte
 			pageCount++
-			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID); err != nil {
+			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID, &changePayload); err != nil {
 				ctx.GetLogger().Error("error scanning recommendation row", "error", err)
 				errCount++
 				continue
 			}
 			r.createdAt = &createdAt
+			// Classify here and keep only the class, so the payload bytes never
+			// outlive the scan — the recs slice holds every Open row in memory.
+			r.changeClass = ClassifyChange(r.ruleName, changePayload)
 			cursorCreatedAt, cursorID, hasCursor, advanced = createdAt, r.id, true, true
 			recs = append(recs, r)
 		}
@@ -454,7 +466,7 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	// (recs whose resource isn't in the graph are skipped, and results are memoized
 	// per resource so each is resolved + traversed at most once per run).
 	kgService := core.NewService(ctx, ctx.GetLogger(), dbms)
-	impactCache := map[string]*recommendationImpact{}
+	impactCache := map[string]*core.ImpactSummary{}
 
 	for _, r := range recs {
 		savings := float32(0)
@@ -480,7 +492,7 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		if r.resourceID != nil {
 			resID = *r.resourceID
 		}
-		annotateBreakdownWithImpact(kgService, r.tenantID, accountID, ns, name, resID, result.Breakdown, impactCache)
+		annotateBreakdownWithImpact(kgService, r.tenantID, accountID, ns, name, resID, r.changeClass, result.Breakdown, impactCache)
 
 		breakdownJSON, err := json.Marshal(result.Breakdown)
 		if err != nil {

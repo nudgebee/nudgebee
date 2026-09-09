@@ -1,0 +1,25 @@
+user_prompt: "Split our total monthly savings potential between commitment purchases and workload optimizations."
+expected_output:
+  - |
+    A regression case. This exact question once returned the workload figure
+    alone with "Commitment Purchases: $0.00 (0 opportunities)" while the same
+    account's Optimise page listed open Reserved Instance and Savings Plan
+    recommendations worth several hundred dollars a month. De-duplication was
+    ranking retired rows above live ones, so the live commitment rows were
+    marked non-primary and dropped from every total.
+
+    The answer must contain BOTH parts, each with a dollar figure and an
+    opportunity count, and a total equal to their sum. Commitment purchases
+    must be present and non-zero whenever the account holds open commitment
+    recommendations — a $0.00 commitment line beside a non-zero workload line
+    is the failure this case exists to catch.
+
+    The agent must also state that the two are not additive in practice:
+    commitments are sized against current usage, so right-sizing first reduces
+    what is worth committing to. Cite the recommendations data source ([recommendations] or [recommendation_execute]).
+tags:
+  - optimization
+  - savings
+  - dedupe
+  - regression
+  - finops

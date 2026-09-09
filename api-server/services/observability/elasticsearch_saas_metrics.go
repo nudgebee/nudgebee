@@ -19,18 +19,30 @@ func (e *ElasticSaasMetricSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_contains", "_like", "_nlike", "_gt", "_lt", "_is_null"}
 }
 
-// GetQuery renders the first entry of req.Queries into the same compact
-// ES _search body that FetchMetricsQuery would POST. The orchestrator at
-// service.go:GetMetricsQuery always passes a single-entry Queries map, so
-// "first" is well-defined in production. Return value is byte-identical
-// to the Query field FetchMetricsQuery stores on each QueryResult — pinned
-// by the parity tests.
+// GetQuery renders one query into the compact ES _search body FetchMetricsQuery
+// would POST, so the UI shows the query that actually runs rather than the
+// cross-provider builder shape. Two inputs:
 //
-// Note: GetMetricsQuery wraps GetQuery output with wrapPromQLAggregator
-// (service.go:1063), which would corrupt this JSON. ES is not routed
-// through GetMetricsQuery today (UI does not populate QueryItems for ES);
-// if that changes, the wrap must be made provider-aware first.
+//   - BUILDER item (single-entry QueryItems) — render the item's LabelMatchers,
+//     without a time range: the executor always AND-merges the live window, so
+//     an embedded one would be duplicated and go stale on a date-picker change.
+//   - Otherwise — the first (and only) entry of req.Queries. Byte-identical to the
+//     Query field FetchMetricsQuery stores on each QueryResult; pinned by the parity tests.
 func (e *ElasticSaasMetricSource) GetQuery(_ *security.RequestContext, req FetchMetricsRequest) (string, error) {
+	if len(req.QueryItems) == 1 {
+		for _, item := range req.QueryItems {
+			body, err := e.buildESMetricsItemBody(item)
+			if err != nil {
+				return "", err
+			}
+			out, err := json.Marshal(body)
+			if err != nil {
+				return "", err
+			}
+			return string(out), nil
+		}
+	}
+
 	queryType, _ := req.Request["query_type"].(string)
 	for _, q := range req.Queries {
 		body, err := buildESMetricsQueryBody(queryType, q, req.StartTime, req.EndTime)
@@ -46,6 +58,101 @@ func (e *ElasticSaasMetricSource) GetQuery(_ *security.RequestContext, req Fetch
 	return "", nil
 }
 
+// buildESMetricsItemBody renders a BUILDER item's matchers through the same
+// Builder-Mode path as execution, so rendered and executed queries cannot drift.
+//
+// Validated against GetSupportedOperators — the set the builder UI offers — which
+// is narrower than what binaryToESClause accepts. That is deliberate, not an
+// oversight: LabelMatcher.Value is a single string, so the array operators
+// (_in/_nin) cannot be expressed as a chip at all. Checking up front also names
+// the offending label, which a failure deeper in translation does not.
+func (e *ElasticSaasMetricSource) buildESMetricsItemBody(item QueryItem) (map[string]any, error) {
+	supported := make(map[string]bool, len(e.GetSupportedOperators()))
+	for _, op := range e.GetSupportedOperators() {
+		supported[op] = true
+	}
+
+	whereClauses := make([]query.QueryWhereClause, 0, len(item.LabelMatchers))
+	for _, m := range item.LabelMatchers {
+		if !supported[m.Operator] {
+			return nil, fmt.Errorf("operator %q is not supported for Elasticsearch metrics (label %q)", m.Operator, m.Label)
+		}
+		whereClauses = append(whereClauses, query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{
+				m.Label: {query.BinaryWhereClauseType(m.Operator): esMatcherValue(m.Operator, m.Value)},
+			},
+		})
+	}
+
+	encoded, err := json.Marshal(whereClauses)
+	if err != nil {
+		return nil, err
+	}
+	return buildESMetricsQueryBody("", string(encoded), 0, 0)
+}
+
+// esMatcherValue coerces a chip's value to the type its operator needs.
+// LabelMatcher.Value is always a string (the chip's text), but binaryToESClause
+// rejects _is_null unless the value is a real bool — so an "is null" chip, which
+// the builder does offer, could never render without this.
+func esMatcherValue(op string, val string) any {
+	if query.BinaryWhereClauseType(op) == query.IsNull {
+		return strings.EqualFold(strings.TrimSpace(val), "true")
+	}
+	return val
+}
+
+// WrapAggregate implements MetricAggregateWrapper: the default `sum(<expr>)` wrap
+// would corrupt this JSON body. ES has no builder aggregation yet, so anything
+// other than "none" is rejected rather than silently dropped.
+func (e *ElasticSaasMetricSource) WrapAggregate(expr string, aggregateOperator string) (string, error) {
+	if aggregateOperator == "" {
+		return expr, nil
+	}
+	return "", fmt.Errorf("aggregate_operator %q is not supported for Elasticsearch metrics", aggregateOperator)
+}
+
+// esQueryClauseNames are the top-level keys of an Elasticsearch *query clause*,
+// as opposed to a _search request body. Not exhaustive — it only needs to cover
+// what someone plausibly pastes into the Code tab.
+var esQueryClauseNames = map[string]bool{
+	"bool": true, "match": true, "match_all": true, "match_none": true,
+	"match_phrase": true, "match_phrase_prefix": true, "match_bool_prefix": true,
+	"multi_match": true, "combined_fields": true, "query_string": true,
+	"simple_query_string": true, "term": true, "terms": true, "terms_set": true,
+	"range": true, "exists": true, "prefix": true, "wildcard": true, "regexp": true,
+	"fuzzy": true, "ids": true, "nested": true, "has_child": true, "has_parent": true,
+	"parent_id": true, "constant_score": true, "dis_max": true, "boosting": true,
+	"function_score": true, "script": true, "script_score": true, "wrapper": true,
+	"pinned": true, "rank_feature": true, "distance_feature": true, "more_like_this": true,
+	"intervals": true, "knn": true, "geo_distance": true, "geo_bounding_box": true,
+	"geo_polygon": true, "geo_shape": true, "shape": true,
+}
+
+// esWrapBareQueryClause accepts a bare query clause where a _search body is
+// expected, wrapping it as {"query": <clause>}. Kibana's DSL box takes either
+// form, so users paste either; without this a clause became a stray top-level
+// key that ES rejects ("Unknown key for a START_OBJECT in [match_phrase]") while
+// the caller separately substituted match_all — an invalid request that had also
+// silently dropped the user's filter.
+//
+// Only rewrites when every top-level key is a query clause name and there is no
+// "query" key, so a real body (even one with just "size" or "aggs") is untouched.
+func esWrapBareQueryClause(userBody map[string]any) map[string]any {
+	if len(userBody) == 0 {
+		return userBody
+	}
+	if _, hasQuery := userBody["query"]; hasQuery {
+		return userBody
+	}
+	for key := range userBody {
+		if !esQueryClauseNames[key] {
+			return userBody
+		}
+	}
+	return map[string]any{"query": userBody}
+}
+
 // buildESMetricsQueryBody renders one query entry into the ES _search body
 // that FetchMetricsQuery would POST. Pure: no IO, no config lookups — safe
 // to call from GetQuery for query rendering as well as from FetchMetricsQuery
@@ -55,10 +162,32 @@ func (e *ElasticSaasMetricSource) GetQuery(_ *security.RequestContext, req Fetch
 // `size` field if omitted, and AND-merge the time range into a bool filter
 // so scans are still bounded.
 //
+// queryType "kql" — Code Mode: translate the typed KQL expression to DSL via
+// kqlToDSL (shared with the logs path), then take the "dsl" branch.
+//
 // any other queryType — Builder Mode: treat queryDSL as a JSON-encoded
 // []QueryWhereClause and render bool/filter via whereToBool +
 // normalizeESMetricsWhere, appending the time range.
 func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis int64) (map[string]any, error) {
+	if queryType == "kql" {
+		// kqlToDSL is signal-agnostic — the logs path (buildESKQLQueryBody) differs
+		// only in its log-specific finalization. Translate to a DSL body here and
+		// fall through, so KQL and DSL share one size/time-range path.
+		inner := map[string]any{"match_all": map[string]any{}}
+		if strings.TrimSpace(queryDSL) != "" {
+			translated, err := kqlToDSL(queryDSL)
+			if err != nil {
+				return nil, err
+			}
+			inner = translated
+		}
+		encoded, err := json.Marshal(map[string]any{"query": inner})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build kql query body: %w", err)
+		}
+		queryDSL, queryType = string(encoded), "dsl"
+	}
+
 	if queryType == "dsl" {
 		var userBody map[string]any
 		if err := json.Unmarshal([]byte(queryDSL), &userBody); err != nil {
@@ -70,6 +199,7 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 			// panic on nil, and a null body is not a valid _search.
 			return nil, fmt.Errorf("DSL query body must be a JSON object, got null")
 		}
+		userBody = esWrapBareQueryClause(userBody)
 		if _, ok := userBody["size"]; !ok {
 			userBody["size"] = 10000
 		}
@@ -91,7 +221,9 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 	if err := json.Unmarshal([]byte(queryDSL), &whereClauses); err != nil {
 		return nil, fmt.Errorf("failed to parse query filters: %v", err)
 	}
-	var filters []any
+	// Non-nil so a zero-clause render marshals to "filter":[] not "filter":null —
+	// reachable from the builder item path, and now shown to the user.
+	filters := []any{}
 	for _, wc := range whereClauses {
 		clause, err := whereToBool(normalizeESMetricsWhere(wc))
 		if err != nil {

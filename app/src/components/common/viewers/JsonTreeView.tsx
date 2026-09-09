@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { Box, IconButton, Tooltip } from '@mui/material';
+import { Box, IconButton } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { ContentCopy } from '@mui/icons-material';
 import { ds } from 'src/utils/colors';
 
@@ -98,22 +99,9 @@ function KeyLabel({ keyName, path, templatePrefix }: Readonly<{ keyName: string 
           </Box>
         }
         placement='top'
-        arrow
         enterDelay={300}
         leaveDelay={100}
-        slotProps={{
-          tooltip: {
-            sx: {
-              bgcolor: 'var(--ds-background-100)',
-              color: 'var(--ds-brand-600)',
-              boxShadow: `0 ${ds.space[1]} 20px color-mix(in srgb, ${ds.gray[700]} 12%, transparent), 0 1px ${ds.space[1]} ${ds.gray.alpha[200]}`,
-              border: '1px solid var(--ds-brand-150)',
-              borderRadius: 'var(--ds-radius-lg)',
-              '& .MuiTooltip-arrow': { color: 'var(--ds-background-100)', '&::before': { border: '1px solid var(--ds-brand-150)' } },
-              maxWidth: 420,
-            },
-          },
-        }}
+        tooltipStyle={{ maxWidth: 420 }}
       >
         <span
           style={{

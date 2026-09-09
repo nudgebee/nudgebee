@@ -4,6 +4,7 @@ import {
   diffLanguageForFile,
   lenientUnescape,
   salvageTruncatedParams,
+  parseWebSearchResults,
 } from '@components/llm/common/ToolDetails';
 
 // Mock heavy internal components — these tests only exercise the exported pure
@@ -108,6 +109,56 @@ describe('salvageTruncatedParams', () => {
 
   it('passes unrelated unparseable text through with escapes decoded', () => {
     expect(salvageTruncatedParams('{"query":"a\\nb"')).toBe('{"query":"a\nb"');
+  });
+});
+
+describe('parseWebSearchResults', () => {
+  // search_execute's real payload double-encodes each result: the scraped
+  // markdown is JSON.stringify'd into `_body`, and that object is itself one
+  // element of the outer JSON array in `response`. Build the fixture the same
+  // way the backend does, rather than hand-writing escaped literals.
+  const wrap = (content, bodyUrl, outerUrl) => JSON.stringify([{ _body: JSON.stringify({ content, url: bodyUrl }), url: outerUrl }]);
+
+  it('decodes a real markdown link with an ampersand and no stray backslash (#37539)', () => {
+    const content = '*   [Images](https://search.brave.com/images?q=x&source=web)\nnext line';
+    const responseText = wrap(content, 'https://source.example/page', 'https://outer.example/result');
+    const results = parseWebSearchResults(responseText);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe(content);
+    expect(results[0].content).not.toContain('\\n');
+    expect(results[0].content).not.toContain('\\u0026');
+    expect(results[0].url).toBe('https://outer.example/result');
+  });
+
+  it('unwraps multiple results in order', () => {
+    const a = JSON.stringify({ content: 'first', url: 'https://a.example' });
+    const b = JSON.stringify({ content: 'second', url: 'https://b.example' });
+    const responseText = JSON.stringify([
+      { _body: a, url: 'https://a.example' },
+      { _body: b, url: 'https://b.example' },
+    ]);
+    const results = parseWebSearchResults(responseText);
+    expect(results.map((r) => r.content)).toEqual(['first', 'second']);
+  });
+
+  it('falls back to a top-level content field when there is no _body', () => {
+    const responseText = JSON.stringify([{ content: 'plain content', url: 'https://c.example' }]);
+    expect(parseWebSearchResults(responseText)).toEqual([{ content: 'plain content', url: 'https://c.example' }]);
+  });
+
+  it('skips items with unparseable _body but keeps the valid ones', () => {
+    const good = JSON.stringify({ content: 'ok', url: 'https://ok.example' });
+    const responseText = JSON.stringify([
+      { _body: '{not json', url: 'https://bad.example' },
+      { _body: good, url: 'https://ok.example' },
+    ]);
+    expect(parseWebSearchResults(responseText)).toEqual([{ content: 'ok', url: 'https://ok.example' }]);
+  });
+
+  it('returns null for non-JSON, non-array, or all-empty input', () => {
+    expect(parseWebSearchResults('not json')).toBeNull();
+    expect(parseWebSearchResults(JSON.stringify({ content: 'x' }))).toBeNull();
+    expect(parseWebSearchResults(JSON.stringify([{ _body: '{"url":"https://x.example"}' }]))).toBeNull();
   });
 });
 

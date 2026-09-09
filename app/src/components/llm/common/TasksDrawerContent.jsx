@@ -1,9 +1,13 @@
 import React from 'react';
 import { Box, Typography } from '@mui/material';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import PropTypes from 'prop-types';
 import { ds } from '@utils/colors';
 import Tooltip from '@ui/Tooltip';
+import { Chip } from '@ui/Chip';
 import MessageItem from '../MessageItem';
+import { executionBatchLabel, executionBatchTone, executionBatchTooltip, parseExecutionBatchMetadata } from './executionBatch';
 
 const taskKeyOf = (task) => String(task.tool_id ?? task.id ?? task.originalIndex ?? '');
 const byCreated = (a, b) => {
@@ -12,9 +16,63 @@ const byCreated = (a, b) => {
   return ca < cb ? -1 : ca > cb ? 1 : 0;
 };
 
+const withExecutionBatchNodes = (tasks) => {
+  const groups = new Map();
+  const taskIds = new Set(tasks.map(taskKeyOf).filter(Boolean));
+  tasks.forEach((task) => {
+    if (task.nodeKind !== 'tool' && !task.isPlannerAction) {
+      return;
+    }
+    const batch = parseExecutionBatchMetadata(task.metadata);
+    if (!batch) {
+      return;
+    }
+    const parentId = task.parentId != null ? String(task.parentId) : '';
+    if (parentId && !taskIds.has(parentId)) {
+      return;
+    }
+    const key = `${parentId}:${batch.id}`;
+    const group = groups.get(key) || { batch, parentId, tasks: [] };
+    group.tasks.push(task);
+    groups.set(key, group);
+  });
+
+  const batchParentByTask = new Map();
+  const batchNodes = [];
+  groups.forEach((group) => {
+    const batchNodeId = `execution-batch:${group.parentId}:${group.batch.id}`;
+    group.tasks.forEach((task) => batchParentByTask.set(taskKeyOf(task), batchNodeId));
+    const timestamps = group.tasks
+      .map((task) => task.created_at)
+      .filter(Boolean)
+      .map((value) => ({ value, time: Date.parse(value) }))
+      .filter(({ time }) => Number.isFinite(time))
+      .sort((a, b) => a.time - b.time);
+    batchNodes.push({
+      id: batchNodeId,
+      tool_id: batchNodeId,
+      parentId: group.parentId || null,
+      nodeKind: 'execution_batch',
+      type: 'execution_batch',
+      executionBatch: group.batch,
+      observedBatchSize: group.tasks.length,
+      created_at: timestamps[0]?.value || null,
+    });
+  });
+
+  return [
+    ...tasks.map((task) => {
+      const batchParent = batchParentByTask.get(taskKeyOf(task));
+      return batchParent ? { ...task, parentId: batchParent } : task;
+    }),
+    ...batchNodes,
+  ];
+};
+
 const buildTaskTree = (tasks) => {
+  const normalizedTasks = withExecutionBatchNodes(tasks);
   const byId = new Map();
-  tasks.forEach((t) => {
+  normalizedTasks.forEach((t) => {
     const id = taskKeyOf(t);
     if (id) {
       byId.set(id, t);
@@ -31,7 +89,7 @@ const buildTaskTree = (tasks) => {
     childrenOf.get(parentKey).push(node);
   };
 
-  tasks.forEach((task) => {
+  normalizedTasks.forEach((task) => {
     const node = { key: 'task:' + taskKeyOf(task), task };
     const parentId = task.parentId != null ? String(task.parentId) : null;
     // Nest under the parent row when it resolves; guard against a self-parent so a bad link
@@ -43,7 +101,7 @@ const buildTaskTree = (tasks) => {
     }
   });
 
-  return { roots, childrenOf };
+  return { roots, childrenOf, tasks: normalizedTasks };
 };
 
 const flattenTree = ({ roots, childrenOf }) => {
@@ -82,64 +140,52 @@ const flattenWithOrphans = (tasks, tree) => {
 };
 
 const LEVEL_COLOR = ['var(--ds-gray-700)', '#6B7280', '#9AA0A8', '#BCBFC4'];
-const CASCADE = {
-  1: { trunkX: 8, trunkY: [3, 21], branchW: 1.5, branches: [] },
-  2: { trunkX: 8, trunkY: [3, 21], branchW: 1.5, branches: [{ fromX: 8, y: 12, toX: 18.5 }] },
-  3: {
-    trunkX: 6,
-    trunkY: [3, 21],
-    branchW: 1.4,
-    branches: [
-      { fromX: 6, y: 9, toX: 19 },
-      { fromX: 11, y: 16, toX: 19, dropFromY: 9 },
-    ],
-  },
-  4: {
-    trunkX: 4.5,
-    trunkY: [2.5, 21.5],
-    branchW: 1.3,
-    branches: [
-      { fromX: 4.5, y: 6, toX: 20 },
-      { fromX: 9, y: 12.5, toX: 20, dropFromY: 6 },
-      { fromX: 13.5, y: 19, toX: 20, dropFromY: 12.5 },
-    ],
-  },
-};
-const ARROW_HEAD = 2.2; // chevron half-size on each branch tip
-const LEVEL1_TRUNK_WIDTH = 2.2; // level-1 trunks (main task + acknowledgment) are a little thicker than the 1.7 sub-level default
-const INDICATOR_COL_W = 32; // fixed gutter width (px) — keeps every row's title aligned
-const INDICATOR_SIZE = 16; // rendered icon size (px), from a 24×24 viewBox
+const VIEWBOX_W = 21;
+const VIEWBOX_H = 24;
+const MAX_LEVEL = 4;
+const ORIGIN_X = 1.5;
+const ARROW_RUN = 9;
+const ARROW_HEAD = 2.4;
+const STEP_X = ARROW_RUN / 2;
+const STEP_Y = 6;
+const ARROW_HEAD_SCALE = [1, 0.85, 0.7];
+const BRANCH_WIDTH = 1.2;
+const TRUNK_WIDTH = 2.4;
+const INDICATOR_COL_W = 36; // fixed gutter width (px) — keeps every row's title aligned
+const NESTED_ROW_INDENT = 12;
+const INDICATOR_H = 24;
+const INDICATOR_W = (INDICATOR_H * VIEWBOX_W) / VIEWBOX_H;
 
 const DepthIndicator = ({ depth }) => {
-  const level = Math.min(Math.max(depth + 1, 1), 4); // drawer depth 0 → level 1 (main); clamp at 4
-  const { trunkX, trunkY, branchW, branches } = CASCADE[level];
+  const level = Math.min(Math.max(depth + 1, 1), MAX_LEVEL); // drawer depth 0 → level 1 (main); clamp at 4
   const color = LEVEL_COLOR[level - 1];
+  const arrowCount = level - 1;
+  const headSize = ARROW_HEAD * (ARROW_HEAD_SCALE[arrowCount - 1] ?? 1);
+  const top = (VIEWBOX_H - (arrowCount * STEP_Y + headSize)) / 2;
 
   return (
-    <svg width={INDICATOR_SIZE} height={INDICATOR_SIZE} viewBox='0 0 24 24' fill='none' aria-hidden style={{ display: 'block' }}>
-      <line
-        x1={trunkX}
-        y1={trunkY[0]}
-        x2={trunkX}
-        y2={trunkY[1]}
-        strokeLinecap='round'
-        style={{ stroke: color, strokeWidth: level === 1 ? LEVEL1_TRUNK_WIDTH : 1.7 }}
-      />
-      {branches.map((b, i) => {
-        const drop = 'dropFromY' in b ? `M${b.fromX} ${b.dropFromY}V${b.y}` : '';
-        const line = `M${b.fromX} ${b.y}H${b.toX}`;
-        const arrow = `M${b.toX - ARROW_HEAD} ${b.y - ARROW_HEAD}L${b.toX} ${b.y}L${b.toX - ARROW_HEAD} ${b.y + ARROW_HEAD}`;
-        return (
-          <path
-            key={i}
-            d={`${drop}${line}${arrow}`}
-            strokeLinecap='round'
-            strokeLinejoin='round'
-            fill='none'
-            style={{ stroke: color, strokeWidth: branchW }}
-          />
-        );
-      })}
+    <svg width={INDICATOR_W} height={INDICATOR_H} viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`} fill='none' aria-hidden style={{ display: 'block' }}>
+      {level === 1 ? (
+        <line x1={ORIGIN_X} y1={3} x2={ORIGIN_X} y2={VIEWBOX_H - 3} strokeLinecap='round' style={{ stroke: color, strokeWidth: TRUNK_WIDTH }} />
+      ) : (
+        Array.from({ length: arrowCount }, (_, i) => {
+          const x = ORIGIN_X + i * STEP_X;
+          const y = top + (i + 1) * STEP_Y;
+          const toX = x + ARROW_RUN;
+          const elbow = `M${x} ${top + i * STEP_Y}V${y}H${toX}`;
+          const head = `M${toX - headSize} ${y - headSize}L${toX} ${y}L${toX - headSize} ${y + headSize}`;
+          return (
+            <path
+              key={i}
+              d={`${elbow}${head}`}
+              strokeLinecap='round'
+              strokeLinejoin='round'
+              fill='none'
+              style={{ stroke: color, strokeWidth: BRANCH_WIDTH }}
+            />
+          );
+        })
+      )}
     </svg>
   );
 };
@@ -152,35 +198,60 @@ DepthIndicator.propTypes = {
 // is a sub-task numbered by how deep it nests.
 const subLevelLabel = (depth) => (depth <= 0 ? 'Task' : `Sub-task · level ${depth}`);
 
-const TaskRow = ({
-  task,
-  depth,
-  stepCount,
-  collapsed,
-  onToggleCollapse,
-  accountId,
-  conversationId,
-  isLast,
-  isActive,
-  onOpenToolDetails,
-  itemProps,
-}) => {
+const ExecutionBatchRow = ({ task, collapsed }) => {
+  const batch = task.executionBatch;
+  return (
+    <Box sx={{ px: ds.space[3], py: ds.space[2], display: 'flex', alignItems: 'center', gap: ds.space[2] }} data-testid='execution-batch-row'>
+      <Tooltip title={executionBatchTooltip(batch)} placement='top'>
+        <Box component='span' sx={{ display: 'inline-flex' }}>
+          <Chip variant='tag' size='xs' tone={executionBatchTone(batch)} dot>
+            {executionBatchLabel(batch, task.observedBatchSize)}
+          </Chip>
+        </Box>
+      </Tooltip>
+      <Box sx={{ ml: 'auto', display: 'inline-flex', color: 'var(--ds-gray-500)' }}>
+        {collapsed ? <KeyboardArrowRightIcon fontSize='small' /> : <KeyboardArrowDownIcon fontSize='small' />}
+      </Box>
+    </Box>
+  );
+};
+
+ExecutionBatchRow.propTypes = {
+  task: PropTypes.object.isRequired,
+  collapsed: PropTypes.bool,
+};
+
+const TaskRow = ({ task, depth, collapsed, onToggleCollapse, accountId, conversationId, isLast, isActive, onOpenToolDetails, itemProps }) => {
+  const isBatch = task.nodeKind === 'execution_batch';
   const isHeader = depth === 0 && task.nodeKind === 'agent';
   const isActionable = (task.nodeKind === 'agent' || task.nodeKind === 'tool') && !isHeader;
-  const collapsible = collapsed !== undefined; // set only for headers with >1 items
+  const collapsible = collapsed !== undefined;
   const openDetails = isActionable ? () => onOpenToolDetails(task) : undefined;
   const onClick = collapsible ? onToggleCollapse : openDetails;
   const clickable = collapsible || isActionable;
   return (
     <Box
       onClick={onClick}
+      role={isBatch ? 'button' : undefined}
+      tabIndex={isBatch ? 0 : undefined}
+      aria-expanded={isBatch && collapsible ? !collapsed : undefined}
+      onKeyDown={
+        isBatch
+          ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
       sx={{
         display: 'flex',
         cursor: clickable ? 'pointer' : 'default',
         ...(clickable ? { '& [id^="task-card-"] *': { cursor: 'pointer' } } : {}),
       }}
     >
-      <Box sx={{ flexShrink: 0, width: INDICATOR_COL_W, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Box sx={{ flexShrink: 0, width: INDICATOR_COL_W, pl: ds.space[2], display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
         <Tooltip title={subLevelLabel(depth)} placement='top'>
           <Box component='span' aria-hidden sx={{ display: 'inline-flex', lineHeight: 0 }}>
             <DepthIndicator depth={depth} />
@@ -192,6 +263,7 @@ const TaskRow = ({
         sx={{
           flex: 1,
           minWidth: 0,
+          ml: depth > 1 ? `${(depth - 1) * NESTED_ROW_INDENT}px` : 0,
           borderRadius: ds.radius.lg,
           transition: 'background-color 0.15s ease, box-shadow 0.15s ease',
           '& [id^="task-card-"] > div': {
@@ -213,33 +285,36 @@ const TaskRow = ({
           boxShadow: isActive ? 'inset 0 0 0 1px var(--ds-blue-200)' : 'none',
         }}
       >
-        <MessageItem
-          message={task}
-          index={task.originalIndex ?? task.id ?? 0}
-          isLastInGroup={isLast}
-          isLastTaskOfLastGroup={false}
-          isCollapsed={false}
-          collapsedObj={{}}
-          onToggle={openDetails}
-          showFullText={false}
-          onShowFullText={() => {}}
-          accountId={accountId}
-          conversationId={conversationId}
-          sessionId={itemProps?.sessionId}
-          generateQuestionText={itemProps?.generateQuestionText}
-          handleShare={itemProps?.handleShare}
-          agentTokenData={itemProps?.getAgentTokenDataForMessage?.(task)}
-          messageTokenData={itemProps?.messageTokenData?.[task.id]}
-          handleTokenUsageHover={itemProps?.handleTokenUsageHover}
-          isFetchingTokenData={itemProps?.isFetchingTokenData}
-          selectedModel={itemProps?.selectedModel}
-          conversationStatus={itemProps?.conversationStatus}
-          onOpenToolDetails={openDetails}
-          indentDepth={depth}
-          stepCount={isHeader ? stepCount : undefined}
-          collapsed={collapsed}
-          hideTimeline
-        />
+        {isBatch ? (
+          <ExecutionBatchRow task={task} collapsed={collapsed} />
+        ) : (
+          <MessageItem
+            message={task}
+            index={task.originalIndex ?? task.id ?? 0}
+            isLastInGroup={isLast}
+            isLastTaskOfLastGroup={false}
+            isCollapsed={false}
+            collapsedObj={{}}
+            onToggle={openDetails}
+            showFullText={false}
+            onShowFullText={() => {}}
+            accountId={accountId}
+            conversationId={conversationId}
+            sessionId={itemProps?.sessionId}
+            generateQuestionText={itemProps?.generateQuestionText}
+            handleShare={itemProps?.handleShare}
+            agentTokenData={itemProps?.getAgentTokenDataForMessage?.(task)}
+            messageTokenData={itemProps?.messageTokenData?.[task.id]}
+            handleTokenUsageHover={itemProps?.handleTokenUsageHover}
+            isFetchingTokenData={itemProps?.isFetchingTokenData}
+            selectedModel={itemProps?.selectedModel}
+            conversationStatus={itemProps?.conversationStatus}
+            onOpenToolDetails={openDetails}
+            indentDepth={depth}
+            collapsed={collapsed}
+            hideTimeline
+          />
+        )}
       </Box>
     </Box>
   );
@@ -248,7 +323,6 @@ const TaskRow = ({
 TaskRow.propTypes = {
   task: PropTypes.object.isRequired,
   depth: PropTypes.number,
-  stepCount: PropTypes.number,
   collapsed: PropTypes.bool,
   onToggleCollapse: PropTypes.func,
   accountId: PropTypes.string,
@@ -267,54 +341,50 @@ const matchesActiveKey = (task, activeTaskKey) => {
   return candidates.some((c) => c != null && String(c) === String(activeTaskKey));
 };
 
-// Total descendant rows under a node — drives the root orchestrator's "· N steps" roll-up.
-const countDescendants = (key, childrenOf) => (childrenOf.get(key) || []).reduce((n, child) => n + 1 + countDescendants(child.key, childrenOf), 0);
+const hasChildren = (key, childrenOf) => (childrenOf.get(key) || []).length > 0;
+
+const EXPANDABLE_MIN_DEPTH = 1;
 
 const TasksDrawerContent = ({ tasks, accountId, conversationId, activeTaskKey, onOpenToolDetails, itemProps }) => {
   const tree = React.useMemo(() => buildTaskTree(tasks ?? []), [tasks]);
   const rows = React.useMemo(() => flattenWithOrphans(tasks ?? [], tree), [tasks, tree]);
 
-  // "· N steps" roll-up per root orchestrator (depth-0 agent) so the root reads as a container header.
-  const stepCountByKey = React.useMemo(() => {
-    const map = new Map();
-    tree.roots.forEach((root) => {
-      if (root.task?.nodeKind === 'agent') {
-        map.set(root.key, countDescendants(root.key, tree.childrenOf));
-      }
-    });
-    return map;
-  }, [tree]);
+  const isExpandable = React.useCallback((row) => row.depth >= EXPANDABLE_MIN_DEPTH && hasChildren(row.node.key, tree.childrenOf), [tree]);
 
-  // Expand/collapse for the main task (a depth-0 header with >1 items). Collapsed headers hide their
-  // descendants; expanded by default. Keyed by node key.
-  const [collapsedKeys, setCollapsedKeys] = React.useState(() => new Set());
-  const toggleCollapse = React.useCallback((key) => {
-    setCollapsedKeys((prev) => {
+  const [expandedKeys, setExpandedKeys] = React.useState(() => new Set());
+  const [collapsedBatchKeys, setCollapsedBatchKeys] = React.useState(() => new Set());
+  const isExpanded = React.useCallback(
+    (row) => (row.node.task.nodeKind === 'execution_batch' ? !collapsedBatchKeys.has(row.node.key) : expandedKeys.has(row.node.key)),
+    [collapsedBatchKeys, expandedKeys]
+  );
+  const toggleExpand = React.useCallback((row) => {
+    const setter = row.node.task.nodeKind === 'execution_batch' ? setCollapsedBatchKeys : setExpandedKeys;
+    setter((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
+      if (next.has(row.node.key)) {
+        next.delete(row.node.key);
       } else {
-        next.add(key);
+        next.add(row.node.key);
       }
       return next;
     });
   }, []);
 
-  // Hide the descendants of a collapsed depth-0 header. Pre-order groups a root's descendants right
-  // after it, so we drop depth>0 rows until the next depth-0 row.
   const visibleRows = React.useMemo(() => {
     const out = [];
-    let hidden = false;
+    let closedAtDepth = null;
     rows.forEach((row) => {
-      if (row.depth === 0) {
-        out.push(row);
-        hidden = collapsedKeys.has(row.node.key);
-      } else if (!hidden) {
-        out.push(row);
+      if (closedAtDepth !== null && row.depth > closedAtDepth) {
+        return;
+      }
+      closedAtDepth = null;
+      out.push(row);
+      if (isExpandable(row) && !isExpanded(row)) {
+        closedAtDepth = row.depth;
       }
     });
     return out;
-  }, [rows, collapsedKeys]);
+  }, [rows, isExpandable, isExpanded]);
 
   if (!tasks || tasks.length === 0) {
     return (
@@ -333,18 +403,16 @@ const TasksDrawerContent = ({ tasks, accountId, conversationId, activeTaskKey, o
   }
   return (
     <Box>
-      {visibleRows.map(({ node, depth }, idx) => {
-        const isHeaderNode = depth === 0 && node.task.nodeKind === 'agent';
-        const steps = isHeaderNode ? stepCountByKey.get(node.key) : undefined;
-        const collapsible = isHeaderNode && steps > 1;
+      {visibleRows.map((row, idx) => {
+        const { node, depth } = row;
+        const expandable = isExpandable(row);
         return (
           <TaskRow
             key={node.key}
             task={node.task}
             depth={depth}
-            stepCount={steps}
-            collapsed={collapsible ? collapsedKeys.has(node.key) : undefined}
-            onToggleCollapse={collapsible ? () => toggleCollapse(node.key) : undefined}
+            collapsed={expandable ? !isExpanded(row) : undefined}
+            onToggleCollapse={expandable ? () => toggleExpand(row) : undefined}
             accountId={accountId}
             conversationId={conversationId}
             isLast={idx === visibleRows.length - 1}
@@ -370,4 +438,4 @@ TasksDrawerContent.propTypes = {
 export default TasksDrawerContent;
 
 // Exported for unit tests only. Not part of the public component API.
-export { buildTaskTree, flattenWithOrphans };
+export { buildTaskTree, flattenWithOrphans, withExecutionBatchNodes };

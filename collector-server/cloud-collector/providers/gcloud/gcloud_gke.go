@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -227,7 +228,7 @@ func (s *gkeService) GetRecommendations(ctx providers.CloudProviderContext, acco
 		if len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_gke_no_labels",
+				RuleName:     constants.GCPGKENoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{
@@ -342,7 +343,7 @@ func (s *gkeService) GetRecommendations(ctx providers.CloudProviderContext, acco
 			if enabled, ok := networkPolicy["enabled"].(bool); ok && !enabled {
 				recommendations = append(recommendations, providers.Recommendation{
 					CategoryName: providers.RecommendationCategorySecurity,
-					RuleName:     "gcp_gke_no_network_policy",
+					RuleName:     constants.GCPGKENoNetworkPolicy,
 					Severity:     providers.RecommendationSeverityHigh,
 					Savings:      0,
 					Data: map[string]any{
@@ -405,7 +406,7 @@ func (s *gkeService) GetRecommendations(ctx providers.CloudProviderContext, acco
 		if loggingService, ok := resource.Meta["loggingService"].(string); ok && (loggingService == "none" || loggingService == "") {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_gke_logging_disabled",
+				RuleName:     constants.GCPGKELoggingDisabled,
 				Severity:     providers.RecommendationSeverityMedium,
 				Savings:      0,
 				Data: map[string]any{
@@ -480,7 +481,7 @@ func (s *gkeService) ApplyRecommendation(ctx providers.CloudProviderContext, acc
 	}
 
 	switch recommendation.RuleName {
-	case "gcp_gke_no_labels":
+	case constants.GCPGKENoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or gcloud CLI")
 
 	case "gcp_gke_inactive_cluster":
@@ -507,7 +508,7 @@ func (s *gkeService) ApplyRecommendation(ctx providers.CloudProviderContext, acc
 	case "gcp_gke_no_binary_authorization":
 		return fmt.Errorf("automatic binary authorization configuration not yet implemented - please enable manually via GCP console")
 
-	case "gcp_gke_no_network_policy":
+	case constants.GCPGKENoNetworkPolicy:
 		return fmt.Errorf("automatic network policy configuration not yet implemented - please enable manually via GCP console")
 
 	case "gcp_gke_no_maintenance_window":
@@ -516,7 +517,7 @@ func (s *gkeService) ApplyRecommendation(ctx providers.CloudProviderContext, acc
 	case "gcp_gke_no_workload_identity":
 		return fmt.Errorf("automatic workload identity configuration not yet implemented - please enable manually via GCP console")
 
-	case "gcp_gke_logging_disabled":
+	case constants.GCPGKELoggingDisabled:
 		return fmt.Errorf("automatic logging configuration not yet implemented - please enable logging manually via GCP console")
 
 	case "gcp_gke_monitoring_disabled":

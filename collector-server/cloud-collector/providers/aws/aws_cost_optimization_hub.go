@@ -93,8 +93,10 @@ func (a *awsCostOptimizationHub) GetRecommendations(ctx providers.CloudProviderC
 					"accountNumber", account.AccountNumber)
 				return recommendations, nil
 			}
-			ctx.GetLogger().Error("failed to list cost optimization hub recommendations", "error", err)
-			return recommendations, nil
+			// Returning the pages fetched so far as a success would archive every
+			// recommendation on the pages we never reached — the sync treats an
+			// absent recommendation as one that no longer applies.
+			return nil, fmt.Errorf("list cost optimization hub recommendations: %w", err)
 		}
 
 		for _, item := range output.Items {

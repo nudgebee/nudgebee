@@ -420,19 +420,46 @@ func toInt64Slice(arr []any) []int64 {
 	return res
 }
 
-func toFloat64Slice(arr []any) []float64 {
+// toFloat64Slice converts a provider's raw sample array, emitting exactly one
+// entry per input entry so Values stays index-aligned with Timestamps. Anything it
+// cannot read — a string that is not a number, an unexpected type — becomes NaN
+// (which marshals as null) and is counted in the returned total. Skipping those
+// silently, as this used to, shortened Values and shifted the entire series
+// against its own timestamps.
+//
+// "NaN", "+Inf" and "-Inf" parse successfully and are NOT counted here: they are
+// values the provider genuinely reported, and Result.MarshalJSON reports them
+// under their own names.
+func toFloat64Slice(arr []any) ([]float64, int) {
 	res := make([]float64, 0, len(arr))
+	unreadable := 0
 	for _, v := range arr {
 		switch vv := v.(type) {
 		case string:
-			if f, err := strconv.ParseFloat(vv, 64); err == nil {
-				res = append(res, f)
+			f, err := strconv.ParseFloat(vv, 64)
+			if err != nil {
+				res = append(res, math.NaN())
+				unreadable++
+				continue
 			}
+			res = append(res, f)
 		case float64:
 			res = append(res, vv)
+		default:
+			res = append(res, math.NaN())
+			unreadable++
 		}
 	}
-	return res
+	return res, unreadable
+}
+
+// unreadableSamples seeds Result.NonFinite for a series the parser could not fully
+// read. Nil when everything parsed, so the field stays absent on healthy series.
+func unreadableSamples(n int) map[string]int {
+	if n == 0 {
+		return nil
+	}
+	return map[string]int{nonFiniteUnparseable: n}
 }
 
 func (s *PrometheusMetricSource) FetchMetricsQuery(
@@ -453,12 +480,15 @@ func (s *PrometheusMetricSource) FetchMetricsQuery(
 		filteredQueries[k] = injected
 	}
 
-	externalAppMap, err := relay.ExecutePrometheus(
+	// The step travels with the request so a panel can size the answer to what
+	// it can draw; zero keeps the agent's default, as before.
+	externalAppMap, err := relay.ExecutePrometheusWithStep(
 		req.AccountId,
 		time.Unix(req.StartTime/1000, 0).UTC(),
 		time.Unix(req.EndTime/1000, 0).UTC(),
 		filteredQueries,
 		instant,
+		req.StepInterval,
 	)
 	if err != nil {
 		return OutputMetricQuery{}, err
@@ -487,10 +517,12 @@ func (s *PrometheusMetricSource) FetchMetricsQuery(
 				results := make([]Result, 0, len(seriesListResult))
 				for _, seriesAny := range seriesListResult {
 					seriesMap := seriesAny.(map[string]any)
+					values, unreadable := toFloat64Slice(seriesMap["values"].([]any))
 					results = append(results, Result{
 						Metric:     toStringMap(seriesMap["metric"].(map[string]any)),
 						Timestamps: toInt64Slice(seriesMap["timestamps"].([]any)),
-						Values:     toFloat64Slice(seriesMap["values"].([]any)),
+						Values:     values,
+						NonFinite:  unreadableSamples(unreadable),
 					})
 				}
 				output.Results = append(output.Results, QueryResult{
@@ -550,10 +582,11 @@ func parseInstantVectorEntries(entries []any) []Result {
 				ts = []int64{int64(t)}
 			}
 			if s, ok := v["value"].(string); ok {
+				// NaN/±Inf parse fine here and are filtered by
+				// dropNonFiniteSamples in FetchMetricsQuery, which drops the
+				// sample instead of the 0 this used to coerce NaN to — a false
+				// zero is indistinguishable from a real one on a chart.
 				if f, err := strconv.ParseFloat(s, 64); err == nil {
-					if math.IsNaN(f) {
-						f = 0
-					}
 					vals = []float64{f}
 				}
 			}
@@ -564,9 +597,6 @@ func parseInstantVectorEntries(entries []any) []Result {
 				}
 				if s, ok := v[1].(string); ok {
 					if f, err := strconv.ParseFloat(s, 64); err == nil {
-						if math.IsNaN(f) {
-							f = 0
-						}
 						vals = []float64{f}
 					}
 				}

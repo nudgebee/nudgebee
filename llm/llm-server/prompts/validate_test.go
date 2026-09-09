@@ -320,7 +320,7 @@ func TestMalformedOverrideFallsThroughToBaseline(t *testing.T) {
 
 	l := &PromptLoader{cache: NewPromptCache(time.Hour), fs: mergedFS{base: base, over: overlay}}
 
-	got, err := l.loadPromptFile("remediation_generate", CategoryTools, "googleai", "v1")
+	got, _, err := l.loadPromptFile("remediation_generate", CategoryTools, "googleai", "v1")
 	require.NoError(t, err, "a malformed override must not fail the load")
 	assert.Contains(t, got, "You are a helpful technical expert assistant.",
 		"should have fallen through to the validated default/v1 baseline")

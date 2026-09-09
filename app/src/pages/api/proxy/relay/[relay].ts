@@ -1,4 +1,4 @@
-import { getToken } from 'next-auth/jwt';
+import { readSessionToken } from '@lib/sessionCookie';
 import { getServerSession } from 'next-auth/next';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { authOptions } from '@pages/api/auth/[...nextauth]';
@@ -63,7 +63,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!token) {
           const session = await getServerSession(req, res, authOptions);
           if (session?.user) {
-            const jwtToken = await getToken({ req });
+            const jwtToken = await readSessionToken(req);
             if (jwtToken) {
               userDetails.userId = jwtToken?.sub as string;
               userDetails.tenantId = (jwtToken?.tenant as any)?.id as string;
@@ -161,7 +161,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         relaySpan.recordException(err);
         relaySpan.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
         status = 'FAILURE';
-        res.status(500).json({ error: 'internal_error', message: err.message });
+        res.status(500).json({ error: 'internal_error' });
       } finally {
         relaySpan.end();
       }
@@ -210,7 +210,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (error: any) {
     span.recordException(error);
     span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
-    res.status(500).json({ error: 'internal_server_error', message: error.message });
+    res.status(500).json({ error: 'internal_server_error' });
   } finally {
     span.end();
   }

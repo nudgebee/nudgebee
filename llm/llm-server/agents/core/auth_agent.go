@@ -50,6 +50,20 @@ func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent N
 	}
 
 	if !found {
+		// update_notebook is injected by the react_4 planner (ensureNotebookTool) for
+		// notebook-enabled agents, exactly like the watch tools above — it is a control
+		// tool and never appears in an agent's declared GetSupportedTools. Without this
+		// the planner advertises it, the model calls it, and dispatch rejects it with
+		// "auth: tool not found", burning an iteration and losing the notebook update.
+		if isNotebookToolName(toolName) {
+			if t, ok := toolcore.GetNBTool(request.AccountId, toolName); ok {
+				found = true
+				tool = t
+			}
+		}
+	}
+
+	if !found {
 		// check if it's a client tool
 		for _, ct := range request.ClientTools {
 			if strings.EqualFold(ct.Name, toolName) {

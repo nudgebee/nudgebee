@@ -415,6 +415,12 @@ func (s *AWSSource) convertResourcesToGraph(reqCtx *security.RequestContext, res
 		nodes = append(nodes, node)
 	}
 
+	// Step 1.5: Collapse the multiple inventory rows AWS reports for one instance
+	// (EC2 describe + Systems Manager) onto a single node, so lookup.ByResourceID
+	// below resolves an instance id to the node that carries its traffic edges
+	// rather than to whichever duplicate was indexed last.
+	nodes = collapseComputeInstanceDuplicates(nodes)
+
 	// Step 2: Build lookup maps for efficient edge creation
 	lookup := sources.NewNodeLookup(nodes)
 

@@ -1,7 +1,6 @@
 import type { AccountOption } from '@api1/dashboards';
 import {
   applyAccountFilter,
-  coversAllOfTypes,
   deriveAccountType,
   deriveAccountTypes,
   describePanelScope,
@@ -261,22 +260,17 @@ describe('multi-provider scope', () => {
     expect(deriveAccountTypes({ account_ids: ['a1', 'a2', 'g1'] }, ACCOUNTS)).toEqual(['AWS', 'GCP']);
   });
 
-  it('tells "all of these providers" apart from a hand-picked subset', () => {
-    // Every AWS + GCP account — what panelScopeFromTypes writes, so the editor
-    // should reopen it as two providers with the account picker empty.
-    expect(coversAllOfTypes({ account_ids: ['a1', 'a2', 'g1'] }, ACCOUNTS)).toBe(true);
-    // One of two AWS accounts is a real choice, and must be shown as one.
-    expect(coversAllOfTypes({ account_ids: ['a1'] }, ACCOUNTS)).toBe(false);
-    expect(coversAllOfTypes({ account_ids: [] }, ACCOUNTS)).toBe(false);
-  });
-
   it('round-trips a multi-provider scope through the editor', () => {
     const stored = panelScopeFromTypes(['AWS', 'GCP'], [], ACCOUNTS);
+    // What PanelEditorModal seeds its two controls with.
     const types = deriveAccountTypes(stored, ACCOUNTS);
-    const ids = coversAllOfTypes(stored, ACCOUNTS) ? [] : stored.account_ids || [];
+    const ids = stored.account_ids || [];
 
     expect(types).toEqual(['AWS', 'GCP']);
-    expect(ids).toEqual([]);
+    // Shown as ticked, not collapsed to an empty "all of these providers" field:
+    // the stored scope is PINNED to these ids and will not widen on its own, so
+    // an empty picker would claim a behaviour the panel does not have.
+    expect(ids).toEqual(['a1', 'a2', 'g1']);
     expect(panelScopeFromTypes(types, ids, ACCOUNTS)).toEqual(stored);
   });
 });

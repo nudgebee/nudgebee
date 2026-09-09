@@ -477,9 +477,9 @@ const CloudAccountEvents = (props: {
             size='xs'
             trailingAccent={<FiArrowRight />}
             href={`/investigate?id=${item.id}&accountId=${props?.accountId}`}
-            data-testid='investigate-btn'
+            data-testid={item.is_investigated ? 'view-analysis-btn' : 'investigate-btn'}
           >
-            Investigate
+            {item.is_investigated ? 'View Analysis' : 'Investigate'}
           </DsButton>
           {menuItemsConfig && menuItemsConfig.length > 0 && (
             <DsDropdownMenu

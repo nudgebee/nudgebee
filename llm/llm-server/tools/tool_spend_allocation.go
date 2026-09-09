@@ -36,7 +36,7 @@ func (t SpendAllocationTool) GetType() core.NBToolType { return core.NBToolTypeT
 
 func (t SpendAllocationTool) Description() string {
 	return "Attributes cloud spend to a dimension for cost showback / chargeback: who or what is spending. " +
-		"group_by: 'namespace' (default, Kubernetes namespace), 'service', 'region', 'resource_type', or 'tag'. " +
+		"group_by: 'namespace' (default, Kubernetes namespace), 'workload' (k8s controller/Deployment), 'service', 'region', 'resource_type', or 'tag'. " +
 		"When group_by='tag', provide tag_key (the tag or k8s label key to group by, e.g. 'team', 'env', 'cost-center'). " +
 		"Optional account_id (defaults to current account) and window (any '{N}d' from 1 to 365 days, e.g. '7d', '15d', '30d', '90d'; defaults to '30d'). " +
 		"Returns each dimension value with its spend (USD), resource count, and share of attributed spend."
@@ -182,22 +182,26 @@ func (t SpendAllocationTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 	// so read them once from the first row. They describe the FULL set before the
 	// top-25 LIMIT, so the agent can say "top N of M, total $X" accurately.
 	grandTotal := 0.0
+	grandTotalPrev := 0.0
 	dimensionCount := 0
 	if len(rows) > 0 {
 		grandTotal = rows[0].GrandTotal
+		grandTotalPrev = rows[0].GrandTotalPrev
 		dimensionCount = rows[0].DimensionCount
 	}
 	computeShares(rows, grandTotal)
+	setAllocationChangeFlags(rows)
 
 	responseMap := map[string]any{
-		"group_by":         groupBy,
-		"window":           window,
-		"window_start":     windowStart.Format("2006-01-02"),
-		"window_end":       windowEnd.Format("2006-01-02"),
-		"total_attributed": roundCents(grandTotal),
-		"dimension_count":  dimensionCount,
-		"shown_count":      len(rows),
-		"data":             rows,
+		"group_by":                  groupBy,
+		"window":                    window,
+		"window_start":              windowStart.Format("2006-01-02"),
+		"window_end":                windowEnd.Format("2006-01-02"),
+		"total_attributed":          roundCents(grandTotal),
+		"total_attributed_previous": roundCents(grandTotalPrev),
+		"dimension_count":           dimensionCount,
+		"shown_count":               len(rows),
+		"data":                      rows,
 	}
 
 	// Coverage (scope_total / unattributed) is only meaningful for an UNFILTERED
@@ -223,7 +227,7 @@ func (t SpendAllocationTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 		// optional namespace), INCLUDING those with no value for this dimension.
 		// Comparing it to grand_total lets the agent report coverage honestly —
 		// important where a dimension is sparse (e.g. non-k8s spend has no workload).
-		scopeTotal, scopeErr := querySpendScopeTotal(dbManager, tenantId, accountId, namespaceScope, windowStart, windowEnd)
+		scopeTotal, scopeErr := querySpendScopeTotal(dbManager, tenantId, accountId, groupBy, namespaceScope, windowStart, windowEnd)
 		if scopeErr != nil {
 			slog.Warn("spend_allocation: scope total query failed", "error", scopeErr, "account_id", accountId)
 		} else {
@@ -234,8 +238,11 @@ func (t SpendAllocationTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 			responseMap["scope_total"] = roundCents(scopeTotal)
 			responseMap["unattributed"] = roundCents(unattributed)
 			if scopeTotal > 0 && unattributed > 0.005 {
-				note += fmt.Sprintf(" Coverage: $%.2f of $%.2f in-scope spend is attributed to a %s (%.1f%%); the remaining $%.2f has no %s value (e.g. non-Kubernetes or unlabeled resources).",
+				note += fmt.Sprintf(" Coverage: $%.2f of $%.2f in-scope spend is attributed to a %s (%.1f%%); the remaining $%.2f has no %s value (unlabeled resources).",
 					grandTotal, scopeTotal, groupBy, grandTotal/scopeTotal*100, unattributed, groupBy)
+			}
+			if groupBy == "tag" {
+				note += " Tag values can exist on both cloud resources and the k8s workloads running on them, so tag coverage can overlap."
 			}
 		}
 	}
@@ -272,13 +279,30 @@ type allocationRow struct {
 	DimensionValue string  `json:"dimension_value" db:"dimension_value"`
 	ResourceCount  int     `json:"resource_count" db:"resource_count"`
 	Amount         float64 `json:"amount" db:"amount"`
-	PctOfTotal     float64 `json:"pct_of_total"`
-	// GrandTotal and DimensionCount are window aggregates over the FULL result set
-	// (all dimension values, before the LIMIT), so every returned row carries the
-	// same value. They are read once (from row 0) into the response envelope and
-	// excluded from per-row JSON to avoid repetition.
+	AmountPrev     float64 `json:"amount_previous_period" db:"amount_previous_period"`
+	// PercentageChange is -100 when the current window is empty (gone) and 0
+	// when the prior window is empty (new); IsNew / IsGone carry those cases
+	// explicitly so a 0 can't be misread as "stable".
+	PercentageChange float64 `json:"percentage_change" db:"percentage_change"`
+	IsNew            bool    `json:"is_new,omitempty" db:"-"`
+	IsGone           bool    `json:"is_gone,omitempty" db:"-"`
+	PctOfTotal       float64 `json:"pct_of_total"`
+	// GrandTotal, GrandTotalPrev and DimensionCount are window aggregates over the
+	// FULL result set (all dimension values, before the LIMIT), so every returned
+	// row carries the same value. They are read once (from row 0) into the
+	// response envelope and excluded from per-row JSON to avoid repetition.
 	GrandTotal     float64 `json:"-" db:"grand_total"`
+	GrandTotalPrev float64 `json:"-" db:"grand_total_previous"`
 	DimensionCount int     `json:"-" db:"dimension_count"`
+}
+
+// setAllocationChangeFlags stamps is_new / is_gone from the two window amounts.
+// Pure (no DB) so it can be unit-tested.
+func setAllocationChangeFlags(rows []allocationRow) {
+	for i := range rows {
+		rows[i].IsNew = rows[i].AmountPrev == 0 && rows[i].Amount > 0
+		rows[i].IsGone = rows[i].Amount == 0 && rows[i].AmountPrev > 0
+	}
 }
 
 // allocationDimensions whitelists group_by values to the SQL expression that
@@ -309,6 +333,30 @@ func computeShares(rows []allocationRow, grandTotal float64) {
 	}
 	for i := range rows {
 		rows[i].PctOfTotal = roundCents(rows[i].Amount / grandTotal * 100)
+	}
+}
+
+// allocationSpendView returns the exclude_aggregate predicate for a dimension.
+// The spends table holds two parallel views of the same dollars: the raw cloud
+// bill rows (exclude_aggregate = false) and the k8s collector's per-pod
+// allocation rows (exclude_aggregate = true, flagged exactly so aggregate views
+// don't double-count the bill). Any aggregate must read exactly ONE view:
+// k8s-shaped dimensions (namespace/workload) only carry values on allocation
+// rows, while cloud-shaped dimensions (service/region/resource_type) belong to
+// the bill view. Summing both (the old behavior) double-counted — scope_total
+// reported ~2x the bill, the entire bill surfaced as "unattributed", and node
+// bill rows leaked into the workload breakdown as pseudo-workloads. Tags exist
+// in both views (cloud tags on bill rows, k8s labels on allocation rows), so
+// tag keeps the union; its coverage can overlap where one key exists at both
+// levels, which the response note calls out.
+func allocationSpendView(groupBy string) string {
+	switch groupBy {
+	case "namespace", "workload":
+		return " AND spends.exclude_aggregate = true"
+	case "service", "region", "resource_type":
+		return " AND spends.exclude_aggregate = false"
+	default: // tag: union of both views
+		return ""
 	}
 }
 
@@ -346,7 +394,7 @@ func querySpendAllocation(dbManager *common.DatabaseManager, tenantId, accountId
 	dimFilter := ""
 	if filter != "" {
 		args = append(args, "%"+filter+"%")
-		dimFilter = fmt.Sprintf(" AND sub.dim ILIKE $%d", len(args))
+		dimFilter = fmt.Sprintf(" WHERE COALESCE(cur.dim, prev.dim) ILIKE $%d", len(args))
 	}
 
 	// Join pre-aggregated spend directly to cloud_resourses on the internal id
@@ -354,28 +402,60 @@ func querySpendAllocation(dbManager *common.DatabaseManager, tenantId, accountId
 	// spend is dropped even when a resourse_id has multiple cloud_resourses rows
 	// (e.g. GCP sub-projects sharing a billing account). Resource count is
 	// COUNT(DISTINCT resourse_id) so those duplicates count as one resource.
+	//
+	// The previous period is aggregated independently per dimension value and
+	// FULL JOINed: joining prior-window spend through only the resources that
+	// also spent in the current window silently drops churned resources'
+	// dollars (the spend_summary service-level bug), and an INNER join would
+	// hide dimensions that disappeared entirely — the "GONE" rows a
+	// what-changed analysis needs.
+	view := allocationSpendView(groupBy)
 	query := fmt.Sprintf(`
-		SELECT
-			sub.dim AS dimension_value,
-			COUNT(DISTINCT sub.resourse_id)::int AS resource_count,
-			ROUND(SUM(s.amount)::numeric, 2)::float AS amount,
-			ROUND(SUM(SUM(s.amount)) OVER ()::numeric, 2)::float AS grand_total,
-			COUNT(*) OVER ()::int AS dimension_count
-		FROM (
-			SELECT spends.cloud_resource_id, SUM(spends.amount) AS amount
-			FROM spends
-			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1%s
-			GROUP BY spends.cloud_resource_id
-		) s
-		INNER JOIN (
+		WITH res AS (
 			SELECT cr.id, cr.resourse_id, %s AS dim
 			FROM cloud_resourses cr
 			WHERE cr.tenant = $1%s
-		) sub ON s.cloud_resource_id = sub.id
-		WHERE s.amount > 0 AND sub.dim IS NOT NULL AND sub.dim <> ''%s
-		GROUP BY sub.dim
-		ORDER BY SUM(s.amount) DESC
-		LIMIT 25`, spendFilter, dimExpr, resourceFilter, dimFilter)
+		),
+		cur AS (
+			SELECT res.dim, COUNT(DISTINCT res.resourse_id)::int AS resource_count, SUM(s.amount) AS amount
+			FROM (
+				SELECT spends.cloud_resource_id, SUM(spends.amount) AS amount
+				FROM spends
+				WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1%s%s
+				GROUP BY spends.cloud_resource_id
+			) s
+			INNER JOIN res ON s.cloud_resource_id = res.id
+			WHERE s.amount > 0 AND res.dim IS NOT NULL AND res.dim <> ''
+			GROUP BY res.dim
+		),
+		prev AS (
+			SELECT res.dim, SUM(s1.amount) AS amount
+			FROM (
+				SELECT spends.cloud_resource_id, SUM(spends.amount) AS amount
+				FROM spends
+				WHERE spends.date >= $2 - ($3 - $2) AND spends.date < $2 AND tenant = $1%s%s
+				GROUP BY spends.cloud_resource_id
+			) s1
+			INNER JOIN res ON s1.cloud_resource_id = res.id
+			WHERE s1.amount > 0 AND res.dim IS NOT NULL AND res.dim <> ''
+			GROUP BY res.dim
+		)
+		SELECT
+			COALESCE(cur.dim, prev.dim) AS dimension_value,
+			COALESCE(cur.resource_count, 0)::int AS resource_count,
+			ROUND(COALESCE(cur.amount, 0)::numeric, 2)::float AS amount,
+			ROUND(COALESCE(prev.amount, 0)::numeric, 2)::float AS amount_previous_period,
+			CASE WHEN COALESCE(prev.amount, 0) > 0
+				THEN ROUND(((COALESCE(cur.amount, 0) - prev.amount) / prev.amount * 100)::numeric, 2)::float
+				ELSE 0
+			END AS percentage_change,
+			ROUND(SUM(COALESCE(cur.amount, 0)) OVER ()::numeric, 2)::float AS grand_total,
+			ROUND(SUM(COALESCE(prev.amount, 0)) OVER ()::numeric, 2)::float AS grand_total_previous,
+			COUNT(*) OVER ()::int AS dimension_count
+		FROM cur
+		FULL OUTER JOIN prev ON prev.dim = cur.dim%s
+		ORDER BY COALESCE(cur.amount, 0) DESC, COALESCE(prev.amount, 0) DESC
+		LIMIT 25`, dimExpr, resourceFilter, spendFilter, view, spendFilter, view, dimFilter)
 
 	rows := []allocationRow{}
 	err := dbManager.Db.Select(&rows, query, args...)
@@ -385,8 +465,10 @@ func querySpendAllocation(dbManager *common.DatabaseManager, tenantId, accountId
 // querySpendScopeTotal sums spend for all in-scope resources (tenant + optional
 // account + optional namespace), regardless of any dimension value — the
 // denominator for the attributed-vs-unattributed coverage figure. Mirrors the
-// dedup-free 1:1 spend↔cloud_resourses join used by querySpendAllocation.
-func querySpendScopeTotal(dbManager *common.DatabaseManager, tenantId, accountId, namespaceScope string, windowStart, windowEnd time.Time) (float64, error) {
+// dedup-free 1:1 spend↔cloud_resourses join used by querySpendAllocation, and
+// MUST read the same spend view (allocationSpendView) as the breakdown it is
+// the denominator for — a mixed-view denominator counts the bill twice.
+func querySpendScopeTotal(dbManager *common.DatabaseManager, tenantId, accountId, groupBy, namespaceScope string, windowStart, windowEnd time.Time) (float64, error) {
 	args := []any{tenantId, windowStart, windowEnd}
 	spendFilter, resourceFilter := "", ""
 	if accountId != "" {
@@ -405,13 +487,13 @@ func querySpendScopeTotal(dbManager *common.DatabaseManager, tenantId, accountId
 		FROM (
 			SELECT spends.cloud_resource_id, SUM(spends.amount) AS amount
 			FROM spends
-			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1%s
+			WHERE spends.date >= $2 AND spends.date < $3 AND tenant = $1%s%s
 			GROUP BY spends.cloud_resource_id
 		) s
 		INNER JOIN (
 			SELECT cr.id FROM cloud_resourses cr WHERE cr.tenant = $1%s
 		) sub ON s.cloud_resource_id = sub.id
-		WHERE s.amount > 0`, spendFilter, resourceFilter)
+		WHERE s.amount > 0`, spendFilter, allocationSpendView(groupBy), resourceFilter)
 
 	var total float64
 	err := dbManager.Db.Get(&total, query, args...)

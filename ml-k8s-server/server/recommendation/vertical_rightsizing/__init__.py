@@ -2,6 +2,7 @@ from typing import List, Optional, Any, Dict, Union
 from dataclasses import dataclass
 import logging
 import traceback
+import warnings
 from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.services.service import RecommendationService
 from datetime import datetime
@@ -14,7 +15,10 @@ from sqlalchemy import text
 from server.recommendation.vertical_rightsizing.models.result import ResourceType, scan_severity_to_priority
 from server.recommendation.vertical_rightsizing.models.severity import Severity
 
-logger = logging.getLogger("krr")
+# Suppress pkg_resources deprecation warning
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated", category=UserWarning)
+
+logger = logging.getLogger("rightsizing")
 tracer = get_trace(__name__)
 
 # Default cost constants (same as collector-server)
@@ -38,6 +42,7 @@ class RecommendationData:
     container: str
     priority: int
     content: List[Dict[str, Any]]
+    pods_count: int = 1
 
 
 @dataclass
@@ -114,7 +119,7 @@ async def generate_recommendations(
 
 
 def get_resource_minimal(resource: ResourceType) -> float:
-    """Get minimal resource value following KRR conventions."""
+    """Get minimal resource value following rightsizing conventions."""
     if resource == ResourceType.CPU:
         return 1 / 1000 * 10  # 10m CPU minimum
     elif resource == ResourceType.Memory:
@@ -124,7 +129,7 @@ def get_resource_minimal(resource: ResourceType) -> float:
 
 
 def round_resource_value(value, resource: ResourceType) -> Optional[float]:
-    """Round resource values following KRR service conventions."""
+    """Round resource values following rightsizing service conventions."""
     if value is None:
         return value
     if isinstance(value, str):
@@ -213,9 +218,9 @@ def worst_priority(container_priorities: List[int]) -> int:
 
 
 def _has_allocated_request(entry: Any) -> bool:
-    """True iff this KRR content entry carries a real allocated request.
+    """True iff this rightsizing content entry carries a real allocated request.
 
-    None (unset), a missing key, "?" (KRR's NaN placeholder) and 0 all count as
+    None (unset), a missing key, "?" (rightsizing's NaN placeholder) and 0 all count as
     NOT set — matching the truthiness test calculate_container_savings uses,
     which keeps the invariant "fully unset => estimated_savings == 0".
     """
@@ -264,6 +269,12 @@ def finalize_workload_rows(
     workload's category and severity. Severity takes the worst container by
     severity rank, which is not the same as the highest priority number.
 
+    Savings are floored at zero here, once every container has been merged, so a
+    workload that is over-provisioned on one resource and under-provisioned on
+    another still reports its true net. A workload whose net is negative costs
+    more to apply, so it is a reliability finding worth no savings rather than a
+    negative number to subtract from the tenant's savings headline.
+
     Dropped workloads must also leave the archive keep-set the caller builds from
     this dict, otherwise the rows already stored for them stay Open forever.
 
@@ -272,6 +283,7 @@ def finalize_workload_rows(
     for resource_id, row in recommendations_to_insert.items():
         row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
         row["severity"] = get_severity(worst_priority(priorities_by_resource[resource_id]))
+        row["estimated_savings"] = max(row["estimated_savings"], 0.0)
 
     no_change_resource_ids = [
         resource_id
@@ -285,19 +297,29 @@ def finalize_workload_rows(
 
 
 def calculate_container_savings(
-    content: List[Dict[str, Any]], cpu_cost_per_hour: float, memory_cost_per_hour: float
+    content: List[Dict[str, Any]],
+    cpu_cost_per_hour: float,
+    memory_cost_per_hour: float,
+    pods_count: int = 1,
 ) -> float:
     """Calculate estimated monthly savings for a container based on CPU and memory recommendations.
+
+    Requests are per pod, so the per-pod delta is multiplied by the number of running
+    pods to get what the workload actually saves. Without it a 20-replica Deployment
+    reports a twentieth of its real saving.
 
     Args:
         content: List of resource recommendations (CPU and memory)
         cpu_cost_per_hour: Cost per CPU core per hour
         memory_cost_per_hour: Cost per GB of memory per hour
+        pods_count: Running pods for the workload; the per-pod saving is scaled by this
 
     Returns:
-        Estimated monthly savings in dollars
+        Estimated monthly savings in dollars, which may be negative when the
+        recommendation raises requests
     """
     saving = 0.0
+    replicas = max(pods_count, 1)
 
     for rec in content:
         # Skip if insufficient data
@@ -319,7 +341,7 @@ def calculate_container_savings(
             # CPU costs are per core
             original_hourly_cost = allocated_request * cpu_cost_per_hour
             new_hourly_cost = recommended_request * cpu_cost_per_hour
-            saving += (original_hourly_cost - new_hourly_cost) * 24 * 30  # Monthly savings
+            saving += (original_hourly_cost - new_hourly_cost) * 24 * 30 * replicas  # Monthly savings
 
         elif resource_type == "memory":
             # Memory costs are per GB (values in bytes, convert to GB)
@@ -327,12 +349,12 @@ def calculate_container_savings(
             recommended_gb = recommended_request / (1024 * 1024 * 1024)
             original_hourly_cost = original_gb * memory_cost_per_hour
             new_hourly_cost = recommended_gb * memory_cost_per_hour
-            saving += (original_hourly_cost - new_hourly_cost) * 24 * 30  # Monthly savings
+            saving += (original_hourly_cost - new_hourly_cost) * 24 * 30 * replicas  # Monthly savings
 
     return saving
 
 
-def archive_existing_krr_recommendations(
+def archive_existing_rightsizing_recommendations(
     account_id: str,
     tenant_id: str,
     recommendations: List[RecommendationData],
@@ -341,7 +363,7 @@ def archive_existing_krr_recommendations(
     kept_categories_by_object_id: Optional[Dict[str, str]] = None,
     kept_object_ids: Optional[List[str]] = None,
 ) -> None:
-    """Archive stale KRR recommendations that no longer correspond to a live workload.
+    """Archive stale rightsizing recommendations that no longer correspond to a live workload.
 
     A scan reports recommendations only for workloads that still exist in the cluster.
     A workload that has been deleted therefore simply disappears from the scan, so the
@@ -372,7 +394,7 @@ def archive_existing_krr_recommendations(
     mass-archive. Defaults to every scanned workload.
     """
     if not tenant_id or not account_id:
-        raise ValueError("archive_existing_krr_recommendations: tenant_id and account_id are required")
+        raise ValueError("archive_existing_rightsizing_recommendations: tenant_id and account_id are required")
 
     ctx_logger = get_contextual_logger(tenant_id, account_id)
 
@@ -425,10 +447,19 @@ def archive_existing_krr_recommendations(
                     params["ns_prefix"] = f"{namespace_filter}/%"
                     scope_label = "namespace"
 
-            span.set_attribute("krr.kept_resources", len(keep_ids))
-            span.set_attribute("krr.scanned_resources", len(scanned_object_ids))
-            span.set_attribute("krr.archive_scope", scope_label)
+            span.set_attribute("rightsizing.kept_resources", len(keep_ids))
+            span.set_attribute("rightsizing.scanned_resources", len(scanned_object_ids))
+            span.set_attribute("rightsizing.archive_scope", scope_label)
 
+            # Archive the one status the scanner owns, rather than excluding the
+            # ones it does not. Leaving the keep-set does not prove a workload was
+            # deleted: a scan can cover one and still emit no row for it because
+            # nothing needs changing (see kept_object_ids above). Tombstoning a
+            # user-set status on that pass meant the next pass that did emit a row
+            # found it reading 'Archive', treated it as scanner-owned, and reopened
+            # a finding the user had already triaged. Naming 'Open' keeps that true
+            # for triage states added later; an exclusion list silently stops
+            # covering each new one (it already missed 'Assigned').
             update_query = text(f"""
                 UPDATE recommendation
                 SET status = 'Archive'
@@ -436,7 +467,7 @@ def archive_existing_krr_recommendations(
                 AND cloud_account_id = :account_id
                 AND category IN ('RightSizing', 'Configuration')
                 AND rule_name = 'pod_right_sizing'
-                AND status NOT IN ('Closed', 'InProgress', 'Archive')
+                AND status = 'Open'
                 {scope_clause}
             """)
 
@@ -445,9 +476,10 @@ def archive_existing_krr_recommendations(
                 conn.commit()
 
                 rows_updated = result.rowcount
-                span.set_attribute("krr.archived_recommendations", rows_updated)
+                span.set_attribute("rightsizing.archived_recommendations", rows_updated)
                 ctx_logger.info(
-                    f"Archived {rows_updated} stale KRR recommendations (scope={scope_label}, kept={len(keep_ids)})"
+                    f"Archived {rows_updated} stale rightsizing recommendations "
+                    f"(scope={scope_label}, kept={len(keep_ids)})"
                 )
 
             # Kept workloads whose stored category differs from the intended one:
@@ -464,7 +496,7 @@ def archive_existing_krr_recommendations(
                     AND r.cloud_account_id = :account_id
                     AND r.rule_name = 'pod_right_sizing'
                     AND r.category IN ('RightSizing', 'Configuration')
-                    AND r.status NOT IN ('Closed', 'InProgress', 'Archive')
+                    AND r.status = 'Open'
                     AND r.account_object_id = k.object_id
                     AND r.category <> k.category
                 """)
@@ -478,11 +510,13 @@ def archive_existing_krr_recommendations(
                     result = conn.execute(sweep_query, sweep_params)
                     conn.commit()
                     if result.rowcount:
-                        span.set_attribute("krr.category_flipped_recommendations", result.rowcount)
-                        ctx_logger.info(f"Archived {result.rowcount} KRR recommendations under a stale category")
+                        span.set_attribute("rightsizing.category_flipped_recommendations", result.rowcount)
+                        ctx_logger.info(
+                            f"Archived {result.rowcount} rightsizing recommendations under a stale category"
+                        )
 
         except Exception as e:
-            span.set_attribute("krr.archive_error", str(e))
+            span.set_attribute("rightsizing.archive_error", str(e))
             ctx_logger.error(f"Failed to archive existing recommendations: {e}")
             raise
 
@@ -504,8 +538,8 @@ def get_existing_resources(
                 workload_identifiers.add((r.namespace, r.kind, r.name))
                 target_namespaces.add(r.namespace)
 
-            span.set_attribute("krr.workload_count", len(workload_identifiers))
-            span.set_attribute("krr.target_namespaces", len(target_namespaces))
+            span.set_attribute("rightsizing.workload_count", len(workload_identifiers))
+            span.set_attribute("rightsizing.target_namespaces", len(target_namespaces))
 
             if not workload_identifiers:
                 return {}
@@ -730,7 +764,7 @@ def get_existing_resources(
                     )
                     continue
 
-            span.set_attribute("krr.resource_map_size", len(resource_map))
+            span.set_attribute("rightsizing.resource_map_size", len(resource_map))
             ctx_logger.info(
                 f"Built resource map with {len(resource_map)} entries from {len(resource_list)} "
                 f"workloads (using WORKLOAD cloud_resource_id)"
@@ -739,12 +773,12 @@ def get_existing_resources(
             return resource_map
 
         except Exception as e:
-            span.set_attribute("krr.get_resources_error", str(e))
+            span.set_attribute("rightsizing.get_resources_error", str(e))
             ctx_logger.error(f"Failed to get existing resources: {e}")
             raise
 
 
-def store_krr_recommendations_to_db(
+def store_rightsizing_recommendations_to_db(
     recommendations: List[RecommendationData],
     account_id: str,
     tenant_id: str,
@@ -753,16 +787,16 @@ def store_krr_recommendations_to_db(
     resource_names_filter: Optional[List[str]] = None,
     max_recommendations: Optional[int] = None,
 ) -> None:
-    """Store KRR recommendations to database following the same pattern as collector-server."""
+    """Store rightsizing recommendations to database following the same pattern as collector-server."""
     ctx_logger = get_contextual_logger(tenant_id, account_id)
 
-    with tracer.start_as_current_span("store_krr_recommendations_to_db") as main_span:
+    with tracer.start_as_current_span("store_rightsizing_recommendations_to_db") as main_span:
         main_span.set_attributes(
             {
-                "krr.recommendations_count": len(recommendations),
-                "krr.account_id": account_id,
-                "krr.tenant_id": tenant_id,
-                "krr.score": score,
+                "rightsizing.recommendations_count": len(recommendations),
+                "rightsizing.account_id": account_id,
+                "rightsizing.tenant_id": tenant_id,
+                "rightsizing.score": score,
             }
         )
 
@@ -829,7 +863,9 @@ def store_krr_recommendations_to_db(
                     memory_cost_per_hour = resource_id_row["memory_cost_per_gb"]
 
                 # Calculate savings using the helper function
-                estimated_savings = calculate_container_savings(rec.content, cpu_cost_per_hour, memory_cost_per_hour)
+                estimated_savings = calculate_container_savings(
+                    rec.content, cpu_cost_per_hour, memory_cost_per_hour, rec.pods_count
+                )
 
                 # Create recommendation record same as collector-server
                 recommendation = {
@@ -860,7 +896,7 @@ def store_krr_recommendations_to_db(
                     recommendations_to_insert[resource_id] = recommendation
 
             no_change_count = finalize_workload_rows(recommendations_to_insert, priorities_by_resource)
-            main_span.set_attribute("krr.no_change_workloads_skipped", no_change_count)
+            main_span.set_attribute("rightsizing.no_change_workloads_skipped", no_change_count)
             if no_change_count:
                 ctx_logger.info(f"Skipped {no_change_count} workloads that need no resource change")
 
@@ -870,7 +906,7 @@ def store_krr_recommendations_to_db(
             # scoped to what the scan was exhaustive over (account / namespace / specific
             # resources), plus kept workloads whose stored category no longer matches the
             # one about to be written. The insert below re-opens the workloads still present.
-            archive_existing_krr_recommendations(
+            archive_existing_rightsizing_recommendations(
                 account_id,
                 tenant_id,
                 recommendations,
@@ -916,7 +952,7 @@ def store_krr_recommendations_to_db(
                         conn.execute(insert_query, recommendations_list)
                         conn.commit()
 
-                    insert_span.set_attribute("krr.inserted_recommendations", len(recommendations_list))
+                    insert_span.set_attribute("rightsizing.inserted_recommendations", len(recommendations_list))
                     ctx_logger.info(f"Successfully inserted {len(recommendations_list)} recommendation records")
                 else:
                     ctx_logger.warning("No recommendations found with matching resources in cloud_resourses table")
@@ -925,6 +961,13 @@ def store_krr_recommendations_to_db(
             with tracer.start_as_current_span("store_score") as score_span:
                 score_record = {
                     "score": float(score),
+                    # Wire value, not a name we choose. It is part of the ON CONFLICT key below
+                    # and the legacy k8s-collector writes the same row with the same literal
+                    # (handlers/transformer.py, handlers/event_handler.py). Renaming it here
+                    # alone would split one upserted row into two divergent ones, and the
+                    # collector ships on its own release cycle, so old agents would keep
+                    # writing the old value indefinitely. Nothing reads it either way — the
+                    # materialized view that did was dropped in V276.
                     "source": "krr",
                     "cloud_account_id": account_id,
                     "tenant": tenant_id,
@@ -941,16 +984,16 @@ def store_krr_recommendations_to_db(
                     conn.execute(score_query, score_record)
                     conn.commit()
 
-                score_span.set_attribute("krr.score_stored", score)
-                ctx_logger.info(f"Successfully stored KRR score: {score}")
+                score_span.set_attribute("rightsizing.score_stored", score)
+                ctx_logger.info(f"Successfully stored rightsizing score: {score}")
 
-            main_span.set_attribute("krr.storage_status", "success")
-            ctx_logger.info("Successfully stored all KRR recommendations to database")
+            main_span.set_attribute("rightsizing.storage_status", "success")
+            ctx_logger.info("Successfully stored all rightsizing recommendations to database")
 
         except Exception as e:
-            main_span.set_attribute("krr.storage_status", "failed")
-            main_span.set_attribute("krr.error", str(e))
-            ctx_logger.error(f"Failed to store KRR recommendations to database: {e}")
+            main_span.set_attribute("rightsizing.storage_status", "failed")
+            main_span.set_attribute("rightsizing.error", str(e))
+            ctx_logger.error(f"Failed to store rightsizing recommendations to database: {e}")
             raise
 
 
@@ -964,7 +1007,7 @@ def get_contextual_logger(tenant_id: str, account_id: str, namespace: Optional[s
 
 
 def build_recommendation_data_from_scans(rightsizing_recommendations, ctx_logger) -> List[RecommendationData]:
-    """Build RecommendationData objects from KRR scan results."""
+    """Build RecommendationData objects from rightsizing scan results."""
     recommendations = []
 
     with tracer.start_as_current_span("build_recommendation_data") as build_span:
@@ -978,7 +1021,7 @@ def build_recommendation_data_from_scans(rightsizing_recommendations, ctx_logger
                     raw_recommended_request = scan.recommended.requests[resource].value
                     raw_recommended_limit = scan.recommended.limits[resource].value
 
-                    # Apply proper rounding following KRR conventions
+                    # Apply proper rounding following rightsizing conventions
                     recommended_request = round_resource_value(raw_recommended_request, resource)
                     recommended_limit = round_resource_value(raw_recommended_limit, resource)
 
@@ -1015,6 +1058,7 @@ def build_recommendation_data_from_scans(rightsizing_recommendations, ctx_logger
                     container=scan.object.container,
                     priority=scan.priority,
                     content=content,
+                    pods_count=scan.object.current_pods_count,
                 )
                 recommendations.append(recommendation)
 
@@ -1026,7 +1070,7 @@ def build_recommendation_data_from_scans(rightsizing_recommendations, ctx_logger
                 )
                 continue
 
-        build_span.set_attribute("krr.recommendations_built", len(recommendations))
+        build_span.set_attribute("rightsizing.recommendations_built", len(recommendations))
 
     return recommendations
 
@@ -1049,8 +1093,8 @@ def process_recommendations_by_namespace(
 
     # Process each namespace with tracing
     with tracer.start_as_current_span("process_namespace_batches") as batch_span:
-        batch_span.set_attribute("krr.total_namespaces", len(namespace_groups))
-        batch_span.set_attribute("krr.batch_by_namespace", batch_by_namespace)
+        batch_span.set_attribute("rightsizing.total_namespaces", len(namespace_groups))
+        batch_span.set_attribute("rightsizing.batch_by_namespace", batch_by_namespace)
 
         if batch_by_namespace:
             for ns, ns_recommendations in namespace_groups.items():
@@ -1091,19 +1135,19 @@ def calculate_processing_metrics(
     # Add final span attributes
     main_span.set_attributes(
         {
-            "krr.overall_status": overall_status,
-            "krr.total_namespaces": len(namespace_groups),
-            "krr.successful_namespaces": len(successful_namespaces),
-            "krr.failed_namespaces": len(failed_results),
-            "krr.total_recommendations": total_recommendations,
-            "krr.total_processing_time_ms": total_processing_time,
-            "krr.score": str(rightsizing_recommendations.score),
+            "rightsizing.overall_status": overall_status,
+            "rightsizing.total_namespaces": len(namespace_groups),
+            "rightsizing.successful_namespaces": len(successful_namespaces),
+            "rightsizing.failed_namespaces": len(failed_results),
+            "rightsizing.total_recommendations": total_recommendations,
+            "rightsizing.total_processing_time_ms": total_processing_time,
+            "rightsizing.score": str(rightsizing_recommendations.score),
         }
     )
 
     # Log final metrics
     ctx_logger.info(
-        "KRR processing completed",
+        "Rightsizing processing completed",
         extra={
             "overall_status": overall_status,
             "successful_namespaces": len(successful_namespaces),
@@ -1181,7 +1225,7 @@ def handle_database_storage(
         with tracer.start_as_current_span("store_to_database") as db_span:
             try:
                 # Store recommendations to database
-                store_krr_recommendations_to_db(
+                store_rightsizing_recommendations_to_db(
                     recommendations,
                     account_id,
                     tenant_id,
@@ -1193,10 +1237,10 @@ def handle_database_storage(
                 ctx_logger.info("Database storage completed")
                 result.database_stored = True
                 metrics.database_stored = True
-                db_span.set_attribute("krr.db_storage_status", "success")
+                db_span.set_attribute("rightsizing.db_storage_status", "success")
             except Exception as db_error:
-                db_span.set_attribute("krr.db_storage_status", "failed")
-                db_span.set_attribute("krr.error", str(db_error))
+                db_span.set_attribute("rightsizing.db_storage_status", "failed")
+                db_span.set_attribute("rightsizing.error", str(db_error))
                 ctx_logger.error("Failed to store to database", extra={"error": str(db_error)})
                 result.database_stored = False
                 metrics.database_stored = False
@@ -1212,10 +1256,10 @@ def process_namespace_batch(
     with tracer.start_as_current_span(
         "process_namespace_batch",
         attributes={
-            "krr.namespace": namespace,
-            "krr.tenant_id": tenant_id,
-            "krr.account_id": account_id,
-            "krr.recommendation_count": len(namespace_recommendations),
+            "rightsizing.namespace": namespace,
+            "rightsizing.tenant_id": tenant_id,
+            "rightsizing.account_id": account_id,
+            "rightsizing.recommendation_count": len(namespace_recommendations),
         },
     ) as span:
         try:
@@ -1233,16 +1277,16 @@ def process_namespace_batch(
                 with tracer.start_as_current_span(
                     "process_individual_recommendation",
                     attributes={
-                        "krr.kind": recommendation.kind,
-                        "krr.name": recommendation.name,
-                        "krr.container": recommendation.container,
-                        "krr.priority": recommendation.priority,
+                        "rightsizing.kind": recommendation.kind,
+                        "rightsizing.name": recommendation.name,
+                        "rightsizing.container": recommendation.container,
+                        "rightsizing.priority": recommendation.priority,
                     },
                 ) as rec_span:
                     try:
                         # Validate recommendation data
                         if not recommendation.content or len(recommendation.content) == 0:
-                            rec_span.set_attribute("krr.skip_reason", "empty_content")
+                            rec_span.set_attribute("rightsizing.skip_reason", "empty_content")
                             ctx_logger.warning(
                                 "Empty content for recommendation",
                                 extra={
@@ -1261,7 +1305,7 @@ def process_namespace_batch(
                         )
 
                         if has_insufficient_data:
-                            rec_span.set_attribute("krr.skip_reason", "insufficient_data")
+                            rec_span.set_attribute("rightsizing.skip_reason", "insufficient_data")
                             ctx_logger.info(
                                 "Insufficient data for recommendation",
                                 extra={
@@ -1276,13 +1320,13 @@ def process_namespace_batch(
                         # Individual recommendation processing completed
                         # Database storage happens at higher level in main function
 
-                        rec_span.set_attribute("krr.status", "processed")
+                        rec_span.set_attribute("rightsizing.status", "processed")
                         processed_count += 1
                         recommendations_stored += 1
 
                     except Exception as rec_error:
-                        rec_span.set_attribute("krr.status", "failed")
-                        rec_span.set_attribute("krr.error", str(rec_error))
+                        rec_span.set_attribute("rightsizing.status", "failed")
+                        rec_span.set_attribute("rightsizing.error", str(rec_error))
                         ctx_logger.error(
                             "Failed to process individual recommendation",
                             extra={
@@ -1307,11 +1351,11 @@ def process_namespace_batch(
             # Add span attributes for final metrics
             span.set_attributes(
                 {
-                    "krr.status": status,
-                    "krr.processed_count": processed_count,
-                    "krr.failed_count": failed_count,
-                    "krr.recommendations_stored": recommendations_stored,
-                    "krr.processing_time_ms": processing_time,
+                    "rightsizing.status": status,
+                    "rightsizing.processed_count": processed_count,
+                    "rightsizing.failed_count": failed_count,
+                    "rightsizing.recommendations_stored": recommendations_stored,
+                    "rightsizing.processing_time_ms": processing_time,
                 }
             )
 
@@ -1341,7 +1385,11 @@ def process_namespace_batch(
             error_msg = str(e)
 
             span.set_attributes(
-                {"krr.status": "failed", "krr.error": error_msg, "krr.processing_time_ms": processing_time}
+                {
+                    "rightsizing.status": "failed",
+                    "rightsizing.error": error_msg,
+                    "rightsizing.processing_time_ms": processing_time,
+                }
             )
 
             ctx_logger.error(
@@ -1374,7 +1422,7 @@ async def generate_and_process_recommendation(
     datadog_site: Optional[str] = None,
     elasticsearch: Optional[Dict[str, Any]] = None,
 ) -> RecommendationProcessingResult:
-    """Generate and process KRR recommendations with improved modularity."""
+    """Generate and process rightsizing recommendations with improved modularity."""
     ctx_logger = get_contextual_logger(tenant_id, account_id, namespace)
     ctx_logger.info(f"generate_and_process_recommendation called with persist_recommendation={persist_recommendation}")
     overall_start_time = time.time()
@@ -1382,16 +1430,16 @@ async def generate_and_process_recommendation(
     with tracer.start_as_current_span(
         "generate_and_process_recommendation",
         attributes={
-            "krr.tenant_id": tenant_id,
-            "krr.account_id": account_id,
-            "krr.namespace_filter": namespace or "all",
-            "krr.resource_names_count": len(resource_names) if resource_names else 0,
-            "krr.persist_recommendation": persist_recommendation,
-            "krr.batch_by_namespace": batch_by_namespace,
+            "rightsizing.tenant_id": tenant_id,
+            "rightsizing.account_id": account_id,
+            "rightsizing.namespace_filter": namespace or "all",
+            "rightsizing.resource_names_count": len(resource_names) if resource_names else 0,
+            "rightsizing.persist_recommendation": persist_recommendation,
+            "rightsizing.batch_by_namespace": batch_by_namespace,
         },
     ) as main_span:
         ctx_logger.info(
-            "Starting KRR recommendation generation",
+            "Starting rightsizing recommendation generation",
             extra={
                 "namespace_filter": namespace,
                 "resource_names_count": len(resource_names) if resource_names else 0,
@@ -1416,17 +1464,17 @@ async def generate_and_process_recommendation(
                     datadog_site=datadog_site,
                     elasticsearch=elasticsearch,
                 )
-                gen_span.set_attribute("krr.recommendations_generated", len(rightsizing_recommendations.scans))
+                gen_span.set_attribute("rightsizing.recommendations_generated", len(rightsizing_recommendations.scans))
             except Exception as e:
-                gen_span.set_attribute("krr.error", str(e))
+                gen_span.set_attribute("rightsizing.error", str(e))
                 ctx_logger.error("Failed to generate rightsizing recommendations", extra={"error": str(e)})
                 raise
 
         end_time = datetime.now()
         generation_time_ms = (end_time - start_time).total_seconds() * 1000
 
-        main_span.set_attribute("krr.generation_time_ms", generation_time_ms)
-        main_span.set_attribute("krr.scan_count", len(rightsizing_recommendations.scans))
+        main_span.set_attribute("rightsizing.generation_time_ms", generation_time_ms)
+        main_span.set_attribute("rightsizing.scan_count", len(rightsizing_recommendations.scans))
 
         ctx_logger.info(
             "Rightsizing recommendations generated",

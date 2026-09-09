@@ -33,3 +33,12 @@ func parseWindowDays(window string) (int, error) {
 	}
 	return n, nil
 }
+
+// savingsExceedSpend reports whether an open-savings figure exceeds the spend
+// it would reduce — an impossible claim that means the estimate is unreliable.
+// A small floor keeps trivial rows (a $0.02 resource with a $0.03 estimate)
+// from tripping the warning.
+func savingsExceedSpend(savings, spend float64) bool {
+	const minSpendForComparison = 1.0
+	return spend >= minSpendForComparison && savings > spend
+}

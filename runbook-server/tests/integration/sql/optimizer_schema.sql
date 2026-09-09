@@ -76,6 +76,15 @@ CREATE TABLE IF NOT EXISTS recommendation (
 	updated_by uuid NULL,
 	CONSTRAINT recommendation_account_object_id_resource_id_cloud_account_id_r UNIQUE (account_object_id, resource_id, cloud_account_id, rule_name, category),
 	CONSTRAINT recommendation_cloud_account_id_rule_name_resource_id_category_ UNIQUE (cloud_account_id, rule_name, resource_id, category, account_object_id),
+	-- FinOps scoring and nudge columns. GetFullRecommendationsForOptimizerCategory
+	-- selects these; without them that query fails with "column r.finops_score does
+	-- not exist" and the run reads as "no recommendations to act on", which is
+	-- indistinguishable from a correct empty result.
+	finops_score double precision NULL,
+	finops_band text NULL,
+	finops_score_breakdown jsonb NULL,
+	last_nudged_at timestamp NULL,
+	dedupe_group text NULL,
 	CONSTRAINT recommendation_pkey PRIMARY KEY (id),
 	CONSTRAINT recommendation_rule_name_cloud_account_id_account_object_id_cat UNIQUE (rule_name, cloud_account_id, account_object_id, category, resource_id)
 );
@@ -171,6 +180,19 @@ CREATE TABLE IF NOT EXISTS recommendation_resolution (
 	created_at timestamp DEFAULT now() NOT NULL,
 	updated_at timestamp DEFAULT now() NULL,
 	status_message text NULL,
+	-- PR-lifecycle columns. GetActiveResolutionsForRecommendations selects these,
+	-- so the fixture has to carry them or every optimizer test that reaches the
+	-- open-resolution check fails on a missing column rather than on its own
+	-- assertion.
+	pr_iteration_count integer DEFAULT 0 NOT NULL,
+	pr_lifecycle_state text NULL,
+	last_pr_check_at timestamp NULL,
+	-- Value-refresh cadence (#34959). The optimizer's selection query reads
+	-- last_value_refresh_at to decide whether a recommendation held InProgress by
+	-- its own open pull request is due another look, so the fixture needs it or
+	-- every optimizer test fails on a missing column instead of its assertion.
+	value_refresh_count integer DEFAULT 0 NOT NULL,
+	last_value_refresh_at timestamp NULL,
 	CONSTRAINT recommendation_resolution_pkey PRIMARY KEY (id),
 	CONSTRAINT resolver_type_check CHECK ((resolver_type = ANY (ARRAY['User'::text, 'AutoOptimize'::text, 'AutoRunbook'::text]))),
 	CONSTRAINT status_check CHECK ((status = ANY (ARRAY['InProgress'::text, 'Failed'::text, 'Success'::text, 'Configuring'::text]))),

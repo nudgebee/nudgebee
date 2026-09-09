@@ -26,7 +26,7 @@ import { Box, Typography, DialogContent, IconButton, DialogActions, Fade } from 
 import type { TransitionProps } from '@mui/material/transitions';
 import CloseIcon from '@mui/icons-material/Close';
 import { modalSuccess, modalPasswordChange } from '@assets';
-import LinearLoader from '@components/k8s/common/LinearLoader';
+import { ProgressLinear } from '@ui/ProgressLinear';
 import { Button } from '@ui/Button';
 
 // Fade transition drives MUI's enter/exit lifecycle for opacity; the Paper
@@ -334,7 +334,7 @@ export function Modal({
     >
       {loader && (
         <Box sx={{ position: 'absolute', top: 0, left: 0, width: '100%', zIndex: 1 }}>
-          <LinearLoader />
+          <ProgressLinear surface='page-top' />
         </Box>
       )}
 

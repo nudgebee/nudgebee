@@ -55,6 +55,11 @@ ml-k8s-server/tests/bench_e2e.py
 # ─── Frontend (TS / React) ───────────────────────────────────────────
 app/src/ee/
 
+# Unit tests for the EE frontend tree. Jest keeps tests outside src/, so they are
+# not covered by app/src/ee/ above, and a test importing @ee/* trips the
+# "no residual ee/ imports" assertion in build-oss-snapshot.sh.
+app/__tests__/ee/
+
 # SAML-handling Next.js pages — entire flow is EE (Okta/Azure AD/Auth0
 # enterprise SSO). Can't live under app/src/ee/ because the pages-router
 # requires filesystem paths under app/src/pages/, so they're listed
@@ -223,8 +228,8 @@ api-server/migrations/migrations/app/1785846046269_V845_confirmed_inferred_prefe
 #   app/src/api1/memory/                 — thin GraphQL/RPC wrappers.
 #      OSS installs don't mount the /rpc/ai_memory_* routes (see the
 #      handleMemoryV2ApisFn seam), so calls resolve to 404 which the
-#      few OSS consumers (KubernetesLLMRequestResponseV2,
-#      AutoOptimizeVerticalRightSizing form) handle silently.
+#      retained consumers are either hidden behind the disabled feature flag
+#      or explicitly skip memory writes in OSS mode.
 #
 # SettingsModal's three static imports from memory2/ become dynamic
 # imports with a null-render fallback in OSS. NubiBrainNav already

@@ -1,4 +1,4 @@
-import AskAiCard from '@components/k8s/investigate/cards/AskAiCard';
+import AskAiCard, { expandParagraphBreaks } from '@components/k8s/investigate/cards/AskAiCard';
 
 // buildResolveData resolves the event's workload identity from (in order):
 // service_key, the noisy_neighbours evidence, and finally the
@@ -60,5 +60,39 @@ describe('AskAiCard.buildResolveData', () => {
 
     expect(data.cloud_resourse.meta.controller).toBe('worker');
     expect(data.cloud_resourse.meta.controllerKind).toBe('StatefulSet');
+  });
+});
+
+// The AI summary arrives with single newlines between paragraphs, so a blank line
+// is inserted to stop markdown collapsing them into one paragraph. That rewrite
+// used to hit table rows too, which ends the table and leaves every following row
+// rendering as literal '| Attribute | Value |' text in the Investigation Analysis
+// card.
+describe('AskAiCard expandParagraphBreaks', () => {
+  it('keeps a markdown table intact', () => {
+    const markdown = [
+      '### Event Details',
+      '',
+      '| Attribute | Value |',
+      '| :--- | :--- |',
+      '| **Event ID** | `ad16241e` |',
+      '| **Finding Type** | `issue` |',
+    ].join('\n');
+
+    expect(expandParagraphBreaks(markdown)).toContain('| :--- | :--- |\n| **Event ID** | `ad16241e` |\n| **Finding Type** | `issue` |');
+  });
+
+  it('still separates consecutive prose lines into paragraphs', () => {
+    expect(expandParagraphBreaks('First line.\nSecond line.')).toBe('First line.\n\nSecond line.');
+  });
+
+  it('leaves fenced code blocks untouched', () => {
+    const markdown = 'Before.\n```\nline one\nline two\n```';
+
+    expect(expandParagraphBreaks(markdown)).toContain('```\nline one\nline two\n```');
+  });
+
+  it('does not add a break where one already exists', () => {
+    expect(expandParagraphBreaks('One.\n\nTwo.')).toBe('One.\n\nTwo.');
   });
 });

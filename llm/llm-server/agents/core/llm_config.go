@@ -81,6 +81,14 @@ const llmModelFallbackFormat = "llm_model_fallbacks_%s"
 const llmProviderTTFTTimeoutEnabledFormat = "llm_provider_ttft_timeout_enabled_%s"
 const llmProviderTTFTTimeoutSecondsFormat = "llm_provider_ttft_timeout_seconds_%s"
 
+// Per-provider sustained-generation timeout controls — same enable/override
+// shape as the TTFT keys above, but this watchdog bounds TOTAL call duration
+// (armed for the whole call, not just the pre-first-token gap), so it catches
+// a call that starts streaming normally and then keeps generating far past
+// what a ReAct decision step should ever take.
+const llmProviderSustainedGenTimeoutEnabledFormat = "llm_provider_sustained_gen_timeout_enabled_%s"
+const llmProviderSustainedGenTimeoutSecondsFormat = "llm_provider_sustained_gen_timeout_seconds_%s"
+
 // Category-tier config keys. A tier (reasoning / retrieval / summary)
 // is configured like an agent but in its own namespace so it cannot collide
 // with an agent that happens to share the name.
@@ -1239,8 +1247,42 @@ func getLLMTTFTTimeout(provider string) (enabled bool, seconds int) {
 	if !config.Config.GetBool(fmt.Sprintf(llmProviderTTFTTimeoutEnabledFormat, p), ttftTimeoutDefaultEnabled(p)) {
 		return false, 0
 	}
-	seconds = config.Config.LlmProviderTTFTTimeoutSeconds
+	return true, resolveTTFTFlatSeconds(provider)
+}
+
+// resolveTTFTFlatSeconds returns the flat (pre-thinking-adjustment) TTFT
+// deadline configured for a provider — the per-provider override
+// (LLM_PROVIDER_TTFT_TIMEOUT_SECONDS_<PROVIDER>) if set, otherwise the global
+// default (LlmProviderTTFTTimeoutSeconds). Split out from getLLMTTFTTimeout so
+// the sustained-gen watchdog can derive its own deadline from this value (see
+// sustainedGenDeadlineSeconds in llm_common.go) even on a call where TTFT
+// itself is not armed for the provider.
+func resolveTTFTFlatSeconds(provider string) int {
+	p := strings.ToLower(provider)
+	seconds := config.Config.LlmProviderTTFTTimeoutSeconds
 	if v := config.Config.GetInt(fmt.Sprintf(llmProviderTTFTTimeoutSecondsFormat, p), 0); v > 0 {
+		seconds = v
+	}
+	return seconds
+}
+
+// getLLMSustainedGenTimeout returns whether the sustained-generation timeout
+// should fire for calls to the given provider, and the deadline in seconds.
+// Enable is per-provider — callers get (false, 0) unless
+// LLM_PROVIDER_SUSTAINED_GEN_TIMEOUT_ENABLED_<PROVIDER>=true is explicitly
+// set. When enabled, the seconds value is the provider-specific override
+// (LLM_PROVIDER_SUSTAINED_GEN_TIMEOUT_SECONDS_<PROVIDER>) if set, otherwise
+// the global default (config.Config.LlmProviderSustainedGenTimeoutSeconds).
+func getLLMSustainedGenTimeout(provider string) (enabled bool, seconds int) {
+	if provider == "" {
+		return false, 0
+	}
+	p := strings.ToLower(provider)
+	if !config.Config.GetBool(fmt.Sprintf(llmProviderSustainedGenTimeoutEnabledFormat, p), false) {
+		return false, 0
+	}
+	seconds = config.Config.LlmProviderSustainedGenTimeoutSeconds
+	if v := config.Config.GetInt(fmt.Sprintf(llmProviderSustainedGenTimeoutSecondsFormat, p), 0); v > 0 {
 		seconds = v
 	}
 	return true, seconds
@@ -1875,6 +1917,7 @@ type LLMConfigResolution struct {
 	AgentName    string            `json:"agent_name,omitempty"`
 	Tier         ModelTier         `json:"tier,omitempty"`        // Category the call opted into (empty when no tier was selected)
 	MaxContext   int               `json:"max_context,omitempty"` // User-configured context window (tokens); 0 = not set → fall back to the model map
+	AccountId    string            `json:"-"`                     // Account the resolution ran for; lets downstream catalog lookups see tenant rows
 	Hierarchy    []LLMConfigLayer  `json:"hierarchy"`             // Full resolution chain
 	dbConfig     map[string]string // unexported cache for optimized downstream lookups
 
@@ -2031,11 +2074,20 @@ func resolveModelContextMap(dbConfig map[string]string) map[string]int {
 }
 
 // ResolveModelMaxContext returns the usable context window (tokens) for a model:
-// the user-configured value (UI/config) if set, else the hardcoded model map /
-// 32k default via GetLlmMaxTokenLength.
+// the user-configured value (UI/config) if set, else the pricing-catalog row
+// (llm_model_pricing.max_context_tokens, tenant row over built-in), else the
+// hardcoded model map / 32k default via GetLlmMaxTokenLength.
 func ResolveModelMaxContext(resolution *LLMConfigResolution, model string) int {
 	if resolution != nil && resolution.MaxContext > 0 {
 		return resolution.MaxContext
+	}
+	provider, accountId := "", ""
+	if resolution != nil {
+		provider = resolution.Provider
+		accountId = resolution.AccountId
+	}
+	if l, ok := lookupModelTokenLimits(accountId, provider, model); ok && l.MaxContext > 0 {
+		return l.MaxContext
 	}
 	return GetLlmMaxTokenLength(model)
 }
@@ -2168,6 +2220,7 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	result := &LLMConfigResolution{
 		AgentName:    agentName,
 		Tier:         tier,
+		AccountId:    accountId,
 		IsOverridden: false,
 		Hierarchy:    []LLMConfigLayer{},
 	}
@@ -2724,10 +2777,6 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 // IsOpenAIModelWithoutStopSupport checks if the model doesn't support the 'stop' parameter
 // OpenAI's reasoning models (o1, o3) and newer GPT-5 series don't support stop words
 func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
-	// The o1/o3/gpt-5 families reject `stop` whoever serves them: OpenAI direct,
-	// or an OpenAI-compatible gateway on the custom provider. Both route through
-	// the same client, so gating on provider identity alone silently re-enables
-	// stop words for gateway-served models.
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai", "custom":
 	default:
@@ -2753,6 +2802,54 @@ func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
 	}
 
 	return false
+}
+
+// ModelSupportsTemperature checks if the model supports the 'temperature' parameter.
+// Anthropic reasoning models (claude-sonnet-5, claude-opus-5, claude-5 series) and OpenAI
+// reasoning model families (o1, o3, gpt-5) reject explicit / non-default temperature on the wire.
+func ModelSupportsTemperature(provider, model string) bool {
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	pLower := strings.ToLower(strings.TrimSpace(provider))
+
+	// Check Anthropic reasoning models
+	if pLower == "anthropic" || strings.Contains(modelLower, "claude") {
+		if strings.Contains(modelLower, "claude-sonnet-5") ||
+			strings.Contains(modelLower, "claude-opus-5") ||
+			strings.Contains(modelLower, "claude-5") {
+			return false
+		}
+	}
+
+	// Check OpenAI reasoning models across any provider, including namespaced proxy/deployment IDs.
+	if isOpenAIReasoningModel(modelLower) {
+		return false
+	}
+
+	return true
+}
+
+func isOpenAIReasoningModel(model string) bool {
+	for _, family := range []string{"o1", "o3", "gpt-5"} {
+		for offset := 0; offset < len(model); {
+			index := strings.Index(model[offset:], family)
+			if index < 0 {
+				break
+			}
+			index += offset
+			beforeFamily := index == 0 || isModelNamespaceSeparator(model[index-1])
+			afterIndex := index + len(family)
+			afterFamily := afterIndex == len(model) || isModelNamespaceSeparator(model[afterIndex])
+			if beforeFamily && afterFamily {
+				return true
+			}
+			offset = index + len(family)
+		}
+	}
+	return false
+}
+
+func isModelNamespaceSeparator(char byte) bool {
+	return char == ':' || char == '/' || char == '.' || char == '_' || char == '-'
 }
 
 // ─── Pinned-source resolution ──────────────────────────────────────────────
@@ -2934,6 +3031,7 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 
 	res := &LLMConfigResolution{
 		Source:             "pinned:" + sourceId,
+		AccountId:          accountId,
 		IsOverridden:       true,
 		PinnedConfigSource: sourceId,
 		Hierarchy: []LLMConfigLayer{{
@@ -3076,50 +3174,6 @@ func containsString(xs []string, s string) bool {
 	for _, x := range xs {
 		if x == s {
 			return true
-		}
-	}
-	return false
-}
-
-// ModelSupportsTemperature checks if the model supports the 'temperature' parameter.
-// Anthropic reasoning models (claude-sonnet-5, claude-opus-5, claude-5 series) and OpenAI
-// reasoning model families (o1, o3, gpt-5) reject explicit / non-default temperature on the wire.
-func ModelSupportsTemperature(provider, model string) bool {
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-	pLower := strings.ToLower(strings.TrimSpace(provider))
-
-	// Check Anthropic reasoning models
-	if pLower == "anthropic" || strings.Contains(modelLower, "claude") {
-		if strings.Contains(modelLower, "claude-sonnet-5") ||
-			strings.Contains(modelLower, "claude-opus-5") ||
-			strings.Contains(modelLower, "claude-5") {
-			return false
-		}
-	}
-
-	// Check OpenAI reasoning models across any provider, including namespaced proxy/deployment IDs.
-	if isOpenAIReasoningModel(modelLower) {
-		return false
-	}
-
-	return true
-}
-
-func isOpenAIReasoningModel(model string) bool {
-	for _, family := range []string{"o1", "o3", "gpt-5"} {
-		for offset := 0; offset < len(model); {
-			index := strings.Index(model[offset:], family)
-			if index < 0 {
-				break
-			}
-			index += offset
-			beforeFamily := index == 0 || isModelNamespaceSeparator(model[index-1])
-			afterIndex := index + len(family)
-			afterFamily := afterIndex == len(model) || isModelNamespaceSeparator(model[afterIndex])
-			if beforeFamily && afterFamily {
-				return true
-			}
-			offset = index + len(family)
 		}
 	}
 	return false
@@ -3561,10 +3615,6 @@ func ConfigNameFor(sourceId, integrationName string) string {
 		return fmt.Sprintf("%s · Agent: %s", owner, p.Name)
 	}
 	return sourceId
-}
-
-func isModelNamespaceSeparator(char byte) bool {
-	return char == ':' || char == '/' || char == '.' || char == '_' || char == '-'
 }
 
 // Azure-shaped gateway support for the custom provider (#36556).

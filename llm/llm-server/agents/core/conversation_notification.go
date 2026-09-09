@@ -61,6 +61,12 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 		"session_id":      sessionId,
 		"tenant_id":       ctx.GetSecurityContext().GetTenantId(),
 	}
+	if agentRequest.ReplyRef != "" {
+		// Echoed back exactly as received — see ConversationApiRequest.ReplyRef
+		// for why the caller needs this alongside a SessionId it may be reusing
+		// across many distinct questions.
+		notificationRequest["reply_ref"] = agentRequest.ReplyRef
+	}
 
 	switch {
 	case err != nil:

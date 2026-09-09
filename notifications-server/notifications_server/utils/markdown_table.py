@@ -127,6 +127,12 @@ _FENCE_LINE_RE = re.compile(r"^```")
 # Slack's table block hard caps (see the doc link above).
 _MAX_TABLE_ROWS = 100
 _MAX_TABLE_COLUMNS = 20
+# Stand-in for a blank markdown cell - Slack's table block rejects a
+# raw_text cell outright ("must be more than 0 characters"), confirmed live
+# against the real API. Single character so it's negligible against
+# _MAX_TABLE_CHARS below - no separate accounting needed, it flows through
+# the normal per-cell char count like any other cell text.
+_BLANK_CELL_PLACEHOLDER = "-"
 # Slack rejects the whole message if a table's cell content exceeds this many
 # characters in aggregate - confirmed empirically (error
 # table_character_count_must_not_exceed_10000, not documented on the page
@@ -334,7 +340,10 @@ def _build_cell(text: str) -> Dict[str, Any]:
     # detection, turning a clean link into garbled raw text.
     elements = _tokenize_cell(text)
     if len(elements) == 1 and "style" not in elements[0] and elements[0]["type"] == "text":
-        return {"type": "raw_text", "text": _truncate_cell_text(elements[0]["text"])}
+        # A blank markdown cell (ragged row padding, or a deliberately empty
+        # cell for a "merged" visual grouping) must not produce "" - see
+        # _BLANK_CELL_PLACEHOLDER.
+        return {"type": "raw_text", "text": _truncate_cell_text(elements[0]["text"]) or _BLANK_CELL_PLACEHOLDER}
     elements = _truncate_elements(elements)
     return {
         "type": "rich_text",

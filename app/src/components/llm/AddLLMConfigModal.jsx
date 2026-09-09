@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Tooltip from '@ui/Tooltip';
 import PropTypes from 'prop-types';
 import { Box, Stack, Typography, CircularProgress } from '@mui/material';
@@ -243,6 +243,30 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // resolves to by default, and with none flagged it falls back to the
   // system ENV credential.
   const [isDefault, setIsDefault] = useState(false);
+  // Save-time guard: an account with zero enabled LLM integrations left
+  // without a default after this save has no working LLM until someone
+  // marks one — the RPC path (integrations_create_config called directly,
+  // not through this modal) has no equivalent check. showDefaultConfirm
+  // gates a 3-way dialog (set default & save / save anyway / cancel)
+  // instead of saving silently. EXPERIMENTAL — not yet validated.
+  const [showDefaultConfirm, setShowDefaultConfirm] = useState(false);
+  const [accountsMissingDefault, setAccountsMissingDefault] = useState([]);
+  const [checkingDefaultCoverage, setCheckingDefaultCoverage] = useState(false);
+  // Mirrors the `open` prop in a ref so handleSave's async coverage check can
+  // tell, AFTER an await, whether the modal was closed in the meantime.
+  // Reading the closed-over `open` prop directly would not work: the running
+  // handleSave call captured `open`'s value at click time, and a later
+  // re-render (with open=false) creates a NEW closure that this call never
+  // sees — only a ref mutated by its own effect reflects the live value.
+  const openRef = useRef(open);
+  useEffect(() => {
+    openRef.current = open;
+    if (!open) {
+      setShowDefaultConfirm(false);
+      setAccountsMissingDefault([]);
+      setCheckingDefaultCoverage(false);
+    }
+  }, [open]);
 
   // Agent list — fetched dynamically from llm-server's registered agents so
   // the dropdown stays in sync without enumerating agents in Go or
@@ -1167,7 +1191,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const canTest = formComplete;
   const canSubmit = formComplete && testStatus === 'passed';
 
-  const buildConfigValues = () => {
+  const buildConfigValues = (isDefaultOverride = isDefault) => {
     const out = [
       { name: 'llm_provider', value: provider },
       { name: 'llm_model_name', value: model.trim() },
@@ -1175,7 +1199,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       // unchecks it, which is how an account is handed back to the ENV
       // credential. Stored on the account link row, not as a config value —
       // see DefaultLLMProvider in api-server integration_config.go.
-      { name: 'default_llm_provider', value: isDefault ? 'true' : 'false' },
+      // Overridable so the "Set as Default & Save" confirm-dialog action can
+      // force true without waiting on the isDefault state update to land.
+      { name: 'default_llm_provider', value: isDefaultOverride ? 'true' : 'false' },
     ];
     if (fallbacks.trim()) {
       out.push({ name: 'llm_model_fallbacks', value: fallbacks.trim() });
@@ -1492,10 +1518,57 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     }
   };
 
+  // findAccountsMissingLLMDefault checks, for each selected account, whether
+  // it already has at least one OTHER enabled LLM integration (limit:1 is
+  // enough — we only need existence, not the full list). An account with
+  // none is about to be left with zero default LLM config if this save goes
+  // through unchecked, which is exactly the "no LLM configuration found"
+  // failure this dialog exists to prevent. A check failure fails OPEN (the
+  // account is not flagged) rather than blocking the save on a client-side
+  // read that isn't the source of truth. EXPERIMENTAL — not yet validated.
+  const findAccountsMissingLLMDefault = async () => {
+    const missing = await Promise.all(
+      selectedAccountIds.map(async (accId) => {
+        try {
+          const res = await apiIntegrations.listIntegrations({ type: 'llm', status: 'enabled', cloudAccountId: accId, limit: 1 });
+          const rows = res?.data?.data?.integrations_list?.rows;
+          const others = Array.isArray(rows) ? rows.filter((row) => !(isEdit && editData?.id && row.id === editData.id)) : [];
+          return others.length === 0 ? accId : null;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('AddLLMConfigModal: default-coverage check failed', accId, err);
+          return null;
+        }
+      })
+    );
+    return missing.filter(Boolean);
+  };
+
   const handleSave = async () => {
     if (!canSubmit) {
       return;
     }
+    if (isDefault) {
+      await performSave(true);
+      return;
+    }
+    setCheckingDefaultCoverage(true);
+    const missing = await findAccountsMissingLLMDefault();
+    setCheckingDefaultCoverage(false);
+    if (!openRef.current) {
+      // Modal was closed while the coverage check was in flight — don't show
+      // the dialog or save into a form the user already dismissed.
+      return;
+    }
+    if (missing.length > 0) {
+      setAccountsMissingDefault(missing);
+      setShowDefaultConfirm(true);
+      return;
+    }
+    await performSave(false);
+  };
+
+  const performSave = async (forcedIsDefault) => {
     setSaving(true);
     try {
       const payload = {
@@ -1504,7 +1577,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         integration_config_name: configName.trim(),
         account_ids: selectedAccountIds,
         source: editData?.source || 'user',
-        integration_config_values: buildConfigValues(),
+        integration_config_values: buildConfigValues(forcedIsDefault),
       };
       const response = await apiIntegrations.addIntegrations(payload);
       // GraphQL errors are returned at response.data.errors (axios wraps the
@@ -2404,10 +2477,10 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               tone='primary'
               size='md'
               onClick={handleSave}
-              disabled={!canSubmit || saving || testing}
-              loading={saving}
+              disabled={!canSubmit || saving || testing || checkingDefaultCoverage}
+              loading={saving || checkingDefaultCoverage}
             >
-              {saving ? 'Saving…' : isEdit ? 'Save' : 'Add LLM Provider'}
+              {saving ? 'Saving…' : checkingDefaultCoverage ? 'Checking…' : isEdit ? 'Save' : 'Add LLM Provider'}
             </Button>
           </Box>
         </Box>
@@ -2416,6 +2489,57 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         <Box sx={{ position: 'absolute', top: ds.space[2], right: ds.space.mul(2, 7) }}>
           <CircularProgress size={16} />
         </Box>
+      )}
+      {showDefaultConfirm && (
+        <Modal
+          width='sm'
+          title='No default LLM configuration for this account'
+          open={showDefaultConfirm}
+          onClose={() => setShowDefaultConfirm(false)}
+        >
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], p: ds.space[4] }}>
+            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], lineHeight: 1.5 }}>
+              {accountsMissingDefault.length === 1
+                ? 'The selected account has no LLM configuration yet.'
+                : `${accountsMissingDefault.length} of the selected accounts have no LLM configuration yet.`}{' '}
+              If you save without marking this one as default, no agent can use an LLM for{' '}
+              {accountsMissingDefault.length === 1 ? 'that account' : 'those accounts'} until one is set as default. Set this as default now, or save
+              anyway?
+            </Typography>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
+              <Button id='llm-default-confirm-cancel-btn' tone='secondary' size='md' onClick={() => setShowDefaultConfirm(false)} disabled={saving}>
+                Cancel
+              </Button>
+              <Button
+                id='llm-default-confirm-save-anyway-btn'
+                tone='secondary'
+                size='md'
+                onClick={() => {
+                  setShowDefaultConfirm(false);
+                  performSave(false);
+                }}
+                disabled={saving}
+                loading={saving}
+              >
+                Save Without Default
+              </Button>
+              <Button
+                id='llm-default-confirm-set-default-btn'
+                tone='primary'
+                size='md'
+                onClick={() => {
+                  setShowDefaultConfirm(false);
+                  setIsDefault(true);
+                  performSave(true);
+                }}
+                disabled={saving}
+                loading={saving}
+              >
+                Set as Default & Save
+              </Button>
+            </Box>
+          </Box>
+        </Modal>
       )}
     </Modal>
   );

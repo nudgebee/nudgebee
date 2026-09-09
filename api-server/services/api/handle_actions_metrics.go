@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -49,9 +50,18 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
-		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (any, error) {
+		start := time.Now()
+		// Typed as OutputMetricQuery rather than any so the history builder can
+		// read per-result Error fields — a metrics call can return 200 with an
+		// individual query failed, which is what the client recorded as FAILED.
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityMetricsQueryTimeout, func() (observability.OutputMetricQuery, error) {
 			return observability.FetchMetricsQuery(ctx, request)
 		})
+		if shouldRecordUserQueryHistory(request.RecordHistory, actionPayload.SessionVariables) {
+			if row, ok := observability.BuildMetricsQueryHistory(request, resp, err, time.Since(start)); ok {
+				recordUserQueryHistoryAsync(c, ctx, row, tracer, meter, logger)
+			}
+		}
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

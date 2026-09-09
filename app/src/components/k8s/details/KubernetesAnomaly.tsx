@@ -20,6 +20,7 @@ import { Button as DsButton } from '@ui/Button';
 import { hasWriteAccess } from '@lib/auth';
 import useTriggerAnomaly from '@hooks/useTriggerAnomaly';
 import { formatInsight, getSeverityColor, AnomalyInsight } from '@lib/anomalyInsights';
+import { anomalyFingerprint } from '@lib/eventFingerprint';
 import KubernetesLogs from './KubernetesLogs';
 import KubernetesTracesListing from './KubernetesTracesListing';
 
@@ -380,7 +381,7 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
         const anomaliesData = res?.data?.data?.anomalies_list_v2?.rows || [];
         const findingIds: any = [];
         const tableData = anomaliesData.map((item: any) => {
-          findingIds.push(item.id);
+          findingIds.push(anomalyFingerprint(item.account_id, item.anomaly_type, item.name, item.namespace));
           return [
             { text: item.namespace, drilldownQuery: item },
             { text: item.name },
@@ -425,7 +426,7 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
               continue;
             }
             const event = eventsData.find((event: any) => {
-              return event.finding_id === item.id;
+              return event.finding_id === anomalyFingerprint(item.account_id, item.anomaly_type, item.name, item.namespace);
             });
 
             if (event) {

@@ -1,0 +1,51 @@
+# Authority for the SWE-bench pipeline to grade in-cluster.
+#
+# Until now grading ran off a developer's kubeconfig, which is why the pipeline
+# could not run unattended. This grants the runner exactly what grade.sh and
+# collect.py do and nothing else:
+#
+#   configmaps  — grade.sh packs patches / test.sh / config.json into three
+#                 ConfigMaps and recreates them each run
+#   jobs        — one grading Job per instance, deleted at the start of a run
+#   pods        — collect.py finds each instance's pod by label
+#   pods/log    — and reads SWE-bench's per-instance report out of its logs
+#
+# Namespaced Role, not ClusterRole: this never needs to see outside `nudgebee`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swebench-runner
+  namespace: nudgebee
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swebench-runner
+  namespace: nudgebee
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swebench-runner
+  namespace: nudgebee
+subjects:
+  - kind: ServiceAccount
+    name: swebench-runner
+    namespace: nudgebee
+roleRef:
+  kind: Role
+  name: swebench-runner
+  apiGroup: rbac.authorization.k8s.io

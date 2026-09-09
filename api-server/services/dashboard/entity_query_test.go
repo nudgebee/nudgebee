@@ -298,6 +298,55 @@ func TestEveryExecutableTableNamesAPermissionModule(t *testing.T) {
 	}
 }
 
+/*
+Columns the panel builder routes into a HAVING must really be aggregates.
+
+app/src/components/k8s/dashboards/entityQuery.ts marks these `aggregate: true`
+and compiles a filter on one into `having` rather than `where`, because the
+engine refuses an aggregate in a where clause ("column event_count defined in
+where clause is aggregated"). Marking a column that is NOT aggregated inverts
+that: an ordinary filter lands in a HAVING, where it either fails or silently
+filters the wrong side of the GROUP BY.
+
+Only this direction is pinned. The reverse — the engine aggregating a column the
+builder offers unmarked — would need the whole TS column list duplicated here,
+and event_groupings_v2 alone carries 42 aggregates against the 11 the builder
+offers.
+*/
+func TestBuilderAggregateColumnsAreAggregatedInTheEngine(t *testing.T) {
+	builderAggregates := map[string][]string{
+		"event_groupings_v2": {
+			"event_count", "count_priority_p0", "count_priority_p1", "count_priority_p2", "count_priority_p3",
+			"count_new_issues", "count_pod_issues", "count_node_issues", "count_application_issues",
+			"max_created_at", "min_created_at",
+		},
+		"recommendation_groupings_v2":              {"count", "sum_estimated_savings"},
+		"spend_groupings_v2":                       {"spend_amount", "spend_count", "resource_count", "account_count"},
+		"ticket_groupings_v2":                      {"count"},
+		"anomaly_grouping_v2":                      {"count"},
+		"recommendation_security_cis_groupings_v2": {"count", "updated_at"},
+		"auto_pilot_task_groupings_v2":             {"count"},
+		"llm_conversation_groupings_v2":            {"count"},
+	}
+	for table, columns := range builderAggregates {
+		def, ok := query.GetTableMetadata(table)
+		if !ok {
+			t.Errorf("%s: not in the query metadata registry", table)
+			continue
+		}
+		for _, column := range columns {
+			col, ok := def.Columns[column]
+			if !ok {
+				t.Errorf("%s/%s: not a column of this table", table, column)
+				continue
+			}
+			if !col.IsAggregated {
+				t.Errorf("%s/%s: the builder routes this into a HAVING, but the engine does not aggregate it", table, column)
+			}
+		}
+	}
+}
+
 // The engine's `_between` takes a MAP of bound operators. A [from, to] list
 // panics its SQL generator on an unchecked type assertion, which reaches the
 // browser as a 500 with an empty body.

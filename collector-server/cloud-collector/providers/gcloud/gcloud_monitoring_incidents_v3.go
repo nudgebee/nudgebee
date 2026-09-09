@@ -789,13 +789,13 @@ func lookupInstanceName(ctx providers.CloudProviderContext, httpClient *http.Cli
 // createHTTPClientFromOpts creates an authenticated HTTP client from session credentials
 func createHTTPClientFromOpts(ctx providers.CloudProviderContext, session gcloudAuthSession) (*http.Client, error) {
 	// Use the credentials from the session to create an OAuth2 HTTP client
-	creds, err := credentials.DetectDefault(&credentials.DetectOptions{
-		CredentialsJSON: []byte(session.AccountCred),
-		Scopes: []string{
-			"https://www.googleapis.com/auth/cloud-platform",
-			"https://www.googleapis.com/auth/monitoring.read",
-		},
-	})
+	creds, err := credentials.NewCredentialsFromJSON(credentials.ServiceAccount, []byte(session.AccountCred),
+		&credentials.DetectOptions{
+			Scopes: []string{
+				"https://www.googleapis.com/auth/cloud-platform",
+				"https://www.googleapis.com/auth/monitoring.read",
+			},
+		})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create credentials: %w", err)
 	}

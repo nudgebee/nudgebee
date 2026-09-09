@@ -393,6 +393,7 @@ func (s *TracesFlowSource) processK8sAccount(
 			// Enrich matched node with trace metadata
 			s.enrichNodeWithTraceMetadata(sourceNode, app)
 		}
+		s.recordUncertainClassificationIfAny(app, req.TenantID, account)
 
 		// Process upstream connections (services this app calls)
 		for _, upstream := range app.Upstreams {
@@ -426,6 +427,7 @@ func (s *TracesFlowSource) processK8sAccount(
 					// Enrich matched node with trace metadata
 					s.enrichNodeWithTraceMetadata(upstreamNode, upstreamApp)
 				}
+				s.recordUncertainClassificationIfAny(upstreamApp, req.TenantID, account)
 			} else {
 				// Upstream not found in applications list - treat as external service.
 				// Source-level short-circuit: if targetName is a raw IP, try to
@@ -514,6 +516,7 @@ func (s *TracesFlowSource) processK8sAccount(
 					// Enrich matched node with trace metadata
 					s.enrichNodeWithTraceMetadata(downstreamNode, downstreamApp)
 				}
+				s.recordUncertainClassificationIfAny(downstreamApp, req.TenantID, account)
 			} else {
 				// Downstream not found in applications list - treat as external service.
 				// Source-level short-circuit: if downstreamName is a raw IP, try to
@@ -1579,6 +1582,55 @@ func lookupTypeEvidence(app *traces.ServiceApplication, matchedAppType string) (
 	}
 	evidence, ok := app.TypeEvidence[strings.ToLower(matchedAppType)]
 	return evidence, ok
+}
+
+// recordUncertainClassificationIfAny is a best-effort, fire-and-forget hook —
+// see core.RecordUncertainClassification. Called once per processed
+// application per build, independent of whether it matched an existing node
+// or a new one was created, so occurrence_count/last_seen_at reflect every
+// rebuild the near-miss is still seen in, not just the first.
+//
+// Also skips recording if app.Type already confidently resolves to a
+// Database/Cache/MessageQueue override via inferNodeType — in that case the
+// node's classification is already settled correctly and the near-miss
+// isn't indicative of a live misclassification risk. Deliberately NOT
+// gated on "any confident type at all" (e.g. a detected language): most
+// real services get a language tag from some span regardless, and our
+// original motivating case (services-server) gets no language signal at
+// all — gating on that would suppress recording for exactly the cases this
+// mechanism exists to catch.
+func (s *TracesFlowSource) recordUncertainClassificationIfAny(app *traces.ServiceApplication, tenantID string, account core.K8sAccount) {
+	if app.UncertainMatch == nil {
+		return
+	}
+	if _, matchedAppType := s.inferNodeType(app.Id.Kind, app.Type); matchedAppType != "" {
+		return
+	}
+	dbManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		s.logger.Warn("skipping uncertain-classification record: no db manager", "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	core.RecordUncertainClassification(ctx, dbManager, core.UncertainClassificationCandidate{
+		TenantID:           tenantID,
+		Source:             "traces",
+		ClassificationKind: "node_type",
+		CandidateType:      app.UncertainMatch.MatchedValue,
+		CandidateName:      app.Id.Name,
+		CandidateNamespace: app.Id.Namespace,
+		CandidateCluster:   account.Name,
+		ReasonCode:         app.UncertainMatch.ReasonCode,
+		ReasonDescription:  "span-name/messaging-system pattern excluded by a confidence guard in detectApplicationType",
+		Evidence: map[string]interface{}{
+			"trace_id":    app.UncertainMatch.TraceID,
+			"span_id":     app.UncertainMatch.SpanID,
+			"span_name":   app.UncertainMatch.SpanName,
+			"timestamp":   app.UncertainMatch.Timestamp,
+			"matched_key": app.UncertainMatch.MatchedKey,
+		},
+	})
 }
 
 // createEdgeFromUpstream creates an edge from the upstream link

@@ -55,6 +55,9 @@ const (
 	NLike  BinaryWhereClauseType = "_nlike"
 )
 
+const whereClauseUsageHint = `each field must map to an operator object, e.g. {"field": {"_eq": "value"}} — not a bare value like {"field": "value"}. ` +
+	`Supported operators: _eq, _neq, _like, _nlike, _ilike, _lt, _gt, _lte, _gte, _in, _nin, _contains, _has_key, _is_null, _between (append _f for numeric fields, e.g. _eq_f)`
+
 func queryBuilderFixWhereClause(whereMap map[string]any) (map[string]any, error) {
 	whereMap2 := make(map[string]any)
 	binaryMap := make(map[string]any)
@@ -122,7 +125,7 @@ func BuildLogQueryBuilder(nbRequestContext NbToolContext, input string) (QueryBu
 			}
 			err = common.DecodeMapToStruct(fixedWhere, &queryObject.Where)
 			if err != nil {
-				return queryObject, err
+				return queryObject, fmt.Errorf("invalid where clause: %s (decode error: %w)", whereClauseUsageHint, err)
 			}
 		}
 	}
@@ -226,7 +229,7 @@ func BuildTraceQueryBuilder(nbRequestContext NbToolContext, input string) (Trace
 			}
 			err = common.DecodeMapToStruct(fixedWhere, &queryObject.Where)
 			if err != nil {
-				return queryObject, startTime, endTime, err
+				return queryObject, startTime, endTime, fmt.Errorf("invalid where clause: %s (decode error: %w)", whereClauseUsageHint, err)
 			}
 		}
 	}

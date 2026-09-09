@@ -259,7 +259,10 @@ func ApplyResolution(ctx *security.RequestContext, query PRraiseRequest) (EventR
 	case adapter.RecommendationResolutionStatusSuccess:
 		recommendationStatus = models.RecommendationStatusClosed
 	case adapter.RecommendationResolutionStatusFailed:
-		recommendationStatus = models.RecommendationStatusDismissed
+		// Not Dismissed: that is the user's decision not to act, and reporting it
+		// for a failure the platform hit says the opposite of what happened. The
+		// work is still outstanding. The resolution row carries the failure.
+		recommendationStatus = models.RecommendationStatusOpen
 	case adapter.RecommendationResolutionStatusInProgress:
 		recommendationStatus = models.RecommendationStatusInProgress
 	}

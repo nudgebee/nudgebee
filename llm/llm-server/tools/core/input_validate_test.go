@@ -26,6 +26,23 @@ func newValidateTestTool(name string, props map[string]ToolSchemaProperty) *vali
 	return &validateTestTool{name: name, schema: ToolSchema{Properties: props}}
 }
 
+type normalizingValidateTestTool struct {
+	*validateTestTool
+}
+
+func (t *normalizingValidateTestTool) NormalizeInputForSchemaValidation(input string) string {
+	return strings.Replace(input, `"legacy"`, `"canonical"`, 1)
+}
+
+func TestMissingRequiredFields_AppliesInputNormalizer(t *testing.T) {
+	tool := &normalizingValidateTestTool{validateTestTool: newValidateTestTool("test", map[string]ToolSchemaProperty{
+		"canonical": {Type: ToolSchemaTypeString},
+	})}
+	tool.schema.Required = []string{"canonical"}
+
+	assert.Empty(t, MissingRequiredFields(tool, `{"legacy":"value"}`))
+}
+
 func TestValidateToolInput_Skips(t *testing.T) {
 	t.Run("nil tool → nil", func(t *testing.T) {
 		assert.Nil(t, ValidateToolInput(nil, `{"x":1}`))

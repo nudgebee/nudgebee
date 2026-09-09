@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, Chip, Switch, FormControlLabel } from '@mui/material';
+import { Box, Typography, Chip } from '@mui/material';
+import { Switch } from '@ui/Switch';
 import { Button } from '@ui/Button';
 import { Add, Close } from '@mui/icons-material';
 import { Input } from '@ui/Input';
@@ -140,9 +141,12 @@ const FailurePolicyField: React.FC<FailurePolicyFieldProps> = ({ value, onChange
           />
 
           {/* Enable Retry Toggle */}
-          <FormControlLabel
-            control={<Switch checked={enableRetry} onChange={(e) => handleEnableRetryChange(e.target.checked)} disabled={disabled} size='small' />}
-            label={<Typography sx={{ fontSize: 'var(--ds-text-body)' }}>Enable retry on failure</Typography>}
+          <Switch
+            label='Enable retry on failure'
+            checked={enableRetry}
+            onChange={(e) => handleEnableRetryChange(e.target.checked)}
+            disabled={disabled}
+            size='sm'
           />
 
           {/* Retry Configuration */}

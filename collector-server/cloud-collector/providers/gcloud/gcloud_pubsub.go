@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -206,9 +207,9 @@ func (s *pubSubService) GetRecommendations(ctx providers.CloudProviderContext, a
 
 		// Recommendation 1: Check if resource has no labels
 		if len(resource.Tags) == 0 {
-			ruleName := "gcp_pubsub_topic_no_labels"
+			ruleName := constants.GCPPubSubTopicNoLabels
 			if resource.Type == "pubsub.googleapis.com/Subscription" {
-				ruleName = "gcp_pubsub_subscription_no_labels"
+				ruleName = constants.GCPPubSubSubscriptionNoLabels
 			}
 
 			recommendations = append(recommendations, providers.Recommendation{
@@ -357,7 +358,10 @@ func (s *pubSubService) ApplyRecommendation(ctx providers.CloudProviderContext, 
 	}()
 
 	switch recommendation.RuleName {
-	case "gcp_pubsub_topic_no_labels", "gcp_pubsub_subscription_no_labels":
+	// GCPPubSubTopicNoLabels and GCPPubSubSubscriptionNoLabels both map to the
+	// generic "missing_tags"; one case covers both (a second would be a Go
+	// duplicate-case error).
+	case constants.GCPPubSubTopicNoLabels:
 		return fmt.Errorf("automatic label addition not yet implemented - please add labels manually via GCP console or gcloud CLI")
 
 	case "gcp_pubsub_no_dead_letter":

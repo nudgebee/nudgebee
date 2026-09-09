@@ -223,7 +223,11 @@ func TestStoreMultipleEvents_ResolvedUpdatesExisting(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(rows), "Should still be exactly 1 event row, not 2")
 	assert.Equal(t, "RESOLVED", rows[0].Status, "Event should be updated to RESOLVED")
-	assert.Equal(t, "INFO", rows[0].Priority, "Priority should be downgraded to INFO")
+	// Severity is a property of what fired, so resolving must not rewrite it. This
+	// assertion is the regression gate: the resolve UPDATE used to force priority to
+	// INFO, which erased the source severity of every self-recovered cloud alarm and
+	// hid them from the Triage Inbox (it filters out DEBUG/INFO).
+	assert.Equal(t, "HIGH", rows[0].Priority, "Resolving must preserve the severity the event fired at")
 
 	// 4. Verify event_history was created with resolution metadata, scoped by event_id
 	type historyRow struct {

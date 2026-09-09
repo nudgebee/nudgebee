@@ -1790,18 +1790,30 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 // This assumes the Meta field contains the unmarshalled DescribeTaskDefinitionOutput or a relevant subset.
 func parseLogGroupFromTaskDefMeta(meta map[string]any) string {
 	// Navigate the structure: containerDefinitions -> logConfiguration -> options -> awslogs-group
-	if containerDefsVal, ok := meta["ContainerDefinitions"]; ok {
-		if containerDefs, ok := containerDefsVal.([]any); ok && len(containerDefs) > 0 {
-			// Assuming the first container definition is representative or the one with awslogs config
-			if containerDef, ok := containerDefs[0].(map[string]any); ok {
-				if logConfig, ok := containerDef["LogConfiguration"].(map[string]any); ok {
-					if options, ok := logConfig["Options"].(map[string]any); ok {
-						if awslogsGroup, ok := options["awslogs-group"].(string); ok && awslogsGroup != "" {
-							return awslogsGroup
-						}
-					}
-				}
-			}
+	//
+	// Scan every container definition rather than only the first. A task whose
+	// first container is a sidecar without an awslogs driver (proxy, init,
+	// otel-collector) reported "failed to auto-discover log group name" and the
+	// event got no logs at all, even though a later container declared the group.
+	containerDefs, ok := meta["ContainerDefinitions"].([]any)
+	if !ok {
+		return "" // Log group not found in the expected structure
+	}
+	for _, containerDefVal := range containerDefs {
+		containerDef, ok := containerDefVal.(map[string]any)
+		if !ok {
+			continue
+		}
+		logConfig, ok := containerDef["LogConfiguration"].(map[string]any)
+		if !ok {
+			continue
+		}
+		options, ok := logConfig["Options"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if awslogsGroup, ok := options["awslogs-group"].(string); ok && awslogsGroup != "" {
+			return awslogsGroup
 		}
 	}
 	return "" // Log group not found in the expected structure
@@ -2239,35 +2251,33 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 				} else {
 					actionLogger.Error("eventprocessor: failed to execute action", "error", err)
 				}
+				// A failed action contributes no evidence. Storing err.Error()
+				// as the card body turned every failure into an evidence entry
+				// reading "eventprocessor: action target resource not found:
+				// ..." on the event page — the resource-missing branch above
+				// even logs "skipping action" while the card was appended
+				// anyway. The logger already carries the action name, type and
+				// full error, which is where a failure belongs.
+				continue
+			}
+			actionResultJson, jsonErr := common.MarshalJson(actionResult)
+			if jsonErr != nil {
+				actionLogger.Error("eventprocessor: failed to marshal action result to JSON", "error", jsonErr)
 				provEvent.AdditionalContext = append(provEvent.AdditionalContext, providers.EventEvidence{
 					Type:    providers.EventEvidenceTypeText,
-					Insight: []string{fmt.Sprintf("Error executing action: %s", actionDef.Name)},
-					Data:    err.Error(),
+					Insight: []string{fmt.Sprintf("Error marshalling result for action: %s", actionDef.Name)},
+					Data:    fmt.Sprintf("Original result: %+v, Marshalling error: %s", actionResult, jsonErr.Error()),
+				})
+			} else {
+				provEvent.AdditionalContext = append(provEvent.AdditionalContext, providers.EventEvidence{
+					Type:    providers.EventEvidenceTypeJson,
+					Insight: []string{actionDef.Name, actionDef.Description},
+					Data:    string(actionResultJson),
 					AdditionalInfo: map[string]string{
 						"action_name": actionDef.Name,
 						"action_type": actionDef.Type,
 					},
 				})
-			} else {
-				actionResultJson, jsonErr := common.MarshalJson(actionResult)
-				if jsonErr != nil {
-					actionLogger.Error("eventprocessor: failed to marshal action result to JSON", "error", jsonErr)
-					provEvent.AdditionalContext = append(provEvent.AdditionalContext, providers.EventEvidence{
-						Type:    providers.EventEvidenceTypeText,
-						Insight: []string{fmt.Sprintf("Error marshalling result for action: %s", actionDef.Name)},
-						Data:    fmt.Sprintf("Original result: %+v, Marshalling error: %s", actionResult, jsonErr.Error()),
-					})
-				} else {
-					provEvent.AdditionalContext = append(provEvent.AdditionalContext, providers.EventEvidence{
-						Type:    providers.EventEvidenceTypeJson,
-						Insight: []string{actionDef.Name, actionDef.Description},
-						Data:    string(actionResultJson),
-						AdditionalInfo: map[string]string{
-							"action_name": actionDef.Name,
-							"action_type": actionDef.Type,
-						},
-					})
-				}
 			}
 		}
 

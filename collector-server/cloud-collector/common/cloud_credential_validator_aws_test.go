@@ -191,3 +191,34 @@ func TestValidateAWSCredentialsInputValidation(t *testing.T) {
 		t.Fatalf("unexpected error message: %s", res.ErrorMessage)
 	}
 }
+
+// TestValidateAWSCredentialsCurIsNonFatal pins the rule that authentication is
+// mandatory but cost is optional. The CUR steps need live AWS to exercise
+// end-to-end, so this asserts the contract the api-server and the onboarding
+// banner depend on: a cost-only gap must leave Success=true with an empty
+// ErrorMessage, because a non-empty ErrorMessage renders as a hard-error banner
+// and suppresses the per-permission breakdown.
+func TestValidateAWSCredentialsCurIsNonFatal(t *testing.T) {
+	// A credential-shape failure is still fatal and still carries a message.
+	res := ValidateAWSCredentials(t.Context(), AWSCredentials{})
+	if res.Success {
+		t.Fatal("expected Success=false when neither role nor keys are supplied")
+	}
+	if res.ErrorMessage == "" {
+		t.Fatal("expected an ErrorMessage on a fatal credential-shape failure")
+	}
+
+	// Both cost permissions must be recognised as cost-only by the frontend
+	// banner, which matches on these exact labels.
+	for _, p := range []PermissionType{PermissionAWSCURDescribe, PermissionAWSCURS3Access} {
+		if p == "" {
+			t.Fatal("cost permission labels must be non-empty; the UI matches on them")
+		}
+	}
+	if PermissionAWSCURDescribe != "Cost & Usage Report (CUR) Discovery" {
+		t.Fatalf("CUR permission label changed to %q — update COST_PERMISSIONS in ValidationResultBanner.jsx", PermissionAWSCURDescribe)
+	}
+	if PermissionAWSCURS3Access != "CUR S3 Bucket Access" {
+		t.Fatalf("CUR S3 permission label changed to %q — update COST_PERMISSIONS in ValidationResultBanner.jsx", PermissionAWSCURS3Access)
+	}
+}

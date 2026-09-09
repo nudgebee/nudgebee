@@ -96,6 +96,23 @@ const createMarkdownRenderer = (chartCodes) => {
   return renderer;
 };
 
+// GFM strikethrough in marked also matches a single tilde pair, so an LLM writing
+// "~1.0%" and "~0.69%" for approximate values in one paragraph gets everything
+// between them struck through (seen on the Investigation tab of the Investigation
+// Analysis card). Escape a lone tilde so it renders as the character the author
+// meant; "~~real strikethrough~~" is left alone. Code spans and fenced blocks are
+// skipped — a backslash inside them would be shown verbatim.
+export function escapeLoneTildes(text) {
+  if (!text || !text.includes('~')) {
+    return text || '';
+  }
+  // Odd-indexed segments are fenced blocks or inline code spans.
+  return text
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .map((segment, index) => (index % 2 === 1 ? segment : segment.replace(/(?<!~)~(?!~)/g, '\\~')))
+    .join('');
+}
+
 const MARKED_OPTIONS = {
   breaks: true,
   gfm: true,
@@ -387,7 +404,7 @@ function MarkDowns({ data, sx, allowExecutable, canRunCode = true, onLinkClick }
       .split('\n')
       .map((line) => line.trim()) // Removes leading spaces/tabs from every line
       .join('\n');
-    const convertedData = marked(cleanedData, { ...MARKED_OPTIONS, renderer: createMarkdownRenderer(codes) });
+    const convertedData = marked(escapeLoneTildes(cleanedData), { ...MARKED_OPTIONS, renderer: createMarkdownRenderer(codes) });
     const sanitized = DOMPurify.sanitize(convertedData, {
       ADD_TAGS: ['div', 'svg', 'path', 'g', 'defs', 'marker', 'img'],
       ADD_ATTR: [

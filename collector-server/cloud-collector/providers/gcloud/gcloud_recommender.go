@@ -70,6 +70,49 @@ var recommenderTypes = []struct {
 	// collected BigQuery resources carry in Region (including multi-regions
 	// like "us"), so the derived region set covers them.
 	{"google.bigquery.table.PartitionClusterRecommender", providers.RecommendationCategoryRightSizing, scopeRegional},
+
+	// --- New GCP recommender types ---
+
+	// Cost
+	{"google.run.service.CostRecommender", providers.RecommendationCategoryRightSizing, scopeRegional},
+	{"google.storage.bucket.SoftDeleteRecommender", providers.RecommendationCategoryRightSizing, scopeRegional},
+
+	// Security
+	{"google.run.service.IdentityRecommender", providers.RecommendationCategorySecurity, scopeRegional},
+	{"google.run.service.SecurityRecommender", providers.RecommendationCategorySecurity, scopeRegional},
+	{"google.resourcemanager.projectUtilization.Recommender", providers.RecommendationCategorySecurity, scopeGlobal},
+	{"google.firestore.database.FirebaseRulesRecommender", providers.RecommendationCategorySecurity, scopeRegional},
+
+	// Performance — folds into Configuration, matching the existing
+	// PERFORMANCE->Configuration impact mapping.
+	{"google.storage.bucket.AnywhereCacheRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
+	{"google.compute.instanceGroupManager.MachineTypeRecommender", providers.RecommendationCategoryConfiguration, scopeRegional | scopeZonal},
+	{"google.cloudfunctions.PerformanceRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
+	{"google.cloudsql.instance.PerformanceRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
+
+	// Reliability — no dedicated category, folded into Configuration (#35141).
+	{"google.resourcemanager.serviceLimit.Recommender", providers.RecommendationCategoryConfiguration, scopeGlobal},
+	{"google.cloudsql.instance.OutOfDiskRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
+	{"google.cloudsql.instance.ReliabilityRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
+	{"google.firestore.database.ReliabilityRecommender", providers.RecommendationCategoryConfiguration, scopeRegional},
+	{"google.compute.ReliabilityRiskRecommender", providers.RecommendationCategoryConfiguration, scopeGlobal},
+
+	// Maintenance (Manageability) — folded into Configuration (#35141).
+	{"google.clouderrorreporting.Recommender", providers.RecommendationCategoryConfiguration, scopeGlobal},
+	{"google.logging.productSuggestion.ContainerRecommender", providers.RecommendationCategoryConfiguration, scopeGlobal},
+
+	// Deliberately deferred — chatty on active projects; review the noise against
+	// a real account before enabling (#35141 Drawbacks):
+	//   google.iam.policy.ChangeRiskRecommender
+	//   google.iam.serviceAccount.ChangeRiskRecommender
+	//   google.resourcemanager.project.ChangeRiskRecommender
+	//   google.cloud.RecentChangeRecommender
+	// Not included: idle/underutilized reservations and advisory notifications
+	// (no distinct recommender id), and deprecation notices
+	// (google.cloud.deprecation.GeneralRecommender is rejected by the live
+	// Recommender API with INVALID_ARGUMENT — the correct id is unconfirmed, so
+	// it is left out until verified). Commitment recommenders are excluded by the
+	// ticket as separate work.
 }
 
 // fallbackRecommenderRegions is used only when the account has no collected

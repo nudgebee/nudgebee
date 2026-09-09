@@ -1,4 +1,4 @@
-import { getToken, type JWT } from 'next-auth/jwt';
+import { type JWT } from 'next-auth/jwt';
 import type { NextApiRequest } from 'next';
 import {
   parse,
@@ -10,6 +10,7 @@ import {
   type ValueNode,
 } from 'graphql';
 import { decodeSessionJWT, decrypt } from '@lib/internal';
+import { readSessionToken } from '@lib/sessionCookie';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
@@ -146,7 +147,7 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
       }
     }
   }
-  let jwt = await getToken({ req });
+  let jwt = await readSessionToken(req);
   const fromCookie = !!jwt && !token;
   // Bearer-only flow (no NextAuth cookie): decode the bearer JWT and
   // synthesize the JWT shape buildSessionVariables expects. Without this,
@@ -450,12 +451,44 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   }
 
   const upstreamCT = upstream.headers.get('content-type') || '';
-  let payload: unknown;
+  let rawBody: string;
   try {
-    payload = upstreamCT.includes('application/json') ? await upstream.json() : await upstream.text();
+    rawBody = await upstream.text();
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: { kind: 'upstream_parse_failed', method: opts.method, url: upstreamUrl, detail } };
+    return { ok: false, error: { kind: 'upstream_unreachable', method: opts.method, url: upstreamUrl, detail } };
+  }
+
+  let payload: unknown;
+  if (upstreamCT.includes('application/json')) {
+    // An upstream that declares JSON and then sends nothing has failed mid-response;
+    // it has not sent an unparseable one. gin writes the `application/json` header
+    // before json.Marshal runs, so a marshal failure (a NaN/±Inf metric sample was
+    // the case that surfaced this) ships 200 + application/json + an empty body.
+    // Reporting that as a parse failure aimed the message at the client, when the
+    // upstream is the thing that broke.
+    if (rawBody.trim() === '') {
+      const detail = `upstream returned ${upstream.status} with an empty body`;
+      console.error(`[graphql-gateway] upstream_empty_body method=${opts.method} url=${upstreamUrl} status=${upstream.status}`);
+      return {
+        ok: false,
+        error: {
+          kind: 'upstream_error',
+          method: opts.method,
+          url: upstreamUrl,
+          status: upstream.status,
+          payload: { message: `${opts.method} failed: ${detail}` },
+        },
+      };
+    }
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: { kind: 'upstream_parse_failed', method: opts.method, url: upstreamUrl, detail } };
+    }
+  } else {
+    payload = rawBody;
   }
 
   if (!upstream.ok) {

@@ -98,7 +98,11 @@ func handleAccountUserHistoryAction(
 	}
 
 	switch actionPayload.Action.Name {
-	case "user_history", "users_list_history", "users_create_history":
+	// Only users_create_history can reach here. "user_history" is not a
+	// registered action at all, and users_list_history is the READ action, routed
+	// to /rpc/query by actions.yaml — accepting it here meant a read-shaped
+	// payload arriving on this route would have performed an INSERT.
+	case "users_create_history":
 		var request observability.UserHistoryRequest
 		err := common.UnmarshalMapToStruct(
 			actionPayload.Input["request"].(map[string]interface{}),

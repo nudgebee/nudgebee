@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,37 @@ func TestInitAnalysis(t *testing.T) {
 	assert.Empty(t, state.Progress)
 	assert.Nil(t, state.Result)
 	assert.Empty(t, state.Error)
+}
+
+func TestCancelAnalysisCancelsContextAndBlocksCompletion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	InitAnalysis("test-cancel")
+	defer CleanupAnalysis("test-cancel")
+	SetCancelFunc("test-cancel", cancel)
+
+	require.True(t, CancelAnalysis("test-cancel"))
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected analysis context to be cancelled")
+	}
+	CompleteAnalysis("test-cancel", "must not publish")
+	state := Snapshot("test-cancel")
+	require.NotNil(t, state)
+	assert.Equal(t, "cancelled", state.Status)
+	assert.Nil(t, state.Result)
+}
+
+func TestCheckInRefreshesRunningLeaseOnly(t *testing.T) {
+	InitAnalysis("test-checkin")
+	defer CleanupAnalysis("test-checkin")
+	first := Snapshot("test-checkin").LastCheckIn
+	CheckIn("test-checkin")
+	assert.False(t, Snapshot("test-checkin").LastCheckIn.Before(first))
+	CancelAnalysis("test-checkin")
+	last := Snapshot("test-checkin").LastCheckIn
+	CheckIn("test-checkin")
+	assert.Equal(t, last, Snapshot("test-checkin").LastCheckIn)
 }
 
 func TestSetProgress(t *testing.T) {

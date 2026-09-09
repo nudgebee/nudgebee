@@ -15,6 +15,7 @@ query FetchLogs(
   $step_interval: Int
   $query_request: jsonb
   $request: jsonb
+  $record_history: Boolean
 ) {
   logs_list(request: {
     account_id: $account_id
@@ -29,6 +30,7 @@ query FetchLogs(
     step_interval: $step_interval
     query_request: $query_request
     request: $request
+    record_history: $record_history
   }) {
     logs {
       timestamp
@@ -61,16 +63,8 @@ query FetchLogLabelValues {
 }
 `;
 
-const USER_HISTORY = `
-mutation UserHistory {
-  users_create_history(request: __WHERE__) {
-    status
-  }
-}
-`;
-
 const observability = {
-  async fetchLogs(data: any) {
+  async fetchLogs(data: any, signal?: AbortSignal) {
     try {
       if (data.account_id === 'demo') {
         return {
@@ -81,20 +75,27 @@ const observability = {
           },
         };
       }
-      const response = await queryGraphQL(FETCH_LOGS, 'FetchLogs', {
-        account_id: data.account_id,
-        query: data.query,
-        start_time: data.start_time,
-        end_time: data.end_time,
-        limit: data.limit,
-        offset: data.offset,
-        log_provider: data.log_provider,
-        log_provider_source: data.log_provider_source,
-        sort_fields: data.sort_fields,
-        step_interval: data.step_interval,
-        query_request: data.query_request,
-        request: data.request,
-      });
+      const response = await queryGraphQL(
+        FETCH_LOGS,
+        'FetchLogs',
+        {
+          account_id: data.account_id,
+          query: data.query,
+          start_time: data.start_time,
+          end_time: data.end_time,
+          limit: data.limit,
+          offset: data.offset,
+          log_provider: data.log_provider,
+          log_provider_source: data.log_provider_source,
+          sort_fields: data.sort_fields,
+          step_interval: data.step_interval,
+          query_request: data.query_request,
+          request: data.request,
+          record_history: data.record_history,
+        },
+        undefined,
+        signal
+      );
       return response;
     } catch (error) {
       console.log('failed to fetch logs-', error);
@@ -124,14 +125,6 @@ const observability = {
       console.log('failed to fetch log label values-', error);
       throw error;
     }
-  },
-
-  async createUserHistory(data: any) {
-    if (!data.data) {
-      return;
-    }
-    const response = await queryGraphQL(USER_HISTORY.replace('__WHERE__', gqlStringify(data)), 'UserHistory');
-    return response;
   },
 
   async metricsList(accountId: string, options?: { metricProvider?: string; metricProviderSource?: string; serviceName?: string }) {
@@ -239,7 +232,8 @@ const observability = {
     }
   },
 
-  async metricsQuery(data: any) {
+  /** `signal` aborts the request — a dashboard panel gives up after its own deadline. */
+  async metricsQuery(data: any, signal?: AbortSignal) {
     const METRICS_QUERY = `
     query MetricsQuery(
       $account_id: String!
@@ -250,6 +244,8 @@ const observability = {
       $request: jsonb
       $metric_provider: String
       $metric_provider_source: String
+      $record_history: Boolean
+      $step_interval: Int
     ) {
       metrics_list(
         request: {
@@ -261,6 +257,8 @@ const observability = {
           request: $request
           metric_provider: $metric_provider
           metric_provider_source: $metric_provider_source
+          record_history: $record_history
+          step_interval: $step_interval
         }
       ) {
         results
@@ -279,16 +277,26 @@ const observability = {
           },
         };
       }
-      const response = await queryGraphQL(METRICS_QUERY, 'MetricsQuery', {
-        account_id: data.account_id,
-        queries: data.queries,
-        start_time: data.start_time,
-        end_time: data.end_time,
-        instant: data.instant || false,
-        request: data.request,
-        metric_provider: data.metric_provider,
-        metric_provider_source: data.metric_provider_source,
-      });
+      const response = await queryGraphQL(
+        METRICS_QUERY,
+        'MetricsQuery',
+        {
+          account_id: data.account_id,
+          queries: data.queries,
+          start_time: data.start_time,
+          end_time: data.end_time,
+          instant: data.instant || false,
+          request: data.request,
+          metric_provider: data.metric_provider,
+          metric_provider_source: data.metric_provider_source,
+          record_history: data.record_history,
+          // Range step in seconds. Omitted, the agent picks 60s whatever the
+          // range — a week is then 10k points per series.
+          step_interval: data.step_interval,
+        },
+        undefined,
+        signal
+      );
       return response;
     } catch (err) {
       console.error('Failed to fetch metrics query:', err);

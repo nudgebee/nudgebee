@@ -125,6 +125,17 @@ RUN ARCH=$(uname -m) && \
 # removed.
 ENV CLOUDSDK_PYTHON=/usr/bin/python3
 ENV PATH=/home/appuser/.local/bin:/home/appuser/bin:/app/google-cloud-sdk/bin:$PATH
+# Keep dependency/build caches in explicit, workspace-owned locations so the
+# runtime can share them across worktrees and remove them safely when idle.
+ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
+    GOMODCACHE=/tmp/code-analysis/shared-cache/go-mod \
+    GOLANGCI_LINT_CACHE=/tmp/code-analysis/shared-cache/go-lint \
+    PIP_CACHE_DIR=/tmp/code-analysis/shared-cache/python/pip \
+    PYTHONPYCACHEPREFIX=/tmp/code-analysis/shared-cache/python/pycache \
+    npm_config_cache=/tmp/code-analysis/shared-cache/node/npm \
+    PNPM_HOME=/tmp/code-analysis/shared-cache/node/pnpm \
+    MAVEN_OPTS=-Dmaven.repo.local=/tmp/code-analysis/shared-cache/maven \
+    GRADLE_USER_HOME=/tmp/code-analysis/shared-cache/gradle
 
 # Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)
 # from system Python packages used by apk-installed aws-cli

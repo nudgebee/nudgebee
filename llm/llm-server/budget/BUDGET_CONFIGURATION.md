@@ -68,15 +68,15 @@ The system checks limits in the following order:
    - Deny if exceeded with: "monthly budget limit exceeded for this account"
 
 **Important**: Budget and count limits are **INDEPENDENT**:
-- Premium tenants can have unlimited budget (`LLM_BUDGET_DISABLED`) but still have count limits enabled
+- Premium tenants can have unlimited budget (`llm_budget_config.budget_disabled`) but still have count limits enabled
 - Count limit has its own enabled flag (`llm_count_limit_enabled_*`)
 - This allows flexible configurations like "unlimited cost but max 200 investigations/month"
 
 ### Disabled Flag Checks
 
 **Tenant Budget Disabled Flag**
-- If feature flag `LLM_BUDGET_DISABLED_<MODULE>` is enabled for tenant, **skip budget checks only** (steps 2 and 6)
-- Source: `feature_flag` table
+- If `budget_disabled` is set for this tenant+module, **skip budget checks only** (steps 2 and 6)
+- Source: `llm_budget_config.budget_disabled` (read at `service.go:78` for tenants, `service.go:138` for accounts)
 - **Important**: This does NOT skip count limit checks (count is independent)
 - Count limits can still apply even when budget is disabled
 
@@ -120,7 +120,7 @@ Request comes in
     ↓
 1. TENANT BUDGET CHECK (organization-wide, checked first)
     ↓
-Is tenant budget disabled for this module? (feature_flag LLM_BUDGET_DISABLED_<MODULE>)
+Is tenant budget disabled for this module? (llm_budget_config.budget_disabled)
     ↓ YES → Allow (skip all budget checks)
     ↓ NO
         ↓
@@ -177,14 +177,15 @@ Check if account usage > account budget limit
 - Count limits are **independent** of budget disabled flags
 - Count limits apply at tenant level only (no account-level count limits)
 
-### Tenant-Level Disabled Flags (table: `feature_flag`)
+### Tenant-Level Disabled Flag (table: `llm_budget_config`)
 
-| Feature ID | Description | Status |
-|------------|-------------|--------|
-| `LLM_BUDGET_DISABLED_INVESTIGATION` | Disable budget checks for investigation module | `'enabled'` to disable checks |
-| `LLM_BUDGET_DISABLED_USER_INVESTIGATION` | Disable budget checks for user investigation module | `'enabled'` to disable checks |
+| Column | Description | Value |
+|--------|-------------|-------|
+| `budget_disabled` | Skip budget checks for this `entity_type` + `entity_id` + `module` | `true` to disable checks |
 
-**Note:** Feature flags require entries in the `feature` table first. These are added via migration `1763234757000_V591_insert_llm_budget_disabled_features`. Feature flag IDs use UPPERCASE naming convention.
+Keyed by `UNIQUE(entity_type, entity_id, module)` — `entity_type` is `'tenant'` or `'account'`, `module` is `'investigation'` or `'user_investigation'`.
+
+**Note:** This replaced the `LLM_BUDGET_DISABLED_<MODULE>` feature flags in migration `V693_budget_config_table`, which copied the existing flag rows into this column. The flags had no readers after that and their `feature` rows were removed in `V889`.
 
 ### Account-Level Attributes (table: `cloud_account_attrs`)
 
@@ -212,13 +213,17 @@ VALUES ('your-tenant-id-here', 'llm_budget_limit_user_investigation', '500.0', N
 ON CONFLICT (tenant_id, name)
 DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
 
--- Disable budget checking for tenant's investigation module (uses feature_flag table)
-INSERT INTO feature_flag (feature_id, tenant_id, status, created_at)
-VALUES ('LLM_BUDGET_DISABLED_INVESTIGATION', 'your-tenant-uuid-here', 'enabled', NOW());
+-- Disable budget checking for tenant's investigation module
+INSERT INTO llm_budget_config (entity_type, entity_id, module, budget_disabled, disabled_at)
+VALUES ('tenant', 'your-tenant-uuid-here', 'investigation', true, NOW())
+ON CONFLICT (entity_type, entity_id, module)
+DO UPDATE SET budget_disabled = true, disabled_at = NOW();
 
--- Disable budget checking for tenant's user_investigation module (uses feature_flag table)
-INSERT INTO feature_flag (feature_id, tenant_id, status, created_at)
-VALUES ('LLM_BUDGET_DISABLED_USER_INVESTIGATION', 'your-tenant-uuid-here', 'enabled', NOW());
+-- Disable budget checking for tenant's user_investigation module
+INSERT INTO llm_budget_config (entity_type, entity_id, module, budget_disabled, disabled_at)
+VALUES ('tenant', 'your-tenant-uuid-here', 'user_investigation', true, NOW())
+ON CONFLICT (entity_type, entity_id, module)
+DO UPDATE SET budget_disabled = true, disabled_at = NOW();
 ```
 
 ### Tenant-Level Count Limit Configurations
@@ -304,13 +309,17 @@ ON CONFLICT (cloud_account_id, name) DO UPDATE SET value = EXCLUDED.value, updat
 Disable all budget checks for a premium customer:
 
 ```sql
--- Disable investigation budget checks (uses feature_flag table)
-INSERT INTO feature_flag (feature_id, tenant_id, status, created_at)
-VALUES ('LLM_BUDGET_DISABLED_INVESTIGATION', 'premium-tenant-uuid', 'enabled', NOW());
+-- Disable investigation budget checks
+INSERT INTO llm_budget_config (entity_type, entity_id, module, budget_disabled, disabled_at)
+VALUES ('tenant', 'premium-tenant-uuid', 'investigation', true, NOW())
+ON CONFLICT (entity_type, entity_id, module)
+DO UPDATE SET budget_disabled = true, disabled_at = NOW();
 
--- Disable user_investigation budget checks (uses feature_flag table)
-INSERT INTO feature_flag (feature_id, tenant_id, status, created_at)
-VALUES ('LLM_BUDGET_DISABLED_USER_INVESTIGATION', 'premium-tenant-uuid', 'enabled', NOW());
+-- Disable user_investigation budget checks
+INSERT INTO llm_budget_config (entity_type, entity_id, module, budget_disabled, disabled_at)
+VALUES ('tenant', 'premium-tenant-uuid', 'user_investigation', true, NOW())
+ON CONFLICT (entity_type, entity_id, module)
+DO UPDATE SET budget_disabled = true, disabled_at = NOW();
 ```
 
 ### Example 4: Trial Account (Very Restrictive)
@@ -335,8 +344,10 @@ Premium tenant with unlimited budget but rate-limited by conversation count to p
 
 ```sql
 -- Disable budget checks (unlimited cost)
-INSERT INTO feature_flag (feature_id, tenant_id, status, created_at)
-VALUES ('LLM_BUDGET_DISABLED_INVESTIGATION', 'premium-tenant-uuid', 'enabled', NOW());
+INSERT INTO llm_budget_config (entity_type, entity_id, module, budget_disabled, disabled_at)
+VALUES ('tenant', 'premium-tenant-uuid', 'investigation', true, NOW())
+ON CONFLICT (entity_type, entity_id, module)
+DO UPDATE SET budget_disabled = true, disabled_at = NOW();
 
 -- Enable count limits (rate limiting)
 INSERT INTO tenant_attrs (tenant_id, name, value, created_at, updated_at)
@@ -475,19 +486,14 @@ WHERE cloud_account_id = 'your-account-id-here'
 
 ### Re-enable Budget Checking (Tenant)
 
-Remove the feature flag to re-enable budget checks for tenant:
+Clear `budget_disabled` to re-enable budget checks for tenant:
 
 ```sql
--- Option 1: Delete the feature flag entry
-DELETE FROM feature_flag
-WHERE feature_id = 'LLM_BUDGET_DISABLED_INVESTIGATION'
-  AND tenant_id = 'your-tenant-uuid-here';
-
--- Option 2: Set status to 'disabled'
-UPDATE feature_flag
-SET status = 'disabled'
-WHERE feature_id = 'LLM_BUDGET_DISABLED_INVESTIGATION'
-  AND tenant_id = 'your-tenant-uuid-here';
+UPDATE llm_budget_config
+SET budget_disabled = false, disabled_by = NULL, disabled_at = NULL
+WHERE entity_type = 'tenant'
+  AND entity_id = 'your-tenant-uuid-here'
+  AND module = 'investigation';
 ```
 
 ### Re-enable Budget Checking (Account)

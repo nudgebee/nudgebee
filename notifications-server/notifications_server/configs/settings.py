@@ -22,6 +22,9 @@ class URLRoutes:
     # Events routes
     EVENTS = "/events"
 
+    # Troubleshoot routes (cross-account events page)
+    TROUBLESHOOT = "/troubleshoot"
+
     # Auto Pilot routes
     AUTO_PILOT_TASK = "/auto-pilot/task/{auto_pilot_id}"
 
@@ -62,6 +65,9 @@ class URLRoutes:
 
         # Monitoring
         MONITORING_SLO = "monitoring/slo"
+
+        # Troubleshoot -> All Events -> Events sub-tab
+        TROUBLESHOOT_EVENTS = "all-events/all"
 
     # ==================== UTM Source Parameters ====================
     class UTMSource:
@@ -239,6 +245,35 @@ class URLSettings(BaseSettings):
             URLRoutes.EVENTS,
             query_params={"accountId": account_id},
             utm_source=utm_source,
+        )
+
+    def troubleshoot_url(
+        self,
+        account_ids: List[str],
+        sources: Optional[List[str]] = None,
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+        utm_source: Optional[str] = None,
+    ) -> str:
+        """Build URL for the cross-account Troubleshoot Events page. Pass
+        start_time_ms/end_time_ms when known -- without them the page falls
+        back to a persisted date range, which can exclude the linked events."""
+        query_params: Dict[str, str] = {}
+        ids = [a for a in account_ids if a]
+        if ids:
+            query_params["accountIds"] = ",".join(ids)
+        src = [s for s in (sources or []) if s]
+        if src:
+            query_params["source"] = ",".join(src)
+        if start_time_ms is not None and end_time_ms is not None:
+            query_params["start_time"] = str(start_time_ms)
+            query_params["end_time"] = str(end_time_ms)
+
+        return self._build_url(
+            URLRoutes.TROUBLESHOOT,
+            query_params=query_params if query_params else None,
+            utm_source=utm_source,
+            anchor=URLRoutes.Anchors.TROUBLESHOOT_EVENTS,
         )
 
     def auto_pilot_task_url(

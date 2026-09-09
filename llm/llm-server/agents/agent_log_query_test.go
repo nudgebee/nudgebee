@@ -79,5 +79,66 @@ func TestLogQueryResult_Marshal(t *testing.T) {
 	}
 	data, err := common.MarshalJson(result)
 	assert.NoError(t, err)
-	assert.JSONEq(t, `{"query":"{app=\"checkout\"}","provider":"loki"}`, string(data))
+	assert.JSONEq(t, `{"query":"{app=\"checkout\"}","provider":"loki"}`, string(data), "index must be omitted for a backend with no index concept")
+}
+
+// TestLogQueryResult_MarshalWithIndex covers the ES shape: the caller needs the
+// index back by name so the logs tab can show which index the query in the bar
+// will run against.
+func TestLogQueryResult_MarshalWithIndex(t *testing.T) {
+	result := logQueryResult{
+		Query:    `{"query":{"bool":{}}}`,
+		Provider: "ES",
+		Index:    "logs-kubernetes-*",
+	}
+	data, err := common.MarshalJson(result)
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"query":"{\"query\":{\"bool\":{}}}","provider":"ES","index":"logs-kubernetes-*"}`, string(data))
+}
+
+// TestLogQueryAgent_EffectiveIndex covers the index precedence the ES "Select an
+// Index" dropdown depends on. The caller's selection is a hard pin — a generated
+// query must never be silently resolved against a different index than the one
+// the dropdown shows — and a backend with no index concept must never inherit an
+// index from the request.
+func TestLogQueryAgent_EffectiveIndex(t *testing.T) {
+	cases := []struct {
+		name           string
+		provider       services_server.ObservabilityProvider
+		requestedIndex string
+		generatedIndex string
+		want           string
+	}{
+		{
+			name:           "requested index wins over the generated one",
+			provider:       services_server.ObservabilityProvider{Provider: "ES", DefaultIndex: "logs-default-*"},
+			requestedIndex: "logs-nginx-*",
+			generatedIndex: "logs-app-*",
+			want:           "logs-nginx-*",
+		},
+		{
+			name:           "generated index used when none was requested",
+			provider:       services_server.ObservabilityProvider{Provider: "ES", DefaultIndex: "logs-default-*"},
+			generatedIndex: "logs-app-*",
+			want:           "logs-app-*",
+		},
+		{
+			name:     "falls back to the account default when neither is set",
+			provider: services_server.ObservabilityProvider{Provider: "elasticsearch", DefaultIndex: "logs-default-*"},
+			want:     "logs-default-*",
+		},
+		{
+			name:           "non-ES provider ignores a requested index",
+			provider:       services_server.ObservabilityProvider{Provider: "loki"},
+			requestedIndex: "logs-nginx-*",
+			want:           "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &LogQueryAgent{accountId: "acct", provider: tc.provider, requestedIndex: tc.requestedIndex}
+			assert.Equal(t, tc.want, a.effectiveIndex(tc.generatedIndex))
+		})
+	}
 }

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import AnchorComponent from '@shared/navigation/AnchorComponent';
 import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
-import { Box, Alert } from '@mui/material';
+import { Box } from '@mui/material';
+import { Banner } from '@ui/Banner';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import CloudOptimizeRecommendationsTable from '@components/cloudaccount/CloudOptimizeRecommendationsTable';
 import CloudAccountSummary from '@components/cloudaccount/CloudAccountSummary';
@@ -560,10 +561,12 @@ const CloudAccounts = () => {
         }}
       />
       {selectedCluster?.account_access === 'readonly' && (
-        <Alert severity='info' sx={{ mt: ds.space[2], mb: ds.space[2] }}>
-          This account is connected in read-only mode. CloudWatch alarm creation, EventBridge event tracking, and automated recommendation actions are
-          unavailable.
-        </Alert>
+        <Box sx={{ mt: ds.space[2], mb: ds.space[2] }}>
+          <Banner
+            tone='info'
+            message='This account is connected in read-only mode. CloudWatch alarm creation, EventBridge event tracking, and automated recommendation actions are unavailable.'
+          />
+        </Box>
       )}
       <ErrorBoundary key={`${accountId}-${selectedFilter}-${selectedSubTab}`}>
         <Box>
@@ -774,7 +777,7 @@ const CloudAccounts = () => {
                   )}
                 </>
               )}
-              {selectedSubTab === 2 && <RdsInstances accountId={accountId} serviceName={getServiceName()} stickyColumnIndex={'7'} />}
+              {selectedSubTab === 2 && <RdsInstances accountId={accountId} serviceName={getServiceName()} stickyColumnIndex={'8'} />}
               {selectedSubTab === 3 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} stickyColumnIndex={'8'} />}
             </>
           )}

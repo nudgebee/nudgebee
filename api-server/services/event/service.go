@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"nudgebee/services/account"
 	"nudgebee/services/account/adapter"
+	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/event/lifecycle"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 	"gopkg.in/yaml.v2"
 )
 
@@ -390,12 +392,39 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 	revert, okRevert := queryData["revert"].(bool)
 	raisePR, okRaisePR := queryData["raisePR"].(bool)
+	// Undoing a previous attempt is not a card action — it re-applies what that attempt replaced,
+	// whatever the card was. It is handled once here rather than per card, so an action becomes
+	// undoable by recording a before-state, not by adding another branch below.
+	undoResolutionID, _ := queryData["undo_resolution_id"].(string)
 	// AggregationKey is a nullable column and is dereferenced throughout the
 	// branches below; fail fast instead of panicking on a nil pointer.
 	if r.AggregationKey == nil {
 		return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: event has no aggregation key")
 	}
-	if *r.AggregationKey == "KubePersistentVolumeFillingUp" || *r.AggregationKey == "KubernetesVolumeOutOfDiskSpace" {
+	if undoResolutionID != "" {
+		undoRequest, action, err := buildUndoRequest(ctx, undoResolutionID)
+		if err != nil {
+			return EventRecommendationApplyResponse{}, err
+		}
+		recommendationRequest = adapter.ApplyRecommendationRequest{
+			Data: query.Data.(map[string]any),
+			Recommendation: models.Recommendation{
+				Category:       "EventResolution",
+				RuleName:       *r.AggregationKey,
+				Id:             r.Id,
+				CloudAccountId: *r.CloudAccountId,
+				TenantId:       *r.Tenant,
+				Recommendation: models.NewJsonObject(map[string]any{
+					"account_id":    *r.CloudAccountId,
+					"action_name":   action,
+					"action_params": undoRequest,
+				}),
+				AccountObjectId: &query.EventId,
+			},
+			Resource:       cr,
+			ProviderConfig: query.ProviderConfig,
+		}
+	} else if *r.AggregationKey == "KubePersistentVolumeFillingUp" || *r.AggregationKey == "KubernetesVolumeOutOfDiskSpace" {
 		if queryData["size"] == "" || queryData["size"] == nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: to increase persistent volume size is required")
 		}
@@ -546,6 +575,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					ProviderConfig: query.ProviderConfig,
 				}
 			} else if restart {
+				restartAction, restartParams := restartActionFor(r)
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
@@ -555,13 +585,9 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
 						Recommendation: models.NewJsonObject(map[string]any{
-							"account_id":  *r.CloudAccountId,
-							"action_name": "delete_pod",
-							"action_params": map[string]any{
-								"name":      r.SubjectName,
-								"namespace": r.SubjectNamespace,
-								"previous":  false,
-							},
+							"account_id":    *r.CloudAccountId,
+							"action_name":   restartAction,
+							"action_params": restartParams,
 						}),
 						AccountObjectId: &query.EventId,
 					},
@@ -664,6 +690,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					ProviderConfig: query.ProviderConfig,
 				}
 			} else if restart {
+				restartAction, restartParams := restartActionFor(r)
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
@@ -673,13 +700,9 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
 						Recommendation: models.NewJsonObject(map[string]any{
-							"account_id":  *r.CloudAccountId,
-							"action_name": "delete_pod",
-							"action_params": map[string]any{
-								"name":      r.SubjectName,
-								"namespace": r.SubjectNamespace,
-								"previous":  false,
-							},
+							"account_id":    *r.CloudAccountId,
+							"action_name":   restartAction,
+							"action_params": restartParams,
 						}),
 						AccountObjectId: &query.EventId,
 					},
@@ -791,7 +814,10 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		}
 	} else if okRevert {
 		if revert {
-			request, err := getRevertRecommendationRequest(cr, r)
+			// Undo re-applies what the change introduced. It is the same operation in the other
+			// direction, so it goes through the same builder, dispatch, audit and record.
+			undo, _ := queryData["undo"].(bool)
+			request, err := getRevertRecommendationRequest(cr, r, undo)
 			if err != nil {
 				return EventRecommendationApplyResponse{}, err
 			}
@@ -1115,6 +1141,11 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 	resp, err := adptr.ApplyRecommendation(ctx, recommendationRequest, convertedRecommendationResolution, recommendationResolutionId)
 
+	// Applying a resolution mutates customer cluster state through the agent, so it is audited the
+	// same way the remediation panel audits its commands. This path wrote a resolution row but no
+	// audit at all, so a revert left no compliance-grade record of who ran it or whether it took.
+	auditEventResolutionApply(ctx, r, recommendationRequest, err)
+
 	if err != nil {
 		ctx.GetLogger().Error("error applying recommendation", "error", err)
 		if _, updateErr := dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, models.RecommendationResolutionStatusFailed, time.Now().UTC().Format(time.RFC3339), err.Error()); updateErr != nil {
@@ -1130,7 +1161,10 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 	case adapter.RecommendationResolutionStatusSuccess:
 		recommendationStatus = models.RecommendationStatusClosed
 	case adapter.RecommendationResolutionStatusFailed:
-		recommendationStatus = models.RecommendationStatusDismissed
+		// Not Dismissed: that is the user's decision not to act, and reporting it
+		// for a failure the platform hit says the opposite of what happened. The
+		// event stays unresolved either way — only Closed marks it RESOLVED below.
+		recommendationStatus = models.RecommendationStatusOpen
 	case adapter.RecommendationResolutionStatusInProgress:
 		recommendationStatus = models.RecommendationStatusInProgress
 	}
@@ -1161,8 +1195,269 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 }
 
-func getRevertRecommendationRequest(cr models.Resource, r models.Event) (map[string]any, error) {
-	oldYaml := ""
+// restartActionFor decides how "Restart" is carried out for an event.
+//
+// It dispatched delete_pod unconditionally. Deleting one pod of a Deployment restarts that replica
+// and leaves the others on the old state, which is not what an operator means by restarting a
+// workload — and on a controller with several replicas it does not clear the condition. The agent
+// exposes rollout_restart for Deployment/StatefulSet/DaemonSet/Rollout, which cycles every replica
+// through the controller the way `kubectl rollout restart` does.
+//
+// A bare Pod has no controller to roll, so it keeps delete_pod: recreation is the only restart
+// available, and for a standalone pod that is the whole workload anyway.
+func restartActionFor(r models.Event) (string, map[string]any) {
+	ownerKind := ""
+	if r.SubjectOwnerKind != nil {
+		ownerKind = *r.SubjectOwnerKind
+	}
+	owner := ""
+	if r.SubjectOwner != nil {
+		owner = *r.SubjectOwner
+	}
+	// Params carry plain strings. The pointers these come from marshal to the same JSON, but a
+	// map holding *string forces every reader — the audit record among them — to know which
+	// fields are pointers, and one that guessed wrong silently dropped the name.
+	namespace := stringValue(r.SubjectNamespace)
+	if owner != "" {
+		if _, ok := rolloutRestartableKinds[strings.ToLower(ownerKind)]; ok {
+			return "rollout_restart", map[string]any{
+				"kind":      ownerKind,
+				"name":      owner,
+				"namespace": namespace,
+			}
+		}
+	}
+	return "delete_pod", map[string]any{
+		"name":      stringValue(r.SubjectName),
+		"namespace": namespace,
+		"previous":  false,
+	}
+}
+
+// Kinds the agent's rollout_restart handler supports. Compared lowercased because subject_owner_kind
+// is not written consistently — cloud_resourses alone carries both "Pod" and "pod".
+var rolloutRestartableKinds = map[string]struct{}{
+	"deployment":  {},
+	"statefulset": {},
+	"daemonset":   {},
+	"rollout":     {},
+}
+
+// stringValue reads a param that may be either a string or a *string.
+func stringValue(v any) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case *string:
+		if value != nil {
+			return *value
+		}
+	}
+	return ""
+}
+
+// buildUndoRequest reconstructs the action that puts back what a previous attempt replaced.
+//
+// It re-dispatches the SAME action the attempt used, with the recorded before-state substituted for
+// the values that attempt wrote. That keeps undo uniform: an action becomes undoable by recording a
+// before-state, never by adding a bespoke undo branch that can drift from the apply it reverses.
+//
+// The coordinates (name, namespace, kind) are taken from the original task's params rather than
+// recomputed from the event, so an undo targets exactly what was changed even if the event's view of
+// the workload has since moved on.
+func buildUndoRequest(ctx *security.RequestContext, resolutionID string) (map[string]any, string, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, "", err
+	}
+	var dataJSON, taskID string
+	if err := dbms.Db.QueryRow(
+		`SELECT COALESCE(data::text, '{}'), COALESCE(type_reference_id, '') FROM event_resolution WHERE id = $1`,
+		resolutionID).Scan(&dataJSON, &taskID); err != nil {
+		// Only a genuinely missing row is the caller's fault. A dropped connection or a timeout is
+		// ours, and reporting it as 400 would tell the operator their undo was invalid when the
+		// database was simply unreachable.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", common.ErrorBadRequest("undo: the attempt to undo could not be found")
+		}
+		return nil, "", err
+	}
+	var data map[string]any
+	if err := common.UnmarshalJson([]byte(dataJSON), &data); err != nil {
+		return nil, "", common.ErrorBadRequest("undo: the attempt's record could not be read")
+	}
+	before, _ := data["before"].(map[string]any)
+	if len(before) == 0 {
+		// Either the action predates before-state capture, or it is one that cannot be undone —
+		// a restart has already happened, a PVC cannot shrink. Say so rather than dispatching
+		// something that would not restore anything.
+		return nil, "", common.ErrorBadRequest("undo: this action did not record what it replaced, so it cannot be undone")
+	}
+	if taskID == "" {
+		return nil, "", common.ErrorBadRequest("undo: the attempt has no task to reconstruct from")
+	}
+
+	var action, payloadJSON string
+	if err := dbms.Db.QueryRow(
+		`SELECT action, COALESCE(payload::text, '{}') FROM agent_task WHERE id = $1`, taskID).Scan(&action, &payloadJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", common.ErrorBadRequest("undo: the original task could not be found")
+		}
+		return nil, "", err
+	}
+	var payload map[string]any
+	if err := common.UnmarshalJson([]byte(payloadJSON), &payload); err != nil {
+		return nil, "", common.ErrorBadRequest("undo: the original task's payload could not be read")
+	}
+	originalParams, _ := payload["action_params"].(map[string]any)
+
+	params := map[string]any{}
+	for _, key := range []string{"name", "namespace", "kind"} {
+		if v, ok := originalParams[key]; ok {
+			params[key] = v
+		}
+	}
+	// Each recorded shape maps to the param the apply path reads. Only shapes we can actually
+	// re-apply are recorded, so an unknown one means the record is from a newer writer than this
+	// code — refuse rather than dispatch a half-formed action.
+	switch {
+	case before["containers"] != nil:
+		params["containers"] = before["containers"]
+	case before["replicas"] != nil:
+		// replica_rightsizing reads replica_count, and accepts it as a number or a numeric string.
+		params["replica_count"] = before["replicas"]
+	default:
+		return nil, "", common.ErrorBadRequest("undo: the recorded before-state is not one this version can re-apply")
+	}
+	return params, action, nil
+}
+
+// storeUndoStateFromTask copies the pre-change state the agent reported into the resolution, under
+// data.before. Undo then means "apply data.before" for every action that has one, the same way a
+// revert's undo means "apply the other side of the diff".
+//
+// Kept on the resolution rather than in a side table: it describes one attempt, and event_resolution
+// .data is jsonb, so this is additive with no migration.
+//
+// Best-effort throughout. The action has already been applied successfully; failing to record how to
+// undo it must not turn a successful apply into a failed one.
+func storeUndoStateFromTask(ctx *security.RequestContext, dbms *database.DatabaseManager, resolution models.EventResolution) {
+	if resolution.TypeReferenceId == "" {
+		return
+	}
+	var response *string
+	if err := dbms.Db.QueryRow("SELECT response::text FROM agent_task WHERE id = $1", resolution.TypeReferenceId).Scan(&response); err != nil {
+		ctx.GetLogger().Warn("undo state: could not read agent task response", "error", err, "resolution_id", resolution.Id)
+		return
+	}
+	if response == nil || *response == "" {
+		return
+	}
+	var parsed map[string]any
+	if err := common.UnmarshalJson([]byte(*response), &parsed); err != nil {
+		return
+	}
+	// Only the shapes an undo can actually re-apply. An action whose agent reports nothing reusable
+	// records no before-state, and the UI offers no Undo for it — which is the honest outcome.
+	// An explicit null in the response is not a before-state. Storing it would leave data.before
+	// non-empty, which is what the UI tests to decide whether to offer Undo — so the button would
+	// appear and then fail, because a nil value re-applies nothing.
+	before := map[string]any{}
+	if containers, ok := parsed["previous_containers"]; ok && containers != nil {
+		before["containers"] = containers
+	}
+	if replicas, ok := parsed["previous_replicas"]; ok && replicas != nil {
+		before["replicas"] = replicas
+	}
+	if len(before) == 0 {
+		return
+	}
+	beforeJSON, err := common.MarshalJson(before)
+	if err != nil {
+		return
+	}
+	if _, err := dbms.Db.Exec(
+		`UPDATE event_resolution
+		    SET data = jsonb_set(COALESCE(data, '{}'::jsonb), '{before}', $2::jsonb, true)
+		  WHERE id = $1`, resolution.Id, string(beforeJSON)); err != nil {
+		ctx.GetLogger().Warn("undo state: could not record before-state", "error", err, "resolution_id", resolution.Id)
+	}
+}
+
+// auditEventResolutionApply records who applied a resolution to an event, and whether the dispatch
+// succeeded. Best-effort: an audit failure must never fail the apply that already happened.
+func auditEventResolutionApply(ctx *security.RequestContext, r models.Event, request adapter.ApplyRecommendationRequest, applyErr error) {
+	actionName := ""
+	params := map[string]any{}
+	if obj, ok := request.Recommendation.Recommendation.Object().(map[string]any); ok {
+		actionName, _ = obj["action_name"].(string)
+		if p, ok := obj["action_params"].(map[string]any); ok {
+			// Only the coordinates — the full params carry an entire manifest on the revert path.
+			for _, k := range []string{"kind", "name", "namespace"} {
+				if v, ok := p[k]; ok {
+					params[k] = v
+				}
+			}
+		}
+	}
+	status := audit.EventStatusSuccess
+	if applyErr != nil {
+		status = audit.EventStatusFailure
+		params["error"] = applyErr.Error()
+	}
+	sc := ctx.GetSecurityContext()
+	if sc == nil {
+		return
+	}
+	accountId := ""
+	if r.CloudAccountId != nil {
+		accountId = *r.CloudAccountId
+	}
+	// The action params carry the name as a string on some paths and a *string on others
+	// (delete_pod passes r.SubjectName straight through), so handle both rather than silently
+	// dropping the target from the audit record.
+	target := actionName
+	if name := stringValue(params["name"]); name != "" {
+		target = fmt.Sprintf("%s/%s", actionName, name)
+	}
+	auditEvent := audit.Audit{
+		UserId:        sc.GetUserId(),
+		TenantId:      sc.GetTenantId(),
+		AccountId:     accountId,
+		EventTime:     time.Now().UTC(),
+		EventCategory: audit.EventCategoryRecommendation,
+		EventType:     audit.EventTypeRecommendationApply,
+		EventTarget:   target,
+		EventState:    map[string]any{"event_id": r.Id, "action_name": actionName},
+		EventActor:    audit.EventActorUiService,
+		EventAction:   audit.EventActionExecute,
+		EventStatus:   status,
+		EventAttr:     params,
+	}
+	if err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}}); err != nil {
+		ctx.GetLogger().Error("failed to create audit event for event resolution apply", "error", err)
+	}
+}
+
+// getRevertRecommendationRequest builds the params that undo the configuration
+// change recorded on the event.
+//
+// It adds the changed field paths (`revert_paths`), which is what the Go agent
+// acts on. Sending only the evidence's pre-change manifest — all this used to do
+// — never worked there: the manifest is serialized snake_case for Hikaru wire
+// compatibility, so the agent's dynamic client fed it straight to the apiserver,
+// which dropped every renamed key and rejected the remains ("spec.selector:
+// Invalid value: {}: empty selector is invalid for deployment"). Replaying a
+// stored snapshot is also wrong independently of the casing: it clobbers every
+// unrelated change made since the event and trips immutable-field validation.
+// Given the paths, the agent applies them to the live object instead.
+//
+// The manifest still goes out under its per-kind field because tenants not yet
+// migrated off the Python agent are served by that agent's replace_workload,
+// which consumes exactly this shape via Hikaru and ignores unknown params. The
+// Go agent prefers revert_paths whenever they are present. Drop the manifest
+// once the Python agent is retired.
+func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo bool) (map[string]any, error) {
 	if cr.ResourceId == nil {
 		return map[string]any{}, common.ErrorBadRequest("event resolution: cannot revert, event is not linked to a cloud resource")
 	}
@@ -1170,45 +1465,103 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event) (map[str
 	if len(resourceKeys) != 3 {
 		return map[string]any{}, fmt.Errorf("resolution: service key is not correct")
 	}
-	if r.Evidences.IsArray() {
-		for _, item := range r.Evidences.Array() {
-			switch v := item.(type) {
-			case map[string]any:
-				if evidenceType, ok := v["type"].(string); ok {
-					if evidenceType == "diff" {
-						if dataMap, ok := v["data"].(map[string]any); ok {
-							if oldVal, ok := dataMap["old"]; ok {
-								switch old := oldVal.(type) {
-								case string:
-									oldYaml = old
-								default:
-									slog.Warn("Unexpected type for 'old'", "type", fmt.Sprintf("%T", old))
-								}
-							} else {
-								slog.Warn("'old' key not found in dataMap")
-							}
-						}
-					}
-				}
-			default:
-				slog.Warn("Unknown type for evidence item", "type", fmt.Sprintf("%T", v))
-			}
-		}
+	kind := resourceKeys[1]
+	request := map[string]any{
+		"name":      resourceKeys[2],
+		"namespace": r.SubjectNamespace,
+		"kind":      kind,
 	}
-	if oldYaml != "" {
+	revertPaths := extractRevertPaths(r, undo)
+	if len(revertPaths) > 0 {
+		request["revert_paths"] = revertPaths
+	}
+	if oldYaml := extractDiffOldManifest(r); oldYaml != "" {
 		var yamlMap map[string]any
-		err := yaml.Unmarshal([]byte(oldYaml), &yamlMap)
-		if err != nil {
-			return map[string]any{}, common.ErrorBadRequest("container_name not found")
+		if err := yaml.Unmarshal([]byte(oldYaml), &yamlMap); err != nil {
+			return map[string]any{}, common.ErrorBadRequest("event resolution: the recorded pre-change manifest is not valid YAML")
 		}
-
-		return map[string]any{
-			"name":                           resourceKeys[2],
-			"namespace":                      r.SubjectNamespace,
-			"kind":                           resourceKeys[1],
-			strings.ToLower(resourceKeys[1]): yamlMap}, nil
+		request[strings.ToLower(kind)] = yamlMap
 	}
-	return map[string]any{}, nil
+	if len(revertPaths) == 0 && request[strings.ToLower(kind)] == nil {
+		return map[string]any{}, common.ErrorBadRequest("event resolution: cannot revert, this event has no recorded configuration change to undo")
+	}
+	return request, nil
+}
+
+// extractDiffOldManifest returns the pre-change manifest recorded on the diff
+// evidence. Only the Python agent can consume it; see
+// getRevertRecommendationRequest.
+func extractDiffOldManifest(r models.Event) string {
+	if r.Evidences == nil || !r.Evidences.IsArray() {
+		return ""
+	}
+	for _, item := range r.Evidences.Array() {
+		evidence, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if evidenceType, _ := evidence["type"].(string); evidenceType != "diff" {
+			continue
+		}
+		dataMap, ok := evidence["data"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if oldYaml, ok := dataMap["old"].(string); ok && oldYaml != "" {
+			return oldYaml
+		}
+	}
+	return ""
+}
+
+// extractRevertPaths pulls {path, old} pairs out of the event's diff evidence.
+// `old` is passed through untouched, including a null — the agent reads a null
+// (or absent) old value as "the change added this field", which reverts to
+// removing it rather than writing a null.
+// undo reverses the revert: it re-applies the values the change introduced. Undoing a revert is a
+// revert with old and new swapped, so one builder serves both directions and there is no separate
+// undo path that could drift from the one that is exercised daily.
+func extractRevertPaths(r models.Event, undo bool) []any {
+	if r.Evidences == nil || !r.Evidences.IsArray() {
+		return nil
+	}
+	var paths []any
+	for _, item := range r.Evidences.Array() {
+		evidence, ok := item.(map[string]any)
+		if !ok {
+			slog.Warn("Unknown type for evidence item", "type", fmt.Sprintf("%T", item))
+			continue
+		}
+		if evidenceType, _ := evidence["type"].(string); evidenceType != "diff" {
+			continue
+		}
+		dataMap, ok := evidence["data"].(map[string]any)
+		if !ok {
+			continue
+		}
+		updatedValues, ok := dataMap["updated_values"].([]any)
+		if !ok {
+			slog.Warn("diff evidence has no updated_values; cannot build a revert", "event_id", r.Id)
+			continue
+		}
+		for _, uv := range updatedValues {
+			change, ok := uv.(map[string]any)
+			if !ok {
+				continue
+			}
+			path, _ := change["path"].(string)
+			if path == "" {
+				continue
+			}
+			// "old" is always the value to write; which side of the diff that is depends on direction.
+			target := change["old"]
+			if undo {
+				target = change["new"]
+			}
+			paths = append(paths, map[string]any{"path": path, "old": target})
+		}
+	}
+	return paths
 }
 
 // hasInProgressRecommendation looks for an existing InProgress resolution for
@@ -1369,6 +1722,10 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		}
 
 		if status == models.RecommendationResolutionStatusSuccess {
+			// The agent reports what it replaced; without capturing it here the applied value is
+			// recorded and the value it replaced is lost, so the action cannot be undone.
+			storeUndoStateFromTask(ctx, dbms, resolution)
+
 			_, err = dbms.Db.Exec("UPDATE events SET status = $3, updated_at = $2 WHERE id = $1", event.Id, time.Now().UTC().Format(time.RFC3339), "RESOLVED")
 			if err != nil {
 				ctx.GetLogger().Error("error closing recommendation", "error", err, "event_id", event.Id, "status", status)
@@ -1476,8 +1833,24 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 	event.SubjectType = strings.ToLower(event.SubjectType)
 	event.SubjectName = truncateStringToMaxBytes(event.SubjectName, maxSubjectNameBytes)
 
-	query := `INSERT INTO events ("id", "finding_id", "title", "description", "source", "aggregation_key", "priority", "subject_type", "subject_name", "subject_namespace", "subject_node", "service_key", "fingerprint", "evidences", "tenant", "cloud_account_id", "status", "finding_type","cluster", "starts_at", "labels", "updated_at", "ends_at", "cloud_resource_id", "category", "created_at", "urgency", "subject_owner", "subject_owner_kind")
-			 VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+	// A configuration_change event describes a moment that has already passed
+	// ("this resource was changed"), not a condition that can recover — no
+	// closer will ever reach it (issue #36597), so store it already closed
+	// rather than leaving it to accumulate in the open-events list forever.
+	// The rest of this codebase already treats configuration_change this way
+	// in several places (playbook enrichment is skipped for it, it's excluded
+	// from workload-recovery closes, it carries a scoring penalty); this is
+	// the one place that decides it at ingestion instead of re-deriving it
+	// per call site. Centralized in InsertEvent (not InvestigateEvent) so
+	// every insert path gets it automatically.
+	isPointInTimeEvent := config.Config.FeatureEventPointInTimeCloseEnabled && event.FindingType == "configuration_change"
+	if isPointInTimeEvent {
+		event.Status = EventStatusClosed
+		event.EndsAt = event.StartsAt
+	}
+
+	query := `INSERT INTO events ("id", "finding_id", "title", "description", "source", "aggregation_key", "priority", "subject_type", "subject_name", "subject_namespace", "subject_node", "service_key", "fingerprint", "evidences", "tenant", "cloud_account_id", "status", "finding_type","cluster", "starts_at", "labels", "updated_at", "ends_at", "cloud_resource_id", "category", "created_at", "urgency", "subject_owner", "subject_owner_kind", "nb_status")
+			 VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 			 ON CONFLICT (tenant, cloud_account_id, finding_id)
 			 DO UPDATE SET
 			 	updated_at = EXCLUDED.updated_at
@@ -1542,8 +1915,13 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		event.Urgency = "LOW"
 	}
 
+	nbStatus := triage.NBStatusOpen
+	if isPointInTimeEvent {
+		nbStatus = triage.NBStatusResolved
+	}
+
 	var isInsert bool
-	err = dbms.Db.QueryRow(query, id, event.FindingId, event.Title, event.Description, event.Source, event.AggregationKey, event.Priority, event.SubjectType, event.SubjectName, event.SubjectNamespace, event.SubjectNode, event.ServiceKey, event.Fingerprint, evidences, event.Tenant, event.AccountId, event.Status, event.FindingType, event.Cluster, event.StartsAt, labels, time.Now().UTC(), event.EndsAt, nullableCloudResourceId, event.Category, event.CreatedAt, event.Urgency, event.SubjectOwner, event.SubjectOwnerKind).Scan(&isInsert)
+	err = dbms.Db.QueryRow(query, id, event.FindingId, event.Title, event.Description, event.Source, event.AggregationKey, event.Priority, event.SubjectType, event.SubjectName, event.SubjectNamespace, event.SubjectNode, event.ServiceKey, event.Fingerprint, evidences, event.Tenant, event.AccountId, event.Status, event.FindingType, event.Cluster, event.StartsAt, labels, time.Now().UTC(), event.EndsAt, nullableCloudResourceId, event.Category, event.CreatedAt, event.Urgency, event.SubjectOwner, event.SubjectOwnerKind, nbStatus).Scan(&isInsert)
 	if err != nil {
 		slog.Error("event: failed to insert event", "error", err)
 		return id, err
@@ -1564,7 +1942,8 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 			common.MqPublishWithBackgroundRetry(),
 			common.MqPublishWithContext(cfg.publishCtx),
 		)
-	} else if !cfg.skipWorkflowRefire && strings.EqualFold(string(event.Status), string(EventStatusFiring)) {
+	} else if !cfg.skipWorkflowRefire &&
+		(strings.EqualFold(string(event.Status), string(EventStatusFiring)) || isPointInTimeEvent) {
 		// Re-fire of an existing event: ON CONFLICT updated an already-present row.
 		// The post-process pipeline (triage/llm/notification) only runs on first
 		// insert, so without this an event-trigger workflow would never see repeat
@@ -1574,6 +1953,10 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		// duplicate notifications or investigations. Gated to FIRING so resolve/
 		// close updates don't spuriously trigger, and skipped for non-occurrence
 		// re-persists (WithoutWorkflowRefire, e.g. UpdateEvent metadata edits).
+		// configuration_change events (issue #36597) are born CLOSED and never
+		// pass through FIRING, so they need their own re-fire path here too —
+		// otherwise a second occurrence of the same finding_id goes silent to
+		// event-trigger workflows.
 		_ = common.MqPublish(
 			config.Config.RabbitMqEventPostProcessExchange,
 			config.Config.RabbitMqEventPostProcessQueue,
@@ -1991,14 +2374,76 @@ func extractEvidenceActionNames(evidences []any) map[string]bool {
 		if !ok {
 			continue
 		}
+		names := make([]string, 0, 2)
 		if name, ok := ai["action_name"].(string); ok && name != "" {
-			actions[name] = true
+			names = append(names, name)
 		}
 		if name, ok := ai["actual_action_name"].(string); ok && name != "" {
+			names = append(names, name)
+		}
+		if len(names) == 0 {
+			continue
+		}
+
+		// A log enrichment that carried nothing did not enrich. The names collected here
+		// suppress the server-side equivalent action (eventrule.executeAutoActions), and
+		// for logs that suppression is category-wide: any one member of the log-action set
+		// having run marks the whole category done. So an agent k8s_pod_log_enricher
+		// evidence whose gzip decodes to zero bytes — 62 of the 433 written in a week —
+		// stopped the `logs` action from ever asking the account's configured log source.
+		//
+		// Restricted to log actions deliberately. The same "empty evidence still suppresses
+		// its twin" pattern may well exist for other enrichers, but the measurement behind
+		// this change only covers logs, and widening it would change what evidence every
+		// investigation collects on no evidence at all.
+		if lo.SomeBy(names, eventrule.IsLogAction) && !evidenceHasContent(m) {
+			continue
+		}
+		for _, name := range names {
 			actions[name] = true
 		}
 	}
 	return actions
+}
+
+// evidenceHasContent reports whether an evidence carries anything worth keeping.
+//
+// Deliberately conservative: it answers false only for shapes it positively
+// recognises as empty, so an unfamiliar enrichment still suppresses its
+// server-side twin exactly as before.
+func evidenceHasContent(evidence map[string]any) bool {
+	switch data := evidence["data"].(type) {
+	case string:
+		if playbooks.IsWrappedAgentPayload(data) {
+			decoded, err := playbooks.DecodeAgentPayload(data)
+			if err != nil {
+				// Undecodable is not the same as empty — leave the old behaviour.
+				return true
+			}
+			return strings.TrimSpace(decoded) != ""
+		}
+		if trimmed := strings.TrimSpace(data); trimmed == "" {
+			return false
+		} else if strings.HasPrefix(trimmed, "{") {
+			var wrapper struct {
+				Data []any `json:"data"`
+			}
+			if err := common.UnmarshalJson([]byte(trimmed), &wrapper); err == nil && wrapper.Data != nil {
+				return len(wrapper.Data) > 0
+			}
+		}
+		return true
+	case map[string]any:
+		if inner, ok := data["data"].([]any); ok {
+			return len(inner) > 0
+		}
+		return true
+	case []any:
+		return len(data) > 0
+	case nil:
+		return false
+	}
+	return true
 }
 
 // dedupeEvidencesByContent removes exact-duplicate evidence elements (same serialized
@@ -2867,4 +3312,78 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 	}
 
 	return r, nil
+}
+
+// AddEvidence appends evidences to an event that already exists.
+//
+// This exists because InvestigateEvent's duplicate branch deliberately refuses
+// to touch evidences ("playbook-collected evidences would be lost"), so a
+// workflow that wants to attach diagnostic output to the alarm event it was
+// triggered by has no way in. Storing a fresh event instead would split one
+// incident across two rows.
+//
+// The append is done in SQL rather than read-modify-write in Go, and that is
+// load-bearing rather than stylistic: the playbook enricher pipeline writes
+// this same jsonb column via RefreshInvestigation, and both run within seconds
+// of an event being created. A read, merge and full-column overwrite would let
+// whichever transaction commits last silently discard the other's evidence.
+// `evidences || $1::jsonb` is a single atomic statement, so concurrent appends
+// both survive.
+//
+// Duplicate suppression therefore happens on read (dedupeEvidencesByContent is
+// already applied where evidences are consumed) rather than by rewriting the
+// column here.
+func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any) error {
+	if eventId == "" {
+		return fmt.Errorf("event: event_id is required")
+	}
+	if len(evidences) == 0 {
+		return fmt.Errorf("event: at least one evidence is required")
+	}
+
+	existing, err := GetEvent(ctx, eventId)
+	if err != nil {
+		return err
+	}
+	if existing.CloudAccountId == nil || *existing.CloudAccountId == "" {
+		return fmt.Errorf("event %s has no account association", eventId)
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(*existing.CloudAccountId, security.SecurityAccessTypeUpdate) {
+		return common.ErrorUnauthorized("access denied for account: " + *existing.CloudAccountId)
+	}
+
+	evidencesJson, err := common.MarshalJson(evidences)
+	if err != nil {
+		return fmt.Errorf("event: failed to marshal evidences: %w", err)
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return err
+	}
+
+	// Two distinct empty states have to be normalised before concatenating.
+	// A SQL NULL would make the whole expression NULL. A jsonb 'null' would
+	// not — `'null'::jsonb || '[{...}]'::jsonb` yields `[null, {...}]`, which
+	// keeps the evidence but leaves a junk null element in the array for every
+	// consumer to skip. The CASE covers both; coalesce alone only covers the
+	// first.
+	res, err := dbms.Db.Exec(
+		`UPDATE events
+		    SET evidences = CASE
+		            WHEN evidences IS NULL OR evidences = 'null'::jsonb THEN '[]'::jsonb
+		            ELSE evidences
+		        END || $1::jsonb,
+		        updated_at = $2
+		  WHERE id = $3`,
+		string(evidencesJson), time.Now().UTC(), eventId)
+	if err != nil {
+		return fmt.Errorf("event: failed to append evidences: %w", err)
+	}
+	if affected, aerr := res.RowsAffected(); aerr == nil && affected == 0 {
+		return fmt.Errorf("event %s not found", eventId)
+	}
+
+	slog.Info("event: appended evidences", "event_id", eventId, "count", len(evidences))
+	return nil
 }

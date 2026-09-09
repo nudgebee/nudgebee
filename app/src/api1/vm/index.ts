@@ -285,6 +285,15 @@ mutation ScanVm($accountId: String!, $datasourceId: String!, $cloudResourceId: S
   }
 }`;
 
+const SCAN_VM_ACCOUNT = `
+mutation ScanVmAccount($accountId: String!) {
+  security_scan_vm_account(object: {
+    account_id: $accountId
+  }) {
+    data
+  }
+}`;
+
 const safeParse = (value: any) => {
   if (typeof value !== 'string') return value;
   try {
@@ -316,8 +325,8 @@ const GROUPING_DIMENSIONS: Record<VmVulnerabilityGrouping, { groupBy: string[]; 
   vm: { groupBy: ['resource_id', 'resource_name'], key: 'resource_id', label: 'resource_name', canListVms: false },
 };
 
-const vmVulnerabilityWhere = (accountId: string, extra: Record<string, any> = {}) => ({
-  account_id: { _eq: accountId },
+const vmVulnerabilityWhere = (accountId: string | string[], extra: Record<string, any> = {}) => ({
+  account_id: Array.isArray(accountId) ? { _in: accountId } : { _eq: accountId },
   rule_name: { _eq: VM_VULNERABILITY_RULE },
   status: { _in: OPEN_STATUSES },
   ...extra,
@@ -419,7 +428,7 @@ const apiVm = {
     limit = 10,
     offset = 0,
   }: {
-    accountId: string;
+    accountId: string | string[];
     cloudResourceId?: string;
     vulnId?: string;
     packageName?: string;
@@ -463,7 +472,7 @@ const apiVm = {
     includeVms = false,
     orderBy = 'severity',
   }: {
-    accountId: string;
+    accountId: string | string[];
     grouping: VmVulnerabilityGrouping;
     cloudResourceId?: string;
     vulnId?: string;
@@ -517,7 +526,7 @@ const apiVm = {
   },
 
   /** Open-finding counts keyed by severity, for the page's summary tiles. */
-  async getSeverityCounts({ accountId, cloudResourceId }: { accountId: string; cloudResourceId?: string }) {
+  async getSeverityCounts({ accountId, cloudResourceId }: { accountId: string | string[]; cloudResourceId?: string }) {
     const extra = cloudResourceId ? { resource_id: { _eq: cloudResourceId } } : {};
     const where = vmVulnerabilityWhere(accountId, extra);
     const query = VULNERABILITY_GROUPINGS.replaceAll('__WHERE__', gqlStringify(where)).replaceAll('__GROUP_BY__', '["severity"]');
@@ -609,6 +618,20 @@ const apiVm = {
       throw new Error(errors[0]?.message || 'Failed to start VM scan');
     }
     return response?.data?.data?.security_scan_vm?.data || [];
+  },
+
+  /**
+   * Fire an on-demand scan for every instance reachable by the account's
+   * discovery datasource(s). Same ack-now/runs-detached contract as scanVm;
+   * fails with a clear error when no discovery agent is configured.
+   */
+  async scanVmAccount({ accountId }: { accountId: string }) {
+    const response = await queryGraphQL(SCAN_VM_ACCOUNT, 'ScanVmAccount', { accountId });
+    const errors = response?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message || 'Failed to start account scan');
+    }
+    return response?.data?.data?.security_scan_vm_account?.data || [];
   },
 };
 

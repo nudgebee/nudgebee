@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/samber/lo"
 )
 
 func lambdaStatusToNbStatus(status *string) providers.ResourceStatus {
@@ -70,7 +72,7 @@ func (a *awsLambda) GetResources(ctx providers.CloudProviderContext, account pro
 	// Loop for Pagination
 	paginator := lambda.NewListFunctionsPaginator(svc, &lambda.ListFunctionsInput{})
 	for paginator.HasMorePages() {
-		instances, err := paginator.NextPage(context.TODO())
+		instances, err := paginator.NextPage(ctx.GetContext())
 		if err != nil {
 			ctx.GetLogger().Error("failed to fetch lambda resources", "error", err, "accountNumber", account.AccountNumber, "region", region)
 			// Return resources collected so far if pagination fails mid-way
@@ -88,97 +90,199 @@ func (a *awsLambda) GetResources(ctx providers.CloudProviderContext, account pro
 				continue
 			}
 
-			tags := make(map[string][]string)
-			result, err := svc.ListTags(context.TODO(), &lambda.ListTagsInput{
-				Resource: instance.FunctionArn,
-			})
-			if err != nil {
-				// Log warning for non-critical tag fetch failure
-				ctx.GetLogger().Warn("failed to fetch lambda tags", "error", err, "functionArn", *instance.FunctionArn, "accountNumber", account.AccountNumber, "region", region)
-			} else {
-				for k, v := range result.Tags {
-					tags[k] = append(tags[k], v)
-				}
-			}
-
-			// Use LastModified as CreatedAt proxy, handle parsing error gracefully
-			createdAt := time.Time{} // Zero time as fallback
-			if instance.LastModified != nil {
-				parsedTime, err := time.Parse("2006-01-02T15:04:05.999+0000", *instance.LastModified)
-				if err != nil {
-					// Log warning on parse failure, use zero time
-					ctx.GetLogger().Warn("failed to parse LastModified time", "error", err, "functionArn", *instance.FunctionArn, "lastModified", *instance.LastModified)
-				} else {
-					createdAt = parsedTime
-				}
-			}
-
-			metaMap := structToMap(instance)
-
-			// --- Fetch Additional Details ---
-
-			// Function URL Configs
-			functionUrls, err := svc.ListFunctionUrlConfigs(context.TODO(), &lambda.ListFunctionUrlConfigsInput{
-				FunctionName: instance.FunctionName,
-			})
-			if err != nil {
-				// Log warning for non-critical failure
-				ctx.GetLogger().Warn("failed to fetch lambda function urls", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
-			} else {
-				metaMap["FunctionUrls"] = functionUrls.FunctionUrlConfigs
-			}
-
-			// Function Concurrency
-			concurrency, err := svc.GetFunctionConcurrency(context.TODO(), &lambda.GetFunctionConcurrencyInput{
-				FunctionName: instance.FunctionName,
-			})
-			if err != nil {
-				// Log warning for non-critical failure (might error if not set)
-				ctx.GetLogger().Warn("failed to fetch lambda concurrency", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
-			} else {
-				metaMap["Concurrency"] = concurrency.ReservedConcurrentExecutions
-			}
-
-			// Provisioned Concurrency
-			// Note: ListProvisionedConcurrencyConfigs might require specific permissions
-			provisionedConcurrency, err := svc.ListProvisionedConcurrencyConfigs(context.TODO(), &lambda.ListProvisionedConcurrencyConfigsInput{
-				FunctionName: instance.FunctionName,
-			})
-			if err != nil {
-				// Log warning for non-critical failure (might error if none exist)
-				ctx.GetLogger().Warn("failed to fetch lambda provisioned concurrency", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
-			} else {
-				metaMap["ProvisionedConcurrency"] = provisionedConcurrency.ProvisionedConcurrencyConfigs
-			}
-
-			// Fetch Network Interfaces (ENIs) for VPC Lambda functions
-			if instance.VpcConfig != nil && instance.VpcConfig.VpcId != nil {
-				enis, privateIPs := fetchLambdaENIs(ctx, ec2Svc, *instance.FunctionName, account.AccountNumber, region)
-				if len(enis) > 0 {
-					metaMap["NetworkInterfaceIds"] = enis
-					ctx.GetLogger().Info("fetched Lambda ENIs", "functionName", *instance.FunctionName, "enis", enis, "privateIPs", privateIPs)
-				}
-				if len(privateIPs) > 0 {
-					metaMap["PrivateIpAddresses"] = privateIPs
-				}
-			}
-
-			resource := providers.Resource{
-				Id:          *instance.FunctionName,
-				ServiceName: ServiceNameLambda,
-				Name:        *instance.FunctionName,
-				Status:      lambdaStatusToNbStatus((*string)(&instance.State)),
-				Region:      region,
-				Tags:        tags,
-				Meta:        metaMap,
-				Arn:         *instance.FunctionArn,
-				CreatedAt:   createdAt, // Using parsed LastModified or zero time
-				Type:        getAwsServiceResourceType(ServiceNameLambda, "function"),
-			}
-			resources = append(resources, resource)
+			resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, account, region))
 		}
 	}
 	return resources, nil
+}
+
+// GetResourcesByIds fetches specific Lambda functions by name without a full region scan.
+//
+// Without this, ListResources falls back to DefaultAwsServiceImpl.GetResourcesByIds ->
+// ErrUnsupported -> a full ListFunctions sweep plus four serial API calls per function.
+// On the EventBridge path that is one whole-region inventory scan per delivered message:
+// a bulk delete of ~109 functions stalled the SQS consumer for 57 minutes because
+// processBatchConcurrent waits for the slowest message in each batch.
+func (a *awsLambda) GetResourcesByIds(ctx providers.CloudProviderContext, account providers.Account, region string, resourceIds []string) ([]providers.Resource, error) {
+	resourceIds = lo.Uniq(resourceIds)
+	if len(resourceIds) == 0 {
+		// Nothing to look up. Deliberately not ErrUnsupported: that word means
+		// "this service has no targeted fetch" and sends ListResources back to a
+		// full region scan.
+		return []providers.Resource{}, nil
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Region = region
+	svc := lambda.NewFromConfig(cfg)
+	ec2Svc := ec2.NewFromConfig(cfg)
+
+	resources := []providers.Resource{}
+	for _, id := range resourceIds {
+		out, err := svc.GetFunction(ctx.GetContext(), &lambda.GetFunctionInput{FunctionName: aws.String(id)})
+		if err != nil {
+			// "Gone" and "could not look it up" must not collapse into the same
+			// empty result. ListResources re-runs the full region scan when this
+			// method errors, and callers read a nil error as authoritative: an
+			// empty, no-error result makes updateCloudResource fall through to its
+			// params-only branch, whose UPSERT overwrites cloud_resourses.tags with
+			// '{}'. So a denied or throttled GetFunction would silently wipe the
+			// stored tags of a function that still exists.
+			//
+			// A function deleted between the event firing and this lookup is the
+			// normal case on Resource_Sync_Lambda_Function_Change, and is genuinely
+			// gone: skip it, and keep the fast path that this method exists for.
+			// Anything else is a lookup failure — return it and let ListResources
+			// fall back to the full scan, exactly as before this method existed.
+			var notFound *lambdatypes.ResourceNotFoundException
+			if errors.As(err, &notFound) {
+				ctx.GetLogger().Info("GetResourcesByIds: lambda function not found, skipping", "functionName", id, "accountNumber", account.AccountNumber, "region", region)
+				continue
+			}
+			ctx.GetLogger().Error("GetResourcesByIds: failed to get lambda function, falling back to full scan", "error", err, "functionName", id, "accountNumber", account.AccountNumber, "region", region)
+			return nil, fmt.Errorf("failed to get lambda function %s: %w", id, err)
+		}
+		if out.Configuration == nil || out.Configuration.FunctionName == nil || out.Configuration.FunctionArn == nil {
+			continue
+		}
+
+		instance := *out.Configuration
+		clearGetFunctionOnlyFields(&instance)
+
+		resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, account, region))
+	}
+	return resources, nil
+}
+
+// clearGetFunctionOnlyFields zeroes the fields GetFunction populates and
+// ListFunctions does not, so a targeted lookup builds the same row as the bulk
+// sync. The list is the SDK's own, from the ListFunctions doc comment: "The
+// ListFunctions operation returns a subset of the FunctionConfiguration fields.
+// To get the additional fields (State, StateReasonCode, StateReason,
+// LastUpdateStatus, LastUpdateStatusReason, LastUpdateStatusReasonCode,
+// RuntimeVersionConfig) for a function or version, use GetFunction."
+//
+// structToMap marshals the whole struct into Meta with no omitempty, and the
+// UPSERT merges Meta with `||`, so anything left populated here would stick to
+// the row as a key the periodic sync never writes or refreshes. State matters
+// twice over: lambdaStatusToNbStatus maps empty to Active deliberately (see its
+// comment), so keeping it would also flip the stored status for Inactive and
+// Failed functions depending on which path last touched the row.
+//
+// Surfacing these fields is a real improvement, but it has to move both paths
+// together — otherwise the row's contents depend on which one wrote it last.
+func clearGetFunctionOnlyFields(fn *lambdatypes.FunctionConfiguration) {
+	fn.State = ""
+	fn.StateReason = nil
+	fn.StateReasonCode = ""
+	fn.LastUpdateStatus = ""
+	fn.LastUpdateStatusReason = nil
+	fn.LastUpdateStatusReasonCode = ""
+	fn.RuntimeVersionConfig = nil
+}
+
+// buildLambdaResource enriches one function configuration into a providers.Resource.
+// Shared by GetResources and GetResourcesByIds so the full-scan and targeted paths
+// produce identical rows — updateCloudResource writes the result straight into
+// cloud_resourses, and any shape difference between the two shows up as row churn.
+func buildLambdaResource(
+	ctx providers.CloudProviderContext,
+	svc *lambda.Client,
+	ec2Svc *ec2.Client,
+	instance lambdatypes.FunctionConfiguration,
+	account providers.Account,
+	region string,
+) providers.Resource {
+	tags := make(map[string][]string)
+	result, err := svc.ListTags(ctx.GetContext(), &lambda.ListTagsInput{
+		Resource: instance.FunctionArn,
+	})
+	if err != nil {
+		// Log warning for non-critical tag fetch failure
+		ctx.GetLogger().Warn("failed to fetch lambda tags", "error", err, "functionArn", *instance.FunctionArn, "accountNumber", account.AccountNumber, "region", region)
+	} else {
+		for k, v := range result.Tags {
+			tags[k] = append(tags[k], v)
+		}
+	}
+
+	// Use LastModified as CreatedAt proxy, handle parsing error gracefully
+	createdAt := time.Time{} // Zero time as fallback
+	if instance.LastModified != nil {
+		parsedTime, err := time.Parse("2006-01-02T15:04:05.999+0000", *instance.LastModified)
+		if err != nil {
+			// Log warning on parse failure, use zero time
+			ctx.GetLogger().Warn("failed to parse LastModified time", "error", err, "functionArn", *instance.FunctionArn, "lastModified", *instance.LastModified)
+		} else {
+			createdAt = parsedTime
+		}
+	}
+
+	metaMap := structToMap(instance)
+
+	// --- Fetch Additional Details ---
+
+	// Function URL Configs
+	functionUrls, err := svc.ListFunctionUrlConfigs(ctx.GetContext(), &lambda.ListFunctionUrlConfigsInput{
+		FunctionName: instance.FunctionName,
+	})
+	if err != nil {
+		// Log warning for non-critical failure
+		ctx.GetLogger().Warn("failed to fetch lambda function urls", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
+	} else {
+		metaMap["FunctionUrls"] = functionUrls.FunctionUrlConfigs
+	}
+
+	// Function Concurrency
+	concurrency, err := svc.GetFunctionConcurrency(ctx.GetContext(), &lambda.GetFunctionConcurrencyInput{
+		FunctionName: instance.FunctionName,
+	})
+	if err != nil {
+		// Log warning for non-critical failure (might error if not set)
+		ctx.GetLogger().Warn("failed to fetch lambda concurrency", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
+	} else {
+		metaMap["Concurrency"] = concurrency.ReservedConcurrentExecutions
+	}
+
+	// Provisioned Concurrency
+	// Note: ListProvisionedConcurrencyConfigs might require specific permissions
+	provisionedConcurrency, err := svc.ListProvisionedConcurrencyConfigs(ctx.GetContext(), &lambda.ListProvisionedConcurrencyConfigsInput{
+		FunctionName: instance.FunctionName,
+	})
+	if err != nil {
+		// Log warning for non-critical failure (might error if none exist)
+		ctx.GetLogger().Warn("failed to fetch lambda provisioned concurrency", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
+	} else {
+		metaMap["ProvisionedConcurrency"] = provisionedConcurrency.ProvisionedConcurrencyConfigs
+	}
+
+	// Fetch Network Interfaces (ENIs) for VPC Lambda functions
+	if instance.VpcConfig != nil && instance.VpcConfig.VpcId != nil {
+		enis, privateIPs := fetchLambdaENIs(ctx, ec2Svc, *instance.FunctionName, account.AccountNumber, region)
+		if len(enis) > 0 {
+			metaMap["NetworkInterfaceIds"] = enis
+			ctx.GetLogger().Info("fetched Lambda ENIs", "functionName", *instance.FunctionName, "enis", enis, "privateIPs", privateIPs)
+		}
+		if len(privateIPs) > 0 {
+			metaMap["PrivateIpAddresses"] = privateIPs
+		}
+	}
+
+	return providers.Resource{
+		Id:          *instance.FunctionName,
+		ServiceName: ServiceNameLambda,
+		Name:        *instance.FunctionName,
+		Status:      lambdaStatusToNbStatus((*string)(&instance.State)),
+		Region:      region,
+		Tags:        tags,
+		Meta:        metaMap,
+		Arn:         *instance.FunctionArn,
+		CreatedAt:   createdAt, // Using parsed LastModified or zero time
+		Type:        getAwsServiceResourceType(ServiceNameLambda, "function"),
+	}
 }
 
 // fetchLambdaENIs fetches network interfaces for a Lambda function by searching for ENIs
@@ -187,7 +291,7 @@ func fetchLambdaENIs(ctx providers.CloudProviderContext, ec2Svc *ec2.Client, fun
 	// Lambda ENIs have description format: "AWS Lambda VPC ENI-{FunctionName}-{UUID}"
 	descriptionPattern := fmt.Sprintf("AWS Lambda VPC ENI-%s-*", functionName)
 
-	eniOutput, err := ec2Svc.DescribeNetworkInterfaces(context.TODO(), &ec2.DescribeNetworkInterfacesInput{
+	eniOutput, err := ec2Svc.DescribeNetworkInterfaces(ctx.GetContext(), &ec2.DescribeNetworkInterfacesInput{
 		Filters: []ec2types.Filter{
 			{
 				Name:   aws.String("description"),
@@ -266,7 +370,7 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 			recommendation := providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryConfiguration,
 				RuleName:            "aws_lambda_dead_letter_queue",
-				Severity:            providers.RecommendationSeverityHigh,
+				Severity:            providers.RecommendationSeverityLow,
 				Savings:             0,
 				Data:                nil,
 				Action:              providers.RecommendationActionModify,
@@ -283,7 +387,7 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 			recommendation := providers.Recommendation{
 				CategoryName:        providers.RecommendationCategorySecurity,
 				RuleName:            "aws_lambda_environment_variable_encryption",
-				Severity:            providers.RecommendationSeverityHigh,
+				Severity:            providers.RecommendationSeverityLow,
 				Savings:             0,
 				Data:                nil,
 				Action:              providers.RecommendationActionModify,
@@ -300,7 +404,7 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 			recommendation := providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryConfiguration,
 				RuleName:            "aws_lambda_provisioned_concurrency",
-				Severity:            providers.RecommendationSeverityHigh,
+				Severity:            providers.RecommendationSeverityLow,
 				Savings:             0,
 				Data:                nil,
 				Action:              providers.RecommendationActionModify,
@@ -317,7 +421,7 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 			recommendation := providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryConfiguration,
 				RuleName:            "aws_lambda_reserved_concurrency",
-				Severity:            providers.RecommendationSeverityHigh,
+				Severity:            providers.RecommendationSeverityLow,
 				Savings:             0,
 				Data:                nil,
 				Action:              providers.RecommendationActionModify,
@@ -337,7 +441,7 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 						recommendation := providers.Recommendation{
 							CategoryName:        providers.RecommendationCategoryInfraUpgrade,
 							RuleName:            "aws_lambda_deprecated_runtime",
-							Severity:            providers.RecommendationSeverityHigh,
+							Severity:            providers.RecommendationSeverityMedium,
 							Savings:             0,
 							Data:                nil,
 							Action:              providers.RecommendationActionModify,
@@ -359,7 +463,7 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 			recommendation := providers.Recommendation{
 				CategoryName:        providers.RecommendationCategoryConfiguration,
 				RuleName:            "aws_lambda_tracing",
-				Severity:            providers.RecommendationSeverityHigh,
+				Severity:            providers.RecommendationSeverityLow,
 				Savings:             0,
 				Data:                nil,
 				Action:              providers.RecommendationActionModify,

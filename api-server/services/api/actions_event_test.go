@@ -70,10 +70,6 @@ func TestProcessEventTriage(t *testing.T) {
 	duplicates, err := triage.GetDuplicateChain(context.Background(), dbms.Db, eventId, tenantID)
 	assert.Nil(t, err)
 	t.Logf("Event triage completed - Duplicate chain length: %d", len(duplicates))
-
-	correlations, err := triage.GetCorrelatedEvents(context.Background(), dbms.Db, eventId, tenantID)
-	assert.Nil(t, err)
-	t.Logf("Event triage completed - Correlated events: %d", len(correlations))
 }
 
 func TestBackfillTriage(t *testing.T) {

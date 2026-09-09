@@ -20,11 +20,36 @@ from server.metrics.prometheus_metrics import Prometheus
 
 # from prometheus_api_client import PrometheusConnect
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
 
+
+def _tuning_env(name: str, legacy_name: str, default: str) -> str:
+    """Read a tuning knob, still honouring the name it had before the rename.
+
+    Neither knob is documented or set anywhere in this repo, but the chart renders
+    `.Values.env` verbatim, so an install can set either name from a values file we do
+    not control. Without this, renaming would silently drop an operator's override back
+    to the default. Remove the legacy lookup once no install predates the rename.
+    """
+    value = os.environ.get(name)
+    if value is not None:
+        return value
+    legacy_value = os.environ.get(legacy_name)
+    if legacy_value is not None:
+        logger.warning(f"{legacy_name} is deprecated and will be removed; use {name} instead")
+        return legacy_value
+    return default
+
+
+# Resolved once at import. Neither knob can change at runtime, and reading them per call would
+# repeat the deprecation warning for every workload of every scan.
 # Global semaphore to limit concurrent relay server requests
 # This prevents overwhelming the relay/agent when multiple ML server replicas are running
-MAX_CONCURRENT_RELAY_REQUESTS = int(os.environ.get("KRR_MAX_CONCURRENT_RELAY_REQUESTS", "10"))
+MAX_CONCURRENT_RELAY_REQUESTS = int(
+    _tuning_env("RIGHTSIZING_MAX_CONCURRENT_RELAY_REQUESTS", "KRR_MAX_CONCURRENT_RELAY_REQUESTS", "10")
+)
+# How many pod owners are packed into a single Prometheus query by load_pods
+OWNER_BATCH_SIZE = int(_tuning_env("RIGHTSIZING_OWNER_BATCH_SIZE", "KRR_OWNER_BATCH_SIZE", "100"))
 _relay_semaphore: asyncio.Semaphore | None = None
 
 
@@ -298,7 +323,7 @@ class PrometheusMetricsService(MetricsService):
             pod_owner_kind = object.kind
 
         related_pods_result = []
-        batch_size = int(os.environ.get("KRR_OWNER_BATCH_SIZE", 100))
+        batch_size = OWNER_BATCH_SIZE
         for owner_group in batched(pod_owners, batch_size):
             owners_regex = "|".join(owner_group)
             related_pods_result_item = await self.query_range(
@@ -324,21 +349,48 @@ class PrometheusMetricsService(MetricsService):
         current_pods_set = set()
         del related_pods_result
 
-        for pod_group in batched(related_pods, 100):
-            group_regex = "|".join(pod_group)
-            pods_status_result = await self.query_range(
-                f"""
+        # "Currently running" must be an INSTANT check. The previous query_range
+        # over the whole history period marked every pod that was Running at ANY
+        # step in the window as not-deleted, so current_pods_count counted every
+        # pod incarnation from every deploy/restart in the last N days — and the
+        # estimated-savings replica multiplier scaled by dozens instead of the
+        # live replica count (a 2-replica deployment with daily rollouts
+        # reported ~45 "replicas" and a ~22x inflated saving).
+        # Batches are independent and the relay semaphore already bounds
+        # concurrency, so they run in parallel.
+        def liveness_query(group_regex: str) -> str:
+            return f"""
                     kube_pod_status_phase{{
                         phase="Running",
                         pod=~"{group_regex}",
                         namespace="{object.namespace}",
                         {cluster_label}
                     }} == 1
-                """,
-                start=datetime.now() - period,
-                end=datetime.now(),
-                step=timedelta(hours=1),
-            )
-            current_pods_set |= {pod["metric"]["pod"] for pod in pods_status_result}
-            del pods_status_result
+                """
+
+        async def instant_batch(pod_group: Iterable[str]) -> set[str]:
+            result = await self.query(liveness_query("|".join(pod_group)))
+            return {pod["metric"]["pod"] for pod in result}
+
+        for batch_pods in await asyncio.gather(*(instant_batch(g) for g in batched(related_pods, 100))):
+            current_pods_set |= batch_pods
+
+        # A transient scrape gap can make the instant vector empty even though
+        # pods are running; fall back to the last hour so a momentary gap
+        # degrades to slightly-stale liveness rather than zero live pods.
+        if not current_pods_set and related_pods:
+            now = datetime.now()
+
+            async def range_batch(pod_group: Iterable[str]) -> set[str]:
+                result = await self.query_range(
+                    liveness_query("|".join(pod_group)),
+                    start=now - timedelta(hours=1),
+                    end=now,
+                    step=timedelta(minutes=15),
+                )
+                return {pod["metric"]["pod"] for pod in result}
+
+            for batch_pods in await asyncio.gather(*(range_batch(g) for g in batched(related_pods, 100))):
+                current_pods_set |= batch_pods
+
         return list({PodData(name=pod, deleted=pod not in current_pods_set) for pod in related_pods})

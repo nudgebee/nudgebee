@@ -402,6 +402,147 @@ func (p *PodSynthesizer) IsPodSeed(tenantID, nodeID string) bool {
 	return found
 }
 
+// WorkloadRollup is one (node, workload) placement group from k8s_pods: the
+// workload identity plus how many of its pods are scheduled on that node.
+type WorkloadRollup struct {
+	NodeName     string
+	WorkloadName string
+	WorkloadType string
+	Namespace    string
+	PodCount     int
+}
+
+// identityKey is the join key WorkloadEntitiesByIdentity keys its result by.
+func (r WorkloadRollup) identityKey() string {
+	return r.Namespace + "|" + r.WorkloadType + "|" + r.WorkloadName
+}
+
+// WorkloadRollupForNodes groups live pod placement by owning workload for a set
+// of k8s node names in one query — the blast-radius rollup's data source.
+// Pods with no owning workload (workload_name = ”) are excluded: they cannot
+// be rolled up to anything.
+func (p *PodSynthesizer) WorkloadRollupForNodes(tenantID, cloudAccountID string, nodeNames []string) ([]WorkloadRollup, error) {
+	if p == nil || p.db == nil || tenantID == "" || cloudAccountID == "" || len(nodeNames) == 0 {
+		return nil, nil
+	}
+	rows, err := p.db.Query(`
+		SELECT
+			node_name,
+			workload_name,
+			COALESCE(workload_type, '') AS workload_type,
+			namespace,
+			COUNT(*)                    AS pod_count
+		FROM public.k8s_pods
+		WHERE node_name        = ANY($1)
+		  AND tenant_id        = $2::uuid
+		  AND cloud_account_id = $3::uuid
+		  AND is_active        = true
+		  AND workload_name    <> ''
+		GROUP BY node_name, workload_name, workload_type, namespace
+		ORDER BY node_name, namespace, workload_name`,
+		pq.Array(nodeNames), tenantID, cloudAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("pod_synthesizer rollup query: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			p.logger.Warn("pod_synthesizer: rollup rows close failed", "error", closeErr)
+		}
+	}()
+
+	var out []WorkloadRollup
+	for rows.Next() {
+		var r WorkloadRollup
+		if err := rows.Scan(&r.NodeName, &r.WorkloadName, &r.WorkloadType, &r.Namespace, &r.PodCount); err != nil {
+			return nil, fmt.Errorf("pod_synthesizer rollup scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pod_synthesizer rollup iter: %w", err)
+	}
+	return out, nil
+}
+
+// WorkloadEntitiesByIdentity resolves rollup groups to persisted Workload
+// entities in one query, keyed by identityKey(). Only groups whose kind can
+// have a Workload entity (supportedManagesKinds) are looked up; the rest are
+// absent from the result and the caller surfaces them by identity alone.
+func (p *PodSynthesizer) WorkloadEntitiesByIdentity(tenantID, cloudAccountID string, rollups []WorkloadRollup) (map[string]*DbNode, error) {
+	if p == nil || p.db == nil || tenantID == "" || cloudAccountID == "" || len(rollups) == 0 {
+		return nil, nil
+	}
+	var names, kinds, namespaces []string
+	seen := map[string]bool{}
+	for _, r := range rollups {
+		if !supportedManagesKinds[r.WorkloadType] {
+			continue
+		}
+		key := r.identityKey()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		names = append(names, r.WorkloadName)
+		kinds = append(kinds, r.WorkloadType)
+		namespaces = append(namespaces, r.Namespace)
+	}
+	if len(names) == 0 {
+		return map[string]*DbNode{}, nil
+	}
+
+	rows, err := p.db.Query(`
+		SELECT n.id, n.created_at, n.updated_at, n.properties, n.labels, n.query_attributes,
+		       n.cloud_account_id, n.tenant_id, n.unique_key, n.node_type, n.level, COALESCE(n.source, '')
+		FROM public.knowledge_graph_node n
+		JOIN unnest($3::text[], $4::text[], $5::text[]) AS t(name, kind, namespace)
+		  ON n.query_attributes->>'name'      = t.name
+		 AND n.properties->>'kind'            = t.kind
+		 AND n.query_attributes->>'namespace' = t.namespace
+		WHERE n.tenant_id        = $1::uuid
+		  AND n.cloud_account_id = $2::uuid
+		  AND n.node_type        = 'Workload'
+		  AND n.source           = 'k8s'
+		  AND n.is_active        = true`,
+		tenantID, cloudAccountID, pq.Array(names), pq.Array(kinds), pq.Array(namespaces))
+	if err != nil {
+		return nil, fmt.Errorf("pod_synthesizer workload lookup: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			p.logger.Warn("pod_synthesizer: workload lookup rows close failed", "error", closeErr)
+		}
+	}()
+
+	out := map[string]*DbNode{}
+	for rows.Next() {
+		node := &DbNode{}
+		var propertiesJSON, labelsJSON, queryAttributesJSON []byte
+		if err := rows.Scan(
+			&node.ID, &node.CreatedAt, &node.UpdatedAt,
+			&propertiesJSON, &labelsJSON, &queryAttributesJSON,
+			&node.CloudAccountID, &node.TenantID, &node.UniqueKey,
+			&node.NodeType, &node.Level, &node.Source,
+		); err != nil {
+			return nil, fmt.Errorf("pod_synthesizer workload lookup scan: %w", err)
+		}
+		_ = json.Unmarshal(propertiesJSON, &node.Properties)
+		_ = json.Unmarshal(labelsJSON, &node.Labels)
+		_ = json.Unmarshal(queryAttributesJSON, &node.QueryAttributes)
+		kind, _ := node.Properties["kind"].(string)
+		namespace, wlName := "", ""
+		if node.QueryAttributes != nil {
+			namespace, _ = node.QueryAttributes["namespace"].(string)
+			wlName, _ = node.QueryAttributes["name"].(string)
+		}
+		out[namespace+"|"+kind+"|"+wlName] = node
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pod_synthesizer workload lookup iter: %w", err)
+	}
+	return out, nil
+}
+
 // ---------- internals ----------
 
 // capLimit translates the caller's maxPods into a SQL LIMIT. A value

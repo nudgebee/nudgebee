@@ -126,27 +126,48 @@ func credResolver() CredResolver {
 	return credResolverHook
 }
 
-// customProviderHook resolves a tenant's custom OpenAI-compatible upstream (an
-// llm_gateway integration) for an addressed model: the lane to route it on (vLLM) and a
-// per-request DirectKey carrying the upstream's base URL + token. ok=false means the
-// model is not a configured custom upstream. Registered by the EE providers package;
-// nil on the OSS build (no custom upstreams).
+// modelResolverHook resolves a tenant's explicit client-facing model mapping to its provider,
+// exact integration credential, and served model. Custom endpoints additionally return a path
+// override when needed. It is nil on the OSS build (no tenant integration mappings).
 // The urlPath return overrides the vLLM lane's request path (set on the Bifrost context by
 // the resolver stage); it is empty for an ordinary custom endpoint and non-empty only for a
 // vertex_openai upstream that must dial Vertex's openapi path.
-var customProviderHook func(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, bool)
+var modelResolverHook func(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, string, bool)
 
-// RegisterCustomProviderResolver registers the custom-upstream resolver (EE).
-func RegisterCustomProviderResolver(fn func(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, bool)) {
-	customProviderHook = fn
+// ModelCatalogEntry describes one tenant-configured callable model name. The generic
+// /v1/models endpoint merges these entries with its static advisory catalog.
+type ModelCatalogEntry struct {
+	ID          string
+	Provider    schemas.ModelProvider
+	ServedModel string
+	Integration string
 }
 
-// resolveCustomProvider consults the registered custom-upstream resolver, if any.
-func resolveCustomProvider(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, bool) {
-	if customProviderHook == nil {
-		return "", schemas.Key{}, "", false
+var modelCatalogResolverHook func(tenantID string) []ModelCatalogEntry
+
+// RegisterModelResolver registers the provider-independent model-mapping resolver (EE).
+func RegisterModelResolver(fn func(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, string, bool)) {
+	modelResolverHook = fn
+}
+
+// RegisterModelCatalogResolver registers the EE tenant model catalog provider.
+func RegisterModelCatalogResolver(fn func(tenantID string) []ModelCatalogEntry) {
+	modelCatalogResolverHook = fn
+}
+
+func resolveModelCatalog(tenantID string) []ModelCatalogEntry {
+	if modelCatalogResolverHook == nil {
+		return nil
 	}
-	return customProviderHook(tenantID, model)
+	return modelCatalogResolverHook(tenantID)
+}
+
+// resolveModelMapping consults the registered tenant model-mapping resolver, if any.
+func resolveModelMapping(tenantID, model string) (schemas.ModelProvider, schemas.Key, string, string, bool) {
+	if modelResolverHook == nil {
+		return "", schemas.Key{}, "", "", false
+	}
+	return modelResolverHook(tenantID, model)
 }
 
 // resolverStage injects the tenant's provider credential for THIS request. When one
@@ -158,18 +179,44 @@ type resolverStage struct{ creds CredResolver }
 func (resolverStage) Name() string { return "resolver" }
 
 func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
-	// A custom-upstream key resolved before the pipeline (llm_gateway integration) wins:
-	// inject it verbatim (it carries its own base URL) and skip the normal lookup. A
+	// A substitution may target another explicit client-facing mapping. Resolve it
+	// after routing so the served model, exact account credential, and endpoint path
+	// move together. Otherwise discard the source mapping before falling back to the
+	// target provider's tenant/operator credential.
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		if _, key, served, path, mapped := resolveModelMapping(rc.Identity.TenantID, rc.Decision.ResolvedModel); mapped {
+			if rc.Path == embeddingsPath && path != "" {
+				rc.RejectReason = "unsupported_embeddings"
+				edgeerr.Write(rc.Gin, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request",
+					"embeddings are not supported for this Vertex (OpenAI-compatible) endpoint")
+				return true, nil
+			}
+			rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
+			if path != "" {
+				rc.Bctx.SetValue(schemas.BifrostContextKeyURLPath, path)
+			}
+			rc.MappedModel = served
+			return false, nil
+		}
+		rc.MappedModel = ""
+	}
+
+	// A model mapping resolved before the pipeline selects an exact llm_gateway integration:
+	// inject its key verbatim and skip the provider-wide lookup. A
 	// vertex_openai upstream also carries a path override so the vLLM lane dials Vertex's
 	// openapi endpoint instead of the default /v1/chat/completions.
-	if rc.DirectKey != nil {
+	if rc.DirectKey != nil && rc.Decision.Reason != routing.ReasonSubstitute {
 		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, *rc.DirectKey)
 		if rc.DirectKeyURLPath != "" {
 			rc.Bctx.SetValue(schemas.BifrostContextKeyURLPath, rc.DirectKeyURLPath)
 		}
 		return false, nil
 	}
-	if key, ok := s.creds.Resolve(rc.Ctx, rc.Provider, rc.Identity); ok {
+	provider := rc.Provider
+	if rc.Decision.Reason == routing.ReasonSubstitute {
+		provider = schemas.ModelProvider(rc.Decision.ResolvedProvider)
+	}
+	if key, ok := s.creds.Resolve(rc.Ctx, provider, rc.Identity); ok {
 		rc.Bctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		return false, nil
 	}
@@ -177,11 +224,11 @@ func (s resolverStage) Handle(rc *RequestContext) (bool, error) {
 	// account default. If we can determine that no operator credential exists either,
 	// fail fast with a clear 403 rather than letting core call the provider keyless
 	// (which surfaces to the client as a confusing upstream auth error).
-	if operatorCredsHook != nil && !operatorCredsHook(rc.Provider) {
+	if operatorCredsHook != nil && !operatorCredsHook(provider) {
 		rc.RejectReason = "no_credentials"
-		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "provider_not_configured",
+		edgeerr.Write(rc.Gin, string(provider), http.StatusForbidden, "provider_not_configured",
 			fmt.Sprintf("No %s credential is configured for your organization. Ask an administrator to add a %s key in NudgeBee integrations.",
-				rc.Provider, rc.Provider))
+				provider, provider))
 		return true, nil
 	}
 	return false, nil

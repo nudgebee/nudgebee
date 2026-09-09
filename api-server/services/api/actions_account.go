@@ -166,34 +166,6 @@ func handleAccountAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 		c.JSON(200, resp)
 		return
 
-	case "gcp_cloud_terraform":
-		var request account.AccountCreateRequest
-
-		accountRequest, err = extractNestedObject(accountRequest)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		err = common.UnmarshalMapToStruct(accountRequest, &request)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		if isReservedAccountName(request.AccountName) {
-			c.JSON(400, common.ErrorActionBadRequest("account name 'Demo' is reserved and cannot be used"))
-			return
-		}
-
-		resp, err := account.GCPOnBoardUrl(ctx, request)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		c.JSON(200, resp)
-		return
 	case "agent_token_create", "agents_create_token":
 		var request account.RegenerateAgentKeysRequest
 
@@ -374,44 +346,6 @@ func handleAccountAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			EventState:    request,
 			EventActor:    audit.EventActorApiService,
 			EventTarget:   "aws_eventbridge",
-			EventAction:   audit.EventActionCreate,
-			EventStatus:   audit.EventStatusSuccess,
-		}); err != nil {
-			ctx.GetLogger().Error("failed to publish audit event", "error", err)
-		}
-		return
-
-	case "gcp_pubsub_onboard", "gcp_get_onboard_pubsub_url":
-		var request account.GcpPubSubOnboardRequest
-
-		accountRequest, err = extractNestedObject(accountRequest)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		err = common.UnmarshalMapToStruct(accountRequest, &request)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		resp, err := account.GcpPubSubOnboardUrl(ctx, request)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		c.JSON(200, resp)
-		if err := audit.PublishAuditEvent(ctx, audit.Audit{
-			TenantId:      ctx.GetSecurityContext().GetTenantId(),
-			UserId:        ctx.GetSecurityContext().GetUserId(),
-			EventTime:     time.Now(),
-			EventCategory: audit.EventCategoryAccount,
-			EventType:     audit.EventTypeAccountCreate,
-			EventState:    request,
-			EventActor:    audit.EventActorApiService,
-			EventTarget:   "gcp_pubsub",
 			EventAction:   audit.EventActionCreate,
 			EventStatus:   audit.EventStatusSuccess,
 		}); err != nil {

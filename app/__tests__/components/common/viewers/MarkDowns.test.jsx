@@ -1,7 +1,7 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import MarkDowns from '@shared/viewers/MarkDowns';
+import MarkDowns, { escapeLoneTildes } from '@shared/viewers/MarkDowns';
 
 jest.mock('@utils/colors');
 
@@ -171,5 +171,22 @@ describe('MarkDowns', () => {
   it('renders null-safe with undefined data', () => {
     render(<MarkDowns data={undefined} />);
     expect(document.body).toBeTruthy();
+  });
+});
+
+// marked's GFM strikethrough matches a single tilde pair too, so an LLM writing
+// "~1.0%" and "~0.69%" in one paragraph struck out everything in between.
+describe('escapeLoneTildes', () => {
+  it('escapes lone tildes used as an approximation sign', () => {
+    expect(escapeLoneTildes('baseline (~1.0%) to 41.84% and back to (~0.69%).')).toBe('baseline (\\~1.0%) to 41.84% and back to (\\~0.69%).');
+  });
+
+  it('leaves real strikethrough alone', () => {
+    expect(escapeLoneTildes('a ~~struck~~ b')).toBe('a ~~struck~~ b');
+  });
+
+  it('leaves tildes inside code spans and fenced blocks alone', () => {
+    expect(escapeLoneTildes('run `cd ~/logs` first')).toBe('run `cd ~/logs` first');
+    expect(escapeLoneTildes('```\ncd ~/logs\n```')).toBe('```\ncd ~/logs\n```');
   });
 });

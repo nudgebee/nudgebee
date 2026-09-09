@@ -29,6 +29,7 @@ import AutoSuggestTextarea from '@components/k8s/common/TextAreaV2';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
 import { isFailedCachedConversation } from '@api1/ask-nudgebee';
 import { isCompleteWorkflowDefinition } from './utils/isCompleteWorkflowDefinition';
+import { readNubiConversationPointer, writeNubiConversationPointer, clearNubiConversationPointer } from './utils/nubiConversationPointer';
 import ConversationShimmer from './common/ConversationShimmer';
 import { ConversationTokenUsage } from './common/TokenUsageDisplay';
 import ConversationList from './ConversationListV2';
@@ -125,6 +126,9 @@ const KubernetesLLMResponseGenerator = ({
   drawerIsOpen = true,
   // Owns the shared localStorage "last opened conversation" pointer — global drawer only.
   persistLastSession = true,
+  // callback(sessionId) whenever the conversation on screen changes — lets the
+  // global drawer point "Open full page" at the current chat without reading cache.
+  onActiveSessionChange = undefined,
 }) => {
   const router = useRouter();
   const { assistantName, baseTitle } = useTenantBranding();
@@ -165,8 +169,8 @@ const KubernetesLLMResponseGenerator = ({
 
   const [uiState, uiDispatch] = useReducer(componentReducer, null, () => {
     let restoredSessionId = router.query.session_id || sessionId || '';
-    if (popup && persistLastSession && typeof window !== 'undefined' && !restoredSessionId) {
-      const stored = localStorage.getItem('nubi_selected_conversation_id');
+    if (popup && persistLastSession && !restoredSessionId) {
+      const stored = readNubiConversationPointer(accountId);
       if (stored) {
         restoredSessionId = stored;
       }
@@ -228,13 +232,21 @@ const KubernetesLLMResponseGenerator = ({
       return;
     }
 
-    if (!selectedSessionId && typeof window !== 'undefined') {
-      const stored = localStorage.getItem('nubi_selected_conversation_id');
+    if (!selectedSessionId) {
+      const stored = readNubiConversationPointer(accountId);
       if (stored) {
         setSelectedSessionId(stored);
       }
     }
-  }, [popup, persistLastSession, drawerIsOpen, selectedSessionId, setSelectedSessionId]);
+  }, [popup, persistLastSession, drawerIsOpen, selectedSessionId, setSelectedSessionId, accountId]);
+
+  // Report the conversation on screen upward. Deliberately NOT persisted here:
+  // merely opening the drawer onto a conversation (investigate "Ask a follow up")
+  // must not overwrite the cached "last opened" pointer — only genuine engagement
+  // (send / history-pick, below) does. "Open full page" uses this live value.
+  useEffect(() => {
+    onActiveSessionChange?.(selectedSessionId);
+  }, [selectedSessionId, onActiveSessionChange]);
 
   const isNewChat = useMemo(() => !selectedSessionId && !selectedConversationId, [selectedSessionId, selectedConversationId]);
   const { troubleShootData, optimizationData } = useClusterInsights(accountId);
@@ -445,7 +457,7 @@ const KubernetesLLMResponseGenerator = ({
             // Standardize on session_id for new chats, clear conversation_id to avoid ambiguity
             applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null }, { shallow: true });
           } else if (persistLastSession) {
-            localStorage.setItem('nubi_selected_conversation_id', llmSessionId);
+            writeNubiConversationPointer(accountId, llmSessionId);
           }
           setSelectedSessionId(llmSessionId);
           setSelectedConversationId(''); // Reset conversationId as we have a fresh session
@@ -943,7 +955,7 @@ const KubernetesLLMResponseGenerator = ({
     if (!popup) {
       applyFiltersOnRouter(router, { session_id: '', conversation_id: '' });
     } else if (persistLastSession) {
-      localStorage.removeItem('nubi_selected_conversation_id');
+      clearNubiConversationPointer();
     }
     setTimeout(() => {
       textareaRef.current?.focus();
@@ -1011,7 +1023,7 @@ const KubernetesLLMResponseGenerator = ({
         if (!popup) {
           applyFiltersOnRouter(router, { session_id: index, conversation_id: null });
         } else if (persistLastSession) {
-          localStorage.setItem('nubi_selected_conversation_id', index);
+          writeNubiConversationPointer(accountId, index);
         }
         setMessages([]);
         clearSuggestions();
@@ -1020,6 +1032,7 @@ const KubernetesLLMResponseGenerator = ({
       }
     },
     [
+      accountId,
       selectedSessionId,
       popup,
       persistLastSession,
@@ -1787,17 +1800,23 @@ const KubernetesLLMResponseGenerator = ({
                 // when the sheet is rendered so we don't have two interactive entry points for
                 // the same question.
                 followupReadOnlyKey: showFollowupSheet ? activeFollowupKey : null,
-                // When a background watch transitions to a terminal state, the
-                // responder appends a markdown "Watch update" block to the parent
-                // message's `response` column on the server. The chip poller in
-                // MessageStream detects that transition and invokes this callback
-                // so we pull the fresh message bodies — without it, the block
-                // is in the DB but the UI keeps showing the pre-terminal copy
-                // until a hard refresh. fetchConversation is the same call used
-                // for initial chat load; it's idempotent.
+                // When a background watch reaches a terminal state, the responder
+                // appends a markdown "Watch update" block to the parent message's
+                // `response` column on the server. The watch poller in MessageStream
+                // calls this until that block actually shows up, so we pull the fresh
+                // message bodies — without it the block is in the DB but the UI keeps
+                // showing the pre-terminal copy until a hard refresh.
+                //
+                // 'poll' rather than 'selected' deliberately. Both go through the same
+                // ai_get_conversation_v3 delta fetcher, but 'selected' additionally
+                // flips isLoading, clears the model picker and aborts in-flight
+                // requests — a visible flash on an otherwise settled chat, and
+                // self-cancelling once this runs more than once. 'poll' is inert here:
+                // its one side effect, SET_ALLOW_STOP, is gated behind
+                // conversationStatus === 'IN_PROGRESS' at the Stop button.
                 onWatchTerminal: () => {
                   if (selectedSessionId || selectedConversationId) {
-                    fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
+                    fetchConversation(selectedSessionId, selectedConversationId, 'poll', false);
                   }
                 },
               }}
@@ -2098,6 +2117,7 @@ KubernetesLLMResponseGenerator.propTypes = {
   historyButtonRef: PropTypes.object,
   drawerIsOpen: PropTypes.bool,
   persistLastSession: PropTypes.bool,
+  onActiveSessionChange: PropTypes.func,
 };
 
 export default KubernetesLLMResponseGenerator;

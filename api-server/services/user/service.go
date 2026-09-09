@@ -11,6 +11,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
+	"nudgebee/services/localagent"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
@@ -857,6 +858,15 @@ func addUserToGroup(db *sqlx.DB, userId, groupId string) error {
 	return err
 }
 
+// GeneratedOrgName exposes the tenant-naming rule to install-time
+// provisioning, which has to pass a tenant name explicitly to get
+// get-or-create-by-name semantics. Exported rather than duplicated so a
+// deployment provisioned at boot and one provisioned at first login end up
+// with the same tenant name for the same admin.
+func GeneratedOrgName(displayName, username string) string {
+	return generateOrgName(displayName, username)
+}
+
 func generateOrgName(displayName, username string) string {
 	if displayName != "" {
 		return strings.Split(displayName, " ")[0] + "'s Org"
@@ -1344,6 +1354,17 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 			return UserOnboardResponse{}, fmt.Errorf("error creating tenant: %w", err)
 		}
 		tenantId = resp.Id
+	}
+
+	// 2b. Register the bundled in-cluster agent, if this install ships one.
+	// This is the first point where both a tenant and a user exist, and
+	// cloud_accounts needs both. Inert unless the chart set LOCAL_AGENT_*.
+	// Logged and continued like the steps below — a failure here must not fail
+	// the login that triggered it.
+	if tenantId != "" && userId != "" {
+		if err := localagent.ReconcileForTenant(context.GetContext(), context.GetLogger(), tenantId, userId); err != nil {
+			context.GetLogger().Error("local agent registration failed; the bundled cluster will not appear until this is resolved", "error", err)
+		}
 	}
 
 	// 3. Assign role (if provided)

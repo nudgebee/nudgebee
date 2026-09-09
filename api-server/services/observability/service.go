@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -53,6 +54,23 @@ type QueryRequestKeyFilter interface {
 	GetIgnoredQueryRequestKeys() []string
 }
 
+// QueryFieldAliasSource is an optional LogSource capability for backends whose query
+// BUILDER accepts field names the backend's own field listing never reports, because
+// the builder rewrites the name before the query is sent. Elasticsearch is the only
+// one today: binaryClauseForField expands the canonical k8s names (namespace, pod,
+// container, app and _body) across every shipper spelling, and falls back from a
+// `<field>.keyword` the index does not define to its bare parent. Both work; neither
+// is in `_mapping`, so validating against the mapping alone reports them unknown and
+// tells the caller to remove a filter that is correct.
+//
+// `discovered` is the field set just resolved, so an implementation can derive aliases
+// from it. Implementations return only the EXTRA names, and must be pure: this runs
+// inside the empty-result diagnosis, which has already paid for one round trip and
+// must not pay for another.
+type QueryFieldAliasSource interface {
+	GetQueryFieldAliases(discovered []string) []string
+}
+
 type TraceSource interface {
 	QueryTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]common.OpenTelemetryTrace, error)
 	GetQuery(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (string, error)
@@ -97,6 +115,13 @@ type MetricSource interface {
 // Implemented by Prometheus/VictoriaMetrics (and, in a follow-up, Elasticsearch).
 type MetricSeriesSource interface {
 	FetchMetricSeries(ctx *security.RequestContext, fetchMetricSeriesRequest FetchMetricSeriesRequest) (MetricSeriesResult, error)
+}
+
+// MetricAggregateWrapper is an OPTIONAL capability for sources whose GetQuery does
+// not return a PromQL expression: the default wrap produces `sum(<expr>)`, which
+// corrupts e.g. Elasticsearch's JSON _search body.
+type MetricAggregateWrapper interface {
+	WrapAggregate(expr string, aggregateOperator string) (string, error)
 }
 
 func escapePromQLString(s string) string {
@@ -373,6 +398,8 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 		// GCP cloud accounts have no agent/integration row; the provider is synthesized
 		// by the resolver, so match on provider alone regardless of source.
 		return &GcpTraceSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveTraceSource{}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported traces provider/source combination: provider=%s, integrationSource=%s",
@@ -443,6 +470,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &DynatraceMetricSource{}, nil
 	case provider == "solarwinds" && integrationSource == "user":
 		return &SolarWindsMetricSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveMetricSource{}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported metric provider/source combination: provider=%s, integrationSource=%s",
@@ -620,11 +649,11 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	// runs, so a time range or other filter the backend injects during execution is not
 	// mistaken for a user-supplied label/value during validation below.
 	var referencedLabels map[string]struct{}
-	var referencedValues map[string][]string
+	var referencedValues map[string][]whereFieldValue
 	if fetchLogRequest.ValidateRequest {
 		referencedLabels = map[string]struct{}{}
 		collectWhereFieldNames(fetchLogRequest.QueryRequest.Where, referencedLabels)
-		referencedValues = map[string][]string{}
+		referencedValues = map[string][]whereFieldValue{}
 		collectWhereFieldValues(fetchLogRequest.QueryRequest.Where, referencedValues)
 	}
 
@@ -695,7 +724,12 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 	if err != nil {
-		return FetchLogsResult{}, err
+		// Carry the executed query and resolved provider even on failure: the
+		// caller records a FAILED history row from them, and the client has no
+		// other way to learn what actually ran (Builder mode sends a where
+		// clause and no query string). Logs stays nil, so callers that inspect
+		// the result after a non-nil error are unaffected.
+		return FetchLogsResult{Query: usedQuery, Provider: provider}, err
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
@@ -705,7 +739,12 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 // lineContentFields are where-clause fields that filter the log message body
 // rather than a label. They are never returned by the backends' label-key APIs,
 // so they must be excluded from label-name validation to avoid false positives.
-var lineContentFields = []string{"content", "log", "message", "body", "line", "_line"}
+//
+// `_body` is llm-server's canonical body token, appended to the advertised label
+// list unconditionally (tool_logs.go), so a reference to it is never a typo on any
+// provider. It also must not be value-checked: no backend has a field by that name
+// to aggregate. `_line` was listed here but is emitted by nothing in the repo.
+var lineContentFields = []string{"content", "log", "message", "body", "_body", "line"}
 
 // collectWhereFieldNames walks a canonical where-clause and records every field
 // name referenced by a binary condition, across nested _and / _or / _not.
@@ -730,16 +769,67 @@ func collectWhereFieldNames(where query.QueryWhereClause, out map[string]struct{
 // pattern operators (_regex / _contains / _like / …) match substrings or expressions, so
 // a "value not in the label's value list" check would false-positive on them and they are
 // skipped. Values are coerced to strings, mirroring how the backends render them.
-func collectWhereFieldValues(where query.QueryWhereClause, out map[string][]string) {
+// whereFieldValue is one filter value the caller can be diagnosed against.
+//
+// Segments nil ⇒ Raw is an equality (_eq / _in) and is matched against the label's value
+// set EXACTLY. Segments non-nil ⇒ Raw is a LIKE pattern, and a candidate is a possible
+// match iff it contains every segment. That containment is a necessary condition of a
+// match under real SQL LIKE and under every provider that degrades LIKE to a substring
+// operator, so "no candidate satisfies it" is sound under all of them and can never
+// produce a false accusation. It is deliberately looser than any backend's real
+// semantics: the only way to be wrong here is to be too strict.
+//
+// Fold is set for the case-insensitive operators (_ilike, _icontains).
+type whereFieldValue struct {
+	Raw      string
+	Segments []string
+	Fold     bool
+}
+
+// collectWhereFieldValues records the values a where-clause pins each field to, so an
+// empty result can be blamed on a value the backend has never emitted.
+//
+// Only operators whose failure EXPLAINS an empty result are collected. Negations are
+// skipped because an absent value makes them trivially true; ordinal and key-existence
+// operators are not set membership; _regex is skipped because dialect and anchoring
+// differ per backend; and the field-vs-field family is skipped because its "value" is
+// another field name, not a value at all.
+func collectWhereFieldValues(where query.QueryWhereClause, out map[string][]whereFieldValue) {
+	add := func(field string, v whereFieldValue) { out[field] = append(out[field], v) }
 	for field, ops := range where.Binary {
 		for op, val := range ops {
 			switch op {
 			case query.Eq:
-				out[field] = append(out[field], fmt.Sprintf("%v", val))
+				add(field, whereFieldValue{Raw: fmt.Sprintf("%v", val)})
 			case query.In:
 				if arr, err := toStringArray(val); err == nil {
-					out[field] = append(out[field], arr...)
+					for _, a := range arr {
+						add(field, whereFieldValue{Raw: a})
+					}
 				}
+			case query.Like, query.ILike:
+				raw := fmt.Sprintf("%v", val)
+				segments := sqlLikeSegments(raw)
+				if len(segments) == 0 {
+					// "%", "%%", "%_%" — matches everything, so it can never be the
+					// reason a query came back empty.
+					continue
+				}
+				if sqlLikeIsAnchored(raw) {
+					// No wildcards at all: LIKE is equality, so the exact path applies
+					// and gives the better (closest-value) diagnosis.
+					add(field, whereFieldValue{Raw: raw})
+					continue
+				}
+				add(field, whereFieldValue{Raw: raw, Segments: segments, Fold: op == query.ILike})
+			case query.Contains, query.IContains:
+				// Bare text, not a pattern — the providers wrap it in wildcards
+				// themselves, so it is a single literal segment.
+				raw := fmt.Sprintf("%v", val)
+				if raw == "" {
+					continue
+				}
+				add(field, whereFieldValue{Raw: raw, Segments: []string{raw}, Fold: op == query.IContains})
 			}
 		}
 	}
@@ -933,6 +1023,42 @@ func unknownReferencedLabels(referenced map[string]struct{}, availableLabels []s
 	return unknown, available
 }
 
+// queryableFieldNames returns every field name a where-clause may legitimately
+// reference for this source: the ones the backend reports, plus the aliases its query
+// BUILDER accepts and rewrites (see QueryFieldAliasSource). Returns nil when the set
+// cannot be established — callers must treat that as "cannot judge" and fail open.
+func queryableFieldNames(ctx *security.RequestContext, source LogSource, req FetchLogLabelRequest) []string {
+	names := discoveredFieldNames(ctx, source, req)
+	if len(names) == 0 {
+		// Cannot establish the real field set — fail open. Aliases alone are NEVER a
+		// field set: returning only them would flip every genuinely-correct field to
+		// "unknown", the exact false positive this path exists to prevent.
+		return nil
+	}
+	if aliasSource, ok := source.(QueryFieldAliasSource); ok {
+		// Evaluate before appending: the callee is handed `names`, and appending in
+		// the same expression could reallocate it underneath.
+		aliases := aliasSource.GetQueryFieldAliases(names)
+		names = append(names, aliases...)
+	}
+	return names
+}
+
+// discoveredFieldNames returns only the field names the backend itself reports.
+// Every source answers this through QueryLabels — Elasticsearch included, where it reads
+// the resolved index's mapping. Returns nil when the set cannot be established.
+func discoveredFieldNames(ctx *security.RequestContext, source LogSource, req FetchLogLabelRequest) []string {
+	labels, err := source.QueryLabels(ctx, req)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(labels))
+	for _, l := range labels {
+		names = append(names, l.Label)
+	}
+	return names
+}
+
 // validateReferencedLabels checks, for a query that returned no logs (or failed),
 // whether the caller's where-clause references label names the log provider does not
 // expose. `referenced` is the set of field names snapshotted BEFORE the query ran, so
@@ -941,25 +1067,25 @@ func unknownReferencedLabels(referenced map[string]struct{}, availableLabels []s
 // ones, or nil when every referenced field is recognized. Best-effort: if the
 // available label set cannot be determined, it returns nil so the original error /
 // empty result is preserved. The referenced fields are in provider label space
-// (mapping was applied upstream in FetchLogs), matching the space QueryLabels returns.
+// (mapping was applied upstream in FetchLogs), matching the space queryableFieldNames
+// returns — index _mapping fields for Elasticsearch, QueryLabels for everyone else.
 func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referenced map[string]struct{}, filteringMap map[string]string) error {
 	if len(referenced) == 0 {
 		return nil
 	}
-	labels, err := source.QueryLabels(ctx, FetchLogLabelRequest{
+	names := queryableFieldNames(ctx, source, FetchLogLabelRequest{
 		AccountId:         fetchLogRequest.AccountId,
 		LogProvider:       fetchLogRequest.LogProvider,
 		LogProviderSource: fetchLogRequest.LogProviderSource,
 		StartTime:         fetchLogRequest.StartTime,
 		EndTime:           fetchLogRequest.EndTime,
+		// Only the index travels: an index-field source needs it to read the same
+		// _mapping the query ran against.
+		Request: labelDiscoveryRequest(fetchLogRequest.Request),
 	})
-	if err != nil || len(labels) == 0 {
-		// Cannot determine the available label set — don't block the query.
+	if len(names) == 0 {
+		// Cannot determine the available field set — don't block the query.
 		return nil
-	}
-	names := make([]string, len(labels))
-	for i, l := range labels {
-		names[i] = l.Label
 	}
 	unknown, available := unknownReferencedLabels(referenced, names, filteringMap)
 	if len(unknown) == 0 {
@@ -979,14 +1105,43 @@ const valueValidationLookback = 7 * 24 * 60 * 60 // seconds
 // maxLabelValuesToScan caps how many values we pull per label before giving up on value
 // suggestion. High-cardinality labels (pod names, request ids) can have thousands of values;
 // scanning them all wastes latency and tokens, and an equality filter on such a label is
-// rarely a typo. Above the cap we fail open (no diagnosis).
-const maxLabelValuesToScan = 2000
+// rarely a typo. At or above the cap we fail open (no diagnosis).
+//
+// INVARIANT: this must stay <= the smallest per-provider value-page cap, and the check
+// must be >= (not >). A provider that truncates its own response returns exactly its page
+// size; treating that truncated page as the complete value universe would report a REAL
+// value as unknown — the precise false positive this cap exists to prevent. The binding
+// cap today is Elasticsearch's esLabelValuesTermsSize (elasticsearch_saas.go).
+const maxLabelValuesToScan = 1000
 
 // unknownValueError builds the actionable message returned when a query filters a label to a
 // value the provider has never seen. It names the label and offending value plus the closest
 // valid value(s); when nothing is close it gives action-agnostic guidance (verify or drop the
 // filter) rather than naming a listing tool the caller may not have. Never dumps the full value
 // list (token-conscious, mirroring unknownLabelError).
+// anyCandidateContainsAll reports whether any known value could possibly match the
+// pattern these segments came from.
+func anyCandidateContainsAll(candidates, segments []string, fold bool) bool {
+	for _, c := range candidates {
+		if containsAllSegments(c, segments, fold) {
+			return true
+		}
+	}
+	return false
+}
+
+// unknownPatternValueError reports a LIKE/contains filter that no known value can
+// satisfy. Suggestions are ranked against `core` — the pattern's literal text, e.g.
+// "%auth%" → "auth" — because closestValues would otherwise score the `%` characters
+// themselves. Ranking only: comparing `core` for equality is precisely the false
+// positive the segment-containment rule exists to avoid.
+func unknownPatternValueError(label, pattern, core string, candidates []string) error {
+	if suggestions := closestValues(core, candidates); len(suggestions) > 0 {
+		return fmt.Errorf("no logs matched: pattern %q for label %q matched none of its known values; closest valid value(s): %v", pattern, label, suggestions)
+	}
+	return fmt.Errorf("no logs matched: pattern %q for label %q matched no value this log provider has emitted; widen or remove this filter", pattern, label)
+}
+
 func unknownValueError(label, value string, candidates []string) error {
 	if suggestions := closestValues(value, candidates); len(suggestions) > 0 {
 		return fmt.Errorf("no logs matched: value %q for label %q not found; closest valid value(s): %v", value, label, suggestions)
@@ -1002,7 +1157,7 @@ func unknownValueError(label, value string, candidates []string) error {
 // cardinality labels, discovery errors, and empty value sets all fail open (return nil) so a
 // legitimately-empty query is never blocked. `referencedValues` is in provider label space
 // (mapping was applied upstream in FetchLogs), matching the space QueryLabelValues expects.
-func validateReferencedLabelValues(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referencedValues map[string][]string) error {
+func validateReferencedLabelValues(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, referencedValues map[string][]whereFieldValue) error {
 	if len(referencedValues) == 0 {
 		return nil
 	}
@@ -1039,9 +1194,12 @@ func validateReferencedLabelValues(ctx *security.RequestContext, source LogSourc
 			LogProviderSource: fetchLogRequest.LogProviderSource,
 			StartTime:         startTime,
 			EndTime:           endTime,
+			// Same index the log query used. nil for every non-ES provider, which is
+			// what preserves their existing (window-driven) value discovery.
+			Request: labelDiscoveryRequest(fetchLogRequest.Request),
 		})
-		// Unknown label, discovery failure, empty or high-cardinality value set → fail open.
-		if err != nil || len(labelValues) == 0 || len(labelValues) > maxLabelValuesToScan {
+		// Unknown label, discovery failure, empty or truncated/high-cardinality value set → fail open.
+		if err != nil || len(labelValues) == 0 || len(labelValues) >= maxLabelValuesToScan {
 			continue
 		}
 		valueSet := make(map[string]struct{}, len(labelValues))
@@ -1051,8 +1209,14 @@ func validateReferencedLabelValues(ctx *security.RequestContext, source LogSourc
 			candidates[i] = v.Value
 		}
 		for _, want := range referencedValues[label] {
-			if _, ok := valueSet[want]; !ok {
-				return unknownValueError(label, want, candidates)
+			if len(want.Segments) > 0 {
+				if !anyCandidateContainsAll(candidates, want.Segments, want.Fold) {
+					return unknownPatternValueError(label, want.Raw, strings.Join(want.Segments, ""), candidates)
+				}
+				continue
+			}
+			if _, ok := valueSet[want.Raw]; !ok {
+				return unknownValueError(label, want.Raw, candidates)
 			}
 		}
 	}
@@ -1194,13 +1358,19 @@ func FetchLogLabelsOrIndexFields(ctx *security.RequestContext, fetchLogRequest F
 		return FetchLogLabels(ctx, fetchLogRequest)
 	}
 
-	if fetchLogRequest.FetchIndex {
-		return FetchLogLabels(ctx, fetchLogRequest)
-	}
-
 	logSource, err := getLogSource(provider, integrationSource)
 	if err != nil {
 		return nil, err
+	}
+
+	// Index TARGETS, not fields: QueryLabels answers the field question for ES now, so
+	// the picker's listing has its own call rather than a differently-shaped QueryLabels.
+	if fetchLogRequest.FetchIndex {
+		names, err := listESIndexTargets(ctx, logSource, fetchLogRequest)
+		if err != nil {
+			return nil, err
+		}
+		return labelsFromIndexNames(names), nil
 	}
 
 	// Same default get_default_provider reports: per-account override → log_index.
@@ -1225,19 +1395,34 @@ func FetchLogLabelsOrIndexFields(ctx *security.RequestContext, fetchLogRequest F
 		"integration_source", integrationSource,
 		"index", common.GetString(fetchLogRequest.Request, "index"))
 
-	var fields []OutputLogLabelFields
-	switch s := logSource.(type) {
+	// Elasticsearch's QueryLabels reads the resolved index's mapping, so the field
+	// listing is now the same call every other provider gets.
+	return FetchLogLabels(ctx, fetchLogRequest)
+}
+
+// listESIndexTargets lists the index / data-stream names an account can query. It backs
+// the logs_list_labels fetch_index branch, which FetchLogLabelsOrIndexFields has already
+// restricted to Elasticsearch — so this is a plain function over the two ES sources
+// rather than a LogSource capability every other provider would have to decline.
+func listESIndexTargets(ctx *security.RequestContext, source LogSource, request FetchLogLabelRequest) ([]string, error) {
+	switch s := source.(type) {
 	case *ElasticSource:
-		fields, err = s.QueryIndexFields(ctx, fetchLogRequest)
+		return s.queryIndexTargets(ctx, request)
 	case *ElasticSaasSource:
-		fields, err = s.QueryIndexFields(ctx, fetchLogRequest)
-	default:
-		return nil, fmt.Errorf("log source does not support QueryIndexFields")
+		return s.queryIndexTargets(ctx, request)
 	}
-	if err != nil {
-		return nil, err
+	return nil, fmt.Errorf("log source does not list index targets")
+}
+
+// labelsFromIndexNames renders index targets in the shape logs_list_labels returns. Index
+// names carry no attributes and no data type — that difference from a real label is the
+// point, and is why they travel as []string until this boundary.
+func labelsFromIndexNames(names []string) []OutputLogLabel {
+	labels := make([]OutputLogLabel, len(names))
+	for i, n := range names {
+		labels[i] = OutputLogLabel{Label: n, Attributes: map[string]any{}}
 	}
-	return LabelsFromIndexFields(fields), nil
+	return labels
 }
 
 func FetchLogGroup(ctx *security.RequestContext, fetchLogGroupRequest FetchLogGroupRequest) (LogGroupOutput, error) {
@@ -1448,6 +1633,15 @@ var allProviderCaps = map[string]providerStaticCaps{
 	"prometheus": {
 		SupportsServiceMap: true,
 		SupportsRawQuery:   true,
+	},
+	"openobserve": {
+		SupportsServiceMap: true,
+		SupportsRawQuery:   true,
+		// The trace waterfall is backed by OpenObserveTraceSource.QueryTracesHeatmap,
+		// which fetches a trace's spans by trace_id. Leaving this false hides the chart
+		// even though the data is available.
+		SupportsHeatmap:       true,
+		SupportsTraceGrouping: false,
 	},
 }
 
@@ -2157,11 +2351,15 @@ func FetchMetricsQuery(ctx *security.RequestContext, fetchMetricsRequest FetchMe
 	return source.FetchMetricsQuery(ctx, fetchMetricsRequest)
 }
 
-// GetMetricsQuery renders BUILDER chips into PromQL strings. Input carries a
-// QueryItems map (key → {metric, label_matchers}); output is a Results map
-// (same keys → rendered PromQL). Each item is rendered independently so
-// matchers from one block never leak into another. Returns the first
-// per-item error to surface the offending key clearly.
+// GetMetricsQuery renders BUILDER chips into provider-native query strings. Input
+// carries a QueryItems map (key → {metric, label_matchers}); output is a Results map
+// (same keys → rendered query). Each item is rendered independently so matchers from
+// one block never leak into another. Returns the first per-item error to surface the
+// offending key clearly.
+//
+// perItem keeps a single-entry QueryItems so a source can tell a BUILDER render from
+// the legacy Queries path — ES needs it, since its Queries entry is a where-clause,
+// not a metric name.
 func GetMetricsQuery(ctx *security.RequestContext, req FetchMetricsRequest) (FetchMetricQueryOutput, error) {
 	source, err := getMetricsSourceForAccount(ctx, req.AccountId, req.MetricProvider, req.MetricProviderSource)
 	if err != nil {
@@ -2172,19 +2370,28 @@ func GetMetricsQuery(ctx *security.RequestContext, req FetchMetricsRequest) (Fet
 		perItem := req
 		perItem.Queries = map[string]string{key: item.Metric}
 		perItem.LabelMatchers = item.LabelMatchers
-		perItem.QueryItems = nil
+		perItem.QueryItems = map[string]QueryItem{key: item}
 		perItem.Labels = nil
 		query, qerr := source.GetQuery(ctx, perItem)
 		if qerr != nil {
 			return FetchMetricQueryOutput{}, fmt.Errorf("query %q: %w", key, qerr)
 		}
-		wrapped, werr := wrapPromQLAggregator(query, item.AggregateOperator)
+		wrapped, werr := wrapAggregator(source, query, item.AggregateOperator)
 		if werr != nil {
 			return FetchMetricQueryOutput{}, fmt.Errorf("query %q: %w", key, werr)
 		}
 		results[key] = wrapped
 	}
 	return FetchMetricQueryOutput{Results: results}, nil
+}
+
+// wrapAggregator defers to the source's own query language when it implements
+// MetricAggregateWrapper, else falls back to the PromQL wrap.
+func wrapAggregator(source MetricSource, expr string, aggregateOperator string) (string, error) {
+	if wrapper, ok := source.(MetricAggregateWrapper); ok {
+		return wrapper.WrapAggregate(expr, aggregateOperator)
+	}
+	return wrapPromQLAggregator(expr, aggregateOperator)
 }
 
 func FetchMetricsList(ctx *security.RequestContext, fetchMetricsListRequest FetchMetricsListRequest) ([]OutputMetrics, error) {
@@ -2543,6 +2750,20 @@ func parseRequestMetadata(reqMap map[string]any) (RequestMetadata, error) {
 }
 
 func SaveUserHistory(ctx *security.RequestContext, userHistoryRequest UserHistoryRequest) (map[string]string, error) {
+	return SaveUserHistoryForUser(
+		ctx,
+		ctx.GetSecurityContext().GetUserId(),
+		ctx.GetSecurityContext().GetTenantId(),
+		userHistoryRequest,
+	)
+}
+
+// SaveUserHistoryForUser is SaveUserHistory with the identity passed explicitly.
+//
+// Async callers snapshot user/tenant off the request context before spawning
+// their goroutine, so the INSERT never reads context state that may have gone
+// away once the handler returned.
+func SaveUserHistoryForUser(ctx *security.RequestContext, userId, tenantId string, userHistoryRequest UserHistoryRequest) (map[string]string, error) {
 	if userHistoryRequest.AccountId == "" {
 		return nil, fmt.Errorf("account id is required")
 	}
@@ -2562,7 +2783,14 @@ func SaveUserHistory(ctx *security.RequestContext, userHistoryRequest UserHistor
 	// explicitly — time.Now() would store the process-local wall clock and read back
 	// labeled as UTC (see issue #31312).
 	now := time.Now().UTC()
-	_, err = dbms.Exec(query, ctx.GetSecurityContext().GetUserId(), ctx.GetSecurityContext().GetTenantId(), userHistoryRequest.AccountId, userHistoryRequest.Module, userHistoryRequest.Data, now, now, userHistoryRequest.Duration, userHistoryRequest.Status)
+	// ExecContext, not Exec: the async caller wraps this in a bounded context, and
+	// that bound only reaches the driver if the context is propagated. database/sql
+	// panics on a nil context, so fall back to Background.
+	execCtx := ctx.GetContext()
+	if execCtx == nil {
+		execCtx = context.Background()
+	}
+	_, err = dbms.ExecContext(execCtx, query, userId, tenantId, userHistoryRequest.AccountId, userHistoryRequest.Module, userHistoryRequest.Data, now, now, userHistoryRequest.Duration, userHistoryRequest.Status)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert record in user_history: %w", err)

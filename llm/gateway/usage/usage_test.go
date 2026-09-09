@@ -156,24 +156,27 @@ func TestSessionsFilter(t *testing.T) {
 	base := ListSessionsRequest{TenantID: "t1", StartDate: start, EndDate: end}
 
 	t.Run("base scopes tenant + window + non-empty session", func(t *testing.T) {
-		where, args := sessionsFilter(base)
+		where, having, args := sessionsFilter(base)
 		assert.Equal(t, "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3 AND g.session_id <> ''", where)
+		assert.Empty(t, having)
 		assert.Equal(t, []any{"t1", start, end}, args)
 	})
 
 	t.Run("user scope", func(t *testing.T) {
 		req := base
 		req.UserID = "u1"
-		where, args := sessionsFilter(req)
+		where, having, args := sessionsFilter(req)
 		assert.Contains(t, where, "g.user_id = $4")
+		assert.Empty(t, having)
 		assert.Equal(t, []any{"t1", start, end, "u1"}, args)
 	})
 
 	t.Run("search wraps in wildcards (ILIKE)", func(t *testing.T) {
 		req := base
 		req.Search = "01f9"
-		where, args := sessionsFilter(req)
+		where, having, args := sessionsFilter(req)
 		assert.Contains(t, where, "g.session_id ILIKE $4")
+		assert.Empty(t, having)
 		assert.Equal(t, []any{"t1", start, end, "%01f9%"}, args)
 	})
 
@@ -181,11 +184,34 @@ func TestSessionsFilter(t *testing.T) {
 		req := base
 		req.UserID = "u1"
 		req.Search = "abc"
-		where, args := sessionsFilter(req)
+		where, having, args := sessionsFilter(req)
 		assert.Contains(t, where, "g.user_id = $4")
 		assert.Contains(t, where, "g.session_id ILIKE $5")
+		assert.Empty(t, having)
 		assert.Equal(t, []any{"t1", start, end, "u1", "%abc%"}, args)
 	})
+
+	t.Run("model is a HAVING (keeps full session totals), numbered after where params", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		req.Model = "gpt-5"
+		where, having, args := sessionsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4")
+		assert.NotContains(t, where, "g.model") // model must NOT be a WHERE (would shrink aggregates)
+		assert.Equal(t, "bool_or(g.model = $5)", having)
+		assert.Equal(t, []any{"t1", start, end, "u1", "gpt-5"}, args)
+	})
+}
+
+func TestSessionsOrderBy(t *testing.T) {
+	// Default + unknown keys fall back to last_seen DESC, always with the id tiebreaker.
+	assert.Equal(t, "ORDER BY last_seen DESC, g.session_id DESC", sessionsOrderBy("", ""))
+	assert.Equal(t, "ORDER BY last_seen DESC, g.session_id DESC", sessionsOrderBy("bogus", "desc"))
+	// Allowlisted columns map to safe expressions; direction honors asc.
+	assert.Equal(t, "ORDER BY cost_usd DESC, g.session_id DESC", sessionsOrderBy("cost", "desc"))
+	assert.Equal(t, "ORDER BY requests ASC, g.session_id DESC", sessionsOrderBy("requests", "asc"))
+	assert.Equal(t, "ORDER BY first_seen ASC, g.session_id DESC", sessionsOrderBy("first_seen", "asc"))
+	assert.Equal(t, "ORDER BY (COALESCE(sum(g.input_tokens),0)+COALESCE(sum(g.output_tokens),0)) DESC, g.session_id DESC", sessionsOrderBy("tokens", ""))
 }
 
 func TestSplitNonEmpty(t *testing.T) {

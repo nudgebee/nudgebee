@@ -105,6 +105,7 @@ const mockListIntegrationSchema = jest.fn();
 const mockAddIntegrations = jest.fn();
 const mockCreateTicketIntegration = jest.fn();
 const mockListTicketConfigurations = jest.fn();
+const mockGetAutogenOptions = jest.fn();
 
 jest.mock('@api1/integrations', () => ({
   __esModule: true,
@@ -112,6 +113,8 @@ jest.mock('@api1/integrations', () => ({
     listIntegrationSchema: (...args) => mockListIntegrationSchema(...args),
     addIntegrations: (...args) => mockAddIntegrations(...args),
     createTicketIntegration: (...args) => mockCreateTicketIntegration(...args),
+    listESIndexes: jest.fn().mockResolvedValue({ indexes: [] }),
+    getAutogenOptions: (...args) => mockGetAutogenOptions(...args),
   },
 }));
 
@@ -348,5 +351,90 @@ describe('IntegrationDynamicFormModal', () => {
 
     const updateBtn = screen.queryByText('Update');
     expect(updateBtn).toBeTruthy();
+  });
+});
+
+// A schema property flagged `advanced` is rendered by the same picker branch as
+// any other autogen field, but inside the collapsed Advanced Settings section;
+// an array-typed one collects chips and round-trips as a comma-joined string.
+describe('schema-driven advanced fields', () => {
+  const confluenceSchema = {
+    data: {
+      data: {
+        integrations_get_schema: {
+          data: {
+            properties: {
+              integration_config_name: { type: 'string', display_name: 'Integration Config Name', description: 'Name', required: true },
+              host: { type: 'string', description: 'Confluence base URL' },
+              namespace: { type: 'string', description: 'Confluence namespace' },
+              page_trees: {
+                type: 'array',
+                description: 'Index only these pages and everything beneath them.',
+                auto_generate_func: 'listConfluencePages',
+                depends_on: ['host', 'namespace', 'page_trees'],
+                advanced: true,
+              },
+            },
+            required: ['integration_config_name'],
+          },
+        },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockListIntegrationSchema.mockResolvedValue(confluenceSchema);
+    mockGetAutogenOptions.mockResolvedValue({ options: [], message: '' });
+    mockAddIntegrations.mockResolvedValue({
+      data: { data: { integrations_create_config: { configs: [{ name: 'id', value: 'conf-1' }] } } },
+    });
+  });
+
+  test('renders an advanced array field under the Advanced Settings toggle, with its description kept for the tooltip', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'confluence', title: 'Add Confluence Integration' });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText('host')).toBeInTheDocument();
+    expect(screen.getByTestId('advanced-settings-toggle')).toBeInTheDocument();
+    expect(screen.getByLabelText('page trees')).toBeInTheDocument();
+    expect(screen.queryByText('Index only these pages and everything beneath them.')).not.toBeInTheDocument();
+  });
+
+  test('hydrates a saved comma-joined value into chips and submits it re-joined', async () => {
+    const editData = {
+      id: 'conf-1',
+      name: 'conf',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'conf', host: 'https://wiki.example.com', page_trees: '100,200' },
+    };
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'confluence', editData });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    const picker = screen.getByLabelText('page trees');
+    expect(
+      Array.from(picker.selectedOptions)
+        .map((o) => o.value)
+        .sort()
+    ).toEqual(['100', '200']);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Update'));
+    });
+
+    await waitFor(() => {
+      expect(mockAddIntegrations).toHaveBeenCalled();
+    });
+    const payload = mockAddIntegrations.mock.calls[0][0];
+    expect(payload.integration_id).toBe('conf-1');
+    expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '100,200', is_encrypted: false });
   });
 });

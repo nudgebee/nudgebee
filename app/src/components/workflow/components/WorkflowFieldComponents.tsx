@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Typography, TextField, Chip, Switch, FormControlLabel, ToggleButtonGroup, ToggleButton, Autocomplete } from '@mui/material';
+import { Box, Typography, TextField, Chip, ToggleButtonGroup, ToggleButton, Autocomplete } from '@mui/material';
+import { Switch } from '@ui/Switch';
 import { Add, Delete, DragIndicator, Visibility, VisibilityOff, ExpandMore, ExpandLess, Code, ViewList } from '@mui/icons-material';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
@@ -422,7 +423,7 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({
 
     // Boolean type
     if (fieldSchema.type === 'boolean') {
-      return <Switch checked={fieldValue === true || fieldValue === 'true'} onChange={(e) => onFieldChange(e.target.checked)} size='small' />;
+      return <Switch checked={fieldValue === true || fieldValue === 'true'} onChange={(e) => onFieldChange(e.target.checked)} size='sm' />;
     }
 
     // Options/enum - render dropdown
@@ -1195,17 +1196,11 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
     // Boolean type - render Switch
     if (fieldSchema.type === 'boolean') {
       return (
-        <FormControlLabel
-          control={
-            <Switch
-              checked={fieldValue === true || fieldValue === 'true'}
-              onChange={(e) => handleFieldChange(fieldName, e.target.checked)}
-              disabled={disabled}
-              size='small'
-            />
-          }
-          label=''
-          sx={{ ml: 0 }}
+        <Switch
+          checked={fieldValue === true || fieldValue === 'true'}
+          onChange={(e) => handleFieldChange(fieldName, e.target.checked)}
+          disabled={disabled}
+          size='sm'
         />
       );
     }

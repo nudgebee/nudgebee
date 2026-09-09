@@ -71,35 +71,32 @@ jest.mock('@shared/CustomDrawer', () => ({
 }));
 
 // Generator stub echoes the parent-driven signal props so we can assert the
-// header controls bump them.
-jest.mock('@components/llm/KubernetesLLMResponseGeneratorV2', () => ({
-  __esModule: true,
-  default: ({
-    accountId,
-    newChatSignal,
-    historySignal,
-    sessionId,
-    query,
-    source,
-  }: {
-    accountId: string;
-    newChatSignal: number;
-    historySignal: number;
-    sessionId: string;
-    query: string;
-    source: string;
-  }) => (
-    <div
-      data-testid='llm-response-generator'
-      data-account-id={accountId}
-      data-new-chat-signal={newChatSignal}
-      data-history-signal={historySignal}
-      data-session-id={sessionId}
-      data-query={query}
-      data-source={source}
-    />
-  ),
-}));
+// header controls bump them, and reports an active session id upward (prefixed
+// so tests can prove "Open full page" uses the reported value, not chatContext).
+jest.mock('@components/llm/KubernetesLLMResponseGeneratorV2', () => {
+  const R = jest.requireActual('react');
+  return {
+    __esModule: true,
+    default: ({ accountId, newChatSignal, historySignal, sessionId, query, source, onActiveSessionChange }: any) => {
+      R.useEffect(() => {
+        if (onActiveSessionChange) {
+          onActiveSessionChange(sessionId ? `live:${sessionId}` : '');
+        }
+      }, [sessionId, onActiveSessionChange]);
+      return (
+        <div
+          data-testid='llm-response-generator'
+          data-account-id={accountId}
+          data-new-chat-signal={newChatSignal}
+          data-history-signal={historySignal}
+          data-session-id={sessionId}
+          data-query={query}
+          data-source={source}
+        />
+      );
+    },
+  };
+});
 
 const mockUseNubiGlobalChat = useNubiGlobalChat as jest.MockedFunction<typeof useNubiGlobalChat>;
 
@@ -184,6 +181,33 @@ describe('NubiGlobalChat', () => {
     render(<NubiGlobalChat />);
     fireEvent.click(screen.getByTestId('nubi-global-chat-close'));
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  describe('Open full page', () => {
+    let openSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+    });
+
+    afterEach(() => {
+      openSpy.mockRestore();
+    });
+
+    it('carries the account and the conversation the generator reports', () => {
+      setContext({ isOpen: true, accountId: 'account-123', chatContext: { accountId: 'account-123', sessionId: 'event-abc123' } });
+      render(<NubiGlobalChat />);
+      fireEvent.click(screen.getByTestId('nubi-global-chat-open-detail'));
+      // `live:` prefix proves the id came from onActiveSessionChange, not chatContext.
+      expect(openSpy).toHaveBeenCalledWith('/ask-nudgebee?accountId=account-123&session_id=live%3Aevent-abc123', '_blank', 'noopener,noreferrer');
+    });
+
+    it('omits session_id when the generator reports no conversation', () => {
+      setContext({ isOpen: true, accountId: 'account-123' });
+      render(<NubiGlobalChat />);
+      fireEvent.click(screen.getByTestId('nubi-global-chat-open-detail'));
+      expect(openSpy).toHaveBeenCalledWith('/ask-nudgebee?accountId=account-123', '_blank', 'noopener,noreferrer');
+    });
   });
 
   it('prompts to select a cluster when no account is available', () => {

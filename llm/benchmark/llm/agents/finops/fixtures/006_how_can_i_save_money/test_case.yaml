@@ -2,6 +2,10 @@ user_prompt: "How can I save money on my cloud bill?"
 expected_output:
   - |
     Lead with: "You have $X/month in potential savings across N recommendations."
+    That headline must be deduplicated — rows sharing a dedupe_group are alternative
+    ways to act on ONE opportunity, so only one variant per group counts — and when
+    the account holds commitment recommendations it must be split into workload
+    optimizations and commitment purchases, noting the two are not additive.
     The agent should call the recommendations tool sorted by estimated_saving
     descending and present the top 5 ranked by dollar impact. For each
     recommendation, include: what to change, estimated monthly savings, risk
@@ -10,7 +14,7 @@ expected_output:
     savings if all are implemented and a recommended order (quick wins first).
     Only recommendations with status='Open' should be counted. If total
     savings exceeds current spend, the agent must flag this as suspicious.
-    Cite [recommendations] for each item.
+    Cite the recommendations data source ([recommendations] or [recommendation_execute]) for each item.
 tags:
   - optimization
   - recommendations
