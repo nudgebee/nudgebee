@@ -314,13 +314,6 @@ async def generate_embeddings_batch(
                     from rag.core.documents.loaders.base import trim_text
 
                     # Trim all documents in batch
-                    # Imported here, not at module scope: rag.core.documents.loaders
-                    # imports process_documents from this module, so a top-level
-                    # import of loaders.base makes the package __init__ re-enter
-                    # a half-initialised processing module. Deferring it to this
-                    # rare token-limit retry breaks the cycle.
-                    from rag.core.documents.loaders.base import trim_text
-
                     for doc in docs_to_process:
                         doc.page_content = trim_text(doc.page_content)
                         # Update document ID after content change
