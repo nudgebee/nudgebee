@@ -16,7 +16,7 @@ dependencies = [
     # --- Core framework ---
     "aiofiles==25.1.0",
     "fastapi==0.141.1",
-    "uvicorn[standard]==0.52.1",
+    "uvicorn[standard]==0.52.3",
     "python-multipart==0.0.32",
     "python-dotenv==1.2.2",
     "asgiref==3.12.1",
@@ -34,15 +34,15 @@ dependencies = [
 
     # --- Database & storage ---
     "psycopg2-binary==2.9.12",
-    "boto3==1.43.67",
-    "botocore==1.43.67",
+    "boto3==1.43.72",
+    "botocore==1.43.72",
     "s3transfer==0.19.2",
-    "sqlalchemy==2.0.51",
+    "sqlalchemy==2.0.52",
     "pymongo==4.17.0",
 
     # --- AI/LLM SDKs (direct, no langchain) ---
     "openai==2.53.0",
-    "anthropic==0.121.0",
+    "anthropic==0.122.0",
     "azure-ai-inference>=1.0.0b9",
     "google-genai==1.66.0",
 
@@ -64,6 +64,7 @@ dependencies = [
     # --- Document processing ---
     "tiktoken==0.13.0",
     "beautifulsoup4==4.15.0",
+    "markdownify==1.2.0",
     "unstructured==0.18.32",
     "pymupdf==1.28.2",
     "jq==1.12.0",
@@ -85,16 +86,16 @@ dependencies = [
     "kubernetes==32.0.1",
 
     # --- Utilities ---
-    "filelock==3.32.2",
+    "filelock==3.32.3",
     "httpcore==1.0.9",
     "psutil==7.2.2",
     "pydantic>=2.11.2",
     "pydantic-settings>=2.10.1",
-    "orjson==3.11.9",
+    "orjson==3.12.0",
     "validators==0.35.0",
     "cryptography==48.0.1",
     "certifi==2026.7.22",
-    "charset-normalizer==3.4.9",
+    "charset-normalizer==3.5.0",
     "click==8.4.2",
     "durationpy==0.10",
     "frozenlist==1.8.0",
@@ -112,7 +113,7 @@ dependencies = [
     "sympy==1.14.0",
     "typer==0.27.1",
     "typing-extensions==4.16.0",
-    "typing-inspection==0.4.2",
+    "typing-inspection==0.4.4",
     "watchfiles==1.2.0",
     "yarl==1.24.5",
     "zipp==3.21.0",
@@ -123,13 +124,13 @@ dependencies = [
     "types-botocore==1.0.2",
     "types-beautifulsoup4==4.12.0.20250516",
     "types-psutil==7.2.2.20260130",
-    "types-awscrt==0.34.1",
+    "types-awscrt==0.36.2",
     "types-html5lib==1.1.11.20260402",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pre-commit==4.6.1",
+    "pre-commit==4.6.2",
     "black==26.5.1",
     # mypy 1.16.1 crashes (INTERNAL ERROR, RuntimeError: Not implemented
     # TypeGuardedType) while resolving indirect dependencies of the openai and

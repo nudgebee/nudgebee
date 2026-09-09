@@ -1,12 +1,15 @@
 package proxy
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"nudgebee/llm-gateway/config"
+	"nudgebee/llm-gateway/engine"
 	"nudgebee/llm-gateway/metering"
+	"nudgebee/llm-gateway/routing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -37,6 +40,36 @@ func TestHandleEmbeddings_UnresolvableModelIs400(t *testing.T) {
 	require.Len(t, sink.Events(), 1)
 	assert.Equal(t, 400, sink.Events()[0].StatusCode)
 	assert.Contains(t, sink.Events()[0].Attributes, "unknown_model")
+}
+
+func TestHandleEmbeddings_SubstitutionDispatchesToTargetProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := config.Config.MaxRequestBodyBytes
+	config.Config.MaxRequestBodyBytes = 1 << 20
+	t.Cleanup(func() { config.Config.MaxRequestBodyBytes = prev })
+
+	eng, err := engine.New(context.Background(), nil)
+	require.NoError(t, err)
+	defer eng.Shutdown()
+	router := routing.NewEngine([]routing.Rule{{
+		ID: "embed-sub", Enabled: true,
+		Match:  routing.Match{Provider: "openai", Model: "text-embedding-3-small"},
+		Target: routing.Target{Endpoint: routing.Endpoint{Provider: "bogus-unconfigured", Model: "embed-x"}},
+	}})
+	sink := &metering.CapturingSink{}
+	h := &handler{client: eng.Client, sink: sink, pipeline: NewPipeline(routeStage{router: router})}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("POST", embeddingsPath,
+		strings.NewReader(`{"model":"openai/text-embedding-3-small","input":"hi"}`))
+	h.handleEmbeddings(c)
+
+	assert.Equal(t, "openai->bogus-unconfigured", rec.Header().Get("x-nb-llm-substituted"))
+	events := sink.Events()
+	require.Len(t, events, 1)
+	assert.Equal(t, "bogus-unconfigured", events[0].Provider)
+	assert.Equal(t, "embed-x", events[0].Model)
 }
 
 // TestMarshalOpenAIEmbedding_StripsExtraFields locks that the response is emitted in

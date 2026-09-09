@@ -133,6 +133,10 @@ func init() {
 	RegisterAgentModulePrefix("azure_", AgentModuleCloudOps)
 
 	// ── FinOps ───────────────────────────────────────────────────────────
+	// Exact name first: the FinOps supervisor is named "finops" with no
+	// underscore, so the "finops_" prefix never matched it and its memory
+	// landed in the Generic bucket.
+	RegisterAgentModule("finops", AgentModuleFinOps)
 	RegisterAgentModulePrefix("finops_", AgentModuleFinOps)
 	RegisterAgentModulePrefix("cost_", AgentModuleFinOps)
 	RegisterAgentModulePrefix("billing_", AgentModuleFinOps)

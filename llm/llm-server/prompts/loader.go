@@ -127,17 +127,38 @@ func (l *PromptLoader) GetPrompt(ctx context.Context, req PromptRequest) (*Promp
 		return nil, err
 	}
 
-	// Load prompt file
-	content, err := l.loadPromptFile(normalizedReq.Name, normalizedReq.Category, config.Provider, config.Version)
+	// Load prompt file. servedVersion is the version whose file was actually
+	// matched -- may differ from config.Version when the requested version
+	// (DB experiment/config, or a local PROMPTS_VERSION pin) has no file for
+	// this specific prompt and the loader fell through to v1.
+	content, servedVersion, err := l.loadPromptFile(normalizedReq.Name, normalizedReq.Category, config.Provider, config.Version)
 	if err != nil {
 		return nil, err
+	}
+	if servedVersion != config.Version {
+		// WARN for the local-dev pin specifically -- a developer needs to see
+		// a typo'd PROMPTS_VERSION immediately. Any other source (DB
+		// experiment/config naming a version some prompts don't have) logs
+		// at Debug instead: at production scale, with many prompts/accounts
+		// behind an hourly cache TTL, a WARN per cache-miss mismatch across
+		// every affected prompt would be log spam, not a signal anyone acts
+		// on -- the fallback itself is graceful and expected.
+		logFn := slog.Debug
+		if config.ConfigSource == ConfigSourceForcedDev {
+			logFn = slog.Warn
+		}
+		logFn("prompts: requested version has no file for this prompt, served a fallback instead",
+			"prompt", normalizedReq.Name,
+			"requested_version", config.Version,
+			"served_version", servedVersion,
+			"config_source", config.ConfigSource)
 	}
 
 	// Build response
 	response := &PromptResponse{
 		Content: content,
 		Metadata: PromptMetadata{
-			Version:        config.Version,
+			Version:        servedVersion,
 			Provider:       config.Provider,
 			Category:       normalizedReq.Category,
 			ConfigSource:   config.ConfigSource,
@@ -187,8 +208,12 @@ func (l *PromptLoader) validateRequest(req PromptRequest) error {
 // resolveConfig resolves the configuration using the priority order:
 // 1. Active Experiment
 // 2. Database Configuration
-// 3. defaults.json
+// 3. Forced-version dev override (PROMPTS_VERSION / PROMPTS_VERSION_<NAME>)
 // 4. Hardcoded Default (v1)
+//
+// (A "3. defaults.json" step was listed here previously; defaults.json has
+// zero references anywhere in the tree, so that line was stale and is
+// removed rather than replaced.)
 func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*ResolvedConfig, error) {
 	// Priority 1: Check for active experiment
 	if l.db != nil && req.AccountID != "" {
@@ -260,7 +285,25 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 			"prompt", req.Name)
 	}
 
-	// Priority 3: Hardcoded default
+	// Priority 3: local-dev version pin. PROMPTS_VERSION_<PROMPT_NAME> takes
+	// precedence over the global PROMPTS_VERSION, so one prompt can be
+	// pinned independently of the rest -- e.g. hold k8s_lean at v1 while
+	// testing react_3_base at v2, or pin down to an older version even when
+	// a newer one exists on disk. Both are unset in any deployed
+	// environment; production always falls through to Priority 4.
+	if forced := forcedVersionFor(req.Name); forced != "" {
+		slog.Info("prompts: using forced version (dev override)",
+			"prompt", req.Name,
+			"version", forced)
+
+		return &ResolvedConfig{
+			Version:      forced,
+			Provider:     req.Provider,
+			ConfigSource: ConfigSourceForcedDev,
+		}, nil
+	}
+
+	// Priority 4: Hardcoded default
 	slog.Info("prompts: falling back to hardcoded default",
 		"prompt", req.Name,
 		"version", "v1")
@@ -270,6 +313,33 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 		Provider:     req.Provider,
 		ConfigSource: ConfigSourceDefault,
 	}, nil
+}
+
+// forcedVersionFor returns the local-dev pinned version for a specific
+// prompt name: PROMPTS_VERSION_<PROMPT_NAME> if set, else the global
+// PROMPTS_VERSION, else "". Mirrors the LLM_PROVIDER_<AGENT> /
+// LLM_PROVIDER per-agent-then-global env pattern in
+// agents/core/llm_config.go. The per-prompt key is read dynamically via
+// viper (AutomaticEnv, set up in config.init()) rather than a static
+// struct field, since prompt names aren't enumerable in config.go.
+// No registered prompt name has a hyphen today, but env vars can't carry
+// one in most shells -- normalized so a future hyphenated name doesn't
+// silently become impossible to pin.
+func forcedVersionFor(promptName string) string {
+	normalizedName := strings.ReplaceAll(strings.ToLower(promptName), "-", "_")
+	key := fmt.Sprintf("prompts_version_%s", normalizedName)
+	if v := config.Config.GetString(key, ""); v != "" {
+		return v
+	}
+	// Read dynamically here too (not just config.Config.PromptsVersion,
+	// which is a snapshot taken once at process startup) so the global
+	// override is live for the same reason the per-prompt one already is,
+	// and so tests can use t.Setenv instead of mutating the shared struct
+	// field directly.
+	if v := config.Config.GetString("prompts_version", ""); v != "" {
+		return v
+	}
+	return config.Config.PromptsVersion
 }
 
 // includeRegex matches {{@include <path>}} directives in prompt content.
@@ -283,19 +353,48 @@ const maxIncludeDepth = 3
 // slice so an include can be written without an extension.
 var promptFileExtensions = []string{".yaml"}
 
-// loadPromptFile loads a prompt file from embedded FS with fallback logic
-func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, provider string, version string) (string, error) {
+// promptFileBase is one entry in loadPromptFile's fallback chain: a path to
+// try, paired with the version actually embedded in that path. Named
+// (rather than two parallel slices) so a future edit to one base can't
+// desync it from its version.
+type promptFileBase struct {
+	path    string
+	version string
+}
+
+// loadPromptFile loads a prompt file from embedded FS with fallback logic.
+// The returned version is the one actually matched (see promptFileBase),
+// which the caller must use for response metadata -- it can differ from the
+// requested version when that version has no file for this specific prompt.
+func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, provider string, version string) (string, string, error) {
 	// Try bases in order:
 	// 1. {provider}/{version}/{category}/{name}
 	// 2. default/{version}/{category}/{name}
 	// 3. {provider}/v1/{category}/{name}
 	// 4. default/v1/{category}/{name}
-
-	bases := []string{
-		fmt.Sprintf("%s/%s/%s/%s", provider, version, category, name),
-		fmt.Sprintf("default/%s/%s/%s", version, category, name),
-		fmt.Sprintf("%s/v1/%s/%s", provider, category, name),
-		fmt.Sprintf("default/v1/%s/%s", category, name),
+	//
+	// processIncludes must resolve each file's @include directives against
+	// the version it was actually FOUND at, not the originally-requested
+	// one: a match on the v1 fallback whose body still has an unresolved
+	// {{@include ...}} would otherwise look for that fragment under the
+	// requested version's directory (e.g. an experiment/DB-config/dev-pin
+	// naming a version that has no matching fragment files) and fail a load
+	// that the v1 baseline -- guaranteed include-clean by MustResolveAll --
+	// would have served just fine.
+	bases := []promptFileBase{
+		{fmt.Sprintf("%s/%s/%s/%s", provider, version, category, name), version},
+		{fmt.Sprintf("default/%s/%s/%s", version, category, name), version},
+	}
+	// Bases 3-4 are identical to 1-2 when version is already "v1" -- the
+	// overwhelmingly common case, since every prompt without an
+	// experiment/DB-config/dev-pin resolves through the hardcoded v1
+	// default. Skip the duplicates rather than probing the same two paths
+	// twice.
+	if version != "v1" {
+		bases = append(bases,
+			promptFileBase{fmt.Sprintf("%s/v1/%s/%s", provider, category, name), "v1"},
+			promptFileBase{fmt.Sprintf("default/v1/%s/%s", category, name), "v1"},
+		)
 	}
 
 	// recordErr keeps the most useful failure rather than the most recent one. Paths are
@@ -311,7 +410,7 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 
 	for _, base := range bases {
 		for _, ext := range promptFileExtensions {
-			path := base + ext
+			path := base.path + ext
 			rawContent, err := fs.ReadFile(l.fs, path)
 			if err != nil {
 				recordErr(err)
@@ -350,7 +449,7 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 			// a missing fragment must not take down a prompt whose default/v1 baseline
 			// is intact. MustResolveAll runs this same path over default/v1 at startup,
 			// so the end of the chain is guaranteed include-clean.
-			content, err := l.processIncludes(body, provider, version, 0)
+			content, err := l.processIncludes(body, provider, base.version, 0)
 			if err != nil {
 				slog.Error("prompts: failed to process includes, falling through to the next resolution path",
 					"prompt", name, "path", path, "error", err)
@@ -361,11 +460,11 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, prov
 			// Replace identity placeholders with configured values
 			content = replaceIdentityPlaceholders(content)
 
-			return content, nil
+			return content, base.version, nil
 		}
 	}
 
-	return "", fmt.Errorf("prompt not found: %s (category: %s, provider: %s, version: %s): %w",
+	return "", "", fmt.Errorf("prompt not found: %s (category: %s, provider: %s, version: %s): %w",
 		name, category, provider, version, lastErr)
 }
 

@@ -95,3 +95,65 @@ func TestFinOpsAccountContext_InFlightFirstBuildIsNotStacked(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// Invalidation drops both keys, so the next turn rebuilds instead of serving a
+// footprint the integration change just made wrong.
+func TestFinOpsAccountContext_InvalidateDropsBothKeys(t *testing.T) {
+	const accountId = "acct-finops-invalidate"
+	clearFinOpsContextCache(t, accountId)
+	t.Cleanup(func() { clearFinOpsContextCache(t, accountId) })
+
+	assert.NoError(t, common.CacheSet(finOpsAccountContextCacheNS, finOpsContextKey(accountId),
+		[]byte("<account_context>\nSTALE-FOOTPRINT\n</account_context>"), common.CacheSetWithExpiration(finOpsContextRetainFor)))
+	assert.NoError(t, common.CacheSet(finOpsAccountContextCacheNS, finOpsContextFreshKey(accountId),
+		[]byte("1"), common.CacheSetWithExpiration(finOpsContextFreshFor)))
+
+	InvalidateFinOpsAccountContext(accountId)
+
+	_, content := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextKey(accountId))
+	assert.False(t, content, "the rendered block must go — the marker alone would serve the stale footprint one more turn")
+	_, marker := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextFreshKey(accountId))
+	assert.False(t, marker, "the freshness marker must go with it")
+}
+
+// An empty account id is a no-op rather than a delete against a key that would
+// collide across accounts.
+func TestFinOpsAccountContext_InvalidateIgnoresEmptyAccount(t *testing.T) {
+	clearFinOpsContextCache(t, "")
+	assert.NoError(t, common.CacheSet(finOpsAccountContextCacheNS, finOpsContextKey(""),
+		[]byte("sentinel"), common.CacheSetWithExpiration(finOpsContextRetainFor)))
+	t.Cleanup(func() { clearFinOpsContextCache(t, "") })
+
+	InvalidateFinOpsAccountContext("")
+
+	_, found := common.CacheGet(finOpsAccountContextCacheNS, finOpsContextKey(""))
+	assert.True(t, found, "an empty account id must not delete anything")
+}
+
+// A build whose spend queries could not run is servable but incomplete, and the
+// caller uses that to shorten the freshness window. Without a metastore the
+// spend section bails at the tenant/db lookup — the same signal a query error
+// produces — so this pins the reported flag, not the specific failure.
+func TestFinOpsAccountContext_DegradedRenderReportsIncomplete(t *testing.T) {
+	agent := &FinOpsAgent{accountId: "acct-finops-degraded"}
+	ctx := security.NewRequestContextForSuperAdmin()
+
+	rendered, complete := agent.renderAccountContext(ctx, true)
+
+	assert.True(t, strings.HasPrefix(rendered, "<account_context>"), "a degraded build still returns a usable block")
+	assert.False(t, complete, "a spend section that could not run must not be cached as complete")
+	assert.NotContains(t, rendered, "30-day spend:", "the spend baseline is absent, not zeroed")
+	assert.Less(t, finOpsContextDegradedFreshFor, finOpsContextFreshFor,
+		"the degraded window must be shorter than the normal one, or the flag buys nothing")
+}
+
+// The footprint-only fallback is incomplete by construction, and reports it.
+func TestFinOpsAccountContext_FootprintOnlyIsNotComplete(t *testing.T) {
+	agent := &FinOpsAgent{accountId: "acct-finops-footprint"}
+	ctx := security.NewRequestContextForSuperAdmin()
+
+	rendered, complete := agent.renderAccountContext(ctx, false)
+
+	assert.False(t, complete)
+	assert.Equal(t, rendered, agent.renderFootprintOnlyContext(ctx))
+}

@@ -46,6 +46,13 @@ const (
 	CorrelationPenaltyDownstream  = -10
 	CorrelationPenaltyUpstream    = -10
 	CorrelationPenaltySameService = -5
+	// IncidentChildPenalty dampens an alert that attached to an incident group
+	// as a CHILD: its leader is the thing to open, so the child is a symptom.
+	// Same magnitude as the downstream penalty it replaces.
+	IncidentChildPenalty = -10
+	// MinCorrelationScoreForAdjustment is the confidence floor a pairwise
+	// correlation must clear before it moves a score at all.
+	MinCorrelationScoreForAdjustment = 0.5
 
 	// Finding type adjustments
 	FindingTypeBonusSLO            = 10
@@ -75,7 +82,12 @@ const (
 // processor.go (detectAndRecordDuplicate / detectAndRecordCorrelations) and passed in so
 // computeLegacyScore can derive its duplicate penalty and correlation adjustment without
 // re-querying — eliminates the per-event N+1 fingerprinted in OSS issue #286.
-func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
+//
+// isIncidentChild comes from Step 3b (attachSameSubjectIncident) for the same reason:
+// the grouping decision was just made in-process, so both scoring paths take it as an
+// argument instead of racing to re-read event_correlations, where the legacy pairwise
+// rows share the table and outrank the group link on correlation_score.
+func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64, isIncidentChild bool) (*ScoreResult, error) {
 	// Human overrides are authoritative and bypass the machine score entirely. This MUST be
 	// the first check so a per-event correction or a class priority_pin is never overwritten by
 	// the LLM/legacy verdict on re-score (events upsert on recurrence and re-run ComputeScore).
@@ -87,22 +99,22 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurre
 	}
 
 	if !llmTriageScoringEnabled(event) {
-		return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
+		return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
 	}
 
-	llmResult, llmErr := ComputeScoreLLM(ctx, db, event)
+	llmResult, llmErr := ComputeScoreLLM(ctx, db, event, correlationType, correlationScore, isIncidentChild)
 
 	if !config.Config.FeatureLLMTriageScoringShadow {
 		if llmErr != nil || llmResult == nil {
 			slog.WarnContext(ctx, "LLM triage scoring failed; falling back to legacy",
 				"event_id", event.Id, "error", llmErr)
-			return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
+			return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
 		}
 		return llmResult, nil
 	}
 
 	// Shadow: legacy authoritative, attach the LLM result to factors for comparison.
-	legacy, err := computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
+	legacy, err := computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
 	if err != nil {
 		return legacy, err
 	}
@@ -130,9 +142,10 @@ func llmTriageScoringEnabled(event *models.Event) bool {
 }
 
 // computeLegacyScore is the original severity*env scoring formula. Takes
-// occurrenceNumber/correlationType/correlationScore from the caller so it can compute
-// the duplicate penalty and correlation adjustment in-process — no per-event DB lookup.
-func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
+// occurrenceNumber/correlationType/correlationScore/isIncidentChild from the caller so it
+// can compute the duplicate penalty and correlation adjustment in-process — no per-event
+// DB lookup.
+func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64, isIncidentChild bool) (*ScoreResult, error) {
 	factors := make(map[string]interface{})
 	var factorCount int
 
@@ -167,7 +180,7 @@ func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event, o
 	// 5. Get correlation adjustment
 	correlationAdj := 0
 	if event.Id != "" {
-		correlationAdj, correlationType = getCorrelationAdjustment(correlationType, correlationScore)
+		correlationAdj, correlationType = resolveCorrelationAdjustment(isIncidentChild, correlationType, correlationScore, getCorrelationAdjustment)
 	}
 	factors["correlation_adjustment"] = correlationAdj
 	factors["correlation_type"] = correlationType
@@ -333,7 +346,7 @@ func getDuplicatePenalty(occurrenceNumber int) int {
 // getCorrelationAdjustment calculates the score adjustment based on correlation type
 func getCorrelationAdjustment(correlationType string, correlationScore float64) (int, string) {
 	// Only apply adjustment if correlation score is above threshold
-	if correlationScore < 0.5 {
+	if correlationScore < MinCorrelationScoreForAdjustment {
 		return 0, correlationType
 	}
 	switch correlationType {

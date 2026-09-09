@@ -1,5 +1,6 @@
 import React, { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Box, Typography, Switch, Dialog, Chip, Tabs, Tab, Autocomplete, TextField, Alert } from '@mui/material';
+import { Box, Typography, Switch as MuiSwitch, Dialog, Chip, Tabs, Tab, Autocomplete, TextField, Alert } from '@mui/material';
+import { Switch } from '@ui/Switch';
 import { Button } from '@ui/Button';
 import { Modal } from '@ui/Modal';
 import { PlayArrow, Timer, Storage, GridView, ErrorOutline, Close, AltRoute, Check } from '@mui/icons-material';
@@ -3047,6 +3048,12 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         if (accountLabel) contextChips.push({ label: 'Account', value: accountLabel });
         if (namespaceValue) contextChips.push({ label: 'Namespace', value: namespaceValue });
         if (kindValue) contextChips.push({ label: 'Kind', value: kindValue });
+        // PVC options carry their allocated storage, so the user can size the
+        // resize against what the volume has today (#34688). Absent for
+        // workload/node options and for expression-mode values, which match no
+        // option — the chip just doesn't render then.
+        const selectedResourceStorage = resourceNames.find((o) => o?.value === fieldValue)?.storage;
+        if (selectedResourceStorage) contextChips.push({ label: 'Current Size', value: selectedResourceStorage });
 
         return (
           <Box key={fieldName} sx={{ mb: 2, display: 'flex', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
@@ -3106,13 +3113,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
             </Typography>
             <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column' }}>
-              <Switch
-                id={`action-sidebar-bool-${fieldName}-switch`}
-                checked={fieldValue || false}
-                onChange={(e) => handleDataChange(fieldName, e.target.checked)}
-                disabled={isReadOnly || viewOnlyMode}
-                sx={{ alignSelf: 'flex-start', ml: -1 }}
-              />
+              <Box sx={{ alignSelf: 'flex-start' }}>
+                <Switch
+                  id={`action-sidebar-bool-${fieldName}-switch`}
+                  checked={fieldValue || false}
+                  onChange={(e) => handleDataChange(fieldName, e.target.checked)}
+                  disabled={isReadOnly || viewOnlyMode}
+                />
+              </Box>
               {fieldSchema.description && (
                 <Typography
                   sx={{
@@ -4231,7 +4239,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                       pt: 1,
                     }}
                   >
-                    Resize
+                    Resize<span style={{ color: ds.red[500] }}> *</span>
                   </Typography>
                   <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <FormField
@@ -4273,6 +4281,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                       }}
                       placeholder={activePlaceholder}
                       description={activeSchema?.description || ''}
+                      error={validationErrors[activeFieldName] || ''}
+                      required={true}
                       disabled={viewOnlyMode}
                       minWidth='100%'
                     />
@@ -4429,7 +4439,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   : 'Skip this task without deleting it. The workflow will be rerouted: predecessors connect directly to successors. Re-enable to restore the original chain.'}
               </Typography>
             </Box>
-            <Switch
+            {/* Stays on MUI Switch: ds/Switch does not forward data-* props, and dropping this testid
+                would break the automation contract with app-e2e-tests. */}
+            <MuiSwitch
               data-testid='task-disable-switch'
               checked={!!taskConfig.disabled}
               onChange={(e) => handleDisableToggle(e.target.checked)}

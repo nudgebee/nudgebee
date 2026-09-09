@@ -18,6 +18,7 @@ import { Modal } from '@ui/Modal';
 import { DeleteIconRed as DeleteIcon } from '@assets';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import SLOConfigDialog from '@components/k8s/common/SLOConfigDialog';
+import { sloFingerprint } from '@lib/eventFingerprint';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -437,6 +438,8 @@ export const SLOReport = ({
   drilldownQuery = {
     availabilityConfig: {} as any,
     latencyConfig: {} as any,
+    workloadName: '',
+    workloadNamespace: '',
   },
   accountId = '',
   dateTime = {
@@ -448,6 +451,8 @@ export const SLOReport = ({
   drilldownQuery?: {
     availabilityConfig: any;
     latencyConfig: any;
+    workloadName?: string;
+    workloadNamespace?: string;
   };
   accountId?: string;
   dateTime?: {
@@ -498,7 +503,11 @@ export const SLOReport = ({
           .then((res) => {
             const data = res?.data?.data?.slo_report || [];
             if (data.length > 0) {
-              availabilityFindingIds = data.filter((g: any) => g.bad_events_count > 0).map((g: any) => g.id);
+              // Every report row for this config/workload shares one event
+              // (see @lib/eventFingerprint) — one fingerprint, not one per row.
+              availabilityFindingIds = data.some((g: any) => g.bad_events_count > 0)
+                ? [sloFingerprint(accountId, 'availability', drilldownQuery?.workloadName ?? '', drilldownQuery?.workloadNamespace ?? '')]
+                : [];
               const label = data.map((n: any) => convertDateStringForSLOReportChart(n.updated_at));
               const goodEventCount = data.map((n: any) => n.good_events_count);
               const badEventCount = data.map((n: any) => n.bad_events_count);
@@ -530,7 +539,11 @@ export const SLOReport = ({
           .then((res) => {
             const data = res?.data?.data?.slo_report || [];
             if (data.length > 0) {
-              latencyFindingIds = data.filter((g: any) => g.bad_events_count > 0).map((g: any) => g.id);
+              // Every report row for this config/workload shares one event
+              // (see @lib/eventFingerprint) — one fingerprint, not one per row.
+              latencyFindingIds = data.some((g: any) => g.bad_events_count > 0)
+                ? [sloFingerprint(accountId, 'latency', drilldownQuery?.workloadName ?? '', drilldownQuery?.workloadNamespace ?? '')]
+                : [];
               const label = data.map((n: any) => convertDateStringForSLOReportChart(n.updated_at));
               const goodEventCount = data.map((n: any) => n.good_events_count);
               const badEventCount = data.map((n: any) => n.bad_events_count);

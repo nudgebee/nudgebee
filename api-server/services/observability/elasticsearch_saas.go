@@ -676,7 +676,19 @@ func esSourceFieldNames(src map[string]any) []string {
 	return keys
 }
 
+// QueryLabels returns the queryable FIELDS of the resolved index — see the note on
+// ElasticSource.QueryLabels. Index TARGETS are listed by queryIndexTargets.
 func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]OutputLogLabel, error) {
+	fields, err := e.QueryIndexFields(ctx, fetchLogRequest)
+	if err != nil {
+		return nil, err
+	}
+	return LabelsFromIndexFields(fields), nil
+}
+
+// queryIndexTargets lists the index / data-stream names this account can query, for the
+// logs_list_labels fetch_index branch that feeds the UI index pickers.
+func (e *ElasticSaasSource) queryIndexTargets(ctx *security.RequestContext, fetchLogRequest FetchLogLabelRequest) ([]string, error) {
 	cfg, err := GetElasticsearchConfig(ctx, fetchLogRequest.AccountId)
 	if err != nil {
 		return nil, err
@@ -686,20 +698,25 @@ func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRe
 	// that _cat/indices exposes. No type-prefix filter: client clusters don't
 	// necessarily name log streams "logs-*", so every queryable target is offered.
 	// See ListAllESIndexTargets.
-	indexNames, err := ListAllESIndexTargets(cfg)
-	if err != nil {
-		return nil, err
-	}
+	return ListAllESIndexTargets(cfg)
+}
 
-	output := make([]OutputLogLabel, 0, len(indexNames))
-	for _, indexName := range indexNames {
-		output = append(output, OutputLogLabel{
-			Label:      indexName,
-			Attributes: map[string]any{},
-		})
-	}
+// esLabelValuesTermsSize caps the terms aggregation a label-value listing runs. It is
+// the binding constraint on service.go's maxLabelValuesToScan: a field with more values
+// than this returns a TRUNCATED page, and a caller that mistakes a truncated page for the
+// complete value set would report a real value as unknown. Keep the two in step.
+const esLabelValuesTermsSize = 1000
 
-	return output, nil
+// resolveESLabelValuesIndex picks the index a value listing aggregates over: the caller's
+// index, else the account default (cfg.LogIndex — the same fallback QueryLogs uses).
+// Deliberately NOT esAllIndicesWildcard: a terms aggregation across every index in the
+// cluster is expensive and mixes unrelated mappings, so an unresolved index stays an error
+// here even though a field LISTING widens (QueryIndexFields reads _mapping, which is cheap).
+func resolveESLabelValuesIndex(requestIndex, defaultIndex string) string {
+	if requestIndex != "" {
+		return requestIndex
+	}
+	return defaultIndex
 }
 
 func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
@@ -708,7 +725,7 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 		return nil, err
 	}
 
-	index, _ := fetchLogRequest.Request["index"].(string)
+	index := resolveESLabelValuesIndex(common.GetString(fetchLogRequest.Request, "index"), cfg.LogIndex)
 	if index == "" {
 		return nil, fmt.Errorf("index is required for querying label values")
 	}
@@ -724,7 +741,7 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 				"values": map[string]any{
 					"terms": map[string]any{
 						"field": field,
-						"size":  1000,
+						"size":  esLabelValuesTermsSize,
 					},
 				},
 			},

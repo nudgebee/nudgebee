@@ -22,7 +22,7 @@ from server.recommendation.vertical_rightsizing.models.result import ResourceAll
 from server.recommendation.vertical_rightsizing.models.object_like_dict import ObjectLikeDict
 from server.recommendation.vertical_rightsizing.models.config import Config
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
 
 AnyKubernetesAPIObject = Union[V1Deployment, V1DaemonSet, V1StatefulSet, V1Pod, V1Job]
 HPAKey = tuple[str, str, str]

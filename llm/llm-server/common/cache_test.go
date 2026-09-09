@@ -2,6 +2,7 @@ package common
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,4 +37,27 @@ func TestCacheDeleteWithTag_ScopedToTag(t *testing.T) {
 	require.NoError(t, CacheClear(ns))
 	_, okB2 := CacheGet(ns, "userB")
 	assert.False(t, okB2, "CacheClear must drop everything in the namespace")
+}
+
+// TestCacheNamespaceExpiration_DefaultsAppliedAtSet covers the TTL fallback
+// CacheSet uses when a caller passes no expiration. Under the redis provider
+// that fallback is what stops an entry from being stored with no TTL at all
+// (gocache passes the expiration straight to SET, where 0 means "keep
+// forever"), turning any missed invalidation into a permanent stale entry. The
+// applied TTL itself is not observable here — the in-memory bigcache store has
+// no per-key expiry — so this asserts the value CacheSet reads.
+func TestCacheNamespaceExpiration_DefaultsAppliedAtSet(t *testing.T) {
+	ns := "test.cache.ttl"
+	CacheCreateNamespace(ns, CacheNamespaceWithExpiration(7*time.Minute))
+
+	assert.Equal(t, 7*time.Minute, cacheNamespaceExpiration(ns),
+		"a set with no explicit expiration must inherit the namespace TTL")
+	assert.Equal(t, time.Duration(0), cacheNamespaceExpiration("test.cache.never.registered"),
+		"an unknown namespace must not invent a TTL")
+
+	// Registered namespaces without an explicit option fall back to the
+	// configured default, never to "no expiry".
+	nsDefault := "test.cache.ttl.default"
+	CacheCreateNamespace(nsDefault)
+	assert.Positive(t, cacheNamespaceExpiration(nsDefault))
 }

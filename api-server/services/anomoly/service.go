@@ -2,8 +2,10 @@ package anomoly
 
 import (
 	"context"
+	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -17,6 +19,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -194,6 +197,8 @@ func executeForAccountPairs(ctx *security.RequestContext, pairs []accountTenantP
 		}
 	}
 
+	closeOrphanedAnomalyEvents(eligibleAccountIds)
+
 	if len(workItems) == 0 {
 		slog.Info("anomaly: no work items generated for processing.")
 		return nil
@@ -302,6 +307,168 @@ func fetchExistingAnomalyCounts(accountIds []string) map[string]map[AnomalyType]
 	return result
 }
 
+// anomalyFingerprint is the single source of truth for a K8s metric anomaly's
+// dedup/close identity — the same instance (account, type, workload,
+// namespace) always produces the same string, across every detection cycle,
+// which is what lets InsertEvent's ON CONFLICT(tenant, cloud_account_id,
+// finding_id) upsert collapse repeat detections into one row instead of
+// inserting a new one every cycle.
+//
+// Uses "|" as the field separator, not "-": account is a UUID and name/
+// namespace are Kubernetes DNS-1123 labels, both of which routinely contain
+// "-" themselves. Joining with "-" is ambiguous — name="api",
+// namespace="prod-payments" and name="api-prod", namespace="payments" both
+// serialize to the identical string under the same account+type — so two
+// unrelated workloads could silently share one event and incorrectly close
+// each other's anomalies. "|" cannot appear in a UUID, this type's enum
+// values, or a DNS-1123 label, so it can't collide.
+func anomalyFingerprint(accountId string, anomalyType AnomalyType, name, namespace string) string {
+	return fmt.Sprintf("anomaly|%s|%s|%s|%s", accountId, anomalyType, name, namespace)
+}
+
+// closeAnomalyEventIfOpen auto-resolves the FIRING Anomaly event for exactly
+// this (account, type, name, namespace) instance, if one is open. Call this
+// when a detection cycle EXPLICITLY evaluated this instance and found it
+// clean — ml.AnomalyResponse.HasAnomaly == false from the ML path, or
+// isAnomaly == false from the Prometheus comparison — not merely "no result
+// came back" (e.g. the ML new-workload/insufficient-training-data guard),
+// which carries no information about whether a prior anomaly recovered.
+//
+// This is a real per-cycle recovery signal, not an inferred one, so it closes
+// immediately — no debounce/buffer needed, unlike closeOrphanedAnomalyEvents.
+func closeAnomalyEventIfOpen(accountId, tenantId string, anomalyType AnomalyType, name, namespace string) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		slog.Error("anomaly: failed to get db manager for closing recovered anomaly event", "error", err)
+		return
+	}
+	fingerprint := anomalyFingerprint(accountId, anomalyType, name, namespace)
+
+	var id string
+	err = dbms.Db.QueryRowx(
+		// events.ends_at is `timestamp` with no timezone (see V175); binding an
+		// explicit UTC value here — rather than the SQL now(), which would cast
+		// through the session's timezone setting — keeps it consistent with
+		// every other write in this codebase, which timestamps in Go as UTC.
+		`UPDATE events SET status = 'RESOLVED', ends_at = $4
+		 WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3 AND status = 'FIRING'
+		 RETURNING id`,
+		tenantId, accountId, fingerprint, time.Now().UTC(),
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		slog.Error("anomaly: failed to close recovered anomaly event", "error", err, "fingerprint", fingerprint)
+		return
+	}
+
+	publishAnomalyEventResolved(id)
+}
+
+// publishAnomalyEventResolved delivers the resolved notification the same
+// way webhook-driven resolves do (integrations/core/integration_webhook.go
+// resolveEvent) — status alone doesn't notify anyone, this does.
+func publishAnomalyEventResolved(eventId string) {
+	_ = common.MqPublish(
+		config.Config.RabbitMqEventPostProcessExchange,
+		config.Config.RabbitMqEventPostProcessQueue,
+		map[string]any{"event_id": eventId, "notify_resolved": true},
+		common.MqPublishWithExpiration(1*time.Hour),
+		common.MqPublishWithBackgroundRetry(),
+	)
+}
+
+// closeOrphanedAnomalyEvents is a backstop, not the primary close path (see
+// closeAnomalyEventIfOpen for that). It only catches anomaly instances that
+// stop being evaluated AT ALL — the workload was deleted, the app no longer
+// shows up in application.ListApplications, or the tenant disabled anomaly
+// detection — so no cycle, clean or dirty, ever runs again to report a
+// recovery. A FIRING anomaly event whose updated_at hasn't moved in a long
+// time (default: 7 days) almost certainly fits that description, since a
+// live, still-evaluated instance is either re-confirmed as FIRING (bumping
+// updated_at via the upsert) or actively closed by closeAnomalyEventIfOpen
+// every single cycle.
+//
+// The window is deliberately much longer than the detection cadence — this
+// is cleanup for abandoned events, not a substitute for prompt closing.
+//
+// category = 'Anomaly' scopes this to K8s metric anomalies only — spend
+// anomalies also use finding_type = 'Anomaly' but category = 'CostAnomaly',
+// and already have their own OPEN/RESOLVED lifecycle (see spend_anomaly.go).
+func closeOrphanedAnomalyEvents(accountIds []string) {
+	closeAnomalyEventsUpdatedBefore(accountIds, time.Now().UTC().Add(-7*24*time.Hour))
+}
+
+// closeAnomalyEventsUpdatedBefore is closeOrphanedAnomalyEvents with the
+// staleness cutoff as a parameter instead of a hardcoded "now - 7 days", so
+// the WHERE clause's account/finding_type/category/status scoping can be
+// tested without needing to backdate a real events.updated_at value — the
+// table's set_public_events_updated_at trigger forces updated_at to NOW() on
+// every UPDATE, so a freshly inserted row can't be backdated by SQL from the
+// application; passing a cutoff in the future makes a fresh row "stale"
+// relative to it instead.
+func closeAnomalyEventsUpdatedBefore(accountIds []string, staleBefore time.Time) {
+	nonEmptyAccountIds := make([]string, 0, len(accountIds))
+	for _, id := range accountIds {
+		if id != "" {
+			nonEmptyAccountIds = append(nonEmptyAccountIds, id)
+		}
+	}
+	if len(nonEmptyAccountIds) == 0 {
+		return
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		slog.Error("anomaly: failed to get db manager for closing orphaned anomaly events", "error", err)
+		return
+	}
+
+	query, args, err := sqlx.In(`
+		UPDATE events
+		   SET status = 'RESOLVED', ends_at = updated_at
+		 WHERE cloud_account_id IN (?) AND finding_type = 'Anomaly' AND category = 'Anomaly'
+		   AND status = 'FIRING' AND updated_at < ?
+		 RETURNING id`, nonEmptyAccountIds, staleBefore)
+	if err != nil {
+		slog.Error("anomaly: failed to build orphaned-anomaly-close query", "error", err)
+		return
+	}
+	query = dbms.Db.Rebind(query)
+
+	rows, err := dbms.Db.Queryx(query, args...)
+	if err != nil {
+		slog.Error("anomaly: failed to close orphaned anomaly events", "error", err)
+		return
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Error("anomaly: failed to close rows after closing orphaned anomaly events", "error", cerr)
+		}
+	}()
+
+	var resolvedIds []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			slog.Error("anomaly: failed to scan resolved anomaly event id", "error", err)
+			continue
+		}
+		resolvedIds = append(resolvedIds, id)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("anomaly: error iterating resolved anomaly event rows", "error", err)
+	}
+
+	for _, id := range resolvedIds {
+		publishAnomalyEventResolved(id)
+	}
+	if len(resolvedIds) > 0 {
+		slog.Info("anomaly: closed orphaned anomaly events", "count", len(resolvedIds))
+	}
+}
+
 func processSingleApplicationMlAsync(
 	ctx *security.RequestContext,
 	anomalyConfig AnomalyTemplate,
@@ -394,15 +561,20 @@ func ProcessAnomaly(ctx *security.RequestContext, app AnomalyProcessingMessage) 
 	}
 
 	if len(mlAnomalies) == 0 {
+		// The ML server returns an empty list only when it couldn't evaluate at
+		// all (e.g. CancelPrediction for a new workload with too little training
+		// data yet) — that's "no information", not "recovered", so don't close.
 		ctx.GetLogger().Info("anomaly: no anomalies found", "account", app.AccountId)
 		return
 	}
 
 	// Process each anomaly
+	anomalyFound := false
 	for _, mlAnomaly := range mlAnomalies {
 		if !mlAnomaly.HasAnomaly {
 			continue
 		}
+		anomalyFound = true
 		anomalyValue := 0.0
 		for _, d := range mlAnomaly.Data {
 			if d.Anomaly {
@@ -464,6 +636,13 @@ func ProcessAnomaly(ctx *security.RequestContext, app AnomalyProcessingMessage) 
 			ctx.GetLogger().Error("anomaly: unable to handle callback for anomaly", "app", app.ApplicationName, "namespace", app.ApplicationNamespace, "error", err)
 		}
 	}
+
+	// The ML server returned a definitive result (len(mlAnomalies) > 0) and none
+	// of them had an anomaly — a real "this instance is clean" signal for this
+	// cycle, not just an absence of one. Close its event if it was open.
+	if !anomalyFound {
+		closeAnomalyEventIfOpen(app.AccountId, app.TenantId, app.AnomalyType, app.ApplicationName, app.ApplicationNamespace)
+	}
 	ctx.GetLogger().Info("anomaly: processing anomaly", "account", app.AccountId, "tenant", app.TenantId, "app", app.ApplicationName, "namespace", app.ApplicationNamespace, "type", app.AnomalyType, "time", time.Since(t0).Seconds())
 }
 
@@ -513,6 +692,17 @@ func processSingleApplicationPrometheus(
 	// Fan the per-period relay fetches out concurrently — each period is an independent
 	// network round-trip to the agent (no shared state), so running them in parallel
 	// cuts wall time from sum(latencies) to ~max(latencies) per app.
+	//
+	// evaluated/anomalyFound track whether at least one period was actually
+	// compared (had both current and historical data) and whether any of those
+	// comparisons found an anomaly — used after g.Wait() to close a previously
+	// open event when this cycle explicitly evaluated the app as clean. A period
+	// skipped for missing data is NOT a "clean" signal, only a completed
+	// comparison is.
+	var stateMu sync.Mutex
+	evaluated := false
+	anomalyFound := false
+
 	var g errgroup.Group
 	for _, period := range referencePeriods {
 		period := period
@@ -557,6 +747,13 @@ func processSingleApplicationPrometheus(
 				slog.Warn("anomaly: unknown change operator", "operator", anomalyCfg.ChangeOperator, "app", app.Name)
 			}
 
+			stateMu.Lock()
+			evaluated = true
+			if isAnomaly {
+				anomalyFound = true
+			}
+			stateMu.Unlock()
+
 			if !isAnomaly {
 				return nil
 			}
@@ -590,7 +787,16 @@ func processSingleApplicationPrometheus(
 		})
 	}
 
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	// At least one period was actually compared and none found an anomaly —
+	// close a previously open event for this instance, if any.
+	if evaluated && !anomalyFound {
+		closeAnomalyEventIfOpen(accountId, tenantId, anomalyCfg.AnomalyType, app.Name, app.K8sNamespace)
+	}
+	return nil
 }
 
 func queryRelayServer(accountId string, rStartTime string, rEndTime string, query string, queryName string, applicationsFilter map[string]any) ([]relay.ApplicationStatsResponse, error) {
@@ -783,6 +989,12 @@ func GenerateAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly) erro
 		return err
 	}
 
+	// FindingId is the dedup fingerprint, not anomaly.Id (a fresh UUID every
+	// detection cycle) — otherwise InsertEvent's ON CONFLICT(tenant,
+	// cloud_account_id, finding_id) upsert never matches a prior cycle's row,
+	// and every cycle inserts a brand-new FIRING event instead of refreshing
+	// the existing one. See closeAnomalyEventIfOpen for the corresponding close.
+	fingerprint := anomalyFingerprint(anomaly.AccountId, anomaly.AnomalyType, anomaly.Name, anomaly.Namespace)
 	eventObj := event.Event{
 		AccountId:        anomaly.AccountId,
 		Tenant:           anomaly.Tenant,
@@ -795,14 +1007,14 @@ func GenerateAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly) erro
 		SubjectName:      anomaly.Name,
 		SubjectNamespace: anomaly.Namespace,
 		Evidences:        evidences,
-		FindingId:        anomaly.Id,
+		FindingId:        fingerprint,
 		AggregationKey:   "Anomaly",
 		Description:      fmt.Sprintf("%s Anomaly detected for %s in namespace %s", anomaly.AnomalyType, anomaly.Name, anomaly.Namespace),
 		SubjectType:      workloadKindMap[anomaly.Name],
 		SubjectNode:      "",
 		Status:           "FIRING",
 		StartsAt:         anomaly.EvaluatedAt,
-		Fingerprint:      fmt.Sprintf("anomaly-%s-%s-%s-%s", anomaly.AccountId, anomaly.AnomalyType, anomaly.Name, anomaly.Namespace),
+		Fingerprint:      fingerprint,
 		Cluster:          accountName,
 		Labels:           metricStatLabels(anomaly),
 	}

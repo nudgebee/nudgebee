@@ -35,7 +35,7 @@ func TestFinOpsAgent_RoutesThroughSpecialistAgents(t *testing.T) {
 	// configured) passes the IsToolConfigured gate. Same pattern used in
 	// the (removed) k8s orchestrator mode tests.
 	summaryJson := `{"IntegrationTypes":{},"TenantIntegrationTypes":{},"CloudProviders":{"k8s":true},"HasAgent":true}`
-	err := common.CacheSet(toolcore.CacheNamespaceLlmToolConfig, "account_config_summary:v2:"+accountId, []byte(summaryJson))
+	err := common.CacheSet(toolcore.CacheNamespaceLlmToolConfig, "account_config_summary:v3:"+accountId, []byte(summaryJson))
 	assert.NoError(t, err)
 	configsJson := `[{"id":"config-1","name":"kubectl_execute"}]`
 	err = common.CacheSet(toolcore.CacheNamespaceLlmToolConfig, "list_tool_configs:"+accountId+":"+tools.ToolExecuteKubectlCommand, []byte(configsJson))

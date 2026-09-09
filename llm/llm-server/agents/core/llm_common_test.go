@@ -156,7 +156,7 @@ func TestLargestTextMessageIndex(t *testing.T) {
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: strings.Repeat("b", 50)}}},
 			{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextContent{Text: strings.Repeat("c", 200)}}},
 		}
-		idx, tokens := largestTextMessageIndex(msgs, []int{100, 50, 200})
+		idx, tokens := largestTextMessageIndex(msgs, []int{100, 50, 200}, -1)
 		assert.Equal(t, 2, idx)
 		assert.Equal(t, 200, tokens)
 	})
@@ -166,7 +166,7 @@ func TestLargestTextMessageIndex(t *testing.T) {
 			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "small"}}},
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.ToolCall{ID: "t1"}}},
 		}
-		idx, _ := largestTextMessageIndex(msgs, []int{10, 9999})
+		idx, _ := largestTextMessageIndex(msgs, []int{10, 9999}, -1)
 		assert.Equal(t, 0, idx, "tool-call message must not be picked even though it has the higher token count")
 	})
 
@@ -174,7 +174,7 @@ func TestLargestTextMessageIndex(t *testing.T) {
 		msgs := []llms.MessageContent{
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.ToolCall{ID: "t1"}}},
 		}
-		idx, tokens := largestTextMessageIndex(msgs, []int{100})
+		idx, tokens := largestTextMessageIndex(msgs, []int{100}, -1)
 		assert.Equal(t, -1, idx)
 		assert.Equal(t, -1, tokens)
 	})
@@ -184,7 +184,7 @@ func TestLargestTextMessageIndex(t *testing.T) {
 			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{}},
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "ok"}}},
 		}
-		idx, _ := largestTextMessageIndex(msgs, []int{0, 5})
+		idx, _ := largestTextMessageIndex(msgs, []int{0, 5}, -1)
 		assert.Equal(t, 1, idx)
 	})
 }

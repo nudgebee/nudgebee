@@ -201,12 +201,18 @@ func (t *ReplaceTool) Execute(ctx context.Context, input map[string]any) core.NB
 	case "verify":
 		return t.executeVerify(filePath, input)
 	case "replace":
+		// Captured before the edit so the gate can report only what the edit
+		// introduced. A file that already had undefined-name findings would
+		// otherwise trigger "your edit likely broke the file's syntax" on
+		// someone else's code — the agent then tries to fix what it never
+		// broke. nil (unreadable/new file) degrades to the plain check.
+		beforeContent, _ := os.ReadFile(filePath)
 		resp := t.executeReplace(ctx, filePath, input)
 		// Post-edit syntax gate (advisory, parse-only, tri-state): catch an
 		// edit that mechanically broke the file immediately instead of paying
 		// LLM review or CI to find out. not_checked appends nothing.
 		if resp.Status == "success" {
-			resp.Observation = CheckEditedFileSyntax(filePath).AppendToObservation(resp.Observation)
+			resp.Observation = CheckEditedFileSyntaxDelta(filePath, beforeContent).AppendToObservation(resp.Observation)
 		}
 		return resp
 	default:

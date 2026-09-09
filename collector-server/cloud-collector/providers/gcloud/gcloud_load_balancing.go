@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -1075,7 +1076,7 @@ func (s *cloudLoadBalancingService) getForwardingRuleRecommendations(resource pr
 	if len(resource.Tags) == 0 {
 		recommendations = append(recommendations, providers.Recommendation{
 			CategoryName: providers.RecommendationCategoryConfiguration,
-			RuleName:     "gcp_lb_no_labels",
+			RuleName:     constants.GCPLBNoLabels,
 			Severity:     providers.RecommendationSeverityLow,
 			Savings:      0,
 			Data: map[string]any{

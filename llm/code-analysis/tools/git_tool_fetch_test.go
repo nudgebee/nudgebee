@@ -107,3 +107,19 @@ func TestGitTool_FetchEnablesConflictMerge(t *testing.T) {
 		t.Fatalf("conflict markers not materialized (merge said: %s)", mergeOut)
 	}
 }
+
+// GitTool must never report IsReadOnly()==true: Execute places no restriction
+// on which git subcommand runs (commit/add/push/reset are all permitted, not
+// just the read-only ones this tool documents), and IsReadOnly is a static
+// per-tool flag the ReAct planner trusts with no visibility into a specific
+// call's args. Claiming true let a write command issued through this tool be
+// batched concurrently with other "read-only" steps (a race on
+// .git/index.lock and remote state) or served a stale cached result on retry
+// instead of actually re-running — issue #36634, which silently discarded a
+// real, correct PR-followup edit on PR #36518.
+func TestGitToolIsNotReadOnly(t *testing.T) {
+	tool := NewGitTool(t.TempDir())
+	if tool.IsReadOnly() {
+		t.Fatal("GitTool.IsReadOnly() returned true — this tool can run write commands (commit/add/push/etc), so the planner would batch them concurrently or serve stale cached results instead of re-executing on retry")
+	}
+}

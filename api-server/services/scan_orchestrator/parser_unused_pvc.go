@@ -13,13 +13,6 @@ import (
 // /optimize/unused-volume → app/src/api1/recommendation/index.ts).
 const UnusedPVCRuleName = "unused_pvc"
 
-// UnusedPVCSavingFactor is the same 10%-of-capacity heuristic the collector's
-// handle_abandoned_pv used (event_handler.py:2027). A PV sitting unclaimed
-// costs ~its provisioned size in monthly storage spend; saving estimate is
-// 10% of that as a conservative monthly cost on hyperdisk-balanced rates.
-// Adjusting this factor is future per-tenant attr work — out of scope here.
-const UnusedPVCSavingFactor = 0.10
-
 // IdentifyUnusedPVs mirrors Robusta's list_unclaimed_persistent_volumes
 // (robusta/playbooks/nudgebee_playbooks/unused_pv.py:23-47): a PV is unused
 // when it is in Released/Available phase, OR when it is Bound to a PVC that
@@ -141,12 +134,18 @@ func IdentifyUnusedPVs(pods, pvcs, pvs []map[string]any) []map[string]any {
 //
 //	rule_name = unused_pvc, category = RightSizing, severity = High,
 //	recommendation_action = Modify, account_object_id = "<ns>/<pv_name>",
-//	recommendation = json.dumps(pv), estimated_savings = 10% * capacity_gb.
+//	recommendation = json.dumps(pv).
+//
+// estimated_savings is the volume's full monthly cost (deleting an unused
+// disk saves the whole disk): capacity_gb × the storage-class-resolved
+// $/GB/month rate (resolveStoragePricing). storageClasses maps class name →
+// StorageClass object and accountProvider is the agent-telemetry backstop;
+// zero values degrade the resolution toward the flat fallback.
 //
 // PV namespace is typically empty (PVs are cluster-scoped), so the
 // account_object_id usually starts with "/" — preserved verbatim from the
 // collector so existing rows UPSERT in place.
-func ParseUnusedPVs(unused []map[string]any, account ScanAccount) ([]Recommendation, error) {
+func ParseUnusedPVs(unused []map[string]any, storageClasses map[string]map[string]any, accountProvider string, account ScanAccount) ([]Recommendation, error) {
 	out := make([]Recommendation, 0, len(unused))
 	seen := map[string]bool{} // dedupe by account_object_id within one scan
 	for _, pv := range unused {
@@ -175,13 +174,19 @@ func ParseUnusedPVs(unused []map[string]any, account ScanAccount) ([]Recommendat
 			}
 		}
 		capacityGB := parseSizeToGB(storage)
-		savings := UnusedPVCSavingFactor * capacityGB
+		pricing := resolveStoragePricing(pv, storageClasses, accountProvider)
+		savings := pricing.PricePerGB * capacityGB
 
 		// The agent's kube handler snake_cases every key before returning
 		// the PV. The UI's KubernetesUnusedVolumes.jsx reads camelCase
 		// (spec.claimRef, metadata.creationTimestamp) — match that contract
 		// so legacy + canary rows render identically.
-		body, err := json.Marshal(camelKeysDeep(pv))
+		camelPV, _ := camelKeysDeep(pv).(map[string]any)
+		if camelPV == nil {
+			camelPV = map[string]any{}
+		}
+		camelPV["pricing"] = pricing
+		body, err := json.Marshal(camelPV)
 		if err != nil {
 			return nil, fmt.Errorf("unused_pvc: encode recommendation: %w", err)
 		}

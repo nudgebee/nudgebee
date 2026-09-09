@@ -94,23 +94,6 @@ func computeLogSummary(logs []map[string]any) map[string]any {
 	return summary
 }
 
-// computeLogSummaryFromText is a convenience wrapper that converts raw text (newline-separated)
-// into the []map[string]any format expected by computeLogSummary.
-func computeLogSummaryFromText(text string) map[string]any {
-	lines := strings.Split(text, "\n")
-	if len(lines) == 0 {
-		return nil
-	}
-	logs := make([]map[string]any, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			logs = append(logs, map[string]any{"body": line})
-		}
-	}
-	return computeLogSummary(logs)
-}
-
 // firstStringField returns the first key in obj that holds a non-empty value, coerced to a
 // string. Structured logs sometimes encode time/level/severity numerically (epoch timestamp
 // as float64, level as int); those are converted rather than silently dropped.
@@ -134,6 +117,20 @@ func firstStringField(obj map[string]any, keys ...string) string {
 	return ""
 }
 
+// splitLeadingRFC3339 splits a "<rfc3339> <rest>" line into its timestamp and remainder.
+// Returns ("", line) unchanged when the first token is not a timestamp, so lines from
+// sources that do not stamp them are left alone. A line that is nothing but a timestamp
+// (what `--timestamps` makes of a blank log line) yields an empty remainder, which the
+// caller drops.
+func splitLeadingRFC3339(line string) (string, string) {
+	head, rest, _ := strings.Cut(line, " ")
+	ts, err := time.Parse(time.RFC3339Nano, head)
+	if err != nil {
+		return "", line
+	}
+	return ts.UTC().Format(time.RFC3339Nano), strings.TrimSpace(rest)
+}
+
 // parseLogTextToOutputLogs converts raw newline-separated log text (e.g. kubectl / agent
 // logs_enricher stdout) into structured OutputLog entries.
 //
@@ -154,11 +151,21 @@ func parseLogTextToOutputLogs(text string) []OutputLog {
 		if line == "" {
 			continue
 		}
-		entry := OutputLog{Message: line}
+		// `kubectl logs --timestamps` prefixes every line with an RFC3339Nano stamp; lift
+		// it off before parsing so it neither pollutes the message body (and with it the
+		// Drain3 pattern templates) nor leaves the entry timestamp-less.
+		streamTimestamp, line := splitLeadingRFC3339(line)
+		if line == "" {
+			continue
+		}
+
+		entry := OutputLog{Message: line, Timestamp: streamTimestamp}
 		var obj map[string]any
 		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &obj) == nil {
 			entry.Labels = obj
-			entry.Timestamp = firstStringField(obj, "time", "timestamp", "ts", "@timestamp")
+			if ts := firstStringField(obj, "time", "timestamp", "ts", "@timestamp"); ts != "" {
+				entry.Timestamp = ts
+			}
 			if msg := firstStringField(obj, "msg", "message", "body", "log"); msg != "" {
 				entry.Message = msg
 			}
@@ -1555,6 +1562,14 @@ type observabilityLogActionParams struct {
 	LabelExtractors []LabelExtractor      `json:"label_extractors,omitempty"`
 }
 
+// resolveLogQueryWindow returns the event's log query window in epoch milliseconds.
+// The floor/cap rules live on PlaybookEvent so the log, metric, and cloud-log
+// enrichers all derive their window the same way — see PlaybookEvent.ResolveQueryWindow.
+func resolveLogQueryWindow(event playbooks.PlaybookEvent, durationMinutes int) (int64, int64) {
+	start, end := event.ResolveQueryWindow(durationMinutes)
+	return start.UnixMilli(), end.UnixMilli()
+}
+
 // getEventNamespace returns the namespace for log collection from SubjectNamespace.
 // For webhook events this is populated from Labels["namespace"] during enrichment.
 // For agent events this is set directly from the k8s resource metadata.
@@ -1584,13 +1599,38 @@ func getEventWorkload(event playbooks.PlaybookEvent) string {
 	return event.SubjectName
 }
 
+// Kubernetes object naming rules (RFC 1123). Namespaces are labels; workload and pod
+// names are subdomains, so they additionally allow dots.
+var (
+	k8sNamespacePattern  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	k8sObjectNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+)
+
+// isK8sLogTarget reports whether (workloadName, namespace) can name a real Kubernetes
+// object, and therefore whether asking the agent for its logs can ever succeed.
+//
+// Not every event with a "subject" has a K8s one. CI events carry a repository as the
+// namespace and a job as the workload ("nudgebee/nudgebee-enterprise" /
+// "label-prs #32334764400"), which the relay fallback happily turned into
+// `kubectl logs deployment/label-prs #32334764400 -n nudgebee/nudgebee-enterprise` —
+// a guaranteed failure, one relay round-trip per event, and a shell metacharacter in a
+// command string. Screening on the naming rules keeps those events out of the agent path
+// entirely; they still get whatever the configured log source can answer.
+func isK8sLogTarget(workloadName, namespace string) bool {
+	if namespace == "" || len(namespace) > 63 || !k8sNamespacePattern.MatchString(namespace) {
+		return false
+	}
+	return workloadName != "" && len(workloadName) <= 253 && k8sObjectNamePattern.MatchString(workloadName)
+}
+
 func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
 	source, err := getLogSourceForAccount(requestCtx, ctx.GetAccountId(), "", "")
 	namespace := getEventNamespace(ctx.GetEvent())
 	if err != nil || source == nil {
 		// No configured log source — allow relay fallback only for non-cloud events
-		if ctx.GetEvent().SubjectName != "" && namespace != "" && !isCloudEventSource(ctx.GetEvent().Source) {
+		// whose subject the agent could actually resolve.
+		if isK8sLogTarget(getEventWorkload(ctx.GetEvent()), namespace) && !isCloudEventSource(ctx.GetEvent().Source) {
 			return true
 		}
 		return false
@@ -1746,14 +1786,11 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 	workloadName := getEventWorkload(ctx.GetEvent())
 	namespace := getEventNamespace(ctx.GetEvent())
 
-	endTime := time.Now().UnixMilli()
-	startTime := endTime - int64(7*60*60*1000) // 1 hour default
-	// if ctx.GetEvent().StartedAt != nil {
-	// 	startTime = ctx.GetEvent().StartedAt.UnixMilli()
-	// }
-	// if ctx.GetEvent().EndedAt != nil {
-	// 	endTime = ctx.GetEvent().EndedAt.UnixMilli()
-	// }
+	// Anchor on the event window (floored/capped by resolveLogQueryWindow) rather than a
+	// fixed lookback from now, so logs for an event that ended hours ago still line up
+	// with it. The floor is what makes this safe: an event-anchored window used to
+	// collapse to a couple of seconds for a just-fired alert.
+	startTime, endTime := resolveLogQueryWindow(ctx.GetEvent(), 0)
 
 	// Try configured log source with workload-based query
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
@@ -1789,6 +1826,14 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 		return nil, nil
 	}
 
+	// Skip relay fallback when the subject is not a Kubernetes object (CI jobs, pull
+	// requests, and anything else whose "namespace"/"workload" are borrowed fields).
+	if !isK8sLogTarget(workloadName, namespace) {
+		ctx.GetLogger().Info("observability: skipping relay fallback for non-kubernetes subject",
+			"source", ctx.GetEvent().Source, "workload", workloadName, "namespace", namespace)
+		return nil, nil
+	}
+
 	// Fallback: relay kubectl logs
 	ctx.GetLogger().Info("observability: falling back to relay kubectl logs",
 		"workload", workloadName, "namespace", namespace)
@@ -1807,7 +1852,7 @@ func (a *observabilityLogAction) fetchLogsViaRelay(ctx playbooks.PlaybookActionC
 		kind = ctx.GetEvent().SubjectType
 	}
 
-	if strings.EqualFold(kind, "Deployment") || strings.EqualFold(kind, "DaemonSet") || strings.EqualFold(kind, "StatefulSet") || strings.EqualFold(kind, "ReplicaSet") {
+	if kubectlLogKinds[strings.ToLower(kind)] {
 		return a.fetchLogsViaKubectl(ctx, kind, workloadName, namespace)
 	}
 
@@ -1833,13 +1878,25 @@ func (a *observabilityLogAction) fetchLogsViaLogsEnricher(ctx playbooks.Playbook
 	if err != nil {
 		return nil, err
 	}
-	data, ok := relayResponse["data"].(string)
+	raw, ok := relayResponse["data"].(string)
 	if !ok {
 		return nil, errors.New("relay: unable to extract log data from response")
 	}
+	data, err := playbooks.DecodeAgentPayload(raw)
+	if err != nil {
+		return nil, fmt.Errorf("relay: unable to decode logs_enricher payload: %w", err)
+	}
+	logs := parseLogTextToOutputLogs(data)
+	if len(logs) == 0 {
+		// The agent answered with an empty (gzipped) log — the pod wrote nothing in
+		// range. Same rule as buildLogsActionResponse: no logs, no card.
+		ctx.GetLogger().Info("observability: logs_enricher returned no log content",
+			"workload", workloadName, "namespace", namespace)
+		return nil, nil
+	}
 	filename, _ := relayResponse["filename"].(string)
 	insight := playbooks.InsightFromRelayResponse(relayResponse)
-	if summary := computeLogSummaryFromText(data); summary != nil {
+	if summary := computeLogSummary(outputLogsToInsightMaps(logs)); summary != nil {
 		additionalInfo["log_summary"] = summary
 	}
 	if filename != "" {
@@ -1856,14 +1913,42 @@ func (a *observabilityLogAction) fetchLogsViaLogsEnricher(ctx playbooks.Playbook
 	// Return structured log entries (not a raw-text file) so the evidence renders in the UI
 	// log card and is consumed by the log-analysis pipeline. See parseLogTextToOutputLogs.
 	return playbooks.NewPlaybookActionResponseJson(
-		map[string]any{"data": parseLogTextToOutputLogs(data)}, additionalInfo, insight, metadata), nil
+		map[string]any{"data": logs}, additionalInfo, insight, metadata), nil
+}
+
+// kubectlLogKinds are the workload kinds `kubectl logs <kind>/<name>` resolves and that
+// logs_enricher cannot (it expects a pod name). Doubles as the allowlist for the only
+// value interpolated into the kubectl command that isK8sLogTarget does not already
+// screen — see fetchLogsViaKubectl.
+var kubectlLogKinds = map[string]bool{
+	"deployment":  true,
+	"daemonset":   true,
+	"statefulset": true,
+	"replicaset":  true,
 }
 
 // fetchLogsViaKubectl uses kubectl logs <kind>/<name> via kubectl_command_executor
 // for workload kinds where logs_enricher cannot resolve the resource.
 func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActionContext, kind, workloadName, namespace string) (playbooks.PlaybookActionResponse, error) {
-	command := fmt.Sprintf("kubectl logs %s/%s -n %s --tail=1000 --all-containers=true",
-		strings.ToLower(kind), workloadName, namespace)
+	// kind reaches here from event labels / SubjectType, i.e. from a webhook payload.
+	// The sole caller already screens it, but the command is assembled here, so the
+	// check belongs here too: with this, every value interpolated below is either from
+	// this fixed set, screened by isK8sLogTarget, or a timestamp we formatted ourselves.
+	kind = strings.ToLower(kind)
+	if !kubectlLogKinds[kind] {
+		return nil, fmt.Errorf("relay: kubectl logs does not support kind %q", kind)
+	}
+
+	// --since-time bounds the output to the event's window. Without it `--tail=1000`
+	// returns whatever the container last wrote, however long ago: an event raised today
+	// was being enriched with the four lines a quiet pod emitted twelve days earlier, and
+	// nothing in the evidence said so. --timestamps is what makes that visible — it is
+	// the only way lines from this path carry a time at all (see parseLogTextToOutputLogs).
+	startTime, _ := resolveLogQueryWindow(ctx.GetEvent(), 0)
+	sinceTime := time.UnixMilli(startTime).UTC().Format(time.RFC3339)
+
+	command := fmt.Sprintf("kubectl logs %s/%s -n %s --tail=1000 --all-containers=true --timestamps=true --since-time=%s",
+		kind, workloadName, namespace, sinceTime)
 
 	ctx.GetLogger().Info("observability: fetching logs via kubectl", "command", command)
 
@@ -1888,11 +1973,26 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 	// relayResponse["data"] (a JSON-encoded string), not at the top level.
 	stdout, stderr := extractKubectlOutput(relayResponse)
 	if stdout == "" {
-		ctx.GetLogger().Error("relay: kubectl logs returned no output", "stderr", stderr, "response", slog.AnyValue(relayResponse))
-		return nil, fmt.Errorf("relay: kubectl logs failed: %s", stderr)
+		// With --since-time, "nothing" is an ordinary answer: the workload was simply
+		// quiet during the event window. Only a non-empty stderr means the command
+		// actually failed. Reporting the quiet case as an error is what used to push
+		// callers into treating the twelve-day-old tail as the better answer.
+		if strings.TrimSpace(stderr) != "" {
+			ctx.GetLogger().Error("relay: kubectl logs failed", "stderr", stderr, "response", slog.AnyValue(relayResponse))
+			return nil, fmt.Errorf("relay: kubectl logs failed: %s", stderr)
+		}
+		ctx.GetLogger().Info("observability: kubectl logs returned nothing in the event window",
+			"workload", workloadName, "namespace", namespace, "since", sinceTime)
+		return nil, nil
+	}
+	logs := parseLogTextToOutputLogs(stdout)
+	if len(logs) == 0 {
+		ctx.GetLogger().Info("observability: kubectl logs produced no parseable entries",
+			"workload", workloadName, "namespace", namespace)
+		return nil, nil
 	}
 	insight := playbooks.InsightFromRelayResponse(relayResponse)
-	if summary := computeLogSummaryFromText(stdout); summary != nil {
+	if summary := computeLogSummary(outputLogsToInsightMaps(logs)); summary != nil {
 		additionalInfo["log_summary"] = summary
 	}
 	additionalInfo["filename"] = fmt.Sprintf("%s-%s.log", workloadName, namespace)
@@ -1907,7 +2007,7 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 	// Return structured log entries (not a raw-text file) so the evidence renders in the UI
 	// log card and is consumed by the log-analysis pipeline. See parseLogTextToOutputLogs.
 	return playbooks.NewPlaybookActionResponseJson(
-		map[string]any{"data": parseLogTextToOutputLogs(stdout)}, additionalInfo, insight, metadata), nil
+		map[string]any{"data": logs}, additionalInfo, insight, metadata), nil
 }
 
 // extractKubectlOutput unwraps the kubectl_command_executor response to recover stdout/stderr.
@@ -1961,8 +2061,13 @@ func (a *observabilityLogAction) buildLogResponse(logoutput []OutputLog, queryIn
 // buildWorkloadLogWhereClause creates a where clause to filter logs by workload name and namespace.
 // Uses canonical keys "app" and "namespace" so that getMergedLabelMapping can translate them
 // to provider-specific field names (e.g. via the UI's Log Label Mapper: app → deployment.keyword).
-// For backends that use different native field names (Loki: service_name/workLoad_name),
-// the static GetLabelMapping() handles the translation.
+//
+// Note that a source's static GetLabelMapping() does not necessarily cover "app" — Loki's
+// is only {content: log} — so on those backends this clause matches solely when the
+// promtail/alloy scrape happens to emit an `app` label equal to the workload name. It is
+// the last resort before the agent: sources that can do better implement
+// PlaybookQueryGenerator (LokiSource matches on `pod=~"<workload>-.*"`), which AutoExecute
+// tries first.
 func buildWorkloadLogWhereClause(workloadName, namespace string) query.QueryWhereClause {
 	return query.QueryWhereClause{
 		And: []query.QueryWhereClause{
@@ -1999,25 +2104,7 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 		return nil, errors.New("account_id is required")
 	}
 
-	startTime := int64(0)
-	endTime := int64(0)
-	if ctx.GetEvent().StartedAt != nil {
-		startTime = ctx.GetEvent().StartedAt.UnixMilli()
-	}
-	if ctx.GetEvent().EndedAt != nil {
-		endTime = ctx.GetEvent().EndedAt.UnixMilli()
-	}
-
-	if endTime == 0 {
-		endTime = time.Now().UnixMilli()
-	}
-
-	if startTime == 0 {
-		if params.Duration < 1 {
-			params.Duration = 60
-		}
-		startTime = endTime - int64(params.Duration*60*1000)
-	}
+	startTime, endTime := resolveLogQueryWindow(ctx.GetEvent(), params.Duration)
 
 	logResult, err := FetchLogs(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), FetchLogRequest{
 		AccountId: params.AccountId,

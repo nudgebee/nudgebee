@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -38,9 +39,13 @@ const (
 // recording the new values until they are really on the branch.
 //
 // Priority over an in-flight review followup is deliberate: a value refresh is
-// dispatched even when the row is mid-followup. It reclaims the row rather than
-// running a second agent against the same branch concurrently, since two agents
-// pushing the same branch would corrupt it.
+// dispatched even when the pr_followup row is mid-followup. It preempts the row
+// rather than running a second agent against the same branch concurrently, since
+// two agents pushing the same branch would corrupt it. The mutex it preempts is
+// the SAME pr_followup row the review-followup loop claims (#36457) — before
+// that fix, this preempted `recommendation_resolution.pr_lifecycle_state`
+// directly, which stopped working once review-followup's claim moved to a
+// PR-URL-keyed table instead of the resolution row.
 func DispatchPRValueRefresh(
 	ctx AccountAdapterContext,
 	resolution *models.RecommendationResolution,
@@ -67,19 +72,38 @@ func DispatchPRValueRefresh(
 		return
 	}
 
-	// Take the row for this refresh even if a review followup holds it: the
-	// numbers being right outranks a review iteration, and the review budget is
-	// reset once the refresh lands anyway. The claim is what actually serialises
-	// this — checking the guardrails and then dispatching would leave a window
-	// for a second replica to slip through and run a second agent against the
-	// same branch, so the guardrails are part of the same atomic update.
-	claimed, err := claimResolutionForValueRefresh(dbms, resolution.Id, maxRefreshes, cooldown)
+	// Cadence guardrail (how OFTEN one PR may be rewritten) is unrelated to
+	// #36457 and stays exactly where it was: value_refresh_count /
+	// last_value_refresh_at on the recommendation_resolution row, checked and
+	// stamped atomically so two concurrent replicas can't both win the same
+	// cooldown window. This is independent of the mutex claim below — a value
+	// refresh can be cadence-blocked without ever touching pr_followup.
+	cadenceOK, err := claimValueRefreshCadence(dbms, resolution.Id, maxRefreshes, cooldown)
 	if err != nil {
+		onDone(ValueRefreshFailed, "failed to check the refresh cadence: "+err.Error())
+		return
+	}
+	if !cadenceOK {
+		onDone(ValueRefreshFailed, "another run is already updating this pull request, or a guardrail now blocks it")
+		return
+	}
+
+	var createdAt time.Time
+	if resolution.CreatedAt != nil {
+		createdAt = *resolution.CreatedAt
+	}
+	followupID, claimed, err := claimPRFollowupForValueRefresh(dbms, meta.PRURL, tenantID, createdAt)
+	if err != nil {
+		recordValueRefreshFailure(dbms, resolution.Id, "failed to claim the pull request for updating: "+err.Error())
 		onDone(ValueRefreshFailed, "failed to claim the pull request for updating: "+err.Error())
 		return
 	}
 	if !claimed {
-		onDone(ValueRefreshFailed, "another run is already updating this pull request, or a guardrail now blocks it")
+		// Only a terminal PR (merged/closed/unresolvable) refuses this claim —
+		// nothing to refresh. Hand the cadence stamp back so it isn't wasted on
+		// a dead PR.
+		recordValueRefreshFailure(dbms, resolution.Id, "pull request already reached a terminal state")
+		onDone(ValueRefreshFailed, "pull request already reached a terminal state")
 		return
 	}
 
@@ -91,8 +115,9 @@ func DispatchPRValueRefresh(
 	// refresh that did not land is visibly failed rather than indistinguishable
 	// from one still running.
 	fail := func(message string) {
-		releaseValueRefreshClaim(dbms, resolution.Id,
-			truncateForStatus("Could not update the pull request with the changed values: "+message))
+		reason := truncateForStatus("Could not update the pull request with the changed values: " + message)
+		recordValueRefreshFailure(dbms, resolution.Id, reason)
+		releasePRFollowupClaim(dbms, followupID, reason)
 		onDone(ValueRefreshFailed, message)
 	}
 
@@ -100,10 +125,10 @@ func DispatchPRValueRefresh(
 	// we asked for. That is an answer, not a failure, so it keeps the cooldown the
 	// claim consumed — handing it back would re-run the agent on the very next
 	// scheduled run and every one after it, since nothing about the inputs has
-	// changed. Only the lifecycle state is restored.
+	// changed. Only the pr_followup mutex is released.
 	settle := func(message string) {
-		restoreValueRefreshState(dbms, resolution.Id,
-			truncateForStatus("Pull request already matches the changed values: "+message))
+		reason := truncateForStatus("Pull request already matches the changed values: " + message)
+		releasePRFollowupClaim(dbms, followupID, reason)
 		onDone(ValueRefreshUnnecessary, message)
 	}
 
@@ -120,6 +145,11 @@ func DispatchPRValueRefresh(
 			outcome := classifyFollowupOutcome(response.Response)
 			switch outcome.name {
 			case followupOutcomeSuccess.name:
+				// The caller (recommendation.recordValueRefresh) records the new
+				// values and clears the pr_followup mutex via ResetPRFollowupBudget
+				// — deliberately not done here, so the mutex only clears once the
+				// values are actually recorded (same ordering guarantee the
+				// original design had via recommendation_resolution).
 				onDone(ValueRefreshUpdated, "")
 			case followupOutcomeNoOp.name:
 				settle("code agent reported " + outcome.name)
@@ -156,26 +186,40 @@ func prMetadataForResolution(resolution *models.RecommendationResolution) (prMet
 	return meta, meta.TenantID, nil
 }
 
-// claimResolutionForValueRefresh marks the row as being worked on, so neither the
-// lifecycle cron nor another replica dispatches onto the same branch while this
-// refresh is in flight. Reports whether the claim was won.
+// claimValueRefreshCadence checks and stamps the value-refresh cadence
+// guardrail (how often ONE pull request may be rewritten) on its own row lock,
+// independent of the pr_followup mutex claim. Reports whether the claim was
+// won.
 //
-// The cap and cooldown are conditions of the update rather than a separate check,
-// so two replicas evaluating the same row at the same moment cannot both decide
-// to proceed. Deliberately not conditioned on pr_lifecycle_state: a value refresh
-// preempts an in-flight review followup rather than yielding to it.
+// The cap and cooldown are conditions of the update rather than a separate
+// check, so two replicas evaluating the same row at the same moment cannot
+// both decide to proceed: the claim STAMPS the cooldown it checks, so the
+// second update — serialised behind the first by the row lock — sees the
+// fresh stamp and loses. A refresh that fails hands the stamp back
+// (recordValueRefreshFailure), which KEEPS that stamp, so a failed attempt
+// retries once the cooldown elapses rather than on the very next run.
 //
-// The claim also STAMPS the cooldown it checks. A claim that only checked the
-// guardrails would let two concurrent refreshes both win (neither update changes
-// what the other's WHERE reads) and run two agents against the same branch.
-// Consuming the cooldown at claim time makes the second update — serialised
-// behind the first by the row lock — see the fresh stamp and lose. A refresh
-// that fails hands the stamp back (releaseValueRefreshClaim), so a failed
-// attempt still retries on the next run rather than waiting out the cooldown.
-func claimResolutionForValueRefresh(dbms *database.DatabaseManager, resolutionID string, maxRefreshes int, cooldown time.Duration) (bool, error) {
+// (now() AT TIME ZONE 'UTC'), not bare now(): the column is `timestamp without
+// time zone` and every other writer puts naive UTC in it (recordValueRefresh
+// writes time.Now().UTC()), while this statement then compares it against a UTC
+// bound in $3. Bare now() stores session-local, so on a session ahead of UTC the
+// row it just wrote reads as being in the future and the cooldown silently
+// stretches by the offset — 11.5h after a claim under Asia/Kolkata, but 6h after
+// a successful record. Two different cooldowns for the same column.
+//
+// value_refresh_count still counts REWRITES THAT LANDED, not attempts, and the
+// failing-refresh loop is bounded by the cadence instead: a failure now keeps
+// the stamp (see recordValueRefreshFailure) rather than handing it back, so a
+// refresh that cannot run retries once per cooldown rather than on every
+// scheduled run. Charging the counter for infra failures would have been the
+// wrong lever — five expired tokens or gateway 5xxs would exhaust a pull
+// request's rewrite budget for its entire life, and valueRefreshBlocked would
+// then report "already been updated 5 times" for a pull request updated zero
+// times.
+func claimValueRefreshCadence(dbms *database.DatabaseManager, resolutionID string, maxRefreshes int, cooldown time.Duration) (bool, error) {
 	result, err := dbms.Db.Exec(
 		`UPDATE recommendation_resolution
-		 SET pr_lifecycle_state = 'addressing', last_pr_check_at = now(), last_value_refresh_at = now()
+		 SET last_value_refresh_at = (now() AT TIME ZONE 'UTC')
 		 WHERE id = $1
 		   AND value_refresh_count < $2
 		   AND (last_value_refresh_at IS NULL OR last_value_refresh_at < $3)`,
@@ -190,39 +234,70 @@ func claimResolutionForValueRefresh(dbms *database.DatabaseManager, resolutionID
 	return rows > 0, nil
 }
 
-// releaseValueRefreshClaim hands the row back after a refresh that did not land,
-// recording why. Without this the row would sit in 'addressing' until the
-// lifecycle cron's 45-minute lease reclaimed it, with no visible reason — a
-// failure that looks identical to a run still in progress.
+// recordValueRefreshFailure records why a refresh did not land, and KEEPS the
+// cadence stamp the claim wrote.
 //
-// The cooldown stamp the claim consumed is handed back too: a failed refresh
-// should retry on the next run, not silently wait out a cooldown that no landed
-// update ever earned. Clearing it (rather than restoring the previous value) is
-// equivalent — the claim only succeeded because any previous stamp had already
-// expired. On a crash this release never runs and the claim-time stamp stands,
-// which errs towards pausing a crashing refresh instead of hot-looping it.
-func releaseValueRefreshClaim(dbms *database.DatabaseManager, resolutionID, reason string) {
+// It used to clear it, so a failed attempt retried on the very next scheduled
+// run. That was harmless while nothing reselected a recommendation whose pull
+// request was open — but the optimizer now does, hourly, so clearing it means a
+// refresh that cannot run dispatches a code agent every hour for the life of the
+// pull request. Keeping the stamp bounds that to one attempt per cooldown while
+// leaving the rewrite budget (value_refresh_count) for rewrites that actually
+// landed.
+//
+// A NULL stamp also reads as "due" to the optimizer's selection predicate, so
+// clearing it here would reselect the workload on the next run regardless.
+//
+// Guarded against a PR that went terminal concurrently, matching
+// recordValueRefresh's own terminal guard, so this never resurrects a dead
+// resolution's status_message.
+func recordValueRefreshFailure(dbms *database.DatabaseManager, resolutionID, reason string) {
 	_, _ = dbms.Db.Exec(
 		`UPDATE recommendation_resolution
-		 SET pr_lifecycle_state = 'created', status_message = $1, updated_at = now(), last_value_refresh_at = NULL
-		 WHERE id = $2 AND pr_lifecycle_state = 'addressing'`,
+		 SET status_message = $1, updated_at = now()
+		 WHERE id = $2
+		   AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable'))`,
 		reason, resolutionID)
 }
 
-// restoreValueRefreshState hands the row back after a refresh the agent declined
-// to make, keeping the cooldown stamp the claim consumed.
-//
-// The difference from releaseValueRefreshClaim is deliberate and is the whole
-// point: a failed refresh should retry on the next run, but a no_op should not.
-// The agent already read the branch and found nothing to change, and the next
-// run computes the same drift from the same values — so handing the cooldown
-// back buys another identical agent run every hour, indefinitely.
-func restoreValueRefreshState(dbms *database.DatabaseManager, resolutionID, reason string) {
+// claimPRFollowupForValueRefresh force-claims the pr_followup mutex for prURL,
+// preempting whatever state a review-followup loop left it in (including
+// 'addressing') — a value refresh reflects a change to the numbers under
+// review, so it outranks an in-flight followup addressing comments on the
+// stale ones. Refuses only a terminal state: can't refresh a merged/closed/
+// unresolvable PR. A plain WHERE-conditioned UPDATE is enough for atomicity
+// here (no CTE needed) — Postgres serialises concurrent UPDATEs on the same
+// row, so a second claim always re-evaluates the WHERE against the first
+// claim's committed result.
+func claimPRFollowupForValueRefresh(dbms *database.DatabaseManager, prURL, tenantID string, createdAt time.Time) (followupID string, claimed bool, err error) {
+	followupID, err = findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
+	if err != nil {
+		return "", false, err
+	}
+	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+	defer cancel()
+	res, err := dbms.Db.ExecContext(dbCtx,
+		`UPDATE pr_followup SET pr_lifecycle_state = 'addressing', pr_followup_pending = false, last_pr_check_at = now()
+		 WHERE id = $1 AND pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable')`,
+		followupID)
+	if err != nil {
+		return followupID, false, err
+	}
+	n, _ := res.RowsAffected()
+	return followupID, n > 0, nil
+}
+
+// releasePRFollowupClaim hands the pr_followup mutex back to 'needs_followup'
+// after a refresh that did not land, restoring the row to a normal open state
+// rather than reconstructing whatever state a review-followup loop had it in
+// — simpler, and safe since a value refresh only ever runs on a PR that was
+// already open. Guarded on the row still being 'addressing' so a concurrent
+// terminal transition (PR closed mid-run) is never overwritten back to open.
+func releasePRFollowupClaim(dbms *database.DatabaseManager, followupID, reason string) {
 	_, _ = dbms.Db.Exec(
-		`UPDATE recommendation_resolution
-		 SET pr_lifecycle_state = 'created', status_message = $1, updated_at = now()
+		`UPDATE pr_followup SET pr_lifecycle_state = 'needs_followup', status_message = $1
 		 WHERE id = $2 AND pr_lifecycle_state = 'addressing'`,
-		reason, resolutionID)
+		reason, followupID)
 }
 
 type valueRefreshError string

@@ -32,7 +32,6 @@ from notifications_server.services.actions import (
 from notifications_server.services.bot_messages import (
     get_account_selection_prompt,
     get_account_selected_confirmation,
-    get_account_selected_with_context,
     get_account_already_selected,
     get_account_not_accessible_message,
     get_user_not_found_message,
@@ -181,7 +180,9 @@ class Events:
         return blocks
 
     @staticmethod
-    def build_llm_payload(cached_entry, query_override=None, channel_context=None, channel_context_refs=None):
+    def build_llm_payload(
+        cached_entry, thread_ts, query_override=None, channel_context=None, channel_context_refs=None
+    ):
         payload = {
             "query": query_override or cached_entry["text"],
             "account_id": cached_entry["account_id"],
@@ -190,6 +191,19 @@ class Events:
             "source": "InstantNotification",
             "async": True,
         }
+        # Per-question correlator, always this exact physical thread — unlike
+        # session_id, which a bound incident channel deliberately reuses across
+        # every future @mention so they share one LLM conversation (see
+        # CommonService._persist_channel_account_mapping). llm-server echoes
+        # this back unchanged on its /llm/response webhook so
+        # llm_callbacks.py:_handle_event_conversation can reply into the thread
+        # a question actually came from instead of guessing from session_id
+        # alone. team_id/account_id ride along separately via
+        # get_channel_and_ts_from_sent_notifications there, not through this
+        # field. Older cached entries predate channel_id, so guard with .get().
+        channel_id = cached_entry.get("channel_id")
+        if channel_id and thread_ts:
+            payload["reply_ref"] = f"{channel_id}-{thread_ts}"
         # Deliberately its own field: channel conversation is third-party text and
         # must stay distinguishable from what the user actually asked. Never fold
         # it into `query`.
@@ -543,17 +557,15 @@ class Events:
             if slack_user_id:
                 user_display_name = self.common_service.get_slack_user_display_name(team_id, slack_user_id)
 
-            blocks, selection_prompt = self._get_cluster_confirmation_blocks(valid_accounts, user_display_name)
+            blocks, _ = self._get_cluster_confirmation_blocks(valid_accounts, user_display_name)
 
             selection_msg_ts = self.common_service.slack_reply_in_thread_as_blocks(
                 channel_id, team_id, thread_ts, blocks
             )
 
-            # Store the selection message timestamp and prompt for later update
+            # Store the selection message timestamp for later update
             if selection_msg_ts:
-                self.cache.update_event_entry(
-                    thread_ts, selection_msg_ts=selection_msg_ts, selection_prompt=selection_prompt
-                )
+                self.cache.update_event_entry(thread_ts, selection_msg_ts=selection_msg_ts)
 
         except Exception as e:
             LOG.error("Failed to request cluster confirmation: %s", e, exc_info=True)
@@ -770,14 +782,11 @@ class Events:
 
             # Update the selection message instead of sending a new one
             selection_msg_ts = cached_entry.get("selection_msg_ts") if cached_entry else None
-            selection_prompt = cached_entry.get("selection_prompt") if cached_entry else None
             url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={channel_id}-{thread_ts}"
 
-            if selection_prompt:
-                body = get_account_selected_with_context(selection_prompt, account_name)
-            else:
-                body = get_account_selected_confirmation(account_name)
-            confirmation_message = f"{body}\n<{url}|View in {settings.urls.branding_name}>"
+            confirmation_message = (
+                f"Got it! Working with *{account_name}*. <{url}|View in {settings.urls.branding_name}>"
+            )
 
             if selection_msg_ts:
                 # Replace the selection message with confirmation
@@ -786,6 +795,7 @@ class Events:
                     team_id,
                     selection_msg_ts,
                     confirmation_message,
+                    unfurl_links=False,
                 )
             else:
                 # Fallback: send new message if we don't have the original ts
@@ -794,6 +804,7 @@ class Events:
                     team_id,
                     thread_ts,
                     confirmation_message,
+                    unfurl_links=False,
                 )
 
             self._process_event(channel_id, self.cache.get_event_entry(thread_ts)["text"], team_id, thread_ts, "chat")
@@ -821,14 +832,14 @@ class Events:
             self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
             return
 
-        payload, headers = self._get_llm_request_payload(cached_entry, channel_id, thread_ts)
+        payload = self.build_llm_payload(cached_entry, thread_ts, query_override=response_option)
         payload.update(
             {
-                "query": response_option,
                 "agent_id": cached_entry.get("agent_id"),
                 "message_id": cached_entry.get("message_id"),
             }
         )
+        headers = {"x-tenant-id": cached_entry["tenant_id"], "x-user-id": cached_entry["user_id"]}
 
         followup_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
         followup_question = cached_entry.get("followup_question") if cached_entry else None
@@ -962,27 +973,35 @@ class Events:
             cleaned_string = conversation
             cached_entry = self.cache.get_event_entry(thread_ts)
 
-        channel_context, channel_context_refs = self._build_channel_context(
-            cached_entry, channel_id, team_id, thread_ts, cleaned_string
+        if not cached_entry:
+            self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
+            return
+
+        # Panel opens as soon as the turn is known-valid, before the (potentially
+        # slow, DB-backed) channel-context build and LLM payload assembly below —
+        # otherwise the user sees nothing during that stretch.
+        slack_progress.start_progress_poller(
+            self.common_service, cached_entry, thread_ts, cached_entry.get("session_id", "")
         )
-        payload = self.build_llm_payload(
-            cached_entry,
-            query_override=cleaned_string,
-            channel_context=channel_context,
-            channel_context_refs=channel_context_refs,
-        )
 
-        headers = {
-            "x-tenant-id": cached_entry["tenant_id"],
-            "x-user-id": cached_entry["user_id"],
-        }
-
-        self._attach_images(payload, thread_ts)
-
-        # Panel opens before the LLM request goes out: agent inference runs
-        # before the 202, and the user should see "thinking" during it.
-        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         try:
+            channel_context, channel_context_refs = self._build_channel_context(
+                cached_entry, channel_id, team_id, thread_ts, cleaned_string
+            )
+            payload = self.build_llm_payload(
+                cached_entry,
+                thread_ts,
+                query_override=cleaned_string,
+                channel_context=channel_context,
+                channel_context_refs=channel_context_refs,
+            )
+
+            headers = {
+                "x-tenant-id": cached_entry["tenant_id"],
+                "x-user-id": cached_entry["user_id"],
+            }
+
+            self._attach_images(payload, thread_ts)
             self.query_llm_server(payload, headers)
         except requests.RequestException as e:
             LOG.debug(f"Query to LLM failed: {e}")
@@ -996,19 +1015,6 @@ class Events:
             LOG.debug(f"Query to LLM failed: {e}")
             slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
-
-    @staticmethod
-    def _get_llm_request_payload(cached_entry, channel_id, thread_ts):
-        payload = {
-            "query": cached_entry["text"],
-            "account_id": cached_entry["account_id"],
-            "user_id": cached_entry["user_id"],
-            "session_id": f"{channel_id}-{thread_ts}",
-            "source": "InstantNotification",
-            "async": True,
-        }
-        headers = {"x-tenant-id": cached_entry["tenant_id"], "x-user-id": cached_entry["user_id"]}
-        return payload, headers
 
     @staticmethod
     def _with_llm_auth(headers):
@@ -1221,6 +1227,9 @@ class Events:
                 # Use summary if available, otherwise fall back to analysis
                 content = summary if summary else analysis
                 if content and content != "No analysis available":
+                    # llm-server returns GFM markdown (### headers, - bullets); Slack's
+                    # mrkdwn renders those literally, so convert before sending.
+                    content = Transformer.markdown_to_slack_markdown(content)
                     message = f"Hey! Just wrapped up digging into this event for you 🔍\n\n{content}"
                 else:
                     message = (
@@ -1278,17 +1287,31 @@ class Events:
         if len(text) <= max_len:
             return [text.strip()]
 
-        sentences = re.split(_SENTENCE_PATTERN, text)
+        # Split on lines first and keep them joined with "\n" so headings/
+        # bullets stay on their own line. _SENTENCE_PATTERN's "\s+" also
+        # matches newlines, so splitting the whole text by sentence (as this
+        # used to do) and rejoining fragments with a single space silently
+        # collapsed every line break in a chunked message. Sentence/word
+        # splitting is now only a fallback for a single line that alone
+        # exceeds max_len, where there's no line break to preserve anyway.
+        lines = text.split("\n")
         chunks, current = [], ""
 
-        for sentence in sentences:
-            if len(sentence) > max_len:
-                words = sentence.split()
-                for word in words:
-                    current = Events._split_chunk_on_words(chunks, current, max_len, word)
+        for line in lines:
+            if len(line) > max_len:
+                if current:
+                    chunks.append(current.strip())
+                    current = ""
+                for sentence in re.split(_SENTENCE_PATTERN, line):
+                    if len(sentence) > max_len:
+                        words = sentence.split()
+                        for word in words:
+                            current = Events._split_chunk_on_words(chunks, current, max_len, word)
+                    else:
+                        current = Events._split_chunks(chunks, current, max_len, sentence)
                 continue
 
-            current = Events._split_chunks(chunks, current, max_len, sentence)
+            current = Events._split_chunks_on_lines(chunks, current, max_len, line)
 
         if current:
             chunks.append(current.strip())
@@ -1316,12 +1339,25 @@ class Events:
         return current
 
     @staticmethod
+    def _split_chunks_on_lines(chunks, current, max_len, line):
+        if len(current) + len(line) + 1 > max_len:
+            if current:
+                chunks.append(current.strip())
+            current = line
+        else:
+            current += ("\n" if current else "") + line
+        return current
+
+    @staticmethod
     def _plain_text_leaf(text: str) -> List[dict]:
         """Leftover-plain-text renderer passed to render_rich_segments: chunks
-        by sentence (Events.split_text) rather than generic.py's char-slice
-        chunking, since this path is a fire-and-forget background reply with
-        no fixed block budget to respect."""
-        blocks = [MarkdownBlock(text=chunk) for chunk in Events.split_text(text) if chunk.strip()]
+        by line (Events.split_text, falling back to sentence/word splitting
+        only for a single line that alone exceeds the block limit) rather
+        than generic.py's char-slice chunking, since this path is a
+        fire-and-forget background reply with no fixed block budget to
+        respect."""
+        converted = Transformer.markdown_to_slack_markdown(text)
+        blocks = [MarkdownBlock(text=chunk) for chunk in Events.split_text(converted) if chunk.strip()]
         return to_slack_dicts(blocks)
 
     def _send_message_with_fallback(self, channel_id: str, team_id: str, thread_ts: str, blocks: List[dict]) -> None:
@@ -1342,7 +1378,14 @@ class Events:
             response_text = payload.response
             view_url = self._diagram_view_url(cached_entry)
 
-            slack_groups = render_rich_segments(response_text, self._plain_text_leaf, view_url)
+            slack_groups = render_rich_segments(
+                response_text,
+                self._plain_text_leaf,
+                view_url,
+                upload_image=lambda filename, contents: self.common_service.upload_file_for_inline_embed(
+                    team_id, filename, contents
+                ),
+            )
 
             if not slack_groups:
                 # response_text was empty/whitespace-only, so nothing survived the

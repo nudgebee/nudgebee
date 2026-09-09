@@ -164,6 +164,7 @@ func TestGoogleAI_CachingSupport(t *testing.T) {
 		},
 		5*time.Minute,
 		"",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create cached content: %v", err)

@@ -17,6 +17,7 @@ import { Box } from '@mui/material';
 import CustomTable2 from '@shared/tables/CustomTable';
 import CustomDateTimePicker from '@shared/widgets/CustomDateTimePicker';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
@@ -124,12 +125,17 @@ function DriverList({ model, source }: { model: AiCostDriver[]; source: AiCostDr
   );
 }
 
-function toRow(r: AiCostAccountRow, costSev: (v: number) => Severity) {
+function toRow(r: AiCostAccountRow, costSev: (v: number) => Severity, provider: string) {
   return [
     {
       data: r.account_name,
       component: (
-        <Box sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>{r.account_name}</Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', minWidth: 0 }}>
+          <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' sx={{ flexShrink: 0 }} />
+          <Box sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-gray-700)' }}>
+            {r.account_name}
+          </Box>
+        </Box>
       ),
     },
     {
@@ -288,8 +294,30 @@ export function CostReportView({ accountId, onAccountChange, accountOptions, ref
     return arr;
   }, [state.rows, sort]);
 
+  // The report rows come from ai_aggregate_account_cost_report, which carries no
+  // provider — accountOptions (ai_get_usage_filters) is the only place the
+  // account -> cloud_provider mapping is available on this screen. 'Other' (never
+  // undefined) so an account that list doesn't cover gets the generic cloud glyph:
+  // CloudProviderIcon falls back to the AWS logo on a null provider, which would
+  // mislabel it. Same rule FilterBar's account picker uses.
+  const providerByAccountId = React.useMemo(
+    () => Object.fromEntries(accountOptions.map((a) => [a.id, a.cloud_provider || 'Other'])) as Record<string, string>,
+    [accountOptions]
+  );
+  const accountDropdownOptions = React.useMemo(
+    () =>
+      accountOptions.map((a) => {
+        const provider = providerByAccountId[a.id] ?? 'Other';
+        return { label: a.name, value: a.id, group: provider, icon: <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' /> };
+      }),
+    [accountOptions, providerByAccountId]
+  );
+
   const costSev = React.useMemo(() => makeSeverity(sortedRows.map((r) => r.daily_cost_usd)), [sortedRows]);
-  const tableData = React.useMemo(() => sortedRows.map((r) => toRow(r, costSev)), [sortedRows, costSev]);
+  const tableData = React.useMemo(
+    () => sortedRows.map((r) => toRow(r, costSev, providerByAccountId[r.account_id] ?? 'Other')),
+    [sortedRows, costSev, providerByAccountId]
+  );
   const topModelsTableData = React.useMemo(() => state.topModels.map(toTopModelRow), [state.topModels]);
   const topSourcesTableData = React.useMemo(() => state.topSources.map(toTopSourceRow), [state.topSources]);
   const showEmpty = !state.loading && !state.error && state.rows.length === 0;
@@ -312,16 +340,17 @@ export function CostReportView({ accountId, onAccountChange, accountOptions, ref
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-5)' }}>
       <Card>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)', flexWrap: 'wrap' }}>
-            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-              accounts with zero cost on the selected date, month-to-date, and last month are omitted
-            </Box>
+        <SectionHeader
+          title='Cost by account'
+          subtitle='accounts with zero cost on the selected date, month-to-date, and last month are omitted'
+          right={
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
               <FilterDropdown
                 id='accounts-account-filter'
                 label='Account'
-                options={accountOptions.map((a) => ({ label: a.name, value: a.id }))}
+                grouped
+                groupIcon={(groupKey: string) => <CloudProviderIcon cloud_provider={groupKey} width='14px' height='14px' />}
+                options={accountDropdownOptions}
                 value={accountId ?? ''}
                 onSelect={(e: { target: { value: string | null } }) => onAccountChange(e?.target?.value ?? '')}
                 clearable
@@ -338,8 +367,9 @@ export function CostReportView({ accountId, onAccountChange, accountOptions, ref
                 width='160px'
               />
             </Box>
-          </Box>
-
+          }
+        />
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
           {state.error && <Banner tone='critical' title='Could not load account cost report' message={state.error} />}
 
           {showEmpty ? (

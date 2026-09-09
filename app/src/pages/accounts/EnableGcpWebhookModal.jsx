@@ -1,19 +1,6 @@
-import {
-  Grid,
-  Typography,
-  Stepper,
-  Step,
-  StepLabel,
-  StepConnector,
-  stepConnectorClasses,
-  styled,
-  Box,
-  Collapse,
-  Alert,
-  CircularProgress,
-  Link,
-} from '@mui/material';
+import { Grid, Typography, Box, Collapse, Alert, CircularProgress, Link } from '@mui/material';
 import { Input } from '@ui/Input';
+import { Stepper } from '@ui/Stepper';
 import { ContentCopy, Check, HelpOutline, ExpandMore, ExpandLess, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
@@ -25,53 +12,6 @@ import { toast as snackbar } from '@ui/Toast';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { ds } from 'src/utils/colors';
 import { safeJSONParse } from 'src/utils/common';
-
-const StepConnectorStyled = styled(StepConnector)(() => ({
-  [`&.${stepConnectorClasses.alternativeLabel}`]: {
-    top: ds.space.mul(1, 5),
-    left: `calc(-50% + ${ds.space[4]})`,
-    right: `calc(50% + ${ds.space[4]})`,
-  },
-  [`&.${stepConnectorClasses.active}, &.${stepConnectorClasses.completed}`]: {
-    [`& .${stepConnectorClasses.line}`]: {
-      borderColor: ds.green[500],
-      borderTopWidth: 2,
-    },
-  },
-  [`& .${stepConnectorClasses.line}`]: {
-    borderColor: ds.brand[200],
-    borderTopWidth: 1,
-    borderRadius: ds.radius.sm,
-  },
-}));
-
-const StepIconCustom = ({ active, completed, icon }) => {
-  const styles = completed
-    ? { backgroundColor: ds.green[500], border: 'none', color: ds.background[100] }
-    : {
-        backgroundColor: ds.background[100],
-        border: active ? `1px solid ${ds.green[500]}` : `1px solid ${ds.brand[200]}`,
-        color: active ? ds.green[500] : ds.gray[600],
-      };
-
-  return (
-    <Box
-      sx={{
-        width: ds.space[5],
-        height: ds.space[5],
-        borderRadius: ds.radius.pill,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: ds.text.bodyLg,
-        fontWeight: 'bold',
-        ...styles,
-      }}
-    >
-      {completed ? <Check sx={{ fontSize: ds.text.title }} /> : icon}
-    </Box>
-  );
-};
 
 const STEPS = ['Prerequisites', 'Verify Permissions', 'Enable Alerts'];
 
@@ -326,24 +266,9 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
 
         {showWizard && (
           <>
-            <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: ds.space[5], mt: ds.space[4] }}>
-              {STEPS.map((label, idx) => (
-                <Step key={label} completed={step > idx}>
-                  <StepLabel
-                    StepIconComponent={StepIconCustom}
-                    sx={{
-                      '& .MuiStepLabel-label': {
-                        fontSize: ds.text.body,
-                        mt: ds.space[1],
-                        color: step === idx ? ds.green[500] : ds.gray[600],
-                      },
-                    }}
-                  >
-                    {label}
-                  </StepLabel>
-                </Step>
-              ))}
-            </Stepper>
+            <Box sx={{ mb: ds.space[5], mt: ds.space[4] }}>
+              <Stepper steps={STEPS.map((label) => ({ id: label, label }))} current={step} orientation='horizontal' />
+            </Box>
 
             {step === 0 && (
               <>

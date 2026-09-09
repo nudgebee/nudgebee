@@ -26,7 +26,8 @@ import apiUser from '@api1/user';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import CfUpdateModal from './CfUpdateModal';
 import EnableGcpWebhookModal from './EnableGcpWebhookModal';
-import AccountEnvToggle, { ACCOUNT_ENV_PROD, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import AccountEnvText from '@shared/format/AccountEnvText';
 
 const EVENTGRID_INSTRUCTIONS = `### Enable Real-Time Resource Events
   ### Step 1. Copy the values below
@@ -91,6 +92,8 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [eventBridgeData, setEventBridgeData] = useState(null);
   const [billingModalOpen, setBillingModalOpen] = useState(false);
   const [billingProjectId, setBillingProjectId] = useState('');
+  const [curReportName, setCurReportName] = useState('');
+  const [curS3Bucket, setCurS3Bucket] = useState('');
   const [billingDatasetName, setBillingDatasetName] = useState('');
   const [billingTableName, setBillingTableName] = useState('');
   const [billingLoading, setBillingLoading] = useState(false);
@@ -276,6 +279,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     }
     if (cloudProvider === 'AWS') {
       items.push({
+        label: 'Edit Billing Config',
+        id: 'billing-config',
+      });
+      items.push({
         label: 'Update Permissions',
         id: 'update-permissions',
       });
@@ -305,10 +312,15 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           accountData = {};
         }
       }
-      const billing = accountData.billing_data || {};
-      setBillingProjectId(billing.billing_project_id || '');
-      setBillingDatasetName(billing.dataset_name || '');
-      setBillingTableName(billing.table_name || '');
+      if (cloudProvider === 'AWS') {
+        setCurReportName(accountData.cost_report_name || '');
+        setCurS3Bucket(accountData.cost_report_s3_bucket || '');
+      } else {
+        const billing = accountData.billing_data || {};
+        setBillingProjectId(billing.billing_project_id || '');
+        setBillingDatasetName(billing.dataset_name || '');
+        setBillingTableName(billing.table_name || '');
+      }
       setBillingValidationResult(null);
       setBillingModalOpen(true);
     } else if (menuItem.id === 'real-time-alerts') {
@@ -331,7 +343,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         { component: <Text value={item?.created_by_name || '-'} /> },
         { component: <Text value={item.account_number || '-'} /> },
         { component: <Label text={item.status || '-'} /> },
-        { component: <Text value={item.account_env === ACCOUNT_ENV_PROD ? 'Production' : 'Non-production'} /> },
+        { component: <AccountEnvText accountName={item.account_name} accountEnv={item.account_env} /> },
         { component: realtimeEventAccountIds.has(item.id) ? <Label text='active' /> : <Text value='-' /> },
         { component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} /> },
       ]),
@@ -549,9 +561,109 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     setBillingProjectId('');
     setBillingDatasetName('');
     setBillingTableName('');
+    setCurReportName('');
+    setCurS3Bucket('');
     setBillingLoading(false);
     setBillingValidationResult(null);
     setIsValidatingBilling(false);
+  };
+
+  const isAwsBilling = cloudProvider === 'AWS';
+  // Both providers need enough to identify the billing source before the
+  // Validate/Save buttons mean anything.
+  const billingFormComplete = isAwsBilling ? !!curReportName : !!billingDatasetName && !!billingTableName;
+
+  // Live CUR check for an already-onboarded AWS account. Same shape as the GCP
+  // check below: the stored credentials never came back to the client, so we
+  // send account_id and let the backend resolve (and decrypt) them. The report
+  // name/bucket narrow discovery to the report the user actually named rather
+  // than whichever one AWS returns first.
+  const handleValidateAwsCurConfig = async () => {
+    if (!selectedAccount || !curReportName) {
+      return;
+    }
+    setIsValidatingBilling(true);
+    setBillingValidationResult(null);
+    try {
+      const result = await apiAccount.validateCloudCredentials({
+        cloud_provider: 'AWS',
+        account_id: selectedAccount.id,
+        cur_report_name: curReportName,
+        cur_s3_bucket: curS3Bucket || undefined,
+      });
+      const curDetail = result?.permissionDetails?.find((d) => d.permission === 'Cost & Usage Report (CUR) Discovery');
+      const s3Detail = result?.permissionDetails?.find((d) => d.permission === 'CUR S3 Bucket Access');
+      if (curDetail && !curDetail.hasAccess) {
+        setBillingValidationResult({ success: false, message: curDetail.errorDetail || 'Cost & Usage Report not found.' });
+      } else if (s3Detail && !s3Detail.hasAccess) {
+        setBillingValidationResult({ success: false, message: s3Detail.errorDetail || 'Unable to read the CUR S3 bucket.' });
+      } else if (!result?.success) {
+        setBillingValidationResult({ success: false, message: result?.errorMessage || 'Failed to validate the Cost & Usage Report.' });
+      } else {
+        setBillingValidationResult({ success: true, message: 'Cost & Usage Report found and readable.' });
+      }
+    } catch {
+      setBillingValidationResult({ success: false, message: 'Failed to validate the Cost & Usage Report.' });
+    } finally {
+      setIsValidatingBilling(false);
+    }
+  };
+
+  // Store only the report name and bucket. resolveCostReportDefinition treats a
+  // missing cur_source as "look it up", so the collector re-derives region,
+  // prefix, compression, versioning and time unit from DescribeReportDefinitions
+  // on each sync. Writing cur_source here would make it trust these values and
+  // skip that lookup, which then needs every field and breaks on a stale prefix.
+  const handleAwsCurSubmit = () => {
+    if (!selectedAccount || !curReportName) {
+      return;
+    }
+    setBillingLoading(true);
+    let existingData = selectedAccount.data || {};
+    if (typeof existingData === 'string') {
+      try {
+        existingData = JSON.parse(existingData);
+      } catch {
+        existingData = {};
+      }
+    }
+    // updateAccount replaces `data` wholesale, so the spread is load-bearing:
+    // without it this write would drop CF stack info and agent config.
+    const updatedData = {
+      ...existingData,
+      cost_report_name: curReportName,
+      cost_report_s3_bucket: curS3Bucket || '',
+    };
+    // Drop cur_source and everything derived from the previous report. A
+    // CloudFormation-onboarded account carries cur_source=auto_callback, which
+    // makes the collector trust the stored prefix/region and skip the lookup —
+    // pairing the newly named report with the old report's S3 path. Removing
+    // these forces DescribeReportDefinitions to re-derive them on the next sync.
+    delete updatedData.cur_source;
+    delete updatedData.cost_report_s3_prefix;
+    delete updatedData.cost_report_s3_region;
+    delete updatedData.cost_report_compression;
+    delete updatedData.cost_report_versioning;
+    delete updatedData.cost_report_time_unit;
+    delete updatedData.cost_report_format;
+    apiAccount
+      .updateAccount({ id: selectedAccount.id }, { data: updatedData })
+      .then((res) => {
+        if (res?.data?.errors?.length > 0) {
+          snackbar.error('Failed to update billing config.');
+        } else {
+          snackbar.success('Billing config updated successfully.');
+          closeBillingModal();
+          listCloudAccounts();
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to update billing config:', error);
+        snackbar.error('Failed to update billing config.');
+      })
+      .finally(() => {
+        setBillingLoading(false);
+      });
   };
 
   // Live BigQuery access check for an already-onboarded account. The service
@@ -854,47 +966,83 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         loader={billingLoading || isValidatingBilling}
       >
         <Grid container spacing={ds.space[4]} p={ds.space[4]}>
-          <Grid item xs={12}>
-            <Input
-              value={billingProjectId}
-              size='sm'
-              id='billing-project-id'
-              label='Billing Project ID'
-              onChange={(value) => {
-                setBillingProjectId(value);
-                setBillingValidationResult(null);
-              }}
-              help='The GCP project containing the BigQuery billing export. Leave empty if same as service account project.'
-            />
-          </Grid>
-          <Grid item xs={12}>
-            <Input
-              value={billingDatasetName}
-              size='sm'
-              id='billing-dataset-name'
-              label='BigQuery Dataset Name'
-              required
-              onChange={(value) => {
-                setBillingDatasetName(value);
-                setBillingValidationResult(null);
-              }}
-              placeholder='e.g., billing_export'
-            />
-          </Grid>
-          <Grid item xs={12}>
-            <Input
-              value={billingTableName}
-              size='sm'
-              id='billing-table-name'
-              label='BigQuery Table Name'
-              required
-              onChange={(value) => {
-                setBillingTableName(value);
-                setBillingValidationResult(null);
-              }}
-              placeholder='e.g., gcp_billing_export_v1_XXXXX'
-            />
-          </Grid>
+          {isAwsBilling ? (
+            <>
+              <Grid item xs={12}>
+                <Input
+                  value={curReportName}
+                  size='sm'
+                  id='cur-report-name'
+                  label='CUR Report Name'
+                  required
+                  onChange={(value) => {
+                    setCurReportName(value);
+                    setBillingValidationResult(null);
+                  }}
+                  placeholder='e.g., nudgebeeReport'
+                  help='Name of a Cost & Usage Report with Daily granularity and text/csv format. Data Exports / CUR 2.0 (Parquet) is not supported.'
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <Input
+                  value={curS3Bucket}
+                  size='sm'
+                  id='cur-s3-bucket'
+                  label='CUR S3 Bucket'
+                  onChange={(value) => {
+                    setCurS3Bucket(value);
+                    setBillingValidationResult(null);
+                  }}
+                  placeholder='e.g., my-cur-bucket'
+                  help='Optional. Only needed to disambiguate when several reports share a name.'
+                />
+              </Grid>
+            </>
+          ) : (
+            <>
+              <Grid item xs={12}>
+                <Input
+                  value={billingProjectId}
+                  size='sm'
+                  id='billing-project-id'
+                  label='Billing Project ID'
+                  onChange={(value) => {
+                    setBillingProjectId(value);
+                    setBillingValidationResult(null);
+                  }}
+                  help='The GCP project containing the BigQuery billing export. Leave empty if same as service account project.'
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <Input
+                  value={billingDatasetName}
+                  size='sm'
+                  id='billing-dataset-name'
+                  label='BigQuery Dataset Name'
+                  required
+                  onChange={(value) => {
+                    setBillingDatasetName(value);
+                    setBillingValidationResult(null);
+                  }}
+                  placeholder='e.g., billing_export'
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <Input
+                  value={billingTableName}
+                  size='sm'
+                  id='billing-table-name'
+                  label='BigQuery Table Name'
+                  required
+                  onChange={(value) => {
+                    setBillingTableName(value);
+                    setBillingValidationResult(null);
+                  }}
+                  placeholder='e.g., gcp_billing_export_v1_XXXXX'
+                />
+              </Grid>
+            </>
+          )}
           {billingValidationResult && (
             <Grid item xs={12}>
               <Alert
@@ -925,18 +1073,19 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
             id='validate-billing-config-btn'
             tone='secondary'
             size='md'
-            disabled={billingLoading || isValidatingBilling || !billingDatasetName || !billingTableName}
+            disabled={billingLoading || isValidatingBilling || !billingFormComplete}
             loading={isValidatingBilling}
-            onClick={handleValidateBillingConfig}
+            onClick={isAwsBilling ? handleValidateAwsCurConfig : handleValidateBillingConfig}
           >
             Validate
           </DsButton>
           <DsButton
+            id='save-billing-config-btn'
             tone='primary'
             size='md'
-            disabled={billingLoading || isValidatingBilling || !billingDatasetName || !billingTableName || !billingValidationResult?.success}
+            disabled={billingLoading || isValidatingBilling || !billingFormComplete || !billingValidationResult?.success}
             loading={billingLoading}
-            onClick={handleBillingSubmit}
+            onClick={isAwsBilling ? handleAwsCurSubmit : handleBillingSubmit}
           >
             Save
           </DsButton>

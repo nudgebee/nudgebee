@@ -22,8 +22,26 @@ func TestResolveEventQuery_MatchesFindingIdAndFingerprint(t *testing.T) {
 	assert.Contains(t, q, "or", "the two id predicates must be an OR, not an AND")
 
 	// Both predicates share $3, so the caller passes one id and either column may
-	// satisfy it. A second placeholder would mean the ids had drifted apart.
-	assert.NotContains(t, q, "$5", "the two id predicates must share a single parameter")
+	// satisfy it. A second id placeholder would mean the ids had drifted apart.
+	// Scoped to the WHERE clause: the SET clause legitimately carries its own
+	// parameters (ends_at is $5).
+	_, where, found := strings.Cut(q, " where ")
+	assert.True(t, found, "query must have a WHERE clause")
+	assert.NotContains(t, where, "$5", "the two id predicates must share a single parameter")
+}
+
+// A resolve must stamp ends_at in the same statement that sets status. Consumers
+// that measure how long an alert ran — triage.computeAlertQuality most visibly —
+// count only rows where ends_at IS NOT NULL AND ends_at > starts_at, so a CLOSED
+// row left open-ended reads as "never resolved", drives the rule's
+// resolution_rate to 0, and gets a healthy alert classified "broken".
+func TestResolveEventQuery_StampsEndsAt(t *testing.T) {
+	q := strings.ToLower(resolveEventQuery)
+
+	assert.Contains(t, q, "ends_at = coalesce(ends_at, $5)",
+		"must stamp ends_at, preserving any end time the ingest path already recorded")
+	assert.Contains(t, q, "set status = $4, ends_at =",
+		"status and ends_at must be set together, so a close can never land without an end time")
 }
 
 // The lookup must stay scoped to one tenant and one cloud account: fingerprints

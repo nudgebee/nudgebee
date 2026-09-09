@@ -1,6 +1,9 @@
 package api
 
 import (
+	"errors"
+	"fmt"
+	"nudgebee/llm/workspace"
 	"testing"
 
 	"nudgebee/llm/common"
@@ -44,24 +47,69 @@ func TestContainsShellMetacharacters_AllowsPlainCommands(t *testing.T) {
 	}
 }
 
-// TestRemediationRelayModule_Routing verifies the command is dispatched to the relay job and tool that
-// carry the right credentials, case-insensitively.
-func TestRemediationRelayModule_Routing(t *testing.T) {
+// TestRemediationSubstrate_Routing verifies the executor is chosen from the ACCOUNT'S PROVIDER and
+// then narrowed by the command, rather than from the command's first word alone. The old
+// prefix-only dispatch sent kubectl from an AWS account down a relay to an agent that cannot exist
+// there, and dropped GCP's `bq` into an uncredentialed shell.
+func TestRemediationSubstrate_Routing(t *testing.T) {
 	cases := []struct {
-		command  string
-		wantJob  tools.RelayJob
-		wantTool string
+		name       string
+		provider   string
+		command    string
+		wantCloud  string
+		wantJob    tools.RelayJob
+		wantTool   string
+		wantReject bool
 	}{
-		{"kubectl get pods -n prod", tools.RelayJobKubectl, tools.ToolExecuteKubectlCommand},
-		{"KUBECTL get pods -n prod", tools.RelayJobKubectl, tools.ToolExecuteKubectlCommand},
-		{"helm status api -n prod", tools.RelayJobHelm, tools.ToolExecuteHelmCommand},
-		{"argocd app get my-app", tools.RelayJobArgoCD, tools.ToolExecuteArgoCDCommand},
-		{"systemctl restart kubelet", tools.RelayJobShell, tools.ToolExecuteServerCommand},
+		// A Kubernetes account is not kubectl-only -- helm and argocd are ordinary remediations on one.
+		{name: "k8s kubectl", provider: "K8s", command: "kubectl get pods -n prod", wantJob: tools.RelayJobKubectl, wantTool: tools.ToolExecuteKubectlCommand},
+		{name: "k8s kubectl uppercase", provider: "K8s", command: "KUBECTL get pods -n prod", wantJob: tools.RelayJobKubectl, wantTool: tools.ToolExecuteKubectlCommand},
+		{name: "k8s helm", provider: "K8s", command: "helm status api -n prod", wantJob: tools.RelayJobHelm, wantTool: tools.ToolExecuteHelmCommand},
+		{name: "k8s argocd", provider: "K8s", command: "argocd app get my-app", wantJob: tools.RelayJobArgoCD, wantTool: tools.ToolExecuteArgoCDCommand},
+		{name: "k8s shell", provider: "K8s", command: "systemctl restart kubelet", wantJob: tools.RelayJobShell, wantTool: tools.ToolExecuteServerCommand},
+
+		// Each cloud provider reaches its own CLI, and only its own.
+		{name: "aws cli on aws", provider: "AWS", command: "aws ec2 describe-instances", wantCloud: tools.ToolExecuteAwsCliCommand},
+		{name: "azure cli on azure", provider: "Azure", command: "az vm list", wantCloud: tools.ToolExecuteAzureCliCommand},
+		{name: "gcloud on gcp", provider: "GCP", command: "gcloud compute instances list", wantCloud: tools.ToolExecuteGcpCliCommand},
+		{name: "gsutil on gcp", provider: "GCP", command: "gsutil ls gs://bucket", wantCloud: tools.ToolExecuteGcpCliCommand},
+		// bq is a GCP CLI the prefix table never listed, so it used to run uncredentialed and exit 0.
+		{name: "bq on gcp", provider: "GCP", command: "bq query --nouse_legacy_sql SELECT 1", wantCloud: tools.ToolExecuteGcpCliCommand},
+
+		// Cross-provider commands are refused with a reason, not dispatched somewhere that fails opaquely.
+		{name: "kubectl on aws", provider: "AWS", command: "kubectl get pods", wantReject: true},
+		{name: "helm on gcp", provider: "GCP", command: "helm upgrade api ./chart", wantReject: true},
+		{name: "aws cli on azure", provider: "Azure", command: "aws s3 ls", wantReject: true},
+		{name: "gcloud on k8s", provider: "K8s", command: "gcloud compute instances list", wantReject: true},
+
+		// A shell command still has somewhere to go on a cloud account: its workspace pod.
+		{name: "shell on aws", provider: "AWS", command: "df -h", wantJob: tools.RelayJobShell, wantTool: tools.ToolExecuteServerCommand},
+
+		// An unreadable or unmodelled provider must not take remediation offline -- fall back to the
+		// old command-shaped dispatch.
+		{name: "unknown provider keeps cloud dispatch", provider: "", command: "aws ec2 describe-instances", wantCloud: tools.ToolExecuteAwsCliCommand},
+		// Splitting before lowercasing means every whitespace form still yields the binary.
+		{name: "tab separated", provider: "AWS", command: "aws\tec2 describe-instances", wantCloud: tools.ToolExecuteAwsCliCommand},
+		{name: "leading whitespace", provider: "GCP", command: "   gcloud compute instances list", wantCloud: tools.ToolExecuteGcpCliCommand},
+		{name: "empty command falls back to shell", provider: "AWS", command: "   ", wantJob: tools.RelayJobShell, wantTool: tools.ToolExecuteServerCommand},
+		{name: "cloudfoundry falls back to shell", provider: "CloudFoundry", command: "cf apps", wantJob: tools.RelayJobShell, wantTool: tools.ToolExecuteServerCommand},
 	}
 	for _, tc := range cases {
-		job, tool := remediationRelayModule(tc.command)
-		assert.Equal(t, tc.wantJob, job, "job for %q", tc.command)
-		assert.Equal(t, tc.wantTool, tool, "tool for %q", tc.command)
+		t.Run(tc.name, func(t *testing.T) {
+			got := tools.RemediationSubstrateFor(tc.provider, tc.command)
+			if tc.wantReject {
+				assert.NotEmpty(t, got.Reject, "expected a refusal naming the account's provider")
+				assert.Empty(t, got.CloudCliTool)
+				assert.Empty(t, got.RelayTool)
+				return
+			}
+			assert.Empty(t, got.Reject)
+			assert.Equal(t, tc.wantCloud, got.CloudCliTool, "cloud tool for %q", tc.command)
+			assert.Equal(t, tc.wantTool, got.RelayTool, "relay tool for %q", tc.command)
+			if tc.wantTool != "" {
+				assert.Equal(t, tc.wantJob, got.RelayJob, "relay job for %q", tc.command)
+			}
+		})
 	}
 }
 
@@ -333,4 +381,299 @@ func TestNormalizePlan_OrdersFixesBeforeMitigations(t *testing.T) {
 	assert.Equal(t, []string{"high-confidence fix", "low-confidence fix", "restart"},
 		[]string{plan.Actions[0].Action, plan.Actions[1].Action, plan.Actions[2].Action},
 		"fixes first (best first), mitigations after — even a 40%% fix outranks a 50%% mitigation")
+}
+
+// A failed execute must still be recorded. Gating the resolution on success meant "nothing was
+// tried here" and "three things were tried and all failed" looked identical in the resolutions
+// list, which is the opposite of what an operator needs.
+func TestShouldPersistRemediationResolution_RecordsFailuresAndOnlyExecute(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		eventId string
+		slot    string
+		want    bool
+	}{
+		{"execute slot", "evt-1", RemediationSlotExecute, true},
+		{"empty slot defaults to execute", "evt-1", "", true},
+		{"slot casing and padding ignored", "evt-1", "  EXECUTE  ", true},
+		// A verify observes and a rollback reverses; neither resolves the event.
+		{"verify is not a resolution", "evt-1", "verify", false},
+		{"rollback is not a resolution", "evt-1", "rollback", false},
+		// Ad-hoc runs outside an event have nothing to attach to.
+		{"no event id", "", RemediationSlotExecute, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldPersistRemediationResolution(tc.eventId, tc.slot); got != tc.want {
+				t.Errorf("shouldPersistRemediationResolution(%q, %q) = %v; want %v", tc.eventId, tc.slot, got, tc.want)
+			}
+		})
+	}
+}
+
+// A verify asserts something about observed state. "Exited 0" is not the same as "confirmed the fix",
+// and collapsing the two is how an operator is told a problem is solved when nothing was checked.
+func TestVerificationPassed(t *testing.T) {
+	result := func(success bool, stdout string) tools.RemediationExecutionResult {
+		return tools.RemediationExecutionResult{Success: success, Stdout: stdout}
+	}
+
+	t.Run("observed something and succeeded", func(t *testing.T) {
+		if got := verificationPassed(result(true, "deployment \"web\" successfully rolled out"), true); got != true {
+			t.Errorf("got %v; want true", got)
+		}
+	})
+
+	t.Run("ran and failed", func(t *testing.T) {
+		if got := verificationPassed(result(false, ""), true); got != false {
+			t.Errorf("got %v; want false", got)
+		}
+	})
+
+	// The case this exists for: exit 0 having observed nothing proves nothing.
+	t.Run("exited 0 observing nothing is not a pass", func(t *testing.T) {
+		for _, empty := range []string{"", "   ", "\n\t "} {
+			if got := verificationPassed(result(true, empty), true); got != nil {
+				t.Errorf("stdout %q: got %v; want nil", empty, got)
+			}
+		}
+	})
+
+	// The executor merged stdout/stderr and discarded the exit code, so there is nothing to judge by
+	// — even when output came back.
+	t.Run("no exit code reported is not a pass", func(t *testing.T) {
+		if got := verificationPassed(result(true, "some output"), false); got != nil {
+			t.Errorf("got %v; want nil", got)
+		}
+	})
+}
+
+// A verify must never file a resolution of its own — that counted one remediation attempt three
+// times. It annotates the execute attempt instead.
+func TestVerifySlotDoesNotCreateItsOwnResolution(t *testing.T) {
+	if shouldPersistRemediationResolution("evt-1", RemediationSlotVerify) {
+		t.Error("verify must not create a resolution")
+	}
+	if !isVerifySlot(RemediationSlotVerify) || !isVerifySlot("  VERIFY  ") {
+		t.Error("isVerifySlot must ignore casing and padding, as the slot gate does")
+	}
+	if isVerifySlot(RemediationSlotExecute) || isVerifySlot("rollback") {
+		t.Error("only verify is a verify")
+	}
+}
+
+// TestRemediationCloudCliTool_Routing verifies which commands leave the relay path for a workspace
+// pod. Only the cloud CLIs do: everything else targets a host inside the customer network and stays
+// on the relay, so a "" result here is what keeps kubectl reaching the cluster agent.
+func TestRemediationCloudCliTool_Routing(t *testing.T) {
+	cases := []struct {
+		command string
+		want    string
+	}{
+		{"aws ec2 describe-instances --region us-east-1", tools.ToolExecuteAwsCliCommand},
+		{"AWS s3 ls", tools.ToolExecuteAwsCliCommand},
+		{"az vm list", tools.ToolExecuteAzureCliCommand},
+		{"gcloud compute instances list", tools.ToolExecuteGcpCliCommand},
+		{"gsutil ls gs://bucket", tools.ToolExecuteGcpCliCommand},
+		{"kubectl get pods -n prod", ""},
+		{"helm status api -n prod", ""},
+		{"systemctl restart kubelet", ""},
+		// A command whose name merely starts with a CLI name is not that CLI.
+		{"awslogs get mygroup", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, tools.CloudCliToolFor(tc.command), "routing for %q", tc.command)
+	}
+}
+
+// TestCloudCliMetacharacterGuard_AllowsQuotedJmesPath is the reason the guard is quote-aware for cloud
+// commands: JMESPath uses ( ) | [ ] inside --query routinely, and the unmodified guard rejected every
+// one of them. The check runs on the quote-stripped command, so the operators stay allowed only while
+// they remain inside quotes.
+func TestCloudCliMetacharacterGuard_AllowsQuotedJmesPath(t *testing.T) {
+	allowed := []string{
+		`aws ec2 describe-instances --query "Reservations[].Instances[?State.Name=='running'].InstanceId"`,
+		`aws logs filter-log-events --filter-pattern "ERROR" --query "events[*].message | [0:5]"`,
+		`az vm list --query "[?powerState=='VM running'].name"`,
+		`gcloud compute instances list --filter="status=(RUNNING)"`,
+	}
+	for _, cmd := range allowed {
+		assert.NotEmpty(t, tools.CloudCliToolFor(cmd), "precondition: %q must route to a cloud CLI", cmd)
+		assert.False(t, isStructurallyTruncated(cmd), "precondition: %q must have balanced quotes", cmd)
+		assert.False(t, containsShellMetacharacters(tools.StripQuotedContent(cmd)),
+			"expected quoted JMESPath to be allowed: %q", cmd)
+	}
+}
+
+// TestCloudCliMetacharacterGuard_StillBlocksUnquotedInjection is the other half: quote-awareness must
+// not become an injection hole. An operator outside quotes can still start a second command, so it is
+// still rejected — and an attempt to hide one behind an unbalanced quote is caught by the truncation
+// check that runs first.
+func TestCloudCliMetacharacterGuard_StillBlocksUnquotedInjection(t *testing.T) {
+	blocked := []string{
+		"aws s3 ls; aws s3 rb --force s3://prod-backups",
+		"aws s3 ls && aws iam delete-user --user-name admin",
+		"aws s3 ls $(aws iam create-access-key --user-name admin)",
+		"az vm list | xargs -I{} az vm delete --name {}",
+	}
+	for _, cmd := range blocked {
+		assert.True(t, containsShellMetacharacters(tools.StripQuotedContent(cmd)),
+			"expected unquoted injection to be rejected: %q", cmd)
+	}
+
+	// Hiding a metacharacter behind an unbalanced quote defeats the stripper, which is exactly why
+	// isStructurallyTruncated is checked before it rather than after.
+	sneaky := `aws s3 ls "; aws s3 rb --force s3://prod-backups`
+	assert.False(t, containsShellMetacharacters(tools.StripQuotedContent(sneaky)),
+		"precondition: the stripper does swallow this, so the truncation check must be what rejects it")
+	assert.True(t, isStructurallyTruncated(sneaky), "unbalanced quote must be rejected")
+}
+
+// A double-quoted span is not inert. The workspace runs the command under `sh -c`, where $ and a
+// backtick still begin a substitution inside double quotes, so stripping such a span wholesale let a
+// substitution reach the shell with every guard reporting the command clean. Single quotes really do
+// suppress expansion, and the operators that are literal inside double quotes must stay allowed --
+// that is what keeps a quoted JMESPath filter usable.
+func TestCloudGuardRejectsSubstitutionInsideDoubleQuotes(t *testing.T) {
+	rejected := []struct{ name, command string }{
+		{"command substitution in double quotes", `aws s3 ls "$(id)"`},
+		{"backtick substitution in double quotes", "aws ec2 describe-instances --filters \"`id`\""},
+		{"variable expansion in double quotes", `aws s3 ls "$HOME"`},
+		{"substitution unquoted", `aws s3 ls $(id)`},
+		{"chaining unquoted", `aws s3 ls; id`},
+	}
+	for _, tc := range rejected {
+		t.Run("rejected/"+tc.name, func(t *testing.T) {
+			assert.True(t, containsShellMetacharacters(tools.StripQuotedContentForShellCheck(tc.command)),
+				"a live substitution must remain visible to the guard")
+		})
+	}
+
+	allowed := []struct{ name, command string }{
+		{"jmespath filter keeps working", `aws ec2 describe-instances --query "Reservations[].Instances[?State.Name=='running']"`},
+		{"operators are literal inside double quotes", `aws s3 ls "a;b&c|d<e>f"`},
+		{"single quotes suppress substitution", `aws s3 ls '$(id)'`},
+		{"escaped dollar is a literal dollar", `aws s3 ls "\$HOME"`},
+		{"plain command", `aws ec2 describe-instance-status --instance-ids i-0abc`},
+	}
+	for _, tc := range allowed {
+		t.Run("allowed/"+tc.name, func(t *testing.T) {
+			assert.False(t, containsShellMetacharacters(tools.StripQuotedContentForShellCheck(tc.command)),
+				"a legitimate cloud CLI command must still pass")
+		})
+	}
+}
+
+// workspaceOutcome is where the cloud path's success, exit code and "did the executor tell us"
+// decision actually live, so it is tested directly rather than by re-asserting errors.Is on an error
+// built in the test.
+//
+// The trap it guards: ErrWorkspaceCommandFailed does NOT mean "ran and exited non-zero".
+// classifyExecuteResponse raises it for any command_status:"failed", which the workspace agent also
+// uses for pre-execution rejections — an empty command, a bad workspace path, the security validator
+// refusing an absolute path (reachable from a real command: `aws s3 cp s3://b/k /var/tmp/x`).
+// Nothing ran in those cases, so claiming a verified exit code 1 for them states a specific wrong
+// number where the old caption was merely vague.
+func TestWorkspaceOutcome(t *testing.T) {
+	wsErr := func(stderr string) error {
+		return fmt.Errorf("cloud cli: aws_execute failed: %w",
+			&workspace.CommandFailure{Status: "failed", StdErr: stderr})
+	}
+
+	for _, tc := range []struct {
+		name         string
+		execErr      error
+		raw          string
+		wantStdout   string
+		wantStderr   string
+		wantExitCode int
+		wantSuccess  bool
+		wantReported bool
+	}{
+		{
+			name: "success is definitive", execErr: nil, raw: "i-0abc	running",
+			wantStdout: "i-0abc	running", wantExitCode: 0, wantSuccess: true, wantReported: true,
+		},
+		{
+			name: "a real non-zero exit carries its own code", execErr: wsErr("exit status 254"),
+			wantStderr: "exit status 254", wantExitCode: 254, wantReported: true,
+		},
+		{
+			name: "exit status 1 is still a real run", execErr: wsErr("exit status 1"),
+			wantStderr: "exit status 1", wantExitCode: 1, wantReported: true,
+		},
+		{
+			// The command never reached cmd.Run(), so its exit code is not ours to state.
+			name: "security rejection never ran", execErr: wsErr("Security validation failed: absolute path"),
+			wantStderr: "Security validation failed: absolute path", wantExitCode: 1, wantReported: false,
+		},
+		{
+			name: "empty command never ran", execErr: wsErr("Command is empty"),
+			wantStderr: "Command is empty", wantExitCode: 1, wantReported: false,
+		},
+		{
+			name: "transport failure leaves everything unknown", execErr: errors.New("connection refused"),
+			wantStderr: "connection refused", wantExitCode: 1, wantReported: false,
+		},
+		{
+			// A CommandFailure with no message must not blank the operator's stderr pane.
+			name: "empty workspace message falls back to the chain", execErr: wsErr(""),
+			wantStderr:   "cloud cli: aws_execute failed: workspace command failed: status=\"failed\" error=\"\"",
+			wantExitCode: 1, wantReported: false,
+		},
+		{
+			// error_hint is written to steer the model; the operator wants what their command printed.
+			name: "recovery envelope is unwrapped", execErr: wsErr("exit status 255"),
+			raw:        `{"error_hint":"read the error before switching commands","original_error":"An error occurred (UnauthorizedOperation)"}`,
+			wantStdout: "An error occurred (UnauthorizedOperation)",
+			wantStderr: "exit status 255", wantExitCode: 255, wantReported: true,
+		},
+		{
+			// A success is returned unexamined -- large describe-* payloads are never parsed.
+			name: "plain json output is not mistaken for an envelope", execErr: nil,
+			raw:        `{"Reservations":[]}`,
+			wantStdout: `{"Reservations":[]}`, wantExitCode: 0, wantSuccess: true, wantReported: true,
+		},
+		{
+			// Even a success whose payload happens to carry the envelope's keys is left alone, since
+			// only a failure can be one.
+			name: "success carrying envelope-like keys is left alone", execErr: nil,
+			raw:        `{"error_hint":"h","original_error":"e"}`,
+			wantStdout: `{"error_hint":"h","original_error":"e"}`, wantExitCode: 0, wantSuccess: true, wantReported: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode, success, reported := workspaceOutcome(tc.execErr, tc.raw)
+			assert.Equal(t, tc.wantStdout, stdout, "stdout")
+			assert.Equal(t, tc.wantStderr, stderr, "stderr")
+			assert.Equal(t, tc.wantExitCode, exitCode, "exit code")
+			assert.Equal(t, tc.wantSuccess, success, "success")
+			assert.Equal(t, tc.wantReported, reported, "exitCodeReported")
+		})
+	}
+}
+
+// describeRemediationAccount states the facts a runnable command needs and the investigation prose
+// does not reliably carry. Both are optional, and neither known must leave the context untouched
+// rather than prepending an empty heading.
+func TestDescribeRemediationAccountShape(t *testing.T) {
+	// The DB is not available in unit tests, so provider/region both resolve empty here. That is the
+	// case worth pinning: a lookup failure must degrade the prompt, never fail generation.
+	assert.Equal(t, "", describeRemediationAccount("", ""),
+		"nothing known must produce no heading at all")
+	assert.Equal(t, "", describeRemediationAccount("883efbbc-bb2c-404b-9ed9-6b7ecbf6f509", "1653f230-5e49-4351-b1f0-9b2bf5d72475"),
+		"an unreachable metastore must degrade silently, not panic or emit a half-filled heading")
+}
+
+// subject_node holds the REGION on a cloud event and a real node name on a Kubernetes one, so the
+// provider decides whether it may be presented as a region at all.
+func TestEventRegionOnlyForCloudAccounts(t *testing.T) {
+	const acct, evt = "883efbbc-bb2c-404b-9ed9-6b7ecbf6f509", "1653f230-5e49-4351-b1f0-9b2bf5d72475"
+
+	assert.Equal(t, "", eventRegion("K8s", acct, evt),
+		"a Kubernetes node name is not a region and must never be offered as one")
+	assert.Equal(t, "", eventRegion("k8s", acct, evt), "the provider match is case-insensitive")
+	assert.Equal(t, "", eventRegion("", acct, evt), "an unknown provider must not be treated as cloud")
+	assert.Equal(t, "", eventRegion("AWS", "", evt), "no account, no lookup")
+	assert.Equal(t, "", eventRegion("AWS", acct, ""), "no event, no lookup")
 }

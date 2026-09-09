@@ -572,6 +572,10 @@ func (a *amazonElasticCache) GetRecommendations(ctx providers.CloudProviderConte
 			}
 
 			alternativeInstances, errAlt := getAvailableCacheInstances(ctx.GetContext(), cfg, resource.Region, engineStr, recommendedMemory, 0, "")
+			// Drop unpriced SKUs before sorting: they would sort to the front and
+			// cost us the recommendation entirely, even when a real cheaper node
+			// type is available further down the list.
+			alternativeInstances = usablyPricedInstances(alternativeInstances)
 			if errAlt == nil && len(alternativeInstances) > 0 {
 				// Sort by price to get cheapest alternative
 				sort.Slice(alternativeInstances, func(i, j int) bool {
@@ -585,7 +589,8 @@ func (a *amazonElasticCache) GetRecommendations(ctx providers.CloudProviderConte
 
 				// Get cheapest alternative price
 				minPrice, errMinPrice := getPricingValue(alternativeInstances[0])
-				if errMinPrice == nil && minPrice < currentPrice {
+				// minPrice > 0 is a backstop; the list is already filtered above.
+				if errMinPrice == nil && minPrice > 0 && minPrice < currentPrice {
 					savings := (currentPrice - minPrice) * 24 * 30
 					if savings > 5 { // Only recommend if savings > $5/month
 						recommendations = append(recommendations, providers.Recommendation{
@@ -637,6 +642,9 @@ func (a *amazonElasticCache) GetRecommendations(ctx providers.CloudProviderConte
 			recommendedMemory := int(totalMemoryBytes / (1024 * 1024 * 1024) * 2) // Double current memory in GiB
 
 			alternativeInstances, errAlt := getAvailableCacheInstances(ctx.GetContext(), cfg, resource.Region, engineStr, recommendedMemory, 0, "")
+			// Same reason as the oversized check: an unpriced SKU sorts first and
+			// would suppress a legitimate larger node type.
+			alternativeInstances = usablyPricedInstances(alternativeInstances)
 			if errAlt == nil && len(alternativeInstances) > 0 {
 				// Sort by price to get cheapest alternative with more memory
 				sort.Slice(alternativeInstances, func(i, j int) bool {
@@ -650,7 +658,9 @@ func (a *amazonElasticCache) GetRecommendations(ctx providers.CloudProviderConte
 
 				// Get cheapest alternative price
 				minPrice, errMinPrice := getPricingValue(alternativeInstances[0])
-				if errMinPrice == nil {
+				// Backstop: an unusable 0 here would invert into a POSITIVE saving
+				// worth the whole current cost, on a recommendation meant to cost more.
+				if errMinPrice == nil && minPrice > 0 {
 					additionalCost := (minPrice - currentPrice) * 24 * 30
 					recommendations = append(recommendations, providers.Recommendation{
 						CategoryName: providers.RecommendationCategoryRightSizing,

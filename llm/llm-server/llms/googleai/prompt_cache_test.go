@@ -293,6 +293,7 @@ Remember: Your primary goal is to provide accurate, helpful, and actionable info
 		},
 		1*time.Hour,
 		"",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("failed to create cache: %v", err)

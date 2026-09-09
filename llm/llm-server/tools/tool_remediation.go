@@ -301,6 +301,60 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 		ExecutedAt: startTime.Format(time.RFC3339),
 	}
 
+	// The executor comes from the account's provider, the same way the remediation panel picks it, so
+	// the two callers cannot disagree about where a command runs.
+	//
+	// A cloud CLI has to go through its own tool to get the account's credentials injected. Run it
+	// anywhere else and it executes unauthenticated, prints its auth-required hint to stdout, exits 0,
+	// and gets recorded as a successful remediation for an action that never happened (#28804).
+	substrate := RemediationSubstrateFor(GetCloudProviderForAccount(nbRequestContext.AccountId), command)
+	if substrate.Reject != "" {
+		logger.Warn("remediation: command does not match the account's provider", "command", command, "reason", substrate.Reject)
+		return core.NBToolResponse{
+			Data:   "Command rejected: " + substrate.Reject,
+			Status: core.NBToolResponseStatusError,
+		}, fmt.Errorf("remediation: %s", substrate.Reject)
+	}
+	if cloudCliTool := substrate.CloudCliTool; cloudCliTool != "" {
+		stdout, execErr := ExecuteCloudCli(nbRequestContext.Ctx, cloudCliTool, nbRequestContext.AccountId, nbRequestContext.ConversationId, command)
+		result.Duration = time.Since(startTime).String()
+		result.Stdout = stdout
+		if execErr != nil {
+			logger.Error("remediation: cloud cli command failed", "command", command, "tool", cloudCliTool, "error", execErr)
+			result.Success = false
+			result.ExitCode = 1
+			result.Error = execErr.Error()
+			result.Stderr = execErr.Error()
+			responseData, formatErr := r.formatExecutionResult(result)
+			if formatErr != nil {
+				logger.Error("remediation: failed to format execution result after command error", "format_error", formatErr, "command_error", execErr)
+				return core.NBToolResponse{
+					Data:   fmt.Sprintf("Command failed (%s) and formatting the result also failed: %s", execErr, formatErr),
+					Status: core.NBToolResponseStatusError,
+				}, nil
+			}
+			return core.NBToolResponse{
+				Data:   responseData,
+				Type:   core.NBToolResponseTypeJson,
+				Status: core.NBToolResponseStatusError,
+			}, nil
+		}
+		result.Success = true
+		result.ExitCode = 0
+		responseData, err := r.formatExecutionResult(result)
+		if err != nil {
+			return core.NBToolResponse{
+				Data:   fmt.Sprintf("Command executed but failed to format result: %v", err),
+				Status: core.NBToolResponseStatusError,
+			}, err
+		}
+		return core.NBToolResponse{
+			Data:   responseData,
+			Type:   core.NBToolResponseTypeJson,
+			Status: core.NBToolResponseStatusSuccess,
+		}, nil
+	}
+
 	wm := workspace.NewWorkspaceManager()
 	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
 		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
@@ -318,7 +372,14 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 			result.Stdout = response
 		}
 
-		responseData, _ := r.formatExecutionResult(result)
+		responseData, formatErr := r.formatExecutionResult(result)
+		if formatErr != nil {
+			logger.Error("remediation: failed to format execution result after command error", "format_error", formatErr, "command_error", err)
+			return core.NBToolResponse{
+				Data:   fmt.Sprintf("Command failed (%s) and formatting the result also failed: %s", err, formatErr),
+				Status: core.NBToolResponseStatusError,
+			}, nil
+		}
 		return core.NBToolResponse{
 			Data:   responseData,
 			Type:   core.NBToolResponseTypeJson,

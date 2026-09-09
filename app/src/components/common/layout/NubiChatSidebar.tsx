@@ -1,4 +1,5 @@
-import { Box, IconButton, Typography, Tooltip, useTheme } from '@mui/material';
+import { Box, IconButton, Typography, useTheme } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import SafeIcon from '@shared/icons/SafeIcon';

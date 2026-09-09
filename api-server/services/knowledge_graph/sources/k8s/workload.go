@@ -494,6 +494,14 @@ func (s *K8sSource) createNodeFromWorkload(workload *K8sWorkloadRow, frameworks 
 		}
 	}
 
+	// A workload-level `environment` label is the operator's own claim about
+	// where this runs; hoist it to the top-level attribute the blast-radius
+	// pipeline reads (QueryablePropertiesMap indexes it), where it overrides
+	// the per-account environment fallback.
+	if env, ok := s.extractWorkloadLabels(workload)["environment"].(string); ok && env != "" {
+		properties["environment"] = env
+	}
+
 	// Add subtype property for K8s workload
 	properties["subtype"] = workload.Kind
 

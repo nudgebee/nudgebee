@@ -150,8 +150,16 @@ func (g *GoogleAI) GenerateContent(
 	}
 
 	var err error
-	if cfg.Tools, err = convertTools(opts.Tools); err != nil {
-		return nil, err
+	// Tools and CachedContent are mutually exclusive on the live request: Gemini
+	// returns 400 "CachedContent can not be used with GenerateContent request
+	// setting system_instruction, tools or tool_config". When cached content is in
+	// play the tools were baked into it at creation time (CreateCachedContent), so
+	// sending them again here is both redundant and fatal. Leaving cfg.Tools nil is
+	// correct — the cache supplies the declarations.
+	if cfg.CachedContent == "" {
+		if cfg.Tools, err = convertTools(opts.Tools); err != nil {
+			return nil, err
+		}
 	}
 
 	// When no tools are provided, explicitly disable function calling.
@@ -247,9 +255,63 @@ func isThinkingLevelUnsupportedError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "thinking level is not supported")
 }
 
+// Thought signatures are Gemini's opaque record of the reasoning that produced a
+// function call. A 2.5/3.x thinking model returns one on the part carrying the
+// call, and expects it back verbatim whenever that call is replayed in history —
+// on 3.x this is enforced, not advisory, and a replay without it fails the whole
+// request with HTTP 400.
+//
+// langchaingo's llms.ToolCall has no field for it (ID / Type / FunctionCall
+// only) and llms.ContentPart cannot be implemented outside that package (the
+// isPart() marker is unexported), so the signature travels through the two
+// generic side channels the interface already provides: out on
+// ContentChoice.GenerationInfo, back in on CallOptions.Metadata.
+//
+// The two directions are keyed differently ON PURPOSE. Coming out, no id exists
+// yet (Gemini does not return one), so the only correlation available is
+// position. Going back in, the caller has assigned its own ids, so the map is
+// keyed by llms.ToolCall.ID.
+const (
+	// GenerationInfoThoughtSignatures holds [][]byte, positionally aligned with
+	// ContentChoice.ToolCalls. Entry i may be nil when the model returned none.
+	GenerationInfoThoughtSignatures = "thought_signatures"
+
+	// MetadataThoughtSignatures holds map[string][]byte keyed by
+	// llms.ToolCall.ID, supplying signatures for tool calls being replayed.
+	MetadataThoughtSignatures = "thought_signatures_by_tool_call_id"
+)
+
+func hasAnyThoughtSignature(signatures [][]byte) bool {
+	for _, s := range signatures {
+		if len(s) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// thoughtSignaturesFromOptions extracts the replay map, tolerating absence and
+// a wrong-typed value rather than failing the request: a missing signature
+// degrades model reasoning, but a panic here would take down every call.
+func thoughtSignaturesFromOptions(opts *llms.CallOptions) map[string][]byte {
+	if opts == nil || len(opts.Metadata) == 0 {
+		return nil
+	}
+	signatures, ok := opts.Metadata[MetadataThoughtSignatures].(map[string][]byte)
+	if !ok {
+		return nil
+	}
+	return signatures
+}
+
 func convertCandidates(modelName string, candidates []*genai.Candidate, usage *genai.GenerateContentResponseUsageMetadata) (*llms.ContentResponse, error) {
 	var contentResponse llms.ContentResponse
 	var toolCalls []llms.ToolCall
+	// thoughtSignatures is POSITIONALLY aligned with toolCalls: entry i belongs
+	// to toolCalls[i]. Position is the only usable key here — Gemini returns no
+	// id for a function call (the ToolCall built below has an empty ID; callers
+	// synthesize one), so there is nothing else to correlate on at this point.
+	var thoughtSignatures [][]byte
 
 	for _, candidate := range candidates {
 		buf := strings.Builder{}
@@ -279,6 +341,16 @@ func convertCandidates(modelName string, candidates []*genai.Candidate, usage *g
 						},
 					}
 					toolCalls = append(toolCalls, toolCall)
+					// Gemini 2.5/3.x thinking models attach an opaque signature of
+					// the reasoning that produced this call. It MUST be replayed
+					// verbatim alongside the same functionCall in history, or 3.x
+					// rejects the request outright ("Function call is missing a
+					// thought_signature in functionCall parts"). llms.ToolCall has
+					// nowhere to carry it, so it is surfaced positionally via
+					// GenerationInfo and re-supplied on the next request through
+					// CallOptions.Metadata. Append unconditionally — including nil
+					// — to keep index alignment with toolCalls exact.
+					thoughtSignatures = append(thoughtSignatures, part.ThoughtSignature)
 				}
 				if part.InlineData != nil {
 					// Silently skip inline data parts (e.g. generated images)
@@ -335,6 +407,12 @@ func convertCandidates(modelName string, candidates []*genai.Candidate, usage *g
 		// Note: Google AI's CachedContent requires pre-created cached content via API,
 		// not inline cache control like Anthropic. Use Client.CreateCachedContent() for caching.
 
+		// Surface the signatures only when at least one is non-empty, so
+		// non-thinking models and tool-less turns keep GenerationInfo unchanged.
+		if hasAnyThoughtSignature(thoughtSignatures) {
+			metadata[GenerationInfoThoughtSignatures] = thoughtSignatures
+		}
+
 		contentResponse.Choices = append(contentResponse.Choices,
 			&llms.ContentChoice{
 				Content:        buf.String(),
@@ -347,7 +425,10 @@ func convertCandidates(modelName string, candidates []*genai.Candidate, usage *g
 }
 
 // convertParts converts between a sequence of langchain parts and genai parts.
-func convertParts(ctx context.Context, parts []llms.ContentPart) ([]*genai.Part, error) {
+// convertParts converts langchaingo parts to genai parts. thoughtSignatures
+// (keyed by llms.ToolCall.ID, may be nil) re-attaches Gemini's opaque reasoning
+// signature to each replayed function call — see MetadataThoughtSignatures.
+func convertParts(ctx context.Context, parts []llms.ContentPart, thoughtSignatures map[string][]byte) ([]*genai.Part, error) {
 	convertedParts := make([]*genai.Part, 0, len(parts))
 	for _, part := range parts {
 		var out *genai.Part
@@ -381,6 +462,12 @@ func convertParts(ctx context.Context, parts []llms.ContentPart) ([]*genai.Part,
 					Args: argsMap,
 				},
 			}
+			// Replay the reasoning signature that produced this call. Gemini 3.x
+			// rejects the entire request when a functionCall part comes back
+			// without it, so a miss here is a hard failure, not degraded quality.
+			if sig, ok := thoughtSignatures[p.ID]; ok && len(sig) > 0 {
+				out.ThoughtSignature = sig
+			}
 		case llms.ToolCallResponse:
 			out = &genai.Part{
 				FunctionResponse: &genai.FunctionResponse{
@@ -402,8 +489,8 @@ func convertParts(ctx context.Context, parts []llms.ContentPart) ([]*genai.Part,
 }
 
 // convertContent converts between a langchain MessageContent and genai content.
-func convertContent(ctx context.Context, content llms.MessageContent) (*genai.Content, error) {
-	parts, err := convertParts(ctx, content.Parts)
+func convertContent(ctx context.Context, content llms.MessageContent, thoughtSignatures map[string][]byte) (*genai.Content, error) {
+	parts, err := convertParts(ctx, content.Parts, thoughtSignatures)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +528,7 @@ func generateFromSingleMessage(
 	cfg *genai.GenerateContentConfig,
 	opts *llms.CallOptions,
 ) (*llms.ContentResponse, error) {
-	convertedParts, err := convertParts(ctx, parts)
+	convertedParts, err := convertParts(ctx, parts, thoughtSignaturesFromOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -472,13 +559,16 @@ func generateFromMessages(
 	opts *llms.CallOptions,
 ) (*llms.ContentResponse, error) {
 	contents := make([]*genai.Content, 0, len(messages))
+	// Resolved once: every replayed function call in this request looks up its
+	// signature here (see MetadataThoughtSignatures).
+	signatures := thoughtSignaturesFromOptions(opts)
 
 	// Merge all system messages into a single SystemInstruction.
 	// Google AI expects exactly one SystemInstruction — multiple system messages
 	// must have their parts concatenated, not overwritten.
 	var systemParts []*genai.Part
 	for _, mc := range messages {
-		content, err := convertContent(ctx, mc)
+		content, err := convertContent(ctx, mc, signatures)
 		if err != nil {
 			return nil, err
 		}
@@ -653,6 +743,20 @@ func convertSchemaRecursive(schemaMap map[string]any, toolIndex int, propertyPat
 	}
 
 	return schema, nil
+}
+
+// ValidateTools reports whether the given tool definitions convert cleanly into
+// this provider's native schema, WITHOUT performing any API call.
+//
+// Google AI is the strictest schema validator of the providers in use (it rejects
+// a non-string `type`, and an array property with no `items`), and a native
+// tool-calling planner advertises an agent's ENTIRE toolset in one request — so a
+// single malformed tool schema fails every request for that agent, not just calls
+// to that one tool. Exposing the conversion lets a build-time test audit every
+// registered tool offline instead of discovering each break as a live 400.
+func ValidateTools(tools []llms.Tool) error {
+	_, err := convertTools(tools)
+	return err
 }
 
 // convertTools converts from a list of langchaingo tools to a list of genai tools.

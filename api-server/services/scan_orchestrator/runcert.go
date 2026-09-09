@@ -8,6 +8,8 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+
+	"github.com/lib/pq"
 )
 
 // RunCertificateScan is the direct-K8s-API counterpart to RunScan: instead of
@@ -116,13 +118,27 @@ func persistCertificates(ctx *security.RequestContext, account ScanAccount, recs
 		return fmt.Errorf("certificate_scanner: db: %w", err)
 	}
 
-	// Archive any existing certificate_expiry rows so dropped certs transition
-	// Open → Archive. Single tuple, single UPDATE.
+	// Single timestamp for both the archive UPDATE and the INSERT/UPSERT so
+	// row-update ordering is observable and consistent.
+	now := time.Now()
+
+	// Retire only the certs that vanished from this scan, keyed on the scan's
+	// keep-set rather than every row for the rule. A cert that is still present
+	// must keep whatever status its user gave it, and the upsert's CASE guard
+	// below can only preserve that if the archive has not already overwritten it.
+	// Closed rows are left as a terminal record. A fetch or parse failure returns
+	// before this point, so an empty keep-set really does mean no certs remain.
+	keepObjectIDs := make([]string, 0, len(recs))
+	for _, r := range recs {
+		keepObjectIDs = append(keepObjectIDs, r.AccountObjectID)
+	}
 	if _, err := dbms.Db.Exec(
 		`UPDATE recommendation SET status = 'Archive', updated_at = $1
 		 WHERE tenant_id = $2 AND cloud_account_id = $3
-		   AND category = 'Configuration' AND rule_name = $4 AND status != 'Archive'`,
-		time.Now(), account.TenantID, account.AccountID, CertificateExpiryRuleName,
+		   AND category = 'Configuration' AND rule_name = $4
+		   AND status NOT IN ('Archive', 'Closed')
+		   AND NOT (account_object_id = ANY($5))`,
+		now, account.TenantID, account.AccountID, CertificateExpiryRuleName, pq.Array(keepObjectIDs),
 	); err != nil {
 		return fmt.Errorf("certificate_scanner: archive: %w", err)
 	}
@@ -134,7 +150,6 @@ func persistCertificates(ctx *security.RequestContext, account ScanAccount, recs
 		return nil
 	}
 
-	now := time.Now()
 	rows := make([]map[string]any, 0, len(recs))
 	for _, r := range recs {
 		rows = append(rows, map[string]any{
@@ -167,7 +182,8 @@ func persistCertificates(ctx *security.RequestContext, account ScanAccount, recs
 		    :finops_score, :finops_band, :finops_score_breakdown)
 		 ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
 		 DO UPDATE SET recommendation = EXCLUDED.recommendation,
-		               status = EXCLUDED.status,
+		               status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+		                             THEN recommendation.status ELSE EXCLUDED.status END,
 		               updated_at = EXCLUDED.updated_at,
 		               severity = EXCLUDED.severity,
 		               recommendation_action = EXCLUDED.recommendation_action`,

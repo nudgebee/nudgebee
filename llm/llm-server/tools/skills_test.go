@@ -12,6 +12,31 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+func TestLoadSkillsTool_SchemaValidationAcceptsLegacyAliases(t *testing.T) {
+	tool := LoadSkillsTool{}
+
+	for _, input := range []string{
+		`{"skill_names":"EC2_CPUUtilization_alarm"}`,
+		`{"skill_names":["EC2_CPUUtilization_alarm"]}`,
+		`{"skills":"EC2_CPUUtilization_alarm"}`,
+		`{"skill_names":[],"skills":"EC2_CPUUtilization_alarm"}`,
+		`{"skill_names":"   ","skills":"EC2_CPUUtilization_alarm"}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			assert.Nil(t, core.ValidateToolInput(tool, input))
+		})
+	}
+}
+
+func TestLoadSkillsTool_SchemaValidationNormalizerLeavesNonObjectsUnchanged(t *testing.T) {
+	tool := LoadSkillsTool{}
+	for _, input := range []string{"", "  null  ", " [] ", "plain skill name"} {
+		t.Run(input, func(t *testing.T) {
+			assert.Equal(t, input, tool.NormalizeInputForSchemaValidation(input))
+		})
+	}
+}
+
 func TestLoadSkillsTool_ParseSkillNames(t *testing.T) {
 	tool := LoadSkillsTool{}
 
@@ -159,6 +184,13 @@ func TestLoadSkillsTool_ArgumentParsing(t *testing.T) {
 				"skill_names": []any{"postgres_performance_tuning"},
 			},
 			expectedSkill: "postgres_performance_tuning",
+		},
+		{
+			name: "skill_names as string slice",
+			arguments: map[string]any{
+				"skill_names": []string{"postgres_performance_tuning", "redis-docs"},
+			},
+			expectedSkill: "postgres_performance_tuning,redis-docs",
 		},
 		{
 			name: "skills as slice",

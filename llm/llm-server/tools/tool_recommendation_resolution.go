@@ -41,6 +41,25 @@ const recommendationResolutionView = `
 		JOIN cloud_accounts ca ON r.cloud_account_id = ca.id
 	`
 
+// ToolPrompt implements core.NBToolPromptProvider: schema and usage for
+// recommendation_resolution_view, shared by every agent that carries this tool.
+func (m RecommendationResolutionExecuteTool) ToolPrompt() []string {
+	return []string{
+		"Use recommendation_resolution_execute for resolution history — what was attempted or done about a recommendation: pull requests, tickets, deployment changes, workflow runs, their outcomes and references. Read-only SELECTs against recommendation_resolution_view; filter by recommendation_id, resource_name, rule_name, type, resolver_type, or status.",
+		"**recommendation_resolution_view:** One row per resolution attempt on a recommendation (how it is being, or was, resolved). Queried via the 'recommendation_resolution_execute' tool.",
+		"- recommendation_id (STRING): The recommendation the attempt belongs to (join key with recommendation_view id)",
+		"- type (ENUM): Artifact created - PullRequest, Ticket, DeploymentChange, CloudResource, WorkflowExecution, EventResolution",
+		"- type_reference_id (STRING): Reference to that artifact - PR URL, ticket id, change id",
+		"- resolver_type (ENUM): Who initiated it - User, AutoOptimize, AutoRunbook, NBLLM (the AI agent)",
+		"- status (ENUM): Attempt state - InProgress (artifact open, work ongoing), Success (completed), Failed (rejected or errored)",
+		"- status_message (STRING): Human-readable outcome detail (failure reason, close note)",
+		"- pr_lifecycle_state (STRING): For PullRequest attempts, the PR's lifecycle state if tracked",
+		"- recommendation_status (ENUM): Current status of the parent recommendation",
+		"- resource_name, rule_name, category, severity (STRING/ENUM): Context from the parent recommendation",
+		"- created_at, updated_at (TIMESTAMP): When the attempt was registered and last updated",
+	}
+}
+
 const ToolRecommendationResolutionExecuteSql = "recommendation_resolution_execute"
 
 type RecommendationResolutionExecuteTool struct {

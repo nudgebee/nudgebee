@@ -7,7 +7,7 @@ expected_output:
     category, severity, estimated monthly savings in dollars, and a risk
     assessment. The total potential savings should be summarized at the top
     in dollars. Closed/Archive recommendations must be excluded. Cite
-    [recommendations] for each savings figure.
+    [recommendations] / [recommendation_execute] for each savings figure.
 tags:
   - optimization
   - recommendations

@@ -58,6 +58,7 @@ mutation CreateAccount($object: cloud_accounts_insert_one_input!) {
       id
       access_key
       access_secret
+      warning
     }
   }
 `;
@@ -492,6 +493,8 @@ const apiAccount = {
         'splunk_observability_platform',
         'splunk_enterprise',
         'splunk_webhook',
+        'cubeapm',
+        'cubeapm_webhook',
         'dynatrace',
         'dynatrace_webhook',
         'gcp_monitoring_webhook',

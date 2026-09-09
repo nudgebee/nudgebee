@@ -665,6 +665,24 @@ func StartEventBridgeSQSConsumer(pCtx providers.CloudProviderContext, eventHandl
 // message in a batch run in parallel while bounding fan-out.
 const sqsWorkerConcurrency = 10
 
+// sqsMessageTimeout bounds how long one message may occupy a worker. The receive
+// loop is single-threaded and processBatchConcurrent waits for the whole batch
+// before deleting and receiving again, so an unbounded message stalls the entire
+// queue — a bulk Lambda delete once held it for 57 minutes. It must also stay
+// well under the queue's 300s VisibilityTimeout: past that, SQS redelivers a
+// message that is still being processed, and the duplicate work feeds the jam.
+const sqsMessageTimeout = 90 * time.Second
+
+// sqsMessageContext scopes a CloudProviderContext to one message's deadline.
+// The AWS SDK calls downstream honour ctx.GetContext(), so this is what actually
+// stops a slow provider lookup rather than merely abandoning it.
+type sqsMessageContext struct {
+	providers.CloudProviderContext
+	ctx context.Context
+}
+
+func (c *sqsMessageContext) GetContext() context.Context { return c.ctx }
+
 // maxMessageAge is the cutoff beyond which incoming messages are dropped
 // without processing. Stale state-change events (e.g., an EC2 termination
 // event delivered 4 days late after the queue backlogs) would otherwise
@@ -768,8 +786,20 @@ func processBatchConcurrent(
 				}
 			}()
 
-			processedEvent, originatingAccount, err := processSQSMessageBodyForEventBridgeEvent(pCtx, *msg.Body, processor, eventHandler)
+			msgCtx, cancel := context.WithTimeout(pCtx.GetContext(), sqsMessageTimeout)
+			defer cancel()
+			wCtx := &sqsMessageContext{CloudProviderContext: pCtx, ctx: msgCtx}
+
+			processedEvent, originatingAccount, err := processSQSMessageBodyForEventBridgeEvent(wCtx, *msg.Body, processor, eventHandler)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					// Not acked: a timeout is not necessarily permanent, so let the
+					// visibility timeout redeliver it. RedrivePolicy DLQs it if it
+					// keeps timing out.
+					logger.Error("aws: timed out processing SQS message", "messageId", mid, "timeout", sqsMessageTimeout, "queueURL", queueURL, "component", "SQSConsumer")
+					results <- batchProcessResult{receiptHandle: rh, messageId: mid, ackDelete: false}
+					return
+				}
 				// A permanent error will fail identically on every redelivery, so
 				// ack it instead of letting it age in the queue until the
 				// RedrivePolicy DLQs it.
@@ -794,7 +824,7 @@ func processBatchConcurrent(
 			logger.Info("aws: successfully processed EventBridge event from SQS message",
 				"processedEventId", processedEvent.EventId, "sqsMessageId", mid, "eventName", processedEvent.EventName, "component", "SQSConsumer")
 
-			if hErr := eventHandler.ProcessEvent(pCtx, processedEvent, originatingAccount); hErr != nil {
+			if hErr := eventHandler.ProcessEvent(wCtx, processedEvent, originatingAccount); hErr != nil {
 				logger.Error("aws: failed to handle processed event", "error", hErr, "processedEventId", processedEvent.EventId, "sqsMessageId", mid, "component", "SQSConsumer")
 				results <- batchProcessResult{receiptHandle: rh, messageId: mid, ackDelete: false}
 				return

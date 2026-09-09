@@ -31,7 +31,7 @@ slack-bolt = "1.30.0"
 # inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
 # so the security boundary can't break under a slack-bolt resolution change.
 slack-sdk = "3.43.0"
-sqlalchemy = "^2.0.48"
+sqlalchemy = {version = "^2.0.48", extras = ["asyncio"]}
 aio_pika = "10.0.1"
 uvicorn = ">=0.34.2,<0.53.0"
 psycopg2-binary = "^2.9.11"
@@ -64,16 +64,21 @@ opentelemetry-instrumentation-fastapi = "^0.61b0"
 opentelemetry-instrumentation-requests = "^0.61b0"
 opentelemetry-instrumentation-aiohttp-client = "^0.61b0"
 reportlab = "^5.0.0"
+# mermaid_graph.py's flowchart Image tier: a thin binding over the local
+# `dot` CLI (installed via the Dockerfile's `apk add graphviz`) - no
+# browser, no network call. See notifications_server/utils/mermaid_graph.py.
+graphviz = "^0.21"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
-pre-commit = "4.6.1"
+pre-commit = "4.6.2"
 black = "^26.3.1"
 mypy = "2.3.0"
 flake8 = "7.3.0"
-sqlglot = "30.15.0"
+sqlglot = "30.17.0"
 pytest = ">=8.3,<10.0"
 pypdf = "^6.15.0"
+aiosqlite = "^0.22.1"

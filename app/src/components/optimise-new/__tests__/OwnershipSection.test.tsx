@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom';
 import { render, screen, waitFor } from '@testing-library/react';
-import OwnershipSection, { buildLevels, derivedText } from '@components/optimise-new/OwnershipSection';
+import OwnershipSection, { buildLevels } from '@components/optimise-new/OwnershipSection';
 import apiOwnership from '@api1/ownership';
 
 jest.mock('@api1/ownership', () => ({
@@ -70,29 +70,6 @@ describe('buildLevels', () => {
       { level: 'Resource', resourceType: 'cloud_resource', resourceKey: 'res-9', own: null },
       { level: 'Cloud account', resourceType: 'cloud_account', resourceKey: 'acct-1', own: null },
     ]);
-  });
-});
-
-describe('derivedText', () => {
-  const levels = (source: string) => [
-    { level: 'Workload', resourceType: 'workload', resourceKey: 'k', own: { found: true, source } },
-    { level: 'Namespace', resourceType: 'namespace', resourceKey: 'k', own: null },
-  ];
-
-  it('distinguishes a direct assignment from a rule match', () => {
-    expect(derivedText(levels('manual'), 0)).toBe('Assigned directly to this resource.');
-    expect(derivedText(levels('rule'), 0)).toBe('Matched by an ownership rule.');
-  });
-
-  it('names the level an owner was inherited from', () => {
-    expect(derivedText(levels('manual'), 1)).toBe('Inherited from the namespace owner.');
-    expect(derivedText([...levels('manual'), { level: 'Cloud account', resourceType: 'cloud_account', resourceKey: 'a', own: null }], 2)).toBe(
-      'Inherited from the cloud account (cluster) owner.'
-    );
-  });
-
-  it('reports no owner when nothing in the chain owns the resource', () => {
-    expect(derivedText(levels('manual'), -1)).toBe('No owner assigned yet.');
   });
 });
 

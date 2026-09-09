@@ -123,7 +123,6 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	resp := ExecutionResponse{
 		ConversationID: req.ConversationID,
 	}
-
 	// 1. Validation
 	if req.Command == "" {
 		resp.CommandStatus = "failed"
@@ -200,6 +199,14 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 		return
 	}
 
+	// A command is an active workspace user too. Acquire only after all request
+	// and path validation has succeeded, so rejected requests do not trigger a
+	// needless cleanup attempt.
+	releaseWorkspace := workspaceGCFor(h.Config.Analysis.WorkspaceDir).Acquire("command:" + req.ConversationID)
+	// Release (and its opportunistic, internally time-bounded cleanup) runs
+	// detached so the HTTP response is not held behind a cache sweep.
+	defer func() { go releaseWorkspace() }()
+
 	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
 	cmd.Dir = workDir
 
@@ -248,10 +255,15 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 		fmt.Sprintf("TEMP=%s", workDir),
 		"LC_ALL=C.UTF-8",
 	}
+	cmd.Env = append(cmd.Env, workspaceCacheEnv(h.Config.Analysis.WorkspaceDir)...)
 	reservedEnv := map[string]struct{}{
 		"PATH": {}, "HOME": {}, "PWD": {},
 		"TMPDIR": {}, "TMP": {}, "TEMP": {},
-		"LC_ALL": {},
+		"LC_ALL":  {},
+		"GOCACHE": {}, "GOMODCACHE": {}, "GOLANGCI_LINT_CACHE": {},
+		"PIP_CACHE_DIR": {}, "PYTHONPYCACHEPREFIX": {},
+		"npm_config_cache": {}, "PNPM_HOME": {},
+		"MAVEN_OPTS": {}, "MAVEN_REPO_LOCAL": {}, "GRADLE_USER_HOME": {},
 	}
 	for k, v := range req.Env {
 		if _, reserved := reservedEnv[k]; reserved {

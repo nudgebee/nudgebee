@@ -1,4 +1,5 @@
-import { Box, Tooltip, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import React, { useEffect, useState, type JSX } from 'react';
 import type { ICustomTableRow } from './types';
 import MoreVertIcon from '@mui/icons-material/MoreVert';

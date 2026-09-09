@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Typography, Alert } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Banner } from '@ui/Banner';
 import { Input } from '@ui/Input';
 import Tooltip from '@ui/Tooltip';
 import apiGlobalContext from '@api1/global-context';
@@ -623,7 +624,7 @@ const GlobalContextTab = ({ accountId }) => {
   if (error && globalContexts.length === 0) {
     return (
       <Box sx={{ p: ds.space[5] }}>
-        <Alert severity='error'>{error}</Alert>
+        <Banner tone='critical' message={error} />
       </Box>
     );
   }
@@ -681,9 +682,12 @@ const GlobalContextTab = ({ accountId }) => {
       </WidgetCard>
 
       {isTenantWide && (
-        <Alert severity='info' sx={{ mb: ds.space[4] }}>
-          Viewing all account contexts across this tenant. Switch to an account-scoped page to create, edit, or delete.
-        </Alert>
+        <Box sx={{ mb: ds.space[4] }}>
+          <Banner
+            tone='info'
+            message='Viewing all account contexts across this tenant. Switch to an account-scoped page to create, edit, or delete.'
+          />
+        </Box>
       )}
 
       {/* Empty State */}

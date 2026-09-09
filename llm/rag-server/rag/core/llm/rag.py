@@ -134,8 +134,58 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
     return collection_names
 
 
+def _collection_scope(metadata):
+    """Classify a collection from its own metadata, not from its name.
+
+    Qdrant collection metadata is the authority on what a collection holds:
+
+    - ``account == "global"``     -> shared content with no knowledge-base row
+      (NudgeBee product docs). Callers must not expect to attribute it to a KB.
+    - ``source == "user_kb"``     -> a manual knowledge base
+    - ``source in (confluence, servicenow, ...)`` -> a synced integration KB
+    - ``module``                  -> which subsystem owns it (knowledge_base,
+      prometheus, logs, ...), so non-KB agent collections are distinguishable.
+
+    Returned verbatim to the caller so llm-server does not have to re-derive any
+    of this by parsing collection names or matching document text.
+    """
+    metadata = metadata or {}
+    scope = "account"
+    if metadata.get("account") == "global":
+        scope = "global"
+    elif metadata.get("tenant_id"):
+        scope = "tenant"
+    return {
+        "collection_scope": scope,
+        "collection_module": metadata.get("module") or "",
+        "collection_source": metadata.get("source") or "",
+    }
+
+
+def _collection_classification(collection, tenant_id):
+    """Full classification of a collection: scope plus whether it is KB-backed.
+
+    ``collection_kb_backed`` is the field callers must branch on. It reuses
+    ``_is_kb_backed_collection`` - the same predicate ``_drop_dead_kb_collections``
+    trusts - so "does an llm_knowledgebases row exist for this?" has ONE answer in
+    the system. Three kinds of collection are NOT KB-backed and can never be
+    attributed to a knowledge base: the global product-docs collection, the
+    tenant-level user KB, and legacy per-account collections renamed from
+    ``<account_id>_docs``. Callers that demand a KB row for those drop content
+    that is legitimately un-owned.
+    """
+    out = _collection_scope(collection.metadata or {})
+    out["collection_kb_backed"] = _is_kb_backed_collection(collection, tenant_id)
+    return out
+
+
 def _retrieve_documents_from_collections(
-    collection_names, query, min_results, account_id, metadata_filter: Optional[Dict] = None
+    collection_names,
+    query,
+    min_results,
+    account_id,
+    metadata_filter: Optional[Dict] = None,
+    collection_metadata: Optional[Dict] = None,
 ):
     """
     Retrieves documents from collections by directly calling search logic.
@@ -151,8 +201,15 @@ def _retrieve_documents_from_collections(
 
     # Reconstruct the Document objects
     all_docs = []
+    collection_metadata = collection_metadata or {}
     for item in serializable_results:
-        doc = Document(page_content=item["page_content"], metadata=item["metadata"])
+        md = item["metadata"] or {}
+        # Attach the owning collection's classification so the caller can tell a
+        # global collection from a KB-backed one without guessing.
+        source_collection = md.get("collection")
+        if source_collection in collection_metadata:
+            md = {**md, **collection_metadata[source_collection]}
+        doc = Document(page_content=item["page_content"], metadata=md)
         score = item["score"]
         all_docs.append((doc, score))
 
@@ -204,7 +261,12 @@ def get_matching_documents(
         # Retrieve documents from collections using multiprocessing
         logger.info(f"Retrieving documents from collections: {collection_names}")
         similar_docs_flat = _retrieve_documents_from_collections(
-            collection_names, query, no_of_results, account_id, metadata_filter
+            collection_names,
+            query,
+            no_of_results,
+            account_id,
+            metadata_filter,
+            collection_metadata={c.name: _collection_classification(c, tenant_id) for c in collections},
         )
         if not similar_docs_flat:
             return [], {}

@@ -189,9 +189,7 @@ func (p *IAMRecommendationsProvider) GetRecommendations(
 		client = realClient
 	}
 
-	var recs []providers.Recommendation
-
-	checks := []func(IAMClientAPI, providers.CloudProviderContext, providers.Account) ([]providers.Recommendation, error){
+	checks := []iamCheck{
 		checkUserMFA, // This function now needs context
 		checkAccessKeyRotation,
 		checkPasswordPolicy,
@@ -203,13 +201,46 @@ func (p *IAMRecommendationsProvider) GetRecommendations(
 		checkUnusedAccessKeys,
 	}
 
+	return runIAMChecks(checks, client, ctx, account)
+}
+
+// iamCheck is a single IAM security check.
+type iamCheck func(IAMClientAPI, providers.CloudProviderContext, providers.Account) ([]providers.Recommendation, error)
+
+// runIAMChecks runs every check and reports the whole scan as failed if any of
+// them did not complete.
+//
+// The error return is load-bearing rather than cosmetic. A producer that
+// returns success has its result treated as the complete truth for the
+// service, and every Open recommendation missing from it is archived. So a
+// check that fails quietly does not just lose its own findings — it retires
+// the findings already on screen, which then reappear after the next healthy
+// scan. These are security findings (root account exposure, password policy,
+// admin policy usage), so losing a scan cycle is much cheaper than making them
+// disappear and come back.
+func runIAMChecks(checks []iamCheck, client IAMClientAPI, ctx providers.CloudProviderContext, account providers.Account) ([]providers.Recommendation, error) {
+	var recs []providers.Recommendation
+	var checkErrs []error
+
 	for _, check := range checks {
+		// A dead context makes every remaining check a doomed API call and a
+		// duplicate warning. Record it once and stop.
+		if err := ctx.GetContext().Err(); err != nil {
+			checkErrs = append(checkErrs, err)
+			break
+		}
 		results, err := check(client, ctx, account) // Pass context down
 		if err != nil {
 			ctx.GetLogger().Warn("IAM security check failed", "error", err)
+			checkErrs = append(checkErrs, err)
 			continue
 		}
 		recs = append(recs, results...)
+	}
+
+	if len(checkErrs) > 0 {
+		return recs, fmt.Errorf("iam: %d of %d security checks failed, reporting the scan as incomplete so existing findings are not archived: %w",
+			len(checkErrs), len(checks), errors.Join(checkErrs...))
 	}
 
 	return recs, nil

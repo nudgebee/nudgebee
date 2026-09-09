@@ -136,23 +136,6 @@ type AwsEventBridgeOnboardResponse struct {
 	ExternalId string `json:"external_id" mapstructure:"external_id" validate:"required"`
 }
 
-type GCPOnBoardResponse struct {
-	Url        string `json:"url" mapstructure:"url" validate:"required"`
-	BucketName string `json:"bucket_name" mapstructure:"bucket_name" validate:"required"`
-}
-
-type GcpPubSubOnboardRequest struct {
-	AccountId string `json:"account_id" mapstructure:"account_id" validate:"required"`
-}
-
-type GcpPubSubOnboardResponse struct {
-	DeploymentManagerUrl string `json:"deployment_manager_url" mapstructure:"deployment_manager_url" validate:"required"`
-	ExternalId           string `json:"external_id" mapstructure:"external_id" validate:"required"`
-	PubSubProjectId      string `json:"pubsub_project_id" mapstructure:"pubsub_project_id" validate:"required"`
-	SubscriptionName     string `json:"subscription_name" mapstructure:"subscription_name" validate:"required"`
-	TemplateYamlUrl      string `json:"template_yaml_url" mapstructure:"template_yaml_url" validate:"required"`
-}
-
 type GcpMonitoringWebhookSetupRequest struct {
 	AccountId  string `json:"account_id" mapstructure:"account_id" validate:"required"`
 	WebhookUrl string `json:"webhook_url" mapstructure:"webhook_url" validate:"required"`
@@ -195,6 +178,11 @@ type ValidateCloudCredentialsRequest struct {
 	BillingProjectID string `json:"billing_project_id,omitempty" mapstructure:"billing_project_id"`
 	BillingDatasetID string `json:"billing_dataset_id,omitempty" mapstructure:"billing_dataset_id"`
 	BillingTableID   string `json:"billing_table_id,omitempty" mapstructure:"billing_table_id"`
+
+	// AWS CUR selection (optional). Narrows CUR discovery to one named report
+	// instead of auto-picking the first usable one. Sent by Edit Billing Config.
+	CurReportName string `json:"cur_report_name,omitempty" mapstructure:"cur_report_name"`
+	CurS3Bucket   string `json:"cur_s3_bucket,omitempty" mapstructure:"cur_s3_bucket"`
 
 	// AWS fields — exactly one of (AssumeRole) or (AccessKey + AccessSecret) must be set.
 	AssumeRole   string `json:"assume_role,omitempty" mapstructure:"assume_role"`

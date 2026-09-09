@@ -15,6 +15,22 @@ func init() {
 
 const MermaidValidationToolName = "mermaid_validation"
 
+// Regex to catch a stray '>' right after an edge label's closing '|',
+// e.g. `A -->|Label|> B`. Valid Mermaid closes an edge label with a
+// single '|' followed by the target node - never a '>'. This is not a
+// recognized arrow style; lines like this fail closed in the strict
+// flowchart-image parser downstream (notifications-server), so this
+// looks well-formed here but silently loses the image rendering there.
+var invalidArrowLabelRegex = regexp.MustCompile(`\|\s*>`)
+
+// Regex to catch a node ID containing '.' or '-' immediately before a
+// shape-opening bracket, e.g. `llm-gateway(...)` or
+// `logging.googleapis.com(...)`. Node IDs must be alphanumeric/
+// underscore only - real resource/host names (which commonly contain
+// hyphens and dots) belong in the quoted label, not the ID. Masked
+// quoted strings first so a hyphen/dot inside a label is never flagged.
+var invalidNodeIDRegex = regexp.MustCompile(`([A-Za-z0-9_]+[.\-][A-Za-z0-9_.\-]*)\s*[\[\(\{]`)
+
 type MermaidValidationTool struct{}
 
 func (m MermaidValidationTool) Name() string {
@@ -186,6 +202,17 @@ func validateMermaidCode(code string) []string {
 			matches := nodeRegex.FindAllStringSubmatch(maskedLine, -1)
 			for range matches {
 				errors = append(errors, fmt.Sprintf("Line %d: Node label must be enclosed in double quotes (e.g., [\"Label\"]).", lineNum))
+			}
+
+			// Check 3b: invalid arrow-label syntax (stray '>' after the closing '|')
+			if invalidArrowLabelRegex.MatchString(maskedLine) {
+				errors = append(errors, fmt.Sprintf("Line %d: An edge label must end with a single '|', not '|>'. Use -->|Label| Target, not -->|Label|> Target.", lineNum))
+			}
+
+			// Check 3c: node IDs must be alphanumeric/underscore only
+			idMatches := invalidNodeIDRegex.FindAllStringSubmatch(maskedLine, -1)
+			for _, m := range idMatches {
+				errors = append(errors, fmt.Sprintf("Line %d: Node ID '%s' is invalid. The ID (to the left of the bracket) must be plain alphanumeric/underscore only - no hyphens, dots, or quotes there. Move '%s' into the quoted label instead, e.g. node1[\"%s\"] (plain ID outside, real name only inside the quotes).", lineNum, m[1], m[1], m[1]))
 			}
 		}
 

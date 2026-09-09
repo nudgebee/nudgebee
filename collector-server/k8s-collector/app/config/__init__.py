@@ -48,8 +48,28 @@ class Settings(BaseSettings):
     ACTION_API_SERVER_TOKEN: str
     SERVICE_API_SERVER_URL: str = "http://services-server:8000"
     COLLECTOR_MESSAGE_SIZE_THRESHOLD_MB: int = 100
+    # Close the agent's open events for a workload once all of its pods are ready
+    # again. Off = the agent's findings (crashloop, OOM, ...) have no resolve path
+    # at all and stay open until their resource is deleted.
+    #
+    # DEFAULT OFF. The readiness-based signal this gates is not sound: discovery is
+    # change-driven, so a snapshot lands precisely on the moment a crashlooping pod
+    # flips Ready for the few seconds its container runs before dying, and
+    # ready_pods == total_pods is therefore observed on nearly every crash cycle.
+    # Measured on dev over two hours with it on: 3 live report_crash_loop events
+    # closed a median 178s after being raised, and 4 pod_oom_killer_enricher events,
+    # every one of them while the workload was still failing. Recovery has to be
+    # evidence over time (e.g. no pod restart since the previous snapshot), not a
+    # single sample; until that lands, leave this off.
+    EVENT_CLOSE_ON_WORKLOAD_RECOVERY: bool = False
     K8S_COLLECTOR_CONSUMER_MAX_WORKERS: int = 2
     K8S_COLLECTOR_CONSUMER_HEARTBEAT: int = 120
+    # Drop agent messages whose cloud account is status='disabled' instead of
+    # ingesting them. Off = a disabled account's agent keeps its events, discovery
+    # snapshots and spend flowing, and each event still runs the full server-side
+    # enrichment path (which calls back to that account's agent over the relay).
+    # Set false only to rule this gate out while debugging missing ingestion.
+    DROP_DISABLED_ACCOUNT_MESSAGES: bool = True
     LLM_SERVER_ENDPOINT: str = "http://llm-server:8000"
     EKS_VERSIONS_SUPPORT: ClassVar[Dict[str, Dict[str, str]]] = {
         "1.32": {

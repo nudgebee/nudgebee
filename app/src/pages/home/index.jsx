@@ -256,6 +256,34 @@ const getInsightSeverity = (item) => {
   }
 };
 
+// Parse an insight's `applications` field (JSON string, array, or 'null'/null)
+// into an array of { name, namespace } — mirrors ServiceChipRow's parsing.
+const parseInsightApps = (applications) => {
+  if (!applications || applications === 'null') return [];
+  let apps = applications;
+  if (typeof apps === 'string') {
+    try {
+      apps = JSON.parse(apps);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(apps) ? apps : [];
+};
+
+// Distinct workloads/services affected across a set of insights. Deduped by
+// name:namespace so a workload hit by several insights is counted once — a
+// truthful "N workloads affected" figure rather than an inflated sum.
+const countAffectedWorkloads = (items) => {
+  const seen = new Set();
+  for (const item of items) {
+    for (const app of parseInsightApps(item?.applications)) {
+      if (app?.name) seen.add(`${app.name}:${app.namespace ?? ''}`);
+    }
+  }
+  return seen.size;
+};
+
 const getActionLabel = (item) => {
   const cat = item?.rule?.category || item?.type;
   switch (cat) {
@@ -2005,10 +2033,25 @@ const Home = () => {
     workflowData.configuredCount > 0 ||
     workflowData.actionedCount > 0;
 
-  // Static subtitles — live counts were unreliable due to row-list truncation
-  // and savings sum quirks. Revert to descriptive text per design.
-  const troubleshootSubtitle = 'Active incidents and event trends';
-  const optimizeSubtitle = 'Right-sizing, storage, and cost recommendations';
+  // Count subtitles mirror the Security card's "X · Y" shape: the issue/rec
+  // count (full filtered arrays — insights_list is unpaged) plus the distinct
+  // workloads those insights touch. Avoids the summed-savings / truncated-row
+  // quirks that got the earlier attempt reverted; falls back to descriptive
+  // text when there's nothing to count / still loading.
+  const troubleshootSubtitle = useMemo(() => {
+    if (!troubleshootItems.length) return 'Active incidents and event trends';
+    const parts = [`${troubleshootItems.length} ${troubleshootItems.length === 1 ? 'issue' : 'issues'}`];
+    const workloads = countAffectedWorkloads(troubleshootItems);
+    if (workloads) parts.push(`${workloads} ${workloads === 1 ? 'workload' : 'workloads'} affected`);
+    return parts.join(' · ');
+  }, [troubleshootItems]);
+  const optimizeSubtitle = useMemo(() => {
+    if (!optimizeItems.length) return 'Right-sizing, storage, and cost recommendations';
+    const parts = [`${optimizeItems.length} ${optimizeItems.length === 1 ? 'recommendation' : 'recommendations'}`];
+    const workloads = countAffectedWorkloads(optimizeItems);
+    if (workloads) parts.push(`${workloads} ${workloads === 1 ? 'workload' : 'workloads'}`);
+    return parts.join(' · ');
+  }, [optimizeItems]);
 
   const securitySubtitle = useMemo(() => {
     const parts = [];

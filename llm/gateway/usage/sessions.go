@@ -49,6 +49,12 @@ type ListSessionsRequest struct {
 	EndDate   time.Time
 	UserID    string // optional; scope to one user
 	Search    string // optional; session_id contains (case-insensitive)
+	Model     string // optional; sessions that touched this model (full session totals kept)
+	// Sort column + direction for the page. Sort is an allowlist key (last_seen |
+	// first_seen | cost | requests | tokens); anything else falls back to last_seen.
+	// Order is "asc" | "desc"; empty defaults to desc (newest / largest first).
+	Sort  string
+	Order string
 	// Body-view policy for the first-message preview: a caller sees their own sessions'
 	// opening message; a tenant admin sees any within the tenant.
 	CallerUserID  string
@@ -75,11 +81,14 @@ type sessScan struct {
 	FirstMessage  string    `db:"first_message"`
 }
 
-// sessionsFilter builds the WHERE for the session aggregation: tenant + window +
-// only rows that carry a session id, plus optional user scope and an id search.
-func sessionsFilter(req ListSessionsRequest) (string, []any) {
-	where := "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3 AND g.session_id <> ''"
-	args := []any{req.TenantID, req.StartDate, req.EndDate}
+// sessionsFilter builds the WHERE (and optional HAVING) for the session aggregation:
+// tenant + window + only rows that carry a session id, plus optional user scope and an
+// id search. A model filter is a HAVING (not a WHERE) so a filtered session still shows
+// its FULL totals — we want "sessions that touched model X", not "the X-only slice of
+// each session". Returns the growing arg list so callers append their own params after.
+func sessionsFilter(req ListSessionsRequest) (where, having string, args []any) {
+	where = "g.tenant_id = $1 AND g.created_at >= $2 AND g.created_at < $3 AND g.session_id <> ''"
+	args = []any{req.TenantID, req.StartDate, req.EndDate}
 	if req.UserID != "" {
 		where += fmt.Sprintf(" AND g.user_id = $%d", len(args)+1)
 		args = append(args, req.UserID)
@@ -88,7 +97,36 @@ func sessionsFilter(req ListSessionsRequest) (string, []any) {
 		where += fmt.Sprintf(" AND g.session_id ILIKE $%d", len(args)+1)
 		args = append(args, "%"+req.Search+"%")
 	}
-	return where, args
+	if req.Model != "" {
+		having = fmt.Sprintf("bool_or(g.model = $%d)", len(args)+1)
+		args = append(args, req.Model)
+	}
+	return where, having, args
+}
+
+// sessionsOrderBy maps a sort key (allowlist) to a safe ORDER BY, always with a
+// session_id tiebreaker so paging is stable when the sort column ties. Defaults to
+// last_seen; direction is desc unless "asc" is asked. The column expressions match the
+// SELECT aggregates so they can be referenced by alias (tokens is the summed pair).
+func sessionsOrderBy(sort, order string) string {
+	var col string
+	switch sort {
+	case "first_seen":
+		col = "first_seen"
+	case "cost":
+		col = "cost_usd"
+	case "requests":
+		col = "requests"
+	case "tokens":
+		col = "(COALESCE(sum(g.input_tokens),0)+COALESCE(sum(g.output_tokens),0))"
+	default: // "last_seen" or anything unrecognized
+		col = "last_seen"
+	}
+	dir := "DESC"
+	if order == "asc" {
+		dir = "ASC"
+	}
+	return fmt.Sprintf("ORDER BY %s %s, g.session_id DESC", col, dir)
 }
 
 func splitNonEmpty(s string) []string {
@@ -117,11 +155,17 @@ func ListSessions(ctx context.Context, db *common.DatabaseManager, req ListSessi
 	}
 	offset := max(0, req.Offset)
 
-	where, args := sessionsFilter(req)
+	where, having, args := sessionsFilter(req)
 
+	// With a model filter the count must also respect the HAVING, so count the grouped
+	// sessions in a subquery; without it, the plain DISTINCT count is cheaper.
+	countQ := "SELECT count(DISTINCT g.session_id) FROM llm_gateway_usage g WHERE " + where
+	if having != "" {
+		countQ = "SELECT count(*) FROM (SELECT g.session_id FROM llm_gateway_usage g WHERE " + where +
+			" GROUP BY g.session_id HAVING " + having + ") t"
+	}
 	var total int64
-	if err := db.QueryRowAndScan(&total,
-		"SELECT count(DISTINCT g.session_id) FROM llm_gateway_usage g WHERE "+where, args...); err != nil {
+	if err := db.QueryRowAndScan(&total, countQ, args...); err != nil {
 		return nil, fmt.Errorf("usage: session count: %w", err)
 	}
 
@@ -143,6 +187,14 @@ func ListSessions(ctx context.Context, db *common.DatabaseManager, req ListSessi
 			  AND rl.deleted_at IS NULL AND rl.expires_at > now()
 			ORDER BY rl.created_at LIMIT 1
 		) fb ON true`
+	}
+
+	// A model filter narrows to sessions that touched it, applied post-aggregation (HAVING)
+	// so the row keeps the whole session's totals. Its param already sits in args (before the
+	// first-message param appended above), so the $N numbering stays correct wherever it appears.
+	havingClause := ""
+	if having != "" {
+		havingClause = "HAVING " + having
 	}
 
 	// GROUP BY session_id ONLY (with max() on the user fields), so a session is exactly
@@ -169,8 +221,9 @@ func ListSessions(ctx context.Context, db *common.DatabaseManager, req ListSessi
 		%s
 		WHERE %s
 		GROUP BY g.session_id
-		ORDER BY last_seen DESC
-		LIMIT %d OFFSET %d`, firstMsgSelect, firstMsgJoin, where, limit, offset)
+		%s
+		%s
+		LIMIT %d OFFSET %d`, firstMsgSelect, firstMsgJoin, where, havingClause, sessionsOrderBy(req.Sort, req.Order), limit, offset)
 
 	var rows []sessScan
 	if err := db.QueryAndScan(&rows, q, args...); err != nil {

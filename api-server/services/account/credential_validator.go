@@ -51,6 +51,12 @@ func validateAWSCredentialsInternal(ctx context.Context, awsReq AwsValidateInter
 	if awsReq.Region != "" {
 		request["region"] = awsReq.Region
 	}
+	if awsReq.CurReportName != "" {
+		request["cur_report_name"] = awsReq.CurReportName
+	}
+	if awsReq.CurS3Bucket != "" {
+		request["cur_s3_bucket"] = awsReq.CurS3Bucket
+	}
 
 	return callCollectorValidationEndpoint(ctx, request)
 }
@@ -64,6 +70,11 @@ type AwsValidateInternalRequest struct {
 	AccessKey    string
 	AccessSecret string
 	Region       string
+
+	// CurReportName / CurS3Bucket narrow CUR discovery to one specific report.
+	// Empty (the onboarding case) auto-picks the first usable one.
+	CurReportName string
+	CurS3Bucket   string
 }
 
 // validateGCPCredentialsInternal delegates to collector-server

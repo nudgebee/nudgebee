@@ -28,6 +28,7 @@ type RepoCloneTool struct {
 	// this the clone falls back to the remote default branch (e.g. main), and a PR
 	// opened against `test` would diff the entire main↔test delta.
 	defaultBranch string
+	defaultCommit string
 }
 
 type RepoCloneInput struct {
@@ -38,7 +39,10 @@ type RepoCloneInput struct {
 	// BaseBranch names the branch this work would merge into. It is fetched alongside
 	// Branch so `git merge origin/<base>` can reproduce a PR merge conflict — the bare
 	// clone is otherwise narrowed to the requested branch only.
-	BaseBranch   string `json:"base_branch,omitempty"`
+	BaseBranch string `json:"base_branch,omitempty"`
+	// Commit pins the checkout to one revision. Takes precedence over Branch,
+	// which only ever resolves to a moving tip.
+	Commit       string `json:"commit,omitempty"`
 	Shallow      bool   `json:"shallow,omitempty"`
 	WorkspaceDir string `json:"workspace_dir,omitempty"` // Shared workspace directory from planner
 }
@@ -49,6 +53,18 @@ func NewRepoCloneTool(workspaceDir string, gitClient *git.GitClient) *RepoCloneT
 		gitClient:     gitClient,
 		cloneAttempts: make(map[string]int),
 	}
+}
+
+// SetDefaultCommit seeds the commit used when an invocation omits `commit`.
+// Seeded by the agent from the request's pinned revision so the LLM does not
+// have to remember to pass it; an explicit `commit` in the call still wins.
+func (t *RepoCloneTool) SetDefaultCommit(commit string) {
+	t.defaultCommit = commit
+}
+
+// DefaultCommit returns the commit used when an invocation omits `commit`.
+func (t *RepoCloneTool) DefaultCommit() string {
+	return t.defaultCommit
 }
 
 // SetDefaultBranch seeds the branch used when an invocation omits `branch`.
@@ -111,6 +127,10 @@ func (t *RepoCloneTool) InputSchema() core.ToolSchema {
 				"type":        "string",
 				"description": "Branch this work merges into (optional). Fetch it too when you need to diff or merge against the base, e.g. to reproduce a PR merge conflict.",
 			},
+			"commit": map[string]any{
+				"type":        "string",
+				"description": "Commit SHA to check out (optional, 7-40 hex chars). Use this when the question is about the code at a specific revision — e.g. the code as it was when an incident fired — instead of the current branch tip. Takes precedence over 'branch'.",
+			},
 			"shallow": map[string]any{
 				"type":        "boolean",
 				"description": "Whether to perform a shallow clone (faster, less history)",
@@ -139,6 +159,9 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	// target — not the remote default branch.
 	if params.Branch == "" && t.defaultBranch != "" {
 		params.Branch = t.defaultBranch
+	}
+	if params.Commit == "" && t.defaultCommit != "" {
+		params.Commit = t.defaultCommit
 	}
 
 	// Handle local repository path
@@ -201,7 +224,7 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	}
 
 	// Clone or reuse repository via worktree for performance
-	cloneResult, err := t.gitClient.CloneOrReuseRepository(ctx, params.RepoURL, internalCreds, params.Branch, repoDir, params.BaseBranch)
+	cloneResult, err := t.gitClient.CloneOrReuseRepositoryAtCommit(ctx, params.RepoURL, internalCreds, params.Branch, params.Commit, repoDir, params.BaseBranch)
 	if err != nil {
 		// Sanitize the raw git error before surfacing it in either Error or
 		// Observation — git usually redacts credentials in URLs but not

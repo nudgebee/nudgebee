@@ -38,9 +38,11 @@ type LogEvent string
 
 const (
 	// Analysis lifecycle events
-	EventAnalysisStart    LogEvent = "analysis_start"
-	EventAnalysisComplete LogEvent = "analysis_complete"
-	EventAnalysisFailure  LogEvent = "analysis_failure"
+	EventAnalysisStart           LogEvent = "analysis_start"
+	EventAnalysisComplete        LogEvent = "analysis_complete"
+	EventAnalysisFailure         LogEvent = "analysis_failure"
+	EventAnalysisCancelRequested LogEvent = "analysis_cancel_requested"
+	EventAnalysisStopped         LogEvent = "analysis_stopped"
 
 	// Tool execution events
 	EventToolStart    LogEvent = "tool_start"
@@ -72,25 +74,27 @@ const (
 
 // StructuredLog represents a structured log entry
 type StructuredLog struct {
-	Timestamp  string         `json:"timestamp"`
-	LogType    LogType        `json:"log_type"`
-	Event      LogEvent       `json:"event"`
-	AnalysisID string         `json:"analysis_id,omitempty"`
-	TraceID    string         `json:"trace_id,omitempty"`
-	Message    string         `json:"message"`
-	Data       map[string]any `json:"data,omitempty"`
-	Duration   string         `json:"duration,omitempty"`
-	Error      string         `json:"error,omitempty"`
-	Success    bool           `json:"success"`
+	Timestamp      string         `json:"timestamp"`
+	LogType        LogType        `json:"log_type"`
+	Event          LogEvent       `json:"event"`
+	AnalysisID     string         `json:"analysis_id,omitempty"`
+	ConversationID string         `json:"conversation_id,omitempty"`
+	TraceID        string         `json:"trace_id,omitempty"`
+	Message        string         `json:"message"`
+	Data           map[string]any `json:"data,omitempty"`
+	Duration       string         `json:"duration,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Success        bool           `json:"success"`
 }
 
 // AnalysisContext holds context for the current analysis
 type AnalysisContext struct {
-	AnalysisID string
-	StartTime  time.Time
-	Repository string
-	UserID     string
-	Request    any
+	AnalysisID     string
+	ConversationID string
+	StartTime      time.Time
+	Repository     string
+	UserID         string
+	Request        any
 }
 
 // Logger provides structured logging for the code analysis agent
@@ -114,14 +118,15 @@ func NewLogger(analysisID, repository, userID string, request any) *Logger {
 // LogEvent logs a structured event
 func (l *Logger) LogEvent(event LogEvent, logType LogType, message string, data map[string]any, err error, success bool) {
 	logEntry := StructuredLog{
-		Timestamp:  time.Now().UTC().Format(time.RFC3339),
-		LogType:    logType,
-		Event:      event,
-		AnalysisID: l.context.AnalysisID,
-		TraceID:    getGlobalTraceID(),
-		Message:    message,
-		Data:       data,
-		Success:    success,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		LogType:        logType,
+		Event:          event,
+		AnalysisID:     l.context.AnalysisID,
+		ConversationID: l.context.ConversationID,
+		TraceID:        getGlobalTraceID(),
+		Message:        message,
+		Data:           data,
+		Success:        success,
 	}
 
 	if err != nil {
@@ -161,6 +166,16 @@ func (l *Logger) GetAnalysisID() string {
 		return l.context.AnalysisID
 	}
 	return ""
+}
+
+// SetConversationID attaches a conversation id to every subsequent log entry
+// (as "conversation_id"), independent of AnalysisID. Lets a logger keyed on
+// the lifecycle-tracked analysis id still be pivoted back to its originating
+// conversation.
+func (l *Logger) SetConversationID(id string) {
+	if l.context != nil {
+		l.context.ConversationID = id
+	}
 }
 
 // Helper methods for common log patterns
@@ -283,6 +298,7 @@ func isCompletionEvent(event LogEvent) bool {
 	completionEvents := []LogEvent{
 		EventAnalysisComplete,
 		EventAnalysisFailure,
+		EventAnalysisStopped,
 		EventToolComplete,
 		EventToolFailure,
 		EventPlanningComplete,

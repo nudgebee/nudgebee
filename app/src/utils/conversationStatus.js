@@ -9,8 +9,26 @@
 // rather than the alarming red 'Failed'. All status colors are baked into the
 // SVG assets themselves; we do NOT apply a wrapper CSS `color` because SafeIcon
 // renders <img src> and the browser ignores parent `color` on the SVG fill.
+//
+// Color legend (baked into the SVGs):
+//   Running               — blue  #3B82F6  spinner    agent working
+//   Waiting for Approval  — amber #FBBF24  clock      user must act
+//   Queued                — grey-blue #a4b0c5 dashed  not yet started
+//   Completed / Failed / Stopped / Interrupted / Unknown — matching semantic icons
 
-import { ErrorIcon, RunningIcon, SuccessIcon, StoppedIcon, InterruptedIcon, QueuedIcon, UnknownIcon } from '@assets';
+import {
+  ErrorIcon,
+  SuccessIcon,
+  StoppedIcon,
+  InterruptedIcon,
+  QueuedIcon,
+  UnknownIcon,
+  // Running = blue spinner, Waiting = amber arc (RunningIcon). The arc is safe
+  // for waiting now that Running is unambiguously blue — the old collision was
+  // both statuses sharing the same amber glyph.
+  AskNudgebeeInProgressIcon,
+  RunningIcon,
+} from '@assets';
 
 export const STATUS_MAP = Object.freeze({
   IN_PROGRESS: 'Running',
@@ -24,10 +42,10 @@ export const STATUS_MAP = Object.freeze({
 });
 
 export const STATUS_ICON_MAP = Object.freeze({
-  Running: RunningIcon,
+  Running: AskNudgebeeInProgressIcon, // blue spinner — AI is actively working
   Completed: SuccessIcon,
   Failed: ErrorIcon,
-  'Waiting for Approval': RunningIcon,
+  'Waiting for Approval': RunningIcon, // amber arc — user must click to unblock
   Queued: QueuedIcon, // lighter-blue dashed circle — queued, not started
   Stopped: StoppedIcon, // grey stop square — user pressed Stop
   Interrupted: InterruptedIcon, // amber dash — supervisor reap, cut short

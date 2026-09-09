@@ -44,7 +44,10 @@ cd nudgebee
 docker compose up -d
 ```
 
-The default compose profile starts Postgres, Redis, RabbitMQ, Qdrant, Temporal, and a one-shot `migrations` container that applies the Postgres + RabbitMQ schema and then exits. Re-runs are safe — golang-migrate is idempotent against an up-to-date tracker. To also run the backend and frontend in containers (instead of from source), use `docker compose --profile full up -d`.
+The default compose profile starts Postgres, Redis, RabbitMQ, Qdrant, Temporal, and a one-shot `migrations` container that applies the Postgres + RabbitMQ schema and then exits. Re-runs are safe — golang-migrate is idempotent against an up-to-date tracker. To also run the backend and frontend in containers (instead of from source), use `docker compose --profile full up -d`. The full profile mounts the host Docker socket into `llm-server` so it can launch an isolated code-analysis workspace container per account; access to that socket is equivalent to host-level Docker control. Workspace containers join the internal `nudgebee-workspace` network and do not publish host ports.
+
+To connect a Kubernetes agent to the Compose relay and K8s collector, use the
+[local agent configuration](docs/QUICKSTART.md#connect-a-kubernetes-agent-to-the-docker-services).
 
 See [api-server/migrations/README.md](api-server/migrations/README.md) for how migration tracking works and how to add a new migration.
 
@@ -257,7 +260,7 @@ The repo ships a `docker-compose.yaml` that wires every service against the publ
 | `postgres`    | postgres:16                  | Primary RDBMS. App schema applied by golang-migrate on deploy.                                                                       |
 | `rabbitmq`    | rabbitmq:3-management        | Message bus. UI at `:15672`.                                                                                                         |
 | `redis`       | redis:7-alpine               | Cache.                                                                                                                               |
-| `qdrant`      | qdrant/qdrant:v1.16.0        | Vector store for RAG / LLM.                                                                                                          |
+| `qdrant`      | qdrant/qdrant:v1.19.0        | Vector store for RAG / LLM.                                                                                                          |
 | `temporal`    | temporalio/auto-setup:1.29.1 | Workflow engine. Backed by `postgres` (creates `temporal` + `temporal_visibility` DBs on first boot). Required by `workflow-server`. |
 | `temporal-ui` | temporalio/ui:2.44.0         | Optional Temporal Web UI at `:8233`.                                                                                                 |
 

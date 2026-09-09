@@ -19,6 +19,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tmc/langchaingo/llms"
@@ -264,11 +265,16 @@ type RemediationExecuteRequest struct {
 	// that undid the fix. Every slot is still audited. Empty is treated as execute so a caller that
 	// omits it keeps its resolution.
 	Slot string `json:"slot"`
+	// ExecuteCommand is the execute slot's command, sent when Slot is "verify". It is the
+	// correlation key back to the attempt being verified: the execute run stored it as the
+	// resolution's type_reference_id. Without it a verify result has no attempt to attach to.
+	ExecuteCommand string `json:"execute_command"`
 }
 
 // Command slots within one action.
 const (
 	RemediationSlotExecute = "execute"
+	RemediationSlotVerify  = "verify"
 )
 
 // processRemediationGenerate turns the completed investigation into a structured remediation plan
@@ -318,9 +324,20 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to load remediation prompt"}}))
 		return
 	}
+	// The prompt asks the model to match the CLI to what the action targets and to put the event's
+	// region on every cloud command, but the only thing it can infer either from is the investigation
+	// prose — which names the provider rarely and the region inconsistently. Stating both outright
+	// makes them facts rather than guesses: it is what stops a kubectl command being proposed against
+	// an EC2 instance, and what stops an `aws` command going out without --region and failing with
+	// "You must specify a region" having done nothing.
+	humanContent := investigationContext
+	if account := describeRemediationAccount(request.AccountId, request.EventId); account != "" {
+		humanContent = account + "\n\n" + investigationContext
+	}
+
 	resp, err := agentcore.GenerateAndTrackLLMContent(ctx, sc.GetUserId(), request.AccountId, "", "", "", false, []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: systemPrompt}}},
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: investigationContext}}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: humanContent}}},
 	}, true)
 	if err != nil {
 		ctx.GetLogger().Error("remediation_generate: llm generation failed", "error", err)
@@ -464,16 +481,30 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: command is too long"}}))
 		return
 	}
+	// Checked before the metacharacter guard: that guard is quote-aware for cloud CLI commands, and
+	// stripping quoted content is only sound once the quotes are known to be balanced. An unbalanced
+	// quote would otherwise let the stripper swallow the rest of the command, metacharacters included.
+	if isStructurallyTruncated(command) {
+		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: command has unbalanced quotes or braces and looks truncated; regenerate the plan"}}))
+		return
+	}
+	cloudCliTool := tools.CloudCliToolFor(command)
 	// A remediation command is a single invocation. Reject shell metacharacters up front: they let a
 	// single string smuggle a second command (e.g. "kubectl get pods; kubectl delete ns prod") past
 	// the safety blocklist while the shell on the workspace pod still evaluates it. This also blunts
 	// indirect prompt injection, since the plan is seeded from attacker-influencable investigation text.
-	if containsShellMetacharacters(command) {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: command contains shell metacharacters (; & | < > ( ) ` $ or newlines) and was rejected; run a single command"}}))
-		return
+	//
+	// Cloud CLI commands are checked with quoted content removed. JMESPath carries ( ) | inside
+	// --query arguments routinely ("Reservations[].Instances[?State.Name=='running']"), and rejecting
+	// those leaves the cloud plan unable to express most of what it needs. Quoted text cannot start a
+	// second command precisely because it stays quoted, so only unquoted metacharacters are a smuggling
+	// risk — and those the stripped check still catches.
+	metaCheckTarget := command
+	if cloudCliTool != "" {
+		metaCheckTarget = tools.StripQuotedContentForShellCheck(command)
 	}
-	if isStructurallyTruncated(command) {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: command has unbalanced quotes or braces and looks truncated; regenerate the plan"}}))
+	if containsShellMetacharacters(metaCheckTarget) {
+		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: command contains shell metacharacters (; & | < > ( ) ` $ or newlines) and was rejected; run a single command"}}))
 		return
 	}
 
@@ -500,35 +531,77 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		return
 	}
 
-	relayJob, registeredToolName := remediationRelayModule(command)
-	nbTool, found := toolcore.GetNBTool(request.AccountId, registeredToolName)
-	if !found {
-		c.JSON(404, buildApiResponse(nil, []error{common.Error{Message: "execution tool is not configured for this account"}}))
+	// The executor is chosen from the ACCOUNT'S PROVIDER, then narrowed by the command. A cloud CLI
+	// talks to a public API endpoint and only needs credentials, so it runs in a workspace pod here;
+	// kubectl/helm/argocd/shell target hosts inside the customer network and go down the relay.
+	//
+	// Reading the command's first word alone used to decide this, which sent kubectl from an AWS
+	// account to a relay agent that cannot exist there ("agent not connected", a connectivity error
+	// for what is really a category error) and dropped GCP's `bq` through to an uncredentialed shell.
+	substrate := tools.RemediationSubstrateFor(tools.GetCloudProviderForAccount(request.AccountId), command)
+	if substrate.Reject != "" {
+		ctx.GetLogger().Warn("remediation_execute: command does not match the account's provider",
+			"command", command, "reason", substrate.Reject)
+		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + substrate.Reject}}))
 		return
 	}
 
-	var queryConfig toolcore.NBQueryConfig
-	if request.ConfigName != "" {
-		queryConfig = toolcore.NBQueryConfig{ToolConfigs: map[string]string{nbTool.Name(): request.ConfigName}}
+	registeredToolName := substrate.CloudCliTool
+	ranOnWorkspace := substrate.CloudCliTool != ""
+	start := time.Now()
+	var raw string
+	var execErr error
+
+	if substrate.CloudCliTool != "" {
+		// A Run click has no conversation behind it, so the workspace gets the per-account
+		// directory rather than "" -- which it rejects with "Conversation ID is empty".
+		raw, execErr = tools.ExecuteCloudCli(ctx, substrate.CloudCliTool, request.AccountId, tools.DefaultCloudCliConversationId(request.AccountId), command)
+	} else {
+		registeredToolName = substrate.RelayTool
+		relayJob := substrate.RelayJob
+		nbTool, found := toolcore.GetNBTool(request.AccountId, registeredToolName)
+		if !found {
+			c.JSON(404, buildApiResponse(nil, []error{common.Error{Message: "execution tool is not configured for this account"}}))
+			return
+		}
+
+		var queryConfig toolcore.NBQueryConfig
+		if request.ConfigName != "" {
+			queryConfig = toolcore.NBQueryConfig{ToolConfigs: map[string]string{nbTool.Name(): request.ConfigName}}
+		}
+
+		toolCtx := toolcore.NewNbToolContext(ctx, nbTool, request.AccountId, sc.GetUserId(), "", "", "", command, nil, "", queryConfig, "")
+
+		var result any
+		result, execErr = tools.ExecuteContainerJob(toolCtx, relayJob, command, request.AccountId, map[string]any{}, true)
+		if s, ok := result.(string); ok {
+			raw = s
+		}
 	}
 
-	toolCtx := toolcore.NewNbToolContext(ctx, nbTool, request.AccountId, sc.GetUserId(), "", "", "", command, nil, "", queryConfig, "")
-
-	start := time.Now()
-	result, execErr := tools.ExecuteContainerJob(toolCtx, relayJob, command, request.AccountId, map[string]any{}, true)
 	response := tools.RemediationExecutionResult{
 		Command:    command,
 		ExecutedAt: start.Format(time.RFC3339),
 		Duration:   time.Since(start).String(),
 	}
 
-	raw := ""
-	if s, ok := result.(string); ok {
-		raw = s
-	}
-	if execErr != nil {
+	// Whether the executor actually told us how the command exited. False means "ran, outcome
+	// unknown" rather than "ran and succeeded".
+	//
+	// The two substrates report that in different shapes, so reportedness is decided per substrate.
+	// The relay returns a JSON envelope carrying exit_code; the workspace has no exit_code field at
+	// all, so running its output through parseRelayExecResult never parsed and every cloud command
+	// was recorded "outcome unverified" even when the outcome was stated plainly.
+	exitCodeReported := false
+	if ranOnWorkspace {
+		response.Stdout, response.Stderr, response.ExitCode, response.Success, exitCodeReported = workspaceOutcome(execErr, raw)
+		if execErr != nil {
+			ctx.GetLogger().Error("remediation_execute: command failed")
+			response.Error = execErr.Error()
+		}
+	} else if execErr != nil {
 		// Transport failure — the command may not have run at all.
-		ctx.GetLogger().Error("remediation_execute: command failed", "error", execErr)
+		ctx.GetLogger().Error("remediation_execute: command failed")
 		response.Success = false
 		response.ExitCode = 1
 		response.Error = execErr.Error()
@@ -542,6 +615,12 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		response.Stdout = stdout
 		response.Stderr = stderr
 		response.ExitCode = exitCode
+		// An unparsed result means the executor merged stdout/stderr to text and discarded the exit
+		// code, so there is nothing to judge by. Treating that as success is the only workable
+		// default — flipping it to failure would mark every merged-output command failed — but the
+		// resolution must not then claim the command was verified. exitCodeReported carries that
+		// distinction to the record; see persistRemediationExecution.
+		exitCodeReported = parsed
 		response.Success = !parsed || exitCode == 0
 		if !response.Success && response.Error == "" {
 			response.Error = stderr
@@ -553,31 +632,131 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// A resolution says how the event was acted on, so only the state-changing execute command earns
 	// one. A verify observes and a rollback reverses; filing those as resolutions counted one
 	// remediation attempt three times and listed an undo as though it resolved the event.
-	slot := strings.ToLower(strings.TrimSpace(request.Slot))
-	isExecuteSlot := slot == "" || slot == RemediationSlotExecute
-	if response.Success && request.EventId != "" && isExecuteSlot {
-		persistRemediationExecution(ctx, request.EventId, sc.GetUserId(), command, response.ExitCode)
+	//
+	// Failures DO earn one. Gating the insert on response.Success meant a command that ran and
+	// failed left no product-visible trace at all: the resolutions list showed only the attempts
+	// that worked, so "nothing was tried here" and "three things were tried and all failed" looked
+	// identical. The operator needs the second one most.
+	if shouldPersistRemediationResolution(request.EventId, request.Slot) {
+		persistRemediationExecution(ctx, request.EventId, sc.GetUserId(), command, response.ExitCode, response.Success, exitCodeReported)
+	} else if isVerifySlot(request.Slot) && request.EventId != "" && request.ExecuteCommand != "" {
+		// A verify does not earn its own resolution — that was the triple-counting bug. It annotates
+		// the attempt it checked, so "it ran" and "the check confirmed it" are one record.
+		persistRemediationVerification(ctx, request.EventId, request.ExecuteCommand, command, response, exitCodeReported)
 	}
 	c.JSON(200, buildApiResponse(response, nil))
 }
 
-// persistRemediationExecution records a successful command run as an event_resolution row so the UI
-// can mark the action already-applied. Best-effort: a DB failure must not fail the (already-run) command.
-func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, exitCode int) {
+// isVerifySlot reports whether this run is an action's verify command.
+func isVerifySlot(slot string) bool {
+	return strings.EqualFold(strings.TrimSpace(slot), RemediationSlotVerify)
+}
+
+// verificationPassed decides what a verify run proved. Three-valued on purpose:
+//
+//	true  — the check ran and observed something consistent with the fix
+//	false — the check ran and failed
+//	nil   — the check ran and proved nothing
+//
+// nil is the case worth having. A verify asserts something about observed state, so a command that
+// exits 0 having observed nothing has verified nothing: a selector matching no object, a query
+// returning no rows and a log tail with no lines all exit 0. Reporting that as success tells the
+// operator the fix held when nothing was actually checked.
+func verificationPassed(response tools.RemediationExecutionResult, exitCodeReported bool) any {
+	switch {
+	case !exitCodeReported:
+		// The executor merged output and discarded the exit code; there is nothing to judge by.
+		return nil
+	case !response.Success:
+		return false
+	case strings.TrimSpace(response.Stdout) == "":
+		return nil
+	default:
+		return true
+	}
+}
+
+// persistRemediationVerification records the outcome of a verify command onto the execute attempt
+// it checked, under data.verify. Best-effort: the command has already run, and failing to annotate
+// it must not fail the response.
+//
+// "passed" is deliberately three-valued. A verify asserts something about observed state, so a
+// command that exits 0 having observed nothing has not verified anything — a selector matching no
+// object and a query returning no rows both exit 0. That case records passed=null, which the UI
+// reads as "needs checking" rather than as confirmation.
+func persistRemediationVerification(ctx *security.RequestContext, eventId, executeCommand, verifyCommand string, response tools.RemediationExecutionResult, exitCodeReported bool) {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("remediation: database unavailable, verification not persisted", "error", err)
+		return
+	}
+	passed := verificationPassed(response, exitCodeReported)
+	verify := map[string]any{
+		"ran":     true,
+		"passed":  passed,
+		"command": verifyCommand,
+		"output":  truncateForRecord(response.Stdout),
+		"at":      time.Now().UTC().Format(time.RFC3339),
+	}
+	repo := events.NewEventAnalysisRepository(dbManager)
+	if err := repo.RecordRemediationVerification(ctx, eventId, executeCommand, verify); err != nil {
+		ctx.GetLogger().Warn("remediation: failed to persist verification", "error", err)
+	}
+}
+
+// truncateForRecord caps command output stored on a resolution. The row is read to render one line
+// in the UI, not to archive logs.
+func truncateForRecord(out string) string {
+	const max = 2000
+	out = strings.TrimSpace(out)
+	if len(out) > max {
+		return out[:max] + "…"
+	}
+	return out
+}
+
+// shouldPersistRemediationResolution decides whether a command run earns an event_resolution row.
+// Deliberately independent of whether the command succeeded: a failed execute is exactly the run an
+// operator most needs to see recorded. Slot still gates it, because a verify observes and a rollback
+// reverses — filing those as resolutions counted one attempt three times and listed an undo as
+// though it resolved the event.
+func shouldPersistRemediationResolution(eventId, slot string) bool {
+	if eventId == "" {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(slot))
+	return normalized == "" || normalized == RemediationSlotExecute
+}
+
+// persistRemediationExecution records a command run as an event_resolution row so the UI can mark the
+// action already-applied, or show that it was tried and failed. Best-effort: a DB failure must not
+// fail the (already-run) command.
+func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, exitCode int, success, exitCodeReported bool) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		ctx.GetLogger().Warn("remediation: database unavailable, execution not persisted", "error", err)
 		return
 	}
 	repo := events.NewEventAnalysisRepository(dbManager)
-	data, err := json.Marshal(map[string]any{"command": command, "exit_code": exitCode})
+	data, err := json.Marshal(map[string]any{
+		"command":            command,
+		"exit_code":          exitCode,
+		"success":            success,
+		"exit_code_reported": exitCodeReported,
+	})
 	if err != nil {
 		return
 	}
 	// The resolutions list shows status_message next to the row. A fixed string there told the reader
 	// nothing they could not already see from the row's type, so record the outcome instead.
+	// Say which of the two happened. "exit code 0" and "we never learned the exit code" are very
+	// different facts, and recording the second as the first is how a command that quietly failed
+	// ends up on the page as a success.
 	statusMessage := fmt.Sprintf("Ran from the remediation panel, exit code %d", exitCode)
-	if err := repo.InsertRemediationExecution(ctx, eventId, userId, command, string(data), statusMessage, true); err != nil {
+	if !exitCodeReported {
+		statusMessage = "Ran from the remediation panel — the executor reported no exit code, so the outcome is unverified"
+	}
+	if err := repo.InsertRemediationExecution(ctx, eventId, userId, command, string(data), statusMessage, success); err != nil {
 		ctx.GetLogger().Warn("remediation: failed to persist execution", "error", err)
 	}
 }
@@ -685,19 +864,103 @@ func isStructurallyTruncated(command string) bool {
 		strings.Count(command, "[") != strings.Count(command, "]")
 }
 
-// remediationRelayModule maps a command to its relay job type and the registered tool that carries
-// the account's cluster credentials. Mirrors the prefix dispatch in tools/tool_remediation.go. The
-// match is case-insensitive so routing agrees with the rest of the command handling.
-func remediationRelayModule(command string) (tools.RelayJob, string) {
-	lower := strings.ToLower(strings.TrimSpace(command))
-	switch {
-	case strings.HasPrefix(lower, "kubectl"):
-		return tools.RelayJobKubectl, tools.ToolExecuteKubectlCommand
-	case strings.HasPrefix(lower, "helm"):
-		return tools.RelayJobHelm, tools.ToolExecuteHelmCommand
-	case strings.HasPrefix(lower, "argocd"):
-		return tools.RelayJobArgoCD, tools.ToolExecuteArgoCDCommand
-	default:
-		return tools.RelayJobShell, tools.ToolExecuteServerCommand
+// workspaceOutcome interprets a workspace-run command's result: stdout, stderr, exit code, whether
+// it succeeded, and whether the executor actually stated how it exited.
+//
+// The workspace has no exit_code field, and ErrWorkspaceCommandFailed is NOT "ran and exited
+// non-zero": classifyExecuteResponse raises it for any command_status:"failed", which the agent also
+// uses for its own pre-execution rejections — an empty command, a bad workspace path, the security
+// validator refusing an absolute path. Nothing ran in those cases, so their exit code is not ours to
+// state; only "exit status N" proves the command reached cmd.Run(), and it carries the real code.
+// Reporting a flat 1 for all of them replaced a vague caption with a specific wrong number.
+func workspaceOutcome(execErr error, raw string) (stdout, stderr string, exitCode int, success, reported bool) {
+	if execErr == nil {
+		// command_status success, which is as definitive as an exit code. Returned unexamined: all
+		// three cloud tools build the recovery envelope only alongside NBToolResponseStatusError, so
+		// a success never carries one -- and this is the path where the payload is large (a full
+		// describe-instances response), so it is also the one worth not parsing.
+		return raw, "", 0, true, true
 	}
+
+	stdout = unwrapCliRecoveryEnvelope(raw)
+	stderr = execErr.Error()
+	exitCode = 1
+	// Prefer the workspace's own message over Go's wrapping chain, but do not blank the pane if the
+	// failure arrived without one.
+	var failure *workspace.CommandFailure
+	if errors.As(execErr, &failure) && strings.TrimSpace(failure.StdErr) != "" {
+		stderr = failure.StdErr
+	}
+	// Only the workspace knows its agent's stderr format; asking it keeps this from becoming a second
+	// parser that a format change would silently miss.
+	if code, ok := workspace.ExitCodeFromFailure(execErr); ok {
+		return stdout, stderr, code, false, true
+	}
+	// It failed, but nothing told us it ran — do not claim an exit code for it.
+	return stdout, stderr, exitCode, false, false
+}
+
+// unwrapCliRecoveryEnvelope returns the original CLI output from the JSON the cloud tools wrap a
+// failure in. That envelope's error_hint is written to steer the model ("read the error before
+// switching commands"); showing it in an operator's Output pane is showing them someone else's
+// instructions instead of what their command printed.
+func unwrapCliRecoveryEnvelope(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "{") {
+		return raw
+	}
+	var envelope struct {
+		ErrorHint     string `json:"error_hint"`
+		OriginalError string `json:"original_error"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil || envelope.ErrorHint == "" {
+		return raw
+	}
+	return envelope.OriginalError
+}
+
+// describeRemediationAccount states the facts a runnable command needs and the investigation prose
+// does not reliably carry: which cloud the account is on, and which region the event happened in.
+// Returns "" when neither is known, leaving the context exactly as it was.
+//
+// Written as labelled values rather than sentences: the values are substituted in, and any phrasing
+// with an article reads as "a AWS account" for some of them.
+func describeRemediationAccount(accountId, eventId string) string {
+	lines := []string{}
+	provider := strings.TrimSpace(tools.GetCloudProviderForAccount(accountId))
+	if provider != "" {
+		lines = append(lines, fmt.Sprintf("Account provider: %s. Act on this event using the CLI for this provider.", provider))
+	}
+	if region := eventRegion(provider, accountId, eventId); region != "" {
+		lines = append(lines, fmt.Sprintf("Region: %s. Every command that acts on a regional resource must carry this region.", region))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "## Account\n" + strings.Join(lines, "\n")
+}
+
+// eventRegion returns the region a cloud event happened in. On a cloud account subject_node holds
+// the region rather than a node -- it is what the event page shows as "Node", and agent_workflow_builder
+// documents it in the same words -- so it is the region the remediation must target.
+//
+// Empty for a Kubernetes event, where subject_node really is a node name and offering it as a region
+// would produce commands that fail in a new way, and empty on any lookup failure: a missing region
+// degrades the prompt, it must not fail generation.
+func eventRegion(provider, accountId, eventId string) string {
+	if strings.TrimSpace(eventId) == "" || strings.TrimSpace(accountId) == "" {
+		return ""
+	}
+	if provider == "" || strings.EqualFold(provider, "k8s") {
+		return ""
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return ""
+	}
+	var node string
+	if err := dbms.Db.Get(&node, "SELECT COALESCE(subject_node, '') FROM events WHERE id = $1 AND cloud_account_id = $2", eventId, accountId); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(node)
 }

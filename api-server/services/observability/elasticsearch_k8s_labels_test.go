@@ -147,3 +147,29 @@ func TestESCandidateFields_BodyResolvesToShipperSpellings(t *testing.T) {
 		assert.Contains(t, got, want, "multi-word body search needs the unanalyzed %s", want)
 	}
 }
+
+func TestESQueryFieldAliases(t *testing.T) {
+	t.Run("every canonical name is offered", func(t *testing.T) {
+		got := esQueryFieldAliases(nil)
+		for canonical := range esCanonicalK8sFields {
+			assert.Contains(t, got, canonical)
+		}
+	})
+
+	t.Run("a discovered field gains its .keyword variant", func(t *testing.T) {
+		assert.Contains(t, esQueryFieldAliases([]string{"kubernetes.pod_name"}), "kubernetes.pod_name.keyword")
+	})
+
+	t.Run("an already-suffixed field is not double-suffixed", func(t *testing.T) {
+		assert.NotContains(t, esQueryFieldAliases([]string{"message.keyword"}), "message.keyword.keyword")
+	})
+
+	t.Run("canonical names are not suffixed", func(t *testing.T) {
+		assert.NotContains(t, esQueryFieldAliases(nil), "namespace.keyword")
+	})
+
+	t.Run("output is sorted, since map iteration is randomized", func(t *testing.T) {
+		got := esQueryFieldAliases([]string{"b_field", "a_field"})
+		assert.IsIncreasing(t, got)
+	})
+}

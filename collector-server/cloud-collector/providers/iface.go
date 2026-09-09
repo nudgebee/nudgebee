@@ -2,11 +2,29 @@ package providers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"nudgebee/collector/cloud/security"
 	"strings"
 	"time"
 )
+
+// ErrCostNotConfigured reports that an account has no billing source attached
+// — no AWS Cost & Usage Report, no GCP billing_data — as distinct from having
+// one that failed. Both are "no spend data", but only the latter is a fault:
+//
+//   - Not configured is a steady state. Cost is optional at onboarding, so an
+//     account can legitimately sit here forever. The cost-report consumer ACKs
+//     these without dead-lettering; otherwise every such account would poison
+//     one message per day, indefinitely.
+//   - Failure (revoked cur:DescribeReportDefinitions, an unreadable bucket, a
+//     BigQuery error) is a fault worth retrying and worth a DLQ entry, and must
+//     NOT be wrapped in this sentinel.
+//
+// Compare with errors.ErrUnsupported, which means the provider has no billing
+// concept at all. Both are benign for the queue; this one is fixable by the user.
+var ErrCostNotConfigured = errors.New("cost reporting is not configured for this account")
 
 type CloudProviderContext interface {
 	GetContext() context.Context
@@ -42,8 +60,13 @@ type QueryMetricsRequest struct {
 }
 
 type Account struct {
-	ID              string  `json:"id" mapstructure:"id"` // Nudgebee cloud account UUID
-	AssumeRole      *string `json:"assume_role" mapstructure:"assume_role"`
+	ID         string  `json:"id" mapstructure:"id"` // Nudgebee cloud account UUID
+	AssumeRole *string `json:"assume_role" mapstructure:"assume_role"`
+	// ExternalId is the sts:ExternalId to present when assuming AssumeRole. It
+	// must be carried here, not just validated at onboarding: a trust policy
+	// with an ExternalId condition rejects an assume-role call that omits it,
+	// so an account would validate green and then fail every sync.
+	ExternalId      *string `json:"external_id" mapstructure:"external_id"`
 	AccessKey       *string `json:"access_key" mapstructure:"access_key"`
 	AccessSecret    *string `json:"access_secret" mapstructure:"access_secret"`
 	Region          *string `json:"region" mapstructure:"region"`
@@ -296,6 +319,32 @@ type Event struct {
 	Raw                 map[string]any    `json:"raw_event"`
 	AdditionalContext   []EventEvidence   `json:"evidences,omitempty"`
 	Labels              map[string]string `json:"labels,omitempty"`
+}
+
+// FiringFindingID is the per-firing identity of an event: what makes two
+// reports of the same occurrence the same row. events carries a unique index on
+// (tenant, cloud_account_id, finding_id), so agreeing here is what collapses
+// them — there is no separate dedup step to fall back on.
+//
+// It exists because one alarm reached us twice. CloudWatch state changes arrive
+// both by EventBridge push and by the alarm poller, and both already keyed on
+// the same two facts — the alarm ARN and the transition timestamp — but printed
+// them differently:
+//
+//	arn:...:alarm:order-down-1788602696            (push, via this fallback)
+//	arn:...:alarm:order-down/2026-09-05T10:04:56Z  (poll, its own format)
+//
+// Same alarm, same instant, two rows. The index cannot match them, so every
+// alarm was stored twice and every firing advanced its dedup chain by two.
+//
+// A method on Event rather than a loose helper: the three call sites in
+// etl_events.go each had their own copy of this expression, which is how the
+// formats were free to drift in the first place.
+func (e Event) FiringFindingID() string {
+	if e.FindingId != "" {
+		return e.FindingId
+	}
+	return fmt.Sprintf("%s-%d", e.EventId, e.Date.Unix())
 }
 
 type ListResourcesResponse struct {

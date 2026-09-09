@@ -28,8 +28,8 @@ ENV TZ=Etc/UTC
 # cache key so BuildKit re-runs the apk upgrade and pulls current Alpine security
 # patches — a registry cache otherwise serves a stale package layer forever.
 # Committed (not a build-arg) so each refresh is a reviewable, revertable diff.
-# W29 pulls curl 8.14.1-r3 (CVE-2026-5545).
-ARG OS_PKG_EPOCH=2026-W29
+# W36 pulls patched Alpine 3.22 packages including OpenSSL 3.5.8-r0 and PostgreSQL client 17.11-r0.
+ARG OS_PKG_EPOCH=2026-W36
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && \
     apk upgrade --no-cache && \
     apk add --no-cache bash postgresql-client curl ca-certificates tzdata libc6-compat
@@ -46,11 +46,11 @@ WORKDIR /hasura-migrations
 # NetworkPolicy environments like rackspace). The downloaded binary is
 # SHA256-verified against the per-arch checksum the release pipeline
 # publishes alongside it.
-ARG ATLAS_VERSION=v0.36.0
+ARG ATLAS_VERSION=v1.3.0
 ENV ATLAS_NO_UPDATE_NOTIFIER=1
 RUN case "${TARGETARCH}" in \
-        amd64) ATLAS_ARCH="amd64"; ATLAS_SHA256="31df223059700191b80032906590bb6030f864ba202dfbc57ba90e593292301a" ;; \
-        arm64) ATLAS_ARCH="arm64"; ATLAS_SHA256="44509f5f642e07e601eac05ecf0a53be92211bfa925f4d5ff73f850862e70405" ;; \
+        amd64) ATLAS_ARCH="amd64"; ATLAS_SHA256="10d7913e3dce43ab99b8d71534a4cbadaf11a16dc293adf3b91d10e83a0ac70b" ;; \
+        arm64) ATLAS_ARCH="arm64"; ATLAS_SHA256="082188c57a53439596a3ee52173b12e785aa83ec718505674e2052db0fec0c4c" ;; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && curl -fsSL \

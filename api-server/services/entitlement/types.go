@@ -4,13 +4,6 @@ import (
 	"time"
 )
 
-// Feature constants for entitlement features
-const (
-	FeatureTroubleshoot = "TROUBLESHOOT"
-	FeatureOptimize     = "OPTIMIZE"
-	FeatureWorkflows    = "WORKFLOWS"
-)
-
 // Dimension constants for usage metering
 const (
 	DimensionIncidents          = "incidents"

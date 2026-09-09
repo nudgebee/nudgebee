@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -208,6 +209,9 @@ func (v *FixVerifier) Verify(ctx context.Context, workspaceDir string, buildCfg 
 
 	result := VerificationResult{Status: VerificationVerified}
 	ranAny := false
+	// Computed on first use: only the python lint path needs it, and it costs a
+	// git invocation.
+	var lineSet changedLineSet
 	for _, m := range modules {
 		buildCmd := m.Build
 		if m.Kind == "python" {
@@ -226,6 +230,28 @@ func (v *FixVerifier) Verify(ctx context.Context, workspaceDir string, buildCfg 
 			continue
 		}
 		step := v.runCommand(ctx, workspaceDir, m.Path, buildCmd)
+		if m.Kind == "python" && !step.Passed {
+			// pyflakes was already narrowed to the changed FILES, which still lets
+			// every pre-existing finding elsewhere in those files through. With no
+			// runtime in the workspace this lint is the agent's only signal, so a
+			// stale warning in a file it touched reads as damage it caused — and it
+			// edits again. Keep only findings on lines the fix actually changed.
+			if lineSet == nil {
+				lineSet = v.changedLines(ctx, workspaceDir)
+			}
+			if scoped, dropped := scopeLintOutputToChangedLines(step.Output, lineSet, m.Path); dropped > 0 {
+				step.Output = scoped
+				if strings.TrimSpace(scoped) == "" {
+					// Every finding predated the fix. The change introduced nothing.
+					step.Passed = true
+					// Keep the step self-consistent: a passed step reporting a
+					// non-zero exit code invites a downstream reader to draw the
+					// opposite conclusion from the same struct.
+					step.ExitCode = 0
+					step.SkipReason = fmt.Sprintf("%d pre-existing lint finding(s) outside the changed lines were ignored", dropped)
+				}
+			}
+		}
 		result.Steps = append(result.Steps, step)
 		ranAny = true
 		if step.Passed {
@@ -575,4 +601,180 @@ func preflightSkip(ctx context.Context, workspaceDir string, m tools.ModuleRoot)
 		}
 	}
 	return ""
+}
+
+// --- pyflakes line scoping ---------------------------------------------------
+//
+// pythonScopedLintCommand narrows pyflakes to the FILES the fix touched, which
+// still lets every pre-existing finding elsewhere in those files through. That
+// is not a cosmetic problem: the agent has no runtime in the workspace (no
+// pytest, no project dependencies), so a linter is the only signal it gets, and
+// a warning naming a file it just edited reads as "I broke this".
+//
+// Observed on SWE-bench astropy-13398: the fix touched one line, pyflakes
+// reported astropy's own long-standing `'from .ecliptic import *' unable to
+// detect undefined names`, and the agent spent 6 edits and 12 minutes chasing
+// it — finishing with a broken test import, strictly worse than one attempt.
+//
+// So: keep only findings on lines the fix actually changed.
+
+// diffLineRe matches a unified-diff hunk header, capturing the post-image start
+// line and length: @@ -12,3 +40,7 @@
+var diffLineRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
+
+// lintFindingRe matches a pyflakes/flake8-style finding: path:line:col: message.
+// The column is optional — pyflakes omits it for some syntax errors.
+var lintFindingRe = regexp.MustCompile(`^([^:]+):(\d+):(?:\d+:)?\s`)
+
+// changedLineSet maps a repo-relative path to the set of post-image line numbers
+// the working tree changed.
+type changedLineSet map[string]map[int]bool
+
+// changedLines returns the lines the working tree changed, per file.
+//
+// Uses -U0 so hunk headers bound exactly the changed lines with no context, and
+// --no-color / --no-ext-diff / explicit --src-prefix / --dst-prefix so a user's
+// git config cannot reshape the output: diff.noprefix or diff.mnemonicPrefix
+// would change what the "b/" strip below has to remove, and every path would
+// then fail to match.
+// An untracked file has no diff, so every line counts as changed — which is
+// correct: the fix authored all of it.
+func (v *FixVerifier) changedLines(ctx context.Context, workspaceDir string) changedLineSet {
+	out := changedLineSet{}
+	cli := tools.NewCLITool(workspaceDir)
+	resp := cli.Execute(ctx, map[string]any{
+		"command": "git --no-pager diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ HEAD -- '*.py'",
+		"timeout": 60,
+	})
+	if resp.Status == "error" {
+		// No diff means no scoping information. Callers treat an empty set as
+		// "cannot scope" and leave the output untouched, which is the safe
+		// direction: showing too much beats hiding a real failure.
+		return out
+	}
+	var stdout string
+	if data, ok := resp.Data.(map[string]any); ok {
+		if r, ok := data["result"].(*tools.CLIOutput); ok {
+			stdout = r.Stdout
+		}
+	}
+
+	return parseChangedLinesDiff(stdout)
+}
+
+// parseChangedLinesDiff turns `git diff -U0` output into per-file changed-line
+// sets. Split out from changedLines so the parsing rules can be tested without
+// a git repository — the header/content ambiguity below is exactly the kind of
+// thing that needs direct cases.
+func parseChangedLinesDiff(stdout string) changedLineSet {
+	out := changedLineSet{}
+	var file string
+	for _, line := range strings.Split(stdout, "\n") {
+		// Require the b/ prefix rather than just "+++ ". A CONTENT line that
+		// itself begins with "++ " is rendered as "+++ " in the diff and would
+		// otherwise be misread as a file header, silently reattributing every
+		// following hunk to a bogus path. git quotes paths containing spaces or
+		// non-ASCII, hence the quoted form too.
+		if strings.HasPrefix(line, "+++ b/") || strings.HasPrefix(line, `+++ "b/`) {
+			p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			p = strings.Trim(p, `"`)
+			p = strings.TrimPrefix(p, "b/")
+			file = p
+			continue
+		}
+		if strings.HasPrefix(line, "+++ /dev/null") {
+			// Deleted file — nothing in the post-image to attribute findings to.
+			file = ""
+			continue
+		}
+		if file == "" {
+			continue
+		}
+		m := diffLineRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		start, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		length := 1
+		if m[2] != "" {
+			if n, err := strconv.Atoi(m[2]); err == nil {
+				length = n
+			}
+		}
+		if length == 0 {
+			// A pure deletion has no post-image lines. Attribute the deletion to
+			// the surrounding line so a finding there is still shown.
+			length = 1
+		}
+		if out[file] == nil {
+			out[file] = map[int]bool{}
+		}
+		for i := start; i < start+length; i++ {
+			out[file][i] = true
+		}
+	}
+	return out
+}
+
+// scopeLintOutputToChangedLines drops findings that sit outside the changed
+// lines, and reports how many were dropped.
+//
+// Deliberately conservative: a line that cannot be parsed as a finding (blank
+// lines, summary counts, tracebacks) is kept, and an empty changed-line set
+// leaves the output alone. Hiding a real failure is far worse than showing a
+// stale one, so every ambiguity resolves toward keeping the line.
+func scopeLintOutputToChangedLines(output string, changed changedLineSet, moduleDir string) (string, int) {
+	if strings.TrimSpace(output) == "" || len(changed) == 0 {
+		return output, 0
+	}
+	var kept []string
+	dropped := 0
+	for _, line := range strings.Split(output, "\n") {
+		m := lintFindingRe.FindStringSubmatch(line)
+		if m == nil {
+			kept = append(kept, line)
+			continue
+		}
+		path, lineNo := m[1], m[2]
+		n, err := strconv.Atoi(lineNo)
+		if err != nil {
+			kept = append(kept, line)
+			continue
+		}
+		// pyflakes prints the path as given on its command line — relative to the
+		// module dir, while the diff is relative to the repo root.
+		// filepath.Clean strips a leading "./" — pyflakes echoes whatever path it
+		// was handed, and "./mod.py" would never match a diff entry of "mod.py".
+		candidates := []string{filepath.ToSlash(filepath.Clean(path))}
+		if moduleDir != "" && moduleDir != "." {
+			candidates = append(candidates, filepath.ToSlash(filepath.Clean(filepath.Join(moduleDir, path))))
+		}
+		known, keptThis := false, false
+		for _, c := range candidates {
+			if lines, ok := changed[c]; ok {
+				known = true
+				if lines[n] {
+					kept = append(kept, line)
+					keptThis = true
+					break
+				}
+			}
+		}
+		if !known {
+			// The finding names a file we have no diff for — keep it rather than
+			// guess.
+			kept = append(kept, line)
+			continue
+		}
+		// Tracked explicitly rather than inferred from the tail of kept: two
+		// identical consecutive findings are possible, and comparing against the
+		// last kept line would miscount them.
+		if !keptThis {
+			dropped++
+		}
+	}
+	return strings.TrimRight(strings.Join(kept, "\n"), "\n"), dropped
 }

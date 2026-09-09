@@ -25,6 +25,9 @@ func flattenAgentPrompt(p core.NBAgentPrompt) string {
 	for _, s := range p.Constraints {
 		b.WriteString(s + "\n")
 	}
+	for _, s := range p.Schema {
+		b.WriteString(s + "\n")
+	}
 	for _, vals := range p.ToolUsage {
 		for _, s := range vals {
 			b.WriteString(s + "\n")

@@ -1,4 +1,5 @@
-import { Grid, Typography, Box, Stepper, Step, StepLabel } from '@mui/material';
+import { Grid, Typography, Box } from '@mui/material';
+import { Stepper } from '@ui/Stepper';
 import { Chip } from '@ui/Chip';
 import { Divider } from '@ui/Divider';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -565,14 +566,14 @@ const AddAwsOrgModal = ({ open, onClose }) => {
     >
       <Box sx={{ px: ds.space[5] }}>
         <Box sx={{ mb: ds.space[5], mt: ds.space[4] }}>
-          <Stepper activeStep={step - 1} orientation='horizontal'>
-            <Step>
-              <StepLabel>Set Organization Name</StepLabel>
-            </Step>
-            <Step>
-              <StepLabel>Deploy StackSet</StepLabel>
-            </Step>
-          </Stepper>
+          <Stepper
+            steps={[
+              { id: 'name', label: 'Set Organization Name' },
+              { id: 'stackset', label: 'Deploy StackSet' },
+            ]}
+            current={step - 1}
+            orientation='horizontal'
+          />
         </Box>
 
         {step === 1 && renderStep1()}

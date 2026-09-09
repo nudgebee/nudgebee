@@ -176,8 +176,9 @@ func searchConfluence(query string, accountId string) (ConfluenceSearchResponse,
 	mode := confluenceAuthType(configs["auth_type"])
 	siteBase := confluenceSiteBase(host, mode)
 
-	escapedQuery := strings.ReplaceAll(url.QueryEscape(strings.ReplaceAll(query, `"`, `\"`)), "+", "%20")
-	searchUrl := fmt.Sprintf("%s/content/search?cql=text~%%22%s%%22&expand=body.view", confluenceAPIBase(host, mode), escapedQuery)
+	cql := fmt.Sprintf(`text~"%s"`, strings.ReplaceAll(query, `"`, `\"`)) + confluenceScopeCQL(configs["namespace"], configs["page_trees"])
+	escapedCQL := strings.ReplaceAll(url.QueryEscape(cql), "+", "%20")
+	searchUrl := fmt.Sprintf("%s/content/search?cql=%s&expand=body.view", confluenceAPIBase(host, mode), escapedCQL)
 
 	req, err := http.NewRequest("GET", searchUrl, nil)
 	if err != nil {

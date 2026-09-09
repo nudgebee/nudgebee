@@ -34,10 +34,10 @@ func TestToEvidenceNodesKeepsOnlyAllowlistedProperties(t *testing.T) {
 		},
 	}
 
-	evidenceNodes := toEvidenceNodes(nodes)
+	evidenceNodes := ToEvidenceNodes(nodes)
 
 	if len(evidenceNodes) != 1 {
-		t.Fatalf("toEvidenceNodes() returned %d nodes, want 1", len(evidenceNodes))
+		t.Fatalf("ToEvidenceNodes() returned %d nodes, want 1", len(evidenceNodes))
 	}
 	node := evidenceNodes[0]
 	if node.ID != "node-1" || node.NodeType != NodeTypeWorkload ||
@@ -86,7 +86,7 @@ func TestToEvidenceNodesOmitsAbsentAndNilProperties(t *testing.T) {
 		},
 	}
 
-	properties := toEvidenceNodes(nodes)[0].Properties
+	properties := ToEvidenceNodes(nodes)[0].Properties
 
 	if len(properties) != 3 {
 		t.Errorf("properties = %v, want exactly name/engine/region", properties)
@@ -103,16 +103,16 @@ func TestToEvidenceNodesOmitsAbsentAndNilProperties(t *testing.T) {
 // projection must not panic on. Properties is a free-form map populated by many
 // source packages, and a node can reach the evidence block without one.
 func TestToEvidenceNodesToleratesNilPropertiesAndEmptyInput(t *testing.T) {
-	evidenceNodes := toEvidenceNodes([]KgNode{{ID: "nil-properties", NodeType: NodeTypeService}})
+	evidenceNodes := ToEvidenceNodes([]KgNode{{ID: "nil-properties", NodeType: NodeTypeService}})
 
 	if len(evidenceNodes) != 1 {
-		t.Fatalf("toEvidenceNodes() returned %d nodes, want 1", len(evidenceNodes))
+		t.Fatalf("ToEvidenceNodes() returned %d nodes, want 1", len(evidenceNodes))
 	}
 	if evidenceNodes[0].Properties == nil {
 		t.Error("Properties should be an empty map, not nil, so consumers can index it")
 	}
 
-	if got := toEvidenceNodes(nil); len(got) != 0 {
-		t.Errorf("toEvidenceNodes(nil) = %v, want empty", got)
+	if got := ToEvidenceNodes(nil); len(got) != 0 {
+		t.Errorf("ToEvidenceNodes(nil) = %v, want empty", got)
 	}
 }

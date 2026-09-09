@@ -99,8 +99,14 @@ type ToolFunction struct {
 
 // ToolCall is a call to a tool.
 type ToolCall struct {
-	ID       string       `json:"id,omitempty"`
-	Type     ToolType     `json:"type"`
+	ID   string   `json:"id,omitempty"`
+	Type ToolType `json:"type"`
+	// NUDGEBEE: streaming deltas carry an "index" that correlates argument
+	// fragments with the call they belong to. Upstream dropped it, leaving the
+	// merge to guess "the last one", which breaks on parallel tool calls and on
+	// gateways that echo a type on every fragment. Pointer + omitempty so
+	// outbound request payloads are unchanged.
+	Index    *int         `json:"index,omitempty"`
 	Function ToolFunction `json:"function,omitempty"`
 }
 
@@ -506,19 +512,66 @@ func updateFunctionCall(message ChatMessage, functionCall *FunctionCall) []byte 
 	return chunk
 }
 
+// appendArgumentsFragment appends one streamed arguments fragment to its tool
+// call, unless the call's arguments already form a complete JSON value.
+//
+// NUDGEBEE: vLLM's tool parser (observed on the Vertex-hosted Qwen endpoint)
+// sometimes re-emits the ENTIRE arguments object as one final JSON-quoted
+// delta after the incremental fragments. Blindly appending it corrupts
+// perfectly assembled arguments into `{...}"{\"escaped\":...}"`, which no
+// longer parses and the tool then executes with garbage input. Arguments are a
+// single JSON object, so incremental prefixes are invalid JSON until the
+// object is complete — once json.Valid says it is complete, anything further
+// is that duplicate trailer and is dropped.
+func appendArgumentsFragment(tc *ToolCall, fragment string) {
+	// Cheap gate first: a complete arguments object always ends in "}" (modulo
+	// trailing whitespace some servers emit), so the json.Valid scan and its
+	// []byte copy are skipped for nearly every intermediate fragment rather
+	// than run per fragment over the whole accumulated string.
+	args := tc.Function.Arguments
+	trimmed := strings.TrimRight(args, " \t\r\n")
+	if trimmed != `` && strings.HasSuffix(trimmed, `}`) && json.Valid([]byte(args)) {
+		return
+	}
+	tc.Function.Arguments += fragment
+}
+
 func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 	if len(delta) == 0 {
 		return []byte{}, tools
 	}
 	for _, t := range delta {
-		// if we have arguments append to the last Tool call
-		if t.Type == `` && t.Function.Arguments != `` {
-			lindex := len(tools) - 1
-			if lindex < 0 {
+		// NUDGEBEE: a continuation fragment is one carrying arguments but no
+		// function NAME. Upstream keyed on Type == "", but gateways echo a type
+		// on every fragment, so each argument chunk became a brand-new call and
+		// the named call was dispatched with an empty input.
+		//
+		// Fragments match on the delta Index VALUE — not used as a slice offset,
+		// since a gateway may emit sparse or non-zero-based indices — falling
+		// back to the most recent call when no index is supplied.
+		// NUDGEBEE: a nameless delta is never a new tool call (openers always carry the
+		// name); vLLM closes every call with an empty {name:null, arguments:""}
+		// trailer, which must not become a phantom, nameless tool call.
+		if t.Function.Name == `` {
+			if t.Function.Arguments == `` {
 				continue
 			}
-
-			tools[lindex].Function.Arguments += t.Function.Arguments
+			if idx := t.Index; idx != nil {
+				matched := false
+				for i := range tools {
+					if tools[i].Index != nil && *tools[i].Index == *idx {
+						appendArgumentsFragment(&tools[i], t.Function.Arguments)
+						matched = true
+						break
+					}
+				}
+				if matched {
+					continue
+				}
+			}
+			if lindex := len(tools) - 1; lindex >= 0 {
+				appendArgumentsFragment(&tools[lindex], t.Function.Arguments)
+			}
 			continue
 		}
 
@@ -532,27 +585,13 @@ func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 }
 
 // StreamingChatResponseTools is a helper function to append tool calls to the stack.
+//
+// NUDGEBEE: this carried a second, independent copy of the merge logic with the
+// same upstream bug. It now delegates so there is one implementation to keep
+// correct rather than two that can drift.
 func StreamingChatResponseTools(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 	if len(delta) == 0 {
 		return []byte{}, tools
 	}
-	for _, t := range delta {
-		// if we have arguments append to the last Tool call
-		if t.Type == `` && t.Function.Arguments != `` {
-			lindex := len(tools) - 1
-			if lindex < 0 {
-				continue
-			}
-
-			tools[lindex].Function.Arguments += t.Function.Arguments
-			continue
-		}
-
-		// Otherwise, this is a new tool call, append that to the stack
-		tools = append(tools, *t)
-	}
-
-	chunk, _ := common.MarshalJson(delta) // nolint:errchkjson
-
-	return chunk, tools
+	return updateToolCalls(tools, delta)
 }

@@ -29,9 +29,51 @@ package asserts
 
 import (
 	"nudgebee/llm/agents/core"
+	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/tmc/langchaingo/llms"
 )
+
+// controlTools are planner BOOKKEEPING tools that touch no external state and
+// perform no investigation. They are excluded from the COUNTING assertions
+// (NoTools / MinToolCalls / MaxToolCalls / ExactToolCount) because their
+// visibility is a property of the planner, not of agent behavior: ReAct3 kept
+// the notebook as an inline XML tag that never surfaced as a tool invocation,
+// while ReAct4 issues it as a native tool call.
+//
+// Counting them makes identical behavior pass under one planner and fail under
+// the other — observed when the "hello" direct-answer fixture failed under
+// ReAct4 solely because the model recorded "User said hello. No active
+// investigation." in its notebook while returning a perfect greeting.
+//
+// The name-matching assertions (ToolUsed / ToolNotUsed / AllToolsUsed /
+// ForbiddenTools) deliberately still see control tools, so a fixture can assert
+// on notebook usage explicitly when that is the point of the test.
+var controlTools = map[string]bool{
+	toolcore.NotebookToolName: true,
+}
+
+// investigationTools returns only the invocations that represent real
+// investigation work, filtering out control tools (see controlTools).
+func investigationTools(resp core.NBAgentResponse) []core.ToolInvocation {
+	out := make([]core.ToolInvocation, 0, len(resp.AgentStepResponse))
+	for _, inv := range resp.AgentStepResponse {
+		if !controlTools[toolName(inv)] {
+			out = append(out, inv)
+		}
+	}
+	return out
+}
+
+// investigationToolNames is toolNames restricted to investigation tools.
+func investigationToolNames(resp core.NBAgentResponse) []string {
+	invs := investigationTools(resp)
+	out := make([]string, 0, len(invs))
+	for _, inv := range invs {
+		out = append(out, toolName(inv))
+	}
+	return out
+}
 
 // toolName extracts the human-readable name of a tool from a single
 // ToolInvocation entry. Returns "" if the call isn't a function call.

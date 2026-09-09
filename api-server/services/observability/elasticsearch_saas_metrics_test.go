@@ -892,6 +892,269 @@ func TestESUnknownQueryFields_FlagsTheSilentNoOp(t *testing.T) {
 	})
 }
 
+// --- BUILDER item path (metrics_get_query) ---
+
+func TestGetQuery_BuilderItem_RendersNativeDSLFromMatchers(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	req := FetchMetricsRequest{
+		// What GetMetricsQuery hands a source for one builder block.
+		Queries: map[string]string{"A": "metricbeat-2026.08.05"},
+		QueryItems: map[string]QueryItem{
+			"A": {
+				Metric:        "metricbeat-2026.08.05",
+				LabelMatchers: []LabelMatcher{{Label: "agent.name", Operator: "_eq", Value: "beat-1"}},
+			},
+		},
+		StartTime: 1787045436154,
+		EndTime:   1787049036154,
+	}
+
+	got, err := src.GetQuery(nil, req)
+	require.NoError(t, err)
+
+	// The index name must never reach the JSON parser as if it were a query —
+	// that is the regression this branch exists to prevent.
+	assert.NotContains(t, got, "metricbeat-2026.08.05")
+	assert.Contains(t, got, `"bool"`)
+	assert.Contains(t, got, `"filter"`)
+	assert.Contains(t, got, "beat-1")
+
+	// Time range is the executor's job; baking it in here would double it and go
+	// stale as soon as the user moves the date picker.
+	assert.NotContains(t, got, "epoch_millis")
+	assert.NotContains(t, got, "1787045436154")
+}
+
+func TestGetQuery_BuilderItem_NoMatchersRendersEmptyFilterNotNull(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	req := FetchMetricsRequest{
+		QueryItems: map[string]QueryItem{"A": {Metric: "metricbeat-2026.08.05"}},
+	}
+
+	got, err := src.GetQuery(nil, req)
+	require.NoError(t, err)
+	assert.Contains(t, got, `"filter":[]`)
+	assert.NotContains(t, got, `"filter":null`)
+}
+
+func TestGetQuery_BuilderItem_RejectsUnsupportedOperator(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	req := FetchMetricsRequest{
+		QueryItems: map[string]QueryItem{
+			"A": {LabelMatchers: []LabelMatcher{{Label: "latency", Operator: "_gte", Value: "5"}}},
+		},
+	}
+
+	_, err := src.GetQuery(nil, req)
+	require.Error(t, err)
+	// Named operator and label, not an opaque failure from deep in the translator.
+	assert.Contains(t, err.Error(), "_gte")
+	assert.Contains(t, err.Error(), "latency")
+}
+
+func TestGetQuery_LegacyQueriesPathUnchangedWhenQueryItemsAbsent(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	req := FetchMetricsRequest{
+		Queries:   map[string]string{"A": `[{"_binary":{"serviceName":{"_eq":"api"}}}]`},
+		StartTime: 1787045436154,
+		EndTime:   1787049036154,
+	}
+
+	got, err := src.GetQuery(nil, req)
+	require.NoError(t, err)
+	assert.Contains(t, got, "epoch_millis", "legacy path still bakes in the time range")
+	assert.Contains(t, got, ".keyword")
+}
+
+func TestWrapAggregate_ESPassesThroughNoneAndRejectsOthers(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	body := `{"size":10000,"query":{"bool":{"filter":[]}}}`
+
+	got, err := src.WrapAggregate(body, "")
+	require.NoError(t, err)
+	assert.Equal(t, body, got, "no aggregation must leave the JSON body untouched")
+
+	// The default PromQL wrap would have produced sum({"size":...}) — invalid JSON.
+	_, err = src.WrapAggregate(body, "sum")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported for Elasticsearch")
+}
+
+// --- KQL Code Mode ---
+
+func TestBuildESMetricsQueryBody_KQL_TranslatesToDSL(t *testing.T) {
+	body, err := buildESMetricsQueryBody("kql", `agent.name:"beat-1" and system.cpu.pct > 0.5`, 0, 0)
+	require.NoError(t, err)
+
+	out, err := json.Marshal(body)
+	require.NoError(t, err)
+	got := string(out)
+
+	// Translated, not passed through as a literal string.
+	assert.NotContains(t, got, "and system.cpu.pct")
+	assert.Contains(t, got, `"bool"`)
+	assert.Contains(t, got, "beat-1")
+	assert.Contains(t, got, `"range"`)
+	assert.Equal(t, 10000, int(body["size"].(int)))
+}
+
+func TestBuildESMetricsQueryBody_KQL_EmptyIsMatchAll(t *testing.T) {
+	body, err := buildESMetricsQueryBody("kql", "   ", 0, 0)
+	require.NoError(t, err)
+
+	q := body["query"].(map[string]any)
+	_, ok := q["match_all"]
+	assert.True(t, ok, "blank KQL must match everything, not error: %v", q)
+}
+
+func TestBuildESMetricsQueryBody_KQL_MergesTimeRange(t *testing.T) {
+	body, err := buildESMetricsQueryBody("kql", `agent.name:"beat-1"`, 1787045436154, 1787049036154)
+	require.NoError(t, err)
+
+	out, err := json.Marshal(body)
+	require.NoError(t, err)
+	got := string(out)
+
+	// Same bounding the dsl branch applies — KQL must not escape the time window.
+	assert.Contains(t, got, "epoch_millis")
+	assert.Contains(t, got, "1787045436154")
+	assert.Contains(t, got, "@timestamp")
+}
+
+func TestBuildESMetricsQueryBody_KQL_PropagatesParseError(t *testing.T) {
+	_, err := buildESMetricsQueryBody("kql", `agent.name:"unterminated`, 0, 0)
+	require.Error(t, err)
+}
+
+func TestGetQuery_KQLMode_RendersTranslatedDSL(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	req := FetchMetricsRequest{
+		Queries: map[string]string{"A": `agent.name:"beat-1"`},
+		Request: map[string]any{"query_type": "kql"},
+	}
+
+	got, err := src.GetQuery(nil, req)
+	require.NoError(t, err)
+	// A single KQL leaf renders as match_phrase, no bool wrapper. The point is
+	// that the KQL text was translated rather than echoed through.
+	assert.Contains(t, got, `"match_phrase"`)
+	assert.Contains(t, got, "beat-1")
+	assert.NotContains(t, got, `agent.name:`)
+}
+
+// --- bare query clause pasted where a _search body is expected ---
+
+func TestBuildESMetricsQueryBody_DSL_WrapsBareClause(t *testing.T) {
+	// Exact body from the reported failure: a query clause, not a _search body.
+	// ES rejected it with "Unknown key for a START_OBJECT in [match_phrase]"
+	// and the filter was silently replaced by match_all.
+	body, err := buildESMetricsQueryBody(
+		"dsl",
+		`{"match_phrase":{"kubernetes.namespace":"default"}}`,
+		1787064443129, 1787068043129,
+	)
+	require.NoError(t, err)
+
+	// The clause must move under "query", not linger at the top level.
+	_, stray := body["match_phrase"]
+	assert.False(t, stray, "bare clause must not stay top-level: %v", body)
+
+	out, err := json.Marshal(body)
+	require.NoError(t, err)
+	got := string(out)
+
+	assert.Contains(t, got, `"match_phrase"`)
+	assert.Contains(t, got, "default")
+	assert.NotContains(t, got, `"match_all"`, "the user's filter must not be dropped")
+	assert.Contains(t, got, "epoch_millis")
+}
+
+func TestBuildESMetricsQueryBody_DSL_WrapsBareBoolClause(t *testing.T) {
+	body, err := buildESMetricsQueryBody("dsl", `{"bool":{"must":[{"term":{"a":"b"}}]}}`, 0, 0)
+	require.NoError(t, err)
+
+	q, ok := body["query"].(map[string]any)
+	require.True(t, ok, "expected a query key, got %v", body)
+	_, hasBool := q["bool"]
+	assert.True(t, hasBool)
+	assert.Equal(t, 10000, int(body["size"].(int)))
+}
+
+func TestBuildESMetricsQueryBody_DSL_FullBodyUntouched(t *testing.T) {
+	body, err := buildESMetricsQueryBody("dsl", `{"query":{"match_all":{}},"size":5}`, 0, 0)
+	require.NoError(t, err)
+
+	assert.Equal(t, float64(5), body["size"], "explicit size must survive")
+	q := body["query"].(map[string]any)
+	_, ok := q["match_all"]
+	assert.True(t, ok)
+}
+
+func TestEsWrapBareQueryClause_LeavesRealBodiesAlone(t *testing.T) {
+	cases := []map[string]any{
+		{"size": 10},                              // body with no query
+		{"aggs": map[string]any{}},                // aggregation-only body
+		{"query": map[string]any{}, "bool": true}, // has query already
+		{}, // empty
+	}
+	for _, in := range cases {
+		got := esWrapBareQueryClause(in)
+		_, wrapped := got["query"]
+		if _, had := in["query"]; !had {
+			assert.False(t, wrapped, "must not wrap %v", in)
+		}
+	}
+}
+
+func TestGetQuery_BuilderItem_IsNullChipCoercesToBool(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	// The chip carries "true" as text; binaryToESClause needs a real bool, so
+	// without coercion this operator could never render from the builder even
+	// though GetSupportedOperators advertises it.
+	for _, val := range []string{"true", "TRUE", " true "} {
+		req := FetchMetricsRequest{
+			QueryItems: map[string]QueryItem{
+				"A": {LabelMatchers: []LabelMatcher{{Label: "pod", Operator: "_is_null", Value: val}}},
+			},
+		}
+		got, err := src.GetQuery(nil, req)
+		require.NoError(t, err, "value %q", val)
+		assert.Contains(t, got, `"exists"`, "value %q", val)
+		assert.Contains(t, got, `"must_not"`, "_is_null true must negate exists (value %q)", val)
+	}
+
+	// "false" is the "is not null" direction: a plain exists, no negation.
+	req := FetchMetricsRequest{
+		QueryItems: map[string]QueryItem{
+			"A": {LabelMatchers: []LabelMatcher{{Label: "pod", Operator: "_is_null", Value: "false"}}},
+		},
+	}
+	got, err := src.GetQuery(nil, req)
+	require.NoError(t, err)
+	assert.Contains(t, got, `"exists"`)
+	assert.NotContains(t, got, `"must_not"`)
+}
+
+func TestGetQuery_BuilderItem_AllAdvertisedOperatorsRender(t *testing.T) {
+	src := &ElasticSaasMetricSource{}
+	// Every operator the builder UI can offer must render. This is the guard
+	// against GetSupportedOperators drifting away from binaryToESClause.
+	for _, op := range src.GetSupportedOperators() {
+		value := "default"
+		if op == "_is_null" {
+			value = "true"
+		}
+		req := FetchMetricsRequest{
+			QueryItems: map[string]QueryItem{
+				"A": {LabelMatchers: []LabelMatcher{{Label: "kubernetes.namespace", Operator: op, Value: value}}},
+			},
+		}
+		got, err := src.GetQuery(nil, req)
+		require.NoErrorf(t, err, "advertised operator %q must render", op)
+		assert.NotEmptyf(t, got, "operator %q rendered an empty body", op)
+	}
+}
+
 func TestResolveESMetricsIndex(t *testing.T) {
 	cases := []struct {
 		name       string

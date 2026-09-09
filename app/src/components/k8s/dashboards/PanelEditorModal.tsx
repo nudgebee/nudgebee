@@ -17,7 +17,7 @@ import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPrevie
 import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
 import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
 import { isCompleteColumn, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
-import { accountsOfTypes, coversAllOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
+import { accountsOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
 import { ES_PROVIDER, isDisabledAccount, providerChoices, providerLabel, providerTypeOf, useEsIndexes, usePanelProviders } from './panelProviders';
 import FilterDropdown from '@ui/FilterDropdown';
 import PanelProviderRow from './PanelProviderRow';
@@ -131,9 +131,12 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   React.useEffect(() => {
     setDraft(panel);
     setAccountTypes(panel ? deriveAccountTypes(panel, accountOptions) : []);
-    // A panel naming every account of its providers IS "all of those providers", which the types control
-    // already says.
-    setAccountIds(panel && coversAllOfTypes(panel, accountOptions) ? [] : panel?.account_ids || []);
+    // Exactly what is stored, even when the ids happen to be every account of the providers above. Those
+    // two are the same bytes on disk but not the same panel: an id list is PINNED and will not pick up an
+    // account connected tomorrow, so showing it as an empty "all of these providers" field claimed a
+    // behaviour the panel does not have — and re-saving it silently widened the scope to whatever had been
+    // connected since.
+    setAccountIds(panel?.account_ids || []);
     setEntityDraft(draftFromQuery(panel?.targets?.[0]?.query));
   }, [panel, accountOptions]);
 

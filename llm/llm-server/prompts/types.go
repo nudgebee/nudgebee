@@ -27,6 +27,12 @@ const (
 	ConfigSourceExperiment ConfigSource = "experiment"
 	ConfigSourceDatabase   ConfigSource = "database"
 	ConfigSourceDefault    ConfigSource = "default"
+	// ConfigSourceForcedDev marks resolution via the PROMPTS_VERSION /
+	// PROMPTS_VERSION_<NAME> local-dev override (config.Config.PromptsVersion,
+	// prompts/loader.go's forcedVersionFor) -- distinct from
+	// ConfigSourceDefault so logs/metrics show it wasn't a deliberate
+	// DB-configured version.
+	ConfigSourceForcedDev ConfigSource = "forced_dev"
 )
 
 // PromptRequest contains parameters for loading a prompt

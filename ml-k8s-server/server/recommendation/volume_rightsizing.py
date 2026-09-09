@@ -20,6 +20,7 @@ import requests
 from server.utils.utils import DatabaseEngine, get_trace
 from server.utils.utils import MetricsServerConfigs
 from server.metrics.prometheus_metrics import prometheus_range_query
+from server.recommendation.storage_pricing import FALLBACK_STORAGE_RATE_PER_GB_MONTH, resolve_storage_pricing
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,6 @@ class VolumeRightsizingService:
         self._executor = ThreadPoolExecutor(max_workers=4)
 
         # Configuration from original implementation
-        self.storage_cost_per_gb = 0.10  # $0.10 per GB per month
         self.overprovisioning_threshold = 0.9  # 90% usage threshold
         self.minimum_savings_threshold = 0.1  # Minimum $1 savings to recommend
 
@@ -501,7 +501,7 @@ class VolumeRightsizingService:
                 inject(headers_with_context, current_context)
 
             # Prepare action parameters for get_resource action.
-            # The post-Robusta Go agent (nudgebee-agent#34) requires `version`
+            # The Go agent (nudgebee-agent#34) requires `version`
             # for every get_resource call — without it the agent rejects with
             # 500 `kube: version and resource_type are required`, the response
             # has no `findings`, and we silently fall through to "No PVC data
@@ -616,9 +616,15 @@ class VolumeRightsizingService:
         """Generate volume recommendations."""
         recommendations = []
         with tracer.start_as_current_span("generate_volume_recommendations") as span:
+            storage_classes = await self._get_storage_classes()
+            provider = self._get_k8s_provider()
             for volume in volume_data:
                 try:
-                    recommendation = self._analyze_single_volume(volume)
+                    pvc_object = volume.metadata.get("metadata") or {
+                        "spec": {"storage_class_name": volume.storage_class}
+                    }
+                    pricing = resolve_storage_pricing(pvc_object, storage_classes=storage_classes, provider=provider)
+                    recommendation = self._analyze_single_volume(volume, pricing)
                     if recommendation:
                         recommendations.append(recommendation)
                 except Exception as e:
@@ -627,7 +633,78 @@ class VolumeRightsizingService:
             span.set_attribute("pvc.recommendations_generated", len(recommendations))
         return recommendations
 
-    def _analyze_single_volume(self, volume: VolumeUsageData) -> Optional[VolumeRecommendation]:
+    def _get_k8s_provider(self) -> str:
+        """Canonical provider ("aws"/"gcp"/"azure") from agent telemetry, or ""."""
+        query = text("""SELECT k8s_provider
+               FROM agent
+               WHERE cloud_account_id = :account_id
+               AND k8s_provider IS NOT NULL
+               AND k8s_provider != ''""")
+        try:
+            with self.engine.connect() as conn:
+                rows = conn.execute(query, {"account_id": self.account_id}).fetchall()
+        except Exception as e:
+            logger.warning(f"k8s_provider lookup failed for account {self.account_id}: {e}")
+            return ""
+        if not rows:
+            return ""
+        provider = (rows[0][0] or "").lower()
+        return {"eks": "aws", "gke": "gcp", "aks": "azure"}.get(provider, provider)
+
+    async def _get_storage_classes(self) -> Dict[str, Dict[str, Any]]:
+        """StorageClass objects by name via relay, for per-class pricing.
+
+        A failure must not fail the scan — pricing degrades to provider
+        defaults, so this swallows errors and returns {}.
+        """
+        try:
+            from server.utils.utils import get_http_session_with_retry
+
+            headers = {"Content-Type": "application/json", "X-SECRET-KEY": MetricsServerConfigs.secret}
+            payload = json.dumps(
+                {
+                    "no_sinks": True,
+                    "body": {
+                        "account_id": str(self.account_id),
+                        "action_name": "get_resource",
+                        "action_params": {
+                            "group": "storage.k8s.io",
+                            "version": "v1",
+                            "resource_type": "storageclasses",
+                            "all_namespaces": False,
+                        },
+                    },
+                    "cache": False,
+                }
+            )
+            response = get_http_session_with_retry().request(
+                "POST", self.prometheus_url, headers=headers, data=payload, timeout=60
+            )
+            if response.status_code != 200:
+                logger.warning(f"storageclasses fetch failed: {response.status_code}: {response.text[:200]}")
+                return {}
+
+            sc_list: List[Dict[str, Any]] = []
+            findings = response.json().get("data", {}).get("findings", [])
+            if findings:
+                for item in json.loads(findings[0].get("evidence", [{}])[0].get("data", "[]")):
+                    if item.get("type") == "json" and "data" in item:
+                        sc_list = json.loads(item["data"])
+                        break
+            by_name = {}
+            for sc in sc_list:
+                name = sc.get("metadata", {}).get("name")
+                if name:
+                    by_name[name] = sc
+            logger.info(f"Retrieved {len(by_name)} storage classes from relay server")
+            return by_name
+        except Exception as e:
+            logger.warning(f"storageclasses fetch failed, pricing falls back to provider defaults: {e}")
+            return {}
+
+    def _analyze_single_volume(
+        self, volume: VolumeUsageData, pricing: Dict[str, Any]
+    ) -> Optional[VolumeRecommendation]:
         """Analyze single volume, assuming input is already in GB."""
         pvc_id = f"{volume.namespace}/{volume.pvc_name}"
         logger.info(f"[{pvc_id}] Starting analysis...")
@@ -648,9 +725,10 @@ class VolumeRightsizingService:
 
             recommended_size_gb, savings, reason, priority, algorithm = 0.0, 0.0, "", "Low", "N/A"
 
+            price_per_gb = pricing["price_per_gb"]
             if utilization > self.overprovisioning_threshold:
                 recommended_size_gb = capacity_gb * 1.2
-                savings = -(capacity_gb * 0.2 * self.storage_cost_per_gb)
+                savings = -(capacity_gb * 0.2 * price_per_gb)
                 reason, priority, algorithm = (
                     "Volume is over 90% full, recommend increasing size",
                     "High",
@@ -675,7 +753,7 @@ class VolumeRightsizingService:
 
                 if 0 < recommended_size_gb < capacity_gb:
                     storage_save_gb = capacity_gb - recommended_size_gb
-                    savings = self.storage_cost_per_gb * storage_save_gb
+                    savings = price_per_gb * storage_save_gb
                     logger.info(f"[{pvc_id}] Potential downsizing identified. Savings: ${savings:.2f}.")
 
                     if savings >= self.minimum_savings_threshold:
@@ -712,6 +790,7 @@ class VolumeRightsizingService:
                     "utilization_percent": utilization * 100,
                     "algorithm": algorithm,
                     **volume.metadata,
+                    "pricing": pricing,
                 },
             )
         except Exception as e:
@@ -797,10 +876,13 @@ class VolumeRightsizingService:
                             "creationTimestamp": pvc_metadata.get("metadata", {}).get("creation_timestamp", ""),
                         },
                         "apiVersion": "v1",
+                        "pricing": rec.metadata.get("pricing", {}),
                         "recommendation": {
                             "usage": {"current": current_usage_bytes, "before_30_days": usage_7_days_bytes},
                             "capacity": current_capacity_bytes,
-                            "price_per_gb": self.storage_cost_per_gb,
+                            "price_per_gb": rec.metadata.get("pricing", {}).get(
+                                "price_per_gb", FALLBACK_STORAGE_RATE_PER_GB_MONTH
+                            ),
                             "recommend_size": int(rec.recommended_capacity_gb),
                         },
                     }
@@ -852,7 +934,7 @@ class VolumeRightsizingService:
         no-op: the upsert immediately re-opened those same rows, leaving deleted PVCs (and rows
         written by the retired collector-side producer, which keyed on PV name) Open forever.
 
-        Mirrors archive_existing_krr_recommendations in vertical_rightsizing/__init__.py, which
+        Mirrors archive_existing_rightsizing_recommendations in vertical_rightsizing/__init__.py, which
         fixed this same bug for pod_right_sizing.
 
         Scope rules ensure we only reconcile what the scan was exhaustive over:
@@ -900,7 +982,7 @@ class VolumeRightsizingService:
             UPDATE recommendation SET status = 'Archive'
             WHERE tenant_id = :tenant_id AND cloud_account_id = :account_id
             AND category = 'RightSizing' AND rule_name = 'pv_rightsize'
-            AND status NOT IN ('Closed', 'InProgress', 'Archive')
+            AND status = 'Open'
             {scope_clause}
         """)
 

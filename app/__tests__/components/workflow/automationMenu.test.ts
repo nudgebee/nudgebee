@@ -14,4 +14,11 @@ describe('getAutomationToggleAction', () => {
     expect(getAutomationToggleAction('SOMETHING_ELSE')).toBeNull();
     expect(getAutomationToggleAction(undefined)).toBeNull();
   });
+
+  // Regression guard for #32191: the listing menu decided on status AND trigger
+  // type, so a manual-only automation never got a toggle. Status is the only
+  // input the decision is allowed to take.
+  it('takes status as its only input', () => {
+    expect(getAutomationToggleAction.length).toBe(1);
+  });
 });

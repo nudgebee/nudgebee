@@ -295,8 +295,21 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 		}
 	}
 
+	// A caller that omits data (a raw RPC call, an agent tool whose model left
+	// it out) used to panic on an unchecked assertion here. Fail fast with a
+	// clear error instead; the payload is caller-built by design — the @finops
+	// apply tool constructs it so the human approval card shows the exact
+	// values being applied.
+	applyData, ok := query.Data.(map[string]any)
+	if !ok {
+		if query.Data != nil {
+			return RecommendationApplyResponse{}, fmt.Errorf("recommendation: apply payload (data) must be an object")
+		}
+		return RecommendationApplyResponse{}, fmt.Errorf("recommendation: apply payload (data) is required for rule %s", r.RuleName)
+	}
+
 	recommendationRequest := adapter.ApplyRecommendationRequest{
-		Data:           query.Data.(map[string]any),
+		Data:           applyData,
 		Recommendation: r,
 		Resource:       cr,
 		ProviderConfig: query.ProviderConfig,
@@ -366,7 +379,16 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 				"refreshed", decision.Refreshed,
 				"decision", decision.Reason)
 
+			// The guard's reason travels on BOTH paths, not just the refresh. The
+			// caller ran a whole generate-execute-apply cycle to get here; if the
+			// answer is "left alone", the reason it was left alone is the only
+			// useful thing this response carries. Reporting bare "a pull request is
+			// already open" makes a below-threshold decline indistinguishable from a
+			// cooldown, a cap, or a payload the guard could not read.
 			message := fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId)
+			if decision.Reason != "" {
+				message = fmt.Sprintf("%s - %s", message, decision.Reason)
+			}
 			action := PRActionUnchanged
 			if decision.Refreshed {
 				message = fmt.Sprintf("%s - %s", existingPR.TypeReferenceId, decision.Reason)
@@ -451,27 +473,53 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 
 	ctx.GetLogger().Info("Recommendation applied", "response", slog.AnyValue(resp.Data))
 
-	recommendationStatus := models.RecommendationStatusInProgress
-	switch resp.Status {
-	case adapter.RecommendationResolutionStatusSuccess:
-		recommendationStatus = models.RecommendationStatusClosed
-	case adapter.RecommendationResolutionStatusFailed:
-		recommendationStatus = models.RecommendationStatusDismissed
-	case adapter.RecommendationResolutionStatusInProgress:
-		recommendationStatus = models.RecommendationStatusInProgress
-	}
-
 	userId := ctx.GetSecurityContext().GetUserId()
-	nowStr := time.Now().UTC().Format(time.RFC3339)
-	if userId != "" {
-		_, err = dbms.Db.Exec("UPDATE recommendation SET status = $3, updated_at = $2, updated_by = $4 WHERE id = $1", r.Id, nowStr, recommendationStatus, userId)
-	} else {
-		_, err = dbms.Db.Exec("UPDATE recommendation SET status = $3, updated_at = $2 WHERE id = $1", r.Id, nowStr, recommendationStatus)
-	}
+	recommendationStatus := models.RecommendationStatusInProgress
 
-	if err != nil {
-		ctx.GetLogger().Error("error closing recommendation", "error", err, "recommendation_id", r.Id, "status", recommendationStatus, "user_id", userId)
-		return RecommendationApplyResponse{}, common.ErrorInternal(fmt.Sprintf("error closing recommendation: %s", err.Error()))
+	// A terminal outcome settles through the coordinator rather than being
+	// written here. The mapping this used to do by hand contradicted the
+	// coordinator's own rules in both directions: it recorded a failed apply as
+	// Dismissed, which is a user's "not doing this" — a state legalDismissal
+	// will not let even a user set on a recommendation being worked, and which
+	// no re-scan can reopen, so an IAM denial or a throttled call silently
+	// deleted a live savings opportunity. The coordinator hands a failed attempt
+	// back for retry instead.
+	if resp.Status == adapter.RecommendationResolutionStatusSuccess || resp.Status == adapter.RecommendationResolutionStatusFailed {
+		settled, err := coordinator.SettleResolution(ctx, resolution.Id,
+			models.RecommendationResolutionStatus(string(resp.Status)), resp.StatusMessage, coordinator.SourceUser)
+		if err != nil {
+			ctx.GetLogger().Error("error settling recommendation resolution after apply", "error", err, "recommendation_id", r.Id, "resolution_id", resolution.Id)
+			return RecommendationApplyResponse{}, common.ErrorInternal(fmt.Sprintf("error settling recommendation resolution: %s", err.Error()))
+		}
+		// A recorded no-op leaves the status blank; the recommendation keeps the
+		// one it already had.
+		recommendationStatus = settled.RecommendationStatus
+		if recommendationStatus == "" {
+			recommendationStatus = r.Status
+		}
+
+		if userId != "" && settled.Applied {
+			if _, err := dbms.Db.Exec("UPDATE recommendation SET updated_by = $2 WHERE id = $1", r.Id, userId); err != nil {
+				ctx.GetLogger().Error("error recording who applied the recommendation", "error", err, "recommendation_id", r.Id, "user_id", userId)
+			}
+		}
+	} else {
+		// An asynchronous apply has to claim the recommendation now. InProgress is
+		// what marks the row as being worked, and three things depend on it: the
+		// scanner's Open-only archive leaves it alone, ReconcileSettledRecommendations
+		// only settles rows sitting at InProgress, and the UI stops offering an
+		// apply that is already running.
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		var err error
+		if userId != "" {
+			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $3, updated_at = $2, updated_by = $4 WHERE id = $1", r.Id, nowStr, recommendationStatus, userId)
+		} else {
+			_, err = dbms.Db.Exec("UPDATE recommendation SET status = $3, updated_at = $2 WHERE id = $1", r.Id, nowStr, recommendationStatus)
+		}
+		if err != nil {
+			ctx.GetLogger().Error("error claiming recommendation for an in-flight apply", "error", err, "recommendation_id", r.Id, "status", recommendationStatus, "user_id", userId)
+			return RecommendationApplyResponse{}, common.ErrorInternal(fmt.Sprintf("error updating recommendation status: %s", err.Error()))
+		}
 	}
 
 	// trigger notification

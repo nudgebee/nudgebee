@@ -132,7 +132,11 @@ func SubjectKey(a AlertIdentity) string {
 		sort.Strings(s)
 		return "db|" + ns + "|" + strings.Join(s, ",")
 	}
-	subj := strings.ToLower(strings.TrimSpace(a.SubjectOwner))
+	// The owner is hash-stripped too: some collectors report the ReplicaSet
+	// ("postgres-78d9cffd68") as owner while others report the Deployment
+	// ("postgres") for the same workload — without stripping, the two forms
+	// key to different subjects and same-incident attach silently misses.
+	subj := WorkloadName(a.SubjectOwner)
 	if subj == "" {
 		subj = WorkloadName(a.SubjectName)
 	}

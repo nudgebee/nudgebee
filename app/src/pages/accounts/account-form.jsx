@@ -203,6 +203,10 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'openobserve'} />;
           case 'openobserve_webhook':
             return <ListIntegrations integrationName={'openobserve_webhook'} />;
+          case 'cubeapm':
+            return <ListIntegrations integrationName={'cubeapm'} />;
+          case 'cubeapm_webhook':
+            return <ListIntegrations integrationName={'cubeapm_webhook'} />;
           case 'azure_monitor_webhook':
             return <ListIntegrations integrationName={'azure_monitor_webhook'} />;
           case 'ssh':

@@ -11,6 +11,12 @@ const (
 
 const ToolExecuteShellCommand = "shell_execute"
 
+// NotebookToolName is the registered name of the update_notebook control tool.
+// Canonical here (in tools/core) because both the tool implementation (package
+// tools) and the ReAct4 planner (package agents/core) reference it and both
+// import this package, avoiding a duplicated literal or an import cycle.
+const NotebookToolName = "update_notebook"
+
 type NBToolCommand struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
@@ -101,6 +107,14 @@ func ImplTypeFor(tool NBTool) string {
 //	var _ core.MissingFieldsResponder = (*myTool)(nil)
 type MissingFieldsResponder interface {
 	OnMissingRequiredFields(request NBToolCallRequest, missing []string) *NBToolResponse
+}
+
+// SchemaValidationInputNormalizer lets a tool canonicalize legacy input shapes
+// before its published InputSchema is enforced. The returned input is used only
+// for validation; Call still receives the original payload so compatibility
+// parsing and persisted tool parameters remain unchanged.
+type SchemaValidationInputNormalizer interface {
+	NormalizeInputForSchemaValidation(input string) string
 }
 
 type NBToolResposeType string

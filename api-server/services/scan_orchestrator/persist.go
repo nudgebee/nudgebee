@@ -170,9 +170,9 @@ func collectVulnerabilityRows(recs []Recommendation) []models.Vulnerability {
 	return vulnRows
 }
 
-// persistUpsertRecommendations UPSERTs recs in a single batch. Mirrors
-// recommendation.upsertRecommendationData (k8s_recommendation_service.go:43-61);
-// the on-conflict tuple is the recommendation table's unique index on
+// persistUpsertRecommendations UPSERTs recs in a single batch. Shares its shape
+// with recommendation.upsertRecommendationData; the on-conflict tuple is the
+// recommendation table's unique index on
 // (rule_name, cloud_account_id, resource_id, category, account_object_id).
 //
 // The status column is guarded by a CASE (below): a re-scan may move a row

@@ -11,23 +11,24 @@ func CheckAndFollowupOpenPRs(ctx *security.RequestContext) error {
 	return adapter.CheckAndFollowupOpenPRs(ctx)
 }
 
-// FindOpenPRResolutionByURL returns the resolution id and table for an open
-// agent PR matching the given URL, or empty strings if none exists.
-// Delegates to adapter.FindOpenPRResolutionByURL.
-func FindOpenPRResolutionByURL(prURL string) (resolutionID, tableName string, err error) {
-	return adapter.FindOpenPRResolutionByURL(prURL)
+// HasOpenPRResolutionForURL reports whether we own an open agent PR matching
+// the given URL. Delegates to adapter.HasOpenPRResolutionForURL.
+func HasOpenPRResolutionForURL(prURL string) (bool, error) {
+	return adapter.HasOpenPRResolutionForURL(prURL)
 }
 
-// ProcessOpenPRResolution dispatches a followup for a single PR resolution row.
-// Used by the GitHub webhook handler to react to PR events immediately, without
-// waiting for the next cron tick. Delegates to adapter.ProcessOpenPRResolution.
-func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableName string) error {
-	return adapter.ProcessOpenPRResolution(ctx, resolutionID, tableName)
+// ProcessOpenPRFollowup dispatches a followup for a single PR, identified by
+// its URL. Used by the GitHub webhook handler to react to PR events
+// immediately, without waiting for the next cron tick. Delegates to
+// adapter.ProcessOpenPRFollowup.
+func ProcessOpenPRFollowup(ctx *security.RequestContext, prURL string) error {
+	return adapter.ProcessOpenPRFollowup(ctx, prURL)
 }
 
 // MarkAllPRResolutionsTerminalByURL retires every open resolution (across both
-// resolution tables) whose PR just closed or merged, flipping pr_lifecycle_state
-// and the user-facing status. Delegates to adapter.MarkAllPRResolutionsTerminalByURL.
+// resolution tables) and the pr_followup row whose PR just closed or merged,
+// flipping pr_lifecycle_state and the user-facing status. Delegates to
+// adapter.MarkAllPRResolutionsTerminalByURL.
 func MarkAllPRResolutionsTerminalByURL(ctx *security.RequestContext, prURL string, merged bool) (int64, error) {
 	return adapter.MarkAllPRResolutionsTerminalByURL(ctx, prURL, merged)
 }

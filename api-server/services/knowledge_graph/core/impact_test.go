@@ -33,7 +33,7 @@ func TestSummarizeImpact_CountsAppDependentsAndProd(t *testing.T) {
 		},
 	}
 
-	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, edges, minDepth)
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, edges, minDepth, map[string]string{})
 
 	if got.DependentCount != 3 {
 		t.Errorf("DependentCount = %d, want 3 (2 services + 1 workload; namespace excluded)", got.DependentCount)
@@ -72,6 +72,111 @@ func TestSummarizeImpact_CountsAppDependentsAndProd(t *testing.T) {
 	}
 }
 
+// withAccount stamps the cloud account a test node belongs to — the join key
+// the account-environment fallback resolves through.
+func withAccount(n *DbNode, accountID string) *DbNode {
+	n.CloudAccountID = accountID
+	return n
+}
+
+func TestSummarizeImpact_ResolvesEnvironmentFromAccountTiers(t *testing.T) {
+	seedID := "db-1"
+	accountEnv := map[string]string{"acc-prod": "prod", "acc-dev": "non_prod"}
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeDatabase, "orders-db", "", ""),
+		// An explicit environment label outranks the account tier.
+		withAccount(newImpactTestNode("wl-labeled", NodeTypeWorkload, "canary", "staging", "shop"), "acc-prod"),
+		// No label → the account tier decides.
+		withAccount(newImpactTestNode("wl-prod", NodeTypeWorkload, "checkout", "", "shop"), "acc-prod"),
+		withAccount(newImpactTestNode("wl-dev", NodeTypeWorkload, "ingest", "", "data"), "acc-dev"),
+		// Unknown account → environment stays unresolved rather than guessed.
+		withAccount(newImpactTestNode("wl-orphan", NodeTypeWorkload, "orphan", "", "data"), "acc-gone"),
+		// ExternalService records the OBSERVING account, so it gets no fallback.
+		withAccount(newImpactTestNode("ext-1", NodeTypeExternalService, "10.0.0.7", "", ""), "acc-prod"),
+		// Infrastructure intermediates resolve too (display only).
+		withAccount(newImpactTestNode("node-1", NodeTypeNode, "gke-node-1", "", ""), "acc-prod"),
+	}
+	minDepth := map[string]int{seedID: 0, "wl-labeled": 1, "wl-prod": 1, "wl-dev": 1, "wl-orphan": 1, "ext-1": 1, "node-1": 1}
+
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, nil, minDepth, accountEnv)
+
+	if got.ProductionDependents != 1 {
+		t.Errorf("ProductionDependents = %d, want 1 (only wl-prod via account tier)", got.ProductionDependents)
+	}
+	envByID := map[string]string{}
+	for _, d := range got.Dependents {
+		envByID[d.NodeID] = d.Environment
+	}
+	want := map[string]string{
+		"wl-labeled": "staging",
+		"wl-prod":    "prod",
+		"wl-dev":     "non_prod",
+		"wl-orphan":  "",
+		"ext-1":      "",
+	}
+	for id, env := range want {
+		if envByID[id] != env {
+			t.Errorf("dependent %s Environment = %q, want %q", id, envByID[id], env)
+		}
+	}
+	if len(got.InfrastructureDependents) != 1 || got.InfrastructureDependents[0].Environment != "prod" {
+		t.Errorf("infrastructure dependent should resolve via account tier, got %+v", got.InfrastructureDependents)
+	}
+}
+
+func TestSortImpactedServices_InternalBeforeExternal(t *testing.T) {
+	deps := []ImpactedService{
+		{NodeID: "ext-close", Name: "10.0.0.7", NodeType: NodeTypeExternalService, HopsAway: 1},
+		{NodeID: "wl-far", Name: "reporting", NodeType: NodeTypeWorkload, HopsAway: 2},
+		{NodeID: "wl-close", Name: "checkout", NodeType: NodeTypeWorkload, HopsAway: 1},
+	}
+	sortImpactedServices(deps)
+	wantOrder := []string{"wl-close", "wl-far", "ext-close"}
+	for i, id := range wantOrder {
+		if deps[i].NodeID != id {
+			t.Errorf("position %d = %q, want %q (internal first, then hops/name; full: %+v)", i, deps[i].NodeID, id, deps)
+		}
+	}
+}
+
+// A K8sService fronted by a load balancer must be nameable in the downstream
+// context list — it is the most common AWS-LB → EKS landing type, and dropping
+// it left an ALB reporting nothing at all.
+func TestSummarizeDownstream_NamesK8sService(t *testing.T) {
+	seedID := "lb-1"
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeLoadBalancer, "web-alb", "", ""),
+		newImpactTestNode("svc-1", NodeTypeK8sService, "frontend", "", "shop"),
+	}
+	got := summarizeDownstream(seedID, nodes, nil, map[string]int{seedID: 0, "svc-1": 1}, map[string]string{})
+	if len(got) != 1 || got[0].NodeType != NodeTypeK8sService {
+		t.Errorf("K8sService must be named downstream, got %+v", got)
+	}
+}
+
+// The seed-aware depth default gives Storage seeds the three levels the
+// Storage←PV←PVC←Workload chain spans; everything else keeps 2.
+func TestImpactDepthDefaults(t *testing.T) {
+	if impactDepthDefaults[NodeTypeStorage] != 3 {
+		t.Errorf("Storage depth default = %d, want 3", impactDepthDefaults[NodeTypeStorage])
+	}
+	if _, ok := impactDepthDefaults[NodeTypeDatabase]; ok {
+		t.Error("Database must keep the default depth")
+	}
+}
+
+func TestSummarizeDownstream_ResolvesEnvironmentFromAccountTiers(t *testing.T) {
+	seedID := "wl-1"
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeWorkload, "checkout", "", "shop"),
+		withAccount(newImpactTestNode("db-1", NodeTypeDatabase, "orders-db", "", ""), "acc-prod"),
+	}
+	got := summarizeDownstream(seedID, nodes, nil, map[string]int{seedID: 0, "db-1": 1}, map[string]string{"acc-prod": "prod"})
+	if len(got) != 1 || got[0].Environment != "prod" {
+		t.Errorf("downstream dependency should resolve via account tier, got %+v", got)
+	}
+}
+
 func TestSummarizeImpact_SingleSourceIsLowCoverage(t *testing.T) {
 	seedID := "vol-1"
 	nodes := []*DbNode{
@@ -84,7 +189,7 @@ func TestSummarizeImpact_SingleSourceIsLowCoverage(t *testing.T) {
 			ContributingSources: []EdgeContributingSource{{Source: "k8s"}},
 		},
 	}
-	got := summarizeImpact(seedID, NodeTypeStorage, nodes, edges, map[string]int{seedID: 0, "wl-1": 1})
+	got := summarizeImpact(seedID, NodeTypeStorage, nodes, edges, map[string]int{seedID: 0, "wl-1": 1}, map[string]string{})
 	if got.CoverageConfidence != CoverageLow {
 		t.Errorf("CoverageConfidence = %q, want low", got.CoverageConfidence)
 	}
@@ -99,7 +204,7 @@ func TestSummarizeImpact_NoDependentsLowNotNone(t *testing.T) {
 	// decided by the caller before traversal.
 	seedID := "vol-orphan"
 	nodes := []*DbNode{newImpactTestNode(seedID, NodeTypeStorage, "orphan-vol", "", "")}
-	got := summarizeImpact(seedID, NodeTypeStorage, nodes, nil, map[string]int{seedID: 0})
+	got := summarizeImpact(seedID, NodeTypeStorage, nodes, nil, map[string]int{seedID: 0}, map[string]string{})
 	if got.DependentCount != 0 {
 		t.Errorf("DependentCount = %d, want 0", got.DependentCount)
 	}
@@ -172,7 +277,7 @@ func TestSummarizeDownstream(t *testing.T) {
 			ContributingSources: []EdgeContributingSource{{Source: "traces"}}},
 	}
 
-	got := summarizeDownstream(seedID, nodes, edges, depth)
+	got := summarizeDownstream(seedID, nodes, edges, depth, map[string]string{})
 
 	if len(got) != 2 {
 		t.Fatalf("expected 2 downstream dependencies (namespace + seed excluded), got %d: %+v", len(got), got)

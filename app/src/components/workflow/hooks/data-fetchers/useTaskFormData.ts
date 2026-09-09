@@ -22,7 +22,14 @@ import {
   RedisLogoIcon,
 } from '@assets';
 
-type LabelValue = { label: string; value: string };
+type LabelValue = { label: string; value: string; storage?: string };
+
+// A PVC's allocated size, read from the relay get_resource payload. The spec
+// request is what the PV Rightsize task patches; status.capacity is the
+// fallback for PVCs whose request isn't set on the object.
+function pvcStorage(item: any): string | undefined {
+  return item?.spec?.resources?.requests?.storage ?? item?.status?.capacity?.storage;
+}
 
 function toNamespaceOptions(data: any[]): LabelValue[] {
   if (!data || data.length === 0) return [];
@@ -164,7 +171,7 @@ export const useTaskFormData = (currentTaskDefinition: any, selectedActionType: 
     { label: string; value: string; tool?: string; projects?: { name?: string; key?: string }[]; icon?: any }[]
   >([]);
   const [resourceTypes, setResourceTypes] = useState<{ label: string; value: string }[]>([]);
-  const [resourceNames, setResourceNames] = useState<{ label: string; value: string }[]>([]);
+  const [resourceNames, setResourceNames] = useState<LabelValue[]>([]);
   const [resourceNamesLoading, setResourceNamesLoading] = useState(false);
   const resourceNamesFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Generation counter so a slow in-flight request doesn't overwrite results
@@ -301,7 +308,7 @@ export const useTaskFormData = (currentTaskDefinition: any, selectedActionType: 
   // Cache of PVCs from the most recent relay call, keyed by the account it
   // was fetched for. Stored in a ref so derive-effects don't trigger another
   // relay call.
-  const pvcCacheRef = useRef<{ accountId: string; items: { name: string; namespace: string }[] }>({ accountId: '', items: [] });
+  const pvcCacheRef = useRef<{ accountId: string; items: { name: string; namespace: string; storage?: string }[] }>({ accountId: '', items: [] });
   const [pvcCacheVersion, setPvcCacheVersion] = useState(0);
 
   // Fetch namespaces when needed, filtered by the currently-selected account
@@ -407,7 +414,7 @@ export const useTaskFormData = (currentTaskDefinition: any, selectedActionType: 
         }
         const items: any[] = Array.isArray(data) ? data : [];
         const normalized = items
-          .map((i: any) => ({ name: i?.metadata?.name as string, namespace: i?.metadata?.namespace as string }))
+          .map((i: any) => ({ name: i?.metadata?.name as string, namespace: i?.metadata?.namespace as string, storage: pvcStorage(i) }))
           .filter((i) => !!i.name && !!i.namespace);
         pvcCacheRef.current = { accountId: selectedAccountId, items: normalized };
         setPvcCacheVersion((v) => v + 1);
@@ -438,7 +445,7 @@ export const useTaskFormData = (currentTaskDefinition: any, selectedActionType: 
     const items = pvcCacheRef.current.items;
     setNamespaces(deduplicateOptions(items.map((i) => ({ label: i.namespace, value: i.namespace }))));
     const filtered = selectedNamespace ? items.filter((i) => i.namespace === selectedNamespace) : items;
-    setResourceNames(deduplicateOptions(filtered.map((i) => ({ label: i.name, value: i.name }))));
+    setResourceNames(deduplicateOptions(filtered.map((i) => ({ label: i.name, value: i.name, storage: i.storage }))));
   }, [isPVCMode, pvcCacheVersion, selectedNamespace]);
 
   // Fetch notification channels when needed
@@ -655,7 +662,11 @@ export const useTaskFormData = (currentTaskDefinition: any, selectedActionType: 
             const items: any[] = Array.isArray(data) ? data : [];
             const filtered = namespace ? items.filter((i: any) => i?.metadata?.namespace === namespace) : items;
             setResourceNames(
-              deduplicateOptions(filtered.map((i: any) => ({ label: i?.metadata?.name, value: i?.metadata?.name })).filter((o: any) => !!o.value))
+              deduplicateOptions(
+                filtered
+                  .map((i: any) => ({ label: i?.metadata?.name, value: i?.metadata?.name, storage: pvcStorage(i) }))
+                  .filter((o: any) => !!o.value)
+              )
             );
           })
           .catch((error: any) => {

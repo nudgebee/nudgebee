@@ -344,6 +344,13 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 				"memory_request": memRequest,
 			})
 		}
+		// An empty or junk-only payload (e.g. the {} the @finops apply tool
+		// substitutes when the model omits data) yields zero containers; letting
+		// it continue would create a no-op agent task while the recommendation
+		// goes InProgress and looks resolved. Reject it instead.
+		if len(containers) == 0 {
+			return ApplyRecommendationResponse{}, fmt.Errorf("recommendation apply rejected: payload contains no container resource changes")
+		}
 		// Reject a physically implausible apply (e.g. a value mangled by a unit
 		// bug) before it reaches the agent, instead of silently bricking the
 		// workload. Runs on the normalized quantities the agent will actually patch,

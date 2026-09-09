@@ -448,11 +448,13 @@ func (m AwsCliTool) IdentifyConfig(ctx core.NbToolContext, input core.NBToolCall
 // It strips content inside quoted strings first to avoid false positives on legitimate AWS CLI
 // arguments like JMESPath queries which use &&, ||, and pipe operators inside quotes.
 func isShellSyntax(command string) bool {
-	// Strip quoted content so operators inside quotes (e.g. JMESPath) are not flagged.
-	stripped := stripQuotedContent(command)
+	// Strip quoted content so operators inside quotes (e.g. JMESPath) are not flagged, while keeping
+	// $ and backticks that stay live inside double quotes -- otherwise "$(...)" strips to "" and the
+	// substitution check below has nothing left to match.
+	stripped := StripQuotedContentForShellCheck(command)
 
 	// Structurally unambiguous shell operators
-	unambiguousPatterns := []string{"$(", "&&", "||", "; do", ";do", "\ndo ", "\ndone"}
+	unambiguousPatterns := []string{"$(", "`", "&&", "||", "; do", ";do", "\ndo ", "\ndone"}
 	for _, p := range unambiguousPatterns {
 		if strings.Contains(stripped, p) {
 			return true
@@ -467,10 +469,64 @@ func isShellSyntax(command string) bool {
 	return false
 }
 
-// stripQuotedContent removes content inside single-quoted and double-quoted strings,
+// StripQuotedContentForShellCheck prepares a command for a shell-syntax or metacharacter check.
+// It drops quoted text the shell treats as literal, but keeps the characters that stay live inside
+// double quotes, so the caller's check still sees them.
+//
+// The distinction matters because the two quote types are not equivalent to a shell. Single quotes
+// suppress every expansion, so their content is inert and dropped whole. Double quotes do NOT: `$`
+// and a backtick still begin a command substitution inside them. StripQuotedContent removes a
+// double-quoted span wholesale, which made `aws s3 ls "$(...)"` look like `aws s3 ls ""` -- clean to
+// every guard -- and the workspace then ran it under `sh -c`, substitution and all. A backslash
+// escape is still skipped, because `\$` inside double quotes really is a literal dollar sign.
+//
+// Everything else (`;` `&` `|` `<` `>` `(` `)`) IS literal inside double quotes, so it is still
+// dropped -- that is what keeps a quoted JMESPath filter acceptable.
+func StripQuotedContentForShellCheck(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == '\'' || ch == '"' {
+			b.WriteByte(ch)
+			quote := ch
+			i++
+			for i < len(s) {
+				if s[i] == '\\' && quote == '"' && i+1 < len(s) {
+					i += 2 // an escaped character is literal, including \$ and \`
+					continue
+				}
+				if s[i] == quote {
+					b.WriteByte(quote)
+					i++
+					break
+				}
+				// Inside double quotes these two keep their power, so the check must still see them.
+				// The `(` of a `$(` is carried with it: a caller looking for the two-character `$(`
+				// (isShellSyntax does) cannot match on a lone `$`. Other parentheses stay dropped, so
+				// a quoted JMESPath filter is still not mistaken for shell syntax.
+				if quote == '"' && (s[i] == '$' || s[i] == '`') {
+					b.WriteByte(s[i])
+					if s[i] == '$' && i+1 < len(s) && s[i+1] == '(' {
+						b.WriteByte('(')
+						i++
+					}
+				}
+				i++
+			}
+		} else {
+			b.WriteByte(ch)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// StripQuotedContent removes content inside single-quoted and double-quoted strings,
 // preserving the quote delimiters. This prevents operators inside CLI arguments
 // (e.g. JMESPath --query '... && ...') from being misidentified as shell syntax.
-func stripQuotedContent(s string) string {
+func StripQuotedContent(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	i := 0

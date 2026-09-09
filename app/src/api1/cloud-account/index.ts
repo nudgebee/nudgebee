@@ -1,5 +1,16 @@
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
-import { getEndOfDay, getEndOfMonth, getEndOfYear, getLast7Days, getStartOfMonth, getStartOfYear } from '@lib/datetime';
+import {
+  getEndOfDay,
+  getEndOfMonth,
+  getEndOfMonthUTC,
+  getEndOfLastMonthUTC,
+  getEndOfYearUTC,
+  getLast7Days,
+  getStartOfMonth,
+  getStartOfMonthUTC,
+  getStartOfLastMonthUTC,
+  getStartOfYearUTC,
+} from '@lib/datetime';
 
 const GET_DISTINCT_REGIONS = `
 query GetDistinctRegions($where: CloudResourceGroupingsWhereRequest) {
@@ -166,6 +177,7 @@ export const LIST_CLOUD_ISSUES = `
       computed_score
       score_factors
       score_confidence
+      is_investigated
     }
   }
 }`;
@@ -206,6 +218,7 @@ export const LIST_CLOUD_ISSUES_LIGHT = `
       computed_priority
       computed_score
       score_confidence
+      is_investigated
     }
   }
 }`;
@@ -1518,11 +1531,6 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       return { mtd: [], prevMonth: [], ytd: [] };
     }
     const currentDate = new Date();
-    const lastMonthDate = new Date();
-    // Pin to the 1st before stepping back a month — on the 29th-31st,
-    // setMonth alone overflows (e.g. Jul 31 → "Jun 31" → Jul 1).
-    lastMonthDate.setDate(1);
-    lastMonthDate.setMonth(lastMonthDate.getMonth() - 1);
 
     const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
     const buildWhere = (s: Date | string, e: Date | string) => ({
@@ -1532,10 +1540,10 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
 
     const query = CLOUD_ACCOUNTS_SPEND_SUMMARY.replace(
       '__WHERE_CM__',
-      gqlStringify(buildWhere(getStartOfMonth(currentDate), getEndOfMonth(currentDate)))
+      gqlStringify(buildWhere(getStartOfMonthUTC(currentDate), getEndOfMonthUTC(currentDate)))
     )
-      .replace('__WHERE_LM__', gqlStringify(buildWhere(getStartOfMonth(lastMonthDate), getEndOfMonth(lastMonthDate))))
-      .replace('__WHERE_YR__', gqlStringify(buildWhere(getStartOfYear(currentDate), getEndOfYear(currentDate))));
+      .replace('__WHERE_LM__', gqlStringify(buildWhere(getStartOfLastMonthUTC(currentDate), getEndOfLastMonthUTC(currentDate))))
+      .replace('__WHERE_YR__', gqlStringify(buildWhere(getStartOfYearUTC(currentDate), getEndOfYearUTC(currentDate))));
 
     const response = await queryGraphQL(query, 'CloudAccountsSpendSummary', {});
     const errors = response?.data?.errors;
@@ -1554,17 +1562,15 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
     if (accountId === 'demo') return null;
     try {
       const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const startDate = data?.start_date || getLast7Days().toISOString();
       const endDate = data?.end_date || getEndOfDay().toISOString();
 
-      const cmStart = getStartOfMonth(currentDate);
-      const cmEnd = getEndOfMonth(currentDate);
-      const lmStart = getStartOfMonth(lastMonthStart);
-      const lmEnd = getEndOfMonth(lastMonthStart);
-      const yrStart = getStartOfYear(currentDate);
-      const yrEnd = getEndOfYear(currentDate);
+      const cmStart = getStartOfMonthUTC(currentDate);
+      const cmEnd = getEndOfMonthUTC(currentDate);
+      const lmStart = getStartOfLastMonthUTC(currentDate);
+      const lmEnd = getEndOfLastMonthUTC(currentDate);
+      const yrStart = getStartOfYearUTC(currentDate);
+      const yrEnd = getEndOfYearUTC(currentDate);
 
       const buildSpendWhere = (s: string | Date, e: string | Date, amountFilter?: any, excludeAggregate = false) => {
         const conditions: any[] = [{ spend_date: { _gte: s } }, { spend_date: { _lte: e } }, { exclude_aggregate: { _eq: excludeAggregate } }];
@@ -1637,15 +1643,13 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       const startDate = data?.start_date || getLast7Days().toISOString();
       const endDate = data?.end_date || getEndOfDay().toISOString();
       const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
 
-      const cmStart = getStartOfMonth(currentDate);
-      const cmEnd = getEndOfMonth(currentDate);
-      const lmStart = getStartOfMonth(lastMonthStart);
-      const lmEnd = getEndOfMonth(lastMonthStart);
-      const yrStart = getStartOfYear(currentDate);
-      const yrEnd = getEndOfYear(currentDate);
+      const cmStart = getStartOfMonthUTC(currentDate);
+      const cmEnd = getEndOfMonthUTC(currentDate);
+      const lmStart = getStartOfLastMonthUTC(currentDate);
+      const lmEnd = getEndOfLastMonthUTC(currentDate);
+      const yrStart = getStartOfYearUTC(currentDate);
+      const yrEnd = getEndOfYearUTC(currentDate);
 
       const svc = data.serviceName;
       const resourceType = EC2_RESOURCE_TYPE_MAP[svc] || EC2_DEFAULT_RESOURCE_TYPE;
@@ -1737,15 +1741,13 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       const startDate = data?.start_date || getLast7Days().toISOString();
       const endDate = data?.end_date || getEndOfDay().toISOString();
       const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
 
-      const cmStart = getStartOfMonth(currentDate);
-      const cmEnd = getEndOfMonth(currentDate);
-      const lmStart = getStartOfMonth(lastMonthStart);
-      const lmEnd = getEndOfMonth(lastMonthStart);
-      const yrStart = getStartOfYear(currentDate);
-      const yrEnd = getEndOfYear(currentDate);
+      const cmStart = getStartOfMonthUTC(currentDate);
+      const cmEnd = getEndOfMonthUTC(currentDate);
+      const lmStart = getStartOfLastMonthUTC(currentDate);
+      const lmEnd = getEndOfLastMonthUTC(currentDate);
+      const yrStart = getStartOfYearUTC(currentDate);
+      const yrEnd = getEndOfYearUTC(currentDate);
 
       const eventsWhere: any = {
         account_id: { _eq: accountId },
@@ -1813,15 +1815,13 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
     if (accountId === 'demo') return null;
     try {
       const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
 
-      const cmStart = getStartOfMonth(currentDate);
-      const cmEnd = getEndOfMonth(currentDate);
-      const lmStart = getStartOfMonth(lastMonthStart);
-      const lmEnd = getEndOfMonth(lastMonthStart);
-      const yrStart = getStartOfYear(currentDate);
-      const yrEnd = getEndOfYear(currentDate);
+      const cmStart = getStartOfMonthUTC(currentDate);
+      const cmEnd = getEndOfMonthUTC(currentDate);
+      const lmStart = getStartOfLastMonthUTC(currentDate);
+      const lmEnd = getEndOfLastMonthUTC(currentDate);
+      const yrStart = getStartOfYearUTC(currentDate);
+      const yrEnd = getEndOfYearUTC(currentDate);
 
       const buildSpendWhere = (s: string | Date, e: string | Date, amountFilter?: any, excludeAggregate = false) =>
         buildServiceSpendWhere(accountId, data.serviceName, s, e, amountFilter, excludeAggregate);
@@ -1878,15 +1878,13 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       const startDate = data?.start_date || getLast7Days().toISOString();
       const endDate = data?.end_date || getEndOfDay().toISOString();
       const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
 
-      const cmStart = getStartOfMonth(currentDate);
-      const cmEnd = getEndOfMonth(currentDate);
-      const lmStart = getStartOfMonth(lastMonthStart);
-      const lmEnd = getEndOfMonth(lastMonthStart);
-      const yrStart = getStartOfYear(currentDate);
-      const yrEnd = getEndOfYear(currentDate);
+      const cmStart = getStartOfMonthUTC(currentDate);
+      const cmEnd = getEndOfMonthUTC(currentDate);
+      const lmStart = getStartOfLastMonthUTC(currentDate);
+      const lmEnd = getEndOfLastMonthUTC(currentDate);
+      const yrStart = getStartOfYearUTC(currentDate);
+      const yrEnd = getEndOfYearUTC(currentDate);
 
       const eventsWhere: any = {
         account_id: { _eq: accountId },

@@ -8,9 +8,11 @@ import Text from '@shared/format/Text';
 // chip with a muted hint when the owner is inherited (via namespace/cluster) or
 // derived from a rule. Renders an em dash when unowned. Reads owner_name off the
 // response — no directory lookup. onClick (when provided) opens the assign modal.
+// hideHint drops the trailing hint, for callers that spell the derivation out in
+// full nearby — there the hint reads as a second value rather than a qualifier.
 const VIA_HINT = { namespace: 'via namespace', cluster: 'via cluster' };
 
-export default function OwnerBadge({ owner, onClick }) {
+export default function OwnerBadge({ owner, onClick, hideHint = false }) {
   if (!owner || !owner.found) {
     if (onClick) {
       return (
@@ -24,7 +26,9 @@ export default function OwnerBadge({ owner, onClick }) {
 
   const isGroup = owner.owner_type === 'group';
   let hint = '';
-  if (owner.source === 'rule') {
+  if (hideHint) {
+    hint = '';
+  } else if (owner.source === 'rule') {
     hint = 'rule';
   } else if (owner.via && owner.via !== 'self') {
     hint = VIA_HINT[owner.via] || `via ${owner.via}`;
@@ -50,4 +54,5 @@ OwnerBadge.propTypes = {
     via: PropTypes.string,
   }),
   onClick: PropTypes.func,
+  hideHint: PropTypes.bool,
 };

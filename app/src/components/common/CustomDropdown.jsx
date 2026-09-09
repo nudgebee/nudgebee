@@ -1,7 +1,8 @@
 import * as React from 'react';
 import PropTypes from 'prop-types';
 import { inputSx, inputCustomSx } from '@data/themes/inputField';
-import { Autocomplete, TextField, Paper, InputAdornment, ListItem, Tooltip, CircularProgress } from '@mui/material';
+import { Autocomplete, TextField, Paper, InputAdornment, ListItem, CircularProgress } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import ClusterStatusIndicator, { checkConnections } from './widgets/ClusterStatusIndicator';
 import Link from 'next/link';
 import { ds } from 'src/utils/colors';
@@ -508,7 +509,7 @@ const CustomDropdown = ({
               showStatusIndicator && clusterData ? (
                 <InputAdornment position='start'>
                   <Link passHref href={`/agentHealth?accountId=${clusterData?.value}#agent`}>
-                    <Tooltip title='Cluster Health'>
+                    <Tooltip title='Cluster Health' placement='bottom'>
                       <span style={{ display: 'inline-block', cursor: 'pointer' }}>
                         <ClusterStatusIndicator showBorder={true} clusterData={clusterData} />
                       </span>

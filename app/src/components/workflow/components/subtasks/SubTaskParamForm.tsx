@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Switch, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Switch } from '@ui/Switch';
 import { ds } from 'src/utils/colors';
 import TemplateTextField, { TemplateSuggestion } from '../TemplateTextField';
 import HybridField from '../HybridField';
@@ -193,7 +194,6 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
           checked={fieldValue || false}
           onChange={(e) => onChange(fieldName, e.target.checked)}
           disabled={disabled}
-          sx={{ alignSelf: 'flex-start', ml: -1 }}
         />
       );
     }

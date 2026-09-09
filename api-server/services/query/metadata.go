@@ -646,10 +646,31 @@ var fingerprintDependentColumns = map[string]bool{
 	"count_new_issue_events":    true,
 }
 
+// Columns that depend on the analysed-events JOIN on event_groupings_v2.
+//
+// Kept separate from prDependentColumns (which serves a different table's
+// pr_url/pr_title) because this one joins a PRE-AGGREGATED subquery:
+// event_log_analysis holds one row per analysis_type per event, so joining it
+// raw would multiply every event row by its stage count and silently inflate
+// event_count, count_new_issues and every other aggregate in the same query.
+// The subquery collapses to one row per (event, account) before the join.
+var analysisDependentColumns = map[string]bool{
+	"count_analysed_issues":     true,
+	"first_analysed_at":         true,
+	"minutes_to_first_analysis": true,
+}
+
 // Columns that depend on the event_log_analysis JOIN
 var prDependentColumns = map[string]bool{
 	"pr_url":   true,
 	"pr_title": true,
+}
+
+// Columns that add the investigation-status join, keyed on the (fingerprint,
+// account, aggregation_key) triple rather than event_id: analysis is cached per
+// fingerprint, so a sibling event's run is what /investigate serves.
+var investigationStatusDependentColumns = map[string]bool{
+	"is_investigated": true,
 }
 
 // Columns that depend on the event_correlations same_incident JOINs
@@ -657,6 +678,10 @@ var prDependentColumns = map[string]bool{
 var incidentDependentColumns = map[string]bool{
 	"incident_leader_id":    true,
 	"incident_member_count": true,
+	// Aggregate forms for grouped (inbox) rows.
+	"incident_group_size":      true,
+	"is_incident_child":        true,
+	"incident_group_leader_id": true,
 }
 
 func whereReferencesColumns(where QueryWhereClause, cols map[string]bool) bool {
@@ -1288,10 +1313,65 @@ var table_metadata = map[string]TableDefinition{
 		Type:             Aggregate,
 		Source:           getSource("event_groupings_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
+			from := "events"
 			if requestReferencesColumns(request, fingerprintDependentColumns) {
-				return "events LEFT JOIN event_duplicates ed ON ed.event_id = events.id AND ed.cloud_account_id = events.cloud_account_id", request, nil
+				from += " LEFT JOIN event_duplicates ed ON ed.event_id = events.id AND ed.cloud_account_id = events.cloud_account_id"
 			}
-			return "events", request, nil
+			if requestReferencesColumns(request, incidentDependentColumns) {
+				// Same-subject incident grouping (#34655): mirrors the events_v2
+				// joins so grouped counts can filter/aggregate on the same
+				// incident columns the list filters on (children folded by
+				// default must fold in the counts too).
+				from += ` LEFT JOIN (SELECT DISTINCT ON (event_id, cloud_account_id) event_id, cloud_account_id, related_event_id
+					FROM event_correlations WHERE correlation_type = 'same_incident'
+					ORDER BY event_id, cloud_account_id, related_event_id) ecl
+					ON ecl.event_id = events.id AND ecl.cloud_account_id = events.cloud_account_id`
+				from += ` LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
+					FROM event_correlations WHERE correlation_type = 'same_incident'
+					GROUP BY related_event_id, cloud_account_id) ecc
+					ON ecc.related_event_id = events.id AND ecc.cloud_account_id = events.cloud_account_id`
+			}
+			// One row per analysed event, not per analysis stage. event_log_analysis
+			// carries a row per analysis_type (summary / log_analysis /
+			// investigation / detailed_response), so a raw join would return up to
+			// four rows per event and multiply every other aggregate selected
+			// alongside these columns.
+			//
+			// min(recorded_at) is the clock: time to FIRST completed stage is when a
+			// reader could first see an explanation, which is what "time to
+			// understand" means. Waiting for all four would measure pipeline depth
+			// instead.
+			if requestReferencesColumns(request, analysisDependentColumns) {
+				from += ` LEFT JOIN (
+					SELECT event_id, cloud_account_id, min(recorded_at) AS first_analysed_at
+					FROM event_log_analysis
+					WHERE status = 'COMPLETED'
+					GROUP BY event_id, cloud_account_id
+				) ela ON ela.event_id = events.id AND ela.cloud_account_id = events.cloud_account_id`
+			}
+			// One row per triple (not per analysis stage), so it can't fan out
+			// event rows. The inner DISTINCT ON picks the newest row per stage —
+			// V850 keeps history rows. completion_ts is that newest stage's
+			// timestamp; the is_investigated column compares it to created_at.
+			if requestReferencesColumns(request, investigationStatusDependentColumns) {
+				from += ` LEFT JOIN (
+					SELECT event_fingerprint, cloud_account_id, event_aggregation_key,
+					       count(*) FILTER (WHERE status = 'COMPLETED') = 4 AS is_complete,
+					       max(ts) FILTER (WHERE status = 'COMPLETED') AS completion_ts
+					FROM (
+						SELECT DISTINCT ON (event_fingerprint, cloud_account_id, event_aggregation_key, analysis_type)
+						       event_fingerprint, cloud_account_id, event_aggregation_key,
+						       status, coalesce(updated_at, recorded_at) AS ts
+						FROM event_log_analysis
+						WHERE analysis_type IN ('summary', 'investigation', 'log_analysis', 'detailed_response')
+						ORDER BY event_fingerprint, cloud_account_id, event_aggregation_key, analysis_type, coalesce(updated_at, recorded_at) DESC
+					) latest
+					GROUP BY event_fingerprint, cloud_account_id, event_aggregation_key
+				) eia ON eia.event_fingerprint = events.fingerprint
+					AND eia.cloud_account_id = events.cloud_account_id
+					AND eia.event_aggregation_key = events.aggregation_key`
+			}
+			return from, request, nil
 		},
 		Name:                "event_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
@@ -1337,7 +1417,12 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"subject_owner": {
 				Type: ColumnDefinitionTypeString,
-				Def:  "COALESCE(subject_owner, subject_name, '')",
+				// NULLIF before COALESCE: events.subject_owner is never NULL —
+				// producers write '' when the subject has no owning workload
+				// (nodes, cloud resources, alerts whose labels resolved no
+				// owner), so a plain COALESCE returns '' and never reaches the
+				// subject_name fallback the grouped-events view depends on.
+				Def: "COALESCE(NULLIF(subject_owner, ''), subject_name, '')",
 			},
 			"priority": {
 				Type: ColumnDefinitionTypeString,
@@ -1583,6 +1668,33 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "min(ed.absolute_first_seen_at)",
 				IsAggregated: true,
 			},
+			// Coverage numerator. DISTINCT fingerprint so it shares the issue unit
+			// with event_count's distinct transformation — dividing a per-event
+			// numerator by a per-chain denominator is the exact mistake this
+			// column exists to stop callers making.
+			"count_analysed_issues": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "count(DISTINCT CASE WHEN ela.first_analysed_at IS NOT NULL THEN events.fingerprint END)",
+				IsAggregated: true,
+			},
+			"first_analysed_at": {
+				Type:         ColumnDefinitionTypeDatetime,
+				Def:          "min(ela.first_analysed_at)",
+				IsAggregated: true,
+			},
+			// Median, not mean: analysis latency has a long tail (a stuck chain
+			// sitting for hours drags an average far past anything a reader would
+			// recognise). Rows where the analysis predates the event are excluded
+			// rather than clamped — a negative interval means the analysis came
+			// from an earlier occurrence being reused, which is not this event's
+			// time to understand.
+			"minutes_to_first_analysis": {
+				Type: ColumnDefinitionTypeFloat,
+				Def: "percentile_cont(0.5) WITHIN GROUP (ORDER BY " +
+					"CASE WHEN ela.first_analysed_at >= events.created_at " +
+					"THEN EXTRACT(EPOCH FROM (ela.first_analysed_at - events.created_at)) / 60 END)",
+				IsAggregated: true,
+			},
 			"fingerprint_event_count": {
 				Type:         ColumnDefinitionTypeInt,
 				Def:          "max(ed.occurrence_number)",
@@ -1591,6 +1703,53 @@ var table_metadata = map[string]TableDefinition{
 			"is_new_issue": {
 				Type: ColumnDefinitionTypeBoolean,
 				Def:  "CASE WHEN ed.absolute_first_seen_at > NOW() - INTERVAL '7 days' THEN true ELSE false END",
+			},
+			"incident_leader_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "ecl.related_event_id",
+			},
+			"incident_member_count": {
+				Type: ColumnDefinitionTypeInt,
+				Def:  "coalesce(ecc.incident_member_count, 0)",
+			},
+			// Row-level group signals for the Triage Inbox (#34655): a
+			// fingerprint row LEADS a group when any of its events has
+			// members; it is a CHILD when any of its events links to a
+			// leader. Aggregated because inbox rows span many events.
+			"incident_group_size": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "max(coalesce(ecc.incident_member_count, 0))",
+				IsAggregated: true,
+			},
+			"is_incident_child": {
+				Type:         ColumnDefinitionTypeBoolean,
+				Def:          "bool_or(ecl.related_event_id IS NOT NULL)",
+				IsAggregated: true,
+			},
+			// eia.* (see the join in DefGenerator) is constant within a
+			// fingerprint group; the >= reuses the analysis for events that
+			// fired up to 24h after it, or any time before.
+			"is_investigated": {
+				Type:         ColumnDefinitionTypeBoolean,
+				Def:          "bool_and(coalesce(eia.is_complete, false)) AND max(eia.completion_ts) >= max(events.created_at) - INTERVAL '24 hours'",
+				IsAggregated: true,
+			},
+			// The event id the Grouped Alerts drill-down resolves the row's
+			// group from. A row's newest event is usually neither a leader nor
+			// a member — the leader is the OLDEST event of a recurring
+			// fingerprint — so anchoring on latest_event_id left rows that
+			// visibly carry a GROUPED badge showing "no related alerts".
+			// Leading rows anchor on their own largest leader (a row can hold
+			// more than one; incident_group_size is that same max); child rows
+			// anchor on the leader their newest linked event points at.
+			"incident_group_leader_id": {
+				Type: ColumnDefinitionTypeString,
+				Def: "coalesce(" +
+					"(array_agg(events.id::text ORDER BY ecc.incident_member_count DESC, events.created_at DESC) " +
+					"FILTER (WHERE ecc.incident_member_count > 0))[1], " +
+					"(array_agg(ecl.related_event_id::text ORDER BY events.created_at DESC) " +
+					"FILTER (WHERE ecl.related_event_id IS NOT NULL))[1])",
+				IsAggregated: true,
 			},
 		},
 	},
@@ -1631,12 +1790,37 @@ var table_metadata = map[string]TableDefinition{
 					`coalesce(ecc.incident_member_count, 0) as incident_member_count`)
 				joins = append(joins,
 					`LEFT JOIN (SELECT DISTINCT ON (event_id, cloud_account_id) event_id, cloud_account_id, related_event_id
-						FROM event_correlations WHERE correlation_type = 'same_incident') ecl
+						FROM event_correlations WHERE correlation_type = 'same_incident'
+						ORDER BY event_id, cloud_account_id, related_event_id) ecl
 						ON ecl.event_id = e.id AND ecl.cloud_account_id = e.cloud_account_id`,
 					`LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
 						FROM event_correlations WHERE correlation_type = 'same_incident'
 						GROUP BY related_event_id, cloud_account_id) ecc
 						ON ecc.related_event_id = e.id AND ecc.cloud_account_id = e.cloud_account_id`)
+			}
+			if requestReferencesColumns(request, investigationStatusDependentColumns) {
+				// LATERAL rather than a whole-table grouped subquery: per list
+				// row this is an index range scan on
+				// idx_event_log_analysis_fingerprint_account_agg_type (V850),
+				// Memoized across repeated fingerprints, so cost stays flat as
+				// event_log_analysis grows. DISTINCT ON picks the newest row per
+				// stage — V850 keeps history rows.
+				selects = append(selects, `coalesce(eia.is_investigated, false) as is_investigated`)
+				joins = append(joins, `LEFT JOIN LATERAL (
+						SELECT count(*) FILTER (WHERE latest.status = 'COMPLETED') = 4
+							AND max(latest.ts) FILTER (WHERE latest.status = 'COMPLETED') >= e.created_at - INTERVAL '24 hours'
+							AS is_investigated
+						FROM (
+							SELECT DISTINCT ON (ela.analysis_type)
+							       ela.status, coalesce(ela.updated_at, ela.recorded_at) AS ts
+							FROM event_log_analysis ela
+							WHERE ela.event_fingerprint = e.fingerprint
+								AND ela.cloud_account_id = e.cloud_account_id
+								AND ela.event_aggregation_key = e.aggregation_key
+								AND ela.analysis_type IN ('summary', 'investigation', 'log_analysis', 'detailed_response')
+							ORDER BY ela.analysis_type, coalesce(ela.updated_at, ela.recorded_at) DESC
+						) latest
+					) eia ON true`)
 			}
 			if len(joins) == 0 {
 				return "events", request, nil
@@ -1771,6 +1955,10 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"pr_title": {
 				Type: ColumnDefinitionTypeString,
+			},
+			// No Def: the LATERAL join in DefGenerator emits the aliased boolean.
+			"is_investigated": {
+				Type: ColumnDefinitionTypeBoolean,
 			},
 			"fingerprint_first_seen_at": {
 				Type: ColumnDefinitionTypeDatetime,
@@ -3097,7 +3285,11 @@ var table_metadata = map[string]TableDefinition{
 							ELSE r.id::text
 						END,
 						r.category
-					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
+					ORDER BY
+						-- Terminal rows sort last; must match
+						-- tools.PrimaryRecommendationRank in llm-server.
+						CASE WHEN r.status IN ('Archive', 'Closed') THEN 1 ELSE 0 END,
+						r.estimated_savings DESC, r.updated_at DESC, r.id
 				) AS resource_rank` + vulnCols + `
 			FROM recommendation r
 			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
@@ -3148,6 +3340,10 @@ var table_metadata = map[string]TableDefinition{
 							-- Per-resource recommendations: one primary per (resource, category) wins.
 							WHEN r.resource_id IS NOT NULL THEN r.resource_id::text
 							-- Azure-shaped fallback (kept while Azure ingestion still relies on it).
+							-- NOTE: llm-server mirrors this whole partition in
+							-- tools.PrimaryRecommendationRank so chat and this page report the
+							-- same savings (#36673). Change both together, or Azure/AWS totals
+							-- diverge across surfaces again.
 							-- Gated on cloud_provider FIRST so the jsonb tests are only reached for
 							-- Azure rows. Without the gate every non-Azure row that falls through the
 							-- branches above detoasts the recommendation jsonb up to four times just
@@ -3168,7 +3364,11 @@ var table_metadata = map[string]TableDefinition{
 							ELSE r.id::text
 						END,
 						r.category
-					ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
+					ORDER BY
+						-- Terminal rows sort last; must match
+						-- tools.PrimaryRecommendationRank in llm-server.
+						CASE WHEN r.status IN ('Archive', 'Closed') THEN 1 ELSE 0 END,
+						r.estimated_savings DESC, r.updated_at DESC, r.id
 				) AS resource_rank` + vulnCols + `
 			FROM recommendation r
 			LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
@@ -3190,6 +3390,10 @@ var table_metadata = map[string]TableDefinition{
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
+			"id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "id",
+			},
 			"tenant_id": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "tenant_id",
@@ -3442,6 +3646,13 @@ var table_metadata = map[string]TableDefinition{
 			// choose a more efficient join strategy.
 			podAccountFilter := extractFilterSQL(&request, "account_id", "pc.cloud_account_id")
 			recAccountFilter := strings.Replace(podAccountFilter, "pc.cloud_account_id", "rec.cloud_account_id", 1)
+			// Tenant filter arrives as an _and clause from the security layer, so
+			// extractFilterSQL leaves it enforced in the outer WHERE and the copies
+			// pushed here act purely as planner hints — without them a cross-account
+			// request (no account filter) scans every tenant's pods and findings
+			// inside the subqueries before the outer tenant filter applies.
+			podTenantFilter := extractFilterSQL(&request, "tenant_id", "pc.tenant_id")
+			recTenantFilter := strings.Replace(podTenantFilter, "pc.tenant_id", "rec.tenant_id", 1)
 			recStatusFilter := extractFilterSQL(&request, "status", "rec.status")
 			recSeverityFilter := extractFilterSQL(&request, "severity", "rec.severity")
 			podNamespaceFilter := extractFilterSQL(&request, "namespace", "pc.\"namespace\"")
@@ -3486,13 +3697,13 @@ var table_metadata = map[string]TableDefinition{
 					container->>'image' AS image
 				FROM k8s_pods pc,
 					LATERAL jsonb_array_elements(pc.meta->'config'->'containers') AS container
-				WHERE pc.is_active IS NOT FALSE` + podAccountFilter + podNamespaceFilter + `
+				WHERE pc.is_active IS NOT FALSE` + podAccountFilter + podTenantFilter + podNamespaceFilter + `
 			) cr ON cr.cloud_account_id = rec.cloud_account_id
 				AND cr.tenant_id        = rec.tenant_id
 				AND cr.image            = rec.recommendation->>'image_name'
 			WHERE rec.category            = 'Security'
 				AND rec.rule_name         = 'image_scan'
-				AND rec.account_object_id IS NOT NULL` + recAccountFilter + recStatusFilter + recSeverityFilter + `
+				AND rec.account_object_id IS NOT NULL` + recAccountFilter + recTenantFilter + recStatusFilter + recSeverityFilter + `
 		) AS t
 		`
 			return def, request, nil
@@ -3570,6 +3781,11 @@ var table_metadata = map[string]TableDefinition{
 			// instead of all pods for the account.
 			podAccountFilter := extractFilterSQL(&request, "account_id", "cr.cloud_account_id")
 			outerAccountFilter := strings.Replace(podAccountFilter, "cr.cloud_account_id", "pc.cloud_account_id", 1)
+			// Planner hint for cross-account requests — the tenant filter stays
+			// enforced in the outer WHERE (it arrives as an _and clause; see
+			// recommendation_security_v2 above). Both CTE paths alias k8s_pods as
+			// cr; the recommendation sides already bind tenant via the pod rows.
+			podTenantFilter := extractFilterSQL(&request, "tenant_id", "cr.tenant_id")
 			podNamespaceFilter := extractFilterSQL(&request, "namespace", "cr.\"namespace\"")
 			// rec2 alias is used in the heavy-path LATERAL; r alias is used in the light-path EXISTS.
 			recStatusFilter := extractFilterSQL(&request, "status", "rec2.status")
@@ -3605,7 +3821,7 @@ var table_metadata = map[string]TableDefinition{
 					cr.tenant_id                   AS tenant_id
 				FROM k8s_pods cr,
 					lateral jsonb_array_elements(cr.meta->'config'->'containers') AS container
-				WHERE cr.is_active IS NOT FALSE` + podAccountFilter + podNamespaceFilter + `
+				WHERE cr.is_active IS NOT FALSE` + podAccountFilter + podTenantFilter + podNamespaceFilter + `
 			)
 			SELECT DISTINCT
 				pi.namespace      AS namespace,
@@ -3750,7 +3966,7 @@ var table_metadata = map[string]TableDefinition{
 					cr.tenant_id         AS tenant_id
 				FROM k8s_pods cr,
 					lateral jsonb_array_elements(cr.meta->'config'->'containers') AS container
-				WHERE cr.is_active IS NOT FALSE` + podAccountFilter + podNamespaceFilter + `
+				WHERE cr.is_active IS NOT FALSE` + podAccountFilter + podTenantFilter + podNamespaceFilter + `
 			)
 			SELECT
 				pc.tenant_id         AS tenant_id,
@@ -4241,6 +4457,22 @@ var table_metadata = map[string]TableDefinition{
 			"status": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "status",
+			},
+			// The status a human recognises, mirroring what kubectl prints. `status`
+			// above is only the pod PHASE, which is "Running" for a pod stuck in
+			// CrashLoopBackOff and "Pending" for one stuck in ImagePullBackOff -- so
+			// on its own it cannot distinguish a broken pod from a healthy one. The
+			// reason kubectl shows lives in the container statuses, which the agent
+			// ships in meta.status_info.
+			//
+			// Precedence follows kubectl: an init container that is not done blocks
+			// the pod, so its reason wins; then the app containers; falling back to
+			// NULL so callers can use `status` when there is nothing more specific.
+			// Computed rather than stored: it changes with every container
+			// transition, and a column would need a migration plus a writer.
+			"container_status": {
+				Type: ColumnDefinitionTypeString,
+				Def:  podContainerStatusExpr,
 			},
 			"node_name": {
 				Type: ColumnDefinitionTypeString,
@@ -5101,7 +5333,11 @@ var table_metadata = map[string]TableDefinition{
 										ELSE r.id::text
 									END,
 									r.category
-								ORDER BY r.estimated_savings DESC, r.updated_at DESC, r.id
+								ORDER BY
+						-- Terminal rows sort last; must match
+						-- tools.PrimaryRecommendationRank in llm-server.
+						CASE WHEN r.status IN ('Archive', 'Closed') THEN 1 ELSE 0 END,
+						r.estimated_savings DESC, r.updated_at DESC, r.id
 							) AS resource_rank` + vulnCols + `
 						FROM recommendation r
 						LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
@@ -8884,7 +9120,17 @@ var table_metadata = map[string]TableDefinition{
 			rr.created_at,
 			rr.updated_at,
 			rr.status_message,
-			CASE WHEN rr.data IS NOT NULL THEN jsonb_build_object('data', rr.data->'data', 'provider_config', rr.data->'provider_config') END as data,
+			-- ticket_id/ticket_key are stored at the TOP level of data by
+			-- services/recommendation/ticket_resolution.go, so a projection naming
+			-- only 'data' and 'provider_config' dropped both, and every ticket
+			-- resolution read out as {"data": null, "provider_config": null} — the
+			-- key was written on creation and then visible to nothing.
+			CASE WHEN rr.data IS NOT NULL THEN jsonb_build_object(
+				'data', rr.data->'data',
+				'provider_config', rr.data->'provider_config',
+				'ticket_id', rr.data->'ticket_id',
+				'ticket_key', rr.data->'ticket_key'
+			) END as data,
 			r.tenant_id as tenant_id,
 			r.cloud_account_id as account_id,
 			CASE WHEN r.recommendation IS NOT NULL THEN jsonb_build_object('spec', r.recommendation->'spec', 'metadata', r.recommendation->'metadata', 'namespace', r.recommendation->'namespace') END as rec_recommendation,
@@ -8931,9 +9177,13 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_resolution_groupings_v2": {
-		Type:                Aggregate,
-		Source:              database.Metastore,
-		Def:                 "(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg",
+		Type:   Aggregate,
+		Source: database.Metastore,
+		// rec_severity is joined in so a severity-filtered listing can be COUNTED
+		// as well as listed: the frontend sends one where clause to the listing and
+		// another to this aggregate, and a column missing here would leave
+		// pagination reporting totals for a filter it never applied.
+		Def:                 "(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg",
 		Name:                "recommendation_resolution_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
@@ -8949,6 +9199,7 @@ var table_metadata = map[string]TableDefinition{
 			"recommendation_id": {Type: ColumnDefinitionTypeString},
 			"tenant_id":         {Type: ColumnDefinitionTypeString},
 			"account_id":        {Type: ColumnDefinitionTypeString},
+			"rec_severity":      {Type: ColumnDefinitionTypeString},
 		},
 	},
 	"event_resolution_v2": {
@@ -10297,3 +10548,71 @@ func init() {
 		}()
 	}
 }
+
+// podContainerStatusExpr renders the pod status a human recognises -- the one
+// kubectl prints in its STATUS column -- from the container statuses the agent
+// ships in meta.status_info.
+//
+// It exists because k8s_pods.status holds the pod PHASE, and the phase cannot
+// express "running but broken": a pod in CrashLoopBackOff has phase Running and
+// one in ImagePullBackOff has phase Pending. Measured on a dev cluster, 402
+// active pods carried just two distinct phases, so the phase alone tells a
+// reader nothing about health.
+//
+// Init containers take precedence over app containers, matching kubectl: while
+// an init container is stuck the app containers have not started, and their
+// generic "PodInitializing" would mask the real reason. Within each group a
+// waiting reason wins over a terminated one, since waiting is the current state
+// and terminated is the last one. NULL when nothing is waiting or terminated --
+// i.e. a healthy pod -- so callers fall back to the phase.
+//
+// A container that exited 0 is not a problem and is skipped in BOTH groups. A
+// long-running pod alongside a completed sidecar or helper would otherwise read
+// "Completed" while its main container is happily running. The consequence is
+// that a finished Job pod reports its phase, "Succeeded", where kubectl says
+// "Completed" -- the same fact in the vocabulary the rest of this table uses.
+//
+// exitCode is compared as text rather than cast to int. Every value Go writes
+// here comes from an int32 field so it is always numeric, but meta is free-form
+// jsonb and a cast raises on anything else, which would fail the whole query
+// rather than one row. This is the same reasoning as the jsonb_typeof guards.
+//
+// jsonb_typeof guards every array: status_info is null for pods last reported by
+// an agent that predates it being sent, and jsonb_array_elements errors on a
+// non-array rather than returning no rows.
+//
+// WITH ORDINALITY + ORDER BY ord makes the pick deterministic. jsonb_array_elements
+// emits in array order in practice, but nothing guarantees it, and a pod whose
+// containers are broken in two different ways (one CrashLoopBackOff, one
+// ImagePullBackOff) would otherwise report whichever the executor happened to
+// return first, and could report a different one on the next refresh. Ordering by
+// position means it always reports the first such container, matching the order the
+// pod spec lists them in.
+const podContainerStatusExpr = `COALESCE(
+	(SELECT cs.value->'state'->'waiting'->>'reason'
+	   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'status_info'->'initContainerStatuses') = 'array'
+	                                  THEN meta->'status_info'->'initContainerStatuses' ELSE '[]'::jsonb END)
+	        WITH ORDINALITY AS cs(value, ord)
+	  WHERE cs.value->'state'->'waiting'->>'reason' IS NOT NULL
+	  ORDER BY cs.ord LIMIT 1),
+	(SELECT cs.value->'state'->'terminated'->>'reason'
+	   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'status_info'->'initContainerStatuses') = 'array'
+	                                  THEN meta->'status_info'->'initContainerStatuses' ELSE '[]'::jsonb END)
+	        WITH ORDINALITY AS cs(value, ord)
+	  WHERE cs.value->'state'->'terminated'->>'reason' IS NOT NULL
+	    AND COALESCE(cs.value->'state'->'terminated'->>'exitCode', '') <> '0'
+	  ORDER BY cs.ord LIMIT 1),
+	(SELECT cs.value->'state'->'waiting'->>'reason'
+	   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'status_info'->'containerStatuses') = 'array'
+	                                  THEN meta->'status_info'->'containerStatuses' ELSE '[]'::jsonb END)
+	        WITH ORDINALITY AS cs(value, ord)
+	  WHERE cs.value->'state'->'waiting'->>'reason' IS NOT NULL
+	  ORDER BY cs.ord LIMIT 1),
+	(SELECT cs.value->'state'->'terminated'->>'reason'
+	   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(meta->'status_info'->'containerStatuses') = 'array'
+	                                  THEN meta->'status_info'->'containerStatuses' ELSE '[]'::jsonb END)
+	        WITH ORDINALITY AS cs(value, ord)
+	  WHERE cs.value->'state'->'terminated'->>'reason' IS NOT NULL
+	    AND COALESCE(cs.value->'state'->'terminated'->>'exitCode', '') <> '0'
+	  ORDER BY cs.ord LIMIT 1)
+)`

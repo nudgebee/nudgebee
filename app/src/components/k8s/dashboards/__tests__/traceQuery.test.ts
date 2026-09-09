@@ -1,48 +1,104 @@
-import { normaliseTraceTimestamp, toTraceParams } from '../traceQuery';
-import { filterableColumns, findTable } from '../entityQuery';
+import { normaliseTraceTimestamp, runTracePanel, toTraceWhere } from '../traceQuery';
+import { defaultDraft, filterableColumns, findTable } from '../entityQuery';
 
-describe('toTraceParams', () => {
-  it('maps a filter row onto the named parameter the traces API takes', () => {
-    const { params, unsupported } = toTraceParams([
-      { column: 'workload_namespace', operator: '_in', value: 'prod, staging' },
-      { column: 'workload_name', operator: '_eq', value: 'api' },
-      { column: 'span_name', operator: '_eq', value: 'GET /orders' },
-      { column: 'duration_ns', operator: '_gte', value: '5000000' },
-    ]);
-    expect(params.namespace).toEqual(['prod', 'staging']);
-    expect(params.workload).toEqual(['api']);
-    expect(params.selectedHttpSpan).toBe('GET /orders');
-    expect(params.duration).toBe(5000000);
+jest.mock('@api1/kubernetes/trace', () => ({
+  __esModule: true,
+  default: { traceV2: jest.fn(async () => ({ traces_list: [] })), traceGroupV2: jest.fn(async () => ({ traces_grouping_v3: [] })) },
+}));
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const apiTrace = require('@api1/kubernetes/trace').default;
+
+const spans = findTable('traces_v2');
+const groupings = findTable('traces_groupings_v2');
+
+describe('toTraceWhere', () => {
+  it('keeps the operator the author picked', () => {
+    // The bug this replaced: every filter was flattened onto a named API
+    // parameter whose operator was hard-coded, so "Span name is not X" ran as
+    // `span_name = X` — the exact opposite of what the panel said.
+    const { where, unsupported } = toTraceWhere(spans, [{ column: 'span_name', operator: '_neq', value: 'GET /orders' }]);
+    expect(where).toEqual({ span_name: { _neq: 'GET /orders' } });
     expect(unsupported).toEqual([]);
   });
 
-  it('sends one HTTP status as a string and several as a list', () => {
-    // The API branches on Array.isArray, using _eq or _in accordingly.
-    expect(toTraceParams([{ column: 'http_status_code', operator: '_eq', value: '500' }]).params.selectedHttpStatus).toBe('500');
-    expect(toTraceParams([{ column: 'http_status_code', operator: '_in', value: '500, 503' }]).params.selectedHttpStatus).toEqual(['500', '503']);
+  it('coerces a value to what its operator and column type expect', () => {
+    const { where } = toTraceWhere(spans, [
+      { column: 'workload_namespace', operator: '_not_in', value: 'prod, staging' },
+      { column: 'duration_ns', operator: '_lte', value: '5000000' },
+    ]);
+    expect(where.workload_namespace).toEqual({ _not_in: ['prod', 'staging'] });
+    // A number, not the string "5000000": the store compares against a numeric column.
+    expect(where.duration_ns).toEqual({ _lte: 5000000 });
   });
 
-  it('ignores rows with no value', () => {
+  it('ANDs two rows on one column into a single range', () => {
+    const { where } = toTraceWhere(spans, [
+      { column: 'duration_ns', operator: '_gte', value: '1000000' },
+      { column: 'duration_ns', operator: '_lte', value: '5000000' },
+    ]);
+    expect(where.duration_ns).toEqual({ _gte: 1000000, _lte: 5000000 });
+  });
+
+  it('ignores a row with no value', () => {
     // An unfinished filter row is not a filter on the empty string.
-    const { params } = toTraceParams([{ column: 'workload_name', operator: '_eq', value: '   ' }]);
-    expect(params.workload).toEqual([]);
+    expect(toTraceWhere(spans, [{ column: 'workload_name', operator: '_eq', value: '   ' }]).where).toEqual({});
   });
 
-  it('reports a column it cannot express instead of dropping it', () => {
-    const { unsupported } = toTraceParams([{ column: 'span_id', operator: '_eq', value: 'abc' }]);
-    expect(unsupported).toEqual(['span_id']);
+  it('reports a column the table cannot filter on instead of dropping it', () => {
+    // A grouping's aggregates need a HAVING, which the builder has no surface for.
+    const { where, unsupported } = toTraceWhere(groupings, [{ column: 'p99_latency', operator: '_gte', value: '1' }]);
+    expect(where).toEqual({});
+    expect(unsupported).toEqual(['p99_latency']);
   });
 
   it('can express every column the builder lets you filter on', () => {
     // The builder offers `filterable` columns; this is the check that the two
     // lists have not drifted apart — a drift means a filter the panel shows and
     // then silently ignores.
-    for (const table of ['traces_v2', 'traces_groupings_v2']) {
-      for (const column of filterableColumns(findTable(table))) {
-        const { unsupported } = toTraceParams([{ column: column.name, operator: '_eq', value: 'x' }]);
-        expect([table, column.name, unsupported]).toEqual([table, column.name, []]);
+    for (const table of [spans, groupings]) {
+      for (const column of filterableColumns(table)) {
+        const { unsupported } = toTraceWhere(table, [{ column: column.name, operator: '_eq', value: 'x' }]);
+        expect([table.value, column.name, unsupported]).toEqual([table.value, column.name, []]);
       }
     }
+  });
+});
+
+describe('runTracePanel', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('sends the grouping filters as a where clause and no list parameters', async () => {
+    await runTracePanel(
+      { ...defaultDraft('traces_groupings_v2'), filters: [{ column: 'span_name', operator: '_nlike', value: '%health%' }] },
+      'acc-1',
+      1,
+      2
+    );
+    const args = apiTrace.traceGroupV2.mock.calls[0];
+    expect(args[args.length - 1]).toEqual({ span_name: { _nlike: '%health%' } });
+    // The four list parameters must be '' and not []: the grouping call branches
+    // on Array.isArray with no length check, so an empty array still emits
+    // `_in: []` — harmless on ClickHouse, a terms query matching nothing on ES.
+    expect([args[1], args[2], args[3], args[4]]).toEqual(['', '', '', '']);
+  });
+
+  it('sends the span filters as a where clause', async () => {
+    await runTracePanel(
+      { ...defaultDraft('traces_v2'), filters: [{ column: 'status_code', operator: '_neq', value: 'STATUS_CODE_OK' }] },
+      'acc-1',
+      1,
+      2
+    );
+    const params = apiTrace.traceV2.mock.calls[0][0];
+    expect(params.where).toEqual({ status_code: { _neq: 'STATUS_CODE_OK' } });
+    expect(params.selectedStatusCode).toBe('');
+  });
+
+  it('does not select a filter-only column', async () => {
+    // `trace_source` narrows a grouping but is not in its fixed response, so
+    // asking for it back would render a blank column.
+    const result = await runTracePanel({ ...defaultDraft('traces_groupings_v2'), columns: ['workload_name', 'trace_source'] }, 'acc-1', 1, 2);
+    expect(result.column_names).toEqual(['workload_name']);
   });
 });
 

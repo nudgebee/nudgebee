@@ -1,57 +1,41 @@
 package core
 
 import (
-	"context"
-	"log/slog"
-	"nudgebee/llm/config"
-	"nudgebee/llm/security"
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestSummarizeContent_LargeInput(t *testing.T) {
-	// This is an integration test and requires a configured LLM provider.
-	// Skip if not running integration tests.
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode.")
+// NOTE: the former TestSummarizeContent_LargeInput live-provider integration test
+// was removed — SummarizeContent's size-based branching is now covered hermetically
+// (and in CI) by the tests in llm_message_summarization_unit_test.go.
+
+// TestSummarizationChunkSize verifies the chunk size fills the window minus the
+// reserved output (replacing the old maxTokens/2), stays within the window, and
+// clamps safely on tiny/pathological windows.
+func TestSummarizationChunkSize(t *testing.T) {
+	cases := []struct {
+		name      string
+		maxTokens int
+		model     string
+		want      int
+	}{
+		{"32k, unknown model (floor output reserve)", 32000, "some-model", 32000 - DefaultMaxOutputTokensFloor - 512},
+		{"32k, gpt-4o (16384 output reserve)", 32000, "gpt-4o", 32000 - 16384 - 512},
+		{"tiny 1k window clamps reserve and hits floor", 1024, "some-model", 256},
+		{"pathologically small 200 window caps to half", 200, "some-model", 100},
 	}
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("requires a live LLM provider configuration; set TEST_ACCOUNT to run")
+	// Output reserves come from the pricing catalog (V878); pin the one this
+	// test depends on so it stays hermetic.
+	withFakeModelLimitsCatalog(t, map[string]modelTokenLimits{
+		"openai:gpt-4o": {MaxOutput: 16384},
+	})
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := summarizationChunkSize(c.maxTokens, c.model)
+			assert.Equal(t, c.want, got)
+			assert.Less(t, got, c.maxTokens, "chunk must be smaller than the window")
+			assert.Greater(t, got, 0, "chunk must be strictly positive")
+		})
 	}
-
-	// 1. Setup: Configure a low token limit
-	config.Config.SetString("llm_max_tokens_per_message", "100")
-	defer config.Config.SetString("llm_max_tokens_per_message", "110000")
-
-	// 2. Create a large text input that will exceed the token limit
-	sentence := "This is a test sentence that we will repeat to create a very long document for summarization. "
-	largeContent := strings.Repeat(sentence, 40000)
-
-	// 3. Get LLM and context. You may need to adjust this based on your project's test setup.
-	accountId := os.Getenv("TEST_ACCOUNT")
-	userId := os.Getenv("TEST_USER")
-	agentName := "llm"
-	conversationId := uuid.New().String()
-	messageId := uuid.New().String()
-
-	llm, err := GetLlmModel(nil, agentName, accountId, conversationId)
-	if err != nil {
-		t.Fatalf("Failed to get LLM model for integration test: %v. Ensure your environment is configured to run LLM calls.", err)
-	}
-
-	reqCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForTenantAdmin(os.Getenv("TEST_TENANT")), slog.Default(), nil, nil)
-
-	summary := SummarizeContent(reqCtx, llm, largeContent, accountId, agentName, conversationId, messageId, userId)
-
-	// 5. Assertions
-	assert.NotEmpty(t, summary, "Summary should not be empty")
-	assert.NotEqual(t, summary, largeContent, "Summary should not be the same as the original content, which indicates summarization failed and returned the input.")
-	assert.Less(t, len(summary), len(largeContent), "Summary should be shorter than the original content.")
-
-	t.Logf("Successfully summarized large content. Original length: %d, Summary length: %d", len(largeContent), len(summary))
-	t.Logf("Summary: %s", summary)
 }

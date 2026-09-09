@@ -156,7 +156,6 @@ func (a *prometheusAction) Execute(ctx playbooks.PlaybookActionContext, rawParam
 		return nil, err
 	}
 
-	endTime := time.Now()
 	durationMinues := 10
 	if params.Duration != nil {
 		if dm, ok := params.Duration["duration_minutes"]; ok {
@@ -175,13 +174,11 @@ func (a *prometheusAction) Execute(ctx playbooks.PlaybookActionContext, rawParam
 			}
 		}
 	}
-	startTime := endTime.Add(-time.Duration(durationMinues) * time.Minute)
-	if ctx.GetEvent().StartedAt != nil {
-		startTime = *ctx.GetEvent().StartedAt
-	}
-	if ctx.GetEvent().EndedAt != nil {
-		endTime = *ctx.GetEvent().EndedAt
-	}
+	// Anchor on the event, floored at durationMinues. Overwriting startTime with
+	// StartedAt outright made the range a few seconds wide for a just-fired alert,
+	// which returns a single sample per series — enough to satisfy a "did it return
+	// data" check, not enough to plot the run-up the alert is about.
+	startTime, endTime := ctx.GetEvent().ResolveQueryWindow(durationMinues)
 	if params.PromqlQueries == nil {
 		params.PromqlQueries = []playbooks.NamedQuery{}
 	}

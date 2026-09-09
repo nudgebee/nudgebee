@@ -42,10 +42,16 @@ func (c *appConfig) GetFloat64(key string, defaultValue float64) float64 {
 var Config appConfig
 
 // SERVICE_NAME is the worker_type used in the leader-election table (nb_workers).
-// Defaults to "llm-server" so production behavior is unchanged. Local developers
-// can override via LLM_SERVER_SERVICE_NAME=llm-server-<dev> to opt out of the
-// shared election pool — each dev's local llm-server then has its own pool of
-// one, always wins the leader lease, and runs the watch dispatcher reliably.
+// Defaults to "llm-server" so production behavior is unchanged.
+//
+// To run leader jobs locally, a developer needs BOTH knobs:
+// LLM_SERVER_SCHEDULER_LEADER_ELIGIBLE=true to be electable at all (see
+// IsSchedulerLeaderEligible), and LLM_SERVER_SERVICE_NAME=llm-server-<dev> to be
+// elected in a private pool. The second without the first is silent — the process
+// heartbeats and never wins. The first without the second is worse: it makes the
+// laptop leader of the shared fleet, and the dead-worker query is scoped to
+// worker_type, so every real pod looks dead to it and their conversations get
+// restarted on the laptop.
 var SERVICE_NAME = func() string {
 	if v := os.Getenv("LLM_SERVER_SERVICE_NAME"); v != "" {
 		return v
@@ -290,6 +296,32 @@ type appConfig struct {
 	// uncapped thinking (budget -1), where there is no budget to derive a deadline from.
 	LlmProviderTTFTTimeoutMaxSeconds int `mapstructure:"llm_provider_ttft_timeout_max_seconds"`
 
+	// Global default sustained-generation timeout in seconds. Applies only when a
+	// provider is explicitly enabled via
+	// LLM_PROVIDER_SUSTAINED_GEN_TIMEOUT_ENABLED_<PROVIDER>=true and does NOT have
+	// its own LLM_PROVIDER_SUSTAINED_GEN_TIMEOUT_SECONDS_<PROVIDER> override. See
+	// getLLMSustainedGenTimeout in agents/core/llm_config.go. Unlike the TTFT
+	// watchdog above (which only guards the gap before the first streamed token),
+	// this watchdog cancels and retries the same model if TOTAL call duration
+	// exceeds this deadline regardless of whether streaming already started —
+	// guards against a call that starts streaming normally and then keeps
+	// generating far longer than a ReAct decision step ever should.
+	//
+	// This is a FLOOR, not the literal deadline used at runtime: a thinking-aware
+	// TTFT deadline can exceed this flat value on higher thinking levels, which
+	// would silently make TTFT unreachable for those calls. sustainedGenDeadlineSeconds
+	// (agents/core/llm_common.go) layers the actual deadline on top of both this
+	// floor and the TTFT deadline — see LlmProviderSustainedGenHeadroomSeconds below.
+	LlmProviderSustainedGenTimeoutSeconds int `mapstructure:"llm_provider_sustained_gen_timeout_seconds"`
+
+	// Fixed safety margin added on top of max(TTFT deadline, LlmProviderSustainedGenTimeoutSeconds)
+	// when computing the actual sustained-gen deadline for a call (see
+	// sustainedGenDeadlineSeconds in agents/core/llm_common.go). Guarantees the TTFT
+	// watchdog always gets its full configured chance to fire before sustained-gen
+	// can, so the two watchdogs are explicitly layered rather than racing on two
+	// independently-configured values (PR #36332 review).
+	LlmProviderSustainedGenHeadroomSeconds int `mapstructure:"llm_provider_sustained_gen_headroom_seconds"`
+
 	// LlmServerGlobalRetryBudgetMinutes caps the total time spent on a single agent step,
 	// including the initial call and all subsequent retries/continuations.
 	// This ensures a single step doesn't consume the entire request budget.
@@ -429,6 +461,13 @@ type appConfig struct {
 	LlmServerImageMaxSizeMB     float64 `mapstructure:"llm_server_image_max_size_mb"`
 
 	ServerName string `mapstructure:"llm_server_name"`
+	// SchedulerLeaderEligible controls whether this process may win the scheduler
+	// leader election. "auto" (default) grants eligibility to in-cluster replicas
+	// only; "true"/"false" force it. Developer machines run against the shared
+	// metastore, and the election is first-come with no preemption — an unguarded
+	// laptop wins it and silently disables every leader job in the cluster for as
+	// long as it keeps heartbeating.
+	SchedulerLeaderEligible string `mapstructure:"llm_server_scheduler_leader_eligible"`
 	// ServerHeartBeatFrequncySecond defines how often the server sends a heartbeat to indicate it is alive.
 	ServerHeartBeatFrequncySecond int `mapstructure:"server_heartbeat_frequency_second"`
 	// ServerHeartBeatTimeoutSecond defines the time after which a server is considered dead if no heartbeat is received.
@@ -534,9 +573,18 @@ type appConfig struct {
 	LlmServerWorkspaceKubeconfigPath string `mapstructure:"llm_server_workspace_kubeconfig_path"`
 	// LlmServerWorkspaceKubeContext optionally selects a specific context within the
 	// kubeconfig (only applied when a kubeconfig file is loaded, not in-cluster).
-	LlmServerWorkspaceKubeContext           string `mapstructure:"llm_server_workspace_kube_context"`
+	LlmServerWorkspaceKubeContext string `mapstructure:"llm_server_workspace_kube_context"`
+	// LlmServerWorkspaceRuntime selects the workspace lifecycle backend. Supported
+	// values are "kubernetes" (the default) and "docker" (for Compose installs).
+	LlmServerWorkspaceRuntime string `mapstructure:"llm_server_workspace_runtime"`
+	// LlmServerWorkspaceDockerHost is the local Docker Engine unix socket used in
+	// docker mode. Remote Engines are unsupported because workspace HTTP traffic
+	// is routed over the Engine-local Docker network.
+	LlmServerWorkspaceDockerHost            string `mapstructure:"llm_server_workspace_docker_host"`
+	LlmServerWorkspaceDockerNetwork         string `mapstructure:"llm_server_workspace_docker_network"`
 	LlmServerWorkspaceResourceLimitCpu      string `mapstructure:"llm_server_workspace_resource_limit_cpu"`
 	LlmServerWorkspaceResourceLimitMemory   string `mapstructure:"llm_server_workspace_resource_limit_memory"`
+	LlmServerWorkspaceResourceLimitStorage  string `mapstructure:"llm_server_workspace_resource_limit_storage"`
 	LlmServerWorkspaceResourceRequestCpu    string `mapstructure:"llm_server_workspace_resource_request_cpu"`
 	LlmServerWorkspaceResourceRequestMemory string `mapstructure:"llm_server_workspace_resource_request_memory"`
 	// LlmServerWorkspaceCommandTimeout sets SERVER_WRITE_TIMEOUT on the workspace
@@ -563,6 +611,21 @@ type appConfig struct {
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
+	// LogsV3CanonicalFastPathEnabled gates logs_v3's ROUTINE-mode canonical-JSON
+	// fast path (canonicalQueryAuthoringForRoutine / preBuiltCanonicalQuery /
+	// FetchLogsAgentV2.ExecuteV3, all in agent_log_v3.go): when the ReAct loop
+	// already knows namespace + app/pod, it builds the canonical `{"where": ...}`
+	// query itself and calls fetch_logs_v3 with it directly, skipping the
+	// tool's internal NL-translation LLM call. Global per-deploy toggle,
+	// default true — logs_v3 itself is already the safety gate (a distinct,
+	// opt-in agent name not wired into production routing), so this exists for
+	// a clean on/off A/B and instant rollback of just this sub-feature without
+	// reverting the whole agent. When false: the prompt never advertises the
+	// canonical-JSON option (fastPathAppAnchor and the tool description fall
+	// back to their NL-only phrasing) and fetchLogsV3Tool.Call never inspects
+	// tool_input shape — every fetch goes through the original NL →
+	// generateCanonicalLogQuery path unchanged.
+	LogsV3CanonicalFastPathEnabled bool `mapstructure:"llm_server_logs_v3_canonical_fast_path_enabled"`
 	// K8sOrchestratorMode selects which K8s orchestrator implementation the
 	// router-selected k8s_orchestrator runs. Boot-time, per-deploy (rollback =
 	// change + redeploy). Post-#32503 Phase 1 only two modes remain:
@@ -571,11 +634,27 @@ type appConfig struct {
 	// Unknown/empty falls back to "lean". The AWS/GCP/Azure orchestrators are
 	// lean-only after the collapse and no longer read a per-cloud mode setting.
 	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
+	// K8sGroundingEnabled appends a "ground before you fan out" discipline to the
+	// lean k8s orchestrator prompt: for a live symptom, probe with the cheap
+	// authoritative kubectl tools it already holds (and, for a hostname/URL symptom,
+	// resolve what serves that host) BEFORE delegating to heavy metrics/logs
+	// sub-agents. Dark/default-off flag for A/B; scopes but never replaces the deep
+	// investigation. See agents/agent_k8s_orchestrator.go k8sGroundingIfEnabled.
+	K8sGroundingEnabled bool `mapstructure:"llm_k8s_grounding_enabled"`
+	// PremiseVerificationEnabled gates the "confirm the symptom before diagnosing it"
+	// discipline: a proactive nudge on the lean k8s orchestrator prompt plus an answer-
+	// critiquer gate. When on, the agent must treat a user-asserted symptom ("X is down",
+	// "there's a surge") as a claim to VERIFY; if behavioural evidence disproves it, the
+	// honest "not occurring" answer is accepted (not forced into a root cause), and if the
+	// confirming tool FAILS/returns nothing the agent must say "cannot confirm" rather than
+	// fabricate an RCA on an unconfirmed symptom. Dark/default-off flag for A/B.
+	PremiseVerificationEnabled bool `mapstructure:"llm_premise_verification_enabled"`
 	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
 	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
 	TraceAgentV2Enabled                    bool   `mapstructure:"llm_server_trace_agent_v2_enabled"`
 	LlmServerWorkspacePort                 int    `mapstructure:"llm_server_workspace_port"`
 	LlmServerWorkspaceLocalUrl             string `mapstructure:"llm_server_workspace_local_url"`
+	LlmServerWorkspaceLocalToken           string `mapstructure:"llm_server_workspace_local_token"`
 	LlmServerWorkspaceFileMaxDownloadBytes int    `mapstructure:"llm_server_workspace_file_max_download_bytes"`
 
 	NotificationServerUrl   string `mapstructure:"notification_service_url"`
@@ -673,6 +752,12 @@ type appConfig struct {
 	// enforces grounding, not tool choice. Default off; enable per env after
 	// monitoring `SDG_no_data_rate` on dev to confirm no over-firing.
 	LlmServerSDGGroundingContractEnabled bool `mapstructure:"llm_server_sdg_grounding_contract_enabled"`
+	// LlmServerReAct4Enabled gates the provider-native tool-calling planner
+	// (ReAct4). Default false: a ReAct/Orchestrating agent only routes to ReAct4
+	// when this is on AND its resolved provider/model supports native tools
+	// (SupportsNativeTools); otherwise it stays on ReAct3. See
+	// docs/planner_react_4.md.
+	LlmServerReAct4Enabled bool `mapstructure:"llm_server_react4_enabled"`
 	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
 	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
 	// Default flipped to false 2026-07-12 after 30d prod data showed the
@@ -846,6 +931,11 @@ type appConfig struct {
 	MemoryTTLStaleDays            int `mapstructure:"llm_memory_ttl_stale_days"`
 	MemoryTTLCleanupIntervalHours int `mapstructure:"llm_memory_ttl_cleanup_interval_hours"`
 
+	// WaitingExpireDays: WAITING conversations idle longer than this are marked
+	// TERMINATED so the Waiting list stays an inbox instead of accumulating dead
+	// approvals forever (0 = disabled).
+	WaitingExpireDays int `mapstructure:"llm_server_waiting_expire_days"`
+
 	// LlmCircuitBreakerCooldownSeconds defines how long a model is placed in cooldown after hitting rate limits.
 	LlmCircuitBreakerCooldownSeconds int `mapstructure:"llm_server_circuit_breaker_cooldown_seconds"`
 
@@ -993,12 +1083,6 @@ type appConfig struct {
 	MemoryMaintenancePatternsStaleDays   int `mapstructure:"llm_memory_maintenance_patterns_stale_days"`
 	MemoryMaintenanceEventsRetentionDays int `mapstructure:"llm_memory_maintenance_events_retention_days"`
 
-	// OSS legacy-memory migration controls. The typed memory-v2 implementation
-	// is excluded, but the retained legacy migration package still consumes
-	// these settings.
-	MemoryMigrationMode        string  `mapstructure:"llm_memory_migration_mode"`
-	MemoryShadowSampleFraction float64 `mapstructure:"llm_memory_shadow_sample_fraction"`
-
 	// Productivity dashboard tunables. The "Time Saved" widget compares each
 	// completed investigation's AI runtime against a flat per-task manual
 	// baseline; the "Savings" widget multiplies the resulting hours by an
@@ -1037,6 +1121,18 @@ type appConfig struct {
 	// for local demos where a shared dev DB has cluster pods holding the
 	// lease. Never set this in a multi-replica production deployment.
 	WatchBypassLeaderElection bool `mapstructure:"llm_server_watch_bypass_leader_election"`
+
+	// PromptsVersion forces the prompt loader (prompts/loader.go resolveConfig)
+	// to resolve every prompt to this exact version (e.g. "v3") when no DB
+	// experiment/config applies, for iterating on a new prompt version
+	// locally without a DB round-trip. Overridable per-prompt via
+	// PROMPTS_VERSION_<PROMPT_NAME> (e.g. PROMPTS_VERSION_K8S_LEAN=v1),
+	// read dynamically since prompt names aren't enumerable here -- see
+	// prompts/loader.go's forcedVersionFor. Mirrors the LLM_PROVIDER_<AGENT>
+	// per-agent-then-global env convention (agents/core/llm_config.go).
+	// Never set in a deployed environment; production rollout stays
+	// DB-experiment/DB-config gated.
+	PromptsVersion string `mapstructure:"prompts_version"`
 }
 
 func (a appConfig) SetString(key string, value string) {
@@ -1186,6 +1282,8 @@ func init() {
 	viper.SetDefault("llm_provider_ttft_timeout_seconds", 30)
 	viper.SetDefault("llm_provider_ttft_thinking_tokens_per_sec", 100) // 0 disables the thinking adjustment
 	viper.SetDefault("llm_provider_ttft_timeout_max_seconds", 240)
+	viper.SetDefault("llm_provider_sustained_gen_timeout_seconds", 60)
+	viper.SetDefault("llm_provider_sustained_gen_headroom_seconds", 30)
 
 	// SLM specific configs for agents
 	viper.SetDefault("llm_provider_promql_query", "")
@@ -1277,6 +1375,7 @@ func init() {
 
 	viper.SetDefault("llm_server_workspace_resource_limit_cpu", "")
 	viper.SetDefault("llm_server_workspace_resource_limit_memory", "")
+	viper.SetDefault("llm_server_workspace_resource_limit_storage", "5Gi")
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
 	// 58s: see WorkspaceHTTPClientTimeout / workspaceCommandTimeoutBuffer doc
@@ -1285,14 +1384,21 @@ func init() {
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
+	viper.SetDefault("llm_server_logs_v3_canonical_fast_path_enabled", true)
 	viper.SetDefault("llm_server_log_validate_request_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are
 	// lean-only after the #32503 Phase 1 collapse — no per-cloud mode setting.
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
+	viper.SetDefault("llm_k8s_grounding_enabled", false)
+	viper.SetDefault("llm_premise_verification_enabled", false)
 	viper.SetDefault("llm_server_workspace_port", 8080)
-	viper.SetDefault("llm_server_workspace_local_url", "") // e.g. http://localhost:8080 for local dev
+	viper.SetDefault("llm_server_workspace_local_url", "")   // e.g. http://localhost:8080 for local dev
+	viper.SetDefault("llm_server_workspace_local_token", "") // must match NB_WORKSPACE_TOKEN on the local code-analysis process
+	viper.SetDefault("llm_server_workspace_runtime", "kubernetes")
+	viper.SetDefault("llm_server_workspace_docker_host", "unix:///var/run/docker.sock")
+	viper.SetDefault("llm_server_workspace_docker_network", "nudgebee-workspace")
 	viper.SetDefault("llm_server_workspace_file_max_download_bytes", 5*1024*1024)
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
@@ -1342,6 +1448,7 @@ func init() {
 	// used to flip this on at boot; baking it in preserves that behavior.
 	viper.SetDefault("llm_server_react_critique_enabled", true)
 	viper.SetDefault("llm_server_sdg_grounding_contract_enabled", false)
+	viper.SetDefault("llm_server_react4_enabled", false)
 	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", true)
 	viper.SetDefault("llm_server_react3_query_lean_prompt_enabled", true)
 	viper.SetDefault("llm_server_react3_query_model_downshift_enabled", false)
@@ -1390,6 +1497,7 @@ func init() {
 	viper.SetDefault("llm_memory_ttl_never_used_days", 90)
 	viper.SetDefault("llm_memory_ttl_stale_days", 180)
 	viper.SetDefault("llm_memory_ttl_cleanup_interval_hours", 24)
+	viper.SetDefault("llm_server_waiting_expire_days", 14)
 
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
 
@@ -1498,7 +1606,7 @@ func init() {
 	viper.SetDefault("llm_memory_maintenance_events_retention_days", 90)
 
 	viper.SetDefault("llm_productivity_manual_baseline_minutes", 25)
-	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 5.0)
+	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 30.0)
 
 	// Watch (background-poll-and-notify) defaults. Disabled by default — opt in via env.
 	viper.SetDefault("llm_server_watch_enabled", false)
@@ -1535,6 +1643,11 @@ func init() {
 	viper.SetDefault("llm_server_watch_sql_source_enabled", false)
 	viper.SetDefault("llm_server_watch_bypass_leader_election", false)
 
+	// Local-dev prompt iteration. Unset by default — opt in via env.
+	// PROMPTS_VERSION_<PROMPT_NAME> has no static default: it's read
+	// dynamically per prompt name (see prompts/loader.go's forcedVersionFor).
+	viper.SetDefault("prompts_version", "")
+
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
 	viper.SetDefault("llm_server_sub_agent_evidence_enabled", true)
@@ -1548,6 +1661,7 @@ func init() {
 	}
 
 	viper.SetDefault("llm_server_name", hostName)
+	viper.SetDefault("llm_server_scheduler_leader_eligible", "auto")
 
 	err = viper.ReadInConfig()
 	if err != nil {
@@ -1584,12 +1698,63 @@ func init() {
 		Config.OtelMetricsExporter = Config.OtelExporter
 	}
 
+	// Tag workers running outside the cluster. Locality has to be part of the name:
+	// a worker's nb_workers row is deleted once it stops, so by the time its
+	// conversation messages look orphaned there is nothing left to join against —
+	// this prefix is the only durable record of who owned them.
+	if !IsInCluster() && !strings.HasPrefix(Config.ServerName, LocalWorkerNamePrefix) {
+		Config.ServerName = LocalWorkerNamePrefix + Config.ServerName
+	}
+
 	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
 		namespace := strings.TrimSpace(string(data))
 		if namespace != "" {
 			Config.LlmServerCodeAgentNamespace = namespace
 		}
 	}
+}
+
+// OrphanRecoveryHorizon bounds how stale an abandoned conversation may be and still
+// be restarted. Shared by both recovery paths — the cluster's dead-worker query and
+// the boot-time own-orphan sweep — so they cannot drift into disagreeing about what
+// counts as abandoned. Past this point nobody is waiting for the answer, and
+// resuming only spends LLM budget.
+const OrphanRecoveryHorizon = 48 * time.Hour
+
+// LocalWorkerNamePrefix marks a worker — and every conversation message it owns —
+// as running outside the cluster. ':' is not legal in a hostname or a pod name, so
+// the prefix can never collide with a real in-cluster worker.
+const LocalWorkerNamePrefix = "local:"
+
+// IsInCluster reports whether this process runs as a Kubernetes pod. The kubelet
+// injects KUBERNETES_SERVICE_HOST into every container and it is never set on a
+// developer machine.
+func IsInCluster() bool {
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+}
+
+// IsSchedulerLeaderEligible reports whether this process may claim scheduler
+// leadership. Physical locality (IsInCluster) and this policy are deliberately
+// separate: forcing eligibility on a laptop lets a developer exercise leader jobs
+// without also making the cluster treat that laptop's conversations as its own.
+func IsSchedulerLeaderEligible() bool {
+	switch strings.ToLower(strings.TrimSpace(Config.SchedulerLeaderEligible)) {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return IsInCluster()
+	}
+}
+
+// IsLocalWorkerName reports whether a worker name belongs to a process running
+// outside the cluster. The trailing checks cover rows written before
+// LocalWorkerNamePrefix existed, which carry a bare hostname or loopback address.
+func IsLocalWorkerName(name string) bool {
+	return strings.HasPrefix(name, LocalWorkerNamePrefix) ||
+		name == "localhost" || name == "127.0.0.1" || name == "0.0.0.0" || name == "::" ||
+		strings.Contains(name, ".local")
 }
 
 const insecureJWTSecret = "default-jwt-secret"

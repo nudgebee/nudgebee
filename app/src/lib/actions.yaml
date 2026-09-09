@@ -3125,18 +3125,6 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Setup GCP Cloud Monitoring webhook notification channel for real-time alerts
-  - name: gcp_get_onboard_pubsub_url
-    definition:
-      kind: synchronous
-      handler: '{{SERVICE_API_SERVER_URL}}/rpc/account'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: account_admin
-    comment: Generate GCP Deployment Manager template URL for Pub/Sub real-time integration
   - name: ml_generate_node_recommendations
     definition:
       kind: synchronous
@@ -4410,6 +4398,19 @@ actions:
       - role: tenant_admin
   - name: security_scan_vm
     comment: Trigger an on-demand VM package inventory + vulnerability scan
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
+  - name: security_scan_vm_account
+    comment: Trigger an on-demand VM package inventory + vulnerability scan for every instance in an account
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
@@ -6972,6 +6973,7 @@ custom_types:
     - name: DisableAlertRule
     - name: security_scan_image_input
     - name: security_scan_vm_input
+    - name: security_scan_vm_account_input
     - name: tenant_user_roles_upsert_one_input
     - name: tenant_group_roles_upsert_one_input
     - name: account_user_roles_upsert_one_input
@@ -7225,7 +7227,6 @@ custom_types:
     - name: MetricsQueryUtilisationRequest
     - name: AwsOnboardStatusInput
     - name: AzureEventGridOnboardInput
-    - name: GcpPubSubOnboardInput
     - name: NotificationRulesWhereRequest
     - name: UserGroupsWhereRequest
     - name: IntegrationWhereRequest
@@ -7356,7 +7357,6 @@ custom_types:
     - name: AwsOrgRefreshTokenOutput
     - name: AwsOnboardStatusOutput
     - name: AzureEventGridOnboardOutput
-    - name: GcpPubSubOnboardOutput
     - name: ValidateCloudCredentialsOutput
     - name: PermissionStatusOutput
     - name: get_openai_query_recommendations_output
@@ -7410,6 +7410,7 @@ custom_types:
     - name: auto_optimize_recommendation_output
     - name: security_scan_image_output
     - name: security_scan_vm_output
+    - name: security_scan_vm_account_output
     - name: tenant_user_roles_upsert_one_output
     - name: tenant_group_roles_upsert_one_output
     - name: account_user_roles_upsert_one_output

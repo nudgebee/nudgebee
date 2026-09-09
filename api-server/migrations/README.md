@@ -81,7 +81,7 @@ The migration job is a Helm `pre-install,pre-upgrade` hook. On every deploy, the
 CI in `nudgebee-infra` builds + pushes the migration image and runs `helm upgrade ... --wait --wait-for-jobs`, which blocks until the Job exits 0.
 
 **Tools in the image:**
-- atlas community `v0.36.0` (SHA256-pinned in Dockerfile)
+- atlas community `v1.3.0` (SHA256-pinned in Dockerfile)
 - `postgresql-client` (for `psql` probes in run-migrations.sh)
 
 `ATLAS_NO_UPDATE_NOTIFIER=1` is set in the Dockerfile — no outbound HTTP from the Job container on every run. Relevant for rackspace and other restricted-egress environments.

@@ -21,14 +21,16 @@ import (
 // Gateway"): one config per (provider, credential) the gateway may use. `provider` selects
 // the shape — openai/anthropic/gemini need only an api_key (native lane, default
 // endpoint), while `custom` is a self-hosted / OpenAI-compatible endpoint (base_url +
-// models, routed on the vLLM lane, e.g. an HF Endpoint serving Qwen).
+// required models, routed on the vLLM lane, e.g. an HF Endpoint serving Qwen). Every
+// provider can additionally declare zero-to-many client-name → served-model mappings.
 //
 // It is DEDICATED to the gateway and deliberately separate from the `llm` integration
 // that llm-server uses for its own direct calls — the gateway no longer reads `llm` rows,
 // keeping the dependency arrow pointing llm-server → gateway (never the reverse).
 // The gateway's ee/providers resolver consumes these rows: custom → a per-request vLLM
-// DirectKey carrying the base URL; known providers → the provider's key (winning over the
-// operator GATEWAY_* env default). base_url is SSRF-validated here at save/test time; at
+// DirectKey carrying the base URL; mapped native models → the exact integration key;
+// unmapped known-provider calls → the provider's latest key (winning over the operator
+// GATEWAY_* env default). base_url is SSRF-validated here at save/test time; at
 // request time the gateway relies on Bifrost's dial-time guard (NetworkConfig.
 // AllowPrivateNetwork defaults false → private/link-local/metadata blocked).
 const IntegrationLLMGateway = "llm_gateway"
@@ -98,8 +100,8 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini, llmGatewayProviderCustom}},
 				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini}},
 			},
-			// base_url + models apply ONLY to a custom endpoint — a well-known provider uses
-			// its native default endpoint and its key covers all of that provider's models.
+			// base_url applies only to custom endpoints. Model mappings below apply to every
+			// provider and remain optional for native provider-wide credentials.
 			"base_url": {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "OpenAI-compatible base URL of the endpoint. A trailing /v1 is optional — both https://<host> and https://<host>/v1 work. Must be https and publicly reachable.",
@@ -108,10 +110,18 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 				RequiredWhen: map[string]any{"provider": llmGatewayProviderCustom},
 			},
 			"models": {
-				Type:         core.ToolSchemaTypeString,
-				Description:  "Comma-separated model ids this endpoint serves (e.g. Qwen/Qwen3.6-35B-A3B-FP8, or google/gemma-3-27b-it-maas for Vertex MaaS). A client addresses the model by one of these names. To give a model a distinct client-facing name — e.g. so two endpoints can serve the same underlying model — use alias=served (e.g. qwen-vertex=Qwen/Qwen3.6-35B-A3B-FP8): clients call the alias, the gateway forwards the served name.",
-				Priority:     5,
-				ShowWhen:     map[string]any{"provider": []any{llmGatewayProviderCustom, llmGatewayProviderVertexOpenAI}},
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional model mappings for this account. Add any number of client-facing names and the exact model ids sent to the provider. Mappings are additive: models not listed here remain available through provider-qualified names. Custom and Vertex OpenAI-compatible endpoints must list the models they serve.",
+				Priority:    5,
+				// Render as a structured name → served-model editor so the alias isn't buried
+				// in the comma string (a plain edit could silently drop it). Type stays string;
+				// the widget serializes back to the same alias=served value the backend validates.
+				Widget: "model_alias_list",
+				ShowWhen: map[string]any{"provider": []any{
+					llmGatewayProviderOpenAI, llmGatewayProviderAnthropic, llmGatewayProviderGemini,
+					llmGatewayProviderVertex, llmGatewayProviderVertexOpenAI, llmGatewayProviderBedrock,
+					llmGatewayProviderCustom,
+				}},
 				RequiredWhen: map[string]any{"provider": []any{llmGatewayProviderCustom, llmGatewayProviderVertexOpenAI}},
 			},
 			// Vertex (provider=vertex): structured GCP creds — the endpoint is derived from
@@ -181,7 +191,7 @@ func (m LLMGateway) ConfigSchema() core.IntegrationSchema {
 	}
 }
 
-func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.IntegrationConfigValue, _ string) []error {
+func (m LLMGateway) ValidateConfig(sc *security.SecurityContext, values []core.IntegrationConfigValue, _ string) []error {
 	cfg := make(map[string]string, len(values))
 	for _, v := range values {
 		cfg[v.Name] = strings.TrimSpace(v.Value)
@@ -207,8 +217,6 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		}
 		if cfg["models"] == "" {
 			errs = append(errs, fmt.Errorf("models is required for a custom endpoint (comma-separated model ids)"))
-		} else if err := validateModelsEntries(cfg["models"]); err != nil {
-			errs = append(errs, err)
 		}
 	case llmGatewayProviderVertex:
 		// Vertex: project + GCP region + a well-formed service-account JSON.
@@ -237,8 +245,6 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		}
 		if cfg["models"] == "" {
 			errs = append(errs, fmt.Errorf("models is required for Vertex (OpenAI-compatible) — the MaaS model id(s), comma-separated"))
-		} else if err := validateModelsEntries(cfg["models"]); err != nil {
-			errs = append(errs, err)
 		}
 	case llmGatewayProviderBedrock:
 		// Bedrock: STATIC AWS creds (access + secret together) + an AWS region. secret_key is
@@ -257,6 +263,22 @@ func (m LLMGateway) ValidateConfig(_ *security.SecurityContext, values []core.In
 		errs = append(errs, fmt.Errorf("provider is required"))
 	default:
 		errs = append(errs, fmt.Errorf("unsupported provider %q (expected openai, anthropic, gemini, vertex, vertex_openai, bedrock, or custom)", provider))
+	}
+	// Model mappings are optional for native providers and required above for endpoints
+	// whose available models cannot be inferred. Whenever supplied, the same mapping
+	// contract applies to every provider.
+	if cfg["models"] != "" {
+		if err := validateModelsEntries(cfg["models"]); err != nil {
+			errs = append(errs, err)
+		} else if sc != nil {
+			requestContext := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+			existing, err := core.ListIntegrationConfigsByTenant(requestContext, IntegrationLLMGateway)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("could not validate model-name uniqueness: %w", err))
+			} else if err := validateTenantModelClientNames(cfg[core.IntegrationConfigName], cfg["models"], existing); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 	return errs
 }
@@ -309,28 +331,84 @@ func validateVertexEndpoint(raw string) error {
 // expose the same underlying model under distinct ids. Rejects empty entries and malformed
 // pairs so the save path agrees with the gateway's registerModels.
 func validateModelsEntries(models string) error {
+	_, err := modelClientNames(models)
+	return err
+}
+
+// modelClientNames validates the persisted models syntax and returns the explicit
+// client-facing routing key for every row. For a bare served-model entry, that served id
+// is also the client-facing name. The served side of alias=served is deliberately not
+// returned: two accounts may serve the same upstream model when distinct aliases select
+// the intended credential.
+func modelClientNames(models string) ([]string, error) {
 	seen := map[string]bool{}
+	names := make([]string, 0, strings.Count(models, ",")+1)
 	for _, part := range strings.Split(models, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			return fmt.Errorf("models must be a comma-separated list with no empty entries")
+			return nil, fmt.Errorf("models must be a comma-separated list with no empty entries")
 		}
 		if strings.Count(part, "=") > 1 {
-			return fmt.Errorf("models entry %q has more than one '=' (use alias=served)", part)
+			return nil, fmt.Errorf("models entry %q has more than one '=' (use alias=served)", part)
 		}
 		alias := part
 		if a, served, ok := strings.Cut(part, "="); ok {
 			alias = strings.TrimSpace(a)
 			if alias == "" || strings.TrimSpace(served) == "" {
-				return fmt.Errorf("models entry %q must be alias=served with both sides non-empty", part)
+				return nil, fmt.Errorf("models entry %q must be alias=served with both sides non-empty", part)
 			}
 		}
 		// The alias is the routing key — duplicates within one config would silently collide
 		// (last wins), so reject them at save time.
 		if seen[alias] {
-			return fmt.Errorf("models has a duplicate id/alias %q", alias)
+			return nil, fmt.Errorf("models has a duplicate id/alias %q", alias)
 		}
 		seen[alias] = true
+		names = append(names, alias)
+	}
+	return names, nil
+}
+
+// validateTenantModelClientNames prevents an edit to one llm_gateway account from
+// silently stealing a client-facing route from another account. The integration name is
+// immutable in the edit form, so it is a stable self-exclusion key. Repeated SERVED model
+// ids remain valid when each account uses a distinct explicit alias.
+func validateTenantModelClientNames(currentConfigName, models string, existing []core.IntegrationDto) error {
+	requested, err := modelClientNames(models)
+	if err != nil {
+		return err
+	}
+	wanted := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		wanted[name] = true
+	}
+
+	currentConfigName = strings.TrimSpace(currentConfigName)
+	for _, integration := range existing {
+		if strings.TrimSpace(integration.Name) == currentConfigName {
+			continue
+		}
+		var existingModels string
+		for _, value := range integration.Configs {
+			if value.Name == "models" {
+				existingModels = value.Value
+				break
+			}
+		}
+		if strings.TrimSpace(existingModels) == "" {
+			continue
+		}
+		names, parseErr := modelClientNames(existingModels)
+		if parseErr != nil {
+			// A directly-written legacy row should not make every future integration
+			// uneditable. The gateway still logs runtime collisions defensively.
+			continue
+		}
+		for _, name := range names {
+			if wanted[name] {
+				return fmt.Errorf("client model name %q is already used by LLM Gateway account %q; choose a unique name", name, integration.Name)
+			}
+		}
 	}
 	return nil
 }

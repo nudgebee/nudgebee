@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback, memo, useMemo } from 'react';
+import { useEffect, useState, useCallback, memo, useMemo, useRef } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Typography, Alert } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Banner } from '@ui/Banner';
 import WidgetCard from '@ui/WidgetCard';
 import PushPinIcon from '@mui/icons-material/PushPin';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
@@ -12,9 +13,23 @@ import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import CustomSearch from '@shared/CustomSearch';
+import AccountPickerModal from '@components/common/AccountPickerModal';
 import { Checkbox } from '@ui/Checkbox';
 import { ds } from '@utils/colors';
 import { safeJSONParse } from '@utils/common';
+
+// Pins live in localStorage keyed by account. Module-level so both the initial
+// state and the on-switch re-derive read them the same way.
+const readPinnedMemories = (id) => {
+  if (typeof window === 'undefined' || !id) {
+    return new Set();
+  }
+  const stored = localStorage.getItem(`nudgebee_pinned_memories_${id}`);
+  // Corrupt storage parses to a non-iterable (an object, say) and new Set()
+  // would throw, taking the tab down on mount.
+  const parsed = stored ? safeJSONParse(stored) : null;
+  return new Set(Array.isArray(parsed) ? parsed : []);
+};
 
 const formatDate = (dateString) => {
   if (!dateString) {
@@ -325,46 +340,98 @@ const MemoryTab = ({ accountId }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [committedSearchQuery, setCommittedSearchQuery] = useState('');
   const [filterPinned, setFilterPinned] = useState(false);
-  const [pinnedMemories, setPinnedMemories] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem(`nudgebee_pinned_memories_${accountId}`);
-      return new Set(stored ? safeJSONParse(stored) : []);
-    }
-    return new Set();
-  });
+  const [pinnedState, setPinnedState] = useState(() => ({
+    accountId: accountId || '',
+    memories: readPinnedMemories(accountId),
+  }));
+  const [pickedAccountId, setPickedAccountId] = useState('');
+  // Prompt straight away when there is nothing to scope to; the empty state
+  // behind the modal can re-open it if the user dismisses without choosing.
+  const [pickerOpen, setPickerOpen] = useState(!accountId);
+  const effectiveAccountId = accountId || pickedAccountId;
+  // Async callbacks capture effectiveAccountId at the render they were created
+  // in. A ref gives them the account that is live when they resume, so a
+  // response for an abandoned account can be dropped instead of applied.
+  const accountIdRef = useRef(effectiveAccountId);
+  accountIdRef.current = effectiveAccountId;
 
-  const fetchMemories = async () => {
-    if (!accountId) {
-      setError('Account ID is required');
-      setLoading(false);
-      return;
-    }
+  // Pins are per account. Re-derive during render rather than in an effect: an
+  // effect would let the save effect below fire first and write the previous
+  // account's pins under the new account's key. Covers BOTH switch paths — the
+  // picker and a changing accountId prop.
+  // A setState during render makes React throw this pass away and re-render, so
+  // the discarded pass is never painted. Read localStorage once and use it for
+  // both the state update and this pass — reading twice would be synchronous
+  // main-thread I/O for output nobody sees.
+  let pinnedMemories = pinnedState.memories;
+  if (pinnedState.accountId !== effectiveAccountId) {
+    const nextPinned = readPinnedMemories(effectiveAccountId);
+    setPinnedState({ accountId: effectiveAccountId, memories: nextPinned });
+    pinnedMemories = nextPinned;
+  }
 
-    try {
-      setLoading(true);
-      const typeParam = memoryType === 'ALL' ? undefined : memoryType;
-      const queryParam = committedSearchQuery.trim() === '' ? undefined : committedSearchQuery.trim();
-      const response = await api.listMemory(accountId, undefined, undefined, typeParam, queryParam);
-      if (!response || (response.errors && response.errors.length > 0)) {
-        setMemories([]);
-        setError('Failed to fetch memories');
-        snackbar.error('Failed to fetch memories');
-      } else {
-        setMemories(response.data || []);
-        setError(null);
-      }
-    } catch (err) {
-      console.error('Error fetching memories:', err);
-      setError('An error occurred while fetching memories');
-      snackbar.error('An error occurred while fetching memories');
-    } finally {
-      setLoading(false);
-    }
+  const handleAccountPick = (next) => {
+    setPickedAccountId(next);
+    setPickerOpen(false);
   };
 
+  // isCancelled is checked after every await: switching accounts fires a second
+  // fetch while the first is still in flight, and without this the slower
+  // response wins and shows the wrong account's memory.
+  const fetchMemories = useCallback(
+    async (isCancelled = () => false) => {
+      // Superseded either by the effect that started it being cleaned up, or by
+      // the account moving on since it started. The second case is the only
+      // guard callers outside an effect have -- handleConfirmDelete refetches
+      // with no cleanup to hang a cancellation flag on.
+      const superseded = () => isCancelled() || accountIdRef.current !== effectiveAccountId;
+      setMemories([]);
+      if (!effectiveAccountId) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        const typeParam = memoryType === 'ALL' ? undefined : memoryType;
+        const queryParam = committedSearchQuery.trim() === '' ? undefined : committedSearchQuery.trim();
+        const response = await api.listMemory(effectiveAccountId, undefined, undefined, typeParam, queryParam);
+        if (superseded()) {
+          return;
+        }
+        if (!response || (response.errors && response.errors.length > 0)) {
+          setMemories([]);
+          setError('Failed to fetch memories');
+          snackbar.error('Failed to fetch memories');
+        } else {
+          setMemories(response.data || []);
+          setError(null);
+        }
+      } catch (err) {
+        if (superseded()) {
+          return;
+        }
+        console.error('Error fetching memories:', err);
+        setError('An error occurred while fetching memories');
+        snackbar.error('An error occurred while fetching memories');
+      } finally {
+        // A superseded fetch must not clear the loading state its replacement is
+        // still using, nor toast an error the user never triggered.
+        if (!superseded()) {
+          setLoading(false);
+        }
+      }
+    },
+    [effectiveAccountId, memoryType, committedSearchQuery]
+  );
+
   useEffect(() => {
-    fetchMemories();
-  }, [accountId, memoryType, committedSearchQuery]);
+    let cancelled = false;
+    fetchMemories(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchMemories]);
 
   const handleConfirmDelete = async () => {
     if (!selectedMemory) {
@@ -373,7 +440,12 @@ const MemoryTab = ({ accountId }) => {
 
     try {
       setSubmitting(true);
-      const response = await api.deleteMemory(accountId, selectedMemory.id);
+      const response = await api.deleteMemory(effectiveAccountId, selectedMemory.id);
+      // Switching accounts mid-delete would otherwise land here in the old
+      // closure and refetch the previous account over the active one's list.
+      if (accountIdRef.current !== effectiveAccountId) {
+        return;
+      }
 
       if (!response || (response.errors && response.errors.length > 0)) {
         const errorMessage = response?.errors?.[0]?.message || 'Failed to delete memory';
@@ -394,22 +466,25 @@ const MemoryTab = ({ accountId }) => {
   };
 
   const handleTogglePin = useCallback((memoryId) => {
-    setPinnedMemories((prev) => {
-      const updated = new Set(prev);
+    setPinnedState((prev) => {
+      if (!prev.accountId) {
+        return prev;
+      }
+      const updated = new Set(prev.memories);
       if (updated.has(memoryId)) {
         updated.delete(memoryId);
       } else {
         updated.add(memoryId);
       }
-      return updated;
+      // Persist here rather than in an effect on pinnedMemories: that effect
+      // also fired on every account switch, rewriting pins it had just read.
+      // Toggling is the only thing that actually changes them.
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`nudgebee_pinned_memories_${prev.accountId}`, JSON.stringify(Array.from(updated)));
+      }
+      return { accountId: prev.accountId, memories: updated };
     });
   }, []);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(`nudgebee_pinned_memories_${accountId}`, JSON.stringify(Array.from(pinnedMemories)));
-    }
-  }, [pinnedMemories, accountId]);
 
   const filteredMemories = useMemo(
     () =>
@@ -441,7 +516,18 @@ const MemoryTab = ({ accountId }) => {
   }, [memories]);
 
   let memoryContent;
-  if (loading) {
+  if (!effectiveAccountId) {
+    memoryContent = (
+      <Box sx={{ p: ds.space[5] }}>
+        <Typography sx={{ color: ds.gray[700], fontSize: ds.text.small, mb: ds.space[3] }}>
+          Memory is stored per account. Choose one to see what has been remembered for it.
+        </Typography>
+        <Button tone='primary' size='md' onClick={() => setPickerOpen(true)}>
+          Select an account
+        </Button>
+      </Box>
+    );
+  } else if (loading) {
     memoryContent = (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', maxHeight: ds.space.mul(1, 75) }}>
         <Loader />
@@ -450,7 +536,7 @@ const MemoryTab = ({ accountId }) => {
   } else if (error) {
     memoryContent = (
       <Box sx={{ p: ds.space[5] }}>
-        <Alert severity='error'>{error}</Alert>
+        <Banner tone='critical' message={error} />
       </Box>
     );
   } else {
@@ -499,7 +585,7 @@ const MemoryTab = ({ accountId }) => {
           <Box sx={{ overflowAnchor: 'none' }}>
             {memories.map((memory) => (
               <Box key={memory.id} sx={{ display: isMemoryVisible(memory) ? undefined : 'none' }}>
-                <MemoryRow memory={memory} accountId={accountId} isPinned={pinnedMemories.has(memory.id)} onTogglePin={handleTogglePin} />
+                <MemoryRow memory={memory} accountId={effectiveAccountId} isPinned={pinnedMemories.has(memory.id)} onTogglePin={handleTogglePin} />
               </Box>
             ))}
           </Box>
@@ -611,6 +697,14 @@ const MemoryTab = ({ accountId }) => {
 
       {/* Memory List Container with Padding */}
       <Box>{memoryContent}</Box>
+      <AccountPickerModal
+        open={pickerOpen && !effectiveAccountId}
+        onSelect={handleAccountPick}
+        onCancel={() => setPickerOpen(false)}
+        title='Select an account to view memory'
+        description='Memory is scoped to an account. Pick one to see what has been remembered for it.'
+        testIdPrefix='memory-account-picker'
+      />
 
       {/* Delete Confirmation Modal */}
       <Modal
@@ -652,7 +746,7 @@ const MemoryTab = ({ accountId }) => {
 };
 
 MemoryTab.propTypes = {
-  accountId: PropTypes.string.isRequired,
+  accountId: PropTypes.string,
 };
 
 export default MemoryTab;

@@ -21,6 +21,7 @@ from notifications_server.message_templates.blocks import (
     JsonBlock,
     ListBlock,
     MarkdownBlock,
+    SlackFileImageBlock,
     TableBlock,
     CallbackBlock,
     LinksBlock,
@@ -37,6 +38,9 @@ SlackBlock = Dict[str, Any]
 MAX_BLOCK_CHARS = 3000
 # Maximum number of data rows rendered in a markdown table before truncation.
 MAX_MARKDOWN_TABLE_ROWS = 10
+# Splits markdown_to_slack_markdown's input on fenced code blocks; the capturing
+# group keeps the fences in the result so they can skip conversion below.
+_FENCE_SPLIT_RE = re.compile(r"(```.*?```)", re.DOTALL)
 SLACK_SIGNIN_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "signing_secret")
 
 try:
@@ -363,7 +367,22 @@ class Transformer:
 
     @staticmethod
     def markdown_to_slack_markdown(markdown_text: str) -> str:
-        lines = markdown_text.strip().split("\n")
+        # Fenced code is real code (Slack already renders ```); the line-based
+        # conversion below would mangle it, so fences skip it (odd indices,
+        # from _FENCE_SPLIT_RE's capturing group).
+        parts = _FENCE_SPLIT_RE.split(markdown_text)
+        converted = "".join(
+            part if index % 2 else Transformer.__convert_markdown_segment(part) for index, part in enumerate(parts)
+        )
+        return converted.strip()
+
+    @staticmethod
+    def __convert_markdown_segment(markdown_text: str) -> str:
+        # llm-server sometimes glues list items/headings onto one line (e.g.
+        # "...low). * **Adjustment:** -15..."); split those out first since
+        # this converter is line-based.
+        markdown_text = re.sub(r"(?<=[.:!?)\]])\s+(?=(?:[*-]\s*\*\*|#{1,6}\s))", "\n", markdown_text)
+        lines = markdown_text.split("\n")
         slack_lines = []
         for line in lines:
             # Convert headers
@@ -373,19 +392,24 @@ class Transformer:
                 slack_lines.append(f"*{line[3:].strip()}*")
             elif line.startswith("#"):
                 slack_lines.append(f"*{line[2:].strip()}*")
+            # Convert unordered list (before bold - a bullet line's own
+            # "**bold**" must not fall into that branch instead)
+            elif line.strip().startswith("* ") or line.strip().startswith("- "):
+                item = re.sub(r"\*\*(.*?)\*\*", r"*\1*", line.strip()[2:])
+                slack_lines.append(f"• {item}")
             # Convert bold
             elif "**" in line:
-                # Handles bold
                 line = re.sub(r"\*\*(.*?)\*\*", r"*\1*", line)
                 slack_lines.append(line)
-            # Convert unordered list
-            elif line.strip().startswith("* "):
-                slack_lines.append(f"• {line.strip()[2:]}")
             # Convert tables
             elif line.strip().startswith("|") and "---" not in line:
+                line = re.sub(r"\*\*(.*?)\*\*", r"*\1*", line)
                 cols = [col.strip() for col in line.strip("|").split("|")]
                 slack_lines.append(" | ".join(cols))
-            elif "---" in line:
+            # Drop a standalone "---" divider or "|---|---|" table separator
+            # row - matched structurally (only "-"/"|"/":"/whitespace), not by
+            # substring, so a divider glued onto real text doesn't eat it too.
+            elif re.fullmatch(r"[|:\-\s]+", line) and "-" in line:
                 continue
             else:
                 slack_lines.append(line.strip())
@@ -712,6 +736,15 @@ class Transformer:
             return Transformer.__to_slack_action_list(block)
         elif isinstance(block, ChartBlock):
             return [{"type": "data_visualization", "title": block.title, "chart": block.chart}]
+        elif isinstance(block, SlackFileImageBlock):
+            return [
+                {
+                    "type": "image",
+                    "slack_file": {"id": block.slack_file_id},
+                    "alt_text": block.alt_text,
+                    "title": {"type": "plain_text", "text": block.title},
+                }
+            ]
         elif isinstance(block, GridTableBlock):
             payload: SlackBlock = {"type": "table", "rows": block.rows}
             if block.column_settings:

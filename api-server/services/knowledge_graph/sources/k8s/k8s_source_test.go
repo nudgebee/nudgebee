@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"encoding/json"
 	"log/slog"
 	"nudgebee/services/knowledge_graph/core"
 	"os"
@@ -110,6 +111,48 @@ func TestGenerateUniqueKeyForK8sResources(t *testing.T) {
 				t.Errorf("GenerateUniqueKey() not deterministic: %v != %v", key, key2)
 			}
 		})
+	}
+}
+
+// A workload's `environment` label must surface as the top-level environment
+// attribute the blast-radius pipeline reads (and override nothing when absent).
+func TestConvertWorkloadsToGraph_HoistsEnvironmentLabel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	source, err := NewK8sSource(K8sSourceConfig{
+		TenantID:       "test-tenant",
+		CloudAccountID: "test-account",
+	}, logger)
+	if err != nil {
+		t.Fatalf("Failed to create K8sSource: %v", err)
+	}
+
+	workloads := []K8sWorkloadRow{
+		{
+			ID: "w1", Kind: "Deployment", Name: "checkout", Namespace: "shop",
+			ClusterName: "c1", IsActive: true,
+			Labels: json.RawMessage(`{"environment":"prod","app":"checkout"}`),
+		},
+		{
+			ID: "w2", Kind: "Deployment", Name: "ingest", Namespace: "data",
+			ClusterName: "c1", IsActive: true,
+		},
+	}
+
+	k8sNodeMap := make(map[string]*core.DbNode)
+	req := &core.SourceBuildRequest{TenantID: "test-tenant", CloudAccountID: "test-account"}
+	nodes, _, _, _, _ := source.convertWorkloadsToGraph(workloads, &k8sNodeMap, map[string]string{}, req)
+
+	envByName := map[string]interface{}{}
+	for _, node := range nodes {
+		if node.NodeType == core.NodeTypeWorkload {
+			envByName[node.Properties["name"].(string)] = node.Properties["environment"]
+		}
+	}
+	if envByName["checkout"] != "prod" {
+		t.Errorf("labeled workload environment = %v, want prod", envByName["checkout"])
+	}
+	if env, present := envByName["ingest"]; present && env != nil {
+		t.Errorf("unlabeled workload should carry no environment, got %v", env)
 	}
 }
 

@@ -133,7 +133,10 @@ import { memo } from 'react';
 
 // Memoize the icon component to prevent unnecessary re-renders in large graphs (e.g. KnowledgeGraph, ServiceMap)
 // where many nodes are rendered and updated frequently on hover/selection.
-const LangTypeIcon = memo(({ appLang, size = 25 }) => {
+// fallback renders when appLang is empty or maps to no icon, so a caller with its
+// own generic icon (e.g. the knowledge-graph node badge) is not left with a blank
+// slot when the backend sends a logo_id this switch does not know.
+const LangTypeIcon = memo(({ appLang, size = 25, fallback = null }) => {
   const iconProps = { size };
 
   const getIcon = (lang) => {
@@ -544,7 +547,7 @@ const LangTypeIcon = memo(({ appLang, size = 25 }) => {
     );
   }
 
-  return getIcon(appLang);
+  return getIcon(appLang) ?? fallback;
 });
 
 export default LangTypeIcon;

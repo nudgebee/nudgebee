@@ -5,7 +5,7 @@ import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import FilterDropdown from '@ui/FilterDropdown';
 import { toast as snackbar } from '@ui/Toast';
-import apiVm, { VmResource, VmSshTarget } from '@api1/vm';
+import apiVm, { VmResource, VmScanTarget } from '@api1/vm';
 import { ds } from '@utils/colors';
 
 interface ScanVmDialogProps {
@@ -16,15 +16,15 @@ interface ScanVmDialogProps {
 }
 
 /**
- * Picks the forager-reachable SSH target to run a VM's inventory scan through.
+ * Picks the forager discovery datasource to run a VM's inventory scan through.
  *
  * The scan RPC needs a `datasource_id` on top of the VM's `cloud_resource_id`:
  * the resource row says *which asset* to record findings against, the datasource
- * says *how to reach it*. Nothing in the data model links the two yet — VM
- * identity/merge is the open part of the discovery epic — so the operator picks.
+ * says *how to reach it*. The datasource is a network-scoped forager integration;
+ * the VM IP is supplied separately by the scan RPC.
  */
 const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
-  const [targets, setTargets] = useState<VmSshTarget[]>([]);
+  const [targets, setTargets] = useState<VmScanTarget[]>([]);
   const [loadingTargets, setLoadingTargets] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -35,7 +35,7 @@ const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
     setLoadingTargets(true);
     setSelectedTarget(null);
     apiVm
-      .listSshTargets(accountId)
+      .listDiscoveryTargets(accountId)
       .then((rows) => {
         if (cancelled) return;
         setTargets(rows);
@@ -100,7 +100,7 @@ const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
 
         {!loadingTargets && targets.length === 0 && (
           <Typography sx={{ fontSize: ds.text.caption, color: ds.red[600] }}>
-            No agent-reachable SSH connection is configured for this account. Add an SSH integration in <em>VM agent</em> connection mode first.
+            No forager discovery datasource is configured for this account. Configure the discovery datasource on the forager first.
           </Typography>
         )}
 

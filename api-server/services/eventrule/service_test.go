@@ -345,6 +345,21 @@ func TestNormalizeEventSource(t *testing.T) {
 			in:      EventConfig{Source: "", AlertType: ""},
 			wantSrc: "prometheus",
 		},
+		{
+			// A webhook rule mirrors an alert that already exists in the external
+			// system. Reverse-mapping its source onto the provider's own source sent
+			// it into the external-create branch, which tried to create a second rule
+			// in the customer's Elasticsearch (PUT /_watcher/watch/...) and failed the
+			// whole ingest.
+			name:    "webhook source is left alone even with a metric_provider",
+			in:      EventConfig{Source: "elasticsearch_webhook", AlertType: "metric", MetricProvider: "ES"},
+			wantSrc: "elasticsearch_webhook",
+		},
+		{
+			name:    "webhook source with no metric_provider is left alone",
+			in:      EventConfig{Source: "datadog_webhook", AlertType: "metric"},
+			wantSrc: "datadog_webhook",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -353,4 +368,18 @@ func TestNormalizeEventSource(t *testing.T) {
 			assert.Equal(t, tc.wantSrc, req.Source)
 		})
 	}
+}
+
+// Alert-rule create/update/delete only reaches the external provider when the
+// source is recognised as external; without this, CubeAPM rule push is dead code.
+func TestCubeAPMIsAnExternalProviderSource(t *testing.T) {
+	assert.True(t, isExternalProviderSource("cubeapm"),
+		"cubeapm rules must route to the external provider")
+
+	provider, providerSource := resolveProviderFromSource("cubeapm")
+	assert.Equal(t, "cubeapm", provider)
+	assert.Equal(t, "user", providerSource)
+
+	// The reverse mapping is the safety net for a request that omits the source.
+	assert.Equal(t, "cubeapm", resolveSourceFromMetricProvider("cubeapm"))
 }

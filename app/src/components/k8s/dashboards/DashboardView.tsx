@@ -32,13 +32,12 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { downloadIcon, RefreshIcon, writeIconLight } from '@assets';
 import { ds } from '@utils/colors';
 import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type Panel } from '@api1/dashboards';
-import DashboardPanel from './DashboardPanel';
 import SortablePanel from './SortablePanel';
 import usePanelResize from './usePanelResize';
 import { downloadNodeAsPng, waitForPanels } from './panelImage';
 import PanelEditorModal from './PanelEditorModal';
 import PanelLibraryModal from './PanelLibraryModal';
-import { blankPanel, panelMinHeight, panelSpan } from './panelDefaults';
+import { blankPanel, panelSpan } from './panelDefaults';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -428,56 +427,44 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
 
   const activePanel = activeId === null ? null : panels.find((p) => p.id === activeId) || null;
 
-  const openPanelEditor = (panel: Panel) => {
+  /*
+   * Stable across renders: every grid cell is memoised on its props, and a fresh
+   * closure per panel per render would re-render every chart on the page each
+   * time the editor opened or the toolbar took a keystroke.
+   */
+  const openPanelEditor = useCallback((panel: Panel) => {
     setEditingPanel(panel);
     setPanelModalOpen(true);
-  };
+  }, []);
+  const requestDelete = useCallback((panel: Panel) => setPendingDelete(panel), []);
+  // The drag starts from the width the panel currently has, so the snap points
+  // are measured from where the user grabbed it.
+  const resizeFrom = useCallback((panel: Panel, event: React.MouseEvent) => startResize(panel.id, panelSpan(panel), event), [startResize]);
 
   /*
-   * The panel grid, in both modes.
+   * The panel grid, in both modes — the same elements under the same context,
+   * so pressing Edit changes what a panel can do without remounting it, and a
+   * panel that is not remounted does not run its query again.
    */
   const grid = (
     <Box ref={gridRef} sx={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: `${GRID_GAP}px`, background: ds.background[300] }}>
-      {panels.map((panel) =>
-        editing ? (
-          <SortablePanel
-            key={panel.id}
-            panel={panel}
-            accounts={accounts}
-            variables={variables}
-            startTime={range.startDate}
-            endTime={range.endDate}
-            refreshToken={refreshToken}
-            resizing={resizingId === panel.id}
-            // The drag starts from the width the panel currently has, so the
-            // snap points are measured from where the user grabbed it.
-            onResizeStart={(event) => startResize(panel.id, panelSpan(panel), event)}
-            onEdit={() => openPanelEditor(panel)}
-            onDelete={() => setPendingDelete(panel)}
-          />
-        ) : (
-          <Box
-            key={panel.id}
-            sx={{
-              // gridPos.w is in 12ths, mirroring the Grafana panel model. The
-              // legacy renderer ignored it and stacked every panel full-width.
-              gridColumn: `span ${panelSpan(panel)}`,
-              minHeight: panelMinHeight(panel),
-            }}
-          >
-            <DashboardPanel
-              panel={panel}
-              accounts={accounts}
-              variables={variables}
-              startTime={range.startDate}
-              endTime={range.endDate}
-              refreshToken={refreshToken}
-              forceLoad={capturing}
-              onEdit={canEdit ? () => openPanelEditor(panel) : undefined}
-            />
-          </Box>
-        )
-      )}
+      {panels.map((panel) => (
+        <SortablePanel
+          key={panel.id}
+          panel={panel}
+          accounts={accounts}
+          variables={variables}
+          startTime={range.startDate}
+          endTime={range.endDate}
+          refreshToken={refreshToken}
+          editing={editing}
+          forceLoad={capturing}
+          resizing={resizingId === panel.id}
+          onResizeStart={resizeFrom}
+          onEdit={canEdit ? openPanelEditor : undefined}
+          onDelete={requestDelete}
+        />
+      ))}
     </Box>
   );
 
@@ -703,7 +690,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
                 only the blank one. Matches the action slot's own top margin. */}
             {canEdit && <Box sx={{ mt: ds.space[2] }}>{addPanelMenu({ align: 'start', tone: 'primary', size: 'sm' })}</Box>}
           </EmptyState>
-        ) : editing ? (
+        ) : (
           <DndContext
             sensors={sensors}
             // Panels differ in width, so the pointer is regularly inside more than one droppable.
@@ -741,8 +728,6 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
               )}
             </DragOverlay>
           </DndContext>
-        ) : (
-          grid
         )}
       </Box>
 

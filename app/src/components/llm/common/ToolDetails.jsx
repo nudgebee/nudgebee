@@ -3,14 +3,7 @@ import PropTypes from 'prop-types';
 import { Box, Typography, Grid } from '@mui/material';
 import { ds } from '@utils/colors';
 import { getIcon } from './AgentIcon';
-import {
-  WrenchIcon,
-  AskNudgebeeErrorIcon,
-  AskNudgebeeInProgressIcon,
-  AskNudgebeeSkipIcon,
-  AskNudgebeeSuccessIcon,
-  AskNudgebeeWaitingIcon,
-} from '@assets';
+import { WrenchIcon, AskNudgebeeErrorIcon, AskNudgebeeInProgressIcon, AskNudgebeeSkipIcon, AskNudgebeeSuccessIcon, RunningIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import Tooltip from '@ui/Tooltip';
 import Duration from './Duration';
@@ -30,7 +23,9 @@ import { LogDate } from '@components/k8s/common/LogDate';
 import KubernetesSecurityDetails from '@components/recommendations/security/KubernetesSecurityDetails';
 import { DiffViewer } from '@ui/DiffViewer';
 import CodeBlock from '@ui/CodeBlock';
+import { Chip } from '@ui/Chip';
 import { convertToReadableFormat } from 'src/utils/common';
+import { executionBatchLabel, executionBatchTone, executionBatchTooltip, parseExecutionBatchMetadata } from './executionBatch';
 
 const FRIENDLY_TOOL_NAMES = {
   react_critique: 'Critique Feedback',
@@ -94,7 +89,7 @@ const getStatusIcon = (status) => {
     return { icon: AskNudgebeeSkipIcon, label: 'Skipped' };
   }
   if (s === 'waiting' || s === 'waiting_for_client' || s === 'waiting_for_client_tool') {
-    return { icon: AskNudgebeeWaitingIcon, label: 'Waiting' };
+    return { icon: RunningIcon, label: 'Waiting' };
   }
   if (s === 'in_progress') {
     return { icon: AskNudgebeeInProgressIcon, label: 'In-Progress' };
@@ -295,6 +290,97 @@ export const salvageTruncatedParams = (text) => {
   return lenientUnescape(out);
 };
 
+// jq expressions like `.[] | {...}` emit one JSON object per line (a stream, not
+// an array), so whole-text JSON.parse rejects the response even though it is fully
+// structured. Detect that shape strictly — two or more lines, every non-empty line
+// parsing to a plain object — and return the collected array so it can take the
+// same structured-table path a real JSON array takes. All-or-nothing: any prose,
+// markdown, primitive, or nested-array line returns null and the response keeps
+// rendering as text.
+export const tryParseJsonLines = (text) => {
+  if (!text || typeof text !== 'string') {
+    return null;
+  }
+  // Raw text first: a JSON string value may itself contain `\n` escapes
+  // (issue bodies, log messages), and decoding those into real newlines
+  // before splitting would cut such a line in half. Only when the raw form
+  // isn't JSONL, retry with literal `\n` separators decoded — some persisted
+  // responses arrive with them (the same variant the markdown and rabbitmq
+  // fallbacks in this file normalize for). Decode only at record boundaries
+  // (between `}` and `{`, or at the end) so value escapes survive even in
+  // that transport.
+  return parseJsonObjectLines(text) || parseJsonObjectLines(text.replace(/\}\s*(?:\\n\s*)+(?=\{|$)/g, '}\n'));
+};
+
+const parseJsonObjectLines = (text) => {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // A single line is whole-parseable JSON (handled by the caller); past ~500 rows
+  // the unpaginated table is heavier than the text fallback it would replace.
+  if (lines.length < 2 || lines.length > 500) {
+    return null;
+  }
+  const parsed = [];
+  for (const line of lines) {
+    if (!line.startsWith('{') || !line.endsWith('}')) {
+      return null;
+    }
+    try {
+      const obj = JSON.parse(line);
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+        return null;
+      }
+      parsed.push(obj);
+    } catch {
+      return null;
+    }
+  }
+  return parsed;
+};
+
+// search_execute returns an array of raw scraped pages, each wrapping its
+// markdown a second time inside `_body` (itself a JSON string) — the page's
+// own `content` field is never at the top level. Nothing else in this file
+// parses that inner layer, so the response fell through to the generic
+// raw-text fallback below, which unescapes `\n` with a single-pass regex and
+// never touches `&` at all. Against still-double-encoded text that just
+// strips one backslash off each `\n` (leaving a stray backslash next to every
+// link) and leaves literal `&` sitting inside every href (#37539). A real
+// JSON.parse of `_body` decodes every escape correctly in one pass instead.
+export const parseWebSearchResults = (responseText) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch (e) {
+    console.warn('parseWebSearchResults: not JSON', e);
+    return null;
+  }
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+  const results = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    let content = typeof item.content === 'string' ? item.content : null;
+    if (!content && typeof item._body === 'string') {
+      try {
+        const body = JSON.parse(item._body);
+        content = typeof body?.content === 'string' ? body.content : null;
+      } catch (e) {
+        console.warn('parseWebSearchResults: _body JSON parse failed', e);
+      }
+    }
+    if (content) {
+      results.push({ content, url: item.url });
+    }
+  }
+  return results.length > 0 ? results : null;
+};
+
 const isPreformattedText = (text) => {
   if (!text) {
     return false;
@@ -436,7 +522,7 @@ const renderResponseText = (responseText, toolCall) => {
         if (/^#{1,6}\s|(\*\*|__).+(\*\*|__)|^[*-]\s|^\d+\.\s|```/m.test(output)) {
           return (
             <MarkDowns
-              data={prettifyJsonFencesInMarkdown(output).replace(/~/g, '\\~')}
+              data={prettifyJsonFencesInMarkdown(output)}
               sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }}
             />
           );
@@ -461,14 +547,19 @@ const renderResponseText = (responseText, toolCall) => {
     console.warn('renderResponseText: not JSON', e);
   }
 
+  // JSONL (one JSON object per line): re-serialize as an array and reuse the
+  // structured-table path. Checked before the markdown sniff below so a field
+  // value containing `**` or backticks can't divert structured data to markdown.
+  const jsonLines = tryParseJsonLines(responseText);
+  if (jsonLines) {
+    return <LLMAnswerRenderer toolCall={{ ...(toolCall || {}), text: JSON.stringify(jsonLines) }} messages={[]} />;
+  }
+
   // Check for markdown in raw (non-JSON) text before falling back to preformatted
   const rawText = responseText.replace(/\\n/g, '\n');
   if (/^#{1,6}\s|(\*\*|__).+(\*\*|__)|^[*-]\s|^\d+\.\s|```/m.test(rawText)) {
     return (
-      <MarkDowns
-        data={prettifyJsonFencesInMarkdown(rawText).replace(/~/g, '\\~')}
-        sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }}
-      />
+      <MarkDowns data={prettifyJsonFencesInMarkdown(rawText)} sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }} />
     );
   }
 
@@ -524,6 +615,7 @@ const isLokiTool = (name) => ['queryLoki', 'loki', 'loki_execute'].includes(name
 const isEsTool = (name) => ['queryES', 'es', 'elastic_search_execute'].includes(name);
 const isKubectlTool = (name) => ['KubectlExecutor', 'k8s', 'kubectl', 'kubectl_execute'].includes(name);
 const isDocsTool = (name) => ['search_docs', 'docs', 'docs_agent'].includes(name);
+const isWebSearchTool = (name) => name === 'search_execute';
 const isSecurityIssuesTool = (name) => name === 'GetSecurityIssues';
 const isLogsTool = (name) => name && name.toLowerCase().includes('logs');
 const isPlannerTool = (name) => name === 'planner' || name === 'TroubleshootPlanner';
@@ -800,6 +892,23 @@ const FormattedToolResponse = ({ responseText, toolName, toolCall, accountId }) 
     }
   }
 
+  // Web search (each result's markdown is nested inside a `_body` JSON string)
+  if (isWebSearchTool(toolName)) {
+    const results = parseWebSearchResults(responseText);
+    if (results) {
+      return (
+        <Box>
+          {results.map((r, i) => (
+            <React.Fragment key={i}>
+              <MarkDowns data={prettifyJsonFencesInMarkdown(r.content)} sx={{ width: '100%', p: 0, fontSize: 'var(--ds-text-small)' }} />
+              {i < results.length - 1 && <Divider style='dashed' thickness={0.75} color='var(--ds-gray-300)' sx={{ my: ds.space[2], mx: 0 }} />}
+            </React.Fragment>
+          ))}
+        </Box>
+      );
+    }
+  }
+
   // Cloud tools (AWS, GCloud, Azure)
   if (isCloudTool(toolName)) {
     return (
@@ -1010,12 +1119,13 @@ ParametersBox.propTypes = {
 /**
  * Renders a single tool call's thought and response.
  */
-const ToolCallSection = ({ tc, index, accountId, reasoning }) => {
+const ToolCallSection = ({ tc, index, accountId, reasoning, showExecutionBatch }) => {
   const thought = (tc.thought || '').split('\n\nAction:')[0];
   const responseText = tc.response;
   const tcName = tc.tool_name || `Tool Call ${index + 1}`;
   const tcIcon = getIcon(tcName) || WrenchIcon;
   const tcStatus = tc.status;
+  const executionBatch = showExecutionBatch ? parseExecutionBatchMetadata(tc.metadata) : null;
 
   const prettyThought = tryPrettifyJson(thought);
   const codeEdit = parseCodeEditParams(tc);
@@ -1039,6 +1149,15 @@ const ToolCallSection = ({ tc, index, accountId, reasoning }) => {
           {toolSourceSuffix(tc.metadata)}
         </Typography>
         <StatusBadge status={tcStatus} />
+        {executionBatch && (
+          <Tooltip title={executionBatchTooltip(executionBatch)} placement='top'>
+            <Box component='span' sx={{ display: 'inline-flex' }}>
+              <Chip variant='tag' size='xs' tone={executionBatchTone(executionBatch)} dot>
+                {executionBatchLabel(executionBatch)}
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
         <ReasoningBadge reasoning={reasoning} />
         <Duration createdAt={tc.created_at} updatedAt={tc.updated_at} metadata={tc.metadata} />
       </Box>
@@ -1124,6 +1243,7 @@ ToolCallSection.propTypes = {
   index: PropTypes.number.isRequired,
   accountId: PropTypes.string,
   reasoning: PropTypes.object,
+  showExecutionBatch: PropTypes.bool,
 };
 
 // Formats a reasoning duration in seconds as "Xm Ys" / "Ys".
@@ -1223,6 +1343,13 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
   // rendered (a task can group several calls), then the first row, then the
   // wrapper — same widening the reasoning lookup below does.
   const headerMetadata = toolCall.metadata ?? toolCalls.find((t) => t?.tool_name === toolName)?.metadata ?? toolCalls[0]?.metadata;
+  const headerBatch = (() => {
+    if (!hasMultipleToolCalls) {
+      return parseExecutionBatchMetadata(headerMetadata);
+    }
+    const batches = toolCalls.map((t) => parseExecutionBatchMetadata(t.metadata)).filter(Boolean);
+    return batches.length === toolCalls.length && new Set(batches.map((batch) => batch.id)).size === 1 ? batches[0] : null;
+  })();
 
   // Per-tool reasoning lookup: match a tool-call-like object's candidate ids against the
   // time-split reasoning map so each tool shows the thinking that produced it.
@@ -1308,6 +1435,15 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
           </Box>
         )}
         <StatusBadge status={status} />
+        {headerBatch && (
+          <Tooltip title={executionBatchTooltip(headerBatch)} placement='top'>
+            <Box component='span' sx={{ display: 'inline-flex' }}>
+              <Chip variant='tag' size='xs' tone={executionBatchTone(headerBatch)} dot>
+                {executionBatchLabel(headerBatch, toolCalls.length)}
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
         <ReasoningBadge reasoning={headerReasoning} />
         {/* `toolCall` is the task wrapper; the persisted row (and its metadata)
             lives in toolCalls[0] for the single-call view — same precedence the
@@ -1345,7 +1481,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
       {hasMultipleToolCalls ? (
         toolCalls.map((tc, idx) => (
           <React.Fragment key={tc.tool_id || idx}>
-            <ToolCallSection tc={tc} index={idx} accountId={accountId} reasoning={reasoningFor(tc)} />
+            <ToolCallSection tc={tc} index={idx} accountId={accountId} reasoning={reasoningFor(tc)} showExecutionBatch={!headerBatch} />
             {idx < toolCalls.length - 1 && <Divider sx={{ my: ds.space[3] }} />}
           </React.Fragment>
         ))

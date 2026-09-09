@@ -55,6 +55,77 @@ why the settings exist):
   Helm install renders an inert `clickhouse` secret so the deploy never fails
   on a missing reference.
 
+### Connect a Kubernetes agent to the Docker services
+
+The `full` Compose profile runs both services required to keep a Kubernetes
+agent active:
+
+- relay server: `http://localhost:8004` (the agent connects to its WebSocket
+  registration endpoint)
+- K8s collector: `http://localhost:8003` (the agent sends discovery and
+  telemetry here)
+
+Both addresses must be supplied to the agent. Configuring only the relay is not
+enough: the control plane will mark an agent inactive when collector traffic is
+missing.
+
+First verify the services from the Docker host:
+
+```bash
+curl --fail http://localhost:8004/status
+curl --fail http://localhost:8003/metrics
+```
+
+Then install the agent in the Kubernetes cluster. Generate the account-specific
+auth key from **Settings -> Integrations -> Kubernetes**, and keep it out of
+source control:
+
+```bash
+helm repo add nudgebee-agent https://nudgebee.github.io/k8s-agent/
+helm repo update
+
+helm upgrade --install nudgebee-agent nudgebee-agent/nudgebee-agent \
+  --namespace nudgebee-agent --create-namespace \
+  --set-string runner.nudgebee.auth_secret_key="<NUDGEBEE_AUTH_KEY>" \
+  --set-string runner.relay_address="ws://host.docker.internal:8004/register" \
+  --set-string runner.nudgebee.endpoint="http://host.docker.internal:8003" \
+  --set enablePrometheusStack=false \
+  --set opencost.enabled=false \
+  --set nodeAgent.enabled=false \
+  --set nodeAgent.podmonitor.enabled=false \
+  --set opentelemetry-collector.enabled=false \
+  --set runner.clickhouse_enabled=false \
+  --set clickhouse.enabled=false
+```
+
+This is the minimum local agent deployment used for workspace command
+execution. The agent runner and its required forwarding/watch component remain
+enabled; Prometheus, OpenCost, the node agent, OpenTelemetry, and ClickHouse are
+disabled.
+
+`host.docker.internal` works for Kubernetes clusters provided by Docker
+Desktop. For another cluster or Docker Engine setup, replace it with a hostname
+or IP that is reachable **from the cluster's pods**. For a non-local deployment,
+use externally reachable HTTPS/WSS endpoints and valid TLS certificates instead
+of the local HTTP/WS URLs above.
+
+To verify connectivity from inside the cluster and confirm the agent is ready:
+
+```bash
+kubectl run nudgebee-connectivity-check \
+  --namespace nudgebee-agent --restart=Never --rm -i \
+  --image=curlimages/curl -- \
+  sh -c 'curl --fail http://host.docker.internal:8004/status && curl --fail http://host.docker.internal:8003/metrics'
+
+kubectl get pods --namespace nudgebee-agent
+kubectl logs --namespace nudgebee-agent \
+  --selector app.kubernetes.io/name=nudgebee-agent --tail=100
+```
+
+If a chart version uses different pod labels, use
+`kubectl get pods -n nudgebee-agent` and pass the runner pod name directly to
+`kubectl logs`.
+
 ## When in doubt
 
 - **What's the matching command for service X?** [README → Project Structure table](../README.md#project-structure) lists each service's run command.

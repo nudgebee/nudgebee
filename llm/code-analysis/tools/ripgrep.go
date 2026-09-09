@@ -271,7 +271,7 @@ func (t *RipgrepTool) Execute(ctx context.Context, input map[string]any) core.NB
 
 	args = append(args, pattern, searchPath)
 
-	cmd := exec.Command("rg", args...)
+	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = t.workspaceDir
 
 	output, err := cmd.CombinedOutput() // Capture both stdout and stderr

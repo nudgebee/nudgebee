@@ -10,10 +10,14 @@ import {
   Chip,
   InputAdornment,
   IconButton,
-  Tooltip,
   Popover,
   CircularProgress,
+  // The chip-overflow tooltip below stays on MUI: its content is styled for a dark
+  // surface and holds interactive delete buttons, neither of which ds/Tooltip's
+  // light surface or link-only 'interactive' variant can express.
+  Tooltip as MuiTooltip,
 } from '@mui/material';
+import Tooltip from '@ui/Tooltip';
 import {
   Label as LabelIcon,
   FilterList as FilterIcon,
@@ -588,7 +592,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
           }}
         />
 
-        <Tooltip title='How to use'>
+        <Tooltip title='How to use' placement='bottom'>
           <IconButton
             onClick={handleInfoClick}
             sx={{
@@ -685,7 +689,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
               />
             ))}
             {chips.length > 2 && (
-              <Tooltip
+              <MuiTooltip
                 title={
                   <Box
                     sx={{
@@ -801,7 +805,7 @@ const SigNozQueryAutocomplete = ({ accountId, onQueryChange, queryItems }) => {
                     },
                   }}
                 />
-              </Tooltip>
+              </MuiTooltip>
             )}
           </Box>
         </Box>

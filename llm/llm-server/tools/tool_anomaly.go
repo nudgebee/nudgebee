@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -140,9 +141,40 @@ func (m AnomalyExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		if len(data) > 0 {
 			// Add reference to anomaly details page if applicable
 			references = append(references, core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"events", "anomaly"}, "Anomaly Details", nil, ""))
+		} else {
+			// Zero rows is ambiguous: "no anomalies" and "anomaly detection is
+			// not running" look identical, and the agent was observed asserting
+			// "no anomalies detected" on accounts where detection had never
+			// produced a row. Disambiguate with a coverage probe — the view
+			// already scopes to this account and the last 30 days, so any row
+			// at all proves detection is active.
+			resp = anomalyEmptyResultResponse(nbRequestContext, anomalyView1)
 		}
 		resp.References = references
 	}
 
 	return resp, err
+}
+
+// anomalyEmptyResultResponse explains an empty result honestly: it reports
+// whether anomaly detection has produced ANY rows for this account in the
+// window, so the caller can distinguish "detection is active, nothing matched"
+// from "detection may not be enabled". Falls back to the neutral message if
+// the probe itself fails.
+func anomalyEmptyResultResponse(nbRequestContext core.NbToolContext, anomalyView string) core.NBToolResponse {
+	_, probe, probeErr := sqlToolCall(nbRequestContext, "SELECT COUNT(*) AS cnt FROM anomaly", "anomaly", anomalyView, 0, nil)
+	msg := `{"message":"No results found matching the query criteria. Try broadening the filters, adjusting the time range, or checking if the resource/entity name is correct.","rows":[]}`
+	if probeErr == nil && len(probe) > 0 {
+		total := fmt.Sprintf("%v", probe[0]["cnt"])
+		if total == "0" {
+			msg = `{"message":"No anomaly rows exist for this account in the last 30 days — anomaly detection may not be enabled or has not produced data yet. Treat anomaly status as UNKNOWN; do not report 'no anomalies detected'.","rows":[]}`
+		} else {
+			msg = fmt.Sprintf(`{"message":"No rows matched the query, but anomaly detection is active for this account (%s anomaly rows in the last 30 days across all types). It is accurate to report that no matching anomalies were detected.","rows":[]}`, total)
+		}
+	}
+	return core.NBToolResponse{
+		Data:   msg,
+		Type:   core.NBToolResponseTypeJson,
+		Status: core.NBToolResponseStatusSuccess,
+	}
 }

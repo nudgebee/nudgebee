@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   app-build:
     runs-on: ubuntu-latest
@@ -71,3 +74,55 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: ./runbook-server
         run: go vet -tags e2e ./...
+
+  # The blocking predicate in GetActiveResolutionsForRecommendations decides
+  # whether a recommendation is skipped, and it has now been wrong twice in a way
+  # the sqlmock suite structurally cannot catch: those tests assert on the query
+  # TEXT and return canned rows, so they stay green whatever the WHERE clause
+  # does (#34943, then #35523, which changed api-server's copy of the predicate
+  # and left runbook-server's alone). This job executes the SQL against a real
+  # Postgres, which is the only thing that catches it.
+  #
+  # ubuntu-latest, not the self-hosted runner: service containers need Docker on
+  # the runner host, and this mirrors the postgres:15 service that
+  # migrations-validate.yaml already runs successfully.
+  blocking-predicate-tests:
+    name: Blocking predicate (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: appdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: ./runbook-server/go.sum
+
+      # A test that silently does not run is how this class of bug survived two
+      # fixes, so REQUIRE_DB_TESTS below makes a missing DSN fail here.
+      - name: Run predicate tests
+        working-directory: ./runbook-server
+        env:
+          TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+          # Turns a missing DSN into a failure in THIS job only, so the suite
+          # cannot quietly stop running here.
+          REQUIRE_DB_TESTS: "true"
+        # No -run filter. Naming every suite in the job is how the coverage this
+        # job exists for silently stopped being gated: a new predicate test that
+        # did not match the regex was simply skipped, with nothing to say so.
+        # requireTestDSN already gates on the database being present, and
+        # REQUIRE_DB_TESTS above turns a missing one into a failure here.
+        run: go test ./internal/storage/ -v

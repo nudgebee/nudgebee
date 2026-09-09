@@ -193,8 +193,15 @@ func summaryOrNone(drifts []valueDrift) string {
 	return describeDrifts(drifts)
 }
 
-// recordValueRefresh advances the stored values and the guardrail counters after
-// a refresh has actually landed on the branch.
+// recordValueRefresh advances the stored values and the rewrite budget after a
+// refresh has actually landed on the branch.
+//
+// value_refresh_count counts rewrites that LANDED, deliberately: an attempt that
+// failed on infrastructure — an expired git token, a gateway 5xx, an empty agent
+// response — must not consume a pull request's rewrite budget, or five transient
+// failures retire it for its entire life while valueRefreshBlocked reports it was
+// "already updated 5 times". The failing-refresh loop is bounded by the cadence
+// stamp instead (see recordValueRefreshFailure).
 //
 // pr_iteration_count is reset because the pull request's contents changed: review
 // comments raised against the previous numbers may no longer apply, so the review
@@ -247,6 +254,17 @@ func recordValueRefresh(
 	if rows, raErr := res.RowsAffected(); raErr == nil && rows == 0 {
 		ctx.GetLogger().Info("pr_value_refresh: pull request went terminal during the refresh; leaving it terminal",
 			"resolution_id", existingPR.Id, "pr_url", existingPR.TypeReferenceId)
+		return nil
+	}
+
+	// The resolution row's own pr_iteration_count/pr_lifecycle_state above are
+	// no longer what drives the review-followup loop (#36457) — pr_followup,
+	// keyed by PR URL, is. Reset that too, or a review-followup budget that
+	// should restart after this rewrite would stay consumed by comments raised
+	// against the numbers this refresh just replaced.
+	if err := adapter.ResetPRFollowupBudget(ctx, existingPR.TypeReferenceId); err != nil {
+		ctx.GetLogger().Error("pr_value_refresh: failed to reset pr_followup budget after refresh",
+			"resolution_id", existingPR.Id, "pr_url", existingPR.TypeReferenceId, "error", err)
 	}
 	return nil
 }

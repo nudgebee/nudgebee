@@ -1125,7 +1125,13 @@ function FilterDropdownButton({
               {selectedDisplayText.labels.map((lbl, idx) => (
                 <React.Fragment key={lbl}>
                   {idx > 0 && <span style={{ color: 'var(--ds-gray-700)', fontWeight: 400 }}>, </span>}
-                  <TruncatedLabel label={lbl} color='var(--ds-blue-500)' fontWeight={600} />
+                  <TruncatedLabel
+                    label={lbl}
+                    // A lone selection may use the whole trigger; several share it.
+                    maxWidth={selectedDisplayText.labels.length === 1 ? '100%' : '90px'}
+                    color='var(--ds-blue-500)'
+                    fontWeight={600}
+                  />
                 </React.Fragment>
               ))}
               {selectedDisplayText.extra > 0 && (

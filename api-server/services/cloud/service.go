@@ -166,6 +166,7 @@ func StoreUsageReport(ctx *security.RequestContext, usageReportRequest StoreUsag
 		"account_id": usageReportRequest.AccountId,
 		"month":      usageReportRequest.Month,
 		"year":       usageReportRequest.Year,
+		"backfill":   usageReportRequest.Backfill,
 	}), common.HttpWithHeaders(map[string]string{
 		config.Config.CloudCollectorServerTokenHeader: config.Config.CloudCollectorServerToken,
 		"x-tenant-id": ctx.GetSecurityContext().GetTenantId(),

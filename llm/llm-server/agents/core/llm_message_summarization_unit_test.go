@@ -119,6 +119,14 @@ func TestSummarizeContent_MediumContent_SingleChunk(t *testing.T) {
 func TestSummarizeContent_LargeContent_ChunkedAndCombined(t *testing.T) {
 	fake := &fakeLLMModel{response: "CHUNKSUM"}
 	withFakeLLMModel(t, fake)
+	// Pin the window this test chunks against. It asserts on chunking behaviour,
+	// not on gpt-4o's real context size, and previously depended on gpt-4o
+	// matching nothing in the code map and inheriting the 32,000 global default.
+	// Correcting gpt-4o to its documented 128,000 made the fixture fit in one
+	// chunk and the assertion fail, so the budget is now explicit.
+	withFakeModelLimitsCatalog(t, map[string]modelTokenLimits{
+		"openai:gpt-4o": {MaxContext: 32_000, MaxOutput: 4096},
+	})
 
 	ctx := llmOverrideContext()
 	// Comfortably exceeds the ~8k-token per-chunk budget so multiple chunks are produced.

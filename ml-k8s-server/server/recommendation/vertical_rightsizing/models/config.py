@@ -5,7 +5,7 @@ from typing import Any, Optional, Union
 import pydantic as pd
 from server.recommendation.vertical_rightsizing.models.objects import KindLiteral
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
 
 
 class Config(pd.BaseModel):

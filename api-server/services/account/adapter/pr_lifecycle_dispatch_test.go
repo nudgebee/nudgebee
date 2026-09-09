@@ -62,23 +62,30 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 	}
 
 	t.Run("claimOrMark", func(t *testing.T) {
+		// wantClaimed is stated per case rather than derived from wantNewState: a
+		// row already in 'addressing' ENDS at 'addressing' without having been
+		// claimed — a run is in flight and this signal only sets pending (see
+		// claimOrMarkResolution's contract). Deriving it collapsed those two into
+		// one and asserted the wrong thing for that case, which went unnoticed
+		// because this suite skips whenever no database is reachable.
 		cases := []struct {
 			id, state             string
 			iters                 int
 			wantOld, wantNewState string
+			wantClaimed           bool
 			wantPending           bool
 		}{
-			{"c", "created", 0, "created", "addressing", false},                   // claim
-			{"n", "needs_followup", 0, "needs_followup", "addressing", false},     // claim
-			{"a", "addressing", 0, "addressing", "addressing", true},              // mark pending (run in flight)
-			{"cap", "created", followupIterationCap, "created", "created", false}, // at cap -> no-op
-			{"closed", "closed", 0, "closed", "closed", false},                    // terminal -> no-op
+			{"c", "created", 0, "created", "addressing", true, false},                    // claim
+			{"n", "needs_followup", 0, "needs_followup", "addressing", true, false},      // claim
+			{"a", "addressing", 0, "addressing", "addressing", false, true},              // mark pending (run in flight)
+			{"cap", "created", followupIterationCap, "created", "created", false, false}, // at cap -> no-op
+			{"closed", "closed", 0, "closed", "closed", false, false},                    // terminal -> no-op
 		}
 		for _, c := range cases {
 			seed(c.id, c.state, c.iters, false)
 			claimed, old, iters, e := claimOrMarkResolution(dbms, tbl, c.id, false)
 			require.NoError(t, e, c.id)
-			assert.Equal(t, c.wantNewState == "addressing", claimed, "claimed for %s", c.id)
+			assert.Equal(t, c.wantClaimed, claimed, "claimed for %s", c.id)
 			assert.Equal(t, c.wantOld, old, "old_state for %s", c.id)
 			assert.Equal(t, c.iters, iters, "old_iters for %s", c.id)
 			st, _, pend := get(c.id)
@@ -135,12 +142,11 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 
 	t.Run("finalize", func(t *testing.T) {
 		ctx := security.NewRequestContextForSuperAdmin(nil, nil, nil)
-		row := func(id string) prResolutionRow { return prResolutionRow{ID: id, TableName: tbl} }
 
 		// success, with a signal that arrived mid-run -> reports pending, resets to
 		// created, clears the flag (the caller will re-dispatch once).
 		seed("fin_success", "addressing", 2, true)
-		assert.True(t, applyFollowupOutcome(ctx, dbms, row("fin_success"), followupOutcomeSuccess))
+		assert.True(t, applyFollowupOutcome(ctx, dbms, tbl, "fin_success", followupOutcomeSuccess))
 		st, it, pend := get("fin_success")
 		assert.Equal(t, "created", st)
 		assert.Equal(t, 0, it)
@@ -148,14 +154,14 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 
 		// failed, no mid-run signal -> no re-dispatch, needs_followup, counter +1.
 		seed("fin_failed", "addressing", 1, false)
-		assert.False(t, applyFollowupOutcome(ctx, dbms, row("fin_failed"), followupOutcomeFailed))
+		assert.False(t, applyFollowupOutcome(ctx, dbms, tbl, "fin_failed", followupOutcomeFailed))
 		st, it, _ = get("fin_failed")
 		assert.Equal(t, "needs_followup", st)
 		assert.Equal(t, 2, it)
 
 		// no_op -> needs_followup, counter unchanged (so a late reviewer isn't capped).
 		seed("fin_noop", "addressing", 1, false)
-		assert.False(t, applyFollowupOutcome(ctx, dbms, row("fin_noop"), followupOutcomeNoOp))
+		assert.False(t, applyFollowupOutcome(ctx, dbms, tbl, "fin_noop", followupOutcomeNoOp))
 		st, it, _ = get("fin_noop")
 		assert.Equal(t, "needs_followup", st)
 		assert.Equal(t, 1, it)
@@ -163,7 +169,7 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 		// terminal guard: a PR-close flipped the row to 'closed' mid-run; finalize
 		// must NOT resurrect it to an open state, but still clears pending.
 		seed("fin_closed", "closed", 3, true)
-		assert.True(t, applyFollowupOutcome(ctx, dbms, row("fin_closed"), followupOutcomeSuccess))
+		assert.True(t, applyFollowupOutcome(ctx, dbms, tbl, "fin_closed", followupOutcomeSuccess))
 		st, it, pend = get("fin_closed")
 		assert.Equal(t, "closed", st, "terminal state must be preserved")
 		assert.Equal(t, 3, it, "counter must be untouched on terminal")

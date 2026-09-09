@@ -58,3 +58,12 @@ func TestPlannerReact3Base_ShellGuidanceIsStrategyOnly(t *testing.T) {
 			"planner_react_3_base.txt should not carry tool-mechanics snippet %q — that lives in ShellTool.Description() now", snippet)
 	}
 }
+
+func TestPlannerReact3Base_DelegationReusesResolvedResourceIdentity(t *testing.T) {
+	prompt := GetPromptForTest(PromptReact3Base)
+	assert.Contains(t, prompt, "reuse its exact provider-native identity and scope")
+	assert.Contains(t, prompt, "do not make the specialist rediscover it")
+	assert.Contains(t, prompt, "input schema exposes `resolved_targets`")
+	assert.Contains(t, prompt, "kind + namespace + exact pod/workload names")
+	assert.Contains(t, prompt, "account/project/subscription + region + exact name/ID/ARN")
+}

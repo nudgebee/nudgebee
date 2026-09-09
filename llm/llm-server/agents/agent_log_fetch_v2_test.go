@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,12 +74,19 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	}
 }
 
-// TestQueryHasExplicitTimeAnchor guards the kubectl-fallback guard added for
-// bug C1 (log_analysis_bugs): kubectl's plain `--tail` fetch has no time
-// filtering, so falling back to it after a services-server success-but-empty
-// result is only safe when the canonical query had no explicit start_time —
-// an absolute historical anchor kubectl cannot honor at all.
-func TestQueryHasExplicitTimeAnchor(t *testing.T) {
+// TestQueryRequestsWindowBeyondKubectl covers the check that decides whether kubectl
+// could answer the question at all.
+//
+// The previous version of this test asserted the defect: it expected
+// `time_range: "1h"` to count as "no historical anchor", because the check only looked
+// at `start_time`. The canonical query expresses windows as `time_range` far more often
+// than as an absolute `start_time`, so that returned false for nearly every generated
+// query and the fallback fired regardless — answering a multi-hour request from a
+// container buffer holding minutes.
+func TestQueryRequestsWindowBeyondKubectl(t *testing.T) {
+	recent := time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339)
+	old := time.Now().Add(-4 * time.Hour).UTC().Format(time.RFC3339)
+
 	cases := []struct {
 		name  string
 		query string
@@ -86,13 +94,24 @@ func TestQueryHasExplicitTimeAnchor(t *testing.T) {
 	}{
 		{"empty query", "", false},
 		{"unparseable query", "not-json", false},
-		{"no start_time, only relative time_range", `{"where":{},"time_range":"1h"}`, false},
-		{"explicit start_time", `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, true},
-		{"blank start_time field", `{"where":{},"start_time":"  "}`, false},
+		{"no window at all", `{"where":{}}`, false},
+
+		// Relative windows — the common form, and the case the old check missed.
+		{"relative 1h exceeds what kubectl holds", `{"where":{},"time_range":"1h"}`, true},
+		{"relative 4h exceeds it", `{"where":{},"time_range":"4h"}`, true},
+		{"relative 7d exceeds it", `{"where":{},"time_range":"7d"}`, true},
+		{"relative 5m is servable", `{"where":{},"time_range":"5m"}`, false},
+		{"unparseable range is not treated as history", `{"where":{},"time_range":"soon"}`, false},
+
+		// Absolute anchors.
+		{"start_time hours ago exceeds it", `{"where":{},"start_time":"` + old + `"}`, true},
+		{"start_time minutes ago is servable", `{"where":{},"start_time":"` + recent + `"}`, false},
+		{"unparseable start_time still signals history", `{"where":{},"start_time":"yesterday"}`, true},
+		{"blank start_time", `{"where":{},"start_time":"  "}`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, c.want, queryHasExplicitTimeAnchor(c.query))
+			assert.Equal(t, c.want, queryRequestsWindowBeyondKubectl(c.query))
 		})
 	}
 }
@@ -117,7 +136,11 @@ func TestShouldFallbackToKubectl(t *testing.T) {
 		{"failed primary always falls back, no query", failed, "", true},
 		{"failed primary always falls back, even with an explicit window", failed, `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, true},
 		{"successful primary with real rows never falls back", rows, "", false},
-		{"successful-empty primary with no explicit window falls back", empty, `{"where":{},"time_range":"1h"}`, true},
+		// Was `true`, asserting the defect: a 1h window counted as "no anchor" because
+		// only start_time was inspected, so an authoritative empty result was replaced
+		// with a container buffer holding minutes.
+		{"successful-empty primary with a 1h relative window does NOT fall back", empty, `{"where":{},"time_range":"1h"}`, false},
+		{"successful-empty primary with a short window still falls back", empty, `{"where":{},"time_range":"5m"}`, true},
 		{"successful-empty primary with no query info falls back", empty, "", true},
 		{"successful-empty primary with an explicit start_time does NOT fall back", empty, `{"where":{},"start_time":"2026-07-20T07:00:00Z"}`, false},
 	}
@@ -534,4 +557,144 @@ func TestCanonicalLogQueryGeneration_Live(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestShouldFallbackToKubectl_DistinguishesCantAskFromNoData pins the structural point:
+// a `Status: Failed` is not one condition. At least four causes reach it, and only a
+// backend we could not reach justifies switching to a narrower source. Falling back on a
+// malformed request of ours hides the defect — permanently, because the kubectl path
+// still returns prose that reads like evidence.
+func TestShouldFallbackToKubectl_DistinguishesCantAskFromNoData(t *testing.T) {
+	failed := func(msg string) core.NBAgentResponse {
+		return core.NBAgentResponse{Status: core.ConversationStatusFailed, Response: []string{msg}}
+	}
+
+	tests := []struct {
+		name         string
+		resp         core.NBAgentResponse
+		wantFallback bool
+		why          string
+	}{
+		// --- our fault: must surface, must NOT switch backends ---
+		{
+			name:         "unsupported operator (the _ilike case)",
+			resp:         failed(`services: fetch logs failed: like clause _ilike not supported for non string type`),
+			wantFallback: false,
+			why:          "an operator this provider does not implement is our defect, not an absence of logs",
+		},
+		{
+			name:         "unparseable clause",
+			resp:         failed(`elasticsearch error: {"type":"x_content_parse_exception","reason":"failed to parse field"}`),
+			wantFallback: false,
+		},
+		{
+			name:         "unknown field",
+			resp:         failed(`query_shard_exception: no mapping found for [kubernetes.pod_name] in order to sort on`),
+			wantFallback: false,
+		},
+		{
+			name:         "provider could not be resolved",
+			resp:         failed(`pq: invalid input syntax for type uuid: "" (22P02)`),
+			wantFallback: false,
+			why:          "losing the account context is our bug; kubectl would mask it",
+		},
+		// --- not our fault: the safety net still applies ---
+		{
+			// "oneof" ends in the same three letters as a bare EOF. It is a validation
+			// error — the request-invalid class this change exists to stop misrouting —
+			// so a substring match would send it to kubectl and hide it again.
+			name:         "oneof validation error is not an EOF transport failure",
+			resp:         failed(`failed to parse query: must set oneof field`),
+			wantFallback: false,
+			why:          "short markers must match as whole words, not substrings",
+		},
+		{
+			name:         "a bare EOF still counts as transport",
+			resp:         failed(`Post "https://es:9200/_search": EOF`),
+			wantFallback: true,
+		},
+		{
+			name:         "backend unreachable",
+			resp:         failed(`dial tcp 10.0.0.1:9200: connect: connection refused`),
+			wantFallback: true,
+		},
+		{
+			name:         "backend 503",
+			resp:         failed(`metric query failed with status 503: service unavailable`),
+			wantFallback: true,
+		},
+		{
+			name:         "backend timeout",
+			resp:         failed(`context deadline exceeded`),
+			wantFallback: true,
+		},
+		{
+			// A 5xx body can happen to contain "unsupported"; transport signals win so
+			// an unreachable backend is never misread as a malformed request.
+			name:         "5xx whose body mentions unsupported",
+			resp:         failed(`status 502: upstream said unsupported`),
+			wantFallback: true,
+		},
+		{
+			name:         "unrecognised failure keeps the existing safety net",
+			resp:         failed(`something nobody has classified yet`),
+			wantFallback: true,
+			why:          "conservative: only confidently-ours failures suppress the fallback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldFallbackToKubectl(tt.resp, "")
+			assert.Equal(t, tt.wantFallback, got, tt.why)
+		})
+	}
+}
+
+// TestRequestInvalidGuidance_TellsTheCallerItIsNotAbsence guards the other half: when we
+// stop falling back, the caller must understand it received a rejection, not an empty
+// result — otherwise it reports "no logs found" from a query the backend never ran.
+func TestRequestInvalidGuidance_TellsTheCallerItIsNotAbsence(t *testing.T) {
+	in := core.NBAgentResponse{
+		Status:   core.ConversationStatusFailed,
+		Response: []string{"like clause _ilike not supported for non string type"},
+	}
+	out := requestInvalidGuidance(in)
+
+	joined := strings.Join(out.Response, "\n")
+	assert.Contains(t, joined, "rejected this query as malformed")
+	assert.Contains(t, joined, "did NOT report an absence of logs")
+	assert.Contains(t, joined, "do not retry the same query")
+	assert.Contains(t, joined, "_ilike", "the original backend error must be preserved")
+	assert.Equal(t, core.ConversationStatusFailed, out.Status, "it is still a failure")
+}
+
+// Elasticsearch rejects `_ilike` outright ("unsupported operator \"_ilike\" for field
+// ..."), and a rejected query costs a whole agent iteration to discover. The fallback
+// list is used precisely when the backend did not tell us what it supports, so it must
+// be the portable intersection.
+func TestDefaultLogQueryOperators_ExcludesILike(t *testing.T) {
+	assert.NotContains(t, defaultLogQueryOperators, "_ilike",
+		"the unknown-backend fallback must not advertise an operator Elasticsearch rejects")
+	assert.Contains(t, defaultLogQueryOperators, "_like", "the portable spelling must stay")
+}
+
+// The few-shots are a stronger signal than the operator list, so hardcoding `_ilike`
+// in them made the model emit it even when the advertised list correctly omitted it.
+func TestCanonicalQueryExamples_FollowTheAdvertisedOperators(t *testing.T) {
+	render := func(ops []string) string {
+		var sb strings.Builder
+		for _, ex := range canonicalQueryExamples(ops) {
+			sb.WriteString(ex.Answer)
+		}
+		return sb.String()
+	}
+
+	es := render([]string{"_eq", "_neq", "_like", "_nlike", "_is_null"})
+	assert.NotContains(t, es, "_ilike", "must not demonstrate an operator this backend rejects")
+	assert.Contains(t, es, "_like", "text matching must still be demonstrated")
+
+	supported := render([]string{"_eq", "_like", "_ilike"})
+	assert.Contains(t, supported, "_ilike",
+		"case-insensitive matching must still be used where the backend supports it")
 }

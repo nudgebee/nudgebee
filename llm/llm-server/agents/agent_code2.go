@@ -19,6 +19,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -35,20 +36,6 @@ const AgentCodeAnalyzer = "code_analyzer"
 // @agent_code_2 invocations, and api-server's hardcoded prompt prefix keep
 // resolving across deploys. Do not use in new code.
 const agentCodeAnalyzerLegacyName = "agent_code_2"
-
-// sanitizeWorkspacePathID maps an ID to the workspace's safe path charset
-// ([A-Za-z0-9_-]; everything else becomes '_') — the SAME mapping the workspace
-// analyze handler applies when naming its temp directories. Slack session IDs
-// contain a '.', so passing them raw both fails the workspace's conversation-id
-// validation and misses the sanitized directory names.
-func sanitizeWorkspacePathID(id string) string {
-	return strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			return r
-		}
-		return '_'
-	}, id)
-}
 
 // Mode constants mirror llm/code-analysis. Kept inline (not imported) because
 // llm-server doesn't take a Go-module dependency on llm/code-analysis.
@@ -90,6 +77,59 @@ const codeAnalysisNoOpStatus = "no_op"
 // message replays this answer as a success instead of re-running the analysis,
 // which is what previously drove a re-dispatch loop and a duplicate PR.
 const noopGuardPrefix = "NOOP:"
+
+// sanitizeWorkspacePathID maps an ID to the workspace's safe path charset.
+// It is retained as the shared naming rule for workspace cleanup tests and
+// any callers that need to address a conversation execution directory.
+func sanitizeWorkspacePathID(id string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, id)
+}
+
+var activeCodeAnalyses = struct {
+	sync.Mutex
+	cancel map[string]func()
+}{cancel: make(map[string]func())}
+
+func registerActiveCodeAnalysis(key string, cancel func()) {
+	if key == "" || cancel == nil {
+		return
+	}
+	activeCodeAnalyses.Lock()
+	activeCodeAnalyses.cancel[key] = cancel
+	activeCodeAnalyses.Unlock()
+}
+
+func unregisterActiveCodeAnalysis(key string) {
+	activeCodeAnalyses.Lock()
+	delete(activeCodeAnalyses.cancel, key)
+	activeCodeAnalyses.Unlock()
+}
+
+// CancelActiveCodeAnalyses is called during llm-server shutdown. Workspace
+// pods are shared and must remain alive, so only the analyses owned by this
+// process are cancelled.
+func CancelActiveCodeAnalyses() {
+	activeCodeAnalyses.Lock()
+	cancellations := make([]func(), 0, len(activeCodeAnalyses.cancel))
+	for _, cancel := range activeCodeAnalyses.cancel {
+		cancellations = append(cancellations, cancel)
+	}
+	activeCodeAnalyses.Unlock()
+	var wg sync.WaitGroup
+	for _, cancel := range cancellations {
+		wg.Add(1)
+		go func(cancel func()) {
+			defer wg.Done()
+			cancel()
+		}(cancel)
+	}
+	wg.Wait()
+}
 
 func init() {
 	common.CacheCreateNamespace(codeAgentFailuresCacheNS, common.CacheNamespaceWithExpiration(24*time.Hour))
@@ -291,6 +331,29 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		}
 	}
 
+	// Analyse the revision the workload was actually running, when we know it.
+	//
+	// GitCommit comes from the deployed artifact (workloads.nudgebee.com/git.hash
+	// / CodeRepoCommitHash). Without it the clone lands on the branch tip, so an
+	// incident gets diagnosed against code that shipped after it — which reads as
+	// a confident "already fixed" on a bug that is still live, with nothing
+	// indicating the wrong revision was read.
+	//
+	// Deliberately NOT sent when a PR is wanted. A fix branch cut from an old
+	// commit would revert everything merged since, so code-analysis refuses that
+	// combination outright; raising a PR means fixing against the branch tip.
+	// Explore and propose (raise_pr=false) are where pinning belongs.
+	gitRepository := map[string]any{
+		"url":      request.GitRepo,
+		"branch":   branch,
+		"provider": provider,
+	}
+	if !request.RaisePr && request.GitCommit != "" {
+		gitRepository["commit"] = request.GitCommit
+		logger.Info("code: pinning analysis to the deployed revision",
+			"commit", request.GitCommit, "branch", branch)
+	}
+
 	analyzeRequest := map[string]any{
 		"cloud_account_id":   request.AccountId,
 		"tenant":             tenantId,
@@ -299,19 +362,15 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		"workload_kind":      "Deployment",
 		"logs":               logs,
 		"prompt":             request.Query,
-		"git_repository": map[string]any{
-			"url":      request.GitRepo,
-			"branch":   branch,
-			"provider": provider,
-		},
-		"mode":              mode,
-		"raise_pr":          request.RaisePr,
-		"event_id":          request.EventId,
-		"recommendation_id": request.RecommendationId,
-		"workflow_id":       request.WorkflowId,
-		"account_id":        request.AccountId,
-		"conversation_id":   agentRequest.SessionId,
-		"message_id":        agentRequest.MessageId,
+		"git_repository":     gitRepository,
+		"mode":               mode,
+		"raise_pr":           request.RaisePr,
+		"event_id":           request.EventId,
+		"recommendation_id":  request.RecommendationId,
+		"workflow_id":        request.WorkflowId,
+		"account_id":         request.AccountId,
+		"conversation_id":    agentRequest.SessionId,
+		"message_id":         agentRequest.MessageId,
 	}
 
 	if request.Agent != "" {
@@ -390,6 +449,11 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	if analysisID == "" || status != "running" {
 		return codeAnalysisResult{}, fmt.Errorf("unexpected workspace /analyze response: status=%q analysis_id=%q", status, analysisID)
 	}
+	analysisKey := agentRequest.AccountId + ":" + analysisID
+	registerActiveCodeAnalysis(analysisKey, func() {
+		cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
+	})
+	defer unregisterActiveCodeAnalysis(analysisKey)
 
 	// Step 2: Poll /status/{id} every 5s until completed or failed
 	logger.Info("code: analysis accepted, polling for progress", "analysis_id", analysisID)
@@ -410,11 +474,24 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	for {
 		select {
 		case <-ctx.GetContext().Done():
+			cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
 			return codeAnalysisResult{}, fmt.Errorf("analysis timed out while polling for results")
 		case <-time.After(5 * time.Second):
 		}
 
+		// The normal planner termination path updates the message in PostgreSQL,
+		// but this external analysis has its own context. Propagate Stop to the
+		// workspace before returning so the remote agent does not keep running.
+		if agentRequest.MessageId != "" {
+			isTerminated, messageErr := core.CheckMessageTerminationStatus(agentRequest.MessageId, agentRequest.AccountId, agentRequest.ConversationId)
+			if messageErr == nil && isTerminated {
+				cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
+				return codeAnalysisResult{}, fmt.Errorf("code analysis cancelled because the conversation was terminated")
+			}
+		}
+
 		if time.Now().After(pollDeadline) {
+			cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
 			return codeAnalysisResult{}, fmt.Errorf("analysis polling exceeded maximum duration of %v", maxPollDuration)
 		}
 
@@ -424,6 +501,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 			logger.Warn("code: failed to poll analysis status", "error", err, "analysis_id", analysisID,
 				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)
 			if consecutiveErrors >= maxConsecutiveErrors {
+				cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
 				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive errors: %w", consecutiveErrors, err)
 			}
 			continue
@@ -466,41 +544,37 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 			}
 			logger.Info("code: analysis completed", "analysis_id", analysisID)
 
-			// Fire-and-forget cleanup of cloned repos
-			go func() {
-				cleanupCtx := security.NewRequestContext(
-					context.Background(),
-					ctx.GetSecurityContext(),
-					ctx.GetLogger(),
-					ctx.GetTracer(),
-					ctx.GetMeter(),
-				)
-				// Sanitize with the SAME character mapping the workspace analyze
-				// handler uses for its temp dirs (anything outside [A-Za-z0-9_-]
-				// becomes '_'). Slack session IDs contain a '.', so the raw ID both
-				// failed the workspace's conversation-id validation AND wouldn't
-				// have matched the sanitized directory names — every Slack-origin
-				// analysis leaked its clone until the pod was replaced.
-				cleanID := sanitizeWorkspacePathID(agentRequest.SessionId)
-				if cleanID == "" {
-					logger.Warn("code: workspace cleanup skipped — empty session id")
-					return
-				}
-				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", cleanID)
-				// The sanitized ID is passed as the conversation_id arg: the
-				// workspace pod rejects empty conversation_id (validates non-empty
-				// + safe path charset) and would silently no-op the cleanup otherwise.
-				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, cleanID, cleanupCmd, nil); cleanupErr != nil {
-					logger.Warn("code: workspace cleanup failed", "error", cleanupErr)
-				}
-			}()
-
 			return extractAgentResponseWithTokenUsage(resultBytes), nil
 		case "failed":
 			errMsg, _ := statusResp["error"].(string)
 			return codeAnalysisResult{}, fmt.Errorf("analysis failed: %s", errMsg)
+		case "cancelled":
+			return codeAnalysisResult{}, fmt.Errorf("analysis was cancelled")
 		}
 		// status == "running" → keep polling
+	}
+}
+
+// cancelWorkspaceAnalysis is best-effort and deliberately uses a detached
+// short-lived context: it is most often called because the caller context has
+// already been cancelled or the planner has been stopped.
+func cancelWorkspaceAnalysis(ctx *security.RequestContext, accountID, analysisID string) {
+	if accountID == "" || analysisID == "" {
+		return
+	}
+	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 10*time.Second)
+	defer cancel()
+	detached := security.NewRequestContext(
+		requestCtx,
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+	wm := workspace.NewWorkspaceManagerWithTimeout(10 * time.Second)
+	endpoint := fmt.Sprintf("/cancel/%s", url.PathEscape(analysisID))
+	if _, err := wm.CallAPI(detached, accountID, "POST", endpoint, nil, nil); err != nil {
+		ctx.GetLogger().Warn("code: failed to cancel workspace analysis", "analysis_id", analysisID, "error", err)
 	}
 }
 
@@ -2086,7 +2160,7 @@ func resolveGitToken(ctx *security.RequestContext, creds []GitCredentials, repoU
 				} else {
 					token, err := utils.GetGithubAppInstallationToken(ctx.GetContext(), cred.Url, installationID)
 					if err != nil {
-						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err)
+						logger.Warn("code: failed to mint github app installation token; clone will be unauthenticated", "error", err, "installation_id", installationID)
 					} else {
 						gitToken = token
 					}

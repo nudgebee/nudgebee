@@ -416,6 +416,7 @@ jobs:
               | jq -r '[.[] | .metadata.container.tags[]?]
                        | map(select(test("-(arm64|amd64)$") | not))
                        | map(select(test("^dev-") | not))
+                       | map(select(. != "latest"))
                        | .[]')
             while IFS= read -r tag; do
               [ -z "$tag" ] && continue
@@ -442,23 +443,21 @@ jobs:
           NOVA_REF="ghcr.io/nudgebee/nova:${nova_tag}" \
           POPEYE_REF="ghcr.io/nudgebee/popeye:${popeye_tag}" \
           yq -i '
-            .services-server.env.NOVA_IMAGE              = strenv(NOVA_REF) |
-            .services-server.env.K8S_VERSION_UPGRADE_IMAGE = strenv(NOVA_REF) |
-            .services-server.env.POPEYE_IMAGE             = strenv(POPEYE_REF)
+            .services-server.env.NOVA_IMAGE   = strenv(NOVA_REF) |
+            .services-server.env.POPEYE_IMAGE = strenv(POPEYE_REF)
           ' deploy/kubernetes/nudgebee/values.yaml
 
           # Standalone services-server subchart — env block.
           NOVA_REF="ghcr.io/nudgebee/nova:${nova_tag}" \
           POPEYE_REF="ghcr.io/nudgebee/popeye:${popeye_tag}" \
           yq -i '
-            .env.NOVA_IMAGE              = strenv(NOVA_REF) |
-            .env.K8S_VERSION_UPGRADE_IMAGE = strenv(NOVA_REF) |
-            .env.POPEYE_IMAGE             = strenv(POPEYE_REF)
+            .env.NOVA_IMAGE   = strenv(NOVA_REF) |
+            .env.POPEYE_IMAGE = strenv(POPEYE_REF)
           ' deploy/kubernetes/services-server/values.yaml
 
-          # trivy / kube-bench / cert-scanner stay hard-pinned in values.yaml —
-          # bumping them requires re-validating parser_*.go against the new
-          # output schema, which doesn't belong in an automated bumper.
+          # trivy / kube-bench stay hard-pinned in values.yaml — bumping them
+          # requires re-validating parser_*.go against the new output schema,
+          # which doesn't belong in an automated bumper.
 
       - name: Package first-party subcharts
         run: |

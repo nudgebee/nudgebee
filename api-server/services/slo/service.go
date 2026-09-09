@@ -155,6 +155,8 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 		if err := GenerateSLOEvent(dbms, config, accountName); err != nil {
 			slog.Error("slo: error generating event", "error", err, "configId", config.Id, "accountId", accountId)
 		}
+	} else {
+		closeSLOEventIfRecovered(dbms, config, reports)
 	}
 	return nil
 }
@@ -291,7 +293,11 @@ func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
 		},
 	})
 	if err != nil {
-		slog.Error("slo: failed to execute slo task", "error", resp["response"], "accountId", accountId)
+		if strings.Contains(err.Error(), "agent not connected") {
+			slog.Warn("slo: agent not connected, skipping slo task", "accountId", accountId)
+			return nil, nil
+		}
+		slog.Error("slo: failed to execute slo task", "error", err, "accountId", accountId)
 		return nil, err
 	}
 	if resp["status_code"] == 500 {
@@ -360,6 +366,13 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		if err != nil {
 			return data, err
 		}
+		if !config.Enabled {
+			// A disabled config never evaluates again, so it never has another
+			// chance to close its own event — same failure class as delete (see
+			// DeleteSLOConfig).
+			fingerprint := sloFingerprint(sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
+			closeSLOEventByFingerprint(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, fingerprint)
+		}
 		data["success"] = true
 	}
 	return data, nil
@@ -400,6 +413,16 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 		args = append(args, request.Name)
 	}
 
+	// Read the config names being removed before they're deleted, so their
+	// events can be closed afterward — a deleted config never runs again, so
+	// without this a still-open SLOViolation event it owns has no evaluator
+	// left to ever resolve it (same failure class this whole change fixes).
+	var deletedConfigNames []string
+	if err = tx.Select(&deletedConfigNames, fmt.Sprintf(`SELECT "name" FROM slo_config
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter), args...); err != nil {
+		return data, err
+	}
+
 	// slo_report.config_id is ON DELETE restrict, so the reports have to go
 	// first or the config delete is rejected.
 	selectIds := fmt.Sprintf(`SELECT id FROM slo_config
@@ -414,6 +437,11 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 	}
 	if err = tx.Commit(); err != nil {
 		return data, err
+	}
+
+	for _, name := range deletedConfigNames {
+		fingerprint := sloFingerprint(request.AccountId, name, request.WorkloadName, request.Namespace)
+		closeSLOEventByFingerprint(dbms, sc.GetTenantId(), request.AccountId, fingerprint)
 	}
 
 	deleted, err := res.RowsAffected()
@@ -631,6 +659,12 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		slog.Error("slo: error collecting evidences", "error", err)
 		evidences = []any{}
 	}
+	// FindingId is the dedup fingerprint, not slo.Id (the latest slo_report row,
+	// a new id every hourly bucket) — otherwise InsertEvent's ON CONFLICT(tenant,
+	// cloud_account_id, finding_id) upsert never matches a prior cycle's row,
+	// and every cycle inserts a brand-new FIRING event instead of refreshing the
+	// existing one. See closeSLOEventIfRecovered for the corresponding close.
+	fingerprint := sloFingerprint(slo.CloudAccountId, sloConfig.Name, slo.WorkloadName, slo.WorkloadNamespace)
 	eventObj := event.Event{
 		AccountId:        slo.CloudAccountId,
 		Tenant:           slo.TenantId,
@@ -643,14 +677,14 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		SubjectName:      slo.WorkloadName,
 		SubjectNamespace: slo.WorkloadNamespace,
 		Evidences:        evidences,
-		FindingId:        slo.Id,
+		FindingId:        fingerprint,
 		AggregationKey:   "SLOViolation",
 		Description:      fmt.Sprintf("%s SLO violation for %s in namespace %s", sloConfig.Name, slo.WorkloadName, slo.WorkloadNamespace),
 		SubjectType:      resolveSubjectType(dbms, sloConfig),
 		SubjectNode:      "",
 		Status:           "FIRING",
 		StartsAt:         slo.Timestamp,
-		Fingerprint:      fmt.Sprintf("slo-%s-%s-%s-%s", slo.CloudAccountId, sloConfig.Name, slo.WorkloadName, slo.WorkloadNamespace),
+		Fingerprint:      fingerprint,
 		Cluster:          accountName,
 	}
 	_, err = event.InsertEvent(eventObj, "")
@@ -659,6 +693,85 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		return err
 	}
 	return err
+}
+
+// sloFingerprint is the single source of truth for an SLO violation's dedup/
+// close identity — the same instance (account, SLO config name, workload,
+// namespace) always produces the same string, across every hourly cycle,
+// which is what lets InsertEvent's ON CONFLICT(tenant, cloud_account_id,
+// finding_id) upsert collapse repeat violations into one row instead of
+// inserting a new row every cycle.
+//
+// Uses "|" as the field separator, not "-": account is a UUID and workload/
+// namespace are Kubernetes DNS-1123 labels, both of which routinely contain
+// "-" themselves. Joining with "-" is ambiguous — workload="api",
+// namespace="prod-payments" and workload="api-prod", namespace="payments"
+// both serialize to the identical string for the same account+config name —
+// so two unrelated workloads could silently share one event and incorrectly
+// close each other's violations. "|" cannot appear in a UUID, an SLO config
+// name ("latency"/"availability"), or a DNS-1123 label, so it can't collide.
+func sloFingerprint(accountId, configName, workloadName, namespace string) string {
+	return fmt.Sprintf("slo|%s|%s|%s|%s", accountId, configName, workloadName, namespace)
+}
+
+// closeSLOEventIfRecovered auto-resolves sloConfig's open SLOViolation event
+// once the workload reports a real recovery this cycle.
+//
+// Unlike anomaly detection, SLO evaluation is synchronous (executeSlo returns
+// reports in the same call), so there's a reliable per-cycle signal — no
+// staleness buffer needed. But it must close only on an EXPLICIT SLOStatusOK
+// report, not merely "no FIRING report found": executeSlo returns an empty/nil
+// report set on relay or agent-connectivity failures ("agent not connected"),
+// which looks identical to "no violation" from here but isn't a real recovery
+// signal — closing on that would false-resolve a violation that's still
+// ongoing during a connectivity blip.
+func closeSLOEventIfRecovered(dbms *database.DatabaseManager, sloConfig DBSLOConfig, reports []SLOReport) {
+	recovered := false
+	for _, report := range reports {
+		if statusForReport(report) == SLOStatusOK {
+			recovered = true
+			break
+		}
+	}
+	if !recovered {
+		return
+	}
+
+	fingerprint := sloFingerprint(sloConfig.CloudAccountId, sloConfig.Name, sloConfig.WorkloadName, sloConfig.Namespace)
+	closeSLOEventByFingerprint(dbms, sloConfig.TenantId, sloConfig.CloudAccountId, fingerprint)
+}
+
+// closeSLOEventByFingerprint resolves the FIRING SLOViolation event matching
+// fingerprint, if any, and delivers the resolved notification the same way
+// webhook-driven resolves do (integrations/core/integration_webhook.go
+// resolveEvent). A no-op when nothing is open for this fingerprint.
+func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accountId, fingerprint string) {
+	var id string
+	err := dbms.Db.QueryRowx(
+		// events.ends_at is `timestamp` with no timezone (see V175); binding an
+		// explicit UTC value here — rather than the SQL now(), which would cast
+		// through the session's timezone setting — keeps it consistent with
+		// every other write in this codebase, which timestamps in Go as UTC.
+		`UPDATE events SET status = 'RESOLVED', ends_at = $4
+		 WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3 AND status = 'FIRING'
+		 RETURNING id`,
+		tenantId, accountId, fingerprint, time.Now().UTC(),
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		slog.Error("slo: failed to close recovered slo event", "error", err, "fingerprint", fingerprint)
+		return
+	}
+
+	_ = common.MqPublish(
+		config.Config.RabbitMqEventPostProcessExchange,
+		config.Config.RabbitMqEventPostProcessQueue,
+		map[string]any{"event_id": id, "notify_resolved": true},
+		common.MqPublishWithExpiration(1*time.Hour),
+		common.MqPublishWithBackgroundRetry(),
+	)
 }
 
 // resolveSubjectType returns the workload's real kind, lower-cased to match the

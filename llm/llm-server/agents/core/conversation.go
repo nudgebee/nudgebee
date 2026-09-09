@@ -122,11 +122,11 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 	err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
 		title, err := generateConversationTitle(bgCtx, accountId, conversationId, messageId, query, userId)
 		if err != nil {
-			bgCtx.GetLogger().Warn("conversation: unable to generate title via LLM in background task", "conversation_id", conversationId, "query", query, "error", err)
+			bgCtx.GetLogger().Warn("conversation: unable to generate title via LLM in background task", "conversation_id", conversationId, "error", err)
 			bgCtx.GetLogger().Info("conversation: title generation task completed with error")
 			return
 		}
-		bgCtx.GetLogger().Info("conversation: generated title via LLM in background task", "conversation_id", conversationId, "query", query, "title", title)
+		bgCtx.GetLogger().Info("conversation: generated title via LLM in background task", "conversation_id", conversationId, "title", title)
 		err = GetConversationDao().UpdateConversationTitle(conversationId, title)
 		if err != nil {
 			bgCtx.GetLogger().Error("conversation: unable to update conversation title in background task", "conversation_id", conversationId, "error", err)
@@ -329,6 +329,7 @@ type additionalConversationSessionRequestConfig struct {
 	images                []ImageAttachment
 	channelContext        string
 	channelContextRefs    map[string]any
+	replyRef              string
 }
 
 type ConversationSessionRequestConfig interface {
@@ -605,6 +606,23 @@ func ConversationSessionRequestWithChannelContextRefs(refs map[string]any) Conve
 	}
 }
 
+type sessionRequestWithReplyRef struct {
+	replyRef string
+}
+
+func (h sessionRequestWithReplyRef) apply(c *additionalConversationSessionRequestConfig) {
+	c.replyRef = h.replyRef
+}
+
+// ConversationSessionRequestWithReplyRef carries an opaque per-question
+// correlator through to NBAgentRequest.ReplyRef — see its doc comment on
+// ConversationApiRequest.ReplyRef for why SessionId alone isn't enough.
+func ConversationSessionRequestWithReplyRef(replyRef string) ConversationSessionRequestConfig {
+	return sessionRequestWithReplyRef{
+		replyRef: replyRef,
+	}
+}
+
 func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgent, userId string, accountId string, sessionId string, query string, configs ...ConversationSessionRequestConfig) (NBAgentResponse, error) {
 
 	defaultConfig := additionalConversationSessionRequestConfig{
@@ -670,6 +688,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		Images:                defaultConfig.images,
 		ChannelContext:        defaultConfig.channelContext,
 		ChannelContextRefs:    defaultConfig.channelContextRefs,
+		ReplyRef:              defaultConfig.replyRef,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
@@ -1417,7 +1436,13 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		status = ConversationStatusFailed
 	}
 	if executeErr != nil {
-		agentResponseContent = executeErr.Error()
+		// This string becomes the assistant's persisted reply, so it is the last
+		// place a raw internal error can reach the user. executor.go sanitizes the
+		// planner-construction path, but an error raised once the planner is
+		// running (config resolved lazily at the first LLM call, provider refusals)
+		// arrives here instead and was previously stored verbatim — account UUIDs
+		// and internal agent names included.
+		agentResponseContent = sanitizeErrorForUser(executeErr)
 		status = ConversationStatusFailed
 	}
 

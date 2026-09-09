@@ -160,7 +160,7 @@ const SummaryView = () => {
     costLoading,
     savingsCurrency,
     savingsSymbol,
-  } = useSummaryData();
+  } = useSummaryData(accountFilter);
 
   // ── Action modal state ──
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);

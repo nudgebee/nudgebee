@@ -118,6 +118,9 @@ server/
 Entry point is `server/app.py` (`python -m server.app`). The RabbitMQ consumer is wired in `gunicorn.conf.py` via a `post_fork` hook so only one Gunicorn worker runs it.
 
 For deeper anomaly-detection algorithm notes, see [`ANOMALY_DETECTION.md`](./ANOMALY_DETECTION.md).
+For how the per-container CPU/memory recommendations are produced — the pipeline, the strategy
+maths, and why the memory limit is derived differently from the request — see
+[`VERTICAL_RIGHTSIZING.md`](./VERTICAL_RIGHTSIZING.md).
 
 ## Development
 

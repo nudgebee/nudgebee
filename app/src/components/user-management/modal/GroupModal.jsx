@@ -178,7 +178,17 @@ function SectionSave({ dirty, saving, disabled, onSave, testId }) {
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexShrink: 0 }}>
       {dirty && !saving && <Box sx={{ font: "400 11px/1 'Roboto'", color: ds.gray[500] }}>Unsaved</Box>}
-      <Button type='button' size='sm' tone='secondary' disabled={!dirty || saving || disabled} loading={saving} onClick={onSave} data-testid={testId}>
+      {/* Primary tone once dirty so the button reads as the clear next action;
+          stays grey/secondary while clean (and disabled) so it doesn't shout at rest. */}
+      <Button
+        type='button'
+        size='sm'
+        tone={dirty ? 'primary' : 'secondary'}
+        disabled={!dirty || saving || disabled}
+        loading={saving}
+        onClick={onSave}
+        data-testid={testId}
+      >
         Save
       </Button>
     </Box>
@@ -276,6 +286,9 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   // with user intent, and saving then would wipe every existing account role.
   const [accountsLoaded, setAccountsLoaded] = useState(false);
   const [customRolesLoaded, setCustomRolesLoaded] = useState(false);
+  // Shown when a close is requested while sections still hold unsaved edits, so
+  // permission changes aren't discarded silently (see requestClose).
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') e.preventDefault();
@@ -313,6 +326,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     setAnySaved(false);
     setAccountsLoaded(false);
     setCustomRolesLoaded(false);
+    setShowUnsavedConfirm(false);
     groupUsersLoaded.current = false;
     reset();
   }
@@ -409,6 +423,8 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   );
 
   // Runs one section's write, reporting success/failure for that section alone.
+  // Returns true on success so callers (notably Save & Exit) can chain saves and
+  // stop at the first failure instead of closing over half-applied changes.
   async function runSectionSave(section, work, successMessage, baselinePatch) {
     setSavingSection(section);
     try {
@@ -416,16 +432,18 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       setSavedBaseline((prev) => ({ ...prev, ...baselinePatch() }));
       setAnySaved(true);
       handleSnackBarData({ message: successMessage, severity: 'success' });
+      return true;
     } catch (error) {
       console.error(`Error saving ${section}:`, error);
       handleSnackBarData({ message: error?.message || `Failed to update ${section}`, severity: 'error' });
+      return false;
     } finally {
       setSavingSection(null);
     }
   }
 
   async function handleSaveInfo() {
-    if (!(await validateGroupName())) return;
+    if (!(await validateGroupName())) return false;
     // Snapshot the inputs before the await so the recorded baseline matches what
     // was written even if the fields change while the request is in flight.
     const name = groupNameValue;
@@ -433,7 +451,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     // `role` is deliberately omitted: usergroup_update treats it as a partial
     // (*string, nil = leave alone), while name/description are unconditional
     // overwrites. The tenant role has its own section below.
-    await runSectionSave(
+    return runSectionSave(
       'info',
       () => apiUserManagement.updateUserGroup({ id: groupData.id, name, description }),
       'Group details updated',
@@ -451,7 +469,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
     // Snapshot for the baseline patch — captured before the await.
     const savedTenantRole = groupRole ?? '';
     const savedCustomRoleIds = [...selectedCustomRoles];
-    await runSectionSave(
+    return runSectionSave(
       'tenant',
       async () => {
         const tenantWrites = tenantRoleChanged ? [apiUserManagement.upsertGroupTenantRole({ group_id: groupData.id, role: groupRole || '' })] : [];
@@ -520,7 +538,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       ...roleIds.flatMap((roleId) => (desiredRoleAccounts.get(roleId) ?? []).map((id) => `${id}|${roleId}`)),
     ];
 
-    await runSectionSave(
+    return runSectionSave(
       'account',
       async () => {
         await Promise.all([
@@ -548,7 +566,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   async function handleSaveMembers() {
     const added = [...userAdded];
     const removed = [...userRemoved];
-    await runSectionSave(
+    return runSectionSave(
       'members',
       async () => {
         await apiUserManagement.manageGroupUsers({ group_id: groupData.id, add_usernames: added, remove_usernames: removed });
@@ -568,6 +586,35 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       'Members updated',
       () => ({})
     );
+  }
+
+  function requestClose() {
+    if (isSubmitting || savingSection) return;
+    if (isEdit && dirtySections.length > 0) {
+      setShowUnsavedConfirm(true);
+      return;
+    }
+    adjustCloseAction(isEdit ? anySaved : false);
+  }
+
+  async function handleSaveAllAndExit() {
+    // Leave the confirm dialog open while the sequential saves run — its backdrop
+    // keeps the form covered and its buttons disabled; a failure leaves it in place.
+    // adjustCloseAction tears it down once every save has succeeded.
+    if (infoDirty && !(await handleSaveInfo())) return;
+    if (tenantDirty && !(await handleSaveTenant())) return;
+    if (accountDirty && !(await handleSaveAccount())) return;
+    if (membersDirty && !(await handleSaveMembers())) return;
+    adjustCloseAction(true);
+  }
+
+  function handleDiscardAndExit() {
+    adjustCloseAction(anySaved);
+  }
+
+  function handleContinueEditing() {
+    if (savingSection) return;
+    setShowUnsavedConfirm(false);
   }
 
   // Create-only. In edit mode every section writes through its own handler
@@ -873,395 +920,436 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   const filteredMembers = isEdit ? selectedUsers.filter((u) => u[1].status === userStatusFilter) : selectedUsers;
 
   return (
-    <Modal
-      open={open}
-      handleClose={() => (isSubmitting || savingSection ? undefined : adjustCloseAction(anySaved))}
-      title={isEdit ? 'Edit Group' : 'Add Group'}
-      width={isEdit ? 'md' : 'sm'}
-      loader={isSubmitting}
-      sx={{
-        '& .MuiDialog-paper': {
-          maxWidth: isEdit ? ds.space.mul(0, 380) : ds.space.mul(0, 360),
-          maxHeight: '90vh',
-          minHeight: isEdit ? '90vh' : 'unset',
-        },
-      }}
-      contentStyles={{ padding: 'var(--ds-space-4) var(--ds-space-5)', overflowX: 'hidden' }}
-      actionButtons={
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: isEdit && dirtySections.length > 0 ? 'space-between' : 'flex-end',
-            gap: 'var(--ds-space-2)',
-            width: '100%',
-          }}
-        >
-          {/* Edit mode has no combined submit — each section saves itself — so name
+    <>
+      <Modal
+        open={open}
+        handleClose={requestClose}
+        title={isEdit ? 'Edit Group' : 'Add Group'}
+        width={isEdit ? 'md' : 'sm'}
+        loader={isSubmitting}
+        sx={{
+          '& .MuiDialog-paper': {
+            maxWidth: isEdit ? ds.space.mul(0, 380) : ds.space.mul(0, 360),
+            maxHeight: '90vh',
+            minHeight: isEdit ? '90vh' : 'unset',
+          },
+        }}
+        contentStyles={{ padding: 'var(--ds-space-4) var(--ds-space-5)', overflowX: 'hidden' }}
+        actionButtons={
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: isEdit && dirtySections.length > 0 ? 'space-between' : 'flex-end',
+              gap: 'var(--ds-space-2)',
+              width: '100%',
+            }}
+          >
+            {/* Edit mode has no combined submit — each section saves itself — so name
               the sections still holding unsaved edits rather than losing them silently. */}
-          {isEdit && dirtySections.length > 0 && (
-            <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[500] }}>Unsaved changes in: {dirtySections.join(', ')}</Box>
-          )}
-          {isEdit ? (
-            <Button id='cancel' tone='secondary' size='md' onClick={() => adjustCloseAction(anySaved)} disabled={!!savingSection}>
-              Close
-            </Button>
-          ) : (
-            <>
-              <Button id='cancel' tone='secondary' size='md' onClick={() => adjustCloseAction(false)} disabled={isSubmitting}>
-                Cancel
+            {isEdit && dirtySections.length > 0 && (
+              <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[500] }}>Unsaved changes in: {dirtySections.join(', ')}</Box>
+            )}
+            {isEdit ? (
+              <Button id='cancel' tone='secondary' size='md' onClick={requestClose} disabled={!!savingSection}>
+                Close
               </Button>
-              <Button id='submit' type='submit' size='md' disabled={isSubmitting} loading={isSubmitting} onClick={handleSubmit(submitForm)}>
-                Create group
-              </Button>
-            </>
-          )}
-        </Box>
-      }
-    >
-      <Box
-        component='form'
-        onSubmit={(e) => e.preventDefault()}
-        onKeyDown={handleKeyDown}
-        sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
+            ) : (
+              <>
+                <Button id='cancel' tone='secondary' size='md' onClick={() => adjustCloseAction(false)} disabled={isSubmitting}>
+                  Cancel
+                </Button>
+                <Button id='submit' type='submit' size='md' disabled={isSubmitting} loading={isSubmitting} onClick={handleSubmit(submitForm)}>
+                  Create group
+                </Button>
+              </>
+            )}
+          </Box>
+        }
       >
-        {/* Group name + description */}
-        <Card
-          variant='outlined'
-          elevation='flat'
-          header={
-            <CardHeader
-              title='Group Info'
-              action={
-                isEdit ? (
-                  <SectionSave
-                    dirty={infoDirty}
-                    saving={savingSection === 'info'}
-                    disabled={!!savingSection}
-                    onSave={handleSaveInfo}
-                    testId='save-group-info'
-                  />
-                ) : null
-              }
-            />
-          }
+        <Box
+          component='form'
+          onSubmit={(e) => e.preventDefault()}
+          onKeyDown={handleKeyDown}
+          sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}
         >
-          {isEdit ? (
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 'var(--ds-space-3)', '& > *': { minWidth: 0 } }}>
-              <Box>
-                {fieldLabel('Group name', true)}
-                <Input
-                  id='groupname'
-                  size='sm'
-                  value={groupNameValue || ''}
-                  onChange={(next) => {
-                    setGroupNameValue(next);
-                    textValidation(next, validationError, setValidationError, 'groupname', [
-                      'required',
-                      'firstLetterAlphaNum',
-                      'minlength5',
-                      'alphaNumWithSpace',
-                    ]);
-                  }}
-                  error={validationError.groupname}
-                />
-              </Box>
-              <Box>
-                {fieldLabel('Description')}
-                <Input id='description' size='sm' placeholder='Optional' value={groupDescValue || ''} onChange={setGroupDescValue} />
-              </Box>
-            </Box>
-          ) : (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-              <Box>
-                {fieldLabel('Group name', true)}
-                <Input
-                  id='groupname'
-                  size='sm'
-                  placeholder='e.g. Platform-Eng'
-                  value={groupNameValue || ''}
-                  onChange={(next) => {
-                    setGroupNameValue(next);
-                    textValidation(next, validationError, setValidationError, 'groupname', [
-                      'required',
-                      'firstLetterAlphaNum',
-                      'minlength5',
-                      'alphaNumWithSpace',
-                    ]);
-                  }}
-                  error={validationError.groupname}
-                  help={'Letters, numbers, dashes, underscores, and spaces only.'}
-                />
-              </Box>
-              <Box>
-                {fieldLabel('Description')}
-                <Input
-                  id='description'
-                  size='sm'
-                  type='textarea'
-                  rows={3}
-                  placeholder='What is this group for? (optional)'
-                  value={groupDescValue || ''}
-                  onChange={setGroupDescValue}
-                />
-              </Box>
-            </Box>
-          )}
-        </Card>
-
-        {/* RBAC tabs (edit only) */}
-        {isEdit && (
+          {/* Group name + description */}
           <Card
             variant='outlined'
             elevation='flat'
             header={
               <CardHeader
-                title='Assign Roles'
+                title='Group Info'
                 action={
-                  /* One save per tab: tenant and account grants are two disjoint
+                  isEdit ? (
+                    <SectionSave
+                      dirty={infoDirty}
+                      saving={savingSection === 'info'}
+                      disabled={!!savingSection}
+                      onSave={handleSaveInfo}
+                      testId='save-group-info'
+                    />
+                  ) : null
+                }
+              />
+            }
+          >
+            {isEdit ? (
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 'var(--ds-space-3)', '& > *': { minWidth: 0 } }}>
+                <Box>
+                  {fieldLabel('Group name', true)}
+                  <Input
+                    id='groupname'
+                    size='sm'
+                    value={groupNameValue || ''}
+                    onChange={(next) => {
+                      setGroupNameValue(next);
+                      textValidation(next, validationError, setValidationError, 'groupname', [
+                        'required',
+                        'firstLetterAlphaNum',
+                        'minlength5',
+                        'alphaNumWithSpace',
+                      ]);
+                    }}
+                    error={validationError.groupname}
+                  />
+                </Box>
+                <Box>
+                  {fieldLabel('Description')}
+                  <Input id='description' size='sm' placeholder='Optional' value={groupDescValue || ''} onChange={setGroupDescValue} />
+                </Box>
+              </Box>
+            ) : (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+                <Box>
+                  {fieldLabel('Group name', true)}
+                  <Input
+                    id='groupname'
+                    size='sm'
+                    placeholder='e.g. Platform-Eng'
+                    value={groupNameValue || ''}
+                    onChange={(next) => {
+                      setGroupNameValue(next);
+                      textValidation(next, validationError, setValidationError, 'groupname', [
+                        'required',
+                        'firstLetterAlphaNum',
+                        'minlength5',
+                        'alphaNumWithSpace',
+                      ]);
+                    }}
+                    error={validationError.groupname}
+                    help={'Letters, numbers, dashes, underscores, and spaces only.'}
+                  />
+                </Box>
+                <Box>
+                  {fieldLabel('Description')}
+                  <Input
+                    id='description'
+                    size='sm'
+                    type='textarea'
+                    rows={3}
+                    placeholder='What is this group for? (optional)'
+                    value={groupDescValue || ''}
+                    onChange={setGroupDescValue}
+                  />
+                </Box>
+              </Box>
+            )}
+          </Card>
+
+          {/* RBAC tabs (edit only) */}
+          {isEdit && (
+            <Card
+              variant='outlined'
+              elevation='flat'
+              header={
+                <CardHeader
+                  title='Assign Roles'
+                  action={
+                    /* One save per tab: tenant and account grants are two disjoint
                      RPCs, so the button acts on the open tab only. */
-                  rbacType === 'tenant' ? (
-                    <SectionSave
-                      dirty={tenantDirty}
-                      saving={savingSection === 'tenant'}
-                      disabled={!!savingSection || !customRolesLoaded}
-                      onSave={handleSaveTenant}
-                      testId='save-tenant-roles'
+                    rbacType === 'tenant' ? (
+                      <SectionSave
+                        dirty={tenantDirty}
+                        saving={savingSection === 'tenant'}
+                        disabled={!!savingSection || !customRolesLoaded}
+                        onSave={handleSaveTenant}
+                        testId='save-tenant-roles'
+                      />
+                    ) : (
+                      <SectionSave
+                        dirty={accountDirty}
+                        saving={savingSection === 'account'}
+                        disabled={!!savingSection || !accountsLoaded || !customRolesLoaded}
+                        onSave={handleSaveAccount}
+                        testId='save-account-roles'
+                      />
+                    )
+                  }
+                />
+              }
+            >
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                <Tabs options={RBAC_TABS} value={rbacType} onChange={(next) => setRbacType(next)} behavior='filter' ariaLabel='Assign roles' />
+
+                {rbacType === 'tenant' && (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+                    {fieldLabel('Role')}
+                    <Select
+                      multiple
+                      id='group-tenant-role'
+                      placeholder='Select role(s)'
+                      // Assigning a role to a group is privilege administration: every
+                      // member inherits it, so it stays tenant-admin-only on both write
+                      // paths (userroles_upsert_group and the customroles assignment
+                      // actions are in non-grantable modules, and SyncUserRoles re-checks).
+                      // A usergroups:Write holder can administer the group but not hand
+                      // out authority through it — without this the picker looked usable
+                      // and every save 403'd.
+                      disabled={!canAssignGroupRoles}
+                      instructionText={canAssignGroupRoles ? undefined : 'Only a tenant admin can assign roles to a group.'}
+                      value={[...(groupRole ? [groupRole] : []), ...selectedCustomRoles]}
+                      onChange={(next) => {
+                        // One merged picker: the tenant built-in role (single — carries data
+                        // scope, written to group_roles) plus custom roles (additive, written
+                        // to custom_role_assignments). Enforce a single built-in.
+                        const builtinSet = new Set(TENANT_ROLE_OPTIONS.map((o) => o.value));
+                        const builtins = next.filter((v) => builtinSet.has(v));
+                        const customs = next.filter((v) => !builtinSet.has(v));
+                        setGroupRole(builtins.length ? builtins[builtins.length - 1] : '');
+                        setSelectedCustomRoles(customs);
+                      }}
+                      options={[...TENANT_ROLE_OPTIONS, ...customRolesList.map((r) => ({ value: r.id, label: r.name }))]}
+                      maxChips={3}
+                      minWidth='100%'
                     />
-                  ) : (
+                    <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[400] }}>
+                      Tenant role grants access to every account; custom roles add extra action permissions.
+                    </Box>
+                  </Box>
+                )}
+
+                {rbacType === 'account' && (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--ds-space-2)' }}>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        {fieldLabel('Accounts')}
+                        <Select
+                          id='group-account'
+                          multiple
+                          value={selectedAccounts}
+                          options={accountOptions}
+                          grouped
+                          groupIcon={renderAccountGroupIcon}
+                          onChange={(next) => setSelectedAccounts(next)}
+                          placeholder='Select Accounts'
+                          minWidth='100%'
+                          maxChips={2}
+                        />
+                      </Box>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        {fieldLabel('Role')}
+                        <Select
+                          id='group-account-role'
+                          value={selectedAccountRole || ''}
+                          options={[...ACCOUNT_ROLE_OPTIONS, ...customRolesList.map((r) => ({ value: r.id, label: r.name }))]}
+                          onChange={(next) => setSelectedAccountRole(next)}
+                          placeholder='Select role'
+                          // Same rule as the tenant tab: binding a role to a group is
+                          // privilege administration whatever the scope, and both write
+                          // paths (userroles_upsert_account_group, the customroles
+                          // account-assignment action) are non-grantable.
+                          disabled={!canAssignGroupRoles}
+                          instructionText={canAssignGroupRoles ? undefined : 'Only a tenant admin can assign roles to a group.'}
+                          minWidth='100%'
+                        />
+                      </Box>
+                      <Box sx={{ flexShrink: 0 }}>
+                        <Button
+                          type='button'
+                          size='md'
+                          onClick={() => {
+                            const toAdd = selectedAccounts.filter(
+                              (accountId) =>
+                                !showSelectedAccounts.some((a) => a[0].drilldownQuery.id === accountId && a[1].roleValue === selectedAccountRole)
+                            );
+                            if (toAdd.length === 0) {
+                              handleSnackBarData({
+                                message: 'Selected account(s) already have this role assigned.',
+                                severity: 'warning',
+                              });
+                              return;
+                            }
+                            // Only a built-in role overrides — it's one built-in per account. Custom
+                            // roles are additive, so adding one never displaces anything.
+                            const replacedCount = isBuiltinAccountRole(selectedAccountRole)
+                              ? toAdd.filter((accountId) =>
+                                  showSelectedAccounts.some((a) => a[0].drilldownQuery.id === accountId && isBuiltinAccountRole(a[1].roleValue))
+                                ).length
+                              : 0;
+                            toAdd.forEach((accountId) => handleAccountSelection(accountId, selectedAccountRole));
+                            if (replacedCount > 0) {
+                              handleSnackBarData({
+                                message: `Replaced the existing role for ${replacedCount} account${replacedCount > 1 ? 's' : ''}.`,
+                                severity: 'info',
+                              });
+                            } else if (toAdd.length < selectedAccounts.length) {
+                              handleSnackBarData({
+                                message: 'Some accounts already had this role and were skipped.',
+                                severity: 'warning',
+                              });
+                            }
+                            setSelectedAccounts([]);
+                            setSelectedAccountRole('');
+                          }}
+                          disabled={!canAssignGroupRoles || selectedAccounts.length === 0 || !selectedAccountRole}
+                        >
+                          Add
+                        </Button>
+                      </Box>
+                    </Box>
+                    {showSelectedAccounts.length > 0 && (
+                      <Box sx={tableWrapperSx}>
+                        <CustomTable
+                          tableData={showSelectedAccounts}
+                          headers={[
+                            { name: 'Account', width: '50%' },
+                            { name: 'Role', width: '42%' },
+                            { name: '', width: '8%' },
+                          ]}
+                          id='selected-accounts'
+                          showExpandable={false}
+                          loading={loading}
+                          showEmptyStateText={true}
+                        />
+                      </Box>
+                    )}
+                  </Box>
+                )}
+              </Box>
+            </Card>
+          )}
+
+          {/* Members section */}
+          <Card
+            variant='outlined'
+            elevation='flat'
+            header={
+              <CardHeader
+                title={selectedUsers.length > 0 ? `Members · ${selectedUsers.length}` : 'Members'}
+                action={
+                  isEdit ? (
                     <SectionSave
-                      dirty={accountDirty}
-                      saving={savingSection === 'account'}
-                      disabled={!!savingSection || !accountsLoaded || !customRolesLoaded}
-                      onSave={handleSaveAccount}
-                      testId='save-account-roles'
+                      dirty={membersDirty}
+                      saving={savingSection === 'members'}
+                      disabled={!!savingSection}
+                      onSave={handleSaveMembers}
+                      testId='save-group-members'
                     />
-                  )
+                  ) : null
                 }
               />
             }
           >
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-              <Tabs options={RBAC_TABS} value={rbacType} onChange={(next) => setRbacType(next)} behavior='filter' ariaLabel='Assign roles' />
-
-              {rbacType === 'tenant' && (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
-                  {fieldLabel('Role')}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Select
+                    id='all-users-for-group'
                     multiple
-                    id='group-tenant-role'
-                    placeholder='Select role(s)'
-                    // Assigning a role to a group is privilege administration: every
-                    // member inherits it, so it stays tenant-admin-only on both write
-                    // paths (userroles_upsert_group and the customroles assignment
-                    // actions are in non-grantable modules, and SyncUserRoles re-checks).
-                    // A usergroups:Write holder can administer the group but not hand
-                    // out authority through it — without this the picker looked usable
-                    // and every save 403'd.
-                    disabled={!canAssignGroupRoles}
-                    instructionText={canAssignGroupRoles ? undefined : 'Only a tenant admin can assign roles to a group.'}
-                    value={[...(groupRole ? [groupRole] : []), ...selectedCustomRoles]}
-                    onChange={(next) => {
-                      // One merged picker: the tenant built-in role (single — carries data
-                      // scope, written to group_roles) plus custom roles (additive, written
-                      // to custom_role_assignments). Enforce a single built-in.
-                      const builtinSet = new Set(TENANT_ROLE_OPTIONS.map((o) => o.value));
-                      const builtins = next.filter((v) => builtinSet.has(v));
-                      const customs = next.filter((v) => !builtinSet.has(v));
-                      setGroupRole(builtins.length ? builtins[builtins.length - 1] : '');
-                      setSelectedCustomRoles(customs);
-                    }}
-                    options={[...TENANT_ROLE_OPTIONS, ...customRolesList.map((r) => ({ value: r.id, label: r.name }))]}
+                    // Add-only picker: selected users live in the members table below, so the
+                    // value stays empty and already-selected users are dropped from the options.
+                    value={[]}
+                    options={availableUserOptions}
+                    clearable={false}
+                    hideOptionCheckbox
                     maxChips={3}
+                    placeholder={isEdit ? 'Add active user' : 'Select users'}
+                    searchPlaceholder={isEdit ? 'Search active users…' : 'Search users…'}
                     minWidth='100%'
+                    onChange={(usernames) => {
+                      usernames.forEach((u) => handleUserSelection(u));
+                    }}
                   />
-                  <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[400] }}>
-                    Tenant role grants access to every account; custom roles add extra action permissions.
-                  </Box>
                 </Box>
+                {isEdit && (
+                  <ToggleGroup
+                    selection='single'
+                    options={MEMBER_FILTER_TABS}
+                    value={userStatusFilter}
+                    onChange={setUserStatusFilter}
+                    size='md'
+                    ariaLabel='Member filter'
+                  />
+                )}
+              </Box>
+              {!isEdit && (
+                <Typography sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[400] }}>
+                  You can assign roles and permissions after creation.
+                </Typography>
               )}
 
-              {rbacType === 'account' && (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
-                  <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--ds-space-2)' }}>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      {fieldLabel('Accounts')}
-                      <Select
-                        id='group-account'
-                        multiple
-                        value={selectedAccounts}
-                        options={accountOptions}
-                        grouped
-                        groupIcon={renderAccountGroupIcon}
-                        onChange={(next) => setSelectedAccounts(next)}
-                        placeholder='Select Accounts'
-                        minWidth='100%'
-                        maxChips={2}
-                      />
-                    </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      {fieldLabel('Role')}
-                      <Select
-                        id='group-account-role'
-                        value={selectedAccountRole || ''}
-                        options={[...ACCOUNT_ROLE_OPTIONS, ...customRolesList.map((r) => ({ value: r.id, label: r.name }))]}
-                        onChange={(next) => setSelectedAccountRole(next)}
-                        placeholder='Select role'
-                        // Same rule as the tenant tab: binding a role to a group is
-                        // privilege administration whatever the scope, and both write
-                        // paths (userroles_upsert_account_group, the customroles
-                        // account-assignment action) are non-grantable.
-                        disabled={!canAssignGroupRoles}
-                        instructionText={canAssignGroupRoles ? undefined : 'Only a tenant admin can assign roles to a group.'}
-                        minWidth='100%'
-                      />
-                    </Box>
-                    <Box sx={{ flexShrink: 0 }}>
-                      <Button
-                        type='button'
-                        size='md'
-                        onClick={() => {
-                          const toAdd = selectedAccounts.filter(
-                            (accountId) =>
-                              !showSelectedAccounts.some((a) => a[0].drilldownQuery.id === accountId && a[1].roleValue === selectedAccountRole)
-                          );
-                          if (toAdd.length === 0) {
-                            handleSnackBarData({
-                              message: 'Selected account(s) already have this role assigned.',
-                              severity: 'warning',
-                            });
-                            return;
-                          }
-                          // Only a built-in role overrides — it's one built-in per account. Custom
-                          // roles are additive, so adding one never displaces anything.
-                          const replacedCount = isBuiltinAccountRole(selectedAccountRole)
-                            ? toAdd.filter((accountId) =>
-                                showSelectedAccounts.some((a) => a[0].drilldownQuery.id === accountId && isBuiltinAccountRole(a[1].roleValue))
-                              ).length
-                            : 0;
-                          toAdd.forEach((accountId) => handleAccountSelection(accountId, selectedAccountRole));
-                          if (replacedCount > 0) {
-                            handleSnackBarData({
-                              message: `Replaced the existing role for ${replacedCount} account${replacedCount > 1 ? 's' : ''}.`,
-                              severity: 'info',
-                            });
-                          } else if (toAdd.length < selectedAccounts.length) {
-                            handleSnackBarData({
-                              message: 'Some accounts already had this role and were skipped.',
-                              severity: 'warning',
-                            });
-                          }
-                          setSelectedAccounts([]);
-                          setSelectedAccountRole('');
-                        }}
-                        disabled={!canAssignGroupRoles || selectedAccounts.length === 0 || !selectedAccountRole}
-                      >
-                        Add
-                      </Button>
-                    </Box>
-                  </Box>
-                  {showSelectedAccounts.length > 0 && (
-                    <Box sx={tableWrapperSx}>
-                      <CustomTable
-                        tableData={showSelectedAccounts}
-                        headers={[
-                          { name: 'Account', width: '50%' },
-                          { name: 'Role', width: '42%' },
-                          { name: '', width: '8%' },
-                        ]}
-                        id='selected-accounts'
-                        showExpandable={false}
-                        loading={loading}
-                        showEmptyStateText={true}
-                      />
-                    </Box>
-                  )}
+              {(isEdit ? true : selectedUsers.length > 0) && (
+                <Box sx={tableWrapperSx}>
+                  <CustomTable
+                    tableData={filteredMembers}
+                    headers={[
+                      { name: 'Display Name', width: '32%' },
+                      { name: 'Username', width: '40%' },
+                      { name: 'Status', width: '20%' },
+                      { name: '', width: '8%' },
+                    ]}
+                    id='selected-users'
+                    showExpandable={false}
+                    loading={loading}
+                    showEmptyStateText={true}
+                  />
                 </Box>
               )}
             </Box>
           </Card>
-        )}
+        </Box>
+      </Modal>
 
-        {/* Members section */}
-        <Card
-          variant='outlined'
-          elevation='flat'
-          header={
-            <CardHeader
-              title={selectedUsers.length > 0 ? `Members · ${selectedUsers.length}` : 'Members'}
-              action={
-                isEdit ? (
-                  <SectionSave
-                    dirty={membersDirty}
-                    saving={savingSection === 'members'}
-                    disabled={!!savingSection}
-                    onSave={handleSaveMembers}
-                    testId='save-group-members'
-                  />
-                ) : null
-              }
-            />
-          }
-        >
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Select
-                  id='all-users-for-group'
-                  multiple
-                  // Add-only picker: selected users live in the members table below, so the
-                  // value stays empty and already-selected users are dropped from the options.
-                  value={[]}
-                  options={availableUserOptions}
-                  clearable={false}
-                  hideOptionCheckbox
-                  maxChips={3}
-                  placeholder={isEdit ? 'Add active user' : 'Select users'}
-                  searchPlaceholder={isEdit ? 'Search active users…' : 'Search users…'}
-                  minWidth='100%'
-                  onChange={(usernames) => {
-                    usernames.forEach((u) => handleUserSelection(u));
-                  }}
-                />
-              </Box>
-              {isEdit && (
-                <ToggleGroup
-                  selection='single'
-                  options={MEMBER_FILTER_TABS}
-                  value={userStatusFilter}
-                  onChange={setUserStatusFilter}
-                  size='md'
-                  ariaLabel='Member filter'
-                />
-              )}
-            </Box>
-            {!isEdit && (
-              <Typography sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[400] }}>
-                You can assign roles and permissions after creation.
-              </Typography>
-            )}
-
-            {(isEdit ? true : selectedUsers.length > 0) && (
-              <Box sx={tableWrapperSx}>
-                <CustomTable
-                  tableData={filteredMembers}
-                  headers={[
-                    { name: 'Display Name', width: '32%' },
-                    { name: 'Username', width: '40%' },
-                    { name: 'Status', width: '20%' },
-                    { name: '', width: '8%' },
-                  ]}
-                  id='selected-users'
-                  showExpandable={false}
-                  loading={loading}
-                  showEmptyStateText={true}
-                />
-              </Box>
-            )}
+      {/* Unsaved-changes guard. Raised by requestClose when a close is attempted
+        while one or more sections are dirty. Save & Exit is the primary action;
+        Discard leaves without saving; Continue Editing dismisses back to the form. */}
+      <Modal
+        open={showUnsavedConfirm}
+        handleClose={handleContinueEditing}
+        title='Unsaved changes'
+        width='sm'
+        actionButtons={
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--ds-space-2)', width: '100%' }}>
+            <Button tone='ghost' size='md' onClick={handleContinueEditing} disabled={!!savingSection} data-testid='unsaved-continue-editing'>
+              Continue Editing
+            </Button>
+            <Button tone='secondary' size='md' onClick={handleDiscardAndExit} disabled={!!savingSection} data-testid='unsaved-discard-changes'>
+              Discard Changes
+            </Button>
+            <Button
+              tone='primary'
+              size='md'
+              onClick={handleSaveAllAndExit}
+              disabled={!!savingSection}
+              loading={!!savingSection}
+              data-testid='unsaved-save-exit'
+            >
+              Save &amp; Exit
+            </Button>
           </Box>
-        </Card>
-      </Box>
-    </Modal>
+        }
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+          <Typography sx={{ font: "400 13px/1.5 'Roboto'", color: ds.gray[700] }}>
+            You have unsaved changes. Do you want to save your changes before leaving?
+          </Typography>
+          {dirtySections.length > 0 && (
+            <Typography sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[500] }}>Unsaved changes in: {dirtySections.join(', ')}</Typography>
+          )}
+        </Box>
+      </Modal>
+    </>
   );
 }
 

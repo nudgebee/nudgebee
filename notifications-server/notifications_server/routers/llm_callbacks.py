@@ -33,6 +33,14 @@ class LLMResponse(BaseModel):
     response: str
     tenant_id: Optional[str] = None
     session_id: Optional[str] = None
+    # Per-question correlator (see events.py:build_llm_payload) echoed back
+    # unchanged by llm-server. conversation_id/session_id are deliberately
+    # reused across every @mention in a bound incident channel, so they can't
+    # identify which physical Slack thread this specific response answers —
+    # reply_ref can. Optional: absent on requests sent before this field
+    # existed, and on responses to non-Slack-chat requests that never set it
+    # (e.g. the automated event-investigation pipeline).
+    reply_ref: Optional[str] = None
 
 
 async def get_cached_or_fallback_entry(
@@ -100,11 +108,35 @@ def _parse_conversation(common_service: CommonService, conversation_id: str, pay
 
 
 def _handle_event_conversation(common_service: CommonService, conversation_id: str, payload: LLMResponse):
+    # A bound incident channel reuses this same conversation_id for every future
+    # @mention (see CommonService._persist_channel_account_mapping), so it alone
+    # can't tell which physical Slack thread a given response belongs to.
+    # get_channel_and_ts_from_sent_notifications remains the source for
+    # team_id/account_id — stable properties of the bound channel that don't
+    # change per-question, unlike channel_id/thread_ts. reply_ref, the
+    # per-question correlator events.py:build_llm_payload attaches to the
+    # original request, overrides channel_id/thread_ts when present and gates
+    # skipping the channel-wide announce path below, which is only correct for
+    # the original investigation's own one-time completion (that request never
+    # goes through _process_event, so it never sets reply_ref).
     channel_id, thread_ts, team_id, account_id = common_service.get_channel_and_ts_from_sent_notifications(
         conversation_id, tenant_id=payload.tenant_id
     )
 
-    if payload.tenant_id:
+    reply_ref_channel_id = reply_ref_thread_ts = None
+    if payload.reply_ref:
+        parts = payload.reply_ref.rsplit("-", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            reply_ref_channel_id, reply_ref_thread_ts = parts
+        else:
+            LOG.warning(
+                "Malformed reply_ref on event conversation",
+                extra={"conversation_id": conversation_id, "reply_ref": payload.reply_ref},
+            )
+
+    if reply_ref_channel_id and reply_ref_thread_ts:
+        channel_id, thread_ts = reply_ref_channel_id, reply_ref_thread_ts
+    elif payload.tenant_id:
         with Session(sync_engine) as session:
             if is_feature_enabled(session, "EVENT_ANALYSIS_ON_CHANNEL", payload.tenant_id):
                 parts = conversation_id.split("-", 1)

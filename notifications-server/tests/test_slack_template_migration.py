@@ -76,7 +76,7 @@ class TestSloMigration:
         rendered = {f["title"]: f["value"] for f in att["fields"]}
         assert rendered["Target"] == "99.9%"
         assert rendered["Current"] == "99.2%"
-        assert rendered["Burn rate"] == "14.3"
+        assert rendered["Burn rate"] == "14.3×"
         assert rendered["Budget remaining"] == "8%"
         assert rendered["Threshold"] == "0.1%"
         assert "312" in rendered["Events (bad/good)"] and "48200" in rendered["Events (bad/good)"]

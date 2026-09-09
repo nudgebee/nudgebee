@@ -12,8 +12,10 @@ import (
 	"nudgebee/llm/tools"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // FetchLogsAgentV2 is the canonical, provider-independent variant of the
@@ -140,6 +142,13 @@ func (a *FetchLogsAgentV2) executeInner(ctx *security.RequestContext, request co
 	if shouldFallbackToKubectl(resp, canonicalQuery) {
 		return a.kubectlFallback(ctx, request, provider, resp)
 	}
+	if resp.Status == core.ConversationStatusFailed {
+		// Reached only for fetchFailureRequestInvalid: surface it as a defect the caller
+		// can act on, rather than switching sources and hiding it.
+		ctx.GetLogger().Warn("fetch_logs v2: backend rejected the query as malformed — not falling back to kubectl",
+			"provider", provider.Provider, "error", strings.Join(resp.Response, " "))
+		return requestInvalidGuidance(resp), nil
+	}
 	return resp, nil
 }
 
@@ -259,30 +268,205 @@ func runFetchLogsWithTimeout(ctx *security.RequestContext, timeout time.Duration
 // plausible match for kubectl's current-buffer semantics.
 func shouldFallbackToKubectl(resp core.NBAgentResponse, canonicalQuery string) bool {
 	if resp.Status == core.ConversationStatusFailed {
-		return true
+		// A single boolean used to send every failure down the same door. It funnels at
+		// least four distinct causes — an operator the backend does not implement (e.g.
+		// `_ilike` on Signoz), a field or clause we built wrongly, a provider we failed
+		// to resolve, and a backend we genuinely could not reach — into one silent
+		// switch to a narrower source.
+		//
+		// Only the last of those is a reason to switch. The others are OUR defect, and
+		// swapping in kubectl hides them: the kubectl path reads a single pod of a
+		// workload, drops the requested time window, and greps for error keywords, so a
+		// malformed query of ours resurfaces as a narrower, time-blind answer that reads
+		// like evidence. The original defect then never appears anywhere — no error, no
+		// metric, no ticket — which is why an unsupported operator can persist
+		// indefinitely while the product still produces confident prose.
+		//
+		// Deliberately conservative: only a failure we are CONFIDENT is our own
+		// malformed request suppresses the fallback. Anything unrecognised keeps the
+		// existing safety net.
+		return classifyFetchFailure(resp) != fetchFailureRequestInvalid
 	}
 	if !fetchResponseIsEmpty(resp) {
 		return false
 	}
-	return !queryHasExplicitTimeAnchor(canonicalQuery)
+	// An authoritative empty result for a window kubectl cannot cover is a real answer.
+	// Replacing it with a few minutes of buffered output would not answer the question
+	// asked, and would look like it had.
+	return !queryRequestsWindowBeyondKubectl(canonicalQuery)
 }
 
-// queryHasExplicitTimeAnchor reports whether the canonical query carries an
-// explicit start_time — an absolute historical anchor that plain `kubectl
-// logs --tail` cannot honor (see shouldFallbackToKubectl). Empty or
-// unparseable input is treated as "no anchor" so callers default to the
-// pre-existing fallback behaviour.
-func queryHasExplicitTimeAnchor(canonicalQuery string) bool {
+// fetchFailureKind is why the primary log fetch failed, to the extent it can be told
+// from the response. NBAgentResponse carries only the error text, so this reads that
+// text; a typed error threaded from the query builders would be better and is the
+// natural follow-up.
+type fetchFailureKind int
+
+const (
+	// fetchFailureUnknown — unrecognised. Treated as recoverable so behaviour is
+	// unchanged for anything not explicitly classified.
+	fetchFailureUnknown fetchFailureKind = iota
+	// fetchFailureRequestInvalid — we asked the backend something it cannot answer as
+	// posed: an unsupported operator, an unparseable clause, an unknown field, an
+	// unresolved provider. Falling back would paper over a defect of ours.
+	fetchFailureRequestInvalid
+	// fetchFailureBackendUnavailable — the backend could not be reached or errored
+	// internally. The data may well exist; another source is a reasonable attempt.
+	fetchFailureBackendUnavailable
+)
+
+// requestInvalidMarkers are phrases emitted when the REQUEST is at fault. Drawn from
+// the query builders (`unsupported type for 'in' clause`, `like clause %s not supported
+// for non string type`) and from Elasticsearch's own 400-class exception names.
+var requestInvalidMarkers = []string{
+	"unsupported", "not supported",
+	"failed to parse", "parsing_exception", "x_content_parse_exception",
+	"illegal_argument_exception", "query_shard_exception",
+	"invalid input syntax", "unknown operator", "no mapping found",
+	"status 400",
+}
+
+// backendUnavailableMarkers are transport- and server-side failures. Checked first:
+// these are unambiguous, whereas a 5xx body can happen to contain the word
+// "unsupported" and must not be misread as our fault.
+var backendUnavailableMarkers = []string{
+	"connection refused", "no such host", "i/o timeout", "context deadline exceeded",
+	"deadline exceeded", "circuit",
+	"status 500", "status 502", "status 503", "status 504",
+}
+
+// backendUnavailableWords are matched as WHOLE WORDS, not substrings. `eof` is the
+// motivating case: Go surfaces a truncated connection as a bare "EOF", but the same
+// three letters end "oneof", "thereof" and "whereof" — and "must set oneof field" is a
+// validation error, i.e. precisely the request-invalid class this change exists to stop
+// misrouting. A substring match there would send it to kubectl and hide it again.
+var backendUnavailableWords = []string{"eof"}
+
+// containsWord reports whether text contains word delimited by non-alphanumerics.
+// Used for markers short enough to appear inside unrelated words.
+func containsWord(text, word string) bool {
+	for _, tok := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if tok == word {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyFetchFailure inspects a failed fetch response and reports why it failed.
+func classifyFetchFailure(resp core.NBAgentResponse) fetchFailureKind {
+	text := strings.ToLower(strings.Join(resp.Response, " "))
+	if strings.TrimSpace(text) == "" {
+		return fetchFailureUnknown
+	}
+	for _, m := range backendUnavailableMarkers {
+		if strings.Contains(text, m) {
+			return fetchFailureBackendUnavailable
+		}
+	}
+	for _, w := range backendUnavailableWords {
+		if containsWord(text, w) {
+			return fetchFailureBackendUnavailable
+		}
+	}
+	for _, m := range requestInvalidMarkers {
+		if strings.Contains(text, m) {
+			return fetchFailureRequestInvalid
+		}
+	}
+	return fetchFailureUnknown
+}
+
+// requestInvalidGuidance prefixes a malformed-request failure with what the caller
+// should do about it. Without this the agent sees a raw backend error, has no reason to
+// believe the query shape was the problem, and commonly retries it unchanged or reports
+// that no logs exist.
+func requestInvalidGuidance(resp core.NBAgentResponse) core.NBAgentResponse {
+	if len(resp.Response) == 0 {
+		return resp
+	}
+	out := resp
+	out.Response = append([]string{
+		"The log backend rejected this query as malformed — it did NOT report an absence of logs. " +
+			"Do not conclude that no logs exist, and do not retry the same query. " +
+			"Re-issue it using only operators this provider advertises (see the provider's supported operators) " +
+			"and field names taken from the backend, not assumed. Backend error follows.",
+	}, resp.Response...)
+	return out
+}
+
+// kubectlLogCoverage is how far back `kubectl logs` is assumed to reach.
+//
+// It is an assumption, not a measurement: the container log buffer is bounded by
+// size, not time, so its span depends entirely on how chatty the workload is. On
+// one customer cluster it held roughly 26 minutes. The value is deliberately
+// conservative — over-estimating it means substituting a short buffer for a long
+// window and calling the result an answer, which is the failure this guards.
+const kubectlLogCoverage = 15 * time.Minute
+
+// queryRequestsWindowBeyondKubectl reports whether the canonical query asks for a
+// span `kubectl logs` cannot serve.
+//
+// This replaces an earlier check that only looked for an explicit `start_time`.
+// That was a proxy for "asks for history", and a poor one: the canonical query
+// expresses windows as `time_range` ("4h", "24h") far more often than as an
+// absolute `start_time`, so the check returned false for nearly every generated
+// query and the fallback fired regardless. A four-hour request would be answered
+// from a buffer holding minutes, silently.
+//
+// Both forms are resolved to a lookback duration and compared against what kubectl
+// can actually cover. Unparseable or absent windows keep the previous behaviour.
+func queryRequestsWindowBeyondKubectl(canonicalQuery string) bool {
 	if strings.TrimSpace(canonicalQuery) == "" {
 		return false
 	}
 	var q struct {
 		StartTime string `json:"start_time"`
+		TimeRange string `json:"time_range"`
 	}
 	if err := json.Unmarshal([]byte(canonicalQuery), &q); err != nil {
 		return false
 	}
-	return strings.TrimSpace(q.StartTime) != ""
+
+	// Absolute anchor: how far back does it reach from now?
+	if ts := strings.TrimSpace(q.StartTime); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return time.Since(t) > kubectlLogCoverage
+		}
+		// An unparseable absolute anchor still signals intent to look at history.
+		return true
+	}
+
+	// Relative window: "30m", "4h", "7d".
+	if tr := strings.TrimSpace(q.TimeRange); tr != "" {
+		if d, ok := parseRelativeWindow(tr); ok {
+			return d > kubectlLogCoverage
+		}
+	}
+	return false
+}
+
+// parseRelativeWindow parses the canonical query's relative window forms.
+// time.ParseDuration handles h/m/s but not the d suffix the generator emits.
+func parseRelativeWindow(v string) (time.Duration, bool) {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return 0, false
+	}
+	if strings.HasSuffix(v, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(v, "d"))
+		if err != nil || days < 0 {
+			return 0, false
+		}
+		return time.Duration(days) * 24 * time.Hour, true
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // kubectlFallback runs the kubectl log path after a services-server fetch errored
@@ -475,11 +659,32 @@ func providerFromLogs(logs string) string {
 // labelMappings is empty (backend not yet enriched for this provider/account),
 // it falls back to advertising the provider-native fields — identical to v1 —
 // so the canonical path keeps working before enrichment lands.
+// generateCanonicalLogQuery translates the user's NL log question into the
+// canonical query JSON. Runs on ModelTierSummary — same treatment as the
+// other small, single-shot, mechanical translation calls in this codebase
+// (generateConversationTitle, generateAsyncAgentSummary, session_extractor):
+// this call's own context previously carried no tier override, so it
+// inherited the calling agent's Retrieval tier and paid a full reasoning-tier
+// LLM call (~4.2s observed) to produce a small JSON translation. Unlike those
+// other calls, this one is on the fetch's correctness-critical path — a wrong
+// canonical query silently returns the wrong or empty log set rather than
+// failing loudly — so the downgrade needs the same validation those callers'
+// own tasks don't: confirm real canonical-query output stays correct across
+// providers before trusting this in production (see
+// TestGenerateCanonicalLogQuery_SummaryTier_StillProducesValidQuery and the
+// logs-v3-agent-investigation doc for the manual validation run).
 func generateCanonicalLogQuery(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, fields []string, indices map[string]string) (string, error) {
 	prompt := buildCanonicalLogQueryPrompt(provider, fields, indices)
 	messages := buildLogIntentMessages(prompt, request)
 
-	res, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	summaryCtx := security.NewRequestContext(
+		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierSummary),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+	res, err := core.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		return "", err
 	}

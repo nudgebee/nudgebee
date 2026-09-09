@@ -272,10 +272,10 @@ func sharedHeaderAndWorkflow() []string {
 		"     a. The name is ambiguous (no namespace, partial match, common service name).",
 		"     b. The name looks like a **workload** (Deployment / StatefulSet / DaemonSet / Job) but you need pod logs. Workload-managed pods have hash suffixes (the Deployment→ReplicaSet→Pod pattern: `<workload-name>-<6-10 hex>-<5 alphanumeric>`). A bare workload name without that suffix is NOT a valid pod name; calling `fetch_logs` with `pod=<workload-name>` resolves to zero entries because Kubernetes pod names always carry the suffix.",
 		"     c. The user gave a service / app / deployment name and didn't specify a pod.",
-		"     Skip resource_search_execute ONLY when the user gave an obvious pod name — already has the hash suffix described above, OR follows a StatefulSet ordinal pattern (`<sts-name>-<integer>`, e.g. `kafka-0`, `mysql-0`).",
+		"     Skip resource_search_execute ONLY when either (1) the framework-generated `<resolved_targets>` block carries `status=\"confirmed\"`, exact pod member names, and their namespace, or (2) the question itself already carries one or more exact resolved pod names — each has the hash suffix described above, OR follows a StatefulSet ordinal pattern (`<sts-name>-<integer>`, e.g. `kafka-0`, `mysql-0`) — together with their namespace. A `candidate` target alone never suppresses discovery. Reuse every confirmed/supplied pod directly; do not rediscover a workload the parent already resolved. If a direct fetch later reports not found, Step 2a remains mandatory and safely re-resolves stale pods.",
 		"     Call it with the workload name and namespace directly: `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}`. `suggestions` is the right mode for this workflow — it resolves a workload to its live pods (and their owner references) in one lookup — and it is also what the tool falls back to when `search_type` is absent, so a call that omits it still behaves correctly. Pass it explicitly anyway. Omit `namespace` only when the user genuinely didn't give one.",
 		"  2. **Fetch the logs** by calling `fetch_logs` with a natural-language question that includes the resolved resource and time window. `fetch_logs` translates the question into the right backend query (Loki, Datadog, Elasticsearch, or kubectl) and runs it. The response is a JSON envelope with the rendered query and the raw logs.",
-		"  2b. **Read the marker at the end of `logs` before you shell out.** The inline logs end in one of two bracketed markers, and the `logs_complete` field says the same thing machine-readably. `[... complete — all matching lines are shown above ...]` (`logs_complete: true`) means `file_ref` holds nothing you have not been given: answer from the inline logs, and do NOT call shell_execute. `[... N more bytes truncated ...]` (`logs_complete: false`) means `file_ref` has more — and the inline portion is the FIRST lines of that same file in EXACTLY the same line format, so write your filter directly from it. You never need a separate `head` call to discover the layout.",
+		"  2b. **Read the response metadata before you shell out.** The inline logs end in one of two bracketed markers, and the `logs_complete` field says the same thing machine-readably. `[... complete — all matching lines are shown above ...]` (`logs_complete: true`) means `file_ref` holds nothing you have not been given: answer from the inline logs, and do NOT call shell_execute. `[... N more bytes truncated ...]` (`logs_complete: false`) means `file_ref` has more — and the inline portion is the FIRST lines of that same file in EXACTLY the same format. Follow `logs_format_hint`: for `timestamp_tab_message`, read line-by-line and split once on TAB; never JSON-decode the whole file. You never need a separate `head` call to discover the layout.",
 		"  2a. **Recovery from name resolution failure.** If `fetch_logs` returns an error containing \"pod not found\", \"(NotFound)\", \"no resources found\", or similar — the resource name didn't resolve. You MUST:",
 		"     - Call `resource_search_execute` with the original name and namespace: `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}`.",
 		"     - Take the resolved pod name (with hash suffix) from the search result.",
@@ -487,6 +487,7 @@ func (m LogAgentTool) Description() string {
 	Usage:
 
 	* Input: Provide a question in natural language. Match the user's intent verbatim — investigation wording, enumeration wording, or a routine fetch.
+	* Resolved targets: When a prior tool already resolved the resource, pass it through the optional resolved_targets field instead of copying it only into prose. The dispatcher validates and supplies it to the selected provider-specific logs agent.
 	* Output: Markdown answer with cited log evidence (timestamps, error signatures). For investigations, includes a 5-Why causality chain and a time-window callout when errors cluster.
 	`
 }
@@ -503,20 +504,53 @@ func (m LogAgentTool) InputSchema() toolcore.ToolSchema {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Optional: Path in the workspace to save the raw log data (e.g., 'logs.json'). Relative paths are saved in the conversation directory.",
 			},
+			toolcore.ResolvedTargetsArgument: {
+				Type:        toolcore.ToolSchemaTypeArray,
+				Description: "Optional resolved identities from prior tool evidence. Each object requires domain, kind, and canonical_id; may include scope (string map), members, status (confirmed|candidate), resolved_at, source_tool, and source_call_id. Pass only targets relevant to this log question. Confirmed targets are tried directly; stale/not-found targets fall back to discovery.",
+				Items:       map[string]any{"type": "object"},
+			},
 		},
 		Required: []string{"command"},
 	}
 }
 
 func (m LogAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	preparedInput, err := prepareLogAgentInput(input)
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Info(
+			"log: ignoring invalid resolved_targets and using normal discovery",
+			"error", err.Error(),
+		)
+		preparedInput = input
+	}
 	agent, err := getLogAgent(nbRequestContext.Ctx, nbRequestContext.AccountId)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Info("log: unable to get logsAgent", "error", err.Error())
 		return toolcore.NBToolResponse{}, err
 	}
 
-	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, input)
-	return buildLogToolResponse(nbRequestContext, agent, input, resp, err)
+	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, preparedInput)
+	return buildLogToolResponse(nbRequestContext, agent, preparedInput, resp, err)
+}
+
+func prepareLogAgentInput(input toolcore.NBToolCallRequest) (toolcore.NBToolCallRequest, error) {
+	if input.Arguments == nil {
+		return input, nil
+	}
+	targets, err := toolcore.ParseResolvedTargets(input.Arguments[toolcore.ResolvedTargetsArgument])
+	if err != nil {
+		return input, err
+	}
+	block, err := toolcore.RenderResolvedTargetsContext(targets)
+	if err != nil || block == "" {
+		return input, err
+	}
+	if strings.TrimSpace(input.Context) == "" {
+		input.Context = block
+	} else {
+		input.Context = strings.TrimSpace(input.Context) + "\n" + block
+	}
+	return input, nil
 }
 
 // buildLogToolResponse shapes ExecuteAgentToolCall's result into the
@@ -587,6 +621,17 @@ func buildLogToolResponse(nbRequestContext toolcore.NbToolContext, agent core.NB
 	// high-volume target of the manifest) drops its evidence at this bespoke
 	// tool boundary, since this wrapper bypasses factory_agent's generic path.
 	subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, LogsAgentName, resp.AgentStepResponse)
+
+	if _, ok := agent.(*LogAgent); ok && resp.Status == core.ConversationStatusCompleted {
+		return toolcore.NBToolResponse{
+			Data:              logData,
+			Type:              toolcore.NBToolResponseTypeText,
+			Status:            toolcore.NBToolResponseStatusSuccess,
+			References:        references,
+			SubAgentEvidence:  subAgentEvidence,
+			AdditionalDetails: additionalDetails,
+		}, nil
+	}
 
 	if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 		return toolcore.NBToolResponse{

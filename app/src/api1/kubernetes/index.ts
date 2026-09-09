@@ -309,6 +309,7 @@ query k8s_pods_list($limit:Int, $offset:Int) {
       namespace
       name
       status
+      container_status
       is_active
       node_name
       workload_name
@@ -470,6 +471,18 @@ query getPodDetails {
       created_at
       service_name
       account_name
+    }
+  }
+}
+`;
+
+export const K8S_EVENT_SUBJECT_RESOURCES = `
+query getEventSubjectResources {
+  cloud_resourses: cloud_resource_v2(where: __WHERE__, limit: 5) {
+    rows {
+      id
+      name
+      type
     }
   }
 }
@@ -683,8 +696,8 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 `;
 
 export const AI_REMEDIATION_EXECUTE = `
-mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String) {
-  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot) {
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand) {
     data
   }
 }
@@ -828,6 +841,11 @@ function buildEventFilterParams(query: any) {
   }
   if (query?.incident_leader_id) {
     filterParams['incident_leader_id'] = { _eq: query['incident_leader_id'] };
+  }
+  // Fold incident children out of the list: only leaders and ungrouped events
+  // remain, each group represented by its leader row (#34655).
+  if (query?.hide_incident_children) {
+    filterParams['incident_leader_id'] = { _is_null: true };
   }
   if (Array.isArray(query?.aggregation_key_nin) && query['aggregation_key_nin'].length) {
     filterParams['aggregation_key'] = { ...(filterParams['aggregation_key'] || {}), _not_in: query['aggregation_key_nin'] };
@@ -1664,7 +1682,8 @@ const apiKubernetes = {
       score_factors
       score_confidence
       incident_leader_id
-      incident_member_count${issueTypeFields}
+      incident_member_count
+      is_investigated${issueTypeFields}
     }
   }
 }`;
@@ -1695,10 +1714,14 @@ const apiKubernetes = {
        finding_id
        fingerprint
        subject_owner
+       source
        computed_score
        computed_priority
        score_factors
-       score_confidence${issueTypeFields}
+       score_confidence
+       incident_leader_id
+       incident_member_count
+       is_investigated${issueTypeFields}
      }
    }
  }`;
@@ -2309,6 +2332,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
             namespace
             name
             status
+            container_status
             is_active
             node_name
             workload_name
@@ -3195,6 +3219,44 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       return error;
     }
   },
+  // Candidate targets for an event's subject link: the resource the event is
+  // linked to (api-server points a pod event at its OWNING WORKLOAD, see
+  // event/service.go linkK8sCloudResource) and the subject pod itself, which the
+  // event never carries an id for. Fetched in one round trip via _or.
+  async getEventSubjectResources({
+    resourceId,
+    podName,
+    namespace,
+    accountId,
+  }: {
+    resourceId?: string;
+    podName?: string;
+    namespace?: string;
+    accountId?: string;
+  }) {
+    const or: any[] = [];
+    if (resourceId) {
+      or.push({ id: { _eq: resourceId } });
+    }
+    if (podName && accountId) {
+      const podMatch: any = { name: { _eq: podName }, type: { _eq: 'Pod' }, account: { _eq: accountId } };
+      if (namespace) {
+        podMatch.namespace = { _eq: namespace };
+      }
+      or.push(podMatch);
+    }
+    if (or.length === 0) {
+      return [];
+    }
+    try {
+      const formattedQuery = K8S_EVENT_SUBJECT_RESOURCES.replaceAll('__WHERE__', gqlStringify({ _or: or }));
+      const response = await queryGraphQL(formattedQuery, 'getEventSubjectResources', {});
+      return response?.data?.data?.cloud_resourses?.rows || [];
+    } catch (error) {
+      console.error(error);
+      return [];
+    }
+  },
   async getClusterMetrices2({
     accountId,
     metric,
@@ -3808,7 +3870,16 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     });
     return response?.data?.data?.ai_remediation_get?.data;
   },
-  async executeRemediationCommand(accountId: string, command: string, eventId?: string, configName?: string, slot?: string) {
+  async executeRemediationCommand(
+    accountId: string,
+    command: string,
+    eventId?: string,
+    configName?: string,
+    slot?: string,
+    // The action's execute command, sent on a verify run so the server can attach the result to the
+    // attempt it checked rather than filing it as an attempt of its own.
+    executeCommand?: string
+  ) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
       accountId,
@@ -3816,6 +3887,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       command,
       configName: configName || null,
       slot: slot || null,
+      executeCommand: executeCommand || null,
     });
     return response?.data?.data?.ai_remediation_execute?.data;
   },

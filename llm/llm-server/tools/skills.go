@@ -40,6 +40,8 @@ func init() {
 
 type LoadSkillsTool struct{}
 
+var _ core.SchemaValidationInputNormalizer = LoadSkillsTool{}
+
 func (m LoadSkillsTool) Name() string {
 	return LoadSkillsToolName
 }
@@ -68,6 +70,65 @@ func (m LoadSkillsTool) InputSchema() core.ToolSchema {
 		},
 		Required: []string{"skill_name"},
 	}
+}
+
+// NormalizeInputForSchemaValidation maps historical aliases onto the one
+// canonical field exposed to the LLM. Call receives the original input and
+// continues to parse the aliases through ParseSkillName.
+func (m LoadSkillsTool) NormalizeInputForSchemaValidation(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if !strings.HasPrefix(trimmed, "{") {
+		return input
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil || parsed == nil {
+		return input
+	}
+	if _, exists := parsed["skill_name"]; exists {
+		return input
+	}
+	for _, alias := range []string{"skill_names", "skills"} {
+		value, exists := parsed[alias]
+		if !exists {
+			continue
+		}
+		name := extractSkillName(value)
+		if name == "" {
+			continue
+		}
+		parsed["skill_name"] = name
+		normalized, err := json.Marshal(parsed)
+		if err != nil {
+			return input
+		}
+		return string(normalized)
+	}
+	return input
+}
+
+func extractSkillName(val any) string {
+	var names []string
+	switch value := val.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []any:
+		for _, item := range value {
+			if s, ok := item.(string); ok {
+				if trimmed := strings.TrimSpace(s); trimmed != "" {
+					names = append(names, trimmed)
+				}
+			}
+		}
+	case []string:
+		for _, s := range value {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				names = append(names, trimmed)
+			}
+		}
+	default:
+		return ""
+	}
+	return strings.Join(names, ",")
 }
 
 func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -750,54 +811,24 @@ func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.D
 func (m LoadSkillsTool) ParseSkillName(input core.NBToolCallRequest) string {
 	var skillName string
 
-	// Helper to extract string or join slice
-	extractName := func(val any) string {
-		if s, ok := val.(string); ok {
-			return s
-		}
-
-		var inputSlice []any
-		if slice, ok := val.([]any); ok {
-			inputSlice = slice
-		} else if sSlice, ok := val.([]string); ok {
-			for _, s := range sSlice {
-				inputSlice = append(inputSlice, s)
-			}
-		}
-
-		if len(inputSlice) > 0 {
-			var names []string
-			for _, item := range inputSlice {
-				if s, ok := item.(string); ok {
-					trimmed := strings.TrimSpace(s)
-					if trimmed != "" {
-						names = append(names, trimmed)
-					}
-				}
-			}
-			return strings.Join(names, ",")
-		}
-		return ""
-	}
-
 	if val, ok := input.Arguments["skill_name"]; ok {
-		skillName = extractName(val)
+		skillName = extractSkillName(val)
 	} else if val, ok := input.Arguments["skill_names"]; ok {
 		// Legacy alias: schema-side dropped 2026-07-10 (PR #31271). Kept in
 		// Call() as a silent compat shim so historical LLM shapes still work
 		// during the transition. Remove once DB shows zero calls landing on
 		// this branch — track via metrics or a periodic sweep of
 		// llm_conversation_tool_calls.parameters. Target: 2026-08-01.
-		skillName = extractName(val)
+		skillName = extractSkillName(val)
 	} else if val, ok := input.Arguments["skills"]; ok {
 		// Legacy alias — same rationale as 'skill_names' above.
-		skillName = extractName(val)
+		skillName = extractSkillName(val)
 	}
 
 	// Fallback 1: check if the argument was passed as "value" or single unnamed arg (some LLMs do this)
 	if skillName == "" && len(input.Arguments) > 0 {
 		for _, v := range input.Arguments {
-			skillName = extractName(v)
+			skillName = extractSkillName(v)
 			if skillName != "" {
 				break
 			}

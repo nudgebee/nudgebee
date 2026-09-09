@@ -31,7 +31,9 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
   const [commentsByTask, setCommentsByTask] = useState<Record<string, string>>({});
 
   const hasPendingApproval = pendingApprovals.length > 0;
-  if (!visible && !hasPendingApproval) {
+  // `visible` is authoritative: a task left at SCHEDULED by a canceled run must not
+  // resurrect the approve/reject form, which would only 409 (#36358).
+  if (!visible) {
     return null;
   }
 

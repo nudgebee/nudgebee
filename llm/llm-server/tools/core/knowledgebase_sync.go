@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -140,6 +142,25 @@ func syncIntegrationKBs() {
 		"recovered", recovered)
 }
 
+// invalidateKBCachesAfterStatusChange clears the KB caches wholesale after a
+// bulk archive/reactivate. Those statements flip `status` on rows the caller
+// never enumerates, and both caches are status-blind — a cached body keeps
+// being served for an archived KB, and a cached menu keeps hiding a
+// reactivated one. Clearing is coarse but these transitions only happen when
+// an integration is enabled or disabled; the entries are rebuilt from the DB
+// on next use.
+func invalidateKBCachesAfterStatusChange(changed int, reason string) {
+	if changed == 0 {
+		return
+	}
+	if err := common.CacheClear(CacheNamespaceLlmSkillContent); err != nil {
+		slog.Error("kb_sync: failed to clear skill content cache", "error", err, "reason", reason)
+	}
+	if err := common.CacheClear(CacheNamespaceLlmKbMapping); err != nil {
+		slog.Error("kb_sync: failed to clear KB mapping cache", "error", err, "reason", reason)
+	}
+}
+
 // reconcileIntegrationKBs archives integration KBs whose integration is no
 // longer in the eligible set, reactivates archived KBs whose integration has
 // returned, and recovers KBs of any type stuck in 'processing'. eligibleIDs is
@@ -193,6 +214,8 @@ func reconcileIntegrationKBs(dbms *common.DatabaseManager, eligibleIDs []string)
 		recovered = int(n)
 	}
 
+	invalidateKBCachesAfterStatusChange(archived+reactivated+recovered, "reconcile")
+
 	return archived, reactivated, recovered
 }
 
@@ -222,14 +245,26 @@ func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, i
 			"cloud_account_id", integration.CloudAccountID)
 		return kbEnsureErrored
 	}
-	// Check if KB entry already exists for this integration
-	var existingCount int
+	// Check if KB entry already exists for this integration. The id and current
+	// name come back with it: a rename below has to invalidate the caches keyed
+	// on the OLD name, which is gone once the UPDATE lands. At most one row
+	// matches — UNIQUE (account_id, integration_id), V622.
+	var existing struct {
+		Id   string `db:"id"`
+		Name string `db:"name"`
+	}
+	kbExists := false
 	checkQuery := `
-		SELECT COUNT(*) FROM llm_knowledgebases
+		SELECT id, name FROM llm_knowledgebases
 		WHERE integration_id = $1
 		AND account_id = $2
 	`
-	if err := dbms.Db.GetContext(ctx, &existingCount, checkQuery, integration.IntegrationID, integration.CloudAccountID); err != nil {
+	switch err := dbms.Db.GetContext(ctx, &existing, checkQuery, integration.IntegrationID, integration.CloudAccountID); {
+	case err == nil:
+		kbExists = true
+	case errors.Is(err, sql.ErrNoRows):
+		kbExists = false
+	default:
 		slog.Error("kb_sync: failed to check existing KB",
 			"integration_id", integration.IntegrationID,
 			"error", err)
@@ -246,7 +281,7 @@ func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, i
 	kbName := integration.IntegrationName
 	kbDescription := "Knowledge Base for integration: " + integration.IntegrationName
 
-	if existingCount > 0 {
+	if kbExists {
 		// Refresh display name + description in case the user renamed the
 		// integration since the KB row was created. Without this the KB
 		// list UI would keep showing the old name forever — the create
@@ -273,6 +308,10 @@ func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, i
 				"integration_id", integration.IntegrationID,
 				"error", err)
 		} else if n, _ := res.RowsAffected(); n > 0 {
+			// Same invalidation contract as a manual rename: clear the body
+			// cached under the old name as well as the new one, plus the skill
+			// menu of every agent this KB is mapped to.
+			invalidateKBCaches(dbms, integration.CloudAccountID, existing.Id, existing.Name, kbName)
 			slog.Info("kb_sync: refreshed KB display name after integration rename",
 				"integration_id", integration.IntegrationID,
 				"integration_name", integration.IntegrationName,
@@ -494,6 +533,7 @@ func archiveReactivateAccountKBs(ctx context.Context, dbms *common.DatabaseManag
 			return 0, 0
 		}
 		n, _ := res.RowsAffected()
+		invalidateKBCachesAfterStatusChange(int(n), "account_archive_all")
 		return int(n), 0
 	}
 
@@ -534,5 +574,6 @@ func archiveReactivateAccountKBs(ctx context.Context, dbms *common.DatabaseManag
 		n, _ := res.RowsAffected()
 		reactivated = int(n)
 	}
+	invalidateKBCachesAfterStatusChange(archived+reactivated, "account_reconcile")
 	return archived, reactivated
 }

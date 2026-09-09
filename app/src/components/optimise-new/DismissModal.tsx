@@ -3,7 +3,7 @@ import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomTextField from '@shared/forms/CustomTextField';
+import { Input } from '@ui/Input';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import recommendationApi from '@api1/recommendation';
@@ -103,14 +103,13 @@ const DismissModal = ({ rec, onClose, onSuccess }: DismissModalProps) => {
               : 'Stays dismissed until someone reactivates it.'}
           </Typography>
         </Box>
-        <CustomTextField
+        <Input
           id='dismiss-reason'
           label='Reason'
-          size='small'
-          multiline
+          type='textarea'
           minRows={2}
           value={reason}
-          onChange={(e) => setReason(e.target.value)}
+          onChange={setReason}
           placeholder='Why is this being dismissed?'
         />
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2] }}>

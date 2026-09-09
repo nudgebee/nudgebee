@@ -3,11 +3,14 @@ package scan_orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"nudgebee/services/internal/database"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+
+	"github.com/lib/pq"
 )
 
 // RunUnusedPVCScan is the direct-K8s-API counterpart that lists PVs, PVCs,
@@ -34,10 +37,22 @@ func RunUnusedPVCScan(ctx *security.RequestContext, account ScanAccount) error {
 	if err != nil {
 		return fmt.Errorf("unused_pvc: list pvs: %w", err)
 	}
-	logger.Info("unused_pvc: fetched", "pods", len(pods), "pvcs", len(pvcs), "pvs", len(pvs))
+	// StorageClasses refine the per-GB rate; a fetch failure (old agent, RBAC)
+	// must not fail the scan — pricing degrades to provider defaults.
+	storageClasses := map[string]map[string]any{}
+	if scs, scErr := fetchK8sList(account.AccountID, "storageclasses", "storage.k8s.io", "v1", false); scErr != nil {
+		logger.Warn("unused_pvc: list storageclasses failed, pricing falls back to provider defaults", "error", scErr)
+	} else {
+		for _, sc := range scs {
+			if name := getStringField(getMapField(sc, "metadata"), "name"); name != "" {
+				storageClasses[name] = sc
+			}
+		}
+	}
+	logger.Info("unused_pvc: fetched", "pods", len(pods), "pvcs", len(pvcs), "pvs", len(pvs), "storage_classes", len(storageClasses))
 
 	unused := IdentifyUnusedPVs(pods, pvcs, pvs)
-	recs, err := ParseUnusedPVs(unused, account)
+	recs, err := ParseUnusedPVs(unused, storageClasses, fetchK8sProvider(account), account)
 	if err != nil {
 		return fmt.Errorf("unused_pvc: parse: %w", err)
 	}
@@ -125,6 +140,37 @@ func fetchK8sList(accountID, resourceType, group, version string, allNamespaces 
 	return items, nil
 }
 
+// fetchK8sProvider returns the account's canonical cloud provider
+// ("aws"/"gcp"/"azure") from agent telemetry, or "" — the same backstop rung
+// the python producers' ladders use (get_k8s_provider), so both unused_pvc
+// writers price a signal-less PV identically. Lookup failure degrades
+// pricing, never the scan.
+func fetchK8sProvider(account ScanAccount) string {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return ""
+	}
+	var provider string
+	if err := dbms.Db.Get(&provider,
+		`SELECT k8s_provider FROM agent
+		 WHERE cloud_account_id = $1
+		   AND k8s_provider IS NOT NULL AND k8s_provider != ''
+		 LIMIT 1`,
+		account.AccountID,
+	); err != nil {
+		return ""
+	}
+	switch strings.ToLower(provider) {
+	case "eks":
+		return "aws"
+	case "gke":
+		return "gcp"
+	case "aks":
+		return "azure"
+	}
+	return strings.ToLower(provider)
+}
+
 // persistUnusedPVCs archives the previous scan's unused_pvc rows then
 // UPSERTs the new ones. Same archive-then-upsert two-step as
 // persistCertificates; only difference is the savings column is real
@@ -137,13 +183,23 @@ func persistUnusedPVCs(ctx *security.RequestContext, account ScanAccount, recs [
 
 	now := time.Now()
 
-	// Archive — transition all currently-open unused_pvc rows for this
-	// account to Archive so dropped PVs disappear from the UI.
+	// Retire only the PVs that vanished from this scan, keyed on the scan's
+	// keep-set rather than every row for the rule. A PV that is still present
+	// must keep whatever status its user gave it, and the upsert's CASE guard
+	// below can only preserve that if the archive has not already overwritten it.
+	// Closed rows are left as a terminal record. A failed scan returns before this
+	// point, so an empty keep-set really does mean no unused PVs remain.
+	keepObjectIDs := make([]string, 0, len(recs))
+	for _, r := range recs {
+		keepObjectIDs = append(keepObjectIDs, r.AccountObjectID)
+	}
 	if _, err := dbms.Db.Exec(
 		`UPDATE recommendation SET status = 'Archive', updated_at = $1
 		 WHERE tenant_id = $2 AND cloud_account_id = $3
-		   AND category = 'RightSizing' AND rule_name = $4 AND status != 'Archive'`,
-		now, account.TenantID, account.AccountID, UnusedPVCRuleName,
+		   AND category = 'RightSizing' AND rule_name = $4
+		   AND status NOT IN ('Archive', 'Closed')
+		   AND NOT (account_object_id = ANY($5))`,
+		now, account.TenantID, account.AccountID, UnusedPVCRuleName, pq.Array(keepObjectIDs),
 	); err != nil {
 		return fmt.Errorf("unused_pvc: archive: %w", err)
 	}
@@ -187,7 +243,8 @@ func persistUnusedPVCs(ctx *security.RequestContext, account ScanAccount, recs [
 		    :finops_score, :finops_band, :finops_score_breakdown)
 		 ON CONFLICT (rule_name, cloud_account_id, resource_id, category, account_object_id)
 		 DO UPDATE SET recommendation = EXCLUDED.recommendation,
-		               status = EXCLUDED.status,
+		               status = CASE WHEN recommendation.status NOT IN ('Open', 'Archive')
+		                             THEN recommendation.status ELSE EXCLUDED.status END,
 		               updated_at = EXCLUDED.updated_at,
 		               severity = EXCLUDED.severity,
 		               estimated_savings = EXCLUDED.estimated_savings,

@@ -25,6 +25,10 @@ func (t *GitTool) Name() string {
 func (t *GitTool) Description() string {
 	return `Executes git commands for repository operations. Usage: git <command> [options]
 
+This tool also commits and pushes your work — it is not read-only. Git identity
+(nudgebee-bot <bot@nudgebee.com>) is already configured for this repo, so commit
+commands work without any setup.
+
 COMMON COMMANDS:
   status:       Show working tree status
   log:          Show commit history
@@ -32,6 +36,10 @@ COMMON COMMANDS:
   show:         Show commit details
   branch:       List, create, or delete branches
   remote:       Manage remote repositories
+  add:          Stage changes for commit
+  commit:       Record staged changes
+  push:         Upload commits to the remote
+  checkout:     Discard uncommitted changes (with -- <path>) or switch refs
 
 COMMON EXAMPLES:
   Status:                ["status"]
@@ -42,18 +50,26 @@ COMMON EXAMPLES:
   Diff specific file:    ["diff", "HEAD", "--", "path/to/file"]
   Branch list:           ["branch", "-a"]
   Remote info:           ["remote", "-v"]
+  Stage everything:      ["add", "-A"]
+  Commit:                ["commit", "-m", "fix: description"]
+  Push:                  ["push"]
+  Discard a file's edits: ["checkout", "--", "path/to/file"]
+  Discard all edits:     ["checkout", "--", "."]
 
 ADVANCED EXAMPLES:
   Log with graph:        ["log", "--oneline", "--graph", "--all", "-n", "20"]
   Diff between commits:  ["diff", "commit1", "commit2"]
   File history:          ["log", "--follow", "--", "path/to/file"]
   Blame (line authors):  ["blame", "path/to/file"]
+  Amend last commit:     ["commit", "--amend", "--no-edit"]
+  Force-push after rewriting history: ["push", "--force-with-lease"]
 
 IMPORTANT:
 - Each argument must be a separate array element
 - Example: ["log", "-n", "5"] NOT ["log -n 5"]
 - Use "--" before file paths: ["diff", "HEAD", "--", "file.py"]
-- For options with values: ["log", "-n", "10"] NOT ["log", "-n=10"]`
+- For options with values: ["log", "-n", "10"] NOT ["log", "-n=10"]
+- Never use ["push", "--force"] — use ["push", "--force-with-lease"] instead.`
 }
 
 func (t *GitTool) InputSchema() core.ToolSchema {
@@ -106,7 +122,7 @@ func (t *GitTool) Execute(ctx context.Context, input map[string]any) core.NBTool
 
 	args, fetchRetargeted := rewriteFetchForTracking(args)
 
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoDir
 
 	var stdout, stderr bytes.Buffer
@@ -173,4 +189,15 @@ func (t *GitTool) GetType() core.NBToolType {
 	return core.NBToolTypeCodeAnalysis
 }
 
-func (t *GitTool) IsReadOnly() bool { return true }
+// IsReadOnly is false even though most documented commands (status, log, diff,
+// show, branch, remote) are read-only: Execute does not restrict which git
+// subcommand runs, so this tool can also run commit/add/push/reset/etc. This
+// flag is a static per-tool property with no visibility into a specific
+// call's args (see react_planner.go's executeSteps and its run-scoped read
+// cache), so claiming true here would let a write command — e.g. commit, add,
+// push issued through this tool — be batched concurrently with other "read
+// only" steps (a race on .git/index.lock and remote state) or served from a
+// stale cached result instead of actually re-running on retry. Both were
+// observed causing the PR-followup commit-enforcement pass to silently leave
+// real edits uncommitted (issue #36634).
+func (t *GitTool) IsReadOnly() bool { return false }

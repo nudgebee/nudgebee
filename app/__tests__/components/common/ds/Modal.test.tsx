@@ -1,8 +1,3 @@
-jest.mock('@components/k8s/common/LinearLoader', () => ({
-  __esModule: true,
-  default: () => <div data-testid='linear-loader' />,
-}));
-
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { Modal } from '@ui/Modal';
@@ -81,7 +76,7 @@ describe('Modal', () => {
         body
       </Modal>
     );
-    expect(screen.getByTestId('linear-loader')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Loading' })).toBeInTheDocument();
   });
 
   it('renders custom actionButtons', () => {

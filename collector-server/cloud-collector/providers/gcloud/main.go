@@ -221,6 +221,13 @@ func (a *gcloudProvider) GetUsageReport(ctx providers.CloudProviderContext, acco
 	return getGcloudUsageReport(ctx, account, month, year)
 }
 
+// GetAvailableUsageReportPeriods implements providers.UsageReportPeriodDiscoverer
+// by asking the billing export which months contain data, so backfill loads
+// exactly the available history instead of probing a fixed trailing window.
+func (a *gcloudProvider) GetAvailableUsageReportPeriods(ctx providers.CloudProviderContext, account providers.Account, maxMonths int) ([]providers.UsageReportPeriod, error) {
+	return discoverAvailableUsageReportPeriods(ctx, account, maxMonths)
+}
+
 func (a *gcloudProvider) ListRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) (providers.ListRecommendationsResponse, error) {
 	// Pre-check: skip if the required GCP API is not enabled
 	session, err := getGcloudSessionFromAccount(ctx, account)

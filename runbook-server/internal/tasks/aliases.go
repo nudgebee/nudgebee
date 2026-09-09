@@ -138,7 +138,8 @@ var SearchAliases = map[string][]string{
 	"scripting.run_script": {"script", "bash", "shell", "python", "run script", "command", "ssm", "run command"},
 
 	// Events
-	"events.store": {"store event", "audit", "record event", "save event", "log event"},
+	"events.store":        {"store event", "audit", "record event", "save event", "log event"},
+	"events.add_evidence": {"add evidence", "attach evidence", "evidence", "enrich event", "update event", "append evidence"},
 }
 
 // AliasesFor returns the search synonyms registered for a task, or nil when

@@ -20,7 +20,7 @@ func TestInfrastructureDependentsReported(t *testing.T) {
 		computeNode("seed", "nb-demo-db", NodeTypeDatabase),
 		computeNode("api", "nb-demo-api", NodeTypeComputeInstance),
 	}
-	s := summarizeImpact("seed", NodeTypeDatabase, nodes, nil, map[string]int{"api": 1})
+	s := summarizeImpact("seed", NodeTypeDatabase, nodes, nil, map[string]int{"api": 1}, map[string]string{})
 
 	if s.InfrastructureCount != 1 || len(s.InfrastructureDependents) != 1 {
 		t.Fatalf("InfrastructureCount=%d dependents=%d, want 1/1", s.InfrastructureCount, len(s.InfrastructureDependents))
@@ -47,7 +47,7 @@ func TestInfrastructureDependentsDoNotInflateSafetyInputs(t *testing.T) {
 		computeNode("api", "nb-demo-api", NodeTypeComputeInstance),
 		computeNode("node1", "ip-10-0-0-1", NodeTypeNode),
 	}
-	s := summarizeImpact("seed", NodeTypeDatabase, nodes, nil, map[string]int{"api": 1, "node1": 2})
+	s := summarizeImpact("seed", NodeTypeDatabase, nodes, nil, map[string]int{"api": 1, "node1": 2}, map[string]string{})
 
 	if s.DependentCount != 0 {
 		t.Errorf("DependentCount = %d, want 0 — infrastructure must not count as an app dependent", s.DependentCount)
@@ -71,7 +71,7 @@ func TestApplicationDependentsStillCounted(t *testing.T) {
 		computeNode("seed", "postgres", NodeTypeDatabase),
 		computeNode("wl", "checkout", NodeTypeWorkload),
 	}
-	s := summarizeImpact("seed", NodeTypeDatabase, nodes, nil, map[string]int{"wl": 1})
+	s := summarizeImpact("seed", NodeTypeDatabase, nodes, nil, map[string]int{"wl": 1}, map[string]string{})
 
 	if s.DependentCount != 1 || len(s.Dependents) != 1 {
 		t.Fatalf("DependentCount=%d dependents=%d, want 1/1", s.DependentCount, len(s.Dependents))

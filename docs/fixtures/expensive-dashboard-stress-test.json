@@ -1,0 +1,2745 @@
+{
+ "title": "Expensive Queries Stress Test (120+ panels)",
+ "description": "Synthetic load fixture for custom-dashboard performance work. Every non-text panel carries a query that is expensive per step: long-window histogram quantiles, subqueries, per-pod cardinality, regex matchers, 7d increases, topk over wide inputs, joins, and max-row entity tables. Each panel's description says why. Open on Last 1 hour first; Last 7 days is the worst case. The account id is a placeholder: the importer will ask you to map it to a kubernetes account.",
+ "definition": {
+  "panels": [
+   {
+    "id": 1,
+    "title": "1 \u00b7 Histogram quantiles over long windows",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "histogram_quantile over the two ARC histograms (11k series each on dev, more per CI volume). Every panel below re-reads a 24h or 7d window at every step of the range."
+   },
+   {
+    "id": 2,
+    "title": "exec p50/p95/p99 by (le) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "global p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "global p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "global p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 3,
+    "title": "exec p50/p95/p99 by (job_workflow_name) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 4,
+    "title": "exec p50/p95/p99 by (repository) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, repository)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, repository)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, repository)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 5,
+    "title": "exec p50/p95/p99 by (job_name) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, job_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_name}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, job_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_name}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, job_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_name}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 6,
+    "title": "exec p50/p95/p99 by (job_name, job_workflow_name) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, job_name, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} / {{job_name}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, job_name, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} / {{job_name}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, job_name, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} / {{job_name}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 7,
+    "title": "exec p50/p95/p99 by (repository, job_result) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, repository, job_result)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} {{job_result}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, repository, job_result)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} {{job_result}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, repository, job_result)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} {{job_result}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 8,
+    "title": "exec p95 by workflow [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.95, sum by (le, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[7d])))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "7-day lookback per step. As a TABLE this runs a range query and keeps only the last point, so the work is multiplied by the number of steps.",
+    "unit": "s"
+   },
+   {
+    "id": 9,
+    "title": "startup p50/p95/p99 by (le) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "global p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "global p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "global p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 10,
+    "title": "startup p50/p95/p99 by (job_workflow_name) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 11,
+    "title": "startup p50/p95/p99 by (repository) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, repository)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, repository)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, repository)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 12,
+    "title": "startup p50/p95/p99 by (job_name) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, job_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_name}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, job_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_name}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, job_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_name}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 13,
+    "title": "startup p50/p95/p99 by (job_name, job_workflow_name) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, job_name, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} / {{job_name}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, job_name, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} / {{job_name}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, job_name, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{job_workflow_name}} / {{job_name}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 14,
+    "title": "startup p50/p95/p99 by (repository, job_result) [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.50, sum by (le, repository, job_result)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} {{job_result}} p50"
+     },
+     {
+      "ref_id": "B",
+      "expr": "histogram_quantile(0.95, sum by (le, repository, job_result)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} {{job_result}} p95"
+     },
+     {
+      "ref_id": "C",
+      "expr": "histogram_quantile(0.99, sum by (le, repository, job_result)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h])))",
+      "legend_format": "{{repository}} {{job_result}} p99"
+     }
+    ],
+    "description": "Three quantiles, each a 24h increase over every _bucket series, recomputed at every step. Cost scales with bucket-series count \u00d7 range steps.",
+    "unit": "s"
+   },
+   {
+    "id": 15,
+    "title": "startup p95 by workflow [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.95, sum by (le, job_workflow_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[7d])))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "7-day lookback per step. As a TABLE this runs a range query and keeps only the last point, so the work is multiplied by the number of steps.",
+    "unit": "s"
+   },
+   {
+    "id": 16,
+    "title": "2 \u00b7 Subqueries",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "Each subquery evaluates its inner expression at every 1m point of a 24h window, for every outer step."
+   },
+   {
+    "id": 17,
+    "title": "max busy runners over 24h (1m subquery)",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "max_over_time(sum by (name)(gha_busy_runners{__CLUSTER__})[24h:1m])",
+      "legend_format": "{{name}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 18,
+    "title": "p99 of per-pod cpu rate over 24h",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "quantile_over_time(0.99, rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\", pod=~\".+\"}[5m])[24h:1m])",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 19,
+    "title": "avg per-pod cpu rate over 24h",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "avg_over_time(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\", pod=~\".+\"}[5m])[24h:1m])",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 20,
+    "title": "max per-pod working set over 24h",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "max_over_time(sum by (pod)(container_memory_working_set_bytes{__CLUSTER__ container!=\"\"})[24h:1m])",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 21,
+    "title": "stddev of node cpu over 24h",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "stddev_over_time(sum by (instance)(rate(node_cpu_seconds_total{__CLUSTER__ mode!=\"idle\"}[5m]))[24h:1m])",
+      "legend_format": "{{instance}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 22,
+    "title": "max job backlog over 7d (1m subquery)",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "max_over_time(clamp_min(sum by (name)(gha_assigned_jobs{__CLUSTER__}) - sum by (name)(gha_running_jobs{__CLUSTER__}), 0)[7d:1m])",
+      "legend_format": "{{name}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 23,
+    "title": "rate of increase of completed jobs (nested)",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "deriv(sum by (job_workflow_name)(increase(gha_completed_jobs_total{__CLUSTER__}[1h]))[24h:5m])",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 24,
+    "title": "p95 pod restarts over 7d",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "quantile_over_time(0.95, sum by (pod)(kube_pod_container_status_restarts_total{__CLUSTER__})[7d:5m])",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 25,
+    "title": "min free memory over 24h per node",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "min_over_time(node_memory_MemAvailable_bytes{__CLUSTER__}[24h:1m])",
+      "legend_format": "{{instance}}"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 26,
+    "title": "count of pods ever running over 7d",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count(count_over_time(kube_pod_info{__CLUSTER__ namespace=~\"arc-system.*\"}[7d]))",
+      "legend_format": "pods"
+     }
+    ],
+    "description": "Subquery: inner expression evaluated at every point of the inner window for every outer step."
+   },
+   {
+    "id": 27,
+    "title": "3 \u00b7 Per-pod series",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "One series per pod. Ephemeral runner pods churn ~2k/day on dev; every panel here returns thousands of series over a day-long range."
+   },
+   {
+    "id": 28,
+    "title": "runner pods by node",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, node)(kube_pod_info{__CLUSTER__ namespace=~\"arc-system.*\"})",
+      "legend_format": "{{pod}} \u2192 {{node}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 29,
+    "title": "cpu by pod & container",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, container)(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m]))",
+      "legend_format": "{{pod}}/{{container}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 30,
+    "title": "memory by pod & container",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, container)(container_memory_working_set_bytes{__CLUSTER__ container!=\"\"})",
+      "legend_format": "{{pod}}/{{container}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 31,
+    "title": "restarts by pod",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(increase(kube_pod_container_status_restarts_total{__CLUSTER__}[24h]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 32,
+    "title": "pod phase by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, phase)(kube_pod_status_phase{__CLUSTER__})",
+      "legend_format": "{{pod}} {{phase}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 33,
+    "title": "network rx by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_network_receive_bytes_total{__CLUSTER__}[5m]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 34,
+    "title": "network tx by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_network_transmit_bytes_total{__CLUSTER__}[5m]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 35,
+    "title": "fs reads by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_fs_reads_bytes_total{__CLUSTER__}[5m]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 36,
+    "title": "pods seen per node over 7d",
+    "type": "bar",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count by (node)(count_over_time(kube_pod_info{__CLUSTER__}[7d]))",
+      "legend_format": "{{node}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 37,
+    "title": "cpu throttling by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_cpu_cfs_throttled_seconds_total{__CLUSTER__}[5m]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 38,
+    "title": "oom kills by pod [24h]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(increase(container_oom_events_total{__CLUSTER__}[24h]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 39,
+    "title": "pod age in hours",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "(time() - kube_pod_created{__CLUSTER__}) / 3600",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Per-pod grouping: series count equals pods alive in the range. Legend chips render one DOM node per series."
+   },
+   {
+    "id": 40,
+    "title": "4 \u00b7 Regex matchers",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "Regex on pod / container / job_name forces a full label scan instead of an index lookup."
+   },
+   {
+    "id": 41,
+    "title": "cpu for pods matching .*runner.*",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_cpu_usage_seconds_total{__CLUSTER__ pod=~\".*runner.*\"}[5m]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 42,
+    "title": "memory for containers not sidecar",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(container_memory_working_set_bytes{__CLUSTER__ container!~\"POD|istio-proxy|.*sidecar.*\"})",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 43,
+    "title": "completed jobs where job_name matches ci",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (job_name)(increase(gha_completed_jobs_total{__CLUSTER__ job_name=~\"(?i).*ci.*\"}[24h]))",
+      "legend_format": "{{job_name}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 44,
+    "title": "exec p95 for workflows matching deploy",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.95, sum by (le, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__ job_workflow_name=~\".*deploy.*\"}[24h])))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 45,
+    "title": "all series in namespaces matching .*",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count by (__name__)({__CLUSTER__ namespace=~\".*\", __name__=~\"container_.*\"})",
+      "legend_format": "{{__name__}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 46,
+    "title": "restarts for pods not matching kube-",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(kube_pod_container_status_restarts_total{__CLUSTER__ pod!~\"kube-.*\"})",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 47,
+    "title": "startup p95 by repository matching nudgebee",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.95, sum by (le, repository)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__ repository=~\".*nudgebee.*\"}[24h])))",
+      "legend_format": "{{repository}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 48,
+    "title": "network by pod matching anything",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_network_receive_bytes_total{__CLUSTER__ pod=~\".+\"}[5m]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 49,
+    "title": "label_replace chain on pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (app)(label_replace(label_replace(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m]), \"app\", \"$1\", \"pod\", \"(.*)-[a-z0-9]+-[a-z0-9]+\"), \"app\", \"$1\", \"app\", \"(.*)-[0-9]+\"))",
+      "legend_format": "{{app}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 50,
+    "title": "jobs by event_name regex",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (event_name, job_result)(increase(gha_completed_jobs_total{__CLUSTER__ event_name=~\"push|pull_request|workflow_dispatch|.*\"}[24h]))",
+      "legend_format": "{{event_name}} {{job_result}}"
+     }
+    ],
+    "description": "Regex matcher on a high-cardinality label; no index shortcut, full postings scan."
+   },
+   {
+    "id": 51,
+    "title": "5 \u00b7 Long-window increase()",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "increase over 7d windows, grouped by the labels that make the counter wide."
+   },
+   {
+    "id": 52,
+    "title": "completed jobs by workflow [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (job_workflow_name)(increase(gha_completed_jobs_total{__CLUSTER__}[7d]))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 53,
+    "title": "completed jobs by repository & result [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (repository, job_result)(increase(gha_completed_jobs_total{__CLUSTER__}[7d]))",
+      "legend_format": "{{repository}} {{job_result}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 54,
+    "title": "started jobs by job_name [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (job_name)(increase(gha_started_jobs_total{__CLUSTER__}[7d]))",
+      "legend_format": "{{job_name}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 55,
+    "title": "reconciles by controller & result [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (controller, result)(increase(controller_runtime_reconcile_total{__CLUSTER__ job=\"arc-controller\"}[7d]))",
+      "legend_format": "{{controller}} {{result}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 56,
+    "title": "container restarts [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (namespace, pod)(increase(kube_pod_container_status_restarts_total{__CLUSTER__}[7d]))",
+      "legend_format": "{{namespace}}/{{pod}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 57,
+    "title": "cpu seconds consumed by pod [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(increase(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[7d]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 58,
+    "title": "bytes received by pod [7d]",
+    "type": "table",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(increase(container_network_receive_bytes_total{__CLUSTER__}[7d]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 59,
+    "title": "failure rate by workflow [7d]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "100 * (1 - sum by (job_workflow_name)(increase(gha_completed_jobs_total{__CLUSTER__ job_result=\"succeeded\"}[7d])) / clamp_min(sum by (job_workflow_name)(increase(gha_completed_jobs_total{__CLUSTER__}[7d])), 0.0001))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 60,
+    "title": "workqueue adds by name [7d]",
+    "type": "bar",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (name)(increase(workqueue_adds_total{__CLUSTER__ job=\"arc-controller\"}[7d]))",
+      "legend_format": "{{name}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 61,
+    "title": "exec seconds by workflow [7d]",
+    "type": "bar",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (job_workflow_name)(increase(gha_job_execution_duration_seconds_sum{__CLUSTER__}[7d]))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "7-day range vector per step. Tables and bars still run as range queries, so the 7d window is re-read at every step."
+   },
+   {
+    "id": 62,
+    "title": "6 \u00b7 topk / bottomk",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "topk has to materialise every candidate series before it can keep 10."
+   },
+   {
+    "id": 63,
+    "title": "top 10 pods by cpu",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, sum by (pod)(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m])))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 64,
+    "title": "top 10 pods by memory",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, sum by (pod)(container_memory_working_set_bytes{__CLUSTER__ container!=\"\"}))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 65,
+    "title": "bottom 10 pods by cpu",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "bottomk(10, sum by (pod)(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m])))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 66,
+    "title": "top 10 workflows by exec p95 [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, histogram_quantile(0.95, sum by (le, job_workflow_name)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h]))))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 67,
+    "title": "top 10 jobs by startup p99 [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, histogram_quantile(0.99, sum by (le, job_name)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[24h]))))",
+      "legend_format": "{{job_name}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 68,
+    "title": "top 10 repos by failures [7d]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, sum by (repository)(increase(gha_completed_jobs_total{__CLUSTER__ job_result!=\"succeeded\"}[7d])))",
+      "legend_format": "{{repository}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 69,
+    "title": "top 10 pods by restarts [7d]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, sum by (pod)(increase(kube_pod_container_status_restarts_total{__CLUSTER__}[7d])))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 70,
+    "title": "top 10 nodes by pod churn [7d]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, count by (node)(count_over_time(kube_pod_info{__CLUSTER__}[7d])))",
+      "legend_format": "{{node}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 71,
+    "title": "top 10 pods by network rx",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, sum by (pod)(rate(container_network_receive_bytes_total{__CLUSTER__}[5m])))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 72,
+    "title": "top 10 containers by throttling",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "topk(10, sum by (pod, container)(rate(container_cpu_cfs_throttled_seconds_total{__CLUSTER__}[5m])))",
+      "legend_format": "{{pod}}/{{container}}"
+     }
+    ],
+    "description": "topk over a per-pod or per-bucket input: the whole input is computed, then discarded down to 10."
+   },
+   {
+    "id": 73,
+    "title": "7 \u00b7 Vector matching joins",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "group_left joins multiply the left-hand series by a lookup on kube_pod_info / kube_pod_labels."
+   },
+   {
+    "id": 74,
+    "title": "cpu by pod with node",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, node)(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m]) * on (pod) group_left(node) max by (pod, node)(kube_pod_info{__CLUSTER__}))",
+      "legend_format": "{{pod}} on {{node}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 75,
+    "title": "memory by pod with owner",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, owner_name)(container_memory_working_set_bytes{__CLUSTER__ container!=\"\"} * on (pod) group_left(owner_name) max by (pod, owner_name)(kube_pod_owner{__CLUSTER__}))",
+      "legend_format": "{{owner_name}}/{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 76,
+    "title": "cpu usage vs requests by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m])) / on (pod) sum by (pod)(kube_pod_container_resource_requests{__CLUSTER__ resource=\"cpu\"})",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 77,
+    "title": "memory usage vs limits by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(container_memory_working_set_bytes{__CLUSTER__ container!=\"\"}) / on (pod) sum by (pod)(kube_pod_container_resource_limits{__CLUSTER__ resource=\"memory\"})",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 78,
+    "title": "restarts with pod labels",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, label_app)(kube_pod_container_status_restarts_total{__CLUSTER__} * on (pod) group_left(label_app) max by (pod, label_app)(kube_pod_labels{__CLUSTER__}))",
+      "legend_format": "{{label_app}}/{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 79,
+    "title": "runner pods with node & phase",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, node, phase)(kube_pod_status_phase{__CLUSTER__ namespace=~\"arc-system.*\"} * on (pod) group_left(node) max by (pod, node)(kube_pod_info{__CLUSTER__}))",
+      "legend_format": "{{pod}} {{phase}} {{node}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 80,
+    "title": "network rx by pod with node",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod, node)(rate(container_network_receive_bytes_total{__CLUSTER__}[5m]) * on (pod) group_left(node) max by (pod, node)(kube_pod_info{__CLUSTER__}))",
+      "legend_format": "{{node}}/{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 81,
+    "title": "throttling vs limits by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_cpu_cfs_throttled_seconds_total{__CLUSTER__}[5m])) / on (pod) sum by (pod)(kube_pod_container_resource_limits{__CLUSTER__ resource=\"cpu\"})",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 82,
+    "title": "pods per node with node labels",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count by (node, label_kubernetes_io_arch)(kube_pod_info{__CLUSTER__} * on (node) group_left(label_kubernetes_io_arch) max by (node, label_kubernetes_io_arch)(kube_node_labels{__CLUSTER__}))",
+      "legend_format": "{{node}} {{label_kubernetes_io_arch}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 83,
+    "title": "cpu by pod on spot nodes",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(rate(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[5m]) * on (pod) group_left(node) max by (pod, node)(kube_pod_info{__CLUSTER__}) * on (node) group_left() max by (node)(kube_node_labels{__CLUSTER__ label_cloud_google_com_gke_spot=\"true\"}))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Join: both sides materialised per step, matched on pod or node. Right side deduplicated with max by (...) so group_left has one match per key."
+   },
+   {
+    "id": 84,
+    "title": "8 \u00b7 Stat panels with 7d range vectors",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "Instant queries, but each one reads a full week of samples for every series it touches."
+   },
+   {
+    "id": 85,
+    "title": "jobs completed [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum(increase(gha_completed_jobs_total{__CLUSTER__}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 86,
+    "title": "jobs failed [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum(increase(gha_completed_jobs_total{__CLUSTER__ job_result!=\"succeeded\"}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 87,
+    "title": "exec p95 [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.95, sum by (le)(increase(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[7d])))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 88,
+    "title": "startup p95 [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "histogram_quantile(0.95, sum by (le)(increase(gha_job_startup_duration_seconds_bucket{__CLUSTER__}[7d])))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 89,
+    "title": "pods seen [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count(count_over_time(kube_pod_info{__CLUSTER__}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 90,
+    "title": "runner pods seen [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count(count_over_time(kube_pod_info{__CLUSTER__ namespace=~\"arc-system.*\"}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 91,
+    "title": "restarts [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum(increase(kube_pod_container_status_restarts_total{__CLUSTER__}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 92,
+    "title": "cpu seconds [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum(increase(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 93,
+    "title": "bytes received [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum(increase(container_network_receive_bytes_total{__CLUSTER__}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 94,
+    "title": "reconcile errors [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum(increase(controller_runtime_reconcile_errors_total{__CLUSTER__ job=\"arc-controller\"}[7d]))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 95,
+    "title": "distinct workflows [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count(count by (job_workflow_name)(count_over_time(gha_completed_jobs_total{__CLUSTER__}[7d])))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 96,
+    "title": "distinct job names [7d]",
+    "type": "stat",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 3,
+     "h": 4
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "count(count by (job_name)(count_over_time(gha_completed_jobs_total{__CLUSTER__}[7d])))"
+     }
+    ],
+    "description": "Instant query with a 7d range vector: cheap to return, expensive to compute."
+   },
+   {
+    "id": 97,
+    "title": "9 \u00b7 Per-series functions over long windows",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "changes / resets / rate over 24h per series: no aggregation until after the expensive part."
+   },
+   {
+    "id": 98,
+    "title": "counter resets by workflow [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (job_workflow_name)(resets(gha_completed_jobs_total{__CLUSTER__}[24h]))",
+      "legend_format": "{{job_workflow_name}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 99,
+    "title": "value changes by pod [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(changes(kube_pod_status_phase{__CLUSTER__}[24h]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 100,
+    "title": "24h rate by bucket series",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (le)(rate(gha_job_execution_duration_seconds_bucket{__CLUSTER__}[24h]))",
+      "legend_format": "le={{le}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 101,
+    "title": "idelta by pod",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(idelta(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[24h]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 102,
+    "title": "predict pod restarts 1h ahead",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(predict_linear(kube_pod_container_status_restarts_total{__CLUSTER__}[24h], 3600))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 103,
+    "title": "holt-winters on busy runners",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "holt_winters(sum by (name)(gha_busy_runners{__CLUSTER__})[24h:1m], 0.5, 0.5)",
+      "legend_format": "{{name}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 104,
+    "title": "absent runner series check",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "absent_over_time(gha_registered_runners{__CLUSTER__}[24h])",
+      "legend_format": "absent"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 105,
+    "title": "delta of registered runners [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (name)(delta(gha_registered_runners{__CLUSTER__}[24h]))",
+      "legend_format": "{{name}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 106,
+    "title": "last-over-time per pod [7d]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(last_over_time(kube_pod_info{__CLUSTER__}[7d]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 107,
+    "title": "count of samples per pod [24h]",
+    "type": "timeseries",
+    "datasource": "metrics",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 6,
+     "h": 8
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "expr": "sum by (pod)(count_over_time(container_cpu_usage_seconds_total{__CLUSTER__ container!=\"\"}[24h]))",
+      "legend_format": "{{pod}}"
+     }
+    ],
+    "description": "Window function applied per series before aggregation."
+   },
+   {
+    "id": 108,
+    "title": "10 \u00b7 Query-engine tables",
+    "type": "text",
+    "datasource": "metrics",
+    "account_ids": [],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 3
+    },
+    "targets": [],
+    "content": "Wide row queries against the events tables with the maximum row limit."
+   },
+   {
+    "id": 109,
+    "title": "all events, max rows",
+    "type": "table",
+    "datasource": "nudgebee",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "query": {
+       "table": "events_v2",
+       "columns": [
+        {
+         "name": "starts_at"
+        },
+        {
+         "name": "priority"
+        },
+        {
+         "name": "subject_type"
+        },
+        {
+         "name": "subject_name"
+        },
+        {
+         "name": "status"
+        },
+        {
+         "name": "id"
+        },
+        {
+         "name": "account_id"
+        },
+        {
+         "name": "subject_node"
+        },
+        {
+         "name": "title"
+        }
+       ],
+       "limit": 500,
+       "order_by": [
+        {
+         "column": "starts_at",
+         "order": "desc"
+        }
+       ]
+      },
+      "time_column": "starts_at"
+     }
+    ],
+    "description": "No filter beyond the account and time window, 500 rows, ordered by starts_at."
+   },
+   {
+    "id": 110,
+    "title": "open events, max rows",
+    "type": "table",
+    "datasource": "nudgebee",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "query": {
+       "table": "events_v2",
+       "columns": [
+        {
+         "name": "starts_at"
+        },
+        {
+         "name": "priority"
+        },
+        {
+         "name": "subject_type"
+        },
+        {
+         "name": "subject_name"
+        },
+        {
+         "name": "status"
+        },
+        {
+         "name": "id"
+        },
+        {
+         "name": "account_id"
+        },
+        {
+         "name": "subject_node"
+        },
+        {
+         "name": "title"
+        }
+       ],
+       "limit": 500,
+       "order_by": [
+        {
+         "column": "starts_at",
+         "order": "desc"
+        }
+       ],
+       "where": {
+        "_and": [
+         {
+          "_binary": {
+           "status": {
+            "_eq": "open"
+           }
+          }
+         }
+        ]
+       }
+      },
+      "time_column": "starts_at"
+     }
+    ],
+    "description": "Status filter only, 500 rows."
+   },
+   {
+    "id": 111,
+    "title": "github ci failures, max rows",
+    "type": "table",
+    "datasource": "nudgebee",
+    "account_ids": [
+     "00000000-0000-0000-0000-000000000000"
+    ],
+    "grid_pos": {
+     "x": 0,
+     "y": 0,
+     "w": 12,
+     "h": 10
+    },
+    "targets": [
+     {
+      "ref_id": "A",
+      "query": {
+       "table": "events_v2",
+       "columns": [
+        {
+         "name": "starts_at"
+        },
+        {
+         "name": "priority"
+        },
+        {
+         "name": "subject_type"
+        },
+        {
+         "name": "subject_name"
+        },
+        {
+         "name": "status"
+        },
+        {
+         "name": "id"
+        },
+        {
+         "name": "account_id"
+        },
+        {
+         "name": "subject_node"
+        },
+        {
+         "name": "title"
+        }
+       ],
+       "limit": 500,
+       "order_by": [
+        {
+         "column": "starts_at",
+         "order": "desc"
+        }
+       ],
+       "where": {
+        "_and": [
+         {
+          "_binary": {
+           "aggregation_key": {
+            "_eq": "github_ci_failure"
+           }
+          }
+         }
+        ]
+       }
+      },
+      "time_column": "starts_at"
+     }
+    ],
+    "description": "Indexed filter, but 500 rows with the correlation subqueries per row."
+   }
+  ]
+ },
+ "accounts": {
+  "00000000-0000-0000-0000-000000000000": {
+   "label": "map me to a kubernetes account on import",
+   "cloud_provider": "kubernetes"
+  }
+ }
+}

@@ -132,17 +132,22 @@ type ServiceApplication struct {
 	TypeEvidence map[string]TypeEvidence `json:"TypeEvidence,omitempty"`
 	// CreationEvidence is the span that proves this application/node exists at
 	// all — set for every application, not just ones whose type was overridden.
-	CreationEvidence  *TypeEvidence `json:"CreationEvidence,omitempty"`
-	DesiredInstances  int           `json:"DesiredInstances"`
-	FailedInstances   int           `json:"FailedInstances"`
-	OOMKills          int           `json:"OOMKills"`
-	Restarts          int           `json:"Restarts"`
-	CPUThrottlingTime float64       `json:"CPUThrottlingTime"`
-	VolumeSize        float64       `json:"VolumeSize"`
-	VolumeUsed        float64       `json:"VolumeUsed"`
-	IsHealthy         bool          `json:"IsHealthy"`
-	HealthReason      string        `json:"HealthReason"`
-	NodeStats         *NodeStats    `json:"NodeStats,omitempty"`
+	CreationEvidence *TypeEvidence `json:"CreationEvidence,omitempty"`
+	// UncertainMatch is set when detectApplicationType saw a pattern that
+	// WOULD have classified this service's type, but a confidence guard
+	// excluded it — captured for later review even though no override
+	// happened (Type/TypeEvidence stay unaffected).
+	UncertainMatch    *UncertainMatch `json:"UncertainMatch,omitempty"`
+	DesiredInstances  int             `json:"DesiredInstances"`
+	FailedInstances   int             `json:"FailedInstances"`
+	OOMKills          int             `json:"OOMKills"`
+	Restarts          int             `json:"Restarts"`
+	CPUThrottlingTime float64         `json:"CPUThrottlingTime"`
+	VolumeSize        float64         `json:"VolumeSize"`
+	VolumeUsed        float64         `json:"VolumeUsed"`
+	IsHealthy         bool            `json:"IsHealthy"`
+	HealthReason      string          `json:"HealthReason"`
+	NodeStats         *NodeStats      `json:"NodeStats,omitempty"`
 }
 
 // TypeEvidence records the specific span whose attributes caused
@@ -157,6 +162,17 @@ type TypeEvidence struct {
 	Timestamp    string `json:"timestamp"`
 	MatchedKey   string `json:"matched_key"`
 	MatchedValue string `json:"matched_value"`
+}
+
+// UncertainMatch records a span-name/messaging-system pattern that WOULD have
+// classified a service's application type, had a confidence guard (outbound
+// span kind, or a service-name/messaging-system mismatch) not excluded it.
+// Captured so a too-aggressive guard's false negatives can be reviewed and
+// backtracked on without re-running trace ingestion — see
+// core.RecordUncertainClassification.
+type UncertainMatch struct {
+	TypeEvidence
+	ReasonCode string `json:"reason_code"`
 }
 
 type ServiceApplicationId struct {

@@ -46,7 +46,7 @@ TrendChip.propTypes = {
 // fields (older backends or a failed fetch) and match the historical
 // hard-coded values.
 const FALLBACK_MANUAL_MINS = 25;
-const FALLBACK_HOURLY_USD = 5;
+const FALLBACK_HOURLY_USD = 30;
 
 const splitTimeSaved = (totalMinutes) => {
   if (!totalMinutes || totalMinutes <= 0) return { days: 0, hours: 0, minutes: 0 };

@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   notifications-build:
@@ -67,3 +67,7 @@ jobs:
         run: |
           poetry run black --check .
           poetry run flake8 .
+
+      - name: Run tests
+        working-directory: ./notifications-server
+        run: poetry run pytest -q

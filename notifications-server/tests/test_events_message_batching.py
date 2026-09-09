@@ -18,40 +18,71 @@ What these pin:
     mangled plain mrkdwn
 """
 
+import json
+
 import pytest
 from slack_sdk.errors import SlackApiError
 
 from notifications_server.services import events as events_module
 from notifications_server.services.events import Events
+from notifications_server.utils import mermaid_chart
+from notifications_server.utils import rich_text_blocks as rich_text_blocks_module
 from notifications_server.utils.rich_text_blocks import batch_slack_groups, fallback_slack_block, render_rich_segments
+
+_STALE_SLACK_FILE_ERROR_DETAIL = ["invalid slack file [json-pointer:/blocks/5/slack_file.id/slack_file]"]
 
 
 class _FakeSlackResponse:
-    def __init__(self, error):
+    def __init__(self, error, errors=None):
         self.data = {"error": error}
+        if errors is not None:
+            self.data["errors"] = errors
 
 
-def _slack_api_error(error_code):
-    return SlackApiError(message=f"error: {error_code}", response=_FakeSlackResponse(error_code))
+def _slack_api_error(error_code, errors=None):
+    return SlackApiError(message=f"error: {error_code}", response=_FakeSlackResponse(error_code, errors))
 
 
 class _FakeCommonService:
-    def __init__(self, poison_ids=None, error_code="invalid_blocks", raise_non_slack_error=False, always_fail=False):
+    def __init__(
+        self,
+        poison_ids=None,
+        error_code="invalid_blocks",
+        raise_non_slack_error=False,
+        always_fail=False,
+        upload_error=None,
+        stale_file_error_calls=0,
+        stale_file_for_poison=False,
+    ):
         self.slack_messages = []
         self.call_count = 0
         self._poison_ids = set(poison_ids or [])
         self._error_code = error_code
         self._raise_non_slack_error = raise_non_slack_error
         self._always_fail = always_fail
+        self._upload_error = upload_error
+        self.uploaded_files = []
+        self._stale_file_error_calls = stale_file_error_calls
+        self._stale_file_for_poison = stale_file_for_poison
 
     def slack_reply_in_thread(self, channel_id, team_id, thread_ts, message, transform_to_markdown=True):
         self.call_count += 1
+        if self.call_count <= self._stale_file_error_calls:
+            raise _slack_api_error("invalid_blocks", errors=_STALE_SLACK_FILE_ERROR_DETAIL)
         ids_in_message = {b.get("id") for b in message if "id" in b}
         if self._always_fail or (ids_in_message & self._poison_ids):
             if self._raise_non_slack_error:
                 raise ConnectionError("simulated network blip")
+            if self._stale_file_for_poison:
+                raise _slack_api_error("invalid_blocks", errors=_STALE_SLACK_FILE_ERROR_DETAIL)
             raise _slack_api_error(self._error_code)
         self.slack_messages.append(message)
+
+    def upload_file_for_inline_embed(self, team_id, filename, contents):
+        if self._upload_error:
+            raise self._upload_error
+        self.uploaded_files.append((filename, contents))
+        return f"F_FAKE_{len(self.uploaded_files)}"
 
 
 class _Payload:
@@ -131,6 +162,23 @@ class TestFallbackSlackBlock:
             {"type": "section", "text": {"type": "mrkdwn", "text": "_Part of this response couldn't be displayed._"}}
         ]
 
+    def test_oversized_table_drops_rows_instead_of_cutting_json_mid_string(self):
+        # A table whose full row dump would blow MAX_BLOCK_CHARS must be
+        # trimmed by dropping whole rows (keeping the header), not by
+        # slicing the serialized JSON string wherever it happens to land -
+        # the real regression this guards: a 3000-char slice cut a cell's
+        # "text" value mid-string, so what Slack showed wasn't even valid
+        # JSON.
+        header = [{"type": "raw_text", "text": "Col"}]
+        rows = [header] + [[{"type": "raw_text", "text": f"row-{i:04d}-{'x' * 30}"}] for i in range(200)]
+
+        fallback = fallback_slack_block({"type": "table", "rows": rows})
+        dumped = fallback[1]["text"]["text"].removeprefix("```\n").removesuffix("\n```")
+        parsed = json.loads(dumped)  # must not raise - proves it's not cut mid-token
+        assert parsed[0] == header
+        assert len(parsed) < len(rows)
+        assert "further truncated" in fallback[0]["text"]["text"]
+
 
 class TestSendMessageWithFallback:
     def test_successful_send_is_sent_as_is(self, monkeypatch):
@@ -186,6 +234,53 @@ class TestSendMessageWithFallback:
         svc._send_message_with_fallback("C1", "T1", "1.1", [])
 
         assert common_service.slack_messages == []
+
+    def test_stale_slack_file_rejection_retries_as_a_single_message(self, monkeypatch):
+        monkeypatch.setattr(rich_text_blocks_module.time, "sleep", lambda *_a, **_kw: None)
+        common_service = _FakeCommonService(stale_file_error_calls=1)
+        svc = _svc(monkeypatch, common_service)
+
+        svc._send_message_with_fallback("C1", "T1", "1.1", _dummy_blocks(10))
+
+        assert common_service.call_count == 2
+        assert common_service.slack_messages == [_dummy_blocks(10)]
+
+    def test_stale_slack_file_rejection_retries_up_to_the_configured_max(self, monkeypatch):
+        sleep_calls = []
+        monkeypatch.setattr(rich_text_blocks_module.time, "sleep", lambda *a, **kw: sleep_calls.append(a))
+        common_service = _FakeCommonService(stale_file_error_calls=3)
+        svc = _svc(monkeypatch, common_service)
+
+        svc._send_message_with_fallback("C1", "T1", "1.1", _dummy_blocks(10))
+
+        assert common_service.call_count == 4
+        assert common_service.slack_messages == [_dummy_blocks(10)]
+        assert len(sleep_calls) == 3
+
+    def test_stale_slack_file_rejection_falls_through_to_bisection_once_retries_are_exhausted(self, monkeypatch):
+        monkeypatch.setattr(rich_text_blocks_module.time, "sleep", lambda *_a, **_kw: None)
+        common_service = _FakeCommonService(poison_ids={5}, stale_file_for_poison=True)
+        svc = _svc(monkeypatch, common_service)
+
+        svc._send_message_with_fallback("C1", "T1", "1.1", _dummy_blocks(10))
+
+        sent_ids = [b.get("id") for m in common_service.slack_messages for b in m if "id" in b]
+        assert sorted(sent_ids) == [0, 1, 2, 3, 4, 6, 7, 8, 9]
+        fallback_messages = [m for m in common_service.slack_messages if "id" not in m[0]]
+        assert len(fallback_messages) == 1
+        assert "couldn't be displayed" in fallback_messages[0][0]["text"]["text"]
+
+    def test_non_stale_invalid_blocks_still_bisects_without_retry_delay(self, monkeypatch):
+        sleep_calls = []
+        monkeypatch.setattr(rich_text_blocks_module.time, "sleep", lambda *a, **kw: sleep_calls.append(a))
+        common_service = _FakeCommonService(poison_ids={5}, error_code="invalid_blocks")
+        svc = _svc(monkeypatch, common_service)
+
+        svc._send_message_with_fallback("C1", "T1", "1.1", _dummy_blocks(10))
+
+        assert sleep_calls == []
+        sent_ids = [b.get("id") for m in common_service.slack_messages for b in m if "id" in b]
+        assert sorted(sent_ids) == [0, 1, 2, 3, 4, 6, 7, 8, 9]
 
 
 class TestSendMessageWithFallbackDoesNotBisectTransientFailures:
@@ -292,4 +387,67 @@ class TestHandleFinalResponseBatching:
         svc.handle_final_response(_Payload("hello"), {}, "C123", "1779952241.483549", "T123")
 
         assert len(reply_calls) == 1
-        assert "can't show results" in reply_calls[0]
+
+
+class TestHandleFinalResponseImageUpload:
+    """handle_final_response's Image tier wiring: a flowchart in the response
+    is uploaded privately and embedded inline (a native `image` block with
+    `slack_file`) in the SAME message as the surrounding text - not posted
+    as a separate follow-up (see rich_text_blocks.py's render_rich_segments
+    and CommonService.upload_file_for_inline_embed)."""
+
+    FLOWCHART_RESPONSE = 'Here is the flow:\n\n```mermaid\ngraph TD\n    A["Start"] --> B["End"]\n```\n\nLet me know.'
+
+    def test_rendered_diagram_is_embedded_inline_in_the_same_message(self, monkeypatch):
+        monkeypatch.setattr(mermaid_chart, "render_flowchart_image", lambda code: b"fake-png-bytes")
+        common_service = _FakeCommonService()
+        svc = _svc(monkeypatch, common_service)
+
+        svc.handle_final_response(_Payload(self.FLOWCHART_RESPONSE), {}, "C123", "1779952241.483549", "T123")
+
+        assert len(common_service.slack_messages) == 1  # everything in one message, no follow-up
+        assert len(common_service.uploaded_files) == 1
+        filename, contents = common_service.uploaded_files[0]
+        assert contents == b"fake-png-bytes"
+        assert filename == "diagram.png"
+
+        image_blocks = [b for b in common_service.slack_messages[0] if b.get("type") == "image"]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["slack_file"]["id"] == "F_FAKE_1"
+
+    def test_unparseable_diagram_falls_back_without_uploading(self, monkeypatch):
+        monkeypatch.setattr(mermaid_chart, "render_flowchart_image", lambda code: None)
+        common_service = _FakeCommonService()
+        svc = _svc(monkeypatch, common_service)
+
+        svc.handle_final_response(_Payload(self.FLOWCHART_RESPONSE), {}, "C123", "1779952241.483549", "T123")
+
+        assert common_service.uploaded_files == []
+        # The fallback code block must still reach the thread - never a
+        # silent drop.
+        assert any(
+            "Start" in b.get("text", {}).get("text", "")
+            for msg in common_service.slack_messages
+            for b in msg
+            if "text" in b
+        )
+
+    def test_upload_failure_falls_back_to_code_block_in_the_same_message(self, monkeypatch):
+        # An upload failure is discovered BEFORE the message is sent (the
+        # upload happens first, then the message is built), so it can just
+        # degrade to the code-block fallback in that same message - unlike
+        # the old design, there's no separate follow-up notice needed.
+        monkeypatch.setattr(mermaid_chart, "render_flowchart_image", lambda code: b"fake-png-bytes")
+        common_service = _FakeCommonService(upload_error=ConnectionError("simulated network blip"))
+        svc = _svc(monkeypatch, common_service)
+        reply_calls = []
+        svc.reply = lambda channel_id, team_id, thread_ts, message: reply_calls.append(message)
+
+        svc.handle_final_response(_Payload(self.FLOWCHART_RESPONSE), {}, "C123", "1779952241.483549", "T123")
+
+        assert reply_calls == []  # no separate failure notice
+        assert len(common_service.slack_messages) == 1
+        assert not any(b.get("type") == "image" for b in common_service.slack_messages[0])
+        assert any(
+            "Start" in b.get("text", {}).get("text", "") for b in common_service.slack_messages[0] if "text" in b
+        )

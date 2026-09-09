@@ -15,6 +15,8 @@ const (
 	GCPComputeOldInstance       = "gcp_compute_old_instance"
 	GCPComputeStoppedInstance   = "vm_stopped"
 	GCPComputeNoLabels          = "missing_tags"
+	GCPDiskNoLabels             = "missing_tags"
+	GCPDiskUnattached           = "orphaned_volume"
 
 	// =============================================================================
 	// GCP Cloud Storage Recommendations
@@ -86,9 +88,16 @@ const (
 	GCPRunAlwaysOn      = "gcp_run_always_on"
 
 	// =============================================================================
+	// GCP Load Balancing Recommendations
+	// =============================================================================
+	GCPLBNoLabels = "missing_tags"
+
+	// =============================================================================
 	// GCP Pub/Sub Recommendations
 	// =============================================================================
-	GCPPubSubNoDeadLetter  = "gcp_pubsub_no_dead_letter"
-	GCPPubSubLongRetention = "gcp_pubsub_long_retention"
-	GCPPubSubRetainAcked   = "gcp_pubsub_retain_acked"
+	GCPPubSubNoDeadLetter         = "gcp_pubsub_no_dead_letter"
+	GCPPubSubLongRetention        = "gcp_pubsub_long_retention"
+	GCPPubSubRetainAcked          = "gcp_pubsub_retain_acked"
+	GCPPubSubTopicNoLabels        = "missing_tags"
+	GCPPubSubSubscriptionNoLabels = "missing_tags"
 )

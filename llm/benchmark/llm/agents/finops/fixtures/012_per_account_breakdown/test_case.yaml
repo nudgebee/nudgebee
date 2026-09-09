@@ -1,12 +1,15 @@
 user_prompt: "Show me cost breakdown by cloud account."
 expected_output:
   - |
-    The agent should call spend_summary with group_by=cloud_account (the
-    default) and return a ranked table with one row per account showing
-    account name, current spend in dollars, previous period spend,
-    percentage change, and any associated estimated savings from open
-    recommendations. The headline should name the top spending account.
-    Cite [spend_summary].
+    spend_summary is scoped to the conversation's cloud account (multiple
+    cloud_accounts can ingest the same billing source, so cross-account
+    aggregation would double-count). The agent should call spend_summary
+    with group_by=cloud_account, present the current account's spend in
+    dollars with previous-period comparison and percentage change plus any
+    estimated savings, and say clearly that the figures cover this account
+    — offering a per-service or per-namespace breakdown (group_by=service /
+    spend_allocation) as the drill-down. It must not fabricate rows for
+    other accounts. Cite [spend_summary].
 tags:
   - spend
   - account

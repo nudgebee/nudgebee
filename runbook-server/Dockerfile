@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # --- Build Stage ---
 # Use the official Go image to build the application
-FROM golang:1.26.5-alpine AS builder
+FROM golang:1.26.6-alpine AS builder
 
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
 # Pins the compile to the base's Go and gives the build layer a distinct cache
@@ -34,15 +34,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # CVE-2026-26171/-33116, CVE-2024-38095 — that no published image tag clears),
 # while the GitHub release channel is serviced monthly. Bump this pin whenever
 # the Trivy scan flags the bundled .NET servicing: 7.4.17 (runtime 8.0.28,
-# Crypto.Xml 8.0.3) accrued 10 HIGH + 1 MEDIUM, cleared by 7.4.18 (2026-07-20),
-# which ships runtime 8.0.29 and Crypto.Xml 8.0.4 — the exact fixed versions.
+# Crypto.Xml 8.0.3) accrued 10 HIGH + 1 MEDIUM, cleared by 7.4.18 (2026-07-20);
+# 7.4.19 ships .NET runtime 8.0.30 clearing CVE-2026-62901 (.NET DoS).
 # Same LTS major we already ran, so runbook behaviour is unchanged. The tarball
 # is pinned by version + sha256 (verified against the hash published in the
 # GitHub release notes); curl retries cover the transient-download concern that
 # originally motivated the image copy.
 FROM alpine:3.22 AS powershell
-ARG PWSH_VERSION=7.4.18
-ARG PWSH_SHA256=979ccf2603fdb4eda6ef115ad55b05e76cc00cc5eee741b864e3a64704fe7fcb
+ARG PWSH_VERSION=7.4.19
+ARG PWSH_SHA256=97fb3c56e574436f49b8ee1199711a34a99a702240ef4f9eb8d0cc0aacc73e80
 RUN apk add --no-cache curl \
     && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
       "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-musl-x64.tar.gz" \
@@ -70,8 +70,8 @@ FROM alpine:3.22
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches instead of a stale cached layer. Committed (not a build-arg) so each
 # refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
-# package (e.g. c-ares CVE-2026-33630).
-ARG OS_PKG_EPOCH=2026-W28
+# package (e.g. c-ares CVE-2026-33630); currently W36 pulls patched packages (libcrypto3 3.5.8-r0).
+ARG OS_PKG_EPOCH=2026-W36
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \
     && apk add --no-cache iputils ca-certificates traceroute nodejs \

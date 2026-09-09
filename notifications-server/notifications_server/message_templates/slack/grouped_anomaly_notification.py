@@ -1,6 +1,6 @@
 import re
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import settings, URLRoutes
@@ -14,6 +14,16 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
 )
 
 MAX_ANOMALY_ITEMS = 5
+
+# Matches event.source, which every anomaly producer stamps "anomaly"
+# regardless of aggregation_key (api-server/services/anomoly).
+ANOMALY_SOURCE = "anomaly"
+
+# Footer link window: sized off grouped_flush_delay_seconds (every item in a
+# batch was enqueued at most that long before flush) rather than a guess, with
+# a floor/buffer for low-delay dev configs and clock skew.
+FOOTER_WINDOW_FLOOR = timedelta(hours=1)
+FOOTER_WINDOW_BUFFER = timedelta(minutes=15)
 
 
 class AnomalyAlertParams(BaseModel):
@@ -104,14 +114,25 @@ def get_anomaly_aggregated_message_params(events: List[Dict[str, Any]]) -> Anoma
     return AnomalyAlertSummaryParams(events=[AnomalyAlertParams(**e) for e in events])
 
 
+def _parse_starts_at(starts_at: str) -> Optional[datetime]:
+    """Producer starts_at as a tz-aware datetime, or None if absent/unparseable."""
+    if not starts_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _started(starts_at: str) -> str:
     """Inline localized start time via Slack's <!date> token; raw producer
     string when it doesn't parse."""
-    try:
-        ts = int(datetime.fromisoformat(starts_at.replace("Z", "+00:00")).timestamp())
-        fallback = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
-    except (TypeError, ValueError, OSError, OverflowError):
+    dt = _parse_starts_at(starts_at)
+    if dt is None:
         return f"started {starts_at}" if starts_at else ""
+    ts = int(dt.timestamp())
+    fallback = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d %b %Y %I:%M %p UTC")
     return f"started <!date^{ts}^{{date_short_pretty}} {{time}}|{fallback}>"
 
 
@@ -159,8 +180,35 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
 
     remaining = total_alerts - MAX_ANOMALY_ITEMS
     if remaining > 0:
+        # Every shown item already has its own "Details" button; a "View All"
+        # link only earns its place once some anomalies didn't fit.
+        unique_account_ids = sorted({alert.cloud_account_id for alert in alerts if alert.cloud_account_id})
+        now = datetime.now(timezone.utc)
+        flush_delay = timedelta(seconds=settings.notifications.grouped_flush_delay_seconds)
+        window_start = now - max(flush_delay, FOOTER_WINDOW_FLOOR) - FOOTER_WINDOW_BUFFER
+        # Some anomalies (e.g. spend, or delayed detections) can carry a starts_at
+        # well before the flush window; widen window_start so "View All" doesn't
+        # filter them out of the Troubleshoot view.
+        earliest_starts_at = [dt for dt in (_parse_starts_at(alert.starts_at) for alert in alerts) if dt]
+        if earliest_starts_at:
+            window_start = min(window_start, min(earliest_starts_at) - FOOTER_WINDOW_BUFFER)
+        footer_actions = [
+            link_button(
+                "View All Anomalies",
+                settings.urls.troubleshoot_url(
+                    unique_account_ids,
+                    sources=[ANOMALY_SOURCE],
+                    start_time_ms=int(window_start.timestamp() * 1000),
+                    end_time_ms=int(now.timestamp() * 1000),
+                    utm_source=URLRoutes.UTMSource.SLACK,
+                ),
+                style="primary",
+            )
+        ]
         attachments.append(
-            neutral_footer_attachment(text=f"_+{remaining} more anomalies detected_", fallback="Anomaly summary")
+            neutral_footer_attachment(
+                text=f"_+{remaining} more anomalies detected_", actions=footer_actions, fallback="View all anomalies"
+            )
         )
 
     return {

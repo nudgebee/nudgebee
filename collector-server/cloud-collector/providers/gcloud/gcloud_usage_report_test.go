@@ -888,6 +888,93 @@ func TestGetGcloudUsageReport_CurrentMonth(t *testing.T) {
 	}
 }
 
+// TestDiscoverAvailableUsageReportPeriods_Live exercises the GCP billing-period
+// discovery against a real BigQuery export and prints (a) the discovered month
+// range and (b) the bytes billed by a dry-run of the range query, which is the
+// cost evidence the feature requires (the query must not scan the full table).
+//
+// Gated by RUN_GCP_INTEGRATION_TESTS. Reads billing config from TEST_GCP_BILLING_*
+// and the project to filter on from TEST_GCP_ACCOUNT_PROJECT_ID (defaults to
+// TEST_GCP_BILLING_PROJECT_ID). Credentials come from GOOGLE_APPLICATION_CREDENTIALS
+// or ADC, same as the other live tests.
+func TestDiscoverAvailableUsageReportPeriods_Live(t *testing.T) {
+	if os.Getenv("RUN_GCP_INTEGRATION_TESTS") != "true" {
+		t.Skip("Skipping live integration test. Set RUN_GCP_INTEGRATION_TESTS=true to run.")
+	}
+
+	projectID := os.Getenv("TEST_GCP_BILLING_PROJECT_ID")
+	dataset := os.Getenv("TEST_GCP_BILLING_DATASET")
+	table := os.Getenv("TEST_GCP_BILLING_TABLE")
+	if projectID == "" || dataset == "" || table == "" {
+		t.Skip("Skipping - set TEST_GCP_BILLING_PROJECT_ID, TEST_GCP_BILLING_DATASET, TEST_GCP_BILLING_TABLE")
+	}
+	// The project whose rows we filter on (matched against project.id in the export).
+	// In production this is the account's GCP project; default it to the billing project.
+	accountProject := os.Getenv("TEST_GCP_ACCOUNT_PROJECT_ID")
+	if accountProject == "" {
+		accountProject = projectID
+	}
+
+	accountData := fmt.Sprintf(`{"billing_data":{"billing_project_id":%q,"dataset_name":%q,"table_name":%q}}`, projectID, dataset, table)
+	account := providers.Account{
+		AccountNumber: accountProject, // filtered as @account_project_id
+		AccountName:   "live-discovery-test",
+		Data:          &accountData,
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	ctx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdmin(), logger, nil, nil)
+
+	// A generous cap so full history is visible; production uses the config value.
+	const maxMonths = 36
+	periods, err := discoverAvailableUsageReportPeriods(ctx, account, maxMonths)
+	if err != nil {
+		t.Fatalf("discoverAvailableUsageReportPeriods() error: %v", err)
+	}
+	fmt.Printf("\n=== GCP BILLING PERIOD DISCOVERY (project=%s) ===\n", accountProject)
+	fmt.Printf("discovered %d period(s) within trailing %d months:\n", len(periods), maxMonths)
+	for _, p := range periods {
+		fmt.Printf("  - %04d-%02d\n", p.Year, int(p.Month))
+	}
+
+	// Cost evidence: dry-run the range query and report bytes billed. This is the
+	// number that must stay small on a large export (acceptance criterion #3).
+	config, err := getBillingConfigFromAccount(account)
+	if err != nil {
+		t.Fatalf("getBillingConfigFromAccount() error: %v", err)
+	}
+	session, err := getGcloudSessionFromAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("getGcloudSessionFromAccount() error: %v", err)
+	}
+	client, err := bigquery.NewClient(ctx.GetContext(), config.ProjectID, session.Opts...)
+	if err != nil {
+		t.Fatalf("bigquery.NewClient() error: %v", err)
+	}
+	defer func() {
+		if cerr := client.Close(); cerr != nil {
+			t.Logf("failed to close BigQuery client: %v", cerr)
+		}
+	}()
+
+	dryRunSQL := fmt.Sprintf(
+		"SELECT MIN(DATE(usage_start_time)) AS earliest, MAX(DATE(usage_start_time)) AS latest FROM `%s.%s.%s` WHERE (project_id = @account_project_id OR project_id IS NULL)",
+		config.ProjectID, config.DatasetID, config.TableID)
+	q := client.Query(dryRunSQL)
+	q.DryRun = true
+	q.Parameters = []bigquery.QueryParameter{{Name: "account_project_id", Value: accountProject}}
+	job, err := q.Run(ctx.GetContext())
+	if err != nil {
+		// Nested-schema exports use project.id; note it and skip the cost print
+		// rather than failing (the discovery above already succeeded).
+		t.Logf("dry-run with flat project_id failed (likely nested schema): %v", err)
+		return
+	}
+	stats := job.LastStatus().Statistics
+	fmt.Printf("dry-run bytes billed: %d (%.2f MB)\n", stats.TotalBytesProcessed, float64(stats.TotalBytesProcessed)/(1024*1024))
+	fmt.Printf("=== END DISCOVERY ===\n\n")
+}
+
 // Helper function to get test account for billing tests. Used only by live
 // integration tests (gated by RUN_GCP_INTEGRATION_TESTS); reads real billing
 // config from env so the internal project ID never lives in source.
@@ -907,3 +994,38 @@ func getTestAccountForBilling(t *testing.T) providers.Account {
 		Data:          &accountData,
 	}
 }
+
+// TestBillingConfigMissingIsNotConfiguredNotFailure pins the distinction the
+// cost-report consumer relies on to decide whether to dead-letter. GCP billing
+// is optional at onboarding, so an account with no billing_data is a steady
+// state — dead-lettering it would poison one message per account per day,
+// forever. A malformed billing_data block is still a genuine error.
+func TestBillingConfigMissingIsNotConfiguredNotFailure(t *testing.T) {
+	notConfigured := []struct {
+		name string
+		data *string
+	}{
+		{name: "nil account data", data: nil},
+		{name: "empty account data", data: strPtr("")},
+		{name: "no billing_data key", data: strPtr(`{"cost_report_name":"x"}`)},
+	}
+	for _, tt := range notConfigured {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := getBillingConfigFromAccount(providers.Account{AccountNumber: "a", AccountName: "a", Data: tt.data})
+			if !errors.Is(err, providers.ErrCostNotConfigured) {
+				t.Fatalf("expected ErrCostNotConfigured so the consumer ACKs instead of dead-lettering, got %v", err)
+			}
+		})
+	}
+
+	// Malformed input is a real fault and must stay retriable/dead-letterable.
+	_, err := getBillingConfigFromAccount(providers.Account{AccountNumber: "a", AccountName: "a", Data: strPtr("{not json")})
+	if err == nil {
+		t.Fatal("expected an error for malformed account data")
+	}
+	if errors.Is(err, providers.ErrCostNotConfigured) {
+		t.Fatal("malformed account data must NOT be classified as not-configured — it is a real fault")
+	}
+}
+
+func strPtr(s string) *string { return &s }

@@ -17,7 +17,7 @@ from server.recommendation.vertical_rightsizing.models.result import PodsTimeDat
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData
 from server.recommendation.vertical_rightsizing.models.config import Config
 
-logger = logging.getLogger("krr")
+logger = logging.getLogger("rightsizing")
 
 
 class BaseMetric(ABC):

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"nudgebee/collector/cloud/providers"
 	"strings"
 	"time"
@@ -20,47 +19,37 @@ import (
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 )
 
-var regionMap = map[string]string{
-	"us-east-1":      "US East (N. Virginia)",
-	"us-east-2":      "US East (Ohio)",
-	"us-west-1":      "US West (N. California)",
-	"us-west-2":      "US West (Oregon)",
-	"ca-central-1":   "Canada (Central)",
-	"eu-central-1":   "EU (Frankfurt)",
-	"eu-west-1":      "EU (Ireland)",
-	"eu-west-2":      "EU (London)",
-	"eu-west-3":      "EU (Paris)",
-	"eu-north-1":     "EU (Stockholm)",
-	"ap-northeast-1": "Asia Pacific (Tokyo)",
-	"ap-northeast-2": "Asia Pacific (Seoul)",
-	"ap-northeast-3": "Asia Pacific (Osaka-Local)",
-	"ap-southeast-1": "Asia Pacific (Singapore)",
-	"ap-southeast-2": "Asia Pacific (Sydney)",
-	"ap-south-1":     "Asia Pacific (Mumbai)",
-	"sa-east-1":      "South America (Sao Paulo)",
-}
-
-func getElbPrice(cfg aws.Config, region string) (float64, error) {
-	location, ok := regionMap[region]
-	if !ok {
-		slog.Debug("elb pricing: region not in regionMap, skipping", "region", region)
-		return 0, nil
-	}
-
-	filters := map[string]string{
-		"location":        location,
+// elbPriceFilters builds the pricing-API filter set for a classic load balancer
+// in one region.
+//
+// Filtering on regionCode rather than the human-readable location string is
+// what makes this work everywhere: location needs a lookup table, and the one
+// this file used to carry listed 17 of AWS's ~36 commercial regions. A region
+// missing from it returned no price at all, so every load balancer there was
+// reported as saving $0 — silently, since a missing price and a genuinely free
+// resource looked identical downstream. RDS and ECS already filter by
+// regionCode through this same helper.
+func elbPriceFilters(region string) map[string]string {
+	return map[string]string{
+		"regionCode":      region,
 		"productFamily":   "Load Balancer",
 		"operatingSystem": "", // Explicitly exclude OS filter - load balancers don't have an OS
 	}
+}
+
+func getElbPrice(cfg aws.Config, region string) (float64, error) {
+	if region == "" {
+		return 0, errors.New("elb pricing: empty region")
+	}
 
 	// The service code for classic ELB is AWSELB.
-	priceList, err := getAvailableInstancesFromPricing(cfg, "AWSELB", filters)
+	priceList, err := getAvailableInstancesFromPricing(cfg, "AWSELB", elbPriceFilters(region))
 	if err != nil {
 		return 0, fmt.Errorf("failed to query pricing API: %w", err)
 	}
 
 	if len(priceList) == 0 {
-		return 0, fmt.Errorf("pricing API returned no results for region %s (filters: location=%s, productFamily=%s)", region, location, "Load Balancer")
+		return 0, fmt.Errorf("pricing API returned no results for region %s (filters: regionCode=%s, productFamily=%s)", region, region, "Load Balancer")
 	}
 
 	// Debug: log the number of pricing items found

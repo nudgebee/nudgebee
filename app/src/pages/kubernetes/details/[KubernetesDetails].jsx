@@ -19,6 +19,7 @@ import { ToggleGroup } from '@ui/ToggleGroup';
 import { ds } from '@utils/colors';
 import Loader from '@shared/Loader';
 import { ListingLayout } from '@ui/ListingLayout';
+import FeatureDisabledEmptyState from '@shared/FeatureDisabledEmptyState';
 import { toast as snackbar } from '@ui/Toast';
 
 // Only one tab is visible at a time; lazy-load the rest to cut initial JS by ~70%.
@@ -93,7 +94,6 @@ import {
   AnomalyIcon,
   SLOInspectionIcon,
   GrafanaIconBlue,
-  GithubIcon,
 } from '@assets';
 import PropTypes from 'prop-types';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -127,7 +127,6 @@ const DefaultAutoScaler = dynamic(() => import('@components/k8s/details/DefaultA
 const KubernetesAutoScalerNodePool = dynamic(() => import('@components/k8s/details/KubernetesAutoScalerNodePool'), { ssr: false });
 const KubernetesDbmsTable = dynamic(() => import('@components/k8s/details/KubernetesDbms'), { ssr: false });
 const KubernetesQueueTable = dynamic(() => import('@components/k8s/details/KubernetesQueue'), { ssr: false });
-const KubernetesGithubRunners = dynamic(() => import('@components/k8s/details/KubernetesGithubRunners'), { ssr: false });
 const KubernetesAlertManager = dynamic(() => import('@components/k8s/details/KubernetesAlertManager'), { ssr: false });
 const TriageRulesManager = dynamic(() => import('@components/triage/TriageRulesManager'), { ssr: false });
 const KubernetesTracesListing = dynamic(() => import('@components/k8s/details/KubernetesTracesListing'), { ssr: false });
@@ -234,6 +233,8 @@ const SUBTAB_MODULE_OVERRIDES = {
   '4:trace-cross-zon': 'traces',
   '4:slo': 'slo',
 };
+
+const ANOMALY_FLAG_DISABLED_MESSAGE = 'The ANOMALY_DETECTION feature flag is not enabled for this tenant';
 
 const KubernetesDetails = () => {
   const router = useRouter();
@@ -348,7 +349,6 @@ const KubernetesDetails = () => {
         },
         { id: 'slo', text: 'SLO', value: 8, fragment: 'slo', icon: SLOInspectionIcon, tabName: 'Others' },
         { id: 'grafana', text: 'Grafana', value: 9, fragment: 'grafana', icon: GrafanaIconBlue, tabName: 'Others' },
-        { id: 'github-runners', text: 'GitHub Runners', value: 10, fragment: 'github-runners', icon: GithubIcon, tabName: 'Others' },
       ],
     },
     {
@@ -391,14 +391,18 @@ const KubernetesDetails = () => {
     },
   ]);
   const [aggregationKeyCount, setAggregationKeyCount] = useState({});
-  const [anomalyEnabled, setAnomalyEnabled] = useState(false);
+  // null = flag fetch still pending, so the anomaly surface renders nothing
+  // instead of flashing the "not enabled" state at flag-ON tenants.
+  const [anomalyEnabled, setAnomalyEnabled] = useState(null);
 
   // ANOMALY_DETECTION is an opt-in tenant feature and the backend is
   // fail-closed at every entry point (`tenant.IsFeatureEnabled` in
   // anomoly/service.go — batch cron, per-account trigger and the queue
   // consumer all bail), so for a tenant that never enabled it the Anomaly
   // sub-tab is a permanently empty table whose "Trigger" button only ever
-  // errors. Hide the tab instead.
+  // errors. Show the tab disabled with an explanatory tooltip (rather than
+  // hiding it) so the feature stays discoverable; a deep link onto it renders
+  // the same explanation in the body (issue #34894 TC3).
   // `hasFeatureAccessCached` is fail-closed too, so warm the cache first
   // (same warm-then-gate pattern as WatchedChannels.tsx).
   useEffect(() => {
@@ -412,7 +416,9 @@ const KubernetesDetails = () => {
           option.name === 'Troubleshoot'
             ? {
                 ...option,
-                tabOptions: option.tabOptions.map((tab) => (tab.id === 'anomaly' ? { ...tab, hidden: !enabled } : tab)),
+                tabOptions: option.tabOptions.map((tab) =>
+                  tab.id === 'anomaly' ? { ...tab, disabled: !enabled, disabledTooltip: enabled ? undefined : ANOMALY_FLAG_DISABLED_MESSAGE } : tab
+                ),
               }
             : option
         )
@@ -1122,7 +1128,11 @@ const KubernetesDetails = () => {
                   stickyColumnIndex={'7'}
                 />
               )}
+              {selectedSubTab === 6 && anomalyEnabled === null && <Loader style={{ width: '100%' }} />}
               {selectedSubTab === 6 && anomalyEnabled && <KubernetesAnomaly accountId={kubeId} />}
+              {selectedSubTab === 6 && anomalyEnabled === false && (
+                <FeatureDisabledEmptyState id='anomaly-flag-disabled' title={ANOMALY_FLAG_DISABLED_MESSAGE} />
+              )}
               {selectedSubTab == 7 && <KubernetesGroupedEventsTable accountId={kubeId} groupEventType={'fingerprint'} isTroubleshootPage={false} />}
               {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} />}
               {selectedSubTab === 10 && <WorkloadCriticalityManager accountId={kubeId} />}
@@ -1161,7 +1171,6 @@ const KubernetesDetails = () => {
               {selectedSubTab == 7 && <KubernetesTracesCrossZoneListing accountId={kubeId} />}
               {selectedSubTab == 8 && <KubernetesSLOConfigs accountId={kubeId} />}
               {selectedSubTab == 9 && kubeId && hasReadAccess(kubeId) && <GrafanaIframe accountId={kubeId} />}
-              {selectedSubTab == 10 && <KubernetesGithubRunners accountId={kubeId} />}
             </>
           )}
           {[tabOptions[5].value].includes(selectedTab) && (

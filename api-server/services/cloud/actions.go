@@ -1211,6 +1211,31 @@ func (a *cloudServiceMapAction) Execute(ctx playbooks.PlaybookActionContext, raw
 		return nil, nil
 	}
 
+	// A map where nothing has an upstream or a downstream is containment only:
+	// the resource, its VPC, its security group. It carries no dependency
+	// information, and the knowledge-graph card on the same event already holds
+	// the real traffic edges (VPC flow logs, eBPF, traces).
+	//
+	// Emitting it anyway was actively harmful rather than merely useless. The
+	// cloud card is written before the knowledge-graph card, and correlation
+	// used to take the first service_map evidence it found - so every cloud
+	// event built its dependency graph from this empty one and could never
+	// score a hop. Correlation now prefers the knowledge-graph card, but the
+	// empty card still renders in the UI and still tells an operator a database
+	// alarm has no callers when the same event carries "instance CALLS
+	// database". Provider-agnostic on purpose: AWS Config, GCP and Azure all
+	// produce containment-only maps for resources with no discovered links.
+	hasDependency := false
+	for _, app := range resourceResp.Applications {
+		if len(app.Upstreams) > 0 || len(app.Downstreams) > 0 {
+			hasDependency = true
+			break
+		}
+	}
+	if !hasDependency {
+		return nil, nil
+	}
+
 	resp := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": resourceResp.Applications}, additionalInfo, []playbooks.PlaybookActionResponseInsight{}, metadata)
 	resp.Format = "service_map"
 	return resp, err
@@ -3426,23 +3451,17 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 		return nil, fmt.Errorf("invalid log_group_name format: %q", params.LogGroupName)
 	}
 
-	// Prioritize time sources: explicit params > event times > default (last 1 hour)
-	var startTime, endTime time.Time
-
+	// Prioritize time sources: explicit params > event window > default (last 1 hour).
+	// The event window goes through ResolveQueryWindow rather than being used raw: a
+	// just-fired EventBridge alarm has EndedAt nil and StartedAt seconds ago, which made
+	// the CloudWatch Insights range a few seconds wide and returned no flows — 36 of the
+	// 41 VPC-flow evidences stored in a week were empty for that reason.
+	startTime, endTime := ctx.GetEvent().ResolveQueryWindow(0)
 	if params.StartTime != nil {
 		startTime = *params.StartTime
-	} else if ctx.GetEvent().StartedAt != nil {
-		startTime = *ctx.GetEvent().StartedAt
-	} else {
-		startTime = time.Now().Add(-1 * time.Hour)
 	}
-
 	if params.EndTime != nil {
 		endTime = *params.EndTime
-	} else if ctx.GetEvent().EndedAt != nil {
-		endTime = *ctx.GetEvent().EndedAt
-	} else {
-		endTime = time.Now()
 	}
 
 	// Discover VPC Flow Logs log group name and format

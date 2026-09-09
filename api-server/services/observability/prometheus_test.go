@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"math"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
 	"os"
@@ -221,7 +222,13 @@ func TestParseInstantVectorEntries(t *testing.T) {
 		}
 	})
 
-	t.Run("nan_coerced_to_zero", func(t *testing.T) {
+	// Parsing no longer coerces NaN to 0. Result.MarshalJSON owns every non-finite
+	// sample on every provider, and it sends them as JSON null rather than coercing
+	// them, because a synthesised 0 is indistinguishable from a measured one on a
+	// chart or in a threshold suggestion. The range path never coerced, so the same
+	// NaN used to render as 0 or blank the whole response depending only on whether
+	// the query was instant.
+	t.Run("nan_is_preserved_for_the_marshaller_to_report", func(t *testing.T) {
 		entries := []any{
 			map[string]any{
 				"metric": map[string]any{},
@@ -229,8 +236,26 @@ func TestParseInstantVectorEntries(t *testing.T) {
 			},
 		}
 		out := parseInstantVectorEntries(entries)
-		if len(out) != 1 || len(out[0].Values) != 1 || out[0].Values[0] != 0 {
-			t.Errorf("NaN should coerce to 0; got %v", out)
+		if len(out) != 1 || len(out[0].Values) != 1 || !math.IsNaN(out[0].Values[0]) {
+			t.Fatalf("parse should preserve NaN for the marshaller to handle; got %v", out)
+		}
+
+		raw, err := json.Marshal(out[0])
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		var got struct {
+			Values    []*float64     `json:"values"`
+			NonFinite map[string]int `json:"non_finite"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Values) != 1 || got.Values[0] != nil {
+			t.Errorf("NaN should marshal as null, not 0: %s", raw)
+		}
+		if got.NonFinite[nonFiniteNaN] != 1 {
+			t.Errorf("the null should be explained as a NaN: %v", got.NonFinite)
 		}
 	})
 

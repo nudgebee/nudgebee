@@ -30,12 +30,18 @@ func NewCachingHelper(ctx context.Context, opts ...Option) (*CachingHelper, erro
 
 // CreateCachedContent creates cached content that can be reused across multiple requests.
 // This is useful for caching large system prompts, context documents, or frequently used instructions.
+// tools, when non-empty, are baked into the cached content. Gemini rejects any
+// request that sets BOTH CachedContent and tools/tool_config/system_instruction
+// (400 INVALID_ARGUMENT), so for a native tool-calling caller the declarations
+// must live here rather than on each GenerateContent call. Callers that send no
+// tools are unaffected — cfg.Tools stays unset, byte-identical to before.
 func (ch *CachingHelper) CreateCachedContent(
 	ctx context.Context,
 	modelName string,
 	messages []llms.MessageContent,
 	ttl time.Duration,
 	displayName string,
+	tools []llms.Tool,
 ) (*genai.CachedContent, error) {
 	contents := make([]*genai.Content, 0, len(messages))
 	// Merge all system messages into a single SystemInstruction.
@@ -85,6 +91,14 @@ func (ch *CachingHelper) CreateCachedContent(
 		TTL:               ttl,
 		Contents:          contents,
 		SystemInstruction: systemInstruction,
+	}
+
+	if len(tools) > 0 {
+		genaiTools, err := convertTools(tools)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Tools = genaiTools
 	}
 
 	return ch.client.Caches.Create(ctx, modelName, cfg)

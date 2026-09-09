@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -21,11 +22,15 @@ import (
 	"nudgebee/code-analysis-agent/tools/core"
 )
 
-// commitEnforcementMaxIterations bounds the focused second planner pass that
-// runs when the agent finishes with uncommitted edits. The task (commit/push
-// the already-made changes, or discard them) is concrete, so a small budget is
-// enough and prevents the retry from thrashing.
-const commitEnforcementMaxIterations = 6
+// autoCommitMaxFiles bounds how many files the deterministic auto-commit
+// (see the commit-enforcement block in Execute) will stage. A legitimate
+// PR-followup fix touches a handful of files; a working tree with more than
+// this is treated as the agent having gone off the rails — e.g. a git
+// reset/checkout to an unrelated ref — rather than a real fix, and gets
+// discarded instead of committed. Observed live: a run left the sandbox with
+// hundreds of unrelated files deleted after an apparent bad git operation;
+// auto-committing that verbatim would have pushed it straight to the PR.
+const autoCommitMaxFiles = 15
 
 // PRFollowupAgent addresses CI failures and review comments on existing PRs/MRs.
 type PRFollowupAgent struct {
@@ -270,89 +275,68 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	})
 
 	// --- Step 5: Observe outcome and reply to comments ---
+	// Summary deliberately does NOT default to planResult.FinalAnswer: for a
+	// submit_analysis step, FinalAnswer is the planner's raw JSON dump of the
+	// entire payload (see ReActPlanner.extractFinalAnswer), never a sentence
+	// fit for a commit message or a PR comment. Left empty unless
+	// parsedSubmit below finds something readable.
 	result := &PRFollowupResult{
 		Success: planResult.Status == "completed",
-		Summary: planResult.FinalAnswer,
 	}
 
-	// Capture the planner's submit_analysis data now, before any commit-
-	// enforcement retry below re-runs the planner (which would overwrite it and
-	// drop the comment_responses we need for replies in Step 6). Structured
-	// fields are extracted into result *after* the retry's salvage below, so a
-	// retry that succeeds where the first pass produced nothing isn't ignored.
-	submitData := planner.GetSubmitAnalysisData()
+	parsedSubmit, submitErr := parseSubmitAnalysisData(planner.GetSubmitAnalysisData())
+	switch {
+	case submitErr != nil:
+		a.logger.Error(common.EventStepFailure, "Failed to parse submit_analysis data", submitErr, nil)
+	case parsedSubmit == nil:
+		a.logger.Log(common.EventStepFailure, "Planner produced no submit_analysis data", nil)
+	default:
+		if len(parsedSubmit.FilesModified) == 0 {
+			a.logger.Log(common.EventStepComplete, "submit_analysis reported no files_modified", map[string]any{"execution_status": parsedSubmit.ExecutionStatus})
+		}
+		result.FilesModified = parsedSubmit.FilesModified
+		result.Summary = parsedSubmit.humanSummary()
+	}
 
-	// Did the agent commit (and presumably push)? If HEAD moved, yes.
+	// Did the agent commit AND push? HEAD moving locally is not enough proof —
+	// a local-only operation (e.g. `git merge origin/main`, or a commit that
+	// was never pushed) also moves HEAD, and gets silently discarded with the
+	// rest of the ephemeral workspace. Confirm the commit actually reached the
+	// remote before treating the run as a success. Issue #36634 follow-up: a
+	// run that locally merged origin/main (moving HEAD) without ever pushing
+	// was misclassified as committed, and posted a PR comment describing a
+	// commit that only ever existed in the torn-down workspace.
 	// Require both pre and post HEADs to be non-empty: an empty preHead means
 	// the workspace had no commits before the planner ran (defensive — Execute
 	// is normally invoked on a populated clone, but the agent could in principle
 	// initialize a repo via cli_tool and we don't want to count that as "fixed").
 	postHead, _ := a.runCommandInDir("git", "rev-parse", "HEAD")
 	postHead = strings.TrimSpace(postHead)
-	committed := preHead != "" && postHead != "" && postHead != preHead
+	committed := preHead != "" && postHead != "" && postHead != preHead && a.headPushedToRemote(postHead, req.Branch)
 
-	// Commit-enforcement retry. The "followup" goal directs the agent to commit
-	// and push, but agents still sometimes finish with edits left uncommitted
-	// (ran out of steps mid-task, or treated the run as investigation). Those
-	// edits would be silently discarded when the ephemeral workspace is torn
-	// down and the run would no_op despite real work. Give the agent one short,
-	// focused pass to commit/push what it left — or discard it if incomplete.
-	// We re-prompt the agent (rather than committing for it) so it keeps
-	// judgment over partial/incorrect edits.
+	// Commit-enforcement: if the agent left real edits uncommitted, commit and
+	// push them deterministically instead of re-prompting the LLM to run git
+	// itself. Live testing repeatedly showed the LLM does not reliably execute
+	// "git add && git commit && git push" even with explicit instructions and
+	// a focused retry pass — in the worst observed case it ran some other git
+	// operation instead and left the sandbox with hundreds of unrelated files
+	// deleted and a corrupted shallow-clone object, never committing anything.
+	// The git mechanics themselves are simple and deterministic (verified by
+	// hand, outside the LLM loop entirely: clone, identity, add, commit, push
+	// all work every time), so the code does them directly. This also removes
+	// the LLM's opportunity to reach for a destructive git command while
+	// trying to recover from its own stuck commit attempt.
 	if !committed {
-		if dirty, _ := a.runCommandInDir("git", "status", "--porcelain"); strings.TrimSpace(dirty) != "" {
-			a.logger.Log(common.EventStepStart, "Uncommitted changes after planner — running commit-enforcement pass", map[string]any{
-				"pr_number": prNumber,
-			})
-			commitPrompt := fmt.Sprintf(
-				"You edited files for %s #%s but the working tree still has uncommitted changes:\n%s\n\n"+
-					"Commit and push them now: git add the changes, git commit, and git push (follow the git safety rules in your instructions). "+
-					"If the changes are incomplete or incorrect, discard them with `git checkout -- .` instead. "+
-					"Make NO other edits, then call submit_analysis.",
-				mrTerm, prNumber, strings.TrimSpace(dirty),
-			)
-			planner.SetMaxIterations(commitEnforcementMaxIterations)
-			if _, rerr := planner.Plan(ctx, commitPrompt, systemPrompt); rerr != nil {
-				a.logger.Error(common.EventStepFailure, "Commit-enforcement pass failed", rerr, nil)
-			}
-			postHead, _ = a.runCommandInDir("git", "rev-parse", "HEAD")
-			postHead = strings.TrimSpace(postHead)
-			committed = preHead != "" && postHead != "" && postHead != preHead
-			if committed {
-				// The retry landed the commit, so the run succeeded even if the
-				// first pass didn't. Salvage the retry's submit_analysis data only
-				// when the first pass produced none — otherwise keep the first
-				// pass's data, which carries the comment_responses used for replies
-				// (the commit-only retry won't have them).
-				result.Success = true
-				if submitData == nil {
-					submitData = planner.GetSubmitAnalysisData()
-				}
-			}
-		}
-	}
-
-	// Salvage complete — now extract structured fields from whichever
-	// submit_analysis data we settled on, before any consumer reads result.
-	if submitData != nil {
-		if data, ok := submitData.(map[string]any); ok {
-			if fm, ok := data["files_modified"]; ok {
-				if files, ok := fm.([]any); ok {
-					result.FilesModified = nil
-					for _, f := range files {
-						if s, ok := f.(string); ok {
-							result.FilesModified = append(result.FilesModified, s)
-						}
-					}
-				}
-			}
-			if es, ok := data["execution_summary"].(string); ok {
-				result.Summary = es
-			}
+		var autoCommitted bool
+		autoCommitted, postHead = a.autoCommitOrDiscard(preHead, req.Branch, result.Summary, mrTerm, prNumber)
+		if autoCommitted {
+			committed = true
+			result.Success = true
 		}
 	}
 
 	if committed {
+		postHead = a.sanitizeCommitMessage(postHead, result.Summary, mrTerm, prNumber)
 		result.CommitHash = postHead
 		a.logger.Log(common.EventStepComplete, "Agent committed", map[string]any{
 			"pre_head":  preHead,
@@ -380,13 +364,24 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// Route replies based on comment source: inline → thread reply, issue/review_body → issue comment
 	var responses []commentResponse
 	if len(pendingComments) > 0 {
-		responses = a.extractCommentResponses(submitData, result.Summary, pendingComments)
+		responses = a.extractCommentResponses(parsedSubmit)
 		// Build source and automation lookups from pending comments
 		commentSource := make(map[int64]string)
 		commentIsAutomation := make(map[int64]bool)
+		hasInline := false
 		for _, c := range pendingComments {
 			commentSource[c.ID] = c.Source
 			commentIsAutomation[c.ID] = a.isAutomationComment(c.AuthorType, c.Body)
+			if c.Source == "inline" {
+				hasInline = true
+			}
+		}
+		// Fetched once per run, only if needed: maps an inline comment to its
+		// review thread's node ID, so a successful reply can also resolve the
+		// thread on GitHub (see the "inline" case below).
+		var commentThreadID map[int64]string
+		if hasInline {
+			commentThreadID = a.reviewThreadIDsByComment(repoInfo, prNumber)
 		}
 
 		repliedCount := 0
@@ -427,6 +422,13 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			switch source := commentSource[resp.CommentID]; source {
 			case "inline":
 				replyErr = a.replyToComment(repoInfo, prNumber, resp.CommentID, replyBody)
+				if replyErr == nil {
+					if threadID, ok := commentThreadID[resp.CommentID]; ok {
+						if rerr := a.resolveReviewThread(threadID); rerr != nil {
+							a.logger.Error(common.EventStepFailure, "Failed to resolve review thread", rerr, map[string]any{"comment_id": resp.CommentID})
+						}
+					}
+				}
 			default:
 				// issue_comment and review_body: post a top-level issue comment as
 				// reply. Stamp which comment it answers — a standalone comment has
@@ -473,9 +475,9 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// CommentPosted, so the run still counts as a no_op and the cron keeps
 	// retrying; an idempotency marker stops that retry loop from re-posting.
 	if len(pendingComments) > 0 && len(responses) == 0 && !agentChangedSomething {
-		if a.hasExistingFollowupNotice(repoInfo, prNumber) {
-			a.logger.Log(common.EventStepComplete, "Non-convergence notice already present — skipping", nil)
-		} else if err := a.postIssueComment(repoInfo, prNumber, a.buildNonConvergenceNotice(result.Summary)); err != nil {
+		if a.hasExistingFollowupNotice(repoInfo, prNumber, pendingComments) {
+			a.logger.Log(common.EventStepComplete, "Non-convergence notice already present for this pending comment set — skipping", nil)
+		} else if err := a.postIssueComment(repoInfo, prNumber, a.buildNonConvergenceNotice(result.Summary, pendingComments)); err != nil {
 			a.logger.Error(common.EventStepFailure, "Failed to post non-convergence notice", err, nil)
 		} else {
 			a.logger.Log(common.EventStepComplete, "Posted non-convergence notice", nil)
@@ -553,6 +555,120 @@ func (a *PRFollowupAgent) runCommandInDir(name string, args ...string) (string, 
 		return "", fmt.Errorf("%s %s failed: %w\nstderr: %s", name, strings.Join(args, " "), err, stderr.String())
 	}
 	return stdout.String(), nil
+}
+
+// headPushedToRemote reports whether head is actually visible on origin's
+// branch, not just moved locally. Queries the remote directly with
+// `git ls-remote` rather than trusting the local remote-tracking ref, so it
+// can't be fooled by a stale cache — the PR's real state is only what's on
+// the remote. Fails closed (false) on any lookup error.
+func (a *PRFollowupAgent) headPushedToRemote(head, branch string) bool {
+	out, err := a.runCommandInDir("git", "ls-remote", "origin", "refs/heads/"+branch)
+	if err != nil {
+		a.logger.Error(common.EventStepFailure, "Failed to verify push reached remote", err, map[string]any{"branch": branch})
+		return false
+	}
+	fields := strings.Fields(out)
+	return len(fields) > 0 && fields[0] == head
+}
+
+// autoCommitOrDiscard deterministically commits and pushes a dirty working
+// tree, or discards it back to preHead if the diff is too large to trust as
+// a real followup fix (see autoCommitMaxFiles). Returns whether the commit
+// landed on the remote, and the resulting HEAD (unchanged from preHead if
+// discarded or if nothing was pushed).
+func (a *PRFollowupAgent) autoCommitOrDiscard(preHead, branch, summary, mrTerm, prNumber string) (committed bool, head string) {
+	dirty, _ := a.runCommandInDir("git", "status", "--porcelain")
+	dirty = strings.TrimSpace(dirty)
+	if dirty == "" {
+		return false, preHead
+	}
+
+	changedFiles := len(strings.Split(dirty, "\n"))
+	if changedFiles > autoCommitMaxFiles {
+		a.logger.Error(common.EventStepFailure, "Refusing to auto-commit — working tree touches too many files to be a real followup fix; discarding", nil, map[string]any{
+			"changed_files": changedFiles,
+			"limit":         autoCommitMaxFiles,
+			"status":        dirty,
+		})
+		if _, err := a.runCommandInDir("git", "reset", "--hard", preHead); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to reset workspace after refusing an oversized diff", err, nil)
+		}
+		if _, err := a.runCommandInDir("git", "clean", "-fd"); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to clean workspace after refusing an oversized diff", err, nil)
+		}
+		return false, preHead
+	}
+
+	msg := commitSubject(summary, mrTerm, prNumber)
+	if _, err := a.runCommandInDir("git", "add", "-A"); err != nil {
+		a.logger.Error(common.EventStepFailure, "Auto-commit: git add failed", err, map[string]any{"pr_number": prNumber})
+	} else if _, err := a.runCommandInDir("git", "commit", "-m", msg); err != nil {
+		a.logger.Error(common.EventStepFailure, "Auto-commit: git commit failed", err, map[string]any{"pr_number": prNumber})
+	} else if _, err := a.runCommandInDir("git", "push"); err != nil {
+		a.logger.Error(common.EventStepFailure, "Auto-commit: git push failed", err, map[string]any{"pr_number": prNumber})
+	}
+
+	postHead, _ := a.runCommandInDir("git", "rev-parse", "HEAD")
+	postHead = strings.TrimSpace(postHead)
+	if preHead != "" && postHead != "" && postHead != preHead && a.headPushedToRemote(postHead, branch) {
+		return true, postHead
+	}
+	return false, postHead
+}
+
+// commitSubject builds a one-line, human-readable commit subject from the
+// best available run summary: the first sentence, capped to a reasonable
+// subject-line length — never the raw multi-paragraph description crammed in
+// whole, and never empty.
+func commitSubject(summary, mrTerm, prNumber string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return fmt.Sprintf("fix: automated followup on %s #%s", mrTerm, prNumber)
+	}
+	if idx := strings.IndexAny(summary, ".\n"); idx > 0 && idx < len(summary)-1 {
+		summary = summary[:idx+1]
+	}
+	const maxSubjectLen = 100
+	if len(summary) > maxSubjectLen {
+		summary = strings.TrimSpace(summary[:maxSubjectLen]) + "…"
+	}
+	return summary
+}
+
+// commitMessageLooksBad reports whether a commit message looks like a raw
+// data dump rather than a human sentence. Observed live: the LLM sometimes
+// commits with the entire submit_analysis JSON payload as -m instead of
+// composing a real message.
+func commitMessageLooksBad(msg string) bool {
+	msg = strings.TrimSpace(msg)
+	return msg == "" || strings.HasPrefix(msg, "{") || strings.HasPrefix(msg, "[")
+}
+
+// sanitizeCommitMessage rewrites HEAD's commit message if it looks like a raw
+// data dump, and re-pushes the amended commit. A no-op (cheap: one git log
+// call) when the message already looks like a real sentence — this exists
+// for commits the LLM made on its own during the main pass, before
+// autoCommitOrDiscard (which already composes a clean message) ever runs.
+// Returns the possibly-updated HEAD.
+func (a *PRFollowupAgent) sanitizeCommitMessage(head, summary, mrTerm, prNumber string) string {
+	msg, err := a.runCommandInDir("git", "log", "-1", "--format=%B")
+	if err != nil || !commitMessageLooksBad(msg) {
+		return head
+	}
+	clean := commitSubject(summary, mrTerm, prNumber)
+	if _, err := a.runCommandInDir("git", "commit", "--amend", "-m", clean); err != nil {
+		a.logger.Error(common.EventStepFailure, "Failed to amend a malformed commit message", err, nil)
+		return head
+	}
+	newHead, _ := a.runCommandInDir("git", "rev-parse", "HEAD")
+	newHead = strings.TrimSpace(newHead)
+	if _, err := a.runCommandInDir("git", "push", "--force-with-lease"); err != nil {
+		a.logger.Error(common.EventStepFailure, "Failed to push amended commit message", err, nil)
+		return head
+	}
+	a.logger.Log(common.EventStepComplete, "Rewrote a malformed commit message", map[string]any{"old_head": head, "new_head": newHead})
+	return newHead
 }
 
 func (a *PRFollowupAgent) parseRepoFromURL(prURL, repoURL string) (*gitprovider.RepoInfo, error) {
@@ -739,14 +855,26 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 		}
 	}
 
+	// The reply-marker check above only catches replies WE posted in our own
+	// format. It misses: a human resolving the thread without replying, a
+	// human or bot reply worded differently (e.g. "Fixed in <sha>." predates
+	// the "Automated Followup" convention), and any reply GitHub itself
+	// doesn't surface here. GitHub's real resolution state — set by whoever
+	// clicks "Resolve conversation" — is authoritative over all of that, but
+	// it isn't in this REST response at all; only GraphQL exposes it. Without
+	// this, already-resolved comments come back as "pending" on every run
+	// forever, burning the ReAct step budget on re-litigating closed threads
+	// before ever reaching a genuinely new one (issue #36629).
+	resolvedThreadCommentIDs := a.fetchResolvedInlineCommentIDs(repoInfo, prNumber)
+
 	var unaddressed []reviewComment
 	for _, c := range rawComments {
 		// Skip replies (we only process top-level review comments)
 		if c.InReplyToID != nil {
 			continue
 		}
-		// Skip comments we've already replied to
-		if repliedCommentIDs[c.ID] {
+		// Skip comments we've already replied to, or whose thread is resolved.
+		if repliedCommentIDs[c.ID] || resolvedThreadCommentIDs[c.ID] {
 			continue
 		}
 		// Do not filter by author (e.g. "[bot]" suffix): useful review bots like
@@ -785,6 +913,164 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 	}
 
 	return unaddressed, sb.String()
+}
+
+// reviewThreadsGraphQLQuery fetches every review thread on a PR — its node
+// ID (needed to resolve it), resolution state, and the database IDs of the
+// comments in it (needed to map a REST comment ID back to its thread).
+const reviewThreadsGraphQLQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 100) { nodes { databaseId } }
+        }
+      }
+    }
+  }
+}`
+
+// reviewThreadsGraphQLResponse is the shape of GitHub's GraphQL response for
+// a PR's review threads, used by fetchResolvedInlineCommentIDs to read each
+// thread's resolution state and the database IDs of the comments in it.
+type reviewThreadsGraphQLResponse struct {
+	Data struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					Nodes []struct {
+						ID         string `json:"id"`
+						IsResolved bool   `json:"isResolved"`
+						Comments   struct {
+							Nodes []struct {
+								DatabaseID int64 `json:"databaseId"`
+							} `json:"nodes"`
+						} `json:"comments"`
+					} `json:"nodes"`
+				} `json:"reviewThreads"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+// fetchResolvedInlineCommentIDs returns the database IDs of every inline
+// review comment whose GitHub review thread is resolved. GitHub-only: the
+// REST endpoint gatherInlineComments calls has no resolution field, so this
+// state is only reachable via GraphQL's reviewThreads.isResolved. GitLab
+// exposes `resolved` directly on each note via REST, so this doesn't apply
+// there — GitLab keeps relying on the reply-marker check alone.
+//
+// Fails open on any error (empty map, nothing treated as resolved): the
+// worst case is identical to today's behavior (a resolved comment reappears
+// as pending), never a false suppression of a genuinely open one.
+func (a *PRFollowupAgent) fetchResolvedInlineCommentIDs(repoInfo *gitprovider.RepoInfo, prNumber string) map[int64]bool {
+	resolved := make(map[int64]bool)
+	if a.provider == gitprovider.GitProviderGitLab {
+		return resolved
+	}
+	prNum, err := strconv.Atoi(prNumber)
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to parse PR number for resolved-thread check", map[string]any{"error": err.Error()})
+		return resolved
+	}
+
+	out, err := a.runCommandInDir("gh", "api", "graphql",
+		"-f", "query="+reviewThreadsGraphQLQuery,
+		"-f", "owner="+repoInfo.Owner,
+		"-f", "name="+repoInfo.Repo,
+		"-F", fmt.Sprintf("number=%d", prNum))
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to fetch review thread resolution state — treating none as resolved", map[string]any{"error": err.Error()})
+		return resolved
+	}
+
+	var resp reviewThreadsGraphQLResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to parse review thread resolution response — treating none as resolved", map[string]any{"error": err.Error()})
+		return resolved
+	}
+	return resolvedCommentIDsFromThreads(resp)
+}
+
+// resolvedCommentIDsFromThreads walks a parsed reviewThreadsGraphQLResponse and
+// returns the database IDs of every comment belonging to a resolved thread.
+// Split out from fetchResolvedInlineCommentIDs so this logic is testable
+// without shelling out to gh.
+func resolvedCommentIDsFromThreads(resp reviewThreadsGraphQLResponse) map[int64]bool {
+	resolved := make(map[int64]bool)
+	for _, thread := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if !thread.IsResolved {
+			continue
+		}
+		for _, c := range thread.Comments.Nodes {
+			resolved[c.DatabaseID] = true
+		}
+	}
+	return resolved
+}
+
+// reviewThreadIDsByComment maps each inline review comment's database ID to
+// its thread's GraphQL node ID, needed to resolve that thread. GitHub only
+// (see fetchResolvedInlineCommentIDs); returns an empty map on GitLab or on
+// any lookup error — the caller treats a missing entry as "can't resolve,
+// skip it" rather than failing the reply itself.
+func (a *PRFollowupAgent) reviewThreadIDsByComment(repoInfo *gitprovider.RepoInfo, prNumber string) map[int64]string {
+	ids := make(map[int64]string)
+	if a.provider == gitprovider.GitProviderGitLab {
+		return ids
+	}
+	prNum, err := strconv.Atoi(prNumber)
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to parse PR number for review thread lookup", map[string]any{"error": err.Error()})
+		return ids
+	}
+	out, err := a.runCommandInDir("gh", "api", "graphql",
+		"-f", "query="+reviewThreadsGraphQLQuery,
+		"-f", "owner="+repoInfo.Owner,
+		"-f", "name="+repoInfo.Repo,
+		"-F", fmt.Sprintf("number=%d", prNum))
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to fetch review threads for resolution", map[string]any{"error": err.Error()})
+		return ids
+	}
+	var resp reviewThreadsGraphQLResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to parse review threads for resolution", map[string]any{"error": err.Error()})
+		return ids
+	}
+	return unresolvedThreadIDsByComment(resp)
+}
+
+// unresolvedThreadIDsByComment walks a parsed reviewThreadsGraphQLResponse and
+// maps each comment in a not-yet-resolved thread to that thread's node ID.
+// Already-resolved threads are omitted, making a lookup miss double as "don't
+// bother resolving it again." Split out from reviewThreadIDsByComment so this
+// logic is testable without shelling out to gh, mirroring
+// resolvedCommentIDsFromThreads above.
+func unresolvedThreadIDsByComment(resp reviewThreadsGraphQLResponse) map[int64]string {
+	ids := make(map[int64]string)
+	for _, thread := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if thread.IsResolved {
+			continue
+		}
+		for _, c := range thread.Comments.Nodes {
+			ids[c.DatabaseID] = thread.ID
+		}
+	}
+	return ids
+}
+
+// resolveReviewThread marks a GitHub review thread resolved via the
+// resolveReviewThread GraphQL mutation — the same action as clicking
+// "Resolve conversation" in the PR UI. A threaded reply alone does not do
+// this: gatherInlineComments' resolved-thread check (and a human re-reading
+// the PR) both rely on the real resolution state, not on reply text.
+func (a *PRFollowupAgent) resolveReviewThread(threadID string) error {
+	const mutation = `mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }`
+	_, err := a.runCommandInDir("gh", "api", "graphql", "-f", "query="+mutation, "-f", "id="+threadID)
+	return err
 }
 
 // followupReplyMarkerPrefix tags a top-level reply with the id of the comment it
@@ -1253,19 +1539,40 @@ func truncateIfNeeded(s string, maxLen int) string {
 	return s[:maxLen] + "\n... [truncated]"
 }
 
-// nonConvergenceNoticeMarker is a hidden HTML comment embedded in the honest
-// "couldn't auto-resolve" notice. It lets a later run detect that the notice
-// was already posted (so the periodic followup cron can't spam the PR with the
-// same message every cycle) without matching on the human-visible text.
-const nonConvergenceNoticeMarker = "<!-- nb-followup-notice -->"
+// nonConvergenceNoticeMarkerPrefix/Suffix wrap the hidden HTML comment embedded
+// in the honest "couldn't auto-resolve" notice — see nonConvergenceNoticeMarker.
+const nonConvergenceNoticeMarkerPrefix = "<!-- nb-followup-notice:"
+const nonConvergenceNoticeMarkerSuffix = " -->"
+
+// nonConvergenceNoticeMarker keys the idempotency marker on the specific set of
+// pending comment IDs this run saw, not a bare constant. A bare constant means
+// "has any notice ever been posted on this PR" — true forever after the first
+// one, which silently suppresses the notice for every later run too, even one
+// triggered by a brand-new, unrelated unresolved comment (issue #36625). Keying
+// on the ID set means a new unresolved comment produces a new marker (so the
+// notice posts), while retrying on the same still-open comment reuses the same
+// marker (so it stays deduped, which is what this guard originally intended).
+func nonConvergenceNoticeMarker(pendingComments []reviewComment) string {
+	ids := make([]int64, len(pendingComments))
+	for i, c := range pendingComments {
+		ids[i] = c.ID
+	}
+	slices.Sort(ids)
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return nonConvergenceNoticeMarkerPrefix + strings.Join(parts, ",") + nonConvergenceNoticeMarkerSuffix
+}
 
 // buildNonConvergenceNotice composes the one-time honest status comment posted
 // when the agent reviewed open comments but applied no change and produced no
 // per-comment responses. It states plainly that nothing was changed — it never
 // claims a fix.
-func (a *PRFollowupAgent) buildNonConvergenceNotice(summary string) string {
+func (a *PRFollowupAgent) buildNonConvergenceNotice(summary string, pendingComments []reviewComment) string {
 	var sb strings.Builder
-	sb.WriteString(nonConvergenceNoticeMarker + "\n")
+	sb.WriteString(nonConvergenceNoticeMarker(pendingComments))
+	sb.WriteString("\n")
 	sb.WriteString("### Nudgebee Automated Followup\n\n")
 	sb.WriteString("I reviewed the open comment(s) on this PR but couldn't automatically apply a change in this run.\n\n")
 	if s := strings.TrimSpace(summary); s != "" {
@@ -1276,9 +1583,10 @@ func (a *PRFollowupAgent) buildNonConvergenceNotice(summary string) string {
 }
 
 // hasExistingFollowupNotice reports whether a non-convergence notice has already
-// been posted on this PR/MR. Fails closed (returns true) on lookup error so a
-// transient API failure can never cause repeated notices.
-func (a *PRFollowupAgent) hasExistingFollowupNotice(repoInfo *gitprovider.RepoInfo, prNumber string) bool {
+// been posted on this PR/MR for this exact set of pending comments. Fails closed
+// (returns true) on lookup error so a transient API failure can never cause
+// repeated notices.
+func (a *PRFollowupAgent) hasExistingFollowupNotice(repoInfo *gitprovider.RepoInfo, prNumber string, pendingComments []reviewComment) bool {
 	var out string
 	var err error
 	// per_page=100 (the API max): the idempotency marker may sit anywhere in the
@@ -1295,7 +1603,7 @@ func (a *PRFollowupAgent) hasExistingFollowupNotice(repoInfo *gitprovider.RepoIn
 		a.logger.Log(common.EventStepFailure, "Failed to check for existing followup notice — assuming present", map[string]any{"error": err.Error()})
 		return true
 	}
-	return strings.Contains(out, nonConvergenceNoticeMarker)
+	return strings.Contains(out, nonConvergenceNoticeMarker(pendingComments))
 }
 
 // buildSummaryComment creates a branded, bullet-point summary of what the followup did.
@@ -1308,15 +1616,9 @@ func (a *PRFollowupAgent) buildSummaryComment(result *PRFollowupResult, response
 		fmt.Fprintf(&sb, "%s\n\n", result.Summary)
 	}
 
-	// Changes — get actual diff stats from git
-	if result.CommitHash != "" {
-		diffStat, err := a.runCommandInDir("git", "diff", "--stat", result.CommitHash+"~1", result.CommitHash)
-		if err == nil && strings.TrimSpace(diffStat) != "" {
-			sb.WriteString("**Changes:**\n```\n")
-			sb.WriteString(strings.TrimSpace(diffStat))
-			sb.WriteString("\n```\n\n")
-		}
-	}
+	// No file-list/diff-stat section here — GitHub already renders that for
+	// the commit itself; repeating it in the comment was pure noise (and, for
+	// a large or malformed diff, actively misleading — see issue #36634).
 
 	// Per-comment actions
 	if len(responses) > 0 {
@@ -1437,55 +1739,101 @@ func (a *PRFollowupAgent) replyToComment(repoInfo *gitprovider.RepoInfo, prNumbe
 	return nil
 }
 
-// extractCommentResponses parses the LLM's submit_analysis output for per-comment responses.
-// Returns empty slice if the LLM didn't structure its output — we never fabricate replies,
+// submitAnalysisData is the followup-mode shape a submit_analysis call
+// produces (see goal.go's "followup" contract): execution status/summary,
+// which files changed, and per-comment dispositions. Parsed once via a JSON
+// round-trip from the planner's dynamically-typed payload, so callers get
+// compile-time field access instead of each repeating map[string]any type
+// assertions by hand.
+type submitAnalysisData struct {
+	ExecutionStatus  string               `json:"execution_status"`
+	ExecutionSummary string               `json:"execution_summary"`
+	FilesModified    []string             `json:"files_modified"`
+	CommentResponses []rawCommentResponse `json:"comment_responses"`
+
+	// Description/Answer/Title belong to the explore/fix-mode submit_analysis
+	// contract, not followup mode's. The agent sometimes uses that shape
+	// anyway (a schema mismatch, tracked separately), so these are read as
+	// fallbacks — see humanSummary — rather than left to fall through to
+	// FinalAnswer, which is the planner's raw JSON dump of the whole payload
+	// and unfit for a commit message or a PR comment.
+	Description string `json:"description"`
+	Answer      string `json:"answer"`
+	Title       string `json:"title"`
+}
+
+// humanSummary returns the best available human-readable one-or-two-sentence
+// description of what this run did, trying fields in order of how well they
+// fit that shape. Empty if the agent gave us nothing usable — callers must
+// not fall back to the raw submit_analysis JSON in that case.
+func (d *submitAnalysisData) humanSummary() string {
+	if d == nil {
+		return ""
+	}
+	for _, s := range []string{d.ExecutionSummary, d.Description, d.Answer, d.Title} {
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// rawCommentResponse mirrors commentResponse but keeps ShouldReply as a
+// pointer so the JSON decoder can tell "field absent" apart from "explicit
+// false" — extractCommentResponses defaults absence to "reply if there's
+// reply text", not to false.
+type rawCommentResponse struct {
+	CommentID   int64  `json:"comment_id"`
+	Action      string `json:"action"`
+	ShouldReply *bool  `json:"should_reply"`
+	Reply       string `json:"reply"`
+}
+
+// parseSubmitAnalysisData converts the planner's dynamically-typed
+// submit_analysis payload (normally a map[string]any decoded from the LLM's
+// JSON tool call) into submitAnalysisData via a JSON round-trip. Returns
+// nil, nil when submitData is nil — the planner never called submit_analysis
+// at all, which is a normal (if unwelcome) outcome, not a parse error.
+func parseSubmitAnalysisData(submitData any) (*submitAnalysisData, error) {
+	if submitData == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(submitData)
+	if err != nil {
+		return nil, fmt.Errorf("re-marshal submit_analysis data: %w", err)
+	}
+	var parsed submitAnalysisData
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("unmarshal submit_analysis data: %w", err)
+	}
+	return &parsed, nil
+}
+
+// extractCommentResponses reads the LLM's submit_analysis output for per-comment responses.
+// Returns nil if the LLM didn't structure its output — we never fabricate replies,
 // since posting noise (e.g. generic "Changes have been applied") on real PRs is worse than
 // posting nothing.
-func (a *PRFollowupAgent) extractCommentResponses(submitData any, _ string, _ []reviewComment) []commentResponse {
-	if submitData == nil {
-		return nil
-	}
-	data, ok := submitData.(map[string]any)
-	if !ok {
-		return nil
-	}
-	rawResponses, ok := data["comment_responses"]
-	if !ok {
-		return nil
-	}
-	responses, ok := rawResponses.([]any)
-	if !ok {
+func (a *PRFollowupAgent) extractCommentResponses(parsed *submitAnalysisData) []commentResponse {
+	if parsed == nil {
 		return nil
 	}
 
 	var result []commentResponse
-	for _, r := range responses {
-		rMap, ok := r.(map[string]any)
-		if !ok {
+	for _, r := range parsed.CommentResponses {
+		if r.CommentID == 0 {
 			continue
 		}
-		// json.Unmarshal produces float64 for numbers
-		var id int64
-		switch v := rMap["comment_id"].(type) {
-		case float64:
-			id = int64(v)
-		case int64:
-			id = v
-		}
-		if id == 0 {
-			continue
-		}
-		action, _ := rMap["action"].(string)
-		reply, _ := rMap["reply"].(string)
+		action := r.Action
+		reply := r.Reply
 		// should_reply: explicit bool from the agent. If absent, default
 		// to true only when the agent gave us substantive reply text — an
 		// empty reply with no explicit should_reply is treated as "skip".
 		shouldReply := strings.TrimSpace(reply) != ""
-		if v, present := rMap["should_reply"].(bool); present {
-			shouldReply = v
+		if r.ShouldReply != nil {
+			shouldReply = *r.ShouldReply
 		}
 		result = append(result, commentResponse{
-			CommentID:   id,
+			CommentID:   r.CommentID,
 			Action:      action,
 			ShouldReply: shouldReply,
 			Reply:       reply,

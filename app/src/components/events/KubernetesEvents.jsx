@@ -243,6 +243,9 @@ const KubernetesEventsTable = ({
   hideScopeFilters = false,
   isTroubleshootPage = false,
   showEventTypeColumn = false,
+  // Members view (#34655): only events linked under this leader — used by the
+  // Triage Inbox 'Grouped Alerts' drill-down.
+  incidentLeaderId = '',
 }) => {
   const router = useRouter();
 
@@ -472,6 +475,9 @@ const KubernetesEventsTable = ({
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
   const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
   const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
+  // Same-subject incident grouping (#34655): children fold under their leader
+  // by default; the toggle shows every event row again.
+  const [showGroupedChildren, setShowGroupedChildren] = useState(false);
 
   // UI Toggles & Popups
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
@@ -1052,6 +1058,29 @@ const KubernetesEventsTable = ({
     if (isTroubleshootPage) {
       query.aggregation_key_nin = EXCLUDED_TRIAGE_AGGREGATION_KEYS;
     }
+    // Same-subject incident grouping (#34655): members drill-down (children of
+    // one leader) or the default list (children folded unless toggled visible).
+    // Folding applies only to the TOP-LEVEL lists — embedded usages (row
+    // drill-downs scoped by fingerprint, filter-less nested tables) must show
+    // every event or a drill-down whose events are group children renders
+    // empty.
+    const embedded = !enableFilters || Boolean(defaultQuery?.fingerprint);
+    if (incidentLeaderId) {
+      // Group membership is absolute: drop every inherited filter (the page
+      // URL leaks eventAggregationKey/priority/etc. into this component's
+      // state, which would silently hide members that don't match the page's
+      // current filter — leaving the "+7" chip disagreeing with a 3-row list).
+      query = {
+        incident_leader_id: incidentLeaderId,
+        account_id: query.account_id,
+        startDate: query.startDate,
+        endDate: query.endDate,
+        sort_by: 'starts_at',
+        sort_order: 'asc',
+      };
+    } else if (!embedded && !showGroupedChildren) {
+      query.hide_incident_children = true;
+    }
     setLoading(true);
 
     // Build row data from events + ticket map
@@ -1127,13 +1156,13 @@ const KubernetesEventsTable = ({
                     >
                       <span>
                         <Chip variant='tag' tone='warning' size='xs' data-testid='incident-leader-chip'>
-                          +{item.incident_member_count} SAME INCIDENT
+                          +{item.incident_member_count} GROUPED
                         </Chip>
                       </span>
                     </Tooltip>
                   )}
                   {item.incident_leader_id && (
-                    <Tooltip title='Part of an incident on this subject — click to open the leading event'>
+                    <Tooltip title='Part of an alert group on this subject — click to open the leading event'>
                       <span
                         style={{ cursor: 'pointer' }}
                         onClick={(e) => {
@@ -1280,6 +1309,12 @@ const KubernetesEventsTable = ({
             });
           }
         }
+        if (headersSet.has('Source')) {
+          row.push({
+            text: <Text showAutoEllipsis value={titleCaseForAggregationKey(item.source || '')} />,
+            data: item.source,
+          });
+        }
         if (headersSet.has('Triage Status')) {
           row.push({
             component: (
@@ -1319,9 +1354,9 @@ const KubernetesEventsTable = ({
                 size='xs'
                 trailingAccent={<FiArrowRight />}
                 href={`/investigate?id=${item.id}&accountId=${item.account_id}`}
-                data-testid='investigate-btn'
+                data-testid={item.is_investigated ? 'view-analysis-btn' : 'investigate-btn'}
               >
-                Investigate
+                {item.is_investigated ? 'View Analysis' : 'Investigate'}
               </DsButton>
               <ThreeDotsMenu
                 sx={{ ...action.primary }}
@@ -1405,6 +1440,8 @@ const KubernetesEventsTable = ({
     selectedNbStatus,
     selectedSortBy,
     selectedIssueType,
+    showGroupedChildren,
+    incidentLeaderId,
     appliedSearchByLabel,
     appliedSearchByMessage,
   ]);
@@ -1588,6 +1625,15 @@ const KubernetesEventsTable = ({
                   }}
                   minDate={new Date(new Date().getFullYear(), new Date().getMonth() - 6, 1)}
                   onChange={({ selection }) => handleDateRangeChange(selection)}
+                />
+              )}
+              {enableFilters && (
+                <DsSwitch
+                  id='showGroupedChildren'
+                  label='Show Grouped'
+                  size='sm'
+                  checked={showGroupedChildren}
+                  onChange={(_e, checked) => setShowGroupedChildren(checked)}
                 />
               )}
               <DsSwitch id='showTrend' label='Show Trend' size='sm' checked={showTrendChart} onChange={(_e, checked) => setShowTrendChart(checked)} />
@@ -1867,6 +1913,7 @@ const KubernetesEventsTable = ({
 
 KubernetesEventsTable.propTypes = {
   accountId: PropTypes.string,
+  incidentLeaderId: PropTypes.string,
   recordsPerPage: PropTypes.number,
   defaultQuery: PropTypes.object,
   enableFilters: PropTypes.bool,

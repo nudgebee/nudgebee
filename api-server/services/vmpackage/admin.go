@@ -147,6 +147,9 @@ func retireOrphanedVMScanArtifacts(tx *sqlx.Tx, tenantID, priorAccountID string)
 		return nil
 	}
 
+	// archive-all-statuses: decommission, not a re-scan. The account has stopped
+	// being a scan target, so every finding it owns is retired regardless of who
+	// owned its status, and nothing re-upserts them afterwards to reopen one.
 	if _, err := tx.Exec(
 		`UPDATE recommendation SET status = 'Archive', updated_at = NOW()
 		 WHERE tenant_id = $1 AND cloud_account_id = $2

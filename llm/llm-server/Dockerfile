@@ -11,7 +11,7 @@
 ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-llm-server-base:ubuntu-noble
 
 # --- Build Stage ---
-FROM golang:1.26.5 AS build-stage
+FROM golang:1.26.6 AS build-stage
 
 ARG TARGETPLATFORM
 ARG TARGETOS
@@ -21,8 +21,8 @@ ENV GOOS=${TARGETOS:-linux}
 ENV GOARCH=${TARGETARCH:-amd64}
 ENV CGO_ENABLED=0
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
-# GOTOOLCHAIN=local future-proofs a base bump (golang:1.26.5 -> compiles with
-# 1.26.5 automatically; a hardcoded version would silently download+reuse the old
+# GOTOOLCHAIN=local future-proofs a base bump (golang:1.26.6 -> compiles with
+# 1.26.6 automatically; a hardcoded version would silently download+reuse the old
 # toolchain) and gives the `go build` layer a distinct cache key so edge.yaml's
 # registry cache can't reuse an older-toolchain build — the cause of stdlib CVEs
 # lingering in the published image despite the pinned builder.

@@ -3,6 +3,7 @@ package gcloud
 import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/providers/constants"
 	"strings"
 	"time"
 
@@ -219,7 +220,7 @@ func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, acc
 
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryRightSizing,
-				RuleName:     "gcp_disk_unattached",
+				RuleName:     constants.GCPDiskUnattached,
 				Severity:     providers.RecommendationSeverityMedium,
 				Savings:      monthlyCost,
 				Data: map[string]any{
@@ -283,7 +284,7 @@ func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, acc
 		if len(resource.Tags) == 0 {
 			recommendations = append(recommendations, providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryConfiguration,
-				RuleName:     "gcp_disk_no_labels",
+				RuleName:     constants.GCPDiskNoLabels,
 				Severity:     providers.RecommendationSeverityLow,
 				Savings:      0,
 				Data: map[string]any{

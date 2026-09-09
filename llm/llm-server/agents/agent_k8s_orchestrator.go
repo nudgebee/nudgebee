@@ -127,6 +127,12 @@ func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 	if nudge := memoryNudgeIfEnabled(); nudge != "" {
 		promptText += "\n\n" + nudge
 	}
+	if grounding := k8sGroundingIfEnabled(); grounding != "" {
+		promptText += "\n\n" + grounding
+	}
+	if premise := k8sPremiseIfEnabled(); premise != "" {
+		promptText += "\n\n" + premise
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }
 
@@ -254,6 +260,44 @@ const memoryToolNudge = "**Check memory first:** When investigating a named serv
 func memoryNudgeIfEnabled() string {
 	if config.Config.MemoryToolEnabled {
 		return memoryToolNudge
+	}
+	return ""
+}
+
+// k8sGroundingNudge is the "ground before you fan out" discipline. k8s_lean is the
+// only lean orchestrator missing the "start where the symptom shows" paragraph its
+// aws/gcp/azure siblings carry, and in practice the planner opens live-symptom
+// investigations by delegating a heavy metrics/logs sub-agent and blocking on it —
+// before running the cheap authoritative kubectl tools it already holds. This adds
+// two disciplines: (1) probe cheap-and-local first, then delegate scoped; (2) for a
+// hostname/URL symptom, resolve WHAT SERVES the host before assuming a workload, and
+// say so honestly when nothing in-cluster serves it (rather than diagnosing a
+// similarly-named workload — the observed "external marketing host → similarly-named
+// in-cluster dev host" subject swap). It scopes the investigation, never replaces it. Appended (not baked into k8s_lean.yaml)
+// so it stays behind K8sGroundingEnabled for a clean A/B and cannot regress the shared
+// prompt when the flag is off.
+const k8sGroundingNudge = "**Ground before you fan out.** For a live symptom — a CPU/memory surge, restarts, pending pods, a workload erroring right now — your opening move is the cheap authoritative tools you already hold: `kubectl top`/`get`/`describe` on the named workload and its recent `events`, issued together in one parallel batch. Read those first, THEN delegate to a heavier surface — `metrics` for a historical trend the live numbers don't explain, `logs` for the error text, `traces` for a latency path — scoped to the specific question the snapshot raised, rather than opening with a broad `metrics`/`logs` delegation and blocking on it. When the symptom is a hostname or URL (e.g. an uptime/downtime alert), first resolve WHAT SERVES IT — `kubectl get ingress -A` (or the Service) for that host — before assuming a workload; if no in-cluster ingress serves that host, say so plainly (\"not served by this cluster\") rather than diagnosing a similarly-named workload. This first look SCOPES the investigation; it never replaces it — a healthy live snapshot doesn't close a \"why did it happen\" question, so carry it through to the mechanism."
+
+// k8sGroundingIfEnabled returns the grounding discipline when the flag is on, else "".
+func k8sGroundingIfEnabled() string {
+	if config.Config.K8sGroundingEnabled {
+		return k8sGroundingNudge
+	}
+	return ""
+}
+
+// k8sPremiseNudge is the proactive half of premise verification (the answer critiquer
+// carries the hard guarantee). A user's wording often ASSERTS a symptom ("X is down",
+// "there's a surge") that isn't actually happening, or the confirming tool fails and the
+// agent fabricates a confident root cause anyway. This nudge makes the agent treat the
+// symptom as a claim to verify first, accept an honest "not occurring" / "cannot confirm"
+// outcome, and never read a tool failure or empty result as proof the symptom is real.
+const k8sPremiseNudge = "**Confirm the symptom before you diagnose it.** The user's wording often ASSERTS a problem (\"X is down\", \"there's a surge on Y\") — treat that as a claim to verify FIRST, not a fact. Your cheap probe also answers \"is this actually happening?\": if the endpoint they say is unreachable returns a success, or the metric they say is surging reads normal, say so plainly — \"the reported <symptom> is not occurring\" with the evidence — and do NOT manufacture a root cause for a problem you didn't confirm (you may note incidental findings and offer to look into them). If the tool that would confirm it FAILS or returns nothing (connection refused, relay unavailable, empty), you cannot confirm the symptom — say \"cannot confirm <symptom> — <tool> unavailable\" and stop, or label any suspected cause as UNVERIFIED. A failed or empty measurement is never evidence the symptom is real."
+
+// k8sPremiseIfEnabled returns the premise-verification nudge when the flag is on, else "".
+func k8sPremiseIfEnabled() string {
+	if config.Config.PremiseVerificationEnabled {
+		return k8sPremiseNudge
 	}
 	return ""
 }

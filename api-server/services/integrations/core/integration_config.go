@@ -379,6 +379,13 @@ func CreateIntegrationConfig(
 					integrationConfigValues[integrationconfig].IsEncrypted = false
 				}
 			}
+			// Canonicalise user input before validation so both ValidateConfig and
+			// the save loop below see the stored form (the loop persists this slice).
+			if normalizer, ok := integration.(ConfigNormalizer); ok {
+				if err := normalizer.NormalizeConfig(ctx.GetSecurityContext(), integrationConfigValues); err != nil {
+					return IntegrationDto{}, err
+				}
+			}
 			// For LLM updates with omit-to-keep semantics: the UI omits secret
 			// fields the user didn't retype, so RequiredWhen validation would
 			// fail spuriously even when the stored value satisfies the contract.
@@ -390,6 +397,13 @@ func CreateIntegrationConfig(
 			if isUpdate && intgerationType == "llm" {
 				configForValidation = augmentLLMConfigWithStoredSecrets(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), integrationId, integrationConfigValues)
 			}
+			// integration_config_name is stored on integrations.name and intentionally
+			// omitted from integration_config_values. Add it back only for validation so
+			// integrations can identify the row being edited without duplicating metadata.
+			configForValidation = append(slices.Clone(configForValidation), IntegrationConfigValue{
+				Name:  IntegrationConfigName,
+				Value: integrationConfigName,
+			})
 			validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configForValidation, accId)
 			if len(validationErrors) > 0 {
 				return IntegrationDto{}, validationErrors[0]

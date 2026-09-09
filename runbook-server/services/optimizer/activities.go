@@ -191,6 +191,12 @@ func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) err
 				task.Attributes.PRAction = prAction
 			}
 
+			// Why the apply reached that outcome, which pr_action alone does not say
+			// (see AutoOptimizeTaskAttributes.PRDecision).
+			if prDecision, ok := outMap["pr_decision"].(string); ok && prDecision != "" {
+				task.Attributes.PRDecision = prDecision
+			}
+
 			// Store ticket URL in task attributes
 			if ticketURL, ok := outMap["ticket_url"].(string); ok && ticketURL != "" {
 				task.Attributes.TicketLink = &ticketURL

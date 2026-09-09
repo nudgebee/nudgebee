@@ -1,15 +1,28 @@
 user_prompt: "What is the total potential monthly savings across all open recommendations?"
 expected_output:
   - |
-    The agent should call recommendations and sum estimated_saving for items
-    with status='Open' only — Archive/Closed recommendations are excluded
-    because they were already handled. The response must contain a single
-    headline dollar figure for total potential monthly savings, optionally
-    broken down by category. If the total exceeds current monthly cloud
-    spend, the agent must flag this as suspicious and verify the numbers.
-    Cite [recommendations].
+    The agent should report open savings only — Archive/Closed were already
+    handled — and the total must be DEDUPLICATED: rows sharing a dedupe_group
+    are alternative ways to act on ONE opportunity (a commitment purchase comes
+    back from AWS as 1yr/3yr x All/No-Upfront variants and only one can be
+    bought), so exactly one variant per group may be counted. Summing every
+    variant inflates an account's total several-fold and is wrong.
+
+    The response must contain a single headline dollar figure, SPLIT into
+    workload optimizations and commitment purchases, with an opportunity count
+    for each. The two parts must add up to the headline figure. It must state
+    that the parts are not additive in practice — commitments are sized against
+    current usage, so right-sizing first changes what is worth committing to.
+
+    Reporting "$0.00" or "0 opportunities" for commitment purchases while the
+    account holds open Reserved Instance or Savings Plan recommendations is a
+    FAILURE: it means live rows were dropped rather than deduplicated.
+
+    If the total exceeds current monthly cloud spend the agent must flag that
+    as impossible and show both figures. Cite the recommendations data source ([recommendations] or [recommendation_execute]).
 tags:
   - optimization
   - savings
+  - dedupe
   - easy
   - finops
