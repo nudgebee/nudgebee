@@ -42,3 +42,20 @@ func TestSanitizeErrorForUser_SensitivePatternsStillSanitized(t *testing.T) {
 func TestSanitizeErrorForUser_NilError(t *testing.T) {
 	assert.Equal(t, "", sanitizeErrorForUser(nil))
 }
+
+// TestSanitizeErrorForUser_LazyConfigFailureIsCovered pins the exact string a
+// live deployment stored as the assistant's reply after the sanitizer case
+// existed but was never reached: config resolves lazily at the first LLM call,
+// so the error is raised inside the running planner and returns through
+// conversation.go's executeErr path rather than executor.go's planner-construction
+// path. The wrapping prefixes must not defeat the match.
+func TestSanitizeErrorForUser_LazyConfigFailureIsCovered(t *testing.T) {
+	err := errors.New("react4: llm generate: error: agent unable to process request\n" +
+		"no LLM configuration found for accountId=6139c931-0385-464c-a1fb-aa1d2dd166e6, agentName=k8s_orchestrator")
+	got := sanitizeErrorForUser(err)
+
+	assert.NotContains(t, got, "6139c931-0385-464c-a1fb-aa1d2dd166e6", "must not leak the account UUID")
+	assert.NotContains(t, got, "k8s_orchestrator", "must not leak the internal agent name")
+	assert.NotContains(t, got, "react4", "must not leak the planner name")
+	assert.Contains(t, got, "default AI provider")
+}

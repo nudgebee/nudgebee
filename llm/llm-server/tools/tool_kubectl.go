@@ -532,11 +532,32 @@ func hasShellExpansion(command string) bool {
 	return false
 }
 
+// describeShellMetachar names the rejected construct in terms the caller can put
+// in front of a model: "a redirection ('>')" repairs; "blocked" does not.
+func describeShellMetachar(char byte) string {
+	switch char {
+	case ';', '&':
+		return fmt.Sprintf("a shell operator (%q)", string(char))
+	case '<', '>':
+		return fmt.Sprintf("a redirection (%q)", string(char))
+	case '(', ')', '{', '}':
+		return fmt.Sprintf("a subshell or command group (%q)", string(char))
+	case '\n', '\r':
+		return "a newline (multiple commands)"
+	}
+	return fmt.Sprintf("an unsupported shell character (%q)", string(char))
+}
+
 // kubectlCommandHasUnsafeShellStructure permits one direct kubectl invocation
 // with optional stdout-only filters. Compound commands, redirections, and
 // downstream executors can manufacture a blocked resource name after static
 // validation, so they fail closed at the relay boundary.
-func kubectlCommandHasUnsafeShellStructure(command string) bool {
+//
+// It reports whether the command is rejected and, when it is, a short reason
+// naming the offending construct. That reason is surfaced to the calling agent:
+// a bare refusal gives a model nothing to repair against, so it either gives up
+// or burns turns guessing.
+func kubectlCommandHasUnsafeShellStructure(command string) (bool, string) {
 	var stages []string
 	start := 0
 	var singleQuoted, doubleQuoted, escaped bool
@@ -562,7 +583,7 @@ func kubectlCommandHasUnsafeShellStructure(command string) bool {
 			continue
 		}
 		if strings.ContainsRune(";&<>\n\r(){}", rune(char)) {
-			return true
+			return true, "the command contains " + describeShellMetachar(char)
 		}
 		if char == '|' {
 			stages = append(stages, command[start:i])
@@ -570,24 +591,30 @@ func kubectlCommandHasUnsafeShellStructure(command string) bool {
 		}
 	}
 	if singleQuoted || doubleQuoted || escaped {
-		return true
+		return true, "the command has an unbalanced quote or a trailing backslash"
 	}
 	stages = append(stages, command[start:])
 
 	first, ok := splitShellWords(stages[0])
 	if !ok {
-		return true
+		return true, "the command could not be parsed as shell words"
 	}
 	if len(first) == 0 || first[0] != "kubectl" {
-		return true
+		return true, "the command does not start with kubectl"
 	}
 	for _, stage := range stages[1:] {
 		parts, ok := splitShellWords(stage)
-		if !ok || !isSafeKubectlPipelineFilter(parts) {
-			return true
+		if !ok {
+			return true, "a pipeline stage could not be parsed as shell words"
+		}
+		if !isSafeKubectlPipelineFilter(parts) {
+			if len(parts) > 0 {
+				return true, fmt.Sprintf("the pipeline stage %q is not an allowed filter", parts[0])
+			}
+			return true, "an empty pipeline stage is not an allowed filter"
 		}
 	}
-	return false
+	return false, ""
 }
 
 func splitShellWords(input string) ([]string, bool) {
@@ -639,6 +666,20 @@ func splitShellWords(input string) ([]string, bool) {
 // an input file. grep/jq get one positional expression; head/tail/wc get none
 // and therefore must consume stdin. This intentionally rejects richer option
 // forms when their operand roles are ambiguous.
+// kubectlCommandGrammarHint states what IS accepted. It is appended to every
+// rejection so the agent can repair on the next turn instead of retrying the
+// same shape or abandoning the step. Keep it in sync with
+// isSafeKubectlPipelineFilter below.
+const kubectlCommandGrammarHint = "Send exactly one kubectl command, " +
+	"optionally piped into a single filter: grep/egrep/fgrep/rgrep/jq (at most one pattern argument) " +
+	"or head/tail/wc (flags only). Loops, subshells, redirections, command substitution and " +
+	"multiple kubectl calls are not accepted. To aggregate across namespaces or resources, " +
+	"issue one kubectl call per target and combine the results yourself."
+
+// isSafeKubectlPipelineFilter accepts only filters whose arguments cannot name
+// an input file. grep/jq get one positional expression; head/tail/wc get none
+// and therefore must consume stdin. This intentionally rejects richer option
+// forms when their operand roles are ambiguous.
 func isSafeKubectlPipelineFilter(parts []string) bool {
 	if len(parts) == 0 {
 		return false
@@ -653,9 +694,18 @@ func isSafeKubectlPipelineFilter(parts []string) bool {
 		return false
 	}
 	positionals := 0
-	for _, part := range parts[1:] {
-		if strings.Contains(parts[0], "grep") && (part == "-e" || strings.HasPrefix(part, "-e") || part == "--regexp" || strings.HasPrefix(part, "--regexp=")) {
+	args := parts[1:]
+	for i := 0; i < len(args); i++ {
+		part := args[i]
+		if filterArgNamesFile(parts[0], part) {
 			return false
+		}
+		// A numeric-value flag's value is its operand, not a second positional
+		// (`grep -A 10 pattern`, `tail -n 20`). Only a plain digit string is
+		// accepted as that value, so this can't absorb a positional in disguise.
+		if isNumericValueFlag(parts[0], part) && i+1 < len(args) && isDigitsOnly(args[i+1]) {
+			i++
+			continue
 		}
 		if !strings.HasPrefix(part, "-") {
 			positionals++
@@ -664,14 +714,95 @@ func isSafeKubectlPipelineFilter(parts []string) bool {
 	return positionals <= maxPositionals
 }
 
+// isNumericValueFlag reports whether part is a bare short flag that takes its
+// value as the next word (rather than attached, e.g. "-n5") for the given
+// filter command. Limited to the flags actually seen taking a detached
+// numeric value in practice; anything else falls through to the normal
+// positional count.
+func isNumericValueFlag(cmd, part string) bool {
+	switch cmd {
+	case "grep", "egrep", "fgrep", "rgrep":
+		switch part {
+		case "-A", "-B", "-C", "-m":
+			return true
+		}
+	case "head", "tail":
+		switch part {
+		case "-n", "-c":
+			return true
+		}
+	}
+	return false
+}
+
+func isDigitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// filterArgNamesFile reports whether part is an option that makes cmd read a
+// file. The positional count above cannot catch these: the option either
+// consumes the filename as its value or carries it inline after '=', so the
+// path is never counted as a positional and `... | jq -f /etc/passwd` slipped
+// through with zero. That was a direct read primitive, not just an oracle --
+// jq quotes the offending program back in its parse error, so the file's
+// contents land in stderr.
+//
+// Short options bundle (`grep -if FILE` is -i -f), so the cluster's letters are
+// tested individually; a HasPrefix check on "-f" misses every bundled form.
+func filterArgNamesFile(cmd, part string) bool {
+	if len(part) < 2 || part[0] != '-' {
+		return false
+	}
+	isGrep := strings.Contains(cmd, "grep")
+	isJq := cmd == "jq"
+	// head/tail/wc read stdin only; they take no file-valued option, and their
+	// zero-positional budget already rejects a bare path.
+	if !isGrep && !isJq {
+		return false
+	}
+
+	if strings.HasPrefix(part, "--") {
+		name := strings.TrimPrefix(part, "--")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		switch name {
+		case "file", "regexp":
+			// grep -f/--file reads patterns from a file; --regexp can hide a
+			// path in the pattern operand.
+			return isGrep
+		case "from-file", "rawfile", "slurpfile", "argfile":
+			// jq reads the program (--from-file) or raw data (--rawfile and
+			// friends) straight off disk and can echo it to stdout.
+			return isJq
+		}
+		return false
+	}
+
+	// grep: -f names a pattern file, -e a pattern that may name a path.
+	// jq: -f names a program file; its -e is --exit-status and is harmless.
+	if isGrep {
+		return strings.ContainsAny(part[1:], "ef")
+	}
+	return strings.ContainsAny(part[1:], "f")
+}
+
 // validateKubectlCommandAccess applies the kubectl hard-deny policy at both
 // the direct tool path and the final relay boundary. Keeping the relay check
 // prevents any caller that dispatches without calling KubectlExecuteTool.Call
 // (workspace shims, remediation, resource search, or future paths) from
 // bypassing secret-access restrictions.
 func validateKubectlCommandAccess(command string) error {
-	if kubectlCommandHasUnsafeShellStructure(command) {
-		return errors.New("kubectl: compound commands, redirections, and unsafe pipeline filters are blocked")
+	if unsafe, reason := kubectlCommandHasUnsafeShellStructure(command); unsafe {
+		return fmt.Errorf("kubectl: blocked because %s. %s", reason, kubectlCommandGrammarHint)
 	}
 	words, _ := splitShellWords(command)
 	normalizedCommand := shellQuoteStripper.Replace(command)

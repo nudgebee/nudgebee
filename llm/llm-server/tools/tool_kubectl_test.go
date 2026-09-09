@@ -430,3 +430,36 @@ func TestWrapKubectlError_EnvelopeShape(t *testing.T) {
 		assert.Equal(t, "", wrapped)
 	})
 }
+
+// TestKubectlBlockMessageGivesTheAgentARepairPath pins that a rejection names the
+// offending construct and states the accepted grammar. The fixture is the exact
+// command an agent sent in a real investigation: the old message said only that
+// the command was "blocked", and the agent abandoned the step rather than
+// retrying with one kubectl call per namespace.
+func TestKubectlBlockMessageGivesTheAgentARepairPath(t *testing.T) {
+	realWorldCommand := `kubectl get namespaces --no-headers -o custom-columns='NAME:.metadata.name' | ` +
+		`grep -i nudgebee | while read ns; do printf '%s\t' "$ns"; ` +
+		`kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l; done`
+
+	err := validateKubectlCommandAccess(realWorldCommand)
+	require.Error(t, err)
+	// Names what was wrong...
+	require.Contains(t, err.Error(), "blocked because")
+	// ...and what to send instead, or the agent has nothing to act on.
+	require.Contains(t, err.Error(), "exactly one kubectl command")
+	require.Contains(t, err.Error(), "one kubectl call per target")
+
+	for _, tc := range []struct{ command, wants string }{
+		{`kubectl get pods > /tmp/out`, "a redirection"},
+		{`kubectl get pods; rm -rf /`, "a shell operator"},
+		{`kubectl get pods $(whoami)`, "a subshell or command group"},
+		{`kubectl get pods | awk '{print $1}'`, `"awk" is not an allowed filter`},
+		{`kubectl get pods | grep 'unterminated`, "unbalanced quote"},
+		{`helm list`, "does not start with kubectl"},
+	} {
+		err := validateKubectlCommandAccess(tc.command)
+		require.Error(t, err, tc.command)
+		require.Contains(t, err.Error(), tc.wants, tc.command)
+		require.Contains(t, err.Error(), "exactly one kubectl command", tc.command)
+	}
+}

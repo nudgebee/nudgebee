@@ -1436,7 +1436,13 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		status = ConversationStatusFailed
 	}
 	if executeErr != nil {
-		agentResponseContent = executeErr.Error()
+		// This string becomes the assistant's persisted reply, so it is the last
+		// place a raw internal error can reach the user. executor.go sanitizes the
+		// planner-construction path, but an error raised once the planner is
+		// running (config resolved lazily at the first LLM call, provider refusals)
+		// arrives here instead and was previously stored verbatim — account UUIDs
+		// and internal agent names included.
+		agentResponseContent = sanitizeErrorForUser(executeErr)
 		status = ConversationStatusFailed
 	}
 
