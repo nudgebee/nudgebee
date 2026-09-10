@@ -15,6 +15,7 @@ import { Modal } from '@ui/Modal';
 import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemplatesModal';
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
+import EventAutomationRunsList from '@components/workflow/components/EventAutomationRunsList';
 import apiWorkflow from '@api1/workflow';
 import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
@@ -989,12 +990,17 @@ const Investigate = () => {
     pollResolutions();
   }, [pollResolutions]);
 
+  // Bumped on every trigger so the in-card runs list refetches; that list polls
+  // itself only while a run is unfinished, so a fresh run needs this nudge.
+  const [automationRunsRefreshKey, setAutomationRunsRefreshKey] = useState(0);
+
   // Called by RunAutomationMenu after a successful trigger. Open a grace window
   // (the InProgress row may not exist yet) and start polling so the new run's
   // status surfaces live.
   const handleAutomationTriggered = useCallback(() => {
     resolutionsPollDeadlineRef.current = Date.now() + EVENT_RESOLUTIONS_POLL_GRACE_MS;
     startResolutionsPoll();
+    setAutomationRunsRefreshKey((n) => n + 1);
   }, [startResolutionsPoll]);
 
   // Loading the page on an event whose workflow is already InProgress (e.g.
@@ -2772,6 +2778,14 @@ const Investigate = () => {
                                       />
                                     </Box>
                                   </Box>
+                                  {/* The runs themselves, in the card body: the dropdown badge only said
+                                      how many there were, so reading them meant opening the menu. Each row
+                                      links straight to that execution. */}
+                                  <EventAutomationRunsList
+                                    accountId={row?.cloud_account_id || router.query.accountId}
+                                    eventId={row.id}
+                                    refreshKey={automationRunsRefreshKey}
+                                  />
                                 </Box>
                               </Box>
                             )}
