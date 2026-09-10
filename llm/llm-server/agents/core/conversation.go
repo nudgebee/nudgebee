@@ -92,9 +92,16 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 	wordCount := common.GetWordCount(query)
 	title := ""
 	if wordCount > 0 && wordCount <= common.ShortQueryWordCountThreshold {
-		title = query
-		if len(title) > 100 {
-			title = title[:97] + "..."
+		// A short query can still be a JSON alert payload — unwrap it to a readable
+		// field rather than using the raw `{"description":...` envelope as the title.
+		if derived, ok := common.DeriveTitleFromJSONQuery(query); ok {
+			title = derived
+		} else {
+			title = query
+			if len(title) > 100 {
+				// Byte-boundary safe: never split a multi-byte rune (raw title[:97] could).
+				title = common.TruncateHead(title, 97) + "..."
+			}
 		}
 	}
 
@@ -1055,7 +1062,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// async title-generation task finishes).
 			var title string
 			initialTitleSource := common.StripLeadingAgentMention(request.Query)
-			if initialTitleSource != "" {
+			if derived, ok := common.DeriveTitleFromJSONQuery(initialTitleSource); ok {
+				// Webhook/alert triggers send a JSON payload as the query; unwrap it to
+				// a readable field so the placeholder isn't the raw `{"description":...`
+				// envelope. Matters most for single-shot classifiers (e.g.
+				// webhook_subject_name_extractor), which skip async title generation and
+				// keep this placeholder as their final, user-facing title.
+				title = derived
+			} else if initialTitleSource != "" {
 				words := strings.Fields(initialTitleSource)
 				if len(words) > 5 {
 					title = strings.Join(words[:5], " ") + "..."

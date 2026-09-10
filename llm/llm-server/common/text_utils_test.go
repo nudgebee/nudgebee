@@ -261,3 +261,110 @@ func TestTruncateHead(t *testing.T) {
 		})
 	}
 }
+
+func TestDeriveTitleFromJSONQuery(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantTitle string
+		wantOK    bool
+	}{
+		{
+			name:      "grafana webhook description with markdown heading",
+			input:     `{"description":"# grafana Alert - Incident: High error rate for relay-server"}`,
+			wantTitle: "grafana Alert - Incident: High error rate for relay-server",
+			wantOK:    true,
+		},
+		{
+			name:      "description without markdown",
+			input:     `{"description":"High error rate for relay-server"}`,
+			wantTitle: "High error rate for relay-server",
+			wantOK:    true,
+		},
+		{
+			name:      "title field wins over description (priority order)",
+			input:     `{"description":"the long body","title":"Deploy failed"}`,
+			wantTitle: "Deploy failed",
+			wantOK:    true,
+		},
+		{
+			name:      "case-insensitive key",
+			input:     `{"Description":"Hello world"}`,
+			wantTitle: "Hello world",
+			wantOK:    true,
+		},
+		{
+			name:      "first non-empty line is used, later lines dropped",
+			input:     "{\"description\":\"\\n\\n## Actual Title\\nbody paragraph here\"}",
+			wantTitle: "Actual Title",
+			wantOK:    true,
+		},
+		{
+			name:      "internal whitespace collapsed",
+			input:     "{\"summary\":\"a    b\\tc\"}",
+			wantTitle: "a b c",
+			wantOK:    true,
+		},
+		{
+			name:      "plain-text query is not JSON",
+			input:     "check pods in the default namespace",
+			wantTitle: "",
+			wantOK:    false,
+		},
+		{
+			name:      "invalid JSON starting with brace",
+			input:     `{not valid json`,
+			wantTitle: "",
+			wantOK:    false,
+		},
+		{
+			name:      "JSON array is ignored (object payloads only)",
+			input:     `["a","b"]`,
+			wantTitle: "",
+			wantOK:    false,
+		},
+		{
+			name:      "object without a recognized text field",
+			input:     `{"foo":"bar","count":3}`,
+			wantTitle: "",
+			wantOK:    false,
+		},
+		{
+			name:      "recognized field present but non-string is skipped",
+			input:     `{"description":{"nested":"x"}}`,
+			wantTitle: "",
+			wantOK:    false,
+		},
+		{
+			name:      "recognized field present but empty falls through to false",
+			input:     `{"title":"   "}`,
+			wantTitle: "",
+			wantOK:    false,
+		},
+		{
+			name:      "empty object",
+			input:     `{}`,
+			wantTitle: "",
+			wantOK:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotTitle, gotOK := DeriveTitleFromJSONQuery(tt.input)
+			assert.Equal(t, tt.wantOK, gotOK)
+			assert.Equal(t, tt.wantTitle, gotTitle)
+		})
+	}
+}
+
+func TestDeriveTitleFromJSONQuery_TruncatesLongTitleAtWordBoundary(t *testing.T) {
+	long := strings.Repeat("word ", 40) // 200 chars, well over the 100-rune cap
+	input := `{"description":"` + long + `"}`
+
+	got, ok := DeriveTitleFromJSONQuery(input)
+	assert.True(t, ok)
+	assert.True(t, strings.HasSuffix(got, "…"), "truncated title should end with an ellipsis")
+	assert.LessOrEqual(t, utf8.RuneCountInString(got), maxDerivedTitleRunes+1, "capped to maxDerivedTitleRunes plus the ellipsis rune")
+	assert.False(t, strings.Contains(strings.TrimSuffix(got, "…"), "  "), "no double spaces from a mid-word cut")
+}
