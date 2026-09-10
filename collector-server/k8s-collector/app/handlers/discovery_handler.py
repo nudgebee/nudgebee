@@ -252,6 +252,21 @@ def run_async_discovery_handler(content) -> None:
         logging.error("Empty tenant or cloud_account_id in discovery data")
         return
 
+    # "data" may legitimately be [] (see above) but never None. A null payload
+    # used to reach len(data["data"]) in _process_discovery and raise TypeError,
+    # which the consumer answered by rejecting the message to the DLQ. Reject it
+    # here instead, where the account can be named. Coercing None to [] is NOT an
+    # option: on a last batch that would diff against an empty active set and
+    # mark every resource for the account deleted.
+    if data["data"] is None:
+        logging.error(
+            "Null 'data' in discovery payload for %s/%s type %s -- discarding",
+            data["cloud_account_id"],
+            data["tenant"],
+            data["type"],
+        )
+        return
+
     # Serialize processing per cloud_account_id to prevent PostgreSQL deadlocks
     # on concurrent INSERT ... ON CONFLICT into cloud_resourses for the same account.
     # Uses Redis distributed lock (works across pods); falls back to threading.Lock.
@@ -761,7 +776,7 @@ def handle_active_resources_deletion(  # noqa: C901
                   legacy/atomic path (diff against all rows for the type).
     """
     try:
-        logging.warning(
+        logging.info(
             f"PROCESSING RESOURCE DELETIONS for {cloud_account_id}/{tenant}/{resource_type}, "
             f"total_count: {total_resources_count}, batch_id: {batch_id}"
         )

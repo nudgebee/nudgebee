@@ -15,6 +15,14 @@ from metrics import prometheus_metrics
 
 logger = logging.getLogger(__name__)
 LARGE_MESSAGE_THRESHOLD_BYTES = 100 * 1024 * 1024
+MAX_CONSUMER_RESTART_BACKOFF = 60.0
+
+# Interpreter-shutdown hook ordering is load-bearing here -- see the
+# _register_atexit call at the bottom of this module for why.
+try:
+    from threading import _register_atexit as _register_thread_atexit
+except ImportError:  # pragma: no cover - private API, present since 3.9
+    _register_thread_atexit = None
 
 
 def _get_connection_string() -> str:
@@ -137,6 +145,18 @@ class RabbitConsumer(ConsumerMixin):
         self.retry_delay = retry_delay
         self.max_workers = max_workers
         self._should_stop = threading.Event()
+        # Set by run() when the drain loop has exited. stop() waits on this
+        # before tearing the executor down.
+        self._run_finished = threading.Event()
+
+        # Incremented every time the broker connection is replaced. AMQP delivery
+        # tags are scoped to a channel, so a tag captured before a reconnect is
+        # meaningless afterwards -- acking it raises PRECONDITION_FAILED (406)
+        # and the broker kills the whole channel, which forces another reconnect.
+        # Worker threads carry the epoch they were handed and skip ack/reject
+        # when it no longer matches.
+        self._connection_epoch = 0
+        self._epoch_lock = threading.Lock()
 
         # Thread pool for processing messages in background
         # This keeps the main consumer loop free to send heartbeats
@@ -151,12 +171,18 @@ class RabbitConsumer(ConsumerMixin):
         # Heartbeats are sent by the main consumer thread during drain_events(), NOT in a
         # background thread. GIL contention from worker threads can starve the main thread,
         # causing missed heartbeats. Configurable via K8S_COLLECTOR_CONSUMER_HEARTBEAT.
+        self.connection = self._new_connection()
+
+        # Declare topology once at startup
+        self._declare_topology()
+
+    @staticmethod
+    def _new_connection() -> Connection:
         from config import Configs
 
-        heartbeat = Configs.K8S_COLLECTOR_CONSUMER_HEARTBEAT
-        self.connection = Connection(
+        return Connection(
             _get_connection_string(),
-            heartbeat=heartbeat,
+            heartbeat=Configs.K8S_COLLECTOR_CONSUMER_HEARTBEAT,
             transport_options={
                 "max_retries": 3,
                 "interval_start": 0,
@@ -164,9 +190,6 @@ class RabbitConsumer(ConsumerMixin):
                 "interval_max": 0.5,
             },
         )
-
-        # Declare topology once at startup
-        self._declare_topology()
 
     def _declare_topology(self):
         """Declare exchanges, queues, and bindings with infinite retry"""
@@ -278,12 +301,48 @@ class RabbitConsumer(ConsumerMixin):
         drain_events() to raise a connection error, which ConsumerMixin catches
         and handles by reconnecting.
         """
+        self._bump_epoch()
         try:
             self.connection.close()
         except Exception:
             pass
 
-    def _process_message_in_thread(self, body: Any, message: Message) -> None:
+    def _bump_epoch(self) -> int:
+        """Invalidate every delivery tag handed out on the previous channel."""
+        with self._epoch_lock:
+            self._connection_epoch += 1
+            return self._connection_epoch
+
+    def _settle(self, message: Message, epoch: int, reject: bool = False) -> bool:
+        """ACK (or reject) a message, unless its channel has since been replaced.
+
+        Returns True when the message was settled. A stale epoch means the
+        connection was torn down while this thread was working: the broker has
+        already requeued the delivery, and settling it here would either hit a
+        dead channel or -- worse -- land a stale delivery tag on the NEW channel,
+        which RabbitMQ answers with PRECONDITION_FAILED (406) and closes.
+        Handlers are idempotent, so letting the redelivery run is correct.
+        """
+        # Read once: a reconnect between the comparison and the log line would
+        # otherwise report an epoch that is not the one we decided against.
+        current_epoch = self._connection_epoch
+        if epoch != current_epoch:
+            logger.warning(
+                "Skipping %s for %s: connection was replaced during processing "
+                "(epoch %d -> %d). Message will be redelivered.",
+                "reject" if reject else "ack",
+                self.queue_name,
+                epoch,
+                current_epoch,
+            )
+            return False
+        if reject:
+            message.reject(requeue=False)
+        else:
+            message.ack()
+        return True
+
+    def _process_message_in_thread(self, body: Any, message: Message, epoch: int) -> None:
         """Process message in background thread with retry logic.
 
         Note: Using manual ack mode (no_ack=False) to ensure message is processed
@@ -325,9 +384,9 @@ class RabbitConsumer(ConsumerMixin):
                     else:
                         logger.error("Max message processing retries exceeded (rejecting message)")
                         try:
-                            message.reject(requeue=False)
-                            prometheus_metrics.record_message_dlq(self.queue_name)
-                            prometheus_metrics.record_nack(self.queue_name, requeue=False)
+                            if self._settle(message, epoch, reject=True):
+                                prometheus_metrics.record_message_dlq(self.queue_name)
+                                prometheus_metrics.record_nack(self.queue_name, requeue=False)
                         except Exception:
                             logger.warning(
                                 "Reject failed (connection closed), forcing reconnect to free prefetch slots"
@@ -339,7 +398,9 @@ class RabbitConsumer(ConsumerMixin):
                 # Callback succeeded — now try to ACK
                 duration = time.time() - start_time
                 try:
-                    message.ack()
+                    if not self._settle(message, epoch):
+                        prometheus_metrics.record_message_processed(self.queue_name, duration)
+                        return
                     prometheus_metrics.record_ack(self.queue_name, success=True)
                 except Exception:
                     logger.warning(
@@ -389,19 +450,28 @@ class RabbitConsumer(ConsumerMixin):
         # Submit message processing to thread pool and return immediately
         # This keeps the consumer loop responsive for heartbeats
         try:
-            self._executor.submit(self._process_message_in_thread, body, message)
+            self._executor.submit(self._process_message_in_thread, body, message, self._connection_epoch)
         except RuntimeError as e:
-            logger.warning("Failed to submit message to executor: %s", e)
+            # The executor is gone -- either stop() raced us, or the interpreter
+            # is finalizing and concurrent.futures' own shutdown hook has already
+            # set its global _shutdown flag.
+            #
+            # Do NOT reject(requeue=True) per message here. The broker redelivers
+            # it immediately to this same dead consumer, so every message loops
+            # reject -> redeliver -> reject as fast as the socket allows, for the
+            # whole termination grace period. Stop consuming and drop the
+            # connection instead: the broker requeues every unacked delivery in
+            # one go, and nothing more is pulled.
+            logger.warning("Executor unavailable (%s); stopping consumer and releasing unacked messages", e)
             self._active_tasks_gauge.dec()
             prometheus_metrics.set_worker_threads(
                 self.queue_name,
                 self._active_tasks_gauge.get(),
                 self.max_workers,
             )
-            try:
-                message.reject(requeue=True)
-            except Exception:
-                pass
+            self.should_stop = True
+            self._should_stop.set()
+            self._force_reconnect()
 
     def on_connection_error(self, exc, interval):
         """Handle connection errors - will retry indefinitely"""
@@ -412,16 +482,33 @@ class RabbitConsumer(ConsumerMixin):
 
     def on_connection_revived(self):
         """Called when connection is restored"""
+        # New channel => every delivery tag issued on the old one is now invalid.
+        self._bump_epoch()
         logger.info("Connection restored successfully, resuming consumption")
         prometheus_metrics.record_reconnection(self.queue_name, success=True)
         prometheus_metrics.record_connection_established(self.queue_name, "consumer")
         prometheus_metrics.set_consumer_health(self.queue_name, healthy=True)
 
-    def stop(self):
-        """Gracefully stop the consumer"""
+    def stop(self, timeout: float = 10.0):
+        """Gracefully stop the consumer.
+
+        Order matters: the drain loop must leave `super().run()` BEFORE the
+        executor is torn down. Shutting the executor down first leaves the
+        consumer thread pulling messages it can no longer submit, which is the
+        `cannot schedule new futures after shutdown` failure.
+        """
         logger.info("Stopping consumer...")
         self._should_stop.set()
         self.should_stop = True
+
+        # ConsumerMixin polls should_stop between drain_events() calls, so this
+        # normally returns in well under a second.
+        if not self._run_finished.wait(timeout=timeout):
+            logger.warning(
+                "Consumer loop for %s did not exit within %.1fs; shutting down executor anyway",
+                self.queue_name,
+                timeout,
+            )
 
         # Shutdown thread pool gracefully
         logger.info("Waiting for worker threads to finish...")
@@ -429,17 +516,45 @@ class RabbitConsumer(ConsumerMixin):
         logger.info("All worker threads stopped")
 
     def run(self):
-        """Override run to add graceful shutdown"""
+        """Override run to restart the drain loop instead of dying on error.
+
+        A single unhandled exception used to kill this thread for good, leaving
+        a pod that is up, healthy-looking, and consuming nothing. Observed twice
+        as `'NoneType' object has no attribute 'drain_events'` after a reconnect.
+        """
         logger.info("Starting consumer for queue: %s", self.queue_name)
+        backoff = self.retry_delay
         try:
-            super().run()
-        except KeyboardInterrupt:
-            logger.info("Consumer interrupted by user")
-        except Exception as e:
-            logger.error("Consumer error: %s", e)
-            raise
+            while not self._stop_requested():
+                try:
+                    super().run()
+                    return
+                except KeyboardInterrupt:
+                    logger.info("Consumer interrupted by user")
+                    return
+                except Exception as e:
+                    if self._stop_requested():
+                        return
+                    logger.exception("Consumer error on %s, restarting in %.1fs: %s", self.queue_name, backoff, e)
+                    prometheus_metrics.set_consumer_health(self.queue_name, healthy=False)
+                    # Wait on the stop event, not time.sleep: a pod terminating
+                    # mid-backoff would otherwise hold shutdown for up to
+                    # MAX_CONSUMER_RESTART_BACKOFF and get SIGKILLed.
+                    if self._should_stop.wait(timeout=backoff):
+                        return
+                    backoff = min(backoff * 2, MAX_CONSUMER_RESTART_BACKOFF)
+                    # Close the old connection before replacing it, or the socket
+                    # and its channels leak for the lifetime of the process. A
+                    # fresh connection is cheaper than reasoning about whatever
+                    # state kombu left the old one in.
+                    self._force_reconnect()
+                    self.connection = self._new_connection()
         finally:
+            self._run_finished.set()
             logger.info("Consumer stopped")
+
+    def _stop_requested(self) -> bool:
+        return self.should_stop or self._should_stop.is_set()
 
 
 class ConsumerManager:
@@ -479,8 +594,11 @@ class ConsumerManager:
                 max_workers=max_workers,
             )
 
-            # Use non-daemon thread so it doesn't die with main process
-            thread = threading.Thread(target=consumer.run, daemon=False)
+            # Non-daemon so the thread doesn't die mid-message with the main
+            # process -- _stop_consumers_at_exit() is what lets the interpreter
+            # finish. Without that hook there is nothing to stop the loop, so
+            # daemon threads are the only way out.
+            thread = threading.Thread(target=consumer.run, daemon=_register_thread_atexit is None)
             thread.start()
 
             self.consumers[consumer_id] = (consumer, thread)
@@ -494,7 +612,7 @@ class ConsumerManager:
                 return
 
             consumer, thread = self.consumers[consumer_id]
-            consumer.stop()
+            consumer.stop(timeout=timeout)
             thread.join(timeout=timeout)
 
             if thread.is_alive():
@@ -569,3 +687,36 @@ def stop_consumer(consumer_id: str) -> None:
 def stop_all_consumers() -> None:
     """Stop all consumers"""
     consumer_manager.stop_all()
+
+
+def _stop_consumers_at_exit() -> None:
+    """Stop consumers before the interpreter tears the thread pools down.
+
+    Nothing in the process calls stop_all_consumers() on the way out: the
+    container runs `gunicorn app:app`, so app.py is imported as a module and the
+    SIGTERM handler it installs under `if __name__ == "__main__"` never runs.
+
+    Registration order is load-bearing. threading._shutdown() walks its hooks in
+    reversed() order and concurrent.futures.thread registers its own
+    (`_python_exit`, which flips the flag that makes submit() raise) when this
+    module imports ThreadPoolExecutor at the top. Registering here -- after that
+    import -- therefore puts us ahead of it, so consumers stop pulling before the
+    executor can become unusable. atexit.register would be too late: those hooks
+    run only after threading._shutdown() has joined every non-daemon thread, and
+    the consumer threads are non-daemon.
+
+    The timeout is deliberately shorter than stop_consumer's default: this runs
+    inside the pod's termination grace period (30s), sequentially across every
+    consumer. It bounds the wait for each drain loop to exit, not the subsequent
+    _executor.shutdown(wait=True) -- in-flight handlers are still allowed to
+    finish, and a slow one can still run the pod into SIGKILL. That is the
+    pre-existing trade-off and is safe: unacked messages are requeued.
+    """
+    try:
+        consumer_manager.stop_all(timeout=3.0)
+    except Exception:  # pragma: no cover - best effort during finalization
+        logger.warning("Failed to stop consumers during interpreter shutdown", exc_info=True)
+
+
+if _register_thread_atexit is not None:
+    _register_thread_atexit(_stop_consumers_at_exit)

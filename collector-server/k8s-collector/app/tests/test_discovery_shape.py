@@ -171,6 +171,24 @@ class TestDiscoveryShape(unittest.TestCase):
         self.assertEqual(pod["workload_name"], "api")
         self.assertEqual(pod["workload_type"], "Deployment")
 
+    def test_null_data_payload_is_discarded_at_the_entry_guard(self):
+        """`"data": null` must be rejected before _process_discovery sees it.
+
+        It used to reach len(data["data"]) and raise TypeError, which the
+        consumer answered by rejecting the message to the DLQ (170 discovery
+        batches lost over 7 days). Coercing None to [] would be worse: on a last
+        batch the deletion pass would diff against an empty active set and mark
+        every resource for the account deleted.
+        """
+        message = _service_message()
+        message["data"] = None
+
+        with mock.patch.object(dh, "_process_discovery") as process:
+            captured = self._run_and_capture(message)
+
+        process.assert_not_called()
+        self.assertEqual(captured, {})
+
 
 if __name__ == "__main__":
     unittest.main()
