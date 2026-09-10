@@ -1147,6 +1147,11 @@ const KnowledgeBaseTab = ({ accountId }) => {
               >
                 {kb.name}
               </Typography>
+              {kb.kb_type === 'manual' && (
+                <Box component='span' sx={{ display: 'inline-flex', flexShrink: 0 }}>
+                  <Label text={kb.note_category === 'sop' ? 'SOP' : 'Fact'} tone='neutral' />
+                </Box>
+              )}
             </Box>
           );
         },
