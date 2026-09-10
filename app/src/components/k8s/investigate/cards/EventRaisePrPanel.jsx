@@ -4,6 +4,7 @@ import { Select } from '@ui/Select';
 import { Button } from '@ui/Button';
 import { Link } from '@ui/Link';
 import { Modal } from '@ui/Modal';
+import SimpleDiffViewer from '@shared/viewers/SimpleDiffViewer';
 import apiTickets from '@api1/tickets';
 import apiRecommendations from '@api1/recommendation';
 import { toast as snackbar } from '@ui/Toast';
@@ -36,7 +37,7 @@ const shortRepo = (repoUrl) => {
  * adds are passed as intent — the agent re-applies or adapts the fix to the
  * current code, it does not blindly replay a possibly-stale patch.
  */
-const EventRaisePrPanel = ({ data, repoUrl, filePath }) => {
+const EventRaisePrPanel = ({ data, repoUrl, filePath, gitDiff, sx }) => {
   const [expanded, setExpanded] = useState(false);
   const [integrations, setIntegrations] = useState([]);
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
@@ -120,6 +121,9 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath }) => {
 
   const noIntegrations = expanded && !loadingIntegrations && options.length === 0;
 
+  // The default top margin separates the trigger from the diff above it in the analysis; a
+  // remediation row passes sx to drop it.
+
   const closeModal = () => {
     if (submitting) {
       return;
@@ -128,12 +132,12 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath }) => {
   };
 
   return (
-    <Box sx={{ mt: 'var(--ds-space-3)' }}>
+    <Box sx={{ mt: 'var(--ds-space-3)', ...sx }}>
       <Button size='sm' onClick={() => setExpanded(true)}>
         Raise PR
       </Button>
 
-      <Modal open={expanded} onClose={closeModal} title='Raise a pull request' width='sm'>
+      <Modal open={expanded} onClose={closeModal} title='Raise a pull request' width={gitDiff ? 'md' : 'sm'}>
         <Box>
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], mb: 'var(--ds-space-4)' }}>
             Raises a pull request fixing this issue in <strong>{shortRepo(repoUrl)}</strong>
@@ -144,6 +148,24 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath }) => {
               </>
             ) : null}
           </Typography>
+
+          {/* What the PR will change, at the point of approving it. Reached from the remediation
+              list there is no diff anywhere on the page, so without this the operator approves a
+              code change to their repository sight unseen. */}
+          {gitDiff && (
+            <Box sx={{ mb: 'var(--ds-space-4)' }}>
+              {/* Its own scroll area so Cancel / Raise PR stay reachable on a six-file diff. */}
+              <Box sx={{ maxHeight: '45vh', overflowY: 'auto' }}>
+                <SimpleDiffViewer gitDiff={gitDiff} fileName={filePath || 'code'} defaultExpanded title='Proposed change' showHeader />
+              </Box>
+              {/* The agent re-derives the fix against the current code rather than replaying this
+                  patch, so it is a proposal, not the final diff. Saying so here stops the PR
+                  reading as a broken promise when it comes back different. */}
+              <Typography sx={{ mt: 'var(--ds-space-2)', fontSize: 'var(--ds-text-caption)', color: ds.gray[600] }}>
+                The agent re-applies this fix against the current code, so the final pull request may differ.
+              </Typography>
+            </Box>
+          )}
 
           <Box sx={{ mb: 'var(--ds-space-4)' }}>
             <Select

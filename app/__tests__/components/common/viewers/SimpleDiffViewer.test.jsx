@@ -70,3 +70,59 @@ describe('SimpleDiffViewer', () => {
     expect(screen.getByText('my-file.ts')).toBeInTheDocument();
   });
 });
+
+// A fix that spans several files arrives as one diff string with a "diff --git" header per file.
+// Parsed as a single blob, every hunk landed under the first file's name with the counts summed into
+// it — an operator approving a PR from the remediation list would have read someone else's changes
+// attributed to the wrong file.
+describe('SimpleDiffViewer with a multi-file diff', () => {
+  const multiFileDiff = `diff --git a/src/one.js b/src/one.js
+index aaa111..bbb222 100644
+--- a/src/one.js
++++ b/src/one.js
+@@ -1,3 +1,3 @@
+ const a = 1;
+-const b = 2;
++const b = 3;
+diff --git a/src/two.js b/src/two.js
+index ccc333..ddd444 100644
+--- a/src/two.js
++++ b/src/two.js
+@@ -10,2 +10,3 @@
+ const c = 4;
++const d = 5;`;
+
+  it('names every file in the change, not just the first', () => {
+    render(<SimpleDiffViewer gitDiff={multiFileDiff} />);
+    expect(screen.getByText('src/one.js')).toBeInTheDocument();
+    expect(screen.getByText('src/two.js')).toBeInTheDocument();
+  });
+
+  it("counts each file's changes against that file", () => {
+    render(<SimpleDiffViewer gitDiff={multiFileDiff} />);
+    // one.js: +1/-1. two.js: +1/-0. Summed into one file they would read +2/-1.
+    expect(screen.getAllByText('+1')).toHaveLength(2);
+    expect(screen.getByText('-1')).toBeInTheDocument();
+    expect(screen.getByText('-0')).toBeInTheDocument();
+  });
+
+  // A caller that knows one file path passes it as `fileName` (EventRaisePrPanel passes the
+  // analysis's file_path). It is the FALLBACK for a section with no "diff --git" header, never an
+  // override — otherwise every file in a multi-file diff would render under that one name.
+  it('lets each section keep its own name even when a fileName prop is passed', () => {
+    render(<SimpleDiffViewer gitDiff={multiFileDiff} fileName='src/one.js' />);
+    expect(screen.getByText('src/one.js')).toBeInTheDocument();
+    expect(screen.getByText('src/two.js')).toBeInTheDocument();
+  });
+
+  it('falls back to the fileName prop only for a section with no header', () => {
+    render(<SimpleDiffViewer gitDiff={'@@ -1,2 +1,2 @@\n-a\n+b'} fileName='headerless.txt' />);
+    expect(screen.getByText('headerless.txt')).toBeInTheDocument();
+  });
+
+  it('keeps a single-file diff on one block', () => {
+    render(<SimpleDiffViewer gitDiff={sampleDiff} />);
+    expect(screen.getByText('src/app.js')).toBeInTheDocument();
+    expect(screen.getAllByText(/^[+-]\d+$/)).toHaveLength(2);
+  });
+});

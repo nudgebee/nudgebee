@@ -80,6 +80,10 @@ const ACTION_KIND_BY_CARD = {
   // Raising the limit stops this class of OOM rather than papering over it — the workload genuinely
   // needed the headroom. It is a fix in the sense that matters here: the condition does not return.
   MemoryAllocationCard: 'fix',
+  // The analysis identified the cause in the source and the agent changes it there, so once the PR
+  // is merged and deployed the condition does not return. The effect line below carries the caveat
+  // that it changes nothing in the cluster before then.
+  AskAiCard: 'fix',
 };
 
 export const ACTION_KIND_META = {
@@ -107,6 +111,7 @@ export const describeActionKind = (cardId) => {
 const ACTION_EFFECT_BY_CARD = {
   LastDeploymentCard: 'Puts the workload back on the spec it ran before the change · rolling restart · reversible',
   MemoryAllocationCard: 'Changes the container resource requests and limits · rolling restart · reversible',
+  AskAiCard: 'Opens a pull request against the mapped source repository · nothing changes in the cluster until it is merged and deployed',
 };
 
 /**
@@ -223,6 +228,7 @@ export const describeRevertUndoPreview = (card) => {
 const ACTION_TITLE_BY_CARD = {
   LastDeploymentCard: 'Revert the last deployment change',
   MemoryAllocationCard: 'Adjust resource requests and limits',
+  AskAiCard: 'Raise a pull request with the proposed code fix',
 };
 
 /**
@@ -232,6 +238,19 @@ const ACTION_TITLE_BY_CARD = {
  * @param {string} fallback
  */
 export const describeActionTitle = (cardId, fallback) => ACTION_TITLE_BY_CARD[cardKey(cardId)] || fallback || 'Run this action';
+
+/**
+ * Whether a card is offering a way to act on the event right now.
+ *
+ * Most cards advertise one with `resolveButton`; a few only carry a `ResolveComponent`, so either
+ * counts. AskAiCard is the exception: it always has a ResolveComponent, and sets `resolveButton`
+ * only once log analysis has stored a fix diff for a mapped source repo — judged by the OR it would
+ * list a row on every event, most of them opening on nothing to raise.
+ *
+ * @param {{id?: string, resolveButton?: boolean, ResolveComponent?: unknown}} option
+ */
+export const cardOffersAction = (option) =>
+  cardKey(option?.id) === 'AskAiCard' ? Boolean(option?.resolveButton) : Boolean(option?.resolveButton || option?.ResolveComponent);
 
 /**
  * The object an undo will change, for the confirmation header. The revert card carries the real

@@ -7,6 +7,7 @@ import {
   describeUndoTarget,
   describeBeforeStatePreview,
   describeRevertUndoPreview,
+  cardOffersAction,
   RESOLUTION_SLOW_AFTER_MS,
 } from '@components/k8s/investigate/resolutionStatus';
 
@@ -86,12 +87,14 @@ describe('describeActionKind', () => {
   it('classifies the actions we can classify honestly', () => {
     expect(describeActionKind('LastDeploymentCard')).toMatchObject({ kind: 'fix', text: 'Fix', tone: 'success' });
     expect(describeActionKind('MemoryAllocationCard')).toMatchObject({ kind: 'fix', tone: 'success' });
+    // The code fix changes the cause in the source; its effect line carries the "not until it is
+    // merged and deployed" caveat that the chip alone cannot.
+    expect(describeActionKind('AskAiCard')).toMatchObject({ kind: 'fix', tone: 'success' });
   });
 
   // An unlabelled action is honest; a wrongly labelled one tells the operator the cause is gone
   // when it may not be.
   it('returns nothing rather than guessing', () => {
-    expect(describeActionKind('AskAiCard')).toBeNull();
     expect(describeActionKind('SomeFutureCard')).toBeNull();
     expect(describeActionKind(undefined)).toBeNull();
   });
@@ -113,10 +116,40 @@ describe('describeActionEffect', () => {
     expect(describeActionEffect('LastDeploymentCard')).toMatch(/reversible/i);
   });
 
+  // The code fix is the one action that changes nothing when it runs — approving it opens a PR.
+  // Reading it beside actions that restart pods, an operator has to be told that.
+  it('says when an action does not touch the cluster', () => {
+    expect(describeActionEffect('AskAiCard')).toMatch(/pull request/i);
+    expect(describeActionEffect('AskAiCard')).toMatch(/until it is merged and deployed/i);
+  });
+
   // A wrong effect description is worse than none: it would be approved on the strength of it.
   it('returns nothing for actions we have not described', () => {
-    expect(describeActionEffect('AskAiCard')).toBeNull();
+    expect(describeActionEffect('SomeFutureCard')).toBeNull();
     expect(describeActionEffect(undefined)).toBeNull();
+  });
+});
+
+// The Remediation tab is the one place that claims to list every way to fix an event, and its badge
+// counts what this returns.
+describe('cardOffersAction', () => {
+  it('counts a card that advertises a resolve button or carries a resolve component', () => {
+    expect(cardOffersAction({ id: 'MemoryAllocationCard', resolveButton: true })).toBe(true);
+    expect(cardOffersAction({ id: 'LastDeploymentCard_0', ResolveComponent: () => null })).toBe(true);
+    expect(cardOffersAction({ id: 'MemoryAllocationCard', resolveButton: false })).toBe(false);
+  });
+
+  // AskAiCard always carries a ResolveComponent and turns resolveButton on only once log analysis
+  // stored a fix diff for a mapped repo. Judged by the OR, every event would list a code-fix row
+  // that opens on nothing to raise.
+  it('lists the code fix only once there is a diff to raise', () => {
+    expect(cardOffersAction({ id: 'AskAiCard', resolveButton: true, ResolveComponent: () => null })).toBe(true);
+    expect(cardOffersAction({ id: 'AskAiCard', resolveButton: false, ResolveComponent: () => null })).toBe(false);
+  });
+
+  it('handles a missing or malformed option', () => {
+    expect(cardOffersAction(undefined)).toBe(false);
+    expect(cardOffersAction({})).toBe(false);
   });
 });
 
