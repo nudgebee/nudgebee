@@ -23,6 +23,12 @@ var (
 	WS_RequestDuration  metric.Float64Histogram
 	WS_RequestTimeouts  metric.Int64Counter
 	WS_RequestErrors    metric.Int64Counter
+
+	// WS_RepliesDelivered counts agent replies by how they reached the waiting
+	// caller: delivery="local" when handed over in-process, "amqp" when
+	// published back through the broker for another replica to consume, and
+	// "dropped" when the request was ours but its caller had already timed out.
+	WS_RepliesDelivered metric.Int64Counter
 )
 
 // Init initializes all OTel instruments using the given meter.
@@ -89,6 +95,14 @@ func Init(meter metric.Meter) error {
 	WS_MessageErrors, err = meter.Int64Counter(
 		"nb_relay_ws_message_errors_total",
 		metric.WithDescription("Total errors encountered forwarding WebSocket messages"),
+	)
+	if err != nil {
+		return err
+	}
+
+	WS_RepliesDelivered, err = meter.Int64Counter(
+		"nb_relay_ws_replies_delivered_total",
+		metric.WithDescription("Agent replies by delivery route: in-process or republished via AMQP"),
 	)
 	if err != nil {
 		return err

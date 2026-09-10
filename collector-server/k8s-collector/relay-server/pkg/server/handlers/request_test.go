@@ -89,9 +89,10 @@ func (f *fakeStore) QueryProxyDatasources(ctx context.Context, accountID string)
 
 // fakeRPCClient implements the minimal Call signature.
 type fakeRPCClient struct {
-	resp  []byte
-	err   error
-	calls []rpcCall
+	resp         []byte
+	err          error
+	calls        []rpcCall
+	deliverLocal bool
 }
 
 type rpcCall struct {
@@ -109,6 +110,12 @@ func (f fakeRPCClient) Call(
 ) ([]byte, error) {
 	f.calls = append(f.calls, rpcCall{exchange, routingKey, payload, requestID}) //nolint:staticcheck
 	return f.resp, f.err
+}
+
+func (f fakeRPCClient) InstanceID() string { return "fake-instance" }
+
+func (f fakeRPCClient) DeliverLocal(corrID string, body []byte) bool {
+	return f.deliverLocal
 }
 
 func (f fakeRPCClient) Close() {

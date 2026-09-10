@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/tidwall/gjson"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
@@ -44,6 +45,30 @@ var upgrader = websocket.Upgrader{
 // pins the relationship.
 const relaySessionHeartbeatInterval = 10 * time.Minute
 
+// deliverReplyLocally hands reply to a caller waiting inside this process.
+//
+// It reports whether a caller took the reply, and separately whether the
+// request was raised by this process at all. Those differ when the local caller
+// has already timed out, and the distinction matters: the reply is then owed to
+// nobody, because the request named us as its publisher and correlation IDs are
+// unique per publisher, not globally — NewRequestHandler mints them from
+// time.Now().UnixNano() when the caller supplies none. Republishing such a reply
+// would send it to our own reply queue for our own consumer to discard.
+//
+// That per-publisher scoping is also why the handover is only attempted when
+// the header names this process: matching a correlation ID raised on another
+// replica could wake an unrelated request with someone else's payload.
+func deliverReplyLocally(rpcClient mq.RPCClient, d amqp.Delivery, reply []byte) (delivered, isLocal bool) {
+	if rpcClient == nil {
+		return false, false
+	}
+	instance, _ := d.Headers[mq.HeaderRelayInstance].(string)
+	if instance == "" || instance != rpcClient.InstanceID() {
+		return false, false
+	}
+	return rpcClient.DeliverLocal(d.CorrelationId, reply), true
+}
+
 func RegisterHandler(
 	store db.AgentStore,
 	connMgr *mq.ConnectionManager,
@@ -51,6 +76,7 @@ func RegisterHandler(
 	cfg *config.Config,
 	exchange string,
 	signer *signing.Signer,
+	rpcClient mq.RPCClient,
 	roottracer *trace.Tracer,
 	rootmeter *metric.Meter,
 	rootLogger *slog.Logger,
@@ -456,6 +482,31 @@ func RegisterHandler(
 							case reply := <-ch:
 								deliveryLogger.Info("received reply from agent")
 
+								// The relay publishes the request and, here, receives its
+								// reply. When the caller blocked in rpcClient.Call sits in
+								// this same process — every request at the chart's default
+								// replicaCount: 1 — hand the reply over directly.
+								// Publishing would serialise a multi-megabyte payload out
+								// to RabbitMQ purely for our own consumer to reassemble.
+								//
+								// A request we published ourselves is owed to nobody else,
+								// so when its caller has already timed out the reply is
+								// dropped rather than republished onto our own reply queue
+								// for our own consumer to discard.
+								if delivered, isLocal := deliverReplyLocally(rpcClient, d, reply); isLocal {
+									route := "local"
+									if delivered {
+										deliveryLogger.Info("reply delivered in-process")
+									} else {
+										route = "dropped"
+										deliveryLogger.Warn("local caller gone, dropping reply")
+									}
+									d.Ack(false) // nolint
+									metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+										metrics.AttrAccount(accountID), attribute.String("delivery", route)))
+									return nil
+								}
+
 								err := sessCh.Publish(
 									"", d.ReplyTo, false, false,
 									amqp.Publishing{
@@ -472,6 +523,8 @@ func RegisterHandler(
 								} else {
 									deliveryLogger.Info("reply published successfully")
 									d.Ack(false) // nolint
+									metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+										metrics.AttrAccount(accountID), attribute.String("delivery", "amqp")))
 								}
 								logger.Debug("reply sent", "corr_id", d.CorrelationId, "account", accountID)
 							case <-timeout.C:

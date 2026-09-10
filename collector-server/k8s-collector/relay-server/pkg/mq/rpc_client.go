@@ -10,13 +10,24 @@ import (
 	"log/slog"
 	"nudgebee/relay-server/pkg/config"
 
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
 )
 
+// HeaderRelayInstance names the publisher's RPCClient instance on each request,
+// so the register session can tell whether the caller awaiting this correlation
+// ID lives in its own process. See DeliverLocal.
+const HeaderRelayInstance = "x-relay-instance"
+
 // RPCClient defines a simple RabbitMQ-backed RPC interface.
 type RPCClient interface {
 	Call(ctx context.Context, exchange, routingKey string, payload []byte, corrID string) ([]byte, error)
+	// InstanceID identifies this client, and so this process, on the wire.
+	InstanceID() string
+	// DeliverLocal hands a reply straight to a caller blocked in Call within
+	// this process, reporting whether one was waiting.
+	DeliverLocal(corrID string, body []byte) bool
 	Close()
 }
 
@@ -33,6 +44,7 @@ type ClientImpl struct {
 	initOnce   sync.Once
 	logger     *slog.Logger
 	cfg        *config.Config
+	instanceID string
 }
 
 // NewRPCClient constructs and connects an RPCClient, wiring in auto-reconnect.
@@ -43,6 +55,7 @@ func NewRPCClient(cm *ConnectionManager, logger *slog.Logger, cfg *config.Config
 		closeErrCh: make(chan *amqp.Error, 1),
 		logger:     logger,
 		cfg:        cfg,
+		instanceID: uuid.NewString(),
 	}
 	// initial setup
 	if err := client.reconnect(); err != nil {
@@ -161,16 +174,45 @@ func (c *ClientImpl) watchDisconnect() {
 func (c *ClientImpl) dispatchLoop(msgs <-chan amqp.Delivery) {
 	c.logger.Info("RPCClient: dispatch loop started")
 	for d := range msgs {
-		if chAny, ok := c.pending.Load(d.CorrelationId); ok {
-			respCh := chAny.(chan []byte)
-			respCh <- d.Body
-			close(respCh)
-			c.pending.Delete(d.CorrelationId)
-		} else {
+		// LoadAndDelete so this and DeliverLocal retire a pending entry
+		// atomically — whichever path reaches the caller first wins, and the
+		// other cannot send on an already-closed channel.
+		if !c.deliver(d.CorrelationId, d.Body) {
 			c.logger.Warn("RPCClient: no pending channel for corrID", "corrID", d.CorrelationId)
 		}
 	}
 	c.logger.Warn("RPCClient: reply consumer closed")
+}
+
+// deliver hands body to the caller waiting on corrID, reporting whether there
+// was one. The response channel is buffered, so this never blocks even if the
+// caller has already given up.
+func (c *ClientImpl) deliver(corrID string, body []byte) bool {
+	chAny, ok := c.pending.LoadAndDelete(corrID)
+	if !ok {
+		return false
+	}
+	respCh := chAny.(chan []byte)
+	respCh <- body
+	close(respCh)
+	return true
+}
+
+// InstanceID identifies this client, and so this process, on the wire.
+func (c *ClientImpl) InstanceID() string { return c.instanceID }
+
+// DeliverLocal hands a reply straight to a caller blocked in Call within this
+// process, bypassing the broker.
+//
+// The relay is both the publisher of a request and — via the register session
+// holding the agent's WebSocket — the receiver of its reply. When both sit in
+// the same process, which is every request at the chart's default
+// replicaCount: 1, publishing the reply serialises a payload out to RabbitMQ
+// only for this client's own consumer to reassemble it. Callers must fall back
+// to publishing when this returns false: the waiter is then on another replica
+// (or has already timed out).
+func (c *ClientImpl) DeliverLocal(corrID string, body []byte) bool {
+	return c.deliver(corrID, body)
 }
 
 // Call sends an RPC request and blocks until a reply or context cancellation.
@@ -190,6 +232,10 @@ func (c *ClientImpl) Call(
 	// in-cluster agent consuming this message can continue the same trace.
 	headers := amqp.Table{}
 	otel.GetTextMapPropagator().Inject(ctx, amqpHeaderCarrier(headers))
+
+	// Name ourselves so the register session consuming this request knows
+	// whether the caller it must reply to is in its own process.
+	headers[HeaderRelayInstance] = c.instanceID
 
 	// publish the RPC request
 	err := c.pubCh.PublishWithContext(

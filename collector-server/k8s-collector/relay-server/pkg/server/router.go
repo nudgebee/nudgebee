@@ -106,7 +106,7 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 	// 4) Agent registration (WebSocket), protected by Basic‐auth on agent keys
 	r.GET("/register",
 		middleware.AgentAuthMiddleware(store),
-		handlers.RegisterHandler(store, connMgr, topo, cfg, cfg.RabbitMQ.ExchangeName, signer, tracer, meter, logger),
+		handlers.RegisterHandler(store, connMgr, topo, cfg, cfg.RabbitMQ.ExchangeName, signer, rpcClient, tracer, meter, logger),
 	)
 
 	// 5) Interactive shell over WS, protected by client secret
