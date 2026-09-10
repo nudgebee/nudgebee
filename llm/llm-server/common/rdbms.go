@@ -441,7 +441,16 @@ func GetAllDatabaseStats() map[string]DatabaseHealth {
 
 var databaseManagerHooks map[DatabaseManagerType]func() (*DatabaseManager, error) = make(map[DatabaseManagerType]func() (*DatabaseManager, error))
 
+// RegisterDatabaseManagerHook replaces the factory and invalidates its cached
+// manager. The caller retains ownership of the previous manager's connections.
 func RegisterDatabaseManagerHook(name DatabaseManagerType, callback func() (*DatabaseManager, error)) {
+	databaseManagerMutex.Lock()
+	defer databaseManagerMutex.Unlock()
+	delete(databaseManager, name)
+	if callback == nil {
+		delete(databaseManagerHooks, name)
+		return
+	}
 	databaseManagerHooks[name] = callback
 }
 
