@@ -3129,6 +3129,8 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       data.kind = query.workloadType;
       data.workload_namespace = query.namespaceName || query.namespace_name;
       data.workload_name = query.workloadName || query.workload_name;
+      // Scopes usage to one container of the workload's pods when asked.
+      if (query.containerName || query.container_name) data.container_name = query.containerName || query.container_name;
     } else if (query.namespaceName || query.namespace_name) {
       data.kind = 'namespace';
       data.workload_namespace = query.namespaceName || query.namespace_name;
@@ -3159,6 +3161,11 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     const cpuUsageVals = getDataByKey('cpu_usage'); // key from your API
     const cpuRequestVals = getDataByKey('cpu_request'); // key from your API
     const cpuLimitVals = getDataByKey('cpu_limit'); // key from your API
+    // Per-pod companions, present only when they were asked for and the
+    // provider knows them (Prometheus does; the others return nothing).
+    const podCountVals = getDataByKey('pod_count');
+    const cpuMaxPodVals = getDataByKey('cpu_usage_max_pod');
+    const memMaxPodVals = getDataByKey('memory_usage_max_pod');
     const timestamps = metricsResults.find((item: any) => item.payload?.[0]?.timestamps)?.payload[0].timestamps || [];
     const result = timestamps.map((timestamp: number, index: number) => {
       return {
@@ -3169,6 +3176,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         avg_memory_used: parseFloat(memUsageVals[index]) || null,
         avg_memory_request: parseFloat(memRequestVals[index]) || null,
         avg_memory_limit: parseFloat(memLimitVals[index]) || null,
+        pod_count: parseFloat(podCountVals[index]) || null,
+        max_pod_cpu_used: parseFloat(cpuMaxPodVals[index]) || null,
+        max_pod_memory_used: parseFloat(memMaxPodVals[index]) || null,
         sum_gpu_used: null,
         sum_gpu_temp: null,
         sum_gpu_mem_temp: null,

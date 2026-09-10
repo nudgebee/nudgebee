@@ -287,6 +287,15 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_requests{__CLUSTER__ %sresource="memory"})`, containerFilter)
 		case "memory_limit":
 			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_limits{__CLUSTER__ %sresource="memory"})`, containerFilter)
+		// Per-pod companions to the summed resource metrics: the running pod count
+		// turns a workload total into an average per pod, and the busiest pod shows
+		// what the average hides. Same filter as the totals so they divide cleanly.
+		case "pod_count":
+			queries[metricKey] = fmt.Sprintf(`count(count by (pod) (container_memory_working_set_bytes{__CLUSTER__ %s}))`, containerFilter)
+		case "cpu_usage_max_pod":
+			queries[metricKey] = fmt.Sprintf(`max(sum by (pod) (rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m])))`, containerFilter)
+		case "memory_usage_max_pod":
+			queries[metricKey] = fmt.Sprintf(`max(sum by (pod) (container_memory_working_set_bytes{__CLUSTER__ %s}))`, containerFilter)
 		case "disk_total":
 			queries[metricKey] = fmt.Sprintf(`sum(node_filesystem_size_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"}) or sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) or sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"})`, safeMeta.InternalIP, safeMeta.NodeName, safeMeta.NodeIP)
 		case "disk_used":
