@@ -6,7 +6,7 @@ from notifications_server.message_templates.slack.daily_highlight import (
     Insight,
     categorize_insights,
     Recommendation,
-    format_rule_name,
+    format_recommendation_label,
     calculate_trend,
     group_events_by_account,
     group_recommendations_by_account,
@@ -36,9 +36,9 @@ def _format_recommendations(recs: List[Recommendation]) -> List[Dict[str, Any]]:
     items = [{"type": "TextBlock", "text": f"{Emojis.New.value} Recommendations", "weight": "Bolder"}]
     for rec in sorted(recs, key=lambda x: x.sum_estimated_savings, reverse=True)[:5]:
         if rec.sum_estimated_savings > 0:
-            text = f"• {rec.count} {format_rule_name(rec.rule_name)} – savings: ${rec.sum_estimated_savings:.2f}/month"
+            text = f"• {rec.count} {format_recommendation_label(rec)} – savings: ${rec.sum_estimated_savings:.2f}/month"
         else:
-            text = f"• {rec.count} {format_rule_name(rec.rule_name)}"
+            text = f"• {rec.count} {format_recommendation_label(rec)}"
         items.append({"type": "TextBlock", "text": text, "wrap": True})
     return items
 
