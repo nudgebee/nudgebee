@@ -92,6 +92,23 @@ class MermaidSegment:
     text: str
 
 
+def _meaningful_lines(code: str) -> List[str]:
+    """``code``'s lines with blanks and ``%%`` comments removed, and a leading
+    YAML frontmatter block (``---`` / ... / ``---``, which real Mermaid allows
+    ahead of the diagram type) dropped - so the first element is the actual
+    diagram-type line. Mirrors mermaid_graph._strip_yaml_frontmatter; kept
+    here too since this module classifies diagrams without going through that
+    parser."""
+    lines = [ln.strip() for ln in code.splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith("%%")]
+    if lines and lines[0] == "---":
+        try:
+            lines = lines[lines.index("---", 1) + 1 :]
+        except ValueError:
+            pass  # no closing fence - leave as-is, downstream just won't match a diagram type
+    return lines
+
+
 def _is_mermaid_fence(lang: str, content: str) -> bool:
     """Whether a ``` fence is a Mermaid diagram: either explicitly tagged
     ```mermaid, or untagged with a body that starts with a recognized
@@ -100,10 +117,7 @@ def _is_mermaid_fence(lang: str, content: str) -> bool:
         return True
     if lang:
         return False  # an explicit non-mermaid tag, e.g. ```python, ```bash
-    for line in content.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("%%"):
-            continue
+    for stripped in _meaningful_lines(content):
         first_word = stripped.split()[0].lower()
         return first_word.startswith("xychart") or first_word in _MERMAID_DIAGRAM_KEYWORDS
     return False
@@ -190,10 +204,7 @@ def _render_flowchart(code: str, upload_image: ImageUploader, diagram_number: Op
 
 
 def _diagram_type(code: str) -> str:
-    for line in code.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("%%"):
-            continue
+    for stripped in _meaningful_lines(code):
         first_word = stripped.split()[0].lower()
         if first_word.startswith("xychart"):
             return "xychart"

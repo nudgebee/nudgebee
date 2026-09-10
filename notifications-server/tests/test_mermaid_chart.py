@@ -450,3 +450,15 @@ class TestRenderFlowchartImageTier:
         assert isinstance(blocks[0], ContextBlock)
         assert "Flowchart" in blocks[0].text
         assert not any(isinstance(b, SlackFileImageBlock) for b in blocks)
+
+    def test_yaml_frontmatter_diagram_still_reaches_the_image_tier(self, monkeypatch):
+        # A leading `---` YAML frontmatter block (real Mermaid + llm-server's
+        # own validator both allow it) must not make _diagram_type see "---"
+        # instead of "graph" and skip the image tier.
+        monkeypatch.setattr(mermaid_chart, "render_flowchart_image", lambda code: b"fake-png")
+        code = "---\ntitle: T\nconfig:\n  theme: dark\n---\n" + FLOWCHART
+
+        blocks = render_mermaid_code(code, upload_image=lambda filename, contents: "F1")
+
+        assert any(isinstance(b, SlackFileImageBlock) for b in blocks)
+        assert not any(isinstance(b, ContextBlock) for b in blocks)
