@@ -89,109 +89,6 @@ const replaceCurrencyInText = (text, targetCurrencySymbol) => {
   return text.replace(/\$(\d[\d,]*\.?\d*)/g, `${targetCurrencySymbol}$1`);
 };
 
-const FILTER_COLUMN_TO_PARAM = {
-  status: 'status',
-  eventstatus: 'eventStatus',
-  category: 'category',
-  severity: 'severity',
-  rule_name: 'rule_name',
-  source: 'source',
-  aggregation_key: 'aggregation_key',
-  subject_name: 'subject_name',
-};
-
-const applyFiltersToLink = (baseLink, filters) => {
-  if (!baseLink || !filters || filters.length === 0) return baseLink;
-  const hashIndex = baseLink.indexOf('#');
-  const [pathAndQuery, hash] = hashIndex >= 0 ? [baseLink.slice(0, hashIndex), baseLink.slice(hashIndex)] : [baseLink, ''];
-  let result = pathAndQuery;
-  for (const filter of filters) {
-    if (!filter?.value || (Array.isArray(filter?.value) && filter?.value.length === 0)) {
-      continue;
-    }
-    const param = FILTER_COLUMN_TO_PARAM[filter.column?.toLowerCase()];
-    if (!param) continue;
-    const paramRegex = new RegExp(`[?&]${param}=`);
-    if (paramRegex.test(result)) continue;
-    const value = Array.isArray(filter.value) ? filter.value.join(',') : filter.value;
-    const separator = result.includes('?') ? '&' : '?';
-    result = `${result}${separator}${param}=${value}`;
-  }
-  return `${result}${hash}`;
-};
-
-// Extracts named placeholder values from a title using an insight_format template.
-// e.g. format = "Most frequent issue: {aggregation_key} ({} FIRING events)"
-//      title  = "Most frequent issue: RabbitmqUnroutableMessages (2058 FIRING events)"
-//      returns { aggregation_key: "RabbitmqUnroutableMessages" }
-//
-// Named placeholders  {key} → regex named capture group (?<key>.+?)
-// Unnamed placeholders {}   → non-capturing group        .+?   (value discarded)
-const extractFromFormat = (format, title) => {
-  if (!format || !title) return {};
-
-  const placeholderRegex = /\{(\w*)\}/g;
-  let match;
-  const placeholders = [];
-  while ((match = placeholderRegex.exec(format)) !== null) {
-    placeholders.push({ name: match[1], index: match.index, length: match[0].length });
-  }
-  if (placeholders.length === 0) return {};
-
-  let regexStr = '^';
-  let lastIndex = 0;
-  for (const ph of placeholders) {
-    regexStr += format.slice(lastIndex, ph.index).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    regexStr += ph.name ? `(?<${ph.name}>.+?)` : '.+?';
-    lastIndex = ph.index + ph.length;
-  }
-  regexStr += format.slice(lastIndex).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$';
-
-  try {
-    return new RegExp(regexStr).exec(title)?.groups ?? {};
-  } catch {
-    return {};
-  }
-};
-
-const specialUniqueIdsForApplyFilter = {
-  129: {
-    keys: ['aggregation_key'],
-    defaultFilters: [
-      {
-        column: 'eventStatus',
-        value: 'FIRING',
-      },
-    ],
-  },
-  127: {
-    keys: ['subject_name'],
-    defaultFilters: null,
-  },
-  17: {
-    keys: [],
-    defaultFilters: [
-      {
-        column: 'severity',
-        value: ['Critical', 'High'],
-      },
-      {
-        column: 'status',
-        value: 'Open',
-      },
-    ],
-  },
-  114: {
-    keys: [],
-    defaultFilters: [
-      {
-        column: 'severity',
-        value: ['Low', 'Medium'],
-      },
-    ],
-  },
-};
-
 // ─── Module-level helpers ─────────────────────────────────────────────────
 
 const getApplicationLink = (rule, workloadFqdn) => {
@@ -219,20 +116,10 @@ const getApplicationLink = (rule, workloadFqdn) => {
   return `${url.pathname}?${url.searchParams.toString()}${url.hash}`;
 };
 
-const buildInsightLink = (item) => {
-  let link = item?.rule?.redirect_url || null;
-  if (link && item.rule?.filters) {
-    link = applyFiltersToLink(link, item.rule.filters);
-  }
-  if (link && specialUniqueIdsForApplyFilter[item?.rule?.unique_id]) {
-    const { keys, defaultFilters } = specialUniqueIdsForApplyFilter[item.rule.unique_id];
-    if (defaultFilters) link = applyFiltersToLink(link, defaultFilters);
-    const extracted = extractFromFormat(item.rule.insight_format, item.title);
-    const extractedFilters = keys.filter((key) => extracted[key]).map((key) => ({ column: key, value: extracted[key] }));
-    link = applyFiltersToLink(link, extractedFilters);
-  }
-  return link;
-};
+// The backend (Go computeRedirectURL) is the single source of truth for insight
+// deep-links: it emits a complete, filter-applied relative URL, recomputed live
+// on the insight-list endpoint. Consume it verbatim.
+const buildInsightLink = (item) => item?.rule?.redirect_url || null;
 
 const getInsightSeverity = (item) => {
   const cat = item?.rule?.category || item?.type;

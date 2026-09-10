@@ -79,7 +79,7 @@ func tryProcessRule(ctx *security.RequestContext, rule InsightRule, accountIdAnd
 		}
 
 		tp := accountIdAndTenantIds[insights[i].AccountID]
-		insights[i].Rule.RedirectURL = computeRedirectURL(rule, insights[i].AccountID, tp.cloudProvider)
+		insights[i].Rule.RedirectURL = computeRedirectURL(rule, insights[i].Title, insights[i].AccountID, tp.cloudProvider)
 		insight := insights[i]
 
 		jsonRule, err := common.MarshalJson(insight.Rule)
@@ -267,7 +267,7 @@ func GetInsights(ctx *security.RequestContext, accountId string) ([]InsightListR
 				mu.Lock()
 				for _, ins := range insights {
 					ruleWithURL := rule
-					ruleWithURL.RedirectURL = computeRedirectURL(rule, accountId, accountDetail.cloudProvider)
+					ruleWithURL.RedirectURL = computeRedirectURL(rule, ins.Title, accountId, accountDetail.cloudProvider)
 					resp := InsightListResponse{Title: ins.Title, Source: string(ins.Source), Rule: ruleWithURL, Applications: ins.Applications, Type: ins.Type}
 					if resp.Title == "" {
 						continue
