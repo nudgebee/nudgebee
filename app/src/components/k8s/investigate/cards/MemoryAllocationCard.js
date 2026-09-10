@@ -343,7 +343,10 @@ class MemoryAllocationCard {
           request: reqBase > 0 ? Number(reqBase).toFixed(4) : undefined,
           limit: undefined,
           oldRequest: cpuObject.cpu_request || 0,
-          oldLimit: undefined,
+          // The evidence carries the container's CPU limit; dropping it made the
+          // Current column claim the workload has none. (Recommended `limit`
+          // stays undefined on purpose — the form advises no CPU limit.)
+          oldLimit: cpuObject.cpu_limit,
           nbalgoBase: cpuPeak > 0 ? cpuPeak : undefined,
         };
       }
