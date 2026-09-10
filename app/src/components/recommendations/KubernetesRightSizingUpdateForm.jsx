@@ -633,7 +633,8 @@ const KubernetesRightSizingPopupForm = ({
   // even after the log-analysis stage has produced the diff this action uses.
   // Gate on that specific stage; use the overall status only for legacy
   // responses that do not yet include task_statuses.
-  const eventAnalysisStatus = data?.aiData?.task_statuses?.log_analysis?.toLowerCase() || data?.aiData?.status?.toLowerCase();
+  const logAnalysisStatus = data?.aiData?.task_statuses?.log_analysis;
+  const eventAnalysisStatus = typeof logAnalysisStatus === 'string' ? logAnalysisStatus.toLowerCase() : data?.aiData?.status?.toLowerCase();
   const eventAnalysisCompleted = eventAnalysisStatus === 'completed';
   const eventAnalysisFailed = eventAnalysisStatus === 'failed';
   const eventAnalysisHasDiff = Boolean(data?.aiData?.source_updates?.gitDiff);
