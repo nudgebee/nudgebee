@@ -779,3 +779,11 @@ func TestLoadPromptFile_KeepsMostDescriptiveError(t *testing.T) {
 	assert.NotContains(t, err.Error(), "file does not exist",
 		"a generic miss must not mask the parse failure")
 }
+
+func TestGlobalLoaderUsesInstalledTestLoader(t *testing.T) {
+	old := globalLoader
+	t.Cleanup(func() { SetGlobalLoaderForTesting(old) })
+	loader := NewLoaderForTesting()
+	SetGlobalLoaderForTesting(loader)
+	require.Same(t, loader, GetLoader())
+}

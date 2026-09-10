@@ -98,6 +98,9 @@ func NewLoaderForTesting() *PromptLoader {
 // SetGlobalLoaderForTesting replaces the global loader singleton.
 // Must only be called from test code.
 func SetGlobalLoaderForTesting(l *PromptLoader) {
+	// An installed test loader must not be overwritten by lazy production
+	// initialization, which would also attempt a real database connection.
+	globalLoaderOnce.Do(func() {})
 	globalLoader = l
 }
 

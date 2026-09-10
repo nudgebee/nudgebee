@@ -2,6 +2,11 @@ package prompts
 
 import "context"
 
+func init() {
+	InitMetrics()
+	SetGlobalLoaderForTesting(NewLoaderForTesting())
+}
+
 // GetPromptForTest resolves a prompt against the embedded FS with no DB, for the
 // content-pinning tests that moved here from prompts_repo.
 func GetPromptForTest(name string, args ...any) string {
