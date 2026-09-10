@@ -147,3 +147,19 @@ func TestPendingTokens_DrainIsolatesByEventID(t *testing.T) {
 	gotB, _ := DrainPendingTokens(ctx, "evt-B")
 	assert.Equal(t, []string{"b1"}, gotB)
 }
+
+func TestPendingTokensScanDoesNotConsumeAndExcludesDrainedEvents(t *testing.T) {
+	resetInMemoryPendingTokens()
+	ctx := context.Background()
+	assert.NoError(t, RegisterPendingToken(ctx, "scan-event", "token"))
+	ids, cursor, err := ScanPendingTokenEvents(ctx, 0)
+	assert.NoError(t, err)
+	assert.Zero(t, cursor)
+	assert.Equal(t, []string{"scan-event"}, ids)
+	tokens, err := DrainPendingTokens(ctx, "scan-event")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"token"}, tokens)
+	ids, _, err = ScanPendingTokenEvents(ctx, cursor)
+	assert.NoError(t, err)
+	assert.Empty(t, ids)
+}
