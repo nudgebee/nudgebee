@@ -1891,6 +1891,29 @@ func normalizeEventSource(source string) string {
 	return source
 }
 
+// normalizeSubjectNode drops a value that cannot be a node name.
+//
+// Alert-sourced events get subject_node from the alert's `instance` label, and
+// for anything scraped from kube-state-metrics that is the KSM pod's scrape
+// address — "10.64.21.224:8080". A Kubernetes node name is an object name, so
+// it is a DNS-1123 subdomain and a colon is not a legal character in one: the
+// test is exact, not a heuristic.
+//
+// Blanking it is lossless — the raw value stays in labels["instance"] — and it
+// is what every consumer needs, because an empty subject_node is the documented
+// "resolve it yourself" signal that the pod-inventory fallback keys off. Left
+// populated, it is worse than absent: it looks authoritative, so consumers use
+// it, and every node-scoped query built from it silently matches nothing.
+// Measured on the test env: 104 of 124 KubePodCrashLooping events in 36h
+// carried a scrape address here, and the noisy-neighbours card rendered for
+// none of them.
+func normalizeSubjectNode(subjectNode string) string {
+	if strings.Contains(subjectNode, ":") {
+		return ""
+	}
+	return subjectNode
+}
+
 func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 	var cfg insertConfig
 	for _, o := range opts {
@@ -1914,6 +1937,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 	event.Source = normalizeEventSource(event.Source)
 	event.SubjectType = strings.ToLower(event.SubjectType)
 	event.SubjectName = truncateStringToMaxBytes(event.SubjectName, maxSubjectNameBytes)
+	event.SubjectNode = normalizeSubjectNode(event.SubjectNode)
 
 	// A configuration_change event describes a moment that has already passed
 	// ("this resource was changed"), not a condition that can recover — no
@@ -2124,6 +2148,10 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	// (structured logs, processing metrics, event-rule matching) reads the
 	// source, and must see the canonical value rather than a retired alias.
 	webhookEvent.Source = normalizeEventSource(webhookEvent.Source)
+	// Same reason: the playbook run below is handed webhookEvent.SubjectNode
+	// directly, before InsertEvent ever sees it, so normalizing only there would
+	// leave the enrichers reading the raw scrape address.
+	webhookEvent.SubjectNode = normalizeSubjectNode(webhookEvent.SubjectNode)
 	eventSource := webhookEvent.Source
 	aggregationKey := webhookEvent.AggregationKey
 

@@ -207,24 +207,43 @@ func payloadData(t *testing.T, resp playbooks.PlaybookActionResponse) map[string
 	return payload.Data
 }
 
-// Alert labels carry `instance` for the scrape target, which for a
-// kube-state-metrics-sourced alert is the KSM pod's address, not a node.
-// Observed live on dev: a KubePodCrashLooping event with
-// instance="10.64.0.141:8080" and no node produced a card reporting the node
-// as completely idle, because every query filtered on a node by that name and
-// matched nothing.
-func TestLooksLikeNodeNameRejectsScrapeTargets(t *testing.T) {
-	for _, addr := range []string{"10.64.0.141:8080", "1.2.3.4:9100", ""} {
-		assert.Falsef(t, looksLikeNodeName(addr), "%q is an address, not a node name", addr)
+// Node resolution goes to the pod's inventory row, not to the event's fields.
+// KubePodCrashLooping carries the KSM scrape address in subject_node
+// ("10.64.21.224:8080") and produced 0 cards from 124 events on test because
+// every query filtered on a node by that name and matched nothing.
+//
+// There is no metastore in a unit test, so the lookup returns "" and execution
+// reaches the fallback — which is what makes the ordering observable here.
+func TestNoisyNeighboursNodeNameComesFromThePodRow(t *testing.T) {
+	podEvent := func(subjectNode string, labels map[string]string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+			AggregationKey:   "KubePodCrashLooping",
+			SubjectType:      "pod",
+			SubjectName:      "payments-79b78b4c7b-2rr7d",
+			SubjectNamespace: "shop",
+			SubjectNode:      subjectNode,
+			Labels:           labels,
+		})
 	}
-	for _, node := range []string{
-		"gke-example-cluster-default-pool-a1b2c3d4-xk9p",
-		"ip-10-0-1-23.ec2.internal",
-		"worker-01",
-		// Some clusters really do name nodes by address. Allowed through
-		// because the empty-result guard catches it if this one is not a node.
-		"10.64.0.141",
-	} {
-		assert.Truef(t, looksLikeNodeName(node), "%q is a plausible node name", node)
-	}
+
+	// An address in any event field is never used as a node name: not from
+	// subject_node, and not from the `instance` label that put it there.
+	assert.Empty(t, noisyNeighboursNodeName(podEvent("", map[string]string{"instance": "10.64.21.224:8080"})),
+		"the instance label is a scrape address, not a node")
+	assert.Empty(t, noisyNeighboursNodeName(podEvent("", map[string]string{"instance": "10.64.21.224"})),
+		"a port-less address is still an address — no node is named by IP")
+
+	// obj.spec.nodeName from an agent-sourced event is a real node name, and
+	// remains usable when the inventory has never seen the pod.
+	assert.Equal(t, "gke-example-cluster-spot-pool-02132c6e-z2nc",
+		noisyNeighboursNodeName(podEvent("gke-example-cluster-spot-pool-02132c6e-z2nc", nil)),
+		"a real node name on the event is the fallback when the pod row is missing")
+
+	// A node-subject event has no pod to look up and names the node itself.
+	nodeEvent := playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+		AggregationKey: "node_not_ready",
+		SubjectType:    "node",
+		SubjectName:    "gke-example-cluster-default-pool-597d4e75-23sr",
+	})
+	assert.Equal(t, "gke-example-cluster-default-pool-597d4e75-23sr", noisyNeighboursNodeName(nodeEvent))
 }
