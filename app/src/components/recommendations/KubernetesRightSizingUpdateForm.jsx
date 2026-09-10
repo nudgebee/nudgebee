@@ -629,7 +629,11 @@ const KubernetesRightSizingPopupForm = ({
   // analysis. Until that analysis is COMPLETED and actually stored a diff, the
   // backend rejects the request — so block submission instead of letting the
   // user fire a doomed call.
-  const eventAnalysisStatus = data?.aiData?.status?.toLowerCase();
+  // The overall investigation can remain IN_PROGRESS while a later stage runs,
+  // even after the log-analysis stage has produced the diff this action uses.
+  // Gate on that specific stage; use the overall status only for legacy
+  // responses that do not yet include task_statuses.
+  const eventAnalysisStatus = data?.aiData?.task_statuses?.log_analysis?.toLowerCase() || data?.aiData?.status?.toLowerCase();
   const eventAnalysisCompleted = eventAnalysisStatus === 'completed';
   const eventAnalysisFailed = eventAnalysisStatus === 'failed';
   const eventAnalysisHasDiff = Boolean(data?.aiData?.source_updates?.gitDiff);
