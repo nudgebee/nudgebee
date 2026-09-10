@@ -25,9 +25,10 @@ import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPrevie
 import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
 import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
 import { isCompleteColumn, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
-import { accountsOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
-import { ES_PROVIDER, isDisabledAccount, providerChoices, providerLabel, providerTypeOf, useEsIndexes, usePanelProviders } from './panelProviders';
+import { accountPickerOptions, accountsOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
+import { ES_PROVIDER, providerChoices, providerLabel, providerTypeOf, useEsIndexes, usePanelProviders } from './panelProviders';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import PanelProviderRow from './PanelProviderRow';
 import { referencedVariables, type VariableValues } from './templating';
 
@@ -135,6 +136,10 @@ const GroupHeader: React.FC<{ title: string; description: string }> = ({ title, 
   </Box>
 );
 
+// The Accounts picker's section headers carry the provider's own mark, same as
+// the automations listing's account groups.
+const renderProviderGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
 const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions, variables, startTime, endTime, onClose, onSave }) => {
   const [draft, setDraft] = useState<Panel | null>(panel);
   /** Account types are editor-local, not panel state. */
@@ -203,18 +208,8 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   }, [accountOptions]);
 
   // The account picker lists only the chosen providers' accounts — an unfiltered list mixes clusters with
-  // cloud accounts and is unreadable past a handful.
-  const accountsForTypes = useMemo(
-    () =>
-      accountsOfTypes(accountTypes, accountOptions).map((o) => {
-        const base = accountTypes.length > 1 && o.cloud_provider ? `${o.label} (${o.cloud_provider})` : o.label;
-        // Named, not hidden or disabled: a disabled account is still a legitimate
-        // thing to leave on a saved panel while it is temporarily off, and a
-        // disabled option in a multi-select cannot be deselected once chosen.
-        return { label: isDisabledAccount(o) ? `${base} — disabled` : base, value: o.value };
-      }),
-    [accountOptions, accountTypes]
-  );
+  // cloud accounts and is unreadable past a handful — sectioned by provider when it spans more than one.
+  const accountsForTypes = useMemo(() => accountPickerOptions(accountTypes, accountOptions), [accountOptions, accountTypes]);
 
   // The accounts this panel will actually query, resolved exactly as the panel
   // itself resolves them at render — the provider row must not be able to
@@ -549,6 +544,9 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                       >
                         <Select
                           multiple
+                          grouped
+                          defaultGroupsOpen
+                          groupIcon={renderProviderGroupIcon}
                           value={accountIds}
                           options={accountsForTypes}
                           onChange={setAccountIds}

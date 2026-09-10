@@ -489,10 +489,16 @@ function Row({ ratio, gap, children }: FormRowProps) {
     <Box
       sx={{
         display: 'grid',
-        gridTemplateColumns: effectiveRatio.map((r) => `${r}fr`).join(' '),
+        // minmax(0, …) rather than a bare `Nfr`: a grid item's automatic minimum
+        // size is its content, so one long value — a multi-select trigger listing
+        // account names — widens its own column past the ratio and pushes the row
+        // out of the form, text spilling past the field's box (#38137). The
+        // floor of 0 lets the column hold the ratio and the control clip/ellipsize
+        // inside it, which is what its own overflow rules already ask for.
+        gridTemplateColumns: effectiveRatio.map((r) => `minmax(0, ${r}fr)`).join(' '),
         gap: gapValue,
         '@media (max-width: 600px)': {
-          gridTemplateColumns: '1fr',
+          gridTemplateColumns: 'minmax(0, 1fr)',
         },
       }}
     >

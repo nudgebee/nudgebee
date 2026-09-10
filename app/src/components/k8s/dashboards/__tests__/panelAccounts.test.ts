@@ -1,5 +1,6 @@
 import type { AccountOption } from '@api1/dashboards';
 import {
+  accountPickerOptions,
   applyAccountFilter,
   deriveAccountType,
   deriveAccountTypes,
@@ -280,5 +281,44 @@ describe('multi-provider scope', () => {
     // an empty picker would claim a behaviour the panel does not have.
     expect(ids).toEqual(['a1', 'a2', 'g1']);
     expect(panelScopeFromTypes(types, ids, ACCOUNTS)).toEqual(stored);
+  });
+});
+
+// #38137: the picker used to suffix every row with its provider — "aws-demo
+// (AWS)" — so a mixed list made the reader parse the same word on every row.
+// The provider is a section instead, and the row is just the account.
+describe('accountPickerOptions', () => {
+  const MIXED: AccountOption[] = [
+    { label: 'sandbox cluster', value: 'k2', cloud_provider: 'K8S' },
+    { label: 'aws-prod', value: 'w2', cloud_provider: 'AWS' },
+    { label: 'k8s-prod', value: 'k1', cloud_provider: 'K8S' },
+    { label: 'aws-demo', value: 'w1', cloud_provider: 'AWS' },
+  ];
+
+  it('names the provider on the group, not on every row', () => {
+    expect(accountPickerOptions(['K8S', 'AWS'], MIXED)).toEqual([
+      { label: 'aws-demo', value: 'w1', group: 'AWS' },
+      { label: 'aws-prod', value: 'w2', group: 'AWS' },
+      { label: 'k8s-prod', value: 'k1', group: 'K8S' },
+      { label: 'sandbox cluster', value: 'k2', group: 'K8S' },
+    ]);
+  });
+
+  it('sorts by provider then name, so sections and rows hold a stable order', () => {
+    const groups = accountPickerOptions(['K8S', 'AWS'], MIXED).map((o) => o.group);
+    expect(groups).toEqual(['AWS', 'AWS', 'K8S', 'K8S']);
+  });
+
+  it('lists only the chosen providers', () => {
+    expect(accountPickerOptions(['AWS'], MIXED).map((o) => o.value)).toEqual(['w1', 'w2']);
+  });
+
+  it('keeps a disabled account listed and says so', () => {
+    const withDisabled: AccountOption[] = [{ label: 'old-cluster', value: 'k9', cloud_provider: 'K8S', status: 'disabled' }];
+    expect(accountPickerOptions(['K8S'], withDisabled)).toEqual([{ label: 'old-cluster — disabled', value: 'k9', group: 'K8S' }]);
+  });
+
+  it('is empty when no type is chosen', () => {
+    expect(accountPickerOptions([], MIXED)).toEqual([]);
   });
 });
