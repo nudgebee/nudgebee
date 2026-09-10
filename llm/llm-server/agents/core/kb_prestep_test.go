@@ -398,7 +398,7 @@ func TestFormatRetrievedKBBlockSequentialBudget(t *testing.T) {
 	// Even split would cap the long doc at ~2500; sequential allocation gives
 	// it the short doc's leftover (~5000 - len("short doc")).
 	assert.Greater(t, len(got), 4500)
-	assert.Contains(t, got, "FOLLOW its steps in order")
+	assert.Contains(t, got, "Reference: use as supporting information")
 }
 
 func TestKBPrestepTimeoutConfigurable(t *testing.T) {
@@ -447,4 +447,19 @@ func TestDocCollectionStamp(t *testing.T) {
 
 	_, ok = docCollection(toolcore.RAGSearchResult{Metadata: map[string]any{}})
 	assert.False(t, ok, "missing stamp must not look like a global collection")
+}
+
+func TestFormatRetrievedKBBlockPurpose(t *testing.T) {
+	for _, tc := range []struct{ collection, category, want string }{
+		{"kb_manual", "sop", "Procedure: follow applicable steps"},
+		{"kb_manual", "fact", "Reference: use as supporting information"},
+		{"confluence_knowledge_base", "sop", "Reference: use as supporting information"},
+	} {
+		t.Run(tc.collection+tc.category, func(t *testing.T) {
+			docs := toolcore.RAGSearchResults{{Document: "Unique body", Metadata: map[string]any{"collection": tc.collection, "kb_id": "manual", "note_category": tc.category}}}
+			got := formatRetrievedKBBlock(docs)
+			require.Contains(t, got, tc.want)
+			require.Contains(t, got, "Unique body")
+		})
+	}
 }
