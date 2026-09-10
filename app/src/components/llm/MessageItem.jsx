@@ -9,6 +9,7 @@ import ConversationCollapsableCard from '@components/llm/common/ConversationColl
 import KubernetesLLMRequestResponse from './KubernetesLLMRequestResponseV2';
 import { AskNudgebeeErrorIcon, AskNudgebeeInProgressIcon, AskNudgebeeSkipIcon, AskNudgebeeSuccessIcon, RunningIcon } from '@assets';
 import capitalize from 'lodash/capitalize';
+import { unwrapTypedValueString } from '@utils/common';
 import { ds } from '@utils/colors';
 import { Button } from '@ui/Button';
 import ReferencesPopover from './common/ReferencesModal';
@@ -72,7 +73,7 @@ const getCardTitle = (data, { indented = false } = {}) => {
       }
       answerSuffix = ' → ' + answer;
     }
-    response = 'Followup Question: ' + data.text + answerSuffix;
+    response = 'Followup Question: ' + unwrapTypedValueString(data.text) + answerSuffix;
   } else if (isInProgress) {
     response = data.query || '';
   } else {
@@ -83,7 +84,16 @@ const getCardTitle = (data, { indented = false } = {}) => {
     if (typeof response === 'string' && response.trim().startsWith('{')) {
       const parsed = JSON.parse(response);
       if (parsed && typeof parsed === 'object' && parsed.command) {
-        response = parsed.command;
+        // `command` is normally the bare title string. A malformed tool payload can
+        // wrap every arg in a `{type, value}` envelope — take the inner value, and
+        // never assign a non-string: it renders as a React child and throws #31,
+        // taking the whole page down via AppErrorBoundary.
+        const command = parsed.command;
+        if (typeof command === 'string') {
+          response = command;
+        } else if (command && typeof command === 'object' && command.type === 'string' && typeof command.value === 'string') {
+          response = command.value;
+        }
       }
     }
   } catch {

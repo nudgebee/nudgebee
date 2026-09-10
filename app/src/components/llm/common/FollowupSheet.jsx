@@ -15,6 +15,7 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { getNubiIconUrl } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
+import { unwrapTypedValueString } from '@utils/common';
 
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -144,7 +145,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
 
   const options = useMemo(() => messageConfig.followupOptions || [], [messageConfig]);
   const sheetType = resolveSheetType(messageConfig.followupType, options);
-  const question = messageConfig.question || '';
+  const question = unwrapTypedValueString(messageConfig.question || '');
   const isDanger = sheetType === 'yn' && isDangerQuestion(question);
 
   // For multi-paragraph or very long questions (e.g. clarification agent's "give me five

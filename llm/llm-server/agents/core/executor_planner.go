@@ -3962,8 +3962,18 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 				}
 				// fallback, incase sometimes command is generates as map[string]any instead of serialized string
 			} else if cmd, ok := request1["command"].(map[string]any); ok && cmd != nil {
-				if commandBytes, err := common.MarshalJson(cmd); err == nil {
-					request.Command = string(commandBytes)
+				// A model sometimes wraps the value in its schema shape,
+				// {"type":"string","value":"…"} — take the inner value; else
+				// fall back to the serialized map (nudgebee-enterprise#38162).
+				commandStr := ""
+				typeStr, _ := cmd["type"].(string)
+				if v, isStr := cmd["value"].(string); isStr && typeStr == "string" {
+					commandStr = v
+				} else if commandBytes, err := common.MarshalJson(cmd); err == nil {
+					commandStr = string(commandBytes)
+				}
+				if commandStr != "" {
+					request.Command = commandStr
 					if request.Arguments == nil {
 						request.Arguments = map[string]any{}
 					}

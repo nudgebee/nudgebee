@@ -384,6 +384,29 @@ export const truncateText = (text: string, maxLength: number) => {
   return text;
 };
 
+// A malformed tool payload can serialize a followup question (or any scalar tool
+// arg) as a typed envelope string — `{"type":"string","value":"…"}` — instead of
+// the bare value. Unwrap it to the inner string for display; pass anything else
+// through untouched.
+export const unwrapTypedValueString = (text: string): string => {
+  if (typeof text !== 'string') {
+    return text;
+  }
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.includes('"value"')) {
+    return text;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && parsed.type === 'string' && typeof parsed.value === 'string') {
+      return parsed.value;
+    }
+  } catch {
+    // not JSON — leave as-is
+  }
+  return text;
+};
+
 export const formatBytes = (bytes: number, fixed = true, suffix = '') => {
   const units = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
   let i = 0;
