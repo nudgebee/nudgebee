@@ -278,10 +278,10 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
   const cpuReccValue = firstContainer?.cpu?.recommended?.request;
   const memReccValue = firstContainer?.memory?.recommended?.request;
   const cpuReccLine = useMemo(() => (cpuReccValue != null ? perPod.rows.map(() => cpuReccValue) : null), [perPod.rows, cpuReccValue]);
-  const memReccLine = useMemo(
-    () => (memReccValue != null ? perPod.rows.map(() => Number(formatMemory(memReccValue, 'bytes', 'mb', false))) : null),
-    [perPod.rows, memReccValue]
-  );
+  // Plain division, not the display formatter: its thousands separator made
+  // every recommendation of 1,000 MB or more parse to NaN and vanish.
+  const memReccMb = memReccValue != null && Number.isFinite(Number(memReccValue)) ? Number(memReccValue) / (1024 * 1024) : null;
+  const memReccLine = useMemo(() => (memReccMb != null ? perPod.rows.map(() => memReccMb) : null), [perPod.rows, memReccMb]);
   const basis = perPod.source ? 'per pod' : 'all replicas';
 
   if (containers.length === 0) {
