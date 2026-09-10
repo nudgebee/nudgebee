@@ -416,7 +416,26 @@ function InvestigateSidebar({
             <Box sx={{ display: 'grid', flexDirection: 'column', alignItems: 'flex-start', gridTemplateColumns: `${ds.space.mul(1, 25)} 1fr` }}>
               <Text value={'Rule'} secondaryText />
               <Box sx={{ minHeight: ds.space.mul(0, 9), fontSize: 'var(--ds-text-body)' }}>
-                {row.aggregation_key && alertRules?.includes(row.aggregation_key) ? (
+                {row?.source === 'automation' && row?.labels?.automation_id ? (
+                  <Link
+                    style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
+                    href={`/automation/${row.labels.automation_id}?executionId=${row.labels.automation_execution_id || ''}&accountId=${
+                      row?.cloud_account_id || ''
+                    }#executions`}
+                    openInNew={true}
+                    id='rule-automation-link'
+                  >
+                    <Label
+                      text={row.labels.automation_name || row?.aggregation_key || '-'}
+                      margin='0'
+                      height='auto'
+                      wordBreak='break-word'
+                      customLabelStyle={fitCustomLabelStyles}
+                      displayTooltip={isCloud}
+                      tooltipCharLimit={isCloud ? 25 : undefined}
+                    />
+                  </Link>
+                ) : row.aggregation_key && alertRules?.includes(row.aggregation_key) ? (
                   <Link
                     style={{ textDecoration: 'none', display: 'inline-flex', margin: '0' }}
                     href={`${detailsPathPrefix}/${row?.cloud_account_id}?name=${row?.aggregation_key}#monitoring/alert-manager`}

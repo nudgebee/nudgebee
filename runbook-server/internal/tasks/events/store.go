@@ -72,6 +72,21 @@ func (t *EventsStoreTask) Execute(taskCtx types.TaskContext, params map[string]a
 		event.Source = "automation"
 	}
 
+	if event.Source == "automation" {
+		if event.Labels == nil {
+			event.Labels = map[string]string{}
+		}
+		if _, ok := event.Labels["automation_id"]; !ok {
+			event.Labels["automation_id"] = taskCtx.GetWorkflowID()
+		}
+		if _, ok := event.Labels["automation_execution_id"]; !ok {
+			event.Labels["automation_execution_id"] = taskCtx.GetWorkflowRunID()
+		}
+		if _, ok := event.Labels["automation_name"]; !ok {
+			event.Labels["automation_name"] = taskCtx.GetWorkflowName()
+		}
+	}
+
 	if err := common.ValidateStruct(event); err != nil {
 		logger.Error("events.store: validation failed", "tenant", event.Tenant, "finding_id", event.FindingId, "error", err)
 		return nil, err
