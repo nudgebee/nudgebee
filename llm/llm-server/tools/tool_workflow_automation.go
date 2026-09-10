@@ -491,6 +491,14 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 			t.toolName, strings.Join(unknown, ", "), accepts, t.reasonArg)
 	}
 
+	// Tags the run with the event under investigation so it surfaces in that
+	// event's automation history (executor.go keys the nb_event_id search
+	// attribute off this "event" map) — same mechanism a human triggering the
+	// automation from the event page gets via workflow's own event input.
+	if ctx.QueryConfig.EventId != "" {
+		inputs["event"] = map[string]any{"id": ctx.QueryConfig.EventId}
+	}
+
 	ctx.Ctx.GetLogger().Info("automation tool: running automation",
 		"workflow_id", t.id, "tool", t.toolName, "account_id", t.accountId,
 		"reason", reason, "input_count", len(inputs))

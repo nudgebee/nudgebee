@@ -2984,6 +2984,7 @@ const Investigate = () => {
                                 openNubiChat({
                                   accountId: row.cloud_account_id || router.query.accountId,
                                   sessionId: `event-${row.fingerprint}`,
+                                  eventId: row.id,
                                 });
                               }
                             }}

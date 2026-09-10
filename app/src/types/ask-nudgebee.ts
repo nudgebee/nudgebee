@@ -9,6 +9,9 @@ export interface ModelConfig {
   // or 'db:<integration-uuid>'. Supplied by ai_list_models as llm_config_source;
   // clients should echo the value back rather than composing it.
   llm_config_source?: string;
+  // Scopes the turn to an event, so an automation the model triggers gets
+  // tagged back to it and shows up in that event's automation history.
+  event_id?: string;
 }
 
 export interface ConversationAttachment {

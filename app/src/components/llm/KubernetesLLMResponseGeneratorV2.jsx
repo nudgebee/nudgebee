@@ -114,6 +114,9 @@ const KubernetesLLMResponseGenerator = ({
   categorySource = '',
   sessionId = '',
   conversationId = '',
+  // Scopes a new investigation turn to an event, so a triggered automation
+  // gets tagged back to it (see useLLMInvestigationControl).
+  eventId = '',
   showBorder = false,
   apiMode = 'investigate', // 'investigate' | 'workflow'
   workflowId = '',
@@ -294,7 +297,7 @@ const KubernetesLLMResponseGenerator = ({
     setSelectedConfig,
     clearModelConfig,
     imageSupport,
-  } = useLLMInvestigationControl(accountId);
+  } = useLLMInvestigationControl(accountId, eventId);
 
   const isConversationInProgress = useMemo(
     () => conversationStatus === 'IN_PROGRESS' || !!currentlyProcessingQuestion,
@@ -2102,6 +2105,7 @@ KubernetesLLMResponseGenerator.propTypes = {
   accountId: PropTypes.string,
   sessionId: PropTypes.string,
   conversationId: PropTypes.string,
+  eventId: PropTypes.string,
   source: PropTypes.string,
   categorySource: PropTypes.string,
   query: PropTypes.string,

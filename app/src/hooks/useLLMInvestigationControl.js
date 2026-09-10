@@ -723,7 +723,7 @@ function investigationReducer(state, action) {
   }
 }
 
-export const useLLMInvestigationControl = (accountId) => {
+export const useLLMInvestigationControl = (accountId, eventId) => {
   const [state, dispatch] = useReducer(investigationReducer, initialState);
 
   const {
@@ -974,24 +974,35 @@ export const useLLMInvestigationControl = (accountId) => {
         session_id: llmSessionId,
       };
 
-      if (selectedModel) {
-        requestPayload.config = {
+      // selectedTierModels is null or non-empty in practice (both the reducer's
+      // own cleanup and the picker normalize an empty selection to null), but
+      // checking key count directly rather than truthiness means that stays
+      // true even if a future producer doesn't — {} is truthy in JS, so a bare
+      // `!selectedTierModels` would silently skip the selectedConfig/
+      // configCleared branches below for an empty-but-non-null value.
+      const hasTierModels = selectedTierModels && Object.keys(selectedTierModels).length > 0;
+      const config = {
+        ...(selectedModel && {
           llm_provider: selectedModel.provider,
           llm_model_name: selectedModel.model,
           ...(selectedModel.configSource && { llm_config_source: selectedModel.configSource }),
-        };
-      } else if (selectedTierModels && Object.keys(selectedTierModels).length > 0) {
-        requestPayload.config = {
-          llm_tier_models: serializeTierModels(selectedTierModels),
-        };
-      } else if (selectedConfig) {
+        }),
+        ...(!selectedModel &&
+          hasTierModels && {
+            llm_tier_models: serializeTierModels(selectedTierModels),
+          }),
         // No provider/model: the config's own per-task models decide, and the
         // server rejects a model sent alongside a whole-config pin.
-        requestPayload.config = { llm_config_source: selectedConfig.configSource };
-      } else if (configCleared) {
+        ...(!selectedModel && !hasTierModels && selectedConfig && { llm_config_source: selectedConfig.configSource }),
         // Carries the picker's "Clear all" to the server. Sending nothing would
         // leave the conversation's stored config in force.
-        requestPayload.config = { llm_config_reset: true };
+        ...(configCleared && !selectedModel && !hasTierModels && !selectedConfig && { llm_config_reset: true }),
+        // Scopes the turn to the event under investigation, so an automation the
+        // model triggers gets tagged back to it (see tool_workflow_automation.go).
+        ...(eventId && { event_id: eventId }),
+      };
+      if (Object.keys(config).length > 0) {
+        requestPayload.config = config;
       }
 
       if (categorySource) {
@@ -1026,7 +1037,7 @@ export const useLLMInvestigationControl = (accountId) => {
         onSuccess(llmSessionId);
       }
     },
-    [accountId, selectedModel, selectedTierModels, selectedConfig, configCleared]
+    [accountId, eventId, selectedModel, selectedTierModels, selectedConfig, configCleared]
   );
 
   const startInvestigation = useCallback(

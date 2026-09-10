@@ -4134,6 +4134,7 @@ input AIFollowupRequest {
 input AIConfigInput {
   llm_provider: String
   llm_model_name: String
+  event_id: String
 }
 
 input ApplicationDeploymentCompareRequest {

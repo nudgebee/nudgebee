@@ -350,6 +350,10 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
         account_id: accountId,
         id: selectedWorkflow.id,
         inputs,
+        // Tags the run to this event (executor.go reads it into the
+        // nb_event_id search attribute), so it surfaces in the same
+        // per-event history the Nubi-triggered path already gets.
+        event_id: eventId,
       });
       const errorMsg = parseHttpResponseBodyMessage(response);
       if (errorMsg) throw new Error(errorMsg);
