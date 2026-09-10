@@ -65,6 +65,12 @@ export const FEATURES_ALL_TAB = "All";
 export const SHOW_FLAG_IDS_LABEL = "Show flag ids";
 export const HIDE_FLAG_IDS_LABEL = "Hide flag ids";
 
+// LLM_ANALYSER's row on this table — display_name set by migration
+// 1787907304290_V900_add_feature_catalog_metadata.up.sql. Read by the LLM Analyser suite's
+// one-time precondition check (llmAnalyserHelper.ts) since CostAnalyser.tsx gates the whole
+// tab on this flag.
+export const FEATURE_LLM_ANALYSER = "AI usage and cost tab";
+
 // Toast copy from handleSaveSettings — the two validation guards return before
 // any network write, which is what makes the negative cases safe to run against
 // a shared tenant.

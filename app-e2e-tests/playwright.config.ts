@@ -49,7 +49,14 @@ export default defineConfig({
   expect: {
     timeout: expectTimeout,
   },
-  fullyParallel: true,
+  // false (the default) keeps a whole file, in declaration order, on one worker — only files
+  // are handed out across the worker pool. This flag was `true` since the suite's first commit
+  // but stayed a no-op while CI ran a single worker; #37745 raised CI to 2 workers for
+  // file-level parallelism and, as an unreviewed side effect, `true` here started letting
+  // Playwright split ONE file's tests across those 2 workers too — silently breaking every
+  // spec whose tests share state (a describe-scoped test.beforeAll, module-level state, an
+  // assumed run order), since the hook then fires once per worker instead of once per file.
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? workers : undefined,

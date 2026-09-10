@@ -2,6 +2,7 @@
 import { test, expect } from "@playwright/test";
 import { CONVERSATIONS_TABLE } from "./llmAnalyserLocators";
 import {
+  ensureLlmAnalyserFeatureEnabled,
   expectScreenNotSelected,
   expectScreenSelected,
   expectToggleChecked,
@@ -37,6 +38,16 @@ test.beforeEach(() => {
 });
 
 test.describe("LLM Analyser", () => {
+  // Runs once for the whole file, not per test: this only exists to turn LLM_ANALYSER on
+  // when a tenant has never opted in, so every test below fails on NO_TAB_HINT's own timeout
+  // instead of it being repeated per test. A generous timeout of its own — the flag-off path
+  // logs into Tenant Settings, saves, and reloads to verify, on top of the login this suite
+  // already pays per test.
+  test.beforeAll(async ({ browser, baseURL }) => {
+    test.setTimeout(300000);
+    await ensureLlmAnalyserFeatureEnabled(browser, baseURL);
+  });
+
   test(
     "LLM Analyser sanity - open Optimise on the LLM Analyser tab with no sub-fragment, verify the screen strip lists Overview, Conversations, Models, Agents, Tools and Users and opens on Overview",
     { tag: ["@dev", "@test", "@sanity", "@functional"] },
