@@ -1403,6 +1403,19 @@ func gcpLogRawParams(labels map[string]string) map[string]any {
 	return params
 }
 
+// logQueryIncomplete reports whether a log query ended before it finished, as opposed to
+// finishing with nothing to show. Both cases used to return zero rows and no card, so a
+// provider rate-limit was indistinguishable from a resource that simply has no logs.
+//
+// Only an explicit non-Complete status counts. Providers that do not populate Status keep
+// their existing behaviour — the AWS path returns a zero-value response (empty status) for
+// its three legitimately-empty cases (service without direct CloudWatch logs, no log group
+// found after detection, ResourceNotFoundException), and those must stay "no logs", not
+// "failed". Collectors older than this change always send "Complete".
+func logQueryIncomplete(status string) bool {
+	return status != "" && status != "Complete"
+}
+
 func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	labels := ctx.GetEvent().Labels
 
@@ -1655,7 +1668,9 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		metadata["truncated_reason"] = "cloud_logs evidence size/entry cap"
 	}
 
-	if len(logoutput) == 0 {
+	queryFailed := logQueryIncomplete(resourceResp.Status)
+
+	if len(logoutput) == 0 && !queryFailed {
 		// Surface "no evidence captured" so a systemically-empty account (wrong
 		// resource id, missing log scope, permissions) is diagnosable instead of
 		// silently leaving only the Raw Event on the event.
@@ -1669,6 +1684,26 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	}
 
 	insights := actionLogExtractErrorPatterns(logoutput, 2)
+	if queryFailed {
+		// Returning an error here would be swallowed by the auto-action loop
+		// (eventrule.ExecutePlaybook logs a warning and drops the result), leaving the
+		// event with no trace of the failure. An insight rides the evidence card into
+		// the investigation view, where the reader and the LLM analysis both see it.
+		ctx.GetLogger().Error("cloud_logs: query did not complete",
+			"account_id", params.AccountId,
+			"status", resourceResp.Status,
+			"service_name", params.ServiceName,
+			"resource_id", params.ResourceId,
+			"entries_returned", len(logoutput))
+		insights = append(insights, playbooks.PlaybookActionResponseInsight{
+			Message: fmt.Sprintf("Log query did not complete (status %q); %d entries returned. "+
+				"Evidence is incomplete — the provider may have rate-limited or rejected the query.",
+				resourceResp.Status, len(logoutput)),
+			Severity: "error",
+		})
+		metadata["query_status"] = resourceResp.Status
+		metadata["incomplete"] = true
+	}
 	labels := map[string]any{}
 	if len(logoutput) > 0 {
 		firstElement := logoutput[0]
