@@ -1622,6 +1622,15 @@ func (r K8sResourceSearchTool) executeKubectlCommand(command string, nbRequestCo
 	// constructing a new http.Client per call — resource_search fans out into many
 	// of these in one tool invocation.
 	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{})
+	if err != nil && isNoMatchExit(err, command) {
+		// grep exiting 1 with no matches is normal Unix semantics, not a relay
+		// failure — record it as a successful empty result so the conversation
+		// trace doesn't show a false [ERROR] for every unmatched search term
+		// (same reclassification tool_shell.go's Call() already does; see
+		// isNoMatchExit for the full rationale).
+		nbRequestContext.Stats.RecordRelay(command, response, nil, time.Since(relayStart))
+		return response
+	}
 	nbRequestContext.Stats.RecordRelay(command, response, err, time.Since(relayStart))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command failed", "error", err.Error(), "command", command)

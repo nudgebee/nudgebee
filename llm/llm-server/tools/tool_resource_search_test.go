@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
 	"os"
 	"strconv"
 	"testing"
@@ -31,6 +32,51 @@ func TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace(t *testing.T) {
 	queryUnscoped, argsUnscoped := buildResourceSearchDBQuery("acct-1", "", patterns)
 	assert.NotContains(t, queryUnscoped, "AND meta->>'namespace' = $3")
 	require.Len(t, argsUnscoped, 2)
+}
+
+// grepNoMatchWorkspaceManager stubs ExecuteOrLazyCreate to fail exactly the
+// way a grep with no matches does — every other WorkspaceManager method is
+// picked up as a nil-valued no-op via the embedded interface, since this test
+// never calls them.
+type grepNoMatchWorkspaceManager struct {
+	workspace.WorkspaceManager
+}
+
+func (grepNoMatchWorkspaceManager) ExecuteOrLazyCreate(ctx *security.RequestContext, accountId, conversationId, command string, env map[string]string) (string, error) {
+	return "", &workspace.CommandFailure{Status: "failed", StdErr: "exit status 1"}
+}
+
+// TestExecuteKubectlCommand_GrepNoMatchIsNotRecordedAsError guards the
+// resource_search_execute-specific instance of the grep-exit-1 bug: unlike
+// kubectl_execute/shell_execute (see isNoMatchExit's other callers), this
+// tool's executeKubectlCommand recorded every unmatched search term as a
+// failed relay step, which the LLM sees as a string of tool [ERROR]s and
+// reacts to by abandoning grep-based narrowing for an exhaustive brute-force
+// scan across every resource kind/label-selector combination (confirmed via
+// benchmark run dd7bc6b21b45, test 100a_historical_logs: 66 tool calls to
+// confirm one empty namespace). A grep that finds nothing is a normal,
+// successful outcome and must be recorded as one.
+func TestExecuteKubectlCommand_GrepNoMatchIsNotRecordedAsError(t *testing.T) {
+	origWm := wm
+	wm = grepNoMatchWorkspaceManager{}
+	defer func() { wm = origWm }()
+
+	stats := &core.ToolCallStats{}
+	nbCtx := core.NbToolContext{
+		Ctx:            security.NewRequestContextForSuperAdmin(),
+		AccountId:      "acct-1",
+		ConversationId: "conv-1",
+		Stats:          stats,
+	}
+
+	tool := K8sResourceSearchTool{}
+	response := tool.executeKubectlCommand(`kubectl get pods -n app-100a --no-headers | grep -i -- 'payment-api'`, nbCtx)
+	assert.Equal(t, "", response, "no-match grep should surface as empty output, same as before the fix")
+
+	steps, dropped := stats.Steps()
+	require.Equal(t, 0, dropped)
+	require.Len(t, steps, 1)
+	assert.Empty(t, steps[0].Err, "a no-match grep must not be recorded as a failed relay step")
 }
 
 func TestResourceSearchTool(t *testing.T) {
