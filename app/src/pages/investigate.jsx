@@ -2365,7 +2365,12 @@ const Investigate = () => {
                                 tooltip='Refresh investigation'
                                 tooltipPlacement='left'
                                 data-testid='refresh-investigation-btn'
-                                disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
+                                disabled={
+                                  !(
+                                    matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted() ||
+                                    matchedOptions.find((o) => o.id === 'AskAiCard')?.isFailed()
+                                  )
+                                }
                                 onClick={() => {
                                   const askAiCard = matchedOptions.find((o) => o.id === 'AskAiCard');
                                   askAiCard?.refreshInvestigation?.();
