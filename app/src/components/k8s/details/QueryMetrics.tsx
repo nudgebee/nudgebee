@@ -520,7 +520,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
           ...getQueryByKey(g.query_key),
           data: {
             // Already milliseconds — see the note on the table branch above.
-            labels: decimatedLabels.map((e: any) => convertNumberToTimestamp(e)),
+            labels: decimatedLabels.map((e: number) => convertNumberToTimestamp(e)),
             data: fromMetric
               ? chartDataDataset
               : [{ label: 'Value', data: decimateData(g.payload[0]?.values?.map((e: string) => parseFloat(e)) || [], MAX_CHART_DATA_POINTS) }],
