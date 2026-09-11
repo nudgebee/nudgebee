@@ -1,16 +1,22 @@
 // Not for OSS
 
+import { readFileSync } from "fs";
 import { Page, Locator, expect } from "@playwright/test";
 import { TenantSettingsLocators } from "./tenantSettingsLocators";
+import { TENANT_FILE_PATH } from "../../utils/paths";
 
-// The tenant this run is pointed at. Read from the environment rather than
-// written into the suite: the same specs run against dev and test, which carry
-// different tenant names, and a hardcoded one would assert the wrong thing on
-// whichever environment it was not copied from.
+// SWITCH_TENANT pins the run's tenant (dev); the test env leaves it unset and LoginPage records the tenant it auto-detects.
 export function requiredTenantName(): string {
-  const tenant = process.env.SWITCH_TENANT || "";
-  if (!tenant) throw new Error("SWITCH_TENANT is not set — add it to .env / .env.dev");
-  return tenant;
+  const pinned = process.env.SWITCH_TENANT?.trim();
+  if (pinned) return pinned;
+  let recorded = "";
+  try {
+    recorded = readFileSync(TENANT_FILE_PATH, "utf-8").trim();
+  } catch {
+    // No recorded tenant yet is an expected state; the throw below names both sources to fix.
+  }
+  if (!recorded) throw new Error(`No tenant known — set SWITCH_TENANT, or let LoginPage record one at ${TENANT_FILE_PATH}`);
+  return recorded;
 }
 
 // Lands on Admin -> Tenant Settings with the General tab open, which is the
