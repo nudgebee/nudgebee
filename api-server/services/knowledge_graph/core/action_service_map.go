@@ -193,8 +193,22 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 		}
 	}
 
-	// Get 1-level neighborhood (direct dependencies only) to keep the graph
-	// focused. Storage is included so collapsed CALLS edges pointing at
+	// Two levels, not one. Both consumers of this evidence are configured for
+	// multi-hop reasoning — triage.MaxDependencyDistance is 4 and
+	// triage.maxIncidentHops is 2 — but they walk only what is written here, so
+	// a one-level neighbourhood made every distance above 1 unreachable and
+	// both limits were dead config. Measured on an AWS account: an ALB alarm's
+	// evidence held exactly two nodes (the balancer and the instance it fronts)
+	// while the graph itself held that instance calling three more, so the
+	// tiers behind the front door could never join the incident.
+	//
+	// Capped rather than trusted. A second level around a shared resource — a
+	// database with a hundred callers, a node running every pod — grows fast,
+	// and this block is persisted on every event. Over the cap the walk is
+	// redone at one level, which is exactly the previous behaviour, so a hub
+	// node degrades to the old graph instead of writing an enormous one.
+	//
+	// Storage is included so collapsed CALLS edges pointing at
 	// Storage nodes (S3, Cloud Storage buckets, etc.) surface in the
 	// neighborhood after core.CollapseEnrichedExternalServices runs.
 	//
@@ -211,10 +225,19 @@ func (a *knowledgeGraphServiceMapAction) Execute(ctx playbooks.PlaybookActionCon
 	// Plumbing (VPC, Subnet, SecurityGroup) stays out on purpose: an AWS resource
 	// is attached to several of them, and they would crowd out the services an
 	// operator is looking for while adding no dependency information.
-	graph, err := kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, 1, serviceMapNeighbourTypes, true)
+	graph, err := kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, serviceMapLevels, serviceMapNeighbourTypes, true)
 	if err != nil {
 		logger.Warn("knowledge_graph_service_map: failed to get neighbors", "error", err)
 		return nil, nil
+	}
+	if len(graph.Nodes) > serviceMapMaxNodes {
+		logger.Info("knowledge_graph_service_map: neighbourhood over cap, retrying at one level",
+			"service", serviceName, "nodes", len(graph.Nodes), "cap", serviceMapMaxNodes)
+		graph, err = kgService.GetMultipleNodeNeighbors(reqCtx, nodeIDs, 1, serviceMapNeighbourTypes, true)
+		if err != nil {
+			logger.Warn("knowledge_graph_service_map: failed to get neighbors", "error", err)
+			return nil, nil
+		}
 	}
 
 	if len(graph.Nodes) == 0 {
@@ -343,7 +366,24 @@ var serviceMapNeighbourTypes = []NodeType{
 	NodeTypeMessageQueue, NodeTypeCache, NodeTypeStorage,
 	NodeTypeWorkload, NodeTypeK8sService,
 	NodeTypeComputeInstance, NodeTypeLoadBalancer, NodeTypeServerlessFunction,
+	// BackendPool is a pass-through tier, not a destination: an AWS target
+	// group, an Azure backend pool, a GCP backend service. It is listed here
+	// because this allowlist is applied as a per-hop predicate inside the BFS
+	// (discoverBFS -> IncludeNodeTypes), so a type left out does not merely get
+	// filtered from the result — it terminates the walk. Omitting it severed
+	// every pooled load balancer from its backends: a GCP LoadBalancer reaches
+	// its instances only via LoadBalancer -> BackendPool -> ComputeInstance,
+	// and its alarms were getting a service map containing the balancer alone.
+	NodeTypeBackendPool,
 }
+
+// serviceMapLevels is how far the evidence neighbourhood walks, and
+// serviceMapMaxNodes is the ceiling that keeps a hub node from writing a huge
+// block onto every event. See the call site for why two levels rather than one.
+const (
+	serviceMapLevels   = 2
+	serviceMapMaxNodes = 60
+)
 
 // findServiceNodes queries the KG for nodes matching a service name and namespace.
 //

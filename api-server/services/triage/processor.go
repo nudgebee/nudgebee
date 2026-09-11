@@ -512,7 +512,7 @@ func detectAndRecordCorrelations(ctx context.Context, db sqlx.ExtContext, event 
 		// ("", 0) here silently downgraded the event's triage score on top of
 		// losing the rows. The scoring pass is already complete at this point and
 		// depends on nothing these two queries do.
-		existing, err := existingCorrelatedFingerprints(ctx, db, *event.Fingerprint, candidateFps, *event.CloudAccountId)
+		existing, err := existingCorrelatedFingerprints(ctx, db, *event.Fingerprint, candidateFps, *event.CloudAccountId, startWindow)
 		if err != nil {
 			return highestType, highestScore, fmt.Errorf("failed to batch-check existing correlations: %w", err)
 		}
@@ -544,10 +544,27 @@ type correlatedCandidate struct {
 
 // existingCorrelatedFingerprints returns the subset of candidateFingerprints
 // that already have a correlation with the triaged event's fingerprint in this
-// account. This replaces the per-candidate COUNT(*) existence check with a
-// single ANY() lookup, preserving the original per-pair dedup semantic
-// (correlations are kept at fingerprint-pair granularity, not event-pair).
-func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, triagedFingerprint string, candidateFingerprints []string, cloudAccountID string) (map[string]bool, error) {
+// account, written no earlier than since. This replaces the per-candidate
+// COUNT(*) existence check with a single ANY() lookup.
+//
+// since is what keeps the dedup honest. The check used to have no time bound at
+// all, so a fingerprint pair correlated once was suppressed for the life of the
+// account: the pair's rows point at the event IDs from that first occurrence,
+// and every later firing of the same two alerts scored, matched an ancient row,
+// and inserted nothing — leaving the new events with no correlations while the
+// table showed the relationship had been "found". Measured on an AWS account:
+// three alarms correlated on two prior days produced zero rows on the third,
+// because all three pairs were already known.
+//
+// Passing the caller's correlation-window start scopes the dedup to the
+// occurrence being triaged, which is the granularity that was always intended —
+// it still collapses the repeat firings of a continuously-alerting pair (they
+// fall inside each other's window) while letting a genuinely new occurrence
+// record its own rows. True duplicates cannot slip through regardless: both
+// insert paths are ON CONFLICT DO NOTHING against the (event_id,
+// related_event_id, cloud_account_id) unique constraint, so this check is an
+// optimization, not the thing preventing duplicate rows.
+func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, triagedFingerprint string, candidateFingerprints []string, cloudAccountID string, since time.Time) (map[string]bool, error) {
 	out := make(map[string]bool)
 	if len(candidateFingerprints) == 0 {
 		return out, nil
@@ -563,10 +580,11 @@ func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, tri
 		WHERE e1.fingerprint = $1
 		  AND e2.fingerprint = ANY($2)
 		  AND ec.cloud_account_id = $3
+		  AND ec.created_at >= $4
 	`
 
 	var fps []string
-	if err := sqlx.SelectContext(ctx, db, &fps, query, triagedFingerprint, pq.Array(candidateFingerprints), cloudAccountID); err != nil {
+	if err := sqlx.SelectContext(ctx, db, &fps, query, triagedFingerprint, pq.Array(candidateFingerprints), cloudAccountID, since); err != nil {
 		return nil, err
 	}
 	for _, fp := range fps {
