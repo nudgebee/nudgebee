@@ -71,14 +71,6 @@ var (
 	})
 	llmIntegrationConfigCacheMutex sync.RWMutex
 
-	// Separate cache for tenant-level LLM configs (keyed by tenantId).
-	// Avoids duplicating the same tenant config for every account under the tenant.
-	llmTenantConfigCache = make(map[string]struct {
-		config map[string]string
-		ts     time.Time
-	})
-	llmTenantConfigCacheMutex sync.RWMutex
-
 	// Per-integration view of the same rows, keyed by accountId. Shares the TTL
 	// and the invalidation path with the caches above.
 	llmIntegrationsCache = make(map[string]struct {
@@ -152,15 +144,11 @@ func InvalidateLLMIntegrationConfigCache(accountId string) {
 	delete(llmIntegrationsCache, accountId)
 	llmIntegrationsCacheMutex.Unlock()
 
-	// Also invalidate tenant-level cache and all sibling accounts that may be
-	// using the tenant-level fallback config.
+	// Sibling accounts still see this tenant's unmapped integrations in their
+	// pickable list (getLLMIntegrationsForAccount), so their caches go too.
 	if tenantId, err := security.GetTenantIdFromAccountId(accountId); err == nil && tenantId != "" {
-		llmTenantConfigCacheMutex.Lock()
-		delete(llmTenantConfigCache, tenantId)
-		llmTenantConfigCacheMutex.Unlock()
-
 		// Clear account-level cache entries for all accounts under this tenant
-		// so they re-resolve on next call (they may have cached the old tenant config).
+		// so they re-resolve on next call.
 		if siblingAccounts, err := security.GetAccountIdsForTenant(tenantId); err == nil {
 			// One cache at a time. Holding both would be the only place in the
 			// package that does, so it'd be the lock-ordering rule everything
@@ -3787,49 +3775,9 @@ func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, ove
 
 	if configMap != nil {
 		slog.Debug("LLM integration config loaded (account-level)", "accountId", accountId, "configKeys", len(configMap))
-	} else {
-		// Fallback to tenant-level config if no account-level config found
-		tenantId, tenantErr := security.GetTenantIdFromAccountId(accountId)
-		if tenantErr != nil {
-			return nil, tenantErr
-		}
-		if tenantId != "" {
-			// Check tenant cache first
-			llmTenantConfigCacheMutex.RLock()
-			tenantEntry, tenantFound := llmTenantConfigCache[tenantId]
-			llmTenantConfigCacheMutex.RUnlock()
-			if tenantFound && time.Since(tenantEntry.ts) < llmIntegrationConfigCacheTTL() {
-				slog.Debug("LLM integration config found in tenant cache", "tenantId", tenantId, "configKeys", len(tenantEntry.config))
-				// Copied so the tenant and account caches don't end up holding the
-				// same map: this value is cached again under the account key below,
-				// and two entries aliasing one map means a future write through
-				// either corrupts both.
-				configMap = cloneConfigMap(tenantEntry.config)
-			} else {
-				slog.Debug("No account-level LLM config, trying tenant-level", "accountId", accountId, "tenantId", tenantId)
-				configMap, err = fetchLLMIntegrationConfigByTenant(ctx, dbManager, tenantId)
-				if err != nil {
-					return nil, err
-				}
-
-				// Cache tenant-level result (even nil — avoids repeated DB queries for tenants without config)
-				llmTenantConfigCacheMutex.Lock()
-				llmTenantConfigCache[tenantId] = struct {
-					config map[string]string
-					ts     time.Time
-				}{config: configMap, ts: time.Now()}
-				llmTenantConfigCacheMutex.Unlock()
-
-				if configMap != nil {
-					slog.Info("Using tenant-level LLM integration config", "accountId", accountId, "tenantId", tenantId, "configKeys", len(configMap))
-				}
-			}
-		}
 	}
-
-	// Always cache the resolved result (account-level, tenant-level, or nil) under the account key.
-	// This avoids repeated DB queries for accounts without their own config. Maps are reference types
-	// so caching the tenant's configMap here only copies a pointer.
+	// Cache the resolved result (account-level or nil) under the account key.
+	// This avoids repeated DB queries for accounts without their own config.
 	llmIntegrationConfigCacheMutex.Lock()
 	llmIntegrationConfigCache[accountId] = struct {
 		config map[string]string
@@ -3838,12 +3786,11 @@ func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, ove
 	llmIntegrationConfigCacheMutex.Unlock()
 
 	if configMap == nil {
-		slog.Debug("No LLM integration config found (account or tenant)", "accountId", accountId)
+		slog.Debug("No LLM integration config found (account-level)", "accountId", accountId)
 	}
 	// Copied on the way out for the same reason as the cache-hit path: the map
 	// just went into the cache, so handing the caller this reference would let a
-	// write reach shared state. The tenant rung is covered too — its map is
-	// cached here under the account key.
+	// write reach shared state.
 	return cloneConfigMap(configMap), nil
 }
 
@@ -3866,10 +3813,12 @@ func cloneConfigMap(src map[string]string) map[string]string {
 // db:<uuid> source ids: GetAllConfiguredModels emits a pickable row per slot per
 // integration, and resolveFromPinnedSource accepts only ids present in this list.
 //
-// Visibility is the union of getLLMIntegrationConfig's two lookups — integrations
-// linked to this cloud account, plus tenant-level integrations not linked to any
-// account. Another tenant's integration can never appear here, which is what makes
-// the pin path tenant-safe without a second authorization check.
+// Visibility is integrations linked to this cloud account, plus this tenant's
+// integrations that are not linked to any account. Another tenant's integration
+// can never appear here, which is what makes the pin path tenant-safe without a
+// second authorization check. Note this is wider than what resolution will pick
+// on its own: an unlinked integration is offered here but is never selected
+// automatically — only by an explicit db:<uuid> pin.
 // cloneIntegrations deep-copies cached integrations before they leave the
 // accessor. Slices and maps are reference types, so handing out the cached ones
 // makes every caller a potential cache mutator — and a write while another
@@ -4009,7 +3958,7 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 // An account may have several enabled LLM integrations, so the integration is
 // chosen first and its config read second — see selectAccountLLMIntegration for
 // the choice rules. When no single integration can be chosen this returns
-// (nil, nil), which walks the caller down to the tenant rung and then ENV.
+// (nil, nil), which walks the caller down to the ENV layers.
 func fetchLLMIntegrationConfigByAccount(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (map[string]string, error) {
 	integrationId, err := selectAccountLLMIntegration(ctx, dbManager, accountId)
 	if err != nil || integrationId == "" {
@@ -4089,16 +4038,6 @@ func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common
 		return "", nil
 	}
 	return "", nil
-}
-
-// fetchLLMIntegrationConfigByTenant queries LLM integration config at the tenant level —
-// integrations that belong to the tenant but are NOT linked to any specific cloud account.
-func fetchLLMIntegrationConfigByTenant(ctx *security.RequestContext, dbManager *common.DatabaseManager, tenantId string) (map[string]string, error) {
-	query := `SELECT i.id, icv.name, icv.value, icv.is_encrypted FROM integrations i
-			  JOIN integration_config_values icv ON i.id = icv.integration_id
-			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND i.tenant_id = :tenant_id
-			  AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id)`
-	return execLLMIntegrationConfigQuery(ctx, dbManager, query, map[string]any{"tenant_id": tenantId}, tenantId)
 }
 
 // execLLMIntegrationConfigQuery runs a named query and scans results into a config map.
