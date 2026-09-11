@@ -882,3 +882,78 @@ func TestMetricsQueryResponseToSeriesEmpty(t *testing.T) {
 	assert.NotNil(t, series)
 	assert.Empty(t, series)
 }
+
+// Discovery has to enumerate the backend the account actually uses. Asking for
+// Prometheus metrics on a CubeAPM account returns nothing, and the agent then
+// guesses names from its Kubernetes priors — container_http_requests_total,
+// istio_requests_total — which match nothing and read as "no metrics reported".
+func TestMetricsDiscoveryProviderFor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider services_server.ObservabilityProvider
+		want     string
+		why      string
+	}{
+		{
+			name:     "user-configured CubeAPM enumerates CubeAPM",
+			provider: services_server.ObservabilityProvider{Provider: "cubeapm", IntegrationSource: "user"},
+			want:     "cubeapm",
+			why:      "this is the case that silently returned nothing",
+		},
+		{
+			name:     "user-configured OpenObserve enumerates OpenObserve",
+			provider: services_server.ObservabilityProvider{Provider: "openobserve", IntegrationSource: "user"},
+			want:     "openobserve",
+		},
+		{
+			name:     "in-cluster Prometheus stays prometheus",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "agent"},
+			want:     "prometheus",
+		},
+		{
+			name:     "cloud CLI fallback stays prometheus",
+			provider: services_server.ObservabilityProvider{Provider: "aws", IntegrationSource: "agent"},
+			want:     "prometheus",
+			why:      "the cloud agents own those metrics; discovery here must not claim them",
+		},
+		{
+			name:     "unresolved provider stays prometheus",
+			provider: services_server.ObservabilityProvider{},
+			want:     "prometheus",
+		},
+		{
+			name:     "surrounding whitespace is trimmed",
+			provider: services_server.ObservabilityProvider{Provider: " cubeapm ", IntegrationSource: " user "},
+			want:     "cubeapm",
+			why:      "the value is sent to the api-server as a provider name",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, metricsDiscoveryProviderFor(tc.provider), tc.why)
+		})
+	}
+}
+
+// Discovery and execution must never disagree about which backend is being talked
+// to: a query executed against CubeAPM while metric names were enumerated from
+// Prometheus is the failure this pair of functions exists to prevent.
+func TestMetricsDiscoveryAndExecutionAgreeOnTheBackend(t *testing.T) {
+	for _, provider := range []services_server.ObservabilityProvider{
+		{Provider: "cubeapm", IntegrationSource: "user"},
+		{Provider: "openobserve", IntegrationSource: "user"},
+		{Provider: "prometheus", IntegrationSource: "agent"},
+		{Provider: "prometheus", IntegrationSource: "user"},
+		{Provider: "aws", IntegrationSource: "agent"},
+		{},
+	} {
+		routedToApiServer := metricsProviderNeedsServicesServer(provider)
+		discovers := metricsDiscoveryProviderFor(provider)
+		if routedToApiServer {
+			assert.Equal(t, strings.TrimSpace(provider.Provider), discovers,
+				"%q executes against the api-server, so discovery must enumerate it too", provider.Provider)
+		} else {
+			assert.Equal(t, "prometheus", discovers,
+				"%q executes through the relay, so discovery must stay on prometheus", provider.Provider)
+		}
+	}
+}
