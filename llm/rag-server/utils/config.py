@@ -69,40 +69,26 @@ class Config:
     # credential — the LLM reranker it replaces failed 100% of calls on a stale
     # key and silently returned documents unranked.
     #
-    # Benchmarked on 39 real queries taken from conversation history (29 needing
-    # live data, 10 answerable from the KB). v2-m3 was the only model that
-    # separated them cleanly — irrelevant results topped out at 0.775 while every
-    # relevant one scored 0.900+, so a threshold anywhere in that gap is exact.
-    # ms-marco-MiniLM is 16x cheaper but overlaps, and bge-reranker-base sits
-    # between the two; both drop a genuine documentation answer at any threshold
-    # that keeps junk out.
+    # Benchmarked on 39 real queries from conversation history (29 needing live
+    # data, 10 answerable from the KB):
     #
     #   model                  errors/39   latency (8 docs, 2 threads)
     #   bge-reranker-v2-m3     0           1480ms  @ max_length 256
     #   bge-reranker-base      1            362ms
     #   ms-marco-MiniLM-L-6    1            309ms
     #
-    # The model-cost column that used to sit here was measured the same wrong
-    # way as the note below and has been removed rather than left misleading.
-    #
-    # The model costs ~1.1GB resident, not the 490MB an earlier revision of this
-    # comment claimed: that figure was an RSS delta sampled immediately after
-    # construction, and mmap'd weights fault in lazily, so most of them had not
-    # been touched yet. Measured 1105MB locally and 1098MB in-pod after a full
-    # warm-up pass. Nearly half of it is a 250k-token multilingual vocabulary we
-    # never use on English documentation. To run somewhere smaller, set
-    # RAG_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2 with
-    # RAG_RERANKER_THRESHOLD=0.99 at the cost of missing roughly one
-    # documentation question in ten.
-    reranker_model = os.environ.get("RAG_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
-    # Minimum 0-1 relevance for a document to survive. 0.80 and 0.85 both scored
-    # zero errors; 0.85 sits mid-gap rather than on its edge. Retune when the
-    # model changes — this number is a property of the model, not of the corpus.
-    reranker_threshold = float(os.environ.get("RAG_RERANKER_THRESHOLD", 0.85))
-    # 256 tokens costs nothing in accuracy and cuts latency 3529ms -> 1480ms.
-    # 192 is where separation collapses, so this is close to the floor.
-    reranker_max_length = int(os.environ.get("RAG_RERANKER_MAX_LENGTH", 256))  # tokens per (query, doc) pair
-    reranker_max_doc_chars = int(os.environ.get("RAG_RERANKER_MAX_DOC_CHARS", 1000))  # doc chars scored
+    # v2-m3 was the only model that separated the two sets cleanly (irrelevant
+    # topped out at 0.775, relevant scored 0.900+); MiniLM's scores overlap.
+    # The defaults below are MiniLM, chosen for latency and footprint — v2-m3
+    # cost ~1.1GB resident and reranked 16 documents in 6-61s in prod. The
+    # accuracy cost of that swap at threshold 0.50 / max_length 128 has not been
+    # measured against the table above.
+    reranker_model = os.environ.get("RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    # Minimum 0-1 relevance for a document to survive. A property of the model,
+    # not of the corpus — retune when the model changes.
+    reranker_threshold = float(os.environ.get("RAG_RERANKER_THRESHOLD", 0.50))
+    reranker_max_length = int(os.environ.get("RAG_RERANKER_MAX_LENGTH", 128))  # tokens per (query, doc) pair
+    reranker_max_doc_chars = int(os.environ.get("RAG_RERANKER_MAX_DOC_CHARS", 500))  # doc chars scored
     # int8 quantization: measured slower and larger on ARM (qnnpack), so it is
     # off until measured to help on the target platform (x86/fbgemm).
     reranker_quantize = os.environ.get("RAG_RERANKER_QUANTIZE", "false").lower() == "true"
