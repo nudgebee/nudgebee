@@ -207,7 +207,7 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 		},
 		"event_summary": {
 			"Use this tool to format and summarize event data when you have a small result set with full evidence.",
-			"Input: events data. Output: events in markdown format.",
+			"Input: none — call with an empty input. The tool automatically summarizes the event data already gathered earlier in this conversation. Do NOT pass event JSON or evidence data as input; it is ignored. Output: events in markdown format.",
 		},
 		tools.ToolGetEventEvidence: {
 			"Fetch detailed evidence for a specific event by ID — use after list_events to drill into one event's manifest.",

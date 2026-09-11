@@ -166,7 +166,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		},
 		"event_summary": {
 			"Use this tool to format and summarize event data when you have ≤5 events with full evidence.",
-			"Input: events data",
+			"Input: none — call with an empty input. The tool automatically summarizes the event data already gathered earlier in this conversation (via get_event_by_id/get_event_evidence/list_events). Do NOT pass event JSON or evidence data as input; it is ignored.",
 			"Output: events in markdown format",
 		},
 		tools.ToolGetEventEvidence: {
