@@ -10,6 +10,8 @@ import (
 
 	"nudgebee/code-analysis-agent/config"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -122,6 +124,54 @@ func TestGenerateContent_SplitsBatchedToolResultsForOpenAIWire(t *testing.T) {
 	if assistantCalls != 2 {
 		t.Errorf("assistant carried %d tool_calls, want 2 in a single message", assistantCalls)
 	}
+}
+
+func TestNewClient_CustomProviderSendsConfiguredHeaders(t *testing.T) {
+	var body []byte
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Tenant-Route")
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{}
+	cfg.LLM.Provider = "custom"
+	cfg.LLM.Model = "tenant-model"
+	cfg.LLM.ApiEndpoint = srv.URL
+	cfg.LLM.ApiKey = "tenant-key"
+	cfg.LLM.ExtraHeaders = `{"X-Tenant-Route":"tenant-a"}`
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+
+	_, err = client.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "hello"}}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-a", gotHeader)
+	assert.Contains(t, string(body), "tenant-model")
+}
+
+func TestCustomHTTPClientRejectsAuthenticationHeaders(t *testing.T) {
+	_, err := customHTTPClient(`{"Authorization":"Bearer spoof"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "managed by the provider configuration")
+}
+
+func TestCustomHTTPClientRejectsOtherAuthHeaderNames(t *testing.T) {
+	for _, header := range []string{"X-Api-Key", "X-Auth-Token", "X-Access-Token"} {
+		_, err := customHTTPClient(`{"` + header + `":"spoof"}`)
+		require.Error(t, err, header)
+		assert.Contains(t, err.Error(), "managed by the provider configuration", header)
+	}
+}
+
+func TestCustomHTTPClientReturnsNilForEmptyHeaders(t *testing.T) {
+	client, err := customHTTPClient(`{}`)
+	require.NoError(t, err)
+	assert.Nil(t, client)
 }
 
 // The split must not disturb conversations that already carry one result per

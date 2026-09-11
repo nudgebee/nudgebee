@@ -191,6 +191,9 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 	if c.Region != "" {
 		m["region"] = c.Region
 	}
+	if c.ExtraHeaders != "" {
+		m["extra_headers"] = c.ExtraHeaders
+	}
 	// Bedrock's credential triple. Sent as a unit — ResolveLLMConfigForForwarding
 	// already blanks all three unless the access/secret pair is complete, and a
 	// half-set static provider is a hard error in the AWS SDK rather than a

@@ -430,9 +430,25 @@ type PlannerResult struct {
 
 // convertNBToolsToToolDefs converts our internal tool definitions to llm.ToolDefinition
 // for native function calling. This is computed once at construction time.
+//
+// Tool names are sorted before building the result: `tools` is a map, whose
+// iteration order Go randomizes on every range, and a fresh planner (hence a
+// fresh call to this function) is constructed for every analysis request. An
+// unsorted result would reorder the tool-schema JSON — the large, separately-
+// passed part of the cacheable prompt prefix (see GenAISession.prevToolsHash
+// in llm/genai_tools.go) — on every single call, permanently busting the
+// provider's implicit prompt cache on that segment even across back-to-back
+// analyses using the identical tool set.
 func convertNBToolsToToolDefs(tools map[string]core.NBTool) []llm.ToolDefinition {
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	result := make([]llm.ToolDefinition, 0, len(tools))
-	for _, tool := range tools {
+	for _, name := range names {
+		tool := tools[name]
 		schema := tool.InputSchema()
 		result = append(result, llm.ToolDefinition{
 			Name:        tool.Name(),

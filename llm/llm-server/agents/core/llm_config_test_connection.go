@@ -54,8 +54,8 @@ const (
 
 // Concurrency limit for the multi-model probe burst. A typical config has
 // ~10-25 (provider, model) pairs across global + tiers + agents + fallbacks.
-// 5 concurrent probes keeps wall time bounded (~5-10s for a 25-model config)
-// without hammering providers hard enough to trigger genuine rate limits.
+// 5 concurrent probes keeps wall time bounded while the per-provider
+// semaphore below prevents a single provider from receiving a burst.
 const probeConcurrency = 5
 
 // Per-probe wall-clock budget. Same 15s used by the original single-probe.
@@ -122,13 +122,28 @@ func TestLLMProviderConnectionAll(ctx context.Context, cfg map[string]string) ([
 
 	results := make([]ProbeResult, len(targets))
 	sem := make(chan struct{}, probeConcurrency)
+	providerSems := make(map[string]chan struct{})
+	var providerSemsMu sync.Mutex
+	providerSem := func(provider string) chan struct{} {
+		key := strings.ToLower(strings.TrimSpace(provider))
+		providerSemsMu.Lock()
+		defer providerSemsMu.Unlock()
+		if existing, ok := providerSems[key]; ok {
+			return existing
+		}
+		created := make(chan struct{}, 1)
+		providerSems[key] = created
+		return created
+	}
 	var wg sync.WaitGroup
 	for i, t := range targets {
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(i int, t probeTarget) {
 			defer wg.Done()
+			sem <- struct{}{}
 			defer func() { <-sem }()
+			providerSem(t.provider) <- struct{}{}
+			defer func() { <-providerSem(t.provider) }()
 			results[i] = probeOne(ctx, t)
 		}(i, t)
 	}

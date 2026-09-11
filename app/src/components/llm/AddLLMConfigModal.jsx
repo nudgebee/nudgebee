@@ -483,11 +483,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           // configured, so they shouldn't appear in the override dropdown.
           .filter((a) => a?.status === 'enabled')
           .map((a) => {
-            const key = a?.aliases?.[0] ?? a?.name;
+            // The key must be the agent's canonical registered name — it becomes
+            // the `llm_model_name_<key>` / `llm_provider_<key>` config suffix
+            // that llm-server's ResolveLLMConfig looks up by agentName (GetName()).
+            // aliases[0] is a human-readable display name (e.g. "Code Analyzer &
+            // Fixer") and was previously used as the key, which saved the
+            // override under a name the resolver never looks up — the per-agent
+            // model silently fell back to the global config.
+            const key = a?.name;
             if (!key) {
               return null;
             }
-            return { key, label: a?.name || key, description: a?.description || '' };
+            return { key, label: a?.aliases?.[0] || a?.name || key, description: a?.description || '' };
           })
           .filter(Boolean);
         if (!cancelled) {
