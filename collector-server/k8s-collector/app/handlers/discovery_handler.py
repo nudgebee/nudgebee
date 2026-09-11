@@ -1254,10 +1254,31 @@ def process_deleted_resources(cloud_account_id, deleted_resources, tenant):
 
         # Close events with history tracking
         # Note: Don't store deleted_resources list in metadata to avoid TOAST bloat
+        #
+        # Matched on cloud_resource_id FIRST, service_key second. `service_key`
+        # alone closed nothing for agent-sourced events: discovery writes
+        # `<ns>/<Kind>/<name>` while the agent's own findings write `<ns>/<name>`
+        # (event_handler.py `_resolve_prometheus_subject` / the finding path), so
+        # the two never matched and a deleted workload kept its alerts open
+        # forever -- 2,288 of them on production, against 1,509 resources that no
+        # longer exist. Same format mismatch #36551 fixed for
+        # handle_active_resources_deletion; this path was left on the old key.
+        #
+        # `resource_ids` are the keys of deleted_resources, which are the
+        # cloud_resourses PKs (`_id` = uuid5(service_key + account), written as
+        # both `id` and `external_resource_id` in process_service_discovery), so
+        # the id needs no lookup -- it is the same value the two UPDATEs below
+        # already use.
+        #
+        # service_key is KEPT as an OR arm, not replaced: on Robusta clusters the
+        # two formats do agree and that arm is the only thing closing those events
+        # (`service_deleted` closes 384 events in 21 days on production). Unlike
+        # the `!= ALL(...)` predicate that caused #36550, `= ANY(...)` matches only
+        # the resources this deletion actually named, so it cannot over-close.
         close_events_with_history(
             cloud_account_id=cloud_account_id,
-            where_conditions="service_key = ANY(%s)",
-            params=[service_keys],
+            where_conditions="(cloud_resource_id = ANY(%s::uuid[]) OR service_key = ANY(%s))",
+            params=[resource_ids, service_keys],
             closing_reason="resource_deleted",
             metadata={
                 "method": "process_deleted_resources",
