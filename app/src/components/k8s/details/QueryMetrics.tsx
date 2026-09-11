@@ -416,7 +416,10 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
           ];
         }
 
-        const labels = [...new Set(g.payload?.flatMap((e: any) => e.timestamps) ?? [])];
+        // Typed as number[] rather than inferred: the payload is `any`, so the Set
+        // widened to unknown[] and every consumer of these labels had to be `any`
+        // to compile. They are Result.timestamps — Unix epoch milliseconds.
+        const labels: number[] = [...new Set<number>(g.payload?.flatMap((e: any) => e.timestamps as number[]) ?? [])];
         labels.sort();
 
         // Track original counts for truncation warning
