@@ -62,6 +62,15 @@ const OPTION_DESC_SX = {
   maxWidth: '46ch',
 };
 
+// Parses the comma-separated region box into the array the API expects. An
+// empty result means "discover regions from the account", never "no regions" —
+// the latter would collect nothing while the account reported healthy.
+const parseRegions = (value) =>
+  value
+    .split(',')
+    .map((region) => region.trim())
+    .filter(Boolean);
+
 const AddAwsAccountModal = ({ open, onClose }) => {
   const [activeTab, setActiveTab] = useState(TAB_CLOUDFORMATION);
   const [guideExpanded, setGuideExpanded] = useState(false);
@@ -78,7 +87,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
   const [externalIdInput, setExternalIdInput] = useState('');
   const [accessKeyId, setAccessKeyId] = useState('');
   const [secretAccessKey, setSecretAccessKey] = useState('');
-  const [keysRegion, setKeysRegion] = useState('us-east-1');
+  const [regionsInput, setRegionsInput] = useState('');
   const [isValidating, setIsValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -105,7 +114,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     setExternalIdInput('');
     setAccessKeyId('');
     setSecretAccessKey('');
-    setKeysRegion('us-east-1');
+    setRegionsInput('');
     setIsSubmitting(false);
     setIsValidating(false);
     setValidationResult(null);
@@ -125,7 +134,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
   // submit through unverified.
   useEffect(() => {
     setValidationResult(null);
-  }, [activeTab, roleArn, externalIdInput, accessKeyId, secretAccessKey, keysRegion]);
+  }, [activeTab, roleArn, externalIdInput, accessKeyId, secretAccessKey, regionsInput]);
 
   const handleCloseModal = (wasSuccessful = false) => {
     resetForm();
@@ -230,9 +239,13 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       } else if (activeTab === TAB_ACCESS_KEYS) {
         payload.access_key = accessKeyId;
         payload.access_secret = secretAccessKey;
-        if (keysRegion) {
-          payload.region = keysRegion;
-        }
+      }
+      // Validation must bootstrap inside the allowlist: a role scoped with an
+      // aws:RequestedRegion condition denies every call made outside it, so
+      // validating from the us-east-1 default would fail on a working role.
+      const regions = parseRegions(regionsInput);
+      if (regions.length > 0) {
+        payload.region = regions[0];
       }
       const result = await apiAccount.validateCloudCredentials(payload);
       setValidationResult(result || { success: false, errorMessage: 'Validation returned no result.' });
@@ -269,9 +282,10 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     } else if (activeTab === TAB_ACCESS_KEYS) {
       payload.access_key = accessKeyId;
       payload.access_secret = secretAccessKey;
-      if (keysRegion) {
-        payload.region = keysRegion;
-      }
+    }
+    const regions = parseRegions(regionsInput);
+    if (regions.length > 0) {
+      payload.regions = regions;
     }
 
     apiAccount
@@ -468,18 +482,6 @@ const AddAwsAccountModal = ({ open, onClose }) => {
         />
       </Grid>
       <Grid item>
-        <Input
-          value={keysRegion}
-          size='sm'
-          id='aws-region'
-          label='AWS Region'
-          placeholder='us-east-1'
-          onChange={(value) => setKeysRegion(value.trim())}
-          disabled={isValidating || isSubmitting}
-          help='Region used to bootstrap the AWS SDK. CUR discovery always runs in us-east-1.'
-        />
-      </Grid>
-      <Grid item>
         <Alert severity='info' sx={{ mt: 1 }}>
           Access keys are stored encrypted at rest. Prefer the CloudFormation flow when possible — keys grant broader access and rotation is your
           responsibility.
@@ -596,6 +598,25 @@ const AddAwsAccountModal = ({ open, onClose }) => {
             disabled={!!externalId}
           />
         </Box>
+
+        {/* Not offered on the CloudFormation tab: that flow creates the account from the
+            stack's callback rather than from this form, so a value typed here would be
+            silently dropped. The template it deploys grants ReadOnlyAccess with no region
+            condition anyway, which is the case this field exists to handle. */}
+        {activeTab !== TAB_CLOUDFORMATION && (
+          <Box sx={{ mt: 2, width: '100%' }}>
+            <Input
+              value={regionsInput}
+              size='sm'
+              id='aws-regions'
+              label='AWS Regions (optional)'
+              placeholder='ap-southeast-2, us-east-1'
+              onChange={setRegionsInput}
+              disabled={isValidating || isSubmitting}
+              help='Leave blank to discover regions automatically. Set this only if the IAM role is restricted to specific regions — an unlisted region is not monitored, and resources already found there are marked deleted.'
+            />
+          </Box>
+        )}
 
         <Grid item xs={12} sx={{ mt: 2, mb: 1 }}>
           <Box sx={{ border: `1px solid ${ds.gray[200]}`, borderRadius: ds.radius.lg, overflow: 'hidden' }}>

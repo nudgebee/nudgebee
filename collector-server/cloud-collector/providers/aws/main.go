@@ -754,6 +754,20 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 }
 
 func (a *awsProvider) getRegions(ctx providers.CloudProviderContext, account providers.Account) ([]string, error) {
+	// An operator-configured allowlist wins over discovery, and is resolved
+	// before the cache read on purpose: the cache is keyed on account number
+	// with a 6h TTL, so resolving after it would leave an edited list inert for
+	// up to six hours. Reading account.Data is free — no API call, no lock
+	// contention worth caching around.
+	//
+	// This sits in getRegions rather than at the StoreResources call site so
+	// that every caller is covered — resource discovery, CloudWatch alarm event
+	// discovery, and ListEventRules all reach regions through here, and the
+	// latter two never pass an explicit region set.
+	if regions := configuredRegions(account); len(regions) > 0 {
+		return regions, nil
+	}
+
 	regionsCacheMutex.Lock()
 	defer regionsCacheMutex.Unlock()
 
