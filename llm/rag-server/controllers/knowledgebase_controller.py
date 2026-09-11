@@ -14,13 +14,14 @@ from rag.core.documents.loaders.file_loaders import (
     TextLoader,
     UnstructuredXMLLoader,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rag.core.documents import collection as document_collection
 from rag.core.documents.processing import process_documents
 from rag.core.embeddings.generator import get_embeddings
 from rag.core.llm.rag import get_matching_documents
 from rag.core.types import Document
+from rag.core.documents.knowledge_tags import add_knowledge_context_tags
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class KBCreateRequest(BaseModel):
     format: str = "text"
     triggered_by: str = "system"
     trigger_type: str = "user_create"
+    context_tags: list[str] = Field(default_factory=list)
 
 
 class KBSearchRequest(BaseModel):
@@ -148,6 +150,7 @@ async def create_kb(request: KBCreateRequest):
 
             # Load documents (blocking I/O - run in thread pool)
             documents = await asyncio.to_thread(loader.load)
+            documents = add_knowledge_context_tags(documents, request.context_tags)
             logger.info(f"Loaded {len(documents)} documents for KB {request.kb_id}")
 
             # Get embeddings for the account (run in thread as it may do I/O)

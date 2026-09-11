@@ -1097,6 +1097,8 @@ Form-field value picker. Single by default; `multiple` discriminates a union. Bu
 | `loading`                  | `boolean`                    | —                     | —                                                       |
 | `disablePortal`            | `boolean`                    | —                     | —                                                       |
 
+`onCreateOption?: (value: string) => boolean | void` opts into custom values: search is always shown, and unmatched trimmed text gets an Add row or can be added with Enter. The caller validates and persists the value; return `false` to keep invalid text for correction. Existing pickers are unchanged when omitted.
+
 **Single** (`multiple` omitted/`false`): `value: string \| null` (✓), `onChange: (next: string) => void` (✓).
 **Multi** (`multiple: true`): `value: string[]` (✓), `onChange: (next: string[]) => void` (✓), `maxChips?` (default 2), `hideOptionCheckbox?`.
 `SelectOption`: `{ value (✓), label?, icon?, disabled? }`.
