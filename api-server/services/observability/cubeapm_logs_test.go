@@ -161,6 +161,55 @@ func TestBuildCubeAPMConditionsIsDeterministic(t *testing.T) {
 	}
 }
 
+// "workload" and "app" are backed by k8s.deployment.name on a Kubernetes-enriched
+// CubeAPM and by `service` on one fed straight from an instrumented app, so a filter
+// has to try both — resolving to a single field makes the other shape match nothing
+// and return an empty result with no error.
+func TestBuildCubeAPMConditionsFansOutAliasedLabels(t *testing.T) {
+	for _, label := range []string{"workload", "app"} {
+		got, err := buildCubeAPMConditions(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+			label: {query.Eq: "payment"},
+		}}, cubeAPMLogLabelMapping)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", label, err)
+		}
+		want := `(k8s.deployment.name:="payment" OR service:="payment")`
+		if got != want {
+			t.Errorf("%s: got %q, want %q", label, got, want)
+		}
+	}
+}
+
+// Distributing the negation instead (NOT a OR NOT b) is true whenever the two
+// fields differ, which for an alias pair is every record — the filter would be a
+// no-op rather than an exclusion.
+func TestBuildCubeAPMConditionsNegatesTheWholeAliasDisjunction(t *testing.T) {
+	got, err := buildCubeAPMConditions(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"workload": {query.Nq: "payment"},
+	}}, cubeAPMLogLabelMapping)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `NOT (k8s.deployment.name:="payment" OR service:="payment")`
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Only aliased labels fan out; every other label keeps the exact expression it
+// always emitted, so existing queries are byte-for-byte unchanged.
+func TestBuildCubeAPMConditionsLeavesSingleFieldLabelsAlone(t *testing.T) {
+	got, err := buildCubeAPMConditions(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"namespace": {query.Eq: "payments"},
+	}}, cubeAPMLogLabelMapping)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `k8s.namespace.name:="payments"`; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestBuildCubeAPMConditionsRejectsUnsafeField(t *testing.T) {
 	_, err := buildCubeAPMConditions(query.QueryWhereClause{Binary: query.BinaryWhereClause{
 		`evil" | drop _msg | x "`: {query.Eq: "1"},
@@ -454,7 +503,7 @@ func TestBuildCubeAPMLogGroupQuery(t *testing.T) {
 			`_msg:*`,
 			`log.level:~"(?i)^(error|err|critical|crit|fatal|emergency|alert|panic|severe)$"`,
 			`NOT k8s.container.name:="istio-proxy"`,
-			`| stats by (_msg, k8s.namespace.name, k8s.pod.name, k8s.deployment.name, k8s.container.name, log.level) count() as cube_count`,
+			`| stats by (_msg, k8s.namespace.name, k8s.pod.name, k8s.deployment.name, k8s.container.name, log.level, service) count() as cube_count`,
 			`| sort ("cube_count" desc)`,
 			`| limit 50`,
 		} {
@@ -479,6 +528,16 @@ func TestBuildCubeAPMLogGroupQuery(t *testing.T) {
 	t.Run("zero limit falls back to the default", func(t *testing.T) {
 		if !strings.Contains(buildCubeAPMLogGroupQuery("", "", "", 0), "| limit 100") {
 			t.Error("expected the default log-group limit")
+		}
+	})
+
+	// A CubeAPM fed straight from an instrumented app carries no k8s.* field at all,
+	// so the pod-prefix term alone matched nothing and emptied the view with no error.
+	t.Run("workload filter also matches the OTel service", func(t *testing.T) {
+		got := buildCubeAPMLogGroupQuery("", "", "checkout-api", 0)
+		want := `(k8s.pod.name:"checkout-api-*" OR service:="checkout-api")`
+		if !strings.Contains(got, want) {
+			t.Errorf("query missing %q\ngot: %s", want, got)
 		}
 	})
 }
@@ -530,6 +589,45 @@ func TestConvertCubeAPMLogGroups(t *testing.T) {
 	}
 	if len(g.Values) != 1 || g.Values[0] != 42 {
 		t.Errorf("Values = %v", g.Values)
+	}
+}
+
+// A CubeAPM with no Kubernetes attributes produces rows carrying only the OTel
+// service. Before the fallback the group had no workload at all, so the UI had
+// nothing to build a filter from and refused to fetch the surrounding logs.
+func TestConvertCubeAPMLogGroupsFallsBackToService(t *testing.T) {
+	rows := []map[string]any{{
+		"_msg":       "Failed connecting to database",
+		"service":    "payment",
+		"log.level":  "error",
+		"cube_count": "927",
+	}}
+
+	out := convertCubeAPMLogGroups(rows, 1788489360)
+	if len(out.Groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(out.Groups))
+	}
+	if got := out.Groups[0].Workload; got != "payment" {
+		t.Errorf("Workload = %q, want %q (the service is the only identity these rows carry)", got, "payment")
+	}
+}
+
+// The k8s.* fields win whenever the instance populates them, so adding the service
+// fallback cannot change what a Kubernetes-enriched deployment reports.
+func TestConvertCubeAPMLogGroupsPrefersK8sWorkloadOverService(t *testing.T) {
+	rows := []map[string]any{{
+		"_msg":                "upstream timeout",
+		"k8s.deployment.name": "checkout-api",
+		"service":             "checkout",
+		"cube_count":          "3",
+	}}
+
+	out := convertCubeAPMLogGroups(rows, 1788489360)
+	if len(out.Groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(out.Groups))
+	}
+	if got := out.Groups[0].Workload; got != "checkout-api" {
+		t.Errorf("Workload = %q, want the k8s deployment name", got)
 	}
 }
 

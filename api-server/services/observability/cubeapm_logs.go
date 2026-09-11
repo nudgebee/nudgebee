@@ -73,6 +73,36 @@ var cubeAPMLogLabelMapping = map[string]string{
 	"env":      "env",
 }
 
+// cubeAPMLogFieldAliases lists EVERY CubeAPM field a canonical label may be backed
+// by, for labels whose real field depends on how the instance is instrumented.
+//
+// "workload" is the only such label today. A CubeAPM fed by the OTel k8s attributes
+// processor carries k8s.deployment.name; one fed straight from an instrumented app
+// carries only `service` and no k8s.* field at all — CubeAPM's own demo deployment
+// indexes exactly `_msg, _time, service, env, endpoint, path, log.level, trace_id`.
+// Resolving to a single field makes the other shape match nothing and return an
+// empty result with no error, which reads as "no logs" rather than "wrong field".
+//
+// Order matters only for readability; a filter ORs across all of them, so whichever
+// field the instance actually populates is the one that matches.
+var cubeAPMLogFieldAliases = map[string][]string{
+	"workload": {"k8s.deployment.name", "service"},
+	"app":      {"k8s.deployment.name", "service"},
+}
+
+// cubeAPMFieldsFor returns the CubeAPM fields a canonical label resolves to: the
+// alias list when the label has one, otherwise the single mapped field (or the
+// label itself when it is already a raw field name).
+func cubeAPMFieldsFor(label string, mapping map[string]string) []string {
+	if aliases, ok := cubeAPMLogFieldAliases[label]; ok {
+		return aliases
+	}
+	if mapped, ok := mapping[label]; ok {
+		return []string{mapped}
+	}
+	return []string{label}
+}
+
 // cubeAPMLogMessageFields are the keys read as the rendered log line, in priority
 // order. `_msg` is CubeAPM's canonical field, but an ingestion pipeline configured
 // with a different `_msg_field` leaves the original key in place alongside it.
@@ -145,30 +175,46 @@ func isSafeCubeAPMField(field string) bool {
 func buildCubeAPMBinaryClause(binary query.BinaryWhereClause, mapping map[string]string) (string, error) {
 	var parts []string
 	for field, ops := range binary {
-		col := field
-		if mapped, ok := mapping[col]; ok {
-			col = mapped
-		}
-		if !isSafeCubeAPMField(col) {
-			return "", fmt.Errorf("invalid or unsafe field name: %q", col)
+		cols := cubeAPMFieldsFor(field, mapping)
+		for _, col := range cols {
+			if !isSafeCubeAPMField(col) {
+				return "", fmt.Errorf("invalid or unsafe field name: %q", col)
+			}
 		}
 		for op, val := range ops {
 			strVal := fmt.Sprintf("%v", val)
-			switch op {
-			case query.Eq:
-				parts = append(parts, fmt.Sprintf("%s:=%s", col, cubeAPMQuote(strVal)))
-			case query.Nq:
-				parts = append(parts, fmt.Sprintf("NOT %s:=%s", col, cubeAPMQuote(strVal)))
-			case query.Contains, query.ILike:
-				// LogsQL's substring form is *value* and is already
-				// case-insensitive for the word index, which is the closest
-				// thing it has to ILIKE.
-				parts = append(parts, fmt.Sprintf("%s:%s", col, cubeAPMQuote("*"+strVal+"*")))
-			case query.Regex:
-				parts = append(parts, fmt.Sprintf("%s:~%s", col, cubeAPMQuote(strVal)))
-			default:
-				return "", fmt.Errorf("unsupported operator for CubeAPM logs: %s", op)
+
+			// Render the POSITIVE match once per candidate field. A label with a
+			// single field keeps the exact expression it always emitted; only a
+			// multi-field label grows the OR, so existing queries are unchanged.
+			match := make([]string, 0, len(cols))
+			for _, col := range cols {
+				switch op {
+				case query.Eq, query.Nq:
+					match = append(match, fmt.Sprintf("%s:=%s", col, cubeAPMQuote(strVal)))
+				case query.Contains, query.ILike:
+					// LogsQL's substring form is *value* and is already
+					// case-insensitive for the word index, which is the closest
+					// thing it has to ILIKE.
+					match = append(match, fmt.Sprintf("%s:%s", col, cubeAPMQuote("*"+strVal+"*")))
+				case query.Regex:
+					match = append(match, fmt.Sprintf("%s:~%s", col, cubeAPMQuote(strVal)))
+				default:
+					return "", fmt.Errorf("unsupported operator for CubeAPM logs: %s", op)
+				}
 			}
+
+			clause := match[0]
+			if len(match) > 1 {
+				clause = "(" + strings.Join(match, " OR ") + ")"
+			}
+			// Negation wraps the whole disjunction. Distributing it instead
+			// (NOT a OR NOT b) is always true whenever the two fields differ,
+			// which for an alias pair is every record.
+			if op == query.Nq {
+				clause = "NOT " + clause
+			}
+			parts = append(parts, clause)
 		}
 	}
 	// Map iteration order is random; sorting keeps a query stable across calls so
@@ -526,28 +572,39 @@ func (s *CubeAPMLogSource) QueryLabelValues(ctx *security.RequestContext, req Fe
 		return nil, fmt.Errorf("failed to get CubeAPM configs: %w", err)
 	}
 
-	field := req.LabelName
-	if mapped, ok := cubeAPMLogLabelMapping[field]; ok {
-		field = mapped
-	}
-	if !isSafeCubeAPMField(field) {
-		return nil, fmt.Errorf("invalid or unsafe field name: %q", req.LabelName)
-	}
-
-	// `stats by (field)` is an exact distinct-value list, which sampling records
-	// would only approximate — a value that appears once in a million-line window
-	// is still a legitimate filter choice and a sample would miss it.
-	logsQL := fmt.Sprintf(`%s | stats by (%s) count() as cube_count | sort ("cube_count" desc) | limit %d`,
-		cubeAPMBaseQuery(cfg.Env, field+":*"), field, cubeAPMLabelValueLimit)
-
-	rows, err := cubeAPMLogSearch(cfg, logsQL, req.StartTime, req.EndTime, 0, cubeAPMLogQueryTimeout)
-	if err != nil {
-		return nil, err
+	fields := cubeAPMFieldsFor(req.LabelName, cubeAPMLogLabelMapping)
+	for _, field := range fields {
+		if !isSafeCubeAPMField(field) {
+			return nil, fmt.Errorf("invalid or unsafe field name: %q", req.LabelName)
+		}
 	}
 
-	values := make([]OutputLogLabelValue, 0, len(rows))
-	for _, row := range rows {
-		if v := cubeAPMString(row[field]); v != "" {
+	// An alias label is backed by whichever field this instance populates, so ask
+	// each in turn and merge. The unpopulated one returns no rows, which costs one
+	// extra aggregation on a label the user is actively picking a value for.
+	values := make([]OutputLogLabelValue, 0, cubeAPMLabelValueLimit)
+	seen := make(map[string]struct{}, cubeAPMLabelValueLimit)
+	for _, field := range fields {
+		// `stats by (field)` is an exact distinct-value list, which sampling records
+		// would only approximate — a value that appears once in a million-line window
+		// is still a legitimate filter choice and a sample would miss it.
+		logsQL := fmt.Sprintf(`%s | stats by (%s) count() as cube_count | sort ("cube_count" desc) | limit %d`,
+			cubeAPMBaseQuery(cfg.Env, field+":*"), field, cubeAPMLabelValueLimit)
+
+		rows, err := cubeAPMLogSearch(cfg, logsQL, req.StartTime, req.EndTime, 0, cubeAPMLogQueryTimeout)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, row := range rows {
+			v := cubeAPMString(row[field])
+			if v == "" {
+				continue
+			}
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
 			values = append(values, OutputLogLabelValue{Value: v, Attributes: map[string]any{}})
 		}
 	}
@@ -572,6 +629,7 @@ var cubeAPMLogGroupFields = struct {
 	Workload  string
 	Container string
 	Level     string
+	Service   string
 }{
 	Message:   "_msg",
 	Namespace: "k8s.namespace.name",
@@ -579,6 +637,10 @@ var cubeAPMLogGroupFields = struct {
 	Workload:  "k8s.deployment.name",
 	Container: "k8s.container.name",
 	Level:     "log.level",
+	// The OTel-native identity, present whether or not the k8s.* fields are. It is
+	// grouped on so a group still has a name to show — and a filter to drill into —
+	// on an instance that ships no Kubernetes attributes. See cubeAPMLogFieldAliases.
+	Service: "service",
 }
 
 // buildCubeAPMLogGroupQuery emits a LogsQL pipeline that aggregates error logs
@@ -609,11 +671,15 @@ func buildCubeAPMLogGroupQuery(env, selectedNamespace, selectedWorkload string, 
 		// Pods are named {workload}-{replica-suffix}, so the workload filter is a
 		// prefix match on the pod rather than an equality on a workload field —
 		// which also covers StatefulSets and Jobs, whose records carry no
-		// deployment name at all.
-		conditions = append(conditions, fmt.Sprintf("%s:%s", f.Pod, cubeAPMQuote(selectedWorkload+"-*")))
+		// deployment name at all. OR'd with the service name so the filter still
+		// selects something on an instance that ships no k8s.* fields, where the
+		// pod-prefix term matches nothing and silently emptied the view.
+		conditions = append(conditions, fmt.Sprintf("(%s:%s OR %s:=%s)",
+			f.Pod, cubeAPMQuote(selectedWorkload+"-*"),
+			f.Service, cubeAPMQuote(selectedWorkload)))
 	}
 
-	groupBy := strings.Join([]string{f.Message, f.Namespace, f.Pod, f.Workload, f.Container, f.Level}, ", ")
+	groupBy := strings.Join([]string{f.Message, f.Namespace, f.Pod, f.Workload, f.Container, f.Level, f.Service}, ", ")
 
 	return fmt.Sprintf(`%s | stats by (%s) count() as cube_count | sort ("cube_count" desc) | limit %d`,
 		cubeAPMBaseQuery(env, strings.Join(conditions, " AND ")), groupBy, limit)
@@ -678,6 +744,14 @@ func convertCubeAPMLogGroups(rows []map[string]any, timestampSec int64) LogGroup
 		workload := cubeAPMString(row[f.Workload])
 		if workload == "" {
 			workload = extractWorkloadFromPodName(pod)
+		}
+		// Last resort, and the only one that fires on a CubeAPM with no Kubernetes
+		// attributes: the OTel service. Without it the group has no workload at all,
+		// so the UI has nothing to build a filter from and refuses to fetch the
+		// surrounding logs ("No label filters available"). Only reached when both
+		// k8s fields were empty, so a k8s-enriched instance is unaffected.
+		if workload == "" {
+			workload = cubeAPMString(row[f.Service])
 		}
 
 		group := LogGroup{
