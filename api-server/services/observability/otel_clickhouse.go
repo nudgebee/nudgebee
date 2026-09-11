@@ -221,6 +221,15 @@ var ClickhouseTraceGroupingTableDefinition = map[string]query.ColumnDefinition{
 		Def:          "MAX(duration_ns)",
 		IsAggregated: true,
 	},
+	// avg_duration_ns backs the grouped response's duration_ns field. It is a distinct
+	// column from the raw "duration_ns" above (rather than flipping that one to
+	// IsAggregated) so existing WHERE-clause filters on the raw column keep working --
+	// an aggregated column cannot appear outside HAVING (see generateWhereClauseColumn).
+	"avg_duration_ns": {
+		Type:         query.ColumnDefinitionTypeFloat,
+		Def:          "AVG(duration_ns)",
+		IsAggregated: true,
+	},
 	"service_name": {
 		Type: query.ColumnDefinitionTypeString,
 	},
@@ -664,9 +673,7 @@ func MapGroupingRowToTraceGroupingValues(row map[string]interface{}) (TraceGroup
 	if v, ok := row["resource"].(string); ok {
 		trace.Resource = v
 	}
-	// if v, ok := row["http_status_code"].(string); ok {
-	// 	trace.DurationNS = v
-	// }
+	trace.DurationNS = clickhouseInt64(row["avg_duration_ns"])
 	if v, ok := row["http_status_code"].(string); ok {
 		trace.HTTPStatusCode = v
 	}
@@ -1361,6 +1368,28 @@ func (s *OtelClickhouseTraceSource) QueryTracesRaw(ctx *security.RequestContext,
 	return s.executeClickhouseQueryRaw(ctx.GetContext(), sqlQuery, fetchTraceRequest.AccountId)
 }
 
+// redirectDurationNsSortToAvg rewrites an incoming "duration_ns" sort to "avg_duration_ns".
+// The API's sort key is "duration_ns" -- the same name every other trace source's grouped
+// sort accepts (e.g. ElasticSaasTraceSource's in-memory switch), so the frontend/API contract
+// keeps using it. On this source, "duration_ns" stays a non-aggregated column definition (so
+// WHERE filters on it still work), while the value actually selected and displayed for a group
+// is the avg_duration_ns aggregate. Left unredirected, ordering by "duration_ns" would resolve
+// to the raw, non-selected, non-grouped column and get silently wrapped in MAX() by
+// generateOrderByClause -- sorting by max duration while the column shows the average.
+func redirectDurationNsSortToAvg(orderBy []query.QueryOrderBy) []query.QueryOrderBy {
+	if len(orderBy) == 0 {
+		return orderBy
+	}
+	result := make([]query.QueryOrderBy, len(orderBy))
+	copy(result, orderBy)
+	for i, ob := range result {
+		if ob.Column == "duration_ns" {
+			result[i].Column = "avg_duration_ns"
+		}
+	}
+	return result
+}
+
 func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]TraceGroupingValues, error) {
 	hasAccess := s.CheckAccess(ctx, fetchTraceRequest.AccountId)
 	if !hasAccess {
@@ -1378,6 +1407,7 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestCont
 			{Name: "p99_latency"},
 			{Name: "p95_latency"},
 			{Name: "max_latency"},
+			{Name: "avg_duration_ns"},
 			{Name: "workload_name"},
 			{Name: "workload_namespace"},
 			{Name: "destination_workload_name"},
@@ -1395,6 +1425,7 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestCont
 			"span_name",
 			"http_status_code",
 		}
+		queryRequest.OrderBy = redirectDurationNsSortToAvg(queryRequest.OrderBy)
 		sqlQuery, err = query.GenerateSqlQuery(ctx, fetchTraceRequest.AccountId, queryRequest, tableDef)
 	} else {
 		sqlQuery = fetchTraceRequest.Query

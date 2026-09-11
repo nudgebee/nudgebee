@@ -146,7 +146,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
     ...(isEsProvider ? [] : [{ name: 'Status Code', width: '10%' }]),
     { name: 'Target' },
     { name: 'Resource' },
-    { name: 'Duration', sortEnabled: true },
+    { name: 'Avg Duration', sortEnabled: true },
     { name: 'P99', sortEnabled: true },
     { name: 'P95', sortEnabled: true },
     { name: 'Max', sortEnabled: true },
@@ -156,7 +156,7 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   const listTraces = () => {
     setLoading(true);
     let sortCol = 'error_count';
-    if (sortObject.name == 'Duration') {
+    if (sortObject.name == 'Avg Duration') {
       sortCol = 'duration_ns';
     } else if (sortObject.name == 'P99') {
       sortCol = 'p99_latency';
