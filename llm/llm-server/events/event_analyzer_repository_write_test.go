@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The three analysis write paths — UpsertEventAnalysisInProgress,
-// SaveEventRCAAnalysis and UpsertEventAnalysis — share one skeleton: resolve the
+// The mutable stage write paths — UpsertEventAnalysisInProgress
+// and UpsertEventAnalysis — share one skeleton: resolve the
 // row this event currently owns (mapping first, latest-for-fingerprint as
 // fallback), update it if found, otherwise insert and register the mapping.
 //
@@ -108,53 +108,6 @@ func TestUpsertEventAnalysisInProgress(t *testing.T) {
 		mock.ExpectCommit()
 
 		require.NoError(t, repo.UpsertEventAnalysisInProgress(ctx, "", wFp, wAcct, wAggKey, AnalysisTypeLog))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-}
-
-func TestSaveEventRCAAnalysis(t *testing.T) {
-	ctx := security.NewRequestContextForSuperAdmin()
-	const result = "rca-body"
-
-	t.Run("mapped event updates the row it owns", func(t *testing.T) {
-		repo, mock := newClaimTestRepo(t)
-		mock.ExpectBegin()
-		expectMappingLookup(mock, AnalysisTypeRCA, wRowID)
-		mock.ExpectExec("UPDATE event_log_analysis SET analysis=.*status_reason=NULL.*WHERE id=").
-			WithArgs(wRowID, result, AnalysisStatusCompleted, wEventID).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
-
-		require.NoError(t, repo.SaveEventRCAAnalysis(ctx, wEventID, wFp, wAcct, wAggKey, result))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("unmapped event inserts and registers the mapping", func(t *testing.T) {
-		repo, mock := newClaimTestRepo(t)
-		mock.ExpectBegin()
-		expectMappingLookup(mock, AnalysisTypeRCA, "")
-		mock.ExpectQuery("INSERT INTO event_log_analysis").
-			WithArgs(wEventID, result, AnalysisStatusCompleted, wFp, wAcct, wAggKey, AnalysisTypeRCA).
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(wNewID))
-		mock.ExpectExec("INSERT INTO event_analysis_mapping").
-			WithArgs(wEventID, wNewID, AnalysisTypeRCA).
-			WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectCommit()
-
-		require.NoError(t, repo.SaveEventRCAAnalysis(ctx, wEventID, wFp, wAcct, wAggKey, result))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("no eventId falls back to the latest row for the fingerprint", func(t *testing.T) {
-		repo, mock := newClaimTestRepo(t)
-		mock.ExpectBegin()
-		expectFingerprintLookup(mock, AnalysisTypeRCA, wRowID)
-		mock.ExpectExec("UPDATE event_log_analysis SET analysis=.*status_reason=NULL.*WHERE id=").
-			WithArgs(wRowID, result, AnalysisStatusCompleted).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
-
-		require.NoError(t, repo.SaveEventRCAAnalysis(ctx, "", wFp, wAcct, wAggKey, result))
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 }

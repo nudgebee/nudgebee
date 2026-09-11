@@ -554,57 +554,45 @@ func (r *EventAnalysisRepository) ClaimEventAnalysis(ctx *security.RequestContex
 	return true, nil
 }
 
-// SaveEventRCAAnalysis saves the final RCA analysis result.
-func (r *EventAnalysisRepository) SaveEventRCAAnalysis(ctx *security.RequestContext, eventId, fingerprint, accountId, aggKey, analysisResult string) error {
+// SaveEventRCAAnalysis completes legacy fingerprint-session work during recovery.
+// New dispatches use ClaimRCAAttempt/FinishRCAAttempt with an explicit attempt ID.
+func (r *EventAnalysisRepository) SaveEventRCAAnalysis(ctx *security.RequestContext, legacyID, eventId, fingerprint, accountId, aggKey, analysisResult string) error {
+	if eventId == "" {
+		return errors.New("event ID is required to retain RCA history")
+	}
 	tx, err := r.dbManager.Db.Beginx()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	existingId, err := findCurrentAnalysisID(tx, eventId, fingerprint, accountId, aggKey, AnalysisTypeRCA)
-	if err != nil {
+	if err = lockRCAEvent(tx, accountId, eventId); err != nil {
 		return err
 	}
-
-	if existingId != "" {
-		if eventId != "" {
-			_, err = tx.Exec(
-				`UPDATE event_log_analysis SET analysis=$2, status=$3, status_reason=NULL, event_id=$4, updated_at=NOW() WHERE id=$1`,
-				existingId, analysisResult, AnalysisStatusCompleted, eventId,
-			)
-		} else {
-			_, err = tx.Exec(
-				`UPDATE event_log_analysis SET analysis=$2, status=$3, status_reason=NULL, updated_at=NOW() WHERE id=$1`,
-				existingId, analysisResult, AnalysisStatusCompleted,
-			)
-		}
-		if err != nil {
-			ctx.GetLogger().Warn("analyzer: failed to update rca analysis row", "error", err, "analysis_id", existingId)
-			return err
-		}
+	var status string
+	if err = tx.Get(&status, `SELECT status FROM event_log_analysis WHERE id=$1 AND event_id=$2 AND cloud_account_id=$3 AND analysis_type='rca_analysis' FOR UPDATE`, legacyID, eventId, accountId); err != nil {
+		return err
+	}
+	if status != string(AnalysisStatusInProgress) {
 		return tx.Commit()
 	}
-
-	var dbEventId any = eventId
-	if eventId == "" {
-		dbEventId = nil
-	}
-
-	insertQuery := `INSERT INTO event_log_analysis (event_id, analysis, status, event_fingerprint, cloud_account_id, event_aggregation_key, analysis_type) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`
-	var analysisId string
-	err = tx.QueryRowx(insertQuery, dbEventId, analysisResult, AnalysisStatusCompleted, fingerprint, accountId, aggKey, AnalysisTypeRCA).Scan(&analysisId)
-	if err != nil {
-		ctx.GetLogger().Warn("analyzer: failed to insert rca analysis into database", "error", err, "event_id", eventId)
+	if err = preserveSharedRCAReport(tx, eventId, accountId); err != nil {
 		return err
 	}
-
-	if eventId != "" {
-		if _, err = upsertAnalysisMapping(tx, eventId, analysisId, AnalysisTypeRCA, true); err != nil {
-			return err
-		}
+	// Retire legacy in-flight status without discarding any retained report text.
+	if _, err = tx.Exec(`UPDATE event_log_analysis SET status='FAILED',status_reason='superseded by recovered RCA' WHERE id=$1 AND cloud_account_id=$2 AND analysis_type='rca_analysis' AND status='IN_PROGRESS'`, legacyID, accountId); err != nil {
+		return err
 	}
-
+	var id string
+	err = tx.QueryRowx(`INSERT INTO event_log_analysis (event_id,analysis,status,event_fingerprint,cloud_account_id,event_aggregation_key,analysis_type,updated_at) VALUES ($1,$2,'COMPLETED',$3,$4,$5,'rca_analysis',NOW()) RETURNING id`, eventId, analysisResult, fingerprint, accountId, aggKey).Scan(&id)
+	if err != nil {
+		return err
+	}
+	if _, err = upsertAnalysisMapping(tx, eventId, id, AnalysisTypeRCA, true); err != nil {
+		return err
+	}
+	if err = pruneRCAReports(tx, eventId, accountId); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
