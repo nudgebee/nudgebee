@@ -583,6 +583,10 @@ func determineNodeTypeFromResourceType(resourceType string) string {
 		return "function"
 	case "eks":
 		return "cluster"
+	case "loadbalancer":
+		return "loadbalancer"
+	case "natgateway":
+		return "natgateway"
 	default:
 		return resourceType
 	}
@@ -601,6 +605,12 @@ func mapResourceTypeToServiceName(resourceType string) string {
 		return "AWSLambda"
 	case "eks":
 		return "AmazonEKS"
+	case "loadbalancer":
+		return "AWSELB"
+	case "natgateway":
+		// NAT gateways live under the EC2 service in CloudWatch and in the
+		// cloud-resource inventory, not under a service of their own.
+		return "AmazonEC2"
 	default:
 		return ""
 	}

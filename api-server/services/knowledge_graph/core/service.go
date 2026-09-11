@@ -1140,6 +1140,16 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 	unifiedGraph.Nodes, unifiedGraph.Edges, _ = ResolveGCPManagedServiceCalls(
 		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
 	)
+	// Phase 3.7: Drop CALLS edges that point back along a routing edge. Last of
+	// the rewriting passes on purpose — both 3.5 and 3.6 repoint CALLS edges, so
+	// running earlier would miss the ones they create. Once a load balancer's own
+	// addresses resolve onto the balancer, the backend's reply traffic becomes
+	// `backend --CALLS--> balancer` opposite the balancer's own ROUTES_TO, and a
+	// graph that says two things need each other cannot answer which way a
+	// failure travels.
+	unifiedGraph.Nodes, unifiedGraph.Edges, _ = DropResponseTrafficCalls(
+		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
+	)
 	unifiedGraph.Edges = DeduplicateEdgesWithPriority(unifiedGraph.Edges)
 
 	// Calculate metadata for unified graph

@@ -613,7 +613,10 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		"hosted_workload_count": impact.HostedWorkloadCount,
 		"coverage_confidence":   string(impact.CoverageConfidence),
 		"truncated":             impact.Truncated,
-		"assembly":              assembly, // four-tier incident story (#34658)
+		// Distinct from "truncated" above, which is the dependents walk. This one
+		// says the "possible cause to check" list is a floor, not the whole set.
+		"depends_on_truncated": impact.DownstreamTruncated,
+		"assembly":             assembly, // four-tier incident story (#34658)
 	})
 }
 

@@ -29,7 +29,7 @@ func TestDecideSameSubjectAttach_NewGroupElectsEarliest(t *testing.T) {
 		gc("oom", "KubeContainerOOMKilled", now.Add(-8*time.Minute)),
 	}
 
-	leader, offset, ok := decideSameSubjectAttach(seed, members, nil, nil, nil)
+	leader, offset, ok := decideSameSubjectAttach(seed, members, nil, nil, nil, nil)
 	require.True(t, ok)
 	assert.Equal(t, "oom", leader, "earliest member leads")
 	assert.Equal(t, 8*time.Minute, offset)
@@ -46,14 +46,14 @@ func TestDecideSameSubjectAttach_RefiresHoldGroupOpen(t *testing.T) {
 	oom.LastSeen = now.Add(-10 * time.Minute)
 	members := []groupCandidate{oom}
 
-	leader, offset, ok := decideSameSubjectAttach(seed, members, nil, nil, nil)
+	leader, offset, ok := decideSameSubjectAttach(seed, members, nil, nil, nil, nil)
 	require.True(t, ok, "a re-firing member holds the attach window open")
 	assert.Equal(t, "oom", leader)
 	assert.Equal(t, 80*time.Minute, offset, "offset measures from the leader's start, not the re-fire")
 
 	// Same shape but the last re-fire is also stale: group closed.
 	oom.LastSeen = now.Add(-IncidentAttachWindow - time.Minute)
-	_, _, ok = decideSameSubjectAttach(seed, []groupCandidate{oom}, nil, nil, nil)
+	_, _, ok = decideSameSubjectAttach(seed, []groupCandidate{oom}, nil, nil, nil, nil)
 	assert.False(t, ok)
 }
 
@@ -64,7 +64,7 @@ func TestDecideSameSubjectAttach_AttachWindowExpired(t *testing.T) {
 		gc("oom", "KubeContainerOOMKilled", now.Add(-IncidentAttachWindow-time.Minute)),
 	}
 
-	_, _, ok := decideSameSubjectAttach(seed, members, nil, nil, nil)
+	_, _, ok := decideSameSubjectAttach(seed, members, nil, nil, nil, nil)
 	assert.False(t, ok, "a member quiet for longer than the attach window does not hold the group open")
 }
 
@@ -79,7 +79,7 @@ func TestDecideSameSubjectAttach_FollowsLiveLeader(t *testing.T) {
 	edges := map[string]string{"crashloop": "oom-leader"}
 	leaderStarts := map[string]time.Time{"oom-leader": now.Add(-30 * time.Minute)}
 
-	leader, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, nil)
+	leader, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, nil, nil)
 	require.True(t, ok)
 	assert.Equal(t, "oom-leader", leader, "attach goes to the group's leader, never a child — the star stays one hop")
 	assert.Equal(t, 30*time.Minute, offset)
@@ -105,14 +105,14 @@ func TestDecideSameSubjectAttach_OldLeaderStillLiveWhileMembersFire(t *testing.T
 	edges := map[string]string{"child": "old-leader"}
 	leaderStarts := map[string]time.Time{"old-leader": now.Add(-72 * time.Hour)}
 
-	leader, _, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, nil)
+	leader, _, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, nil, nil)
 	require.True(t, ok, "a firing member keeps its group live however old the leader is")
 	assert.Equal(t, "old-leader", leader, "the seed joins the existing group rather than starting a rival")
 
 	// An unlinked member alongside it does not start a competing group: the
 	// existing group still wins, so one incident keeps one leader.
 	members = append(members, gc("fresh", "KubeContainerOOMKilled", now.Add(-3*time.Minute)))
-	leader, _, ok = decideSameSubjectAttach(seed, members, edges, leaderStarts, nil)
+	leader, _, ok = decideSameSubjectAttach(seed, members, edges, leaderStarts, nil, nil)
 	require.True(t, ok)
 	assert.Equal(t, "old-leader", leader, "an existing group anchors the incident as it grows")
 }
@@ -137,14 +137,14 @@ func TestDecideSameSubjectAttach_ChronicJoinsButNeverLeads(t *testing.T) {
 	members := []groupCandidate{
 		gc("flap", "FlappingLatency", now.Add(-2*time.Minute)),
 	}
-	leader, _, ok := decideSameSubjectAttach(seed, members, nil, nil, chronic)
+	leader, _, ok := decideSameSubjectAttach(seed, members, nil, nil, chronic, nil)
 	require.True(t, ok, "a chronic pair must still form a group")
 	assert.Equal(t, "flap", leader)
 
 	// With a non-chronic member present, the non-chronic one leads even though
 	// the chronic one started earlier — a flapper never becomes the headline.
 	members = append(members, gc("oom", "KubeContainerOOMKilled", now.Add(-1*time.Minute)))
-	leader, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic)
+	leader, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic, nil)
 	require.True(t, ok)
 	assert.Equal(t, "oom", leader, "non-chronic outranks chronic regardless of start order")
 
@@ -154,7 +154,7 @@ func TestDecideSameSubjectAttach_ChronicJoinsButNeverLeads(t *testing.T) {
 		gc("flap", "FlappingLatency", now.Add(-2*time.Minute)),
 		gc("oom", "KubeContainerOOMKilled", now.Add(-IncidentAttachWindow-5*time.Minute)),
 	}
-	leader, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic)
+	leader, _, ok = decideSameSubjectAttach(seed, members, nil, nil, chronic, nil)
 	require.True(t, ok, "a recent chronic firing keeps the subject live")
 	assert.Equal(t, "oom", leader, "the stale non-chronic member still outranks the chronic one")
 }
@@ -168,7 +168,7 @@ func TestDecideSameSubjectAttach_DeterministicTieBreak(t *testing.T) {
 		gc("aaa", "KubeContainerOOMKilled", ts),
 	}
 
-	leader, _, ok := decideSameSubjectAttach(seed, members, nil, nil, nil)
+	leader, _, ok := decideSameSubjectAttach(seed, members, nil, nil, nil, nil)
 	require.True(t, ok)
 	assert.Equal(t, "aaa", leader, "equal starts break by ID so concurrent processors agree")
 }
@@ -485,7 +485,7 @@ func TestPoolConnectedMembers_GroupsTheWholeConnectedSet(t *testing.T) {
 		cand("unrelated-chain", "i-billing", unrelated),
 	}
 
-	members, hops, subjects, capped := poolConnectedMembers(graph, order, "amazonec2|i-order", cands)
+	members, hops, subjects, capped, _ := poolConnectedMembers(graph, order, "amazonec2|i-order", cands)
 
 	assert.False(t, capped)
 	ids := make([]string, 0, len(members))
@@ -529,8 +529,79 @@ func TestPoolConnectedMembers_StopsAtTheSubjectCap(t *testing.T) {
 		})
 	}
 
-	_, _, subjects, capped := poolConnectedMembers(graph, seedSvc, "amazonec2|i-seed", cands)
+	_, _, subjects, capped, _ := poolConnectedMembers(graph, seedSvc, "amazonec2|i-seed", cands)
 
 	assert.True(t, capped, "the cap must be reported, not applied silently")
 	assert.Len(t, subjects, incidentGroupSubjectCap)
+}
+
+// TestDecideSameSubjectAttach_CauseLeadsOverEarliest is the reason the election
+// takes a dependency signal at all.
+//
+// The ordinary shape of an outage puts the symptom first in time: a load
+// balancer reports 5xx the moment its backend stops answering, while the health
+// check that notices the backend is down needs a couple of evaluation periods to
+// agree. Ranked on start time the 5xx becomes the headline and "the service is
+// down" is filed underneath it — the group is right and the story is backwards.
+//
+// Measured on the case this came from: alb-5xx opened 11:38, the backend alarm
+// 11:51, and the balancer depends on the backend.
+func TestDecideSameSubjectAttach_CauseLeadsOverEarliest(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	seed := gc("seed", "unhealthy-hosts", now)
+	alb := gc("alb-5xx", "alb-5xx", now.Add(-22*time.Minute))
+	backend := gc("backend-down", "service-down", now.Add(-9*time.Minute))
+
+	// The balancer depends on the backend, so one member depends on "backend-down".
+	dependedOnBy := map[string]int{"backend-down": 1}
+
+	leader, _, ok := decideSameSubjectAttach(seed, []groupCandidate{alb, backend}, nil, nil, nil, dependedOnBy)
+	require.True(t, ok)
+	assert.Equal(t, "backend-down", leader,
+		"the member others depend on leads, even though the load balancer alarmed 13 minutes earlier")
+}
+
+// With nothing structural to separate members — the common same-subject case,
+// where every alert is on one machine and the graph says nothing — the election
+// must fall back to exactly what it did before.
+func TestDecideSameSubjectAttach_TimingStillBreaksStructuralTies(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	seed := gc("seed", "KubePodNotReady", now)
+	members := []groupCandidate{
+		gc("crashloop", "KubePodCrashLooping", now.Add(-5*time.Minute)),
+		gc("oom", "KubeContainerOOMKilled", now.Add(-8*time.Minute)),
+	}
+
+	for _, tt := range []struct {
+		name         string
+		dependedOnBy map[string]int
+	}{
+		{"no signal at all", nil},
+		{"every member scores the same", map[string]int{"crashloop": 2, "oom": 2}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			leader, _, ok := decideSameSubjectAttach(seed, members, nil, nil, nil, tt.dependedOnBy)
+			require.True(t, ok)
+			assert.Equal(t, "oom", leader, "earliest member still leads when nothing depends on anything")
+		})
+	}
+}
+
+// A flapper must not take the headline just because things point at it — the
+// chronic check runs before the causal one, and that order is the point.
+func TestDecideSameSubjectAttach_ChronicOutranksCause(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	seed := gc("seed", "unhealthy-hosts", now)
+	noisy := gc("noisy", "flapping-alert", now.Add(-30*time.Minute))
+	quiet := gc("quiet", "real-alert", now.Add(-2*time.Minute))
+
+	leader, _, ok := decideSameSubjectAttach(
+		seed,
+		[]groupCandidate{noisy, quiet},
+		nil, nil,
+		map[string]bool{"flapping-alert": true},
+		map[string]int{"noisy": 5}, // everything depends on it, and it still must not lead
+	)
+	require.True(t, ok)
+	assert.Equal(t, "quiet", leader, "a chronic member never leads, however central it looks")
 }

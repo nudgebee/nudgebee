@@ -130,6 +130,7 @@ func decideSameSubjectAttach(
 	edges map[string]string,
 	leaderStarts map[string]time.Time,
 	chronicPairs map[string]bool,
+	dependedOnBy map[string]int,
 ) (string, time.Duration, bool) {
 	// Every member reaching here fired inside the attach window, so every group
 	// they belong to is live by construction. There is no staleness test any more:
@@ -183,16 +184,29 @@ func decideSameSubjectAttach(
 		return leader, seed.StartsAt.Sub(leaderStarts[leader]), true
 	}
 
-	// No group yet: elect a leader. A non-chronic member always beats a chronic
-	// one, so a flapper never becomes the headline of an incident it merely
-	// accompanies; within the same class the earliest start wins, and the id
-	// breaks ties so the choice is deterministic under concurrent attaches.
-	// When every member is chronic one of them still leads — the group exists,
-	// it just ranks low.
+	// No group yet: elect a leader.
+	//
+	// A non-chronic member always beats a chronic one, so a flapper never becomes
+	// the headline of an incident it merely accompanies. Within that class the
+	// member the most others DEPEND ON leads: an alert on a thing its neighbours
+	// need is the cause, and the alerts on the things that need it are the
+	// symptoms. Timing cannot express that and gets it backwards on the ordinary
+	// shape of an outage — a load balancer reports errors before a health check
+	// notices the backend behind it is down, so earliest-start makes the 5xx the
+	// headline and files "the service is down" underneath it.
+	//
+	// Start time only breaks a tie between members nothing distinguishes
+	// structurally (the common same-subject case, where every member scores 0),
+	// and the id breaks that in turn so the choice is deterministic under
+	// concurrent attaches. When every member is chronic one of them still leads —
+	// the group exists, it just ranks low.
 	sort.Slice(active, func(i, j int) bool {
 		ci, cj := chronicPairs[active[i].AggregationKey], chronicPairs[active[j].AggregationKey]
 		if ci != cj {
 			return !ci
+		}
+		if di, dj := dependedOnBy[active[i].ID], dependedOnBy[active[j].ID]; di != dj {
+			return di > dj
 		}
 		if !active[i].StartsAt.Equal(active[j].StartsAt) {
 			return active[i].StartsAt.Before(active[j].StartsAt)
@@ -398,7 +412,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		return false, nil
 	}
 
-	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, members, memberStarts, chronicPairs)
+	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, members, memberStarts, chronicPairs, pool.dependedOnBy)
 	if err != nil {
 		return false, err
 	}
@@ -426,6 +440,7 @@ func resolveOpenGroupLeader(
 	members []groupCandidate,
 	memberStarts map[string]time.Time,
 	chronicPairs map[string]bool,
+	dependedOnBy map[string]int,
 ) (string, time.Duration, bool, error) {
 	memberIDs := make([]string, len(members))
 	for i, m := range members {
@@ -480,7 +495,7 @@ func resolveOpenGroupLeader(
 		}
 	}
 
-	leaderID, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, chronicPairs)
+	leaderID, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, chronicPairs, dependedOnBy)
 	return leaderID, offset, ok, nil
 }
 
@@ -559,9 +574,10 @@ func poolConnectedMembers(
 	graph *DependencyGraph,
 	seedSvcKey, seedKey string,
 	cands []connectedCandidate,
-) ([]groupCandidate, map[string]int, map[string]string, bool) {
+) ([]groupCandidate, map[string]int, map[string]string, bool, map[string]int) {
 	members := make([]groupCandidate, 0, len(cands))
 	hopsByMember := make(map[string]int, len(cands))
+	dependedOnBy := make(map[string]int, len(cands))
 	subjects := map[string]string{}
 	capped := false
 
@@ -587,7 +603,34 @@ func poolConnectedMembers(
 		members = append(members, c.candidate)
 		hopsByMember[c.candidate.ID] = hops
 	}
-	return members, hopsByMember, subjects, capped
+
+	// Who depends on whom, among the members that made it in. getDependencyDistance
+	// walks the "depends on" direction, so a positive distance from A to B means A
+	// needs B — and B is the better candidate for the headline. Counted rather
+	// than treated as a flag so the member the most others need wins, which is
+	// what a shared backend looks like from the alerts around it.
+	//
+	// The seed is scored too: it is a member like any other, and on the case this
+	// exists for it is the one the rest depend on.
+	keys := make(map[string]string, len(cands)+1)
+	keys[seedKey] = seedSvcKey
+	for _, c := range cands {
+		if _, kept := hopsByMember[c.candidate.ID]; kept {
+			keys[c.candidate.ID] = c.serviceKey
+		}
+	}
+	for id, svcKey := range keys {
+		for otherID, otherKey := range keys {
+			if id == otherID || otherKey == "" || svcKey == "" {
+				continue
+			}
+			if d := graph.getDependencyDistance(otherKey, svcKey); d > 0 && d <= maxIncidentHops {
+				dependedOnBy[id]++
+			}
+		}
+	}
+
+	return members, hopsByMember, subjects, capped, dependedOnBy
 }
 
 // collectConnectedMembers gathers the alerts on OTHER subjects that are connected
@@ -613,6 +656,13 @@ type connectedPool struct {
 	memberStarts map[string]time.Time
 	hops         map[string]int
 	chronicPairs map[string]bool
+	// dependedOnBy counts how many other members of this pool depend on each
+	// member. It is the only causal signal the group has: everything else the
+	// election looks at is timing, and timing gets the direction wrong exactly
+	// when it matters. A load balancer starts erroring before the operator's
+	// health check notices the backend is down, so earliest-start crowns the
+	// symptom and files the cause underneath it.
+	dependedOnBy map[string]int
 }
 
 func collectConnectedMembers(
@@ -710,7 +760,7 @@ func collectConnectedMembers(
 			subject: ownerElseName(deref(r.SubjectOwner), deref(r.SubjectName)),
 		})
 	}
-	members, hopsByMember, subjects, capped := poolConnectedMembers(graph, seedSvcKey, seedKey, cands)
+	members, hopsByMember, subjects, capped, dependedOnBy := poolConnectedMembers(graph, seedSvcKey, seedKey, cands)
 	memberStarts := make(map[string]time.Time, len(members))
 	for _, m := range members {
 		memberStarts[m.ID] = m.StartsAt
@@ -764,6 +814,7 @@ func collectConnectedMembers(
 		members:      members,
 		memberStarts: memberStarts,
 		hops:         hopsByMember,
+		dependedOnBy: dependedOnBy,
 		chronicPairs: chronicPairs,
 	}, nil
 }

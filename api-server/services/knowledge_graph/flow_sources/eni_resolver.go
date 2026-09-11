@@ -8,6 +8,7 @@ import (
 	"net"
 	"nudgebee/services/cloud"
 	"nudgebee/services/common"
+	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
 	"sort"
 	"strings"
@@ -66,6 +67,47 @@ type ENIInfo struct {
 	Tags             map[string]string      `json:"tags,omitempty"`
 	RDSTags          map[string]string      `json:"rds_tags,omitempty"`
 	Status           string                 `json:"status"`
+}
+
+const (
+	// natGatewayInterfaceType is what AWS reports for a NAT gateway's interface.
+	natGatewayInterfaceType = "nat_gateway"
+	// natGatewayDescriptionPrefix precedes the gateway id in the ENI description,
+	// e.g. "Interface for NAT Gateway nat-010ea04de1c2538cf".
+	natGatewayDescriptionPrefix = "Interface for NAT Gateway "
+	// elbDescriptionPrefix precedes the balancer identifier, e.g.
+	// "ELB app/my-alb/8f314ac75b1d43a8" for v2 and "ELB my-classic-lb" for classic.
+	elbDescriptionPrefix = "ELB "
+)
+
+// trimNATGatewayID returns the gateway id from a NAT gateway ENI description,
+// or "" when the description is not that exact AWS-generated form.
+func trimNATGatewayID(description string) string {
+	if !strings.HasPrefix(description, natGatewayDescriptionPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(description, natGatewayDescriptionPrefix))
+}
+
+// elbFromENIDescription pulls the load balancer out of an ELB ENI description.
+// Returns the identifier flow data and CloudWatch both use ("app/my-alb/1a2b3c"
+// for v2, the plain name for classic) and the display name the graph node
+// carries, which for v2 is the middle segment rather than the whole dimension.
+// Returns empty strings when the description is not an ELB one.
+func elbFromENIDescription(description string) (id, name string) {
+	if !strings.HasPrefix(description, elbDescriptionPrefix) {
+		return "", ""
+	}
+	id = strings.TrimSpace(strings.TrimPrefix(description, elbDescriptionPrefix))
+	if id == "" {
+		return "", ""
+	}
+	// Classic load balancers carry the bare name, so the v2 extraction returns
+	// nothing and the identifier is already the name.
+	if n := core.ELBV2LoadBalancerName(id); n != "" {
+		return id, n
+	}
+	return id, id
 }
 
 // ENIResourceMapping represents the mapping from ENI to AWS resource
@@ -421,6 +463,53 @@ func (r *ENIResolver) mapENIToResources(ctx context.Context, eni *ENIInfo, origi
 			Confidence:   0.70,
 		}
 		mappings = append(mappings, mapping)
+	}
+
+	// Strategy 7: load balancer. An ELB's ENIs are the addresses the balancer
+	// answers on, so a flow to one of them is a flow to the balancer.
+	//
+	// Without this the balancer's own addresses never resolved, and because flow
+	// logs see the backend talking back through them, every workload behind a
+	// load balancer appeared to depend on a pair of bare private IPs. Measured on
+	// one account: an ALB's two ENI addresses sat in the graph as unresolved
+	// ExternalService nodes and turned up in its own dependency list.
+	//
+	// Keyed on RequesterId first, the way the RDS and ElastiCache strategies are:
+	// AWS sets "amazon-elb" itself, while the description is editable. The
+	// description is still read for the name, and is the only signal on older
+	// interfaces that carry no requester.
+	if eni.RequesterId == "amazon-elb" || strings.HasPrefix(eni.Description, "ELB ") {
+		if id, name := elbFromENIDescription(eni.Description); id != "" {
+			mappings = append(mappings, &ENIResourceMapping{
+				ENI:          eni,
+				MatchType:    "description",
+				ResourceType: "loadbalancer",
+				ResourceID:   id,
+				ResourceName: name,
+				MatchedIPs:   []string{originalIP},
+				// Same confidence as the RequesterId-backed RDS path: AWS owns
+				// both the requester tag and the description format here.
+				Confidence: 0.90,
+			})
+		}
+	}
+
+	// Strategy 8: NAT gateway. Every private-subnet instance egresses through it,
+	// so its address appears in the flow logs of most of the estate. Left
+	// unresolved it becomes a bare IP that half the workloads seem to depend on —
+	// the single noisiest unmapped address on a VPC.
+	if eni.InterfaceType == natGatewayInterfaceType || strings.HasPrefix(eni.Description, natGatewayDescriptionPrefix) {
+		if id := trimNATGatewayID(eni.Description); id != "" {
+			mappings = append(mappings, &ENIResourceMapping{
+				ENI:          eni,
+				MatchType:    "description",
+				ResourceType: "natgateway",
+				ResourceID:   id,
+				ResourceName: id,
+				MatchedIPs:   []string{originalIP},
+				Confidence:   0.90,
+			})
+		}
 	}
 
 	return mappings

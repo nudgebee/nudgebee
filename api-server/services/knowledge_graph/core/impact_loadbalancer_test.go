@@ -16,12 +16,19 @@ func TestDownstreamRelationshipStrings_LoadBalancerCoversCloudRoutesTo(t *testin
 		string(RelationshipRoutesTo):        false,
 		string(RelationshipRoutesToBackend): false,
 		string(RelationshipRoutesToService): false,
+		// CALLS was deliberately excluded here until the ENI resolver learned to
+		// classify amazon-elb and nat_gateway interfaces. Before that, a
+		// backend's flow edges pointed back at the balancer's own addresses,
+		// those arrived as unresolved ExternalService IP nodes, and an ALB was
+		// reported as depending on its own two private IPs. With the addresses
+		// collapsing onto the balancer and the gateway, the walk reaches the tier
+		// behind the front door instead of stopping at the first instance.
+		//
+		// If bare IPs reappear in a load balancer's dependency list, the fix is
+		// in flow_sources/eni_resolver.go, not here.
+		string(RelationshipCalls): false,
 	}
 	for _, rel := range got {
-		if rel == string(RelationshipCalls) {
-			t.Error("CALLS must stay out of the LoadBalancer downstream set: a backend's flow edges point back at the balancer's own ENIs, which arrive as ExternalService IP nodes and pass the dependency-type filter, so the panel would report the load balancer depending on its own private IPs")
-			continue
-		}
 		if _, ok := want[rel]; !ok {
 			t.Errorf("unexpected LoadBalancer downstream relationship %q", rel)
 			continue
@@ -32,6 +39,45 @@ func TestDownstreamRelationshipStrings_LoadBalancerCoversCloudRoutesTo(t *testin
 		if !seen {
 			t.Errorf("LoadBalancer downstream is missing %q", rel)
 		}
+	}
+}
+
+// The reach CALLS buys has to stay bounded. One routing hop plus one calls hop
+// reaches 6, 6, 47 and 69 real resources across the load balancers on one
+// tenant; the last two are a shared ingress and a busy ALB. "Possible cause to
+// check" is read during an incident, so past a screenful it stops being a
+// shortlist and starts being a wall.
+func TestDownstreamDependencyCapIsAScreenful(t *testing.T) {
+	if downstreamDependencyCap < 5 {
+		t.Errorf("cap = %d: too small to hold a real tier behind a load balancer", downstreamDependencyCap)
+	}
+	if downstreamDependencyCap > 30 {
+		t.Errorf("cap = %d: past a screenful this is a wall, not a shortlist", downstreamDependencyCap)
+	}
+}
+
+// A truncated list must be reported as one. DownstreamCount is what was
+// returned, not what was found, so a consumer that cannot tell the difference
+// presents a bounded slice as the complete answer.
+func TestSummarizeDownstream_SortsSoTheKeptSliceIsTheUsefulEnd(t *testing.T) {
+	seedID := "alb-1"
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeLoadBalancer, "alb", "", ""),
+		newImpactTestNode("ext-1", NodeTypeExternalService, "10.0.0.9", "", ""),
+		newImpactTestNode("ec2-far", NodeTypeComputeInstance, "api", "", ""),
+		newImpactTestNode("ec2-near", NodeTypeComputeInstance, "web", "", ""),
+	}
+	depth := map[string]int{seedID: 0, "ec2-near": 1, "ec2-far": 2, "ext-1": 2}
+
+	got := summarizeDownstream(seedID, nodes, nil, depth, map[string]string{}, map[string]string{})
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 dependencies, got %d: %+v", len(got), got)
+	}
+	// Closest named resource first, unresolved external last — so truncating at
+	// any length keeps the actionable end.
+	if got[0].Name != "web" || got[1].Name != "api" || got[2].Name != "10.0.0.9" {
+		t.Errorf("order = %s, %s, %s; want web, api, 10.0.0.9", got[0].Name, got[1].Name, got[2].Name)
 	}
 }
 
@@ -80,5 +126,49 @@ func TestAppDependentTypesExcludesComputeInstance(t *testing.T) {
 	}
 	if !downstreamDependencyTypes[NodeTypeComputeInstance] {
 		t.Fatal("ComputeInstance must be nameable as a downstream dependency")
+	}
+}
+
+// An address the flow source could not identify is not a cause an operator can
+// investigate. The ENI resolver reclaims the ones that still have an interface
+// behind them, but on one tenant 210 of 223 match no interface at all, so this
+// list would otherwise carry bare private IPs indefinitely.
+func TestSummarizeDownstream_DropsUnresolvedVPCAddresses(t *testing.T) {
+	seedID := "alb-1"
+	// The flow source writes subtype into Properties; impactNodeAttr reads
+	// QueryAttributes first and Properties second, so the node is built the way
+	// vpc_flowlogs_flow_source actually builds it.
+	unresolved := newImpactTestNode("ext-1", NodeTypeExternalService, "10.0.0.143", "", "")
+	unresolved.Properties = map[string]interface{}{"subtype": unresolvedVPCAddressSubtype}
+	named := newImpactTestNode("ext-2", NodeTypeExternalService, "api.stripe.com", "", "")
+
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeLoadBalancer, "alb", "", ""),
+		newImpactTestNode("ec2-1", NodeTypeComputeInstance, "web", "", ""),
+		unresolved,
+		named,
+	}
+	depth := map[string]int{seedID: 0, "ec2-1": 1, "ext-1": 2, "ext-2": 2}
+
+	got := summarizeDownstream(seedID, nodes, nil, depth, map[string]string{}, map[string]string{})
+
+	for _, d := range got {
+		if d.Name == "10.0.0.143" {
+			t.Error("an unidentified address was named as a possible cause")
+		}
+	}
+	// A resolved external dependency is a real one and must survive — the rule is
+	// about addresses we failed to identify, not about external services.
+	var sawNamed bool
+	for _, d := range got {
+		if d.Name == "api.stripe.com" {
+			sawNamed = true
+		}
+	}
+	if !sawNamed {
+		t.Error("a named external dependency was dropped; the filter is too broad")
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d dependencies, want 2 (web and api.stripe.com): %+v", len(got), got)
 	}
 }

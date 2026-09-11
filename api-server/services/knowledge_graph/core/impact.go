@@ -92,6 +92,11 @@ type ImpactSummary struct {
 	// grade risk to callers only.
 	DownstreamDependencies []ImpactedService `json:"downstream_dependencies,omitempty"`
 	DownstreamCount        int               `json:"downstream_count,omitempty"`
+	// DownstreamTruncated reports that downstreamDependencyCap stopped the list
+	// short, so a consumer can say "and more" rather than present a bounded
+	// slice as the whole answer. DownstreamCount is the number returned, not the
+	// number found — a truncated list is a floor.
+	DownstreamTruncated bool `json:"downstream_truncated,omitempty"`
 	// InfrastructureDependents are traversed dependents that are not
 	// application-level types — the intermediates DependentCount deliberately
 	// omits (a Node, a Namespace, a PV). They are reported because "not a service
@@ -237,15 +242,23 @@ var downstreamRelationshipDefaults = map[NodeType][]RelationshipType{
 	// ROUTES_TO_BACKEND / ROUTES_TO_SERVICE pair alone never matches a cloud
 	// load balancer.
 	//
-	// Routing edges only — deliberately NOT RelationshipCalls. Continuing the
-	// walk through the backend's own traffic looks appealing (it would name the
-	// tier behind the front door) but a load balancer's backend calls back
-	// through the balancer's own ENIs, which arrive as unresolved ExternalService
-	// IP nodes. Those are an app-level type, so they survive the
-	// downstreamDependencyTypes filter and the panel ends up reporting that the
-	// load balancer depends on its own two private IPs. The backend is one click
-	// away and its panel tells the rest of the story correctly.
-	NodeTypeLoadBalancer: {RelationshipRoutesTo, RelationshipRoutesToBackend, RelationshipRoutesToService},
+	// RelationshipCalls is here so the walk reaches the tier behind the front
+	// door: an ALB alarm used to name the one instance it routes to and stop,
+	// while the graph held that instance calling three more.
+	//
+	// It was excluded for a real reason — a balancer's backend calls back
+	// through the balancer's own ENIs, which arrived as unresolved
+	// ExternalService IP nodes, and an ALB was reported as depending on its own
+	// two private IPs. That is fixed at the source now: the ENI resolver
+	// classifies amazon-elb and nat_gateway interfaces, so those addresses
+	// collapse onto the balancer and the NAT gateway instead of standing as bare
+	// IPs. Re-excluding CALLS here is not the fix if they come back — check that
+	// resolver first.
+	//
+	// Bounded by downstreamDependencyCap: one hop of routing plus one of calls
+	// reaches 69 real resources on the busiest balancer measured, which is a
+	// wall rather than a list of causes.
+	NodeTypeLoadBalancer: {RelationshipRoutesTo, RelationshipRoutesToBackend, RelationshipRoutesToService, RelationshipCalls},
 }
 
 // downstreamDependencyTypes are the node types worth naming as something the
@@ -325,6 +338,16 @@ func downstreamRelationshipStrings(nodeType NodeType) []string {
 // processes (either direction); the upstream pass reports overflow via
 // Truncated.
 const maxImpactNodes = 500
+
+// downstreamDependencyCap bounds what gets NAMED as something the seed depends
+// on. The traversal is already bounded by maxImpactNodes; this bounds the
+// answer, which is a different problem: "possible cause to check" is a list an
+// operator reads during an incident, and past a screenful it stops being a
+// shortlist. Measured across the load balancers on one tenant, a routing hop
+// plus a calls hop reaches 6, 6, 47 and 69 real resources — the last two being
+// a shared ingress and a busy ALB. sortImpactedServices already puts internal
+// before external and closest first, so the kept slice is the useful end.
+const downstreamDependencyCap = 15
 
 // GetImpactedServices computes the blast radius of a resource node: the
 // application-level dependents that rely on it and could be affected if it is
@@ -443,6 +466,12 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		downstream, err := s.traverseDownstreamDependencies(tenantID, nodeID, downRels, maxDepth, accountEnv)
 		if err != nil {
 			return nil, err
+		}
+		if len(downstream) > downstreamDependencyCap {
+			// Sorted by summarizeDownstream, so this keeps the closest and the
+			// named ones and drops the tail.
+			downstream = downstream[:downstreamDependencyCap]
+			summary.DownstreamTruncated = true
 		}
 		summary.DownstreamDependencies = downstream
 		summary.DownstreamCount = len(downstream)
@@ -850,6 +879,9 @@ func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMi
 		if n == nil || n.ID == seedID || !downstreamDependencyTypes[n.NodeType] {
 			continue
 		}
+		if isUnresolvedVPCAddress(n) {
+			continue
+		}
 		att := attribution[n.ID]
 		deps = append(deps, ImpactedService{
 			NodeID:       n.ID,
@@ -865,6 +897,31 @@ func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMi
 	}
 	sortImpactedServices(deps)
 	return deps
+}
+
+// unresolvedVPCAddressSubtype marks an ExternalService the VPC flow source
+// minted for an address it could not identify (set alongside is_sync_gap in
+// flow_sources/vpc_flowlogs_flow_source.go).
+const unresolvedVPCAddressSubtype = "vpc-unresolved-ip"
+
+// isUnresolvedVPCAddress reports whether a node is an address we failed to put a
+// name to, rather than something the operator can act on.
+//
+// These are kept in the graph deliberately — they are evidence that traffic
+// exists, and the ENI resolver turns some of them into real resources on a later
+// build — but naming one under "possible cause to check" asks an operator to
+// investigate a bare private IP. The resolver reclaims only the addresses that
+// still have an ENI behind them: of 223 such nodes on one tenant, 210 match no
+// interface at all, so this is not a gap that closes on its own.
+//
+// Downstream only. The dependents side feeds DependentCount, ProductionDependents
+// and the FinOps safety band, and an unresolved caller there is still a caller —
+// hiding it would understate a blast radius rather than tidy a list.
+func isUnresolvedVPCAddress(n *DbNode) bool {
+	if n == nil || n.NodeType != NodeTypeExternalService {
+		return false
+	}
+	return impactNodeAttr(n, "subtype") == unresolvedVPCAddressSubtype
 }
 
 // sortImpactedServices orders internal dependents before unresolved external
