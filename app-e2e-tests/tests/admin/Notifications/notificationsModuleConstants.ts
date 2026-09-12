@@ -69,13 +69,15 @@ export async function pickFilterOption(page: Page, trigger: Locator, optionText:
   await expect(trigger).toBeEnabled();
   await trigger.click();
 
-  // The panel is a body-level MUI Popover with no id, testid or role, and only one FilterDropdown panel is open at a time.
+  // The panel mounts inline (FilterDropdown's disablePortal defaults to true) as a MUI Popover with no id, testid or role.
   const panel = page.locator(".MuiPopover-paper:visible").last();
   await expect(panel).toBeVisible({ timeout: 30000 });
   await expect(panel.locator('[aria-busy="true"]')).toHaveCount(0, { timeout: 30000 });
 
   const search = panel.locator('input[placeholder^="Search"]');
   const option = panel.locator('[role="option"]').filter({ hasText: optionText }).first();
+  // Options can arrive after the panel opens (this filter has no loading flag), so wait for a search box, group header or option.
+  await expect(search.or(panel.locator('[role="button"], [role="option"]')).first()).toBeVisible({ timeout: 30000 });
   // FilterDropdown renders its search box only above 8 options; below that, grouped options sit in collapsed groups.
   if (await search.isVisible()) {
     await search.fill(optionText);
