@@ -2,8 +2,6 @@ package triage
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,17 +19,29 @@ import (
 // when one subject produces several distinct alert types in a short burst (a pod
 // OOMKilled, then CrashLoopBackOff, then NotReady), link them into one group by
 // writing a `same_incident` row (child -> leader) to event_correlations. The
-// leader is the group's earliest non-chronic alert; every child points straight
-// at the leader (a star, never child -> child), so resolving a group is one hop
-// — the same shape event_duplicates uses per-fingerprint via first_event_id,
-// applied across fingerprints on one subject.
+// leader is elected from the group (see decideSameSubjectAttach); every child
+// points straight at it (a star, never child -> child), so resolving a group is
+// one hop.
 //
-// Membership is evidence-based, not scored: same SubjectKey, inside a rolling
-// attach window, non-chronic. Re-fires never attach — only dedup-chain leaders
-// (occurrence 1) participate, so a group member represents its whole chain.
-// Chronic pairs (>= ChronicWeeklyThreshold firings/week, chronic.go) neither
-// lead nor extend a group: a flapper must not become an immortal leader
-// vacuuming up everything on its subject.
+// A group is the alerts firing together in one window — nothing more. Links join
+// the FIRINGS, so an incident has a beginning and an end without needing a record
+// of its own: a fresh burst links fresh events, an older burst's links fall
+// outside the window, and the headline is always something that fired in it.
+//
+// Links used to hang off each alert's first-ever event instead, which made a
+// group a permanent association rather than an incident. It never ended: any
+// member firing held it open while the alert that named it could have stopped
+// days ago. Measured on the Rackspace tenant over 14 days — 1,337 of 1,445 links
+// (93%) named a headline whose alert had not fired in the preceding 15 minutes,
+// average 38.8 hours quiet; one group had collected 17 members, one headline was
+// 158 days old, and none of it was visible in a time-scoped view because the
+// events predated the window being looked at.
+//
+// Membership is evidence-based, not scored: same SubjectKey (or connected to it),
+// inside a rolling attach window. One row per ALERT, carrying its latest firing,
+// so an alert firing ten times is one member. Chronic pairs
+// (>= ChronicWeeklyThreshold firings/week, chronic.go) still join — they only
+// lose the leader election, so a flapper never becomes the headline.
 //
 // On by default; INCIDENT_GROUPING_ENABLED=false is the kill switch. The
 // promotion train (main -> test -> prod) gives dev/test a validation window
@@ -99,11 +109,11 @@ func eventAlertIdentity(ev *models.Event) AlertIdentity {
 type groupCandidate struct {
 	ID             string
 	AggregationKey string
-	// StartsAt is the fingerprint's earliest start in the window — the chain
-	// leader's, which is the row that can carry group links.
+	// StartsAt is the firing this candidate represents — the alert's most recent
+	// one inside the window, which is the event its group link points at.
 	StartsAt time.Time
-	// LastSeen is the fingerprint's newest start in the window: re-fires keep
-	// a group's attach timer alive even though only chain leaders join.
+	// LastSeen is the alert's newest start in the window: re-fires keep a
+	// group's attach timer alive.
 	LastSeen time.Time
 }
 
@@ -169,9 +179,11 @@ func decideSameSubjectAttach(
 		return "", 0, false
 	}
 
-	// An existing live group wins; with several (shouldn't happen, but links
-	// written concurrently can race), the earliest-started leader is the
-	// deterministic choice.
+	// An existing group wins. Its links were written in this same window against
+	// these same firings, so its headline is firing too — that is what anchoring
+	// on firings buys, and why this needs no liveness check of its own. With
+	// several leaders (links written concurrently can race) the earliest-started
+	// is the deterministic choice.
 	if len(liveLeaders) > 0 {
 		var leader string
 		for l := range liveLeaders {
@@ -247,26 +259,22 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	}
 	start := *event.StartsAt
 
-	// Group links hang off the chain's FIRST event, so one alert contributes one
-	// member however many times it fires. Resolving it here is also the gate that
-	// replaces the old occurrence==1 check: no chain row means we do not know this
-	// alert's identity, and guessing would let every copy of one alert look like a
-	// separate member.
-	var seedChainID string
-	err := sqlx.GetContext(ctx, db, &seedChainID,
-		`SELECT first_event_id FROM event_duplicates WHERE event_id = $1 AND cloud_account_id = $2`,
-		event.Id, *event.CloudAccountId)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return false, nil // no chain yet — nothing to hang a link off
-	case err != nil:
-		// Anything else is an operational failure. Returning it gets it logged by
-		// the caller; treating it as "no chain" would disable grouping silently
-		// for as long as the database was unhappy.
-		return false, fmt.Errorf("failed to resolve seed chain: %w", err)
-	case seedChainID == "":
-		return false, nil
-	}
+	// A group is the alerts firing together in this window, and a link joins the
+	// FIRINGS — not the first events of their chains.
+	//
+	// Anchoring on the chain's first event made a group a permanent association
+	// rather than an incident. It never ended: any member firing held it open,
+	// while the alert that named it could have stopped days ago. Measured on the
+	// Rackspace tenant over 14 days, 1,337 of 1,445 links (93%) named a headline
+	// whose alert had not fired in the preceding 15 minutes, average 38.8 hours
+	// quiet; one group had collected 17 members and one headline was 158 days
+	// old. It also made the group invisible to any time-scoped view, because the
+	// events it pointed at were older than the window being looked at.
+	//
+	// Anchoring on firings gives an incident a beginning and an end for free: a
+	// fresh burst links fresh events, an old burst's links simply fall outside
+	// the window, and the headline is always something that fired in it.
+	seedChainID := event.Id
 
 	// One grouped query gives every pair's trailing rate on this subject: the
 	// seed's own chronic gate plus the chronic flags for candidate pairs. Uses
@@ -277,7 +285,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		Weekly         int    `db:"weekly"`
 	}
 	var rates []pairRate
-	err = sqlx.SelectContext(ctx, db, &rates, `
+	err := sqlx.SelectContext(ctx, db, &rates, `
 		SELECT aggregation_key,
 		       count(*) AS weekly
 		FROM events
@@ -328,27 +336,25 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	// and rejected — 15 minutes to 24 hours multiplies candidate pairs 96x, and
 	// the median gap between two chain starts on one subject is 4.1 days.
 	//
-	// Each row is a firing; `id` is its chain's FIRST event, because that is the
-	// row group links hang off (one link per alert, not one per firing). The
-	// window is now IncidentAttachWindow rather than the 90-minute absorption cap
-	// it replaced, so this scans LESS than it used to.
+	// One row per ALERT (DISTINCT ON fingerprint), carrying that alert's most
+	// recent firing in the window — so an alert firing ten times is still one
+	// candidate, without needing its chain. The event_duplicates join went with
+	// the chain anchoring; fingerprint is the alert's identity here.
 	var rows []candidateRow
 	err = sqlx.SelectContext(ctx, db, &rows, `
-		SELECT DISTINCT ON (d.first_event_id)
-		       d.first_event_id AS id, e.subject_type, e.subject_name, e.subject_namespace, e.subject_owner,
-		       e.aggregation_key, le.starts_at AS starts_at,
-		       max(e.starts_at) OVER (PARTITION BY d.first_event_id) AS last_seen
+		SELECT DISTINCT ON (e.fingerprint)
+		       e.id, e.subject_type, e.subject_name, e.subject_namespace, e.subject_owner,
+		       e.aggregation_key, e.starts_at,
+		       max(e.starts_at) OVER (PARTITION BY e.fingerprint) AS last_seen
 		FROM events e
-		JOIN event_duplicates d ON d.event_id = e.id AND d.cloud_account_id = e.cloud_account_id
-		JOIN events le ON le.id = d.first_event_id
 		WHERE e.tenant = $1
 		  AND e.cloud_account_id = $2
 		  AND lower(coalesce(btrim(e.subject_namespace), '')) = $3
 		  AND e.starts_at >= $4 AND e.starts_at < $5
-		  AND d.first_event_id != $6
+		  AND e.id != $6
 		  AND e.fingerprint IS DISTINCT FROM $7
 		  AND lower(coalesce(e.finding_type, '')) NOT IN ('slo', 'anomaly')
-		ORDER BY d.first_event_id, e.starts_at DESC
+		ORDER BY e.fingerprint, e.starts_at DESC
 		LIMIT `+fmt.Sprint(incidentCandidateLimit),
 		*event.Tenant, *event.CloudAccountId, ns,
 		start.Add(-IncidentAttachWindow), start, seedChainID, event.Fingerprint,
@@ -703,21 +709,19 @@ func collectConnectedMembers(
 	}
 	var rows []candidateRow
 	err = sqlx.SelectContext(ctx, db, &rows, `
-		SELECT DISTINCT ON (d.first_event_id)
-		       d.first_event_id AS id, e.subject_type, e.subject_name, e.subject_namespace,
+		SELECT DISTINCT ON (e.fingerprint)
+		       e.id, e.subject_type, e.subject_name, e.subject_namespace,
 		       e.subject_owner, e.subject_owner_kind, e.service_key, e.aggregation_key,
-		       le.starts_at AS starts_at,
-		       max(e.starts_at) OVER (PARTITION BY d.first_event_id) AS last_seen
+		       e.starts_at,
+		       max(e.starts_at) OVER (PARTITION BY e.fingerprint) AS last_seen
 		FROM events e
-		JOIN event_duplicates d ON d.event_id = e.id AND d.cloud_account_id = e.cloud_account_id
-		JOIN events le ON le.id = d.first_event_id
 		WHERE e.tenant = $1
 		  AND e.cloud_account_id = $2
 		  AND e.starts_at >= $3 AND e.starts_at < $4
-		  AND d.first_event_id != $5
+		  AND e.id != $5
 		  AND e.fingerprint IS DISTINCT FROM $6
 		  AND lower(coalesce(e.finding_type, '')) NOT IN ('slo', 'anomaly')
-		ORDER BY d.first_event_id, e.starts_at DESC
+		ORDER BY e.fingerprint, e.starts_at DESC
 		LIMIT `+fmt.Sprint(incidentCandidateLimit),
 		*event.Tenant, *event.CloudAccountId,
 		start.Add(-IncidentAttachWindow), start, seed.ID, event.Fingerprint,

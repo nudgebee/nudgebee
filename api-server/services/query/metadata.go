@@ -1344,9 +1344,15 @@ var table_metadata = map[string]TableDefinition{
 					FROM event_correlations WHERE correlation_type = 'same_incident'
 					ORDER BY event_id, cloud_account_id, related_event_id) ecl
 					ON ecl.event_id = events.id AND ecl.cloud_account_id = events.cloud_account_id`
-				from += ` LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
-					FROM event_correlations WHERE correlation_type = 'same_incident'
-					GROUP BY related_event_id, cloud_account_id) ecc
+				// Distinct ALERTS, not links. Group links join firings, so one alert firing repeatedly inside an incident contributes several rows
+				// counting them would report an incident with two alerts in it
+				// as having six members.
+				from += ` LEFT JOIN (SELECT ec.related_event_id, ec.cloud_account_id,
+					       count(DISTINCT me.fingerprint) AS incident_member_count
+					FROM event_correlations ec
+					JOIN events me ON me.id = ec.event_id AND me.cloud_account_id = ec.cloud_account_id
+					WHERE ec.correlation_type = 'same_incident'
+					GROUP BY ec.related_event_id, ec.cloud_account_id) ecc
 					ON ecc.related_event_id = events.id AND ecc.cloud_account_id = events.cloud_account_id`
 			}
 			// One row per analysed event, not per analysis stage. event_log_analysis
@@ -1811,9 +1817,13 @@ var table_metadata = map[string]TableDefinition{
 						FROM event_correlations WHERE correlation_type = 'same_incident'
 						ORDER BY event_id, cloud_account_id, related_event_id) ecl
 						ON ecl.event_id = e.id AND ecl.cloud_account_id = e.cloud_account_id`,
-					`LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
-						FROM event_correlations WHERE correlation_type = 'same_incident'
-						GROUP BY related_event_id, cloud_account_id) ecc
+					// Distinct alerts, not links — see the matching join above.
+					`LEFT JOIN (SELECT ec.related_event_id, ec.cloud_account_id,
+						       count(DISTINCT me.fingerprint) AS incident_member_count
+						FROM event_correlations ec
+						JOIN events me ON me.id = ec.event_id AND me.cloud_account_id = ec.cloud_account_id
+						WHERE ec.correlation_type = 'same_incident'
+						GROUP BY ec.related_event_id, ec.cloud_account_id) ecc
 						ON ecc.related_event_id = e.id AND ecc.cloud_account_id = e.cloud_account_id`)
 			}
 			if requestReferencesColumns(request, investigationStatusDependentColumns) {

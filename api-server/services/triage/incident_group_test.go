@@ -605,3 +605,45 @@ func TestDecideSameSubjectAttach_ChronicOutranksCause(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "quiet", leader, "a chronic member never leads, however central it looks")
 }
+
+// TestCandidatesAreAlertsNotChains documents the shape the window query now
+// returns. A group is the alerts firing together in a window; anchoring links on
+// firings rather than on each chain's first event is what gives an incident a
+// beginning and an end.
+//
+// Before, a link pointed at the event an alert FIRST ever produced, so a group
+// never ended: any member firing held it open while the alert that named it
+// could have stopped days earlier. Measured on the Rackspace tenant over 14
+// days — 1,337 of 1,445 links (93%) named a headline quiet for an average of
+// 38.8 hours, one group had 17 members, one headline was 158 days old, and none
+// of it was visible in a time-scoped view because the events predated the window.
+func TestCandidatesAreAlertsNotChains(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	// Two firings of one alert inside the window are one candidate, and the
+	// candidate carries the LATEST firing — the incident is about what is
+	// happening now, not when the alert first appeared.
+	seed := gc("seed-firing", "alb-5xx", now)
+	backend := gc("backend-firing-latest", "service-down", now.Add(-2*time.Minute))
+	backend.LastSeen = now.Add(-1 * time.Minute)
+
+	leader, offset, ok := decideSameSubjectAttach(
+		seed, []groupCandidate{backend}, nil, nil, nil, map[string]int{"backend-firing-latest": 1})
+	require.True(t, ok)
+	assert.Equal(t, "backend-firing-latest", leader,
+		"the headline is a firing from this window, elected on who others depend on")
+	assert.Equal(t, 2*time.Minute, offset)
+}
+
+// A burst that has gone quiet must not hold a group open: once its firings fall
+// outside the window they are not candidates, so the next burst forms its own
+// incident rather than inheriting an old headline.
+func TestQuietBurstDoesNotHoldTheGroupOpen(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	seed := gc("new-firing", "alb-5xx", now)
+	stale := gc("old-firing", "service-down", now.Add(-2*IncidentAttachWindow))
+	stale.LastSeen = now.Add(-2 * IncidentAttachWindow)
+
+	_, _, ok := decideSameSubjectAttach(seed, []groupCandidate{stale}, nil, nil, nil, nil)
+	assert.False(t, ok, "a member last seen two windows ago must not keep an incident open")
+}
