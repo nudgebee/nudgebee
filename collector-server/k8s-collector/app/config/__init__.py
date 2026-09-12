@@ -52,16 +52,31 @@ class Settings(BaseSettings):
     # again. Off = the agent's findings (crashloop, OOM, ...) have no resolve path
     # at all and stay open until their resource is deleted.
     #
-    # DEFAULT OFF. The readiness-based signal this gates is not sound: discovery is
+    # DEFAULT ON by product decision, with a known false-close rate. Read this
+    # before changing it back or relying on it.
+    #
+    # The readiness signal is a single sample and is NOT sound. Discovery is
     # change-driven, so a snapshot lands precisely on the moment a crashlooping pod
     # flips Ready for the few seconds its container runs before dying, and
     # ready_pods == total_pods is therefore observed on nearly every crash cycle.
-    # Measured on dev over two hours with it on: 3 live report_crash_loop events
-    # closed a median 178s after being raised, and 4 pod_oom_killer_enricher events,
-    # every one of them while the workload was still failing. Recovery has to be
-    # evidence over time (e.g. no pod restart since the previous snapshot), not a
-    # single sample; until that lands, leave this off.
-    EVENT_CLOSE_ON_WORKLOAD_RECOVERY: bool = False
+    # Measured on dev across the 43 events this actually closed while it was on:
+    # 39 of them (91%) were closed within ten minutes of being raised, average
+    # lifetime 173 seconds, and 17 (40%) had the same alert fire again for the same
+    # workload within two hours -- i.e. the workload was still broken when we closed
+    # its alert. That is the #36550 failure mode ("alerts close themselves while the
+    # problem is still happening") in a narrower form.
+    #
+    # It is on regardless because the alternative is worse for the operator: with it
+    # off, the agent's own findings (crashloop, OOM, ...) have NO resolve path at all
+    # and stay open until their resource is deleted, so a workload that genuinely
+    # recovered keeps a red alert indefinitely. A too-eager close re-fires on the
+    # next occurrence; a missing close never corrects itself.
+    #
+    # The sound version is recovery as evidence over time -- all pods ready AND no
+    # pod restart since the previous snapshot (k8s_pods.restart_count is already
+    # collected). Landing that is what makes this flag safe rather than a trade;
+    # until then, expect crashloop alerts to close and re-open on each cycle.
+    EVENT_CLOSE_ON_WORKLOAD_RECOVERY: bool = True
     K8S_COLLECTOR_CONSUMER_MAX_WORKERS: int = 2
     K8S_COLLECTOR_CONSUMER_HEARTBEAT: int = 120
     # Drop agent messages whose cloud account is status='disabled' instead of

@@ -1163,6 +1163,14 @@ def close_events_for_recovered_workloads(cloud_account_id: str, workloads: List[
     `status.phase = Running` between restarts, which is what made the legacy
     status-diff path (run_status_update) close crashloop events on a live crashloop.
 
+    Readiness is narrower than phase but NOT immune to the same defect, and the
+    comment above should not be read as claiming otherwise: a crashlooping pod is
+    genuinely Ready for the seconds its container runs, and a change-driven snapshot
+    lands on that flip often. Measured on dev, 17 of the 43 events this closed had
+    the same alert fire again within two hours. The signal that actually fixes it is
+    ready AND no pod restart since the previous snapshot (k8s_pods.restart_count is
+    already collected); see the flag's comment in config/__init__.py.
+
     Scoped to `kubernetes_api_server`, the source whose findings are derived from
     workload health and which has no resolve delivery of its own. Every other source
     (prometheus, datadog, pagerduty, cloud alarms) sends its own resolve and owns its

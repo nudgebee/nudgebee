@@ -277,6 +277,30 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				nb.CleanupData(ctx)
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "Inactive Resource Event Sweep":
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ctx.GetLogger().Error("cron: panic in inactive-resource event sweep", "recovered", r)
+					}
+				}()
+				t0 := time.Now()
+				// Detached cron context never cancels on its own; bound the run so a
+				// hung DB statement can't leak this goroutine indefinitely. `events`
+				// is a 200GB+ table, so a statement waiting on a lock is the realistic
+				// hang here, not a slow scan.
+				tctx, cancel := context.WithTimeout(ctx.GetContext(), 10*time.Minute)
+				defer cancel()
+				runCtx := security.NewRequestContext(tctx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+				closed, err := event.CloseEventsForInactiveResources(runCtx)
+				if err != nil {
+					ctx.GetLogger().Error("cron: inactive-resource event sweep failed", "error", err)
+					return
+				}
+				ctx.GetLogger().Info("cron: inactive-resource event sweep done",
+					"closed", closed, "duration", time.Since(t0))
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
 		case "LLM Token Usage Short Cleanup":
 			go func() {
 				defer func() {

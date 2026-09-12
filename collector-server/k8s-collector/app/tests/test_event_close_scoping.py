@@ -129,10 +129,14 @@ class TestDiscoveryCleanupScoping(unittest.TestCase):
 
 
 class TestWorkloadRecoveryClose(unittest.TestCase):
-    """The recovery close is DEFAULT OFF (see Configs.EVENT_CLOSE_ON_WORKLOAD_RECOVERY):
-    the readiness signal it uses closes live crashloops. These tests pin the predicate
-    it will use once a sound signal replaces `ready_pods == total_pods`, so the
-    scoping work already done is not lost when it is re-enabled.
+    """The recovery close is DEFAULT ON (see Configs.EVENT_CLOSE_ON_WORKLOAD_RECOVERY).
+
+    The readiness signal it uses is a single sample and closes some live crashloops:
+    measured on dev, 39 of the 43 events it closed went within ten minutes of being
+    raised and 17 re-fired within two hours. It is on anyway, by product decision --
+    without it the agent's findings have no resolve path at all. These tests pin the
+    scoping that keeps the damage bounded, and stay valid for the sound signal
+    (ready AND no restart since the previous snapshot) when it replaces the sample.
     """
 
     def setUp(self):
@@ -222,12 +226,14 @@ class TestWorkloadRecoveryClose(unittest.TestCase):
             dh.close_events_for_recovered_workloads(ACCOUNT, [self._workload(LIVE_RESOURCE, 1, 1)])
         closer.assert_not_called()
 
-    def test_flag_is_off_by_default(self):
-        """Readiness alone closes live crashloops -- nothing may close on it until a
-        sound recovery signal replaces it."""
+    def test_flag_is_on_by_default(self):
+        """Pins the deliberate default. Flipping it is a product decision with a
+        measured false-close rate on both sides -- off means agent findings never
+        resolve, on means some live crashloops close early -- so neither value may
+        change silently as a side effect of another edit."""
         from config import Settings
 
-        self.assertFalse(Settings.model_fields["EVENT_CLOSE_ON_WORKLOAD_RECOVERY"].default)
+        self.assertTrue(Settings.model_fields["EVENT_CLOSE_ON_WORKLOAD_RECOVERY"].default)
 
 
 class TestLegacyStatusUpdate(unittest.TestCase):
