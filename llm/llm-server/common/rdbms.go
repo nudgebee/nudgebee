@@ -454,6 +454,15 @@ func RegisterDatabaseManagerHook(name DatabaseManagerType, callback func() (*Dat
 	databaseManagerHooks[name] = callback
 }
 
+// ResetDatabaseManager drops the cached manager so the next GetDatabaseManager
+// re-runs the registered hook. For tests that swap in a fresh mocked database
+// after an earlier one was closed.
+func ResetDatabaseManager(name DatabaseManagerType) {
+	databaseManagerMutex.Lock()
+	defer databaseManagerMutex.Unlock()
+	delete(databaseManager, name)
+}
+
 func Close() {
 	for _, db := range databaseManager {
 		err := db.Close()
