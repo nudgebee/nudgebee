@@ -69,7 +69,7 @@ func TestSummarizeDownstream_SortsSoTheKeptSliceIsTheUsefulEnd(t *testing.T) {
 	}
 	depth := map[string]int{seedID: 0, "ec2-near": 1, "ec2-far": 2, "ext-1": 2}
 
-	got := summarizeDownstream(seedID, nodes, nil, depth, map[string]string{}, map[string]string{})
+	got := summarizeDownstream(seedID, nodes, nil, depth, map[string]string{})
 
 	if len(got) != 3 {
 		t.Fatalf("expected 3 dependencies, got %d: %+v", len(got), got)
@@ -150,7 +150,7 @@ func TestSummarizeDownstream_DropsUnresolvedVPCAddresses(t *testing.T) {
 	}
 	depth := map[string]int{seedID: 0, "ec2-1": 1, "ext-1": 2, "ext-2": 2}
 
-	got := summarizeDownstream(seedID, nodes, nil, depth, map[string]string{}, map[string]string{})
+	got := summarizeDownstream(seedID, nodes, nil, depth, map[string]string{})
 
 	for _, d := range got {
 		if d.Name == "10.0.0.143" {
