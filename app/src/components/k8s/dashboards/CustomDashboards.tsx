@@ -398,6 +398,10 @@ const CustomDashboards: React.FC = () => {
   if (mode.name === 'view' && selected) {
     return (
       <DashboardView
+        // Keyed on the dashboard: the route can swap the dashboard IN PLACE (the header search opens another
+        // one while this is showing), and the view's account filter, time range and drafts belong to the one
+        // they were set on. A remount is what drops them, rather than each piece of state resetting itself.
+        key={selected.dashboard.id}
         dashboard={selected.dashboard}
         accounts={accountOptions}
         canEdit={canWrite && !selected.dashboard.is_builtin}
