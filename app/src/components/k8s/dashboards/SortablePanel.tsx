@@ -17,6 +17,9 @@ import type { VariableValues } from './templating';
 interface Props {
   panel: Panel;
   accounts: AccountOption[];
+  /** The dashboard's account filter — see DashboardPanel. */
+  dashboardAccountIds: string[];
+  onClearDashboardFilter: () => void;
   variables: VariableValues;
   startTime: number;
   endTime: number;
@@ -51,6 +54,8 @@ interface Props {
 const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
   panel,
   accounts,
+  dashboardAccountIds,
+  onClearDashboardFilter,
   variables,
   startTime,
   endTime,
@@ -134,6 +139,8 @@ const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
       <DashboardPanel
         panel={panel}
         accounts={accounts}
+        dashboardAccountIds={dashboardAccountIds}
+        onClearDashboardFilter={onClearDashboardFilter}
         variables={variables}
         startTime={startTime}
         endTime={endTime}
