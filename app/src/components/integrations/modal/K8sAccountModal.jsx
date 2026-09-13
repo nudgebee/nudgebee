@@ -8,7 +8,7 @@ import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
 import { Card } from '@ui/Card';
-import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV, accountEnvTooltip } from '@shared/forms/AccountEnvToggle';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV, ACCOUNT_ENV_TOOLTIP } from '@shared/forms/AccountEnvToggle';
 import LabelWithInfo from '@components/ownership/LabelWithInfo';
 import Tabs from '@shared/navigation/Tabs';
 import { Banner } from '@ui/Banner';
@@ -519,7 +519,7 @@ helm repo update`;
                         fontWeight: 'var(--ds-font-weight-medium)',
                       }}
                     >
-                      <LabelWithInfo text='Account Type' info={accountEnvTooltip()} />
+                      <LabelWithInfo text='Account Type' info={ACCOUNT_ENV_TOOLTIP} />
                     </Box>
                     {/* label='' suppresses AccountEnvToggle's own built-in label + info
                         icon (a larger fontSize='small' icon) so it doesn't duplicate the
