@@ -160,11 +160,20 @@ const resolveNavPath = (path, router) => (path.includes('#') ? path : getDynamic
 /**
  * Navigating out of Troubleshoot's Knowledge Graph tab with next/router is
  * blocked by the heavy elkjs layout running inside it, so leave that tab with a
- * full document load instead.
+ * full document load instead — but only when the target is a genuinely
+ * different page. A same-page target (another /troubleshoot hash, e.g. the
+ * sidebar's own Investigations/Analytics/All Events sub-items) is a
+ * hash-only URL: `location.assign` does a fragment navigation for those, not
+ * a load, so the address bar updates but next/router (and the tab effect in
+ * pages/troubleshoot/index.jsx keyed on router.asPath) never sees it, leaving
+ * Knowledge Graph on screen until a second click (#38250). Those targets
+ * already unmount Knowledge Graph via ordinary React state, so router.push is
+ * safe for them.
  */
 const navigateTo = (router, targetPath) => {
   const onKnowledgeGraphTab = router.pathname === '/troubleshoot' && typeof window !== 'undefined' && window.location.hash === '#kg';
-  if (onKnowledgeGraphTab) {
+  const leavingPage = targetPath.split('#')[0].split('?')[0] !== router.pathname;
+  if (onKnowledgeGraphTab && leavingPage) {
     window.location.assign(targetPath);
     return;
   }
