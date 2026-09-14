@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"math"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/events"
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/nudgebee/logparser"
@@ -20,6 +24,14 @@ const (
 	slowSpanThresholdNs     = 1_000_000_000
 	topLogErrorPatternCount = 5
 	logFilterContextLines   = 2
+	// evidencePreviewBytes caps the inline preview shown when evidence is
+	// offloaded to the workspace. Deliberately independent of
+	// config.Config.LlmServerEventEvidenceOverflowThreshold (the save
+	// trigger) and sized near the scratchpad's default per-observation cap
+	// (LlmServerScratchpadMaxObservationChars, 65536) so evidence that fit
+	// inline before this change still does — only the save trigger, not the
+	// preview, follows agent_traces.go's overflow convention.
+	evidencePreviewBytes = 60000
 )
 
 func init() {
@@ -199,9 +211,15 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 
 	// If no specific evidence type requested, return everything
 	if evidenceType == "" || evidenceType == "all" {
+		data, references := saveEvidenceToWorkspaceIfLarge(nbRequestContext.Ctx, wm, nbRequestContext.AccountId, nbRequestContext.ConversationId, fmt.Sprintf("event_%s_evidence", eventId), resp.Data)
+		respType := core.NBToolResponseTypeJson
+		if references != nil {
+			respType = core.NBToolResponseTypeText
+		}
 		return core.NBToolResponse{
-			Data: resp.Data,
-			Type: core.NBToolResponseTypeJson,
+			Data:       data,
+			Type:       respType,
+			References: references,
 		}, nil
 	}
 
@@ -261,9 +279,15 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 		}, nil
 	}
 
+	data, references := saveEvidenceToWorkspaceIfLarge(nbRequestContext.Ctx, wm, nbRequestContext.AccountId, nbRequestContext.ConversationId, fmt.Sprintf("event_%s_%s", eventId, evidenceType), string(result))
+	respType := core.NBToolResponseTypeJson
+	if references != nil {
+		respType = core.NBToolResponseTypeText
+	}
 	return core.NBToolResponse{
-		Data: string(result),
-		Type: core.NBToolResponseTypeJson,
+		Data:       data,
+		Type:       respType,
+		References: references,
 	}, nil
 }
 
@@ -380,6 +404,62 @@ func extractEvidenceByType(data events.InvestigateData, evidenceType string) any
 	default:
 		return nil
 	}
+}
+
+// saveEvidenceToWorkspaceIfLarge saves data to a workspace file when it
+// exceeds config.Config.LlmServerEventEvidenceOverflowThreshold, returning a
+// preview + Type:"file" reference instead of the raw blob — the same
+// automatic-overflow pattern agent_traces.go uses for the traces evidence
+// path (agent_traces.go:407-436), reusing the package-wide WorkspaceManager
+// (tool_shell.go's wm) rather than constructing a second connection pool.
+// data is returned unchanged (nil references) when it's small enough, or
+// when the save itself fails, so a workspace outage degrades to today's
+// behavior rather than losing the response.
+//
+// Without this, get_event_evidence's raw response enters the scratchpad with no
+// reference: the per-observation truncation cap (getMaxObservationChars) drops
+// most of it behind a "[output truncated — N chars]" marker with no way for the
+// model to recover the full body, since nothing else in the ReAct3 render path
+// (getToolResponse/SummarizeObservation in planner_react_3.go) resolves a file
+// handle for evidence that was never saved anywhere.
+func saveEvidenceToWorkspaceIfLarge(ctx *security.RequestContext, wm workspace.WorkspaceManager, accountId, conversationId, filePrefix, data string) (string, []core.NBToolResponseReference) {
+	if len(data) <= config.Config.LlmServerEventEvidenceOverflowThreshold {
+		return data, nil
+	}
+
+	// filePrefix is already unique per event id + evidence type (both
+	// validated upstream), so no timestamp suffix is needed — a deterministic
+	// name keeps repeat calls on the same event idempotent instead of writing
+	// a new multi-MB blob (and a new evidence-index entry) every time.
+	outputFile := fmt.Sprintf("%s.json", filePrefix)
+	if err := wm.SaveFile(ctx, accountId, conversationId, outputFile, data); err != nil {
+		ctx.GetLogger().Error("get_event_evidence: failed to save evidence to workspace", "error", err, "path", outputFile)
+		return data, nil
+	}
+
+	return fmt.Sprintf("Output large (%d bytes). Saved to %s.\nPreview: %s", len(data), outputFile, truncateUTF8Safe(data, evidencePreviewBytes)),
+		[]core.NBToolResponseReference{{
+			Text:        "Full event evidence saved to workspace",
+			Url:         outputFile,
+			Type:        "file",
+			Description: "Full event evidence collected by system",
+		}}
+}
+
+// truncateUTF8Safe cuts s to at most maxBytes without splitting a multi-byte
+// UTF-8 rune, mirroring agents/core.TruncateHead (not reusable here — tools
+// does not import agents/core).
+func truncateUTF8Safe(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
 
 // summarizeEvidence routes to type-specific summary implementations.

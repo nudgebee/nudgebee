@@ -2,6 +2,8 @@ package tools
 
 import (
 	"fmt"
+
+	"nudgebee/llm/common"
 	"nudgebee/llm/tools/core"
 )
 
@@ -169,6 +171,7 @@ func (m RecommendationExecuteTool) ToolPrompt() []string {
 	defaultColumns := RecommendationDefaultColumns
 	return []string{
 		"**Default status behavior (important):**\n  - If the user asks to *see/get/list/retrieve recommendations* without qualification, assume they want actionable items and **add `status = 'Open'` by default**.\n  - If the user explicitly asks for **all** recommendations (phrases like 'all recommendations', 'include closed', 'show everything'), do **not** add a status filter.\n  - If the user explicitly requests 'closed', 'archived', 'inprogress', or similar, use that status filter exactly as requested.\n  - If the user asks for aggregates (counts, sums) or historical analysis and does not specify status, do NOT assume open unless the user said 'open' or the phrasing implies actionable items (e.g., 'show me recommendations to act on').",
+		"**A zero-row result is NOT proof that a specific resource is healthy:** this view only contains what a completed background scan already computed and wrote — it is a cache, not a live check. A zero-row result for a specific resource/namespace the user is asking about can mean any of: (a) genuinely nothing wrong, (b) the relevant scan has not run yet for this account (recently connected, or an infrequent scan cadence), or (c) no `rule_name`/`category` here models the exact pattern being asked about at all — see the Rule Classifications list below. Before answering a direct question like 'is X wasteful' or 'why is X scaling like this' with 'no issues found', check whether the pattern is actually in that rule list. If it is not, say plainly that this tool has no rule covering that pattern (do not imply it was checked and came back clean), and recommend a live check (e.g. `kubectl_execute`, a PromQL query) instead of presenting the absence of a row as a clean bill of health.",
 		"**ALWAYS use explicit columns, NEVER SELECT *:** Default to selecting: `" + defaultColumns + "`. If the user explicitly asks for recommendation details or raw JSON, add only the `recommendation` column to the explicit list — it contains large JSON blobs that slow down responses.",
 		"**Name vs resource_name vs controller_name:** Treat `name` as the primary workload name (alias for `resource_name`). Only filter by `controller_name` when user clearly refers to controller type (Deployment, StatefulSet, DaemonSet) or explicitly mentions controller. If ambiguous, prefer `name` and document the assumption.",
 		"**Namespace matching rules:** If user uses short token like 'prod' prefer fuzzy match `namespace ILIKE '%prod%'`. If user explicitly says 'production' or quotes namespace, prefer exact equality `namespace = 'production'` unless user asked fuzzy.",
@@ -307,11 +310,83 @@ func truncateRecommendationJSON(r map[string]any, _ int, _ int) map[string]any {
 }
 
 func (m RecommendationExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	resp, _, err := sqlToolCall(nbRequestContext, input.Command, "recommendation_view", recommendationView, 10, truncateRecommendationJSON)
+	resp, rows, err := sqlToolCall(nbRequestContext, input.Command, "recommendation_view", recommendationView, 10, truncateRecommendationJSON)
 	if err == nil {
+		if len(rows) == 0 {
+			resp.Data = emptyResultWithRuleCatalog(nbRequestContext)
+		}
 		resp.References = []core.NBToolResponseReference{
 			core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"optimize", "summary"}, "Recommendation Details", nil, ""),
 		}
 	}
 	return resp, err
+}
+
+// emptyRecommendationResultFallback is returned verbatim when the live
+// category catalog can't be loaded (DB error) — same wording sqlToolCall
+// itself uses, so a catalog-lookup failure never produces a worse message
+// than before.
+const emptyRecommendationResultFallback = `{"message":"No results found matching the query criteria. Try broadening the filters, adjusting the time range, or checking if the resource/entity name is correct.","rows":[]}`
+
+// queryRecommendationCategories is a test seam: emptyResultWithRuleCatalog
+// calls this indirection instead of common.GetDatabaseManager directly, so
+// tests can stub the category list without depending on the package-wide
+// connection cache in common.GetDatabaseManager. That cache is a single
+// process-global map keyed by DatabaseManagerType — once ANY test in this
+// package populates it (even a real, later-closed Postgres connection from
+// an unrelated test), every subsequent call returns the same cached manager
+// and ignores common.RegisterDatabaseManagerHook. In an isolated `go test
+// -run`, this test is the first caller and a sqlmock hook works fine; in a
+// full `go test ./tools/...` run (this package's CI job), dozens of other
+// tests call GetDatabaseManager(Metastore) first, so the hook is silently
+// ignored and the real (closed) connection is reused — exactly what broke
+// CI here. A test seam sidesteps that shared global state entirely.
+var queryRecommendationCategories = func() ([]string, error) {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, err
+	}
+
+	var categories []string
+	if err := dbManager.QueryAndScan(&categories, "SELECT DISTINCT category FROM recommendation ORDER BY category"); err != nil {
+		return nil, err
+	}
+	return categories, nil
+}
+
+// emptyResultWithRuleCatalog replaces the generic "no rows" message with the
+// live list of every recommendation category this engine detects, so the
+// caller can distinguish "checked, genuinely clean" from "no rule covers this
+// pattern at all" — a zero-row result means only the former, and an agent
+// that can't tell the two apart reports a real, unmodeled problem as "no
+// issues found." See #37624 and the ToolPrompt guidance above, which this
+// reinforces with live data instead of a prompt instruction the model has to
+// recall unaided.
+//
+// Scoped to DISTINCT category (6 rows), not (category, rule_name): the full
+// rule_name catalog is 370+ rows dominated by AWS/Azure/GCP-specific config
+// and security checks, which would bloat every empty-result response and
+// bury the handful of rows actually relevant to a given question. Categories
+// stay stable and cheap; the ToolPrompt's "Rule Classifications" section above
+// already lists representative rule_names per category for finer detail.
+func emptyResultWithRuleCatalog(nbRequestContext core.NbToolContext) string {
+	categories, err := queryRecommendationCategories()
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Warn("recommendation_execute: unable to load category catalog for empty result", "error", err)
+		return emptyRecommendationResultFallback
+	}
+	if len(categories) == 0 {
+		return emptyRecommendationResultFallback
+	}
+
+	encoded, err := common.MarshalJson(map[string]any{
+		"message":              "No results found matching the query criteria. This does NOT mean the situation is healthy — it only means no matching row exists. Check whether what you're investigating falls under one of the categories in available_categories (the full set this system detects, live from the database; see the Rule Classifications section above for representative rule_names per category). If it does not map to any of them, say plainly that this tool has no rule for that pattern and recommend a live check instead of concluding 'no issues.'",
+		"rows":                 []any{},
+		"available_categories": categories,
+	})
+	if err != nil {
+		nbRequestContext.Ctx.GetLogger().Warn("recommendation_execute: unable to encode category catalog", "error", err)
+		return emptyRecommendationResultFallback
+	}
+	return string(encoded)
 }

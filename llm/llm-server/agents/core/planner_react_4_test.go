@@ -2,7 +2,9 @@ package core
 
 import (
 	"errors"
+	"regexp"
 	"testing"
+	"time"
 
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -55,6 +57,25 @@ func TestReAct4_ParseCompletion_FinalAnswer(t *testing.T) {
 	assert.NotNil(t, finish)
 	assert.Equal(t, "root cause is OOMKill", finish.Data)
 	assert.True(t, finish.IsTerminal)
+}
+
+// TestReAct4_HumanText_TodayIncludesTimeOfDay guards against a real bug found
+// via benchmark run dd7bc6b21b45 (test 43_current_datetime_from_prompt): the
+// only grounded "current time" fact reaching the model for a no-tool-call
+// turn was date-only ("January 02, 2006"), so a direct "what time is it"
+// question had no time-of-day data to draw on and the model fabricated
+// 00:00:00. humanText's injected "today" value must carry both an actual
+// UTC date AND a time-of-day component the model can read directly.
+func TestReAct4_HumanText_TodayIncludesTimeOfDay(t *testing.T) {
+	planner := &NBReActPlanner4{}
+	human := planner.humanText("what time is it right now?")
+
+	assert.Regexp(t, regexp.MustCompile(`\d{2}:\d{2}:\d{2} UTC`), human,
+		"today must carry a real time-of-day component, not just a date")
+
+	wantDate := time.Now().UTC().Format("January 2, 2006")
+	assert.Contains(t, human, wantDate,
+		"today's date component must be rendered in UTC, matching time.Now().UTC()")
 }
 
 func TestReAct4_ParseCompletion_EmptyTurnIsParseFailure(t *testing.T) {
@@ -272,6 +293,51 @@ func TestReAct4_ParseCompletion_ActionGrammarWithoutToolCallIsParseFailure(t *te
 	assert.Nil(t, actions)
 	assert.Nil(t, finish, "must NOT be treated as a final answer")
 	assert.True(t, errors.Is(err, ErrParseFailure), "executor must see a retryable parse failure")
+}
+
+// A model that wraps a call in its OWN TOOL NAME as an ad-hoc XML tag (observed:
+// qwen emitting "<update_notebook>...</update_notebook>") must be treated the same
+// as react_3's generic action grammar — a retryable parse failure, not a terminal
+// final answer. containsActionGrammar alone misses this shape because it only
+// checks a fixed react_3 tag set that doesn't include real tool names.
+func TestReAct4_ParseCompletion_ToolNameGrammarWithoutToolCallIsParseFailure(t *testing.T) {
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{&stubTool{name: "update_notebook"}}}
+	raw := "<update_notebook>Confirmed the root cause is a Redis timeout.</update_notebook>"
+
+	actions, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
+	assert.Error(t, err)
+	assert.Nil(t, actions)
+	assert.Nil(t, finish, "must NOT be treated as a final answer")
+	assert.True(t, errors.Is(err, ErrParseFailure), "executor must see a retryable parse failure")
+}
+
+// Prose that merely mentions a tool's name in passing (no wrapping tag) must
+// still answer normally — only the XML-tag shape is a parse failure.
+func TestReAct4_ParseCompletion_ProseMentioningToolNameStillAnswers(t *testing.T) {
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{&stubTool{name: "update_notebook"}}}
+	_, finish, err := o.parseCompletion(&llms.ContentChoice{
+		Content: "I used update_notebook to record the finding, then confirmed it via logs.",
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, finish)
+}
+
+// A final-answer wrapper must not hide an attempted text-protocol tool call.
+func TestReAct4_ParseCompletion_FinalAnswerCannotHideActionGrammar(t *testing.T) {
+	o := &NBReActPlanner4{}
+	action := `<action><tool_name>list_events</tool_name><tool_input>{}</tool_input></action>`
+	for _, raw := range []string{
+		action + `<final_answer><content>Done</content></final_answer>`,
+		`<final_answer><content>` + action + `</content></final_answer>`,
+		`<final_answer><content>Done</content></final_answer>` + action,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			actions, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
+			assert.ErrorIs(t, err, ErrParseFailure)
+			assert.Nil(t, actions)
+			assert.Nil(t, finish)
+		})
+	}
 }
 
 // Prose that merely mentions the tags must still answer normally.

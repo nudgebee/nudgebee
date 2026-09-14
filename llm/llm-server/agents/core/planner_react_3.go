@@ -2529,7 +2529,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// every entry point by handleDefaultConversation) so
 	// the cacheable system prefix does not flip between entry points.
 	dynamicPrompt := `
-**TODAY's Date:** {{.today}}
+**Current date and time:** {{.today}}
 {{.kb_prestep_content}}
 {{.skill_lists_menu}}
 {{.global_preferences_block}}
@@ -2618,7 +2618,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"memory_consumption_rules":     memoryConsumptionRules,
 		"async_completion_rules":       asyncCompletionRules(agent),
 		// Human message template vars (dynamic — change per conversation/iteration)
-		"today":                time.Now().Format("January 02, 2006"),
+		"today":                time.Now().UTC().Format("Monday, January 2, 2006, 15:04:05 UTC"),
 		"history":              previousMessageStr,
 		"conversation_context": conversationContext,
 		// FS evidence recall (flag-gated): an always-visible list of the exact

@@ -88,7 +88,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 	switch actionPayload.Action.Name {
 	case "integrations_create_config":
 		var request IntegrationCreateRequest
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -123,7 +128,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 	case "integrations_delete_config":
 		var request IntegrationDeleteRequest
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -175,7 +185,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 	case "integrations_get_schema":
 		request := map[string]string{}
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -196,7 +211,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 	case "integration_list_config":
 		request := map[string]string{}
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -217,7 +237,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 	case "integrations_update_status":
 		var request IntegrationDeleteRequest
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -273,7 +298,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 
 	case "integrations_test_connection", "integrations_check_connection":
 		request := map[string]string{}
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode test connection request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -304,7 +334,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 
 	case "integrations_test_connection_config", "integrations_check_connection_config":
 		var request IntegrationCreateRequest
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		err := common.UnmarshalMapToStruct(requestInput, &request)
 		if err != nil {
 			slog.Error("integrations: failed to decode test connection config request", "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -384,7 +419,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 		var request integrations.WebhookSubjectMappingsSyncRequest
-		if err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request); err != nil {
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		if err := common.UnmarshalMapToStruct(requestInput, &request); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}

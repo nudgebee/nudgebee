@@ -325,6 +325,22 @@ var (
 	// retrievalPrefixRe — plain read-only/discovery verbs → Query.
 	retrievalPrefixRe = regexp.MustCompile(`(?i)^(get|list|show|display|fetch|count|how many|describe|whoami|version)\b`)
 
+	// investigationProbeRe — neutral existence / health probes ("were there
+	// issues with X", "is Z healthy", "is anything at risk", "has X had
+	// issues"). No causal/negation cue, but still needs the same evidence-
+	// gathering as "what's wrong with X". An explicit existence anchor
+	// ("<be> there" / "any" / "did|has|have|had|does|do … have|had") keeps a
+	// bare state query like "is the error budget exhausted" as Query.
+	//
+	// The crash/fail branches are asymmetric on purpose: is/are/was/were
+	// matches only the literal "crashing"/"failing" (a crash\w*/fail\w* stem
+	// there would also catch "what is a crash" — see the regression guard in
+	// utils_test.go), while did/has/have/had/does/do stem-matches
+	// crash\w*/fail\w* freely since "did X crash" carries no such ambiguity —
+	// except does/do, which is deliberately excluded from that branch for the
+	// same reason ("how does a crash happen" would collide).
+	investigationProbeRe = regexp.MustCompile(`(?i)\b((were|was|are|is)\s+there|any|(did|has|have|had|does|do)\b[^?.!]*\b(have|had))\b[^?.!]*\b(issues?|problems?|errors?|failures?|incidents?|outages?|anomal\w*|unhealthy|degraded|crash\w*|risks?)\b|\b(is|are|was|were)\b[^?.!]*\b(healthy|ok|okay|fine|working|reachable|at[-\s]+risk\w*|risky|down|broken|crashing|failing)\b|\b(did|has|have|had)\b[^?.!]*\b(crash\w*|fail\w*)\b`)
+
 	// memoryRequestRe — explicit "store this for later" / preference-setting
 	// intent. Such a turn ("remember our prod DB is 10.14.128.5", "from now on
 	// prefer the postgres agent") is neither an investigation nor notebook-bearing,
@@ -386,6 +402,13 @@ func IsInvestigationRequestTask(input string) bool {
 	// Plain retrieval / discovery verbs → Query.
 	if retrievalPrefixRe.MatchString(lowerInput) {
 		return false
+	}
+
+	// Neutral existence / health probes ("were there issues with X", "is X
+	// healthy") are investigations — same evidence-gathering as "what's wrong
+	// with X". Checked after the retrieval skip so "show me any errors" stays Query.
+	if investigationProbeRe.MatchString(lowerInput) {
+		return true
 	}
 
 	// Ambiguous failure-ish nouns only count alongside a problem indicator.

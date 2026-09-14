@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -264,11 +265,33 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	et := EventsExecuteTool{}
 	et.enrichData(data) // single row → full-evidence path
 
+	// capInvestigateDataEvidence bounds the per-field-typed insights first (its
+	// own ~50KB aggregate budget), then the whole (already-capped) struct is
+	// measured again here — this second check covers the struct's non-Insight
+	// fields (LogData, ErrorLogData, LogSummary) that capInvestigateDataEvidence
+	// can't see, and offloads to a workspace file past
+	// LlmServerEventEvidenceOverflowThreshold, the same overflow convention
+	// get_event_evidence already uses (tool_event_evidence.go's
+	// saveEvidenceToWorkspaceIfLarge). A workspace-save failure falls back to
+	// the inline, already-per-field-capped struct rather than losing data.
+	var overflowRefs []core.NBToolResponseReference
 	for _, row := range data {
-		if investigateData, ok := row["evidences"].(events.InvestigateData); ok {
-			capInvestigateDataEvidence(&investigateData)
-			row["evidences"] = investigateData
+		investigateData, ok := row["evidences"].(events.InvestigateData)
+		if !ok {
+			continue
 		}
+		capInvestigateDataEvidence(&investigateData)
+
+		if evidenceBytes, marshalErr := common.MarshalJson(investigateData); marshalErr == nil {
+			preview, refs := saveEvidenceToWorkspaceIfLarge(nbCtx.Ctx, wm, nbCtx.AccountId, nbCtx.ConversationId,
+				fmt.Sprintf("event_%s_evidence", eventID), string(evidenceBytes))
+			if refs != nil {
+				row["evidences"] = preview
+				overflowRefs = append(overflowRefs, refs...)
+				continue
+			}
+		}
+		row["evidences"] = investigateData
 	}
 
 	bytesData, marshalErr := common.MarshalJson(data)
@@ -276,7 +299,7 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 		return core.NBToolResponse{}, marshalErr
 	}
 	resp.Data = string(bytesData)
-	resp.References = eventReferences(nbCtx, data)
+	resp.References = append(eventReferences(nbCtx, data), overflowRefs...)
 	return resp, nil
 }
 
@@ -317,15 +340,25 @@ func truncateAtRuneBoundary(s string, maxBytes int) string {
 func capInsight(insight events.InvestigateDataInsight) events.InvestigateDataInsight {
 	if insight.Data != nil {
 		// Evidence data is almost always a string (raw JSON already stringified
-		// upstream); the type switch skips fmt.Sprintf's reflection path for
-		// that common case, which matters here since insight.Data can be up to
-		// ~1MB before capping.
+		// upstream); the type switch skips the JSON-marshal path for that
+		// common case, which matters here since insight.Data can be up to
+		// ~1MB before capping. For anything else (a native Go struct/map —
+		// e.g. a Prometheus query result), JSON-marshal rather than
+		// fmt.Sprintf("%v", ...): %v produces Go's debug syntax
+		// (map[k:v ...], scientific-notation floats), which is both more
+		// verbose than the equivalent JSON for the same data and not valid
+		// JSON itself — a model asked to reproduce it ends up re-encoding
+		// malformed pseudo-JSON instead of parsing a clean structure.
 		var dataStr string
 		switch v := insight.Data.(type) {
 		case string:
 			dataStr = v
 		default:
-			dataStr = fmt.Sprintf("%v", v)
+			if jsonBytes, err := common.MarshalJson(v); err == nil {
+				dataStr = string(jsonBytes)
+			} else {
+				dataStr = fmt.Sprintf("%v", v)
+			}
 		}
 		if len(dataStr) > maxEvidenceInsightDataChars {
 			insight.Data = truncateAtRuneBoundary(dataStr, maxEvidenceInsightDataChars) + "\n... (truncated)"
@@ -369,6 +402,118 @@ func capInvestigateDataEvidence(id *events.InvestigateData) {
 	id.Traces = capInsight(id.Traces)
 	id.AlertData = capInsight(id.AlertData)
 	id.ServiceMap = capInsight(id.ServiceMap)
+
+	capTotalEvidenceSize(id)
+}
+
+// maxTotalEvidenceChars bounds the SUM of every insight field's Data across
+// the whole InvestigateData object, once each field is already capped
+// individually above. Per-field capping alone doesn't bound the total: 11
+// slice fields x maxEvidenceInsightEntries x maxEvidenceInsightDataChars,
+// plus 12 single fields x maxEvidenceInsightDataChars, comes to ~531KB in
+// the worst case even with every per-field cap already applied (an event
+// with many moderately-sized fields, each individually under its own cap,
+// still sums to something unbounded). Once the combined size crosses this
+// budget, the largest remaining fields are replaced with a pointer to
+// get_event_evidence — which has its own workspace offload for full detail
+// — until the total is back under budget.
+const maxTotalEvidenceChars = 50000
+
+// capTotalEvidenceSize re-checks the sum of every already-per-field-capped
+// insight's Data size and, if over maxTotalEvidenceChars, drops the largest
+// remaining fields (replacing their Data with a short pointer) until the
+// total fits. Traces and AlertLabels are counted toward the total but never
+// dropped here: capTracesInsight/capAlertLabelsInsight's doc comments note
+// downstream consumers read their Data as a map/[]any respectively, so
+// replacing it with a plain string would corrupt that shape. Both are
+// already small (bounded to maxEvidenceInsightEntries items), so excluding
+// them from dropping costs little.
+func capTotalEvidenceSize(id *events.InvestigateData) {
+	type field struct {
+		size int
+		drop func()
+	}
+
+	fields := []field{
+		{insightSliceSize(id.MetricsData), func() { id.MetricsData = []events.InvestigateDataInsight{evidenceOmittedInsight("metrics_data")} }},
+		{insightSliceSize(id.PodMetrics), func() { id.PodMetrics = []events.InvestigateDataInsight{evidenceOmittedInsight("pod_metrics")} }},
+		{insightSliceSize(id.NodeMetrics), func() { id.NodeMetrics = []events.InvestigateDataInsight{evidenceOmittedInsight("node_metrics")} }},
+		{insightSliceSize(id.PodEvents), func() { id.PodEvents = []events.InvestigateDataInsight{evidenceOmittedInsight("pod_events")} }},
+		{insightSliceSize(id.NodeEvents), func() { id.NodeEvents = []events.InvestigateDataInsight{evidenceOmittedInsight("node_events")} }},
+		{insightSliceSize(id.ApiFailures), func() { id.ApiFailures = []events.InvestigateDataInsight{evidenceOmittedInsight("api_failures")} }},
+		{insightSliceSize(id.NoisyNeighbours), func() {
+			id.NoisyNeighbours = []events.InvestigateDataInsight{evidenceOmittedInsight("noisy_neighbours")}
+		}},
+		{insightSliceSize(id.UserActions), func() { id.UserActions = []events.InvestigateDataInsight{evidenceOmittedInsight("user_actions")} }},
+		{insightSliceSize(id.RDBMSQueryData), func() {
+			id.RDBMSQueryData = []events.InvestigateDataInsight{evidenceOmittedInsight("rdbms_query_response")}
+		}},
+		{insightSliceSize(id.Markdowns), func() { id.Markdowns = []events.InvestigateDataInsight{evidenceOmittedInsight("markdowns")} }},
+		{insightSliceSize(id.Others), func() { id.Others = []events.InvestigateDataInsight{evidenceOmittedInsight("all")} }},
+		{insightSize(id.Deployment), func() { id.Deployment = evidenceOmittedInsight("deployment") }},
+		{insightSize(id.PodData), func() { id.PodData = evidenceOmittedInsight("pod_data") }},
+		{insightSize(id.NodeData), func() { id.NodeData = evidenceOmittedInsight("all") }},
+		{insightSize(id.RelatedEvents), func() { id.RelatedEvents = evidenceOmittedInsight("related_events") }},
+		{insightSize(id.JobInformation), func() { id.JobInformation = evidenceOmittedInsight("job_information") }},
+		{insightSize(id.JobEvents), func() { id.JobEvents = evidenceOmittedInsight("job_events") }},
+		{insightSize(id.JobPodEvents), func() { id.JobPodEvents = evidenceOmittedInsight("all") }},
+		{insightSize(id.ContainerMetrics), func() { id.ContainerMetrics = evidenceOmittedInsight("container_metrics") }},
+		{insightSize(id.AlertData), func() { id.AlertData = evidenceOmittedInsight("alert_data") }},
+		{insightSize(id.ServiceMap), func() { id.ServiceMap = evidenceOmittedInsight("all") }},
+	}
+
+	total := insightSize(id.Traces) + insightSize(id.AlertLabels)
+	for _, f := range fields {
+		total += f.size
+	}
+	if total <= maxTotalEvidenceChars {
+		return
+	}
+
+	// Largest first: the biggest contributors to the overage, and — being
+	// metric/event streams rather than a single fact — the least costly to
+	// defer to an explicit get_event_evidence follow-up.
+	sort.Slice(fields, func(i, j int) bool { return fields[i].size > fields[j].size })
+	for _, f := range fields {
+		if total <= maxTotalEvidenceChars {
+			break
+		}
+		total -= f.size
+		f.drop()
+	}
+}
+
+// evidenceOmittedInsight replaces a field dropped by capTotalEvidenceSize.
+// evidenceType is the get_event_evidence argument that recovers the full
+// data ("all" when the field has no dedicated evidence_type).
+func evidenceOmittedInsight(evidenceType string) events.InvestigateDataInsight {
+	return events.InvestigateDataInsight{
+		Data: fmt.Sprintf("omitted — event evidence exceeded the %d-char total budget. Call get_event_evidence with evidence_type=%q for this data.", maxTotalEvidenceChars, evidenceType),
+	}
+}
+
+// insightSize measures how large an insight's Data will actually serialize
+// to — string Data measured directly, anything else JSON-marshaled first
+// (mirrors capInsight's own handling).
+func insightSize(insight events.InvestigateDataInsight) int {
+	if insight.Data == nil {
+		return 0
+	}
+	if s, ok := insight.Data.(string); ok {
+		return len(s)
+	}
+	if b, err := common.MarshalJson(insight.Data); err == nil {
+		return len(b)
+	}
+	return len(fmt.Sprintf("%v", insight.Data))
+}
+
+func insightSliceSize(insights []events.InvestigateDataInsight) int {
+	total := 0
+	for _, insight := range insights {
+		total += insightSize(insight)
+	}
+	return total
 }
 
 // ---------------------------------------------------------------------------

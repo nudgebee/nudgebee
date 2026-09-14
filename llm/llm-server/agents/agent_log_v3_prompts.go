@@ -182,10 +182,11 @@ func investigationInstructionsV3() []string {
 		"     Step E2 — only if Step E1 is also empty, widen the fetch:",
 		"       Re-call fetch_logs_v3 with `\"all logs for <pod> in <namespace> last 7d, limit 5000\"` (widen the *window*, not the limit — 5000 is the recommended max across providers). Wait for it to complete, THEN re-run the Step E1 grep on the new file_ref in a later iteration — never in the same batch as this fetch_logs_v3 call.",
 		"       If the user's question or any earlier observation mentions a specific timestamp, ALSO issue a narrower targeted fetch around that timestamp.",
+		"     Step E3 — only if Step E2 is also empty, read the file plainly before concluding \"no errors\": `head -100 <file_ref>` (or a representative sample). Every grep pass so far assumed the incident is logged as an error-shaped line — a component that fails quietly (an eviction policy, a rate limiter, a resource ceiling correctly doing its job) can log the actual mechanism at INFO or with no error-shaped word at all, and Sweep A/B/E1 are all built to miss exactly that. A plain, unfiltered read is what catches it. Only conclude \"no errors found\" after this step also shows nothing relevant — not after E2 alone.",
 		"     **Strict prohibitions:**",
 		"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
-		"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2.",
-		"       - Only after Sweep A + Step E1 + Step E2 all return empty may you state \"no errors found in last 7d\".",
+		"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2 AND (if E2 empty) Step E3.",
+		"       - Only after Sweep A + Step E1 + Step E2 + Step E3 all return empty may you state \"no errors found in last 7d\".",
 		"  Do NOT produce a final answer without Sweep A AND (Sweep B succeeding OR a documented second-pass attempt OR a documented widened-window attempt). The critic will reject answers that skip this step.",
 		"  **Report WHEN (MANDATORY).** Your final answer MUST state the incident time window — the `timestamp` field of the FIRST and LAST matching error line from Sweep A. Naming the failure and its cause without \"between <T1> and <T2>\" is incomplete. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
 

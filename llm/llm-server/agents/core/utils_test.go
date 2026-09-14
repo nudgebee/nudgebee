@@ -92,6 +92,40 @@ func TestIsInvestigationRequestTask(t *testing.T) {
 		{"why api", true},
 		{"why app", true},
 		{"why svc", true},
+
+		// --- neutral existence / health probes are investigations ---
+		{"were there issues with the cron-scheduler pod in namespace-73b", true},
+		{"any errors in the api pod recently", true},
+		{"is there a problem with checkout-svc", true},
+		{"did the deployment have problems", true},
+		{"is redis healthy", true},
+		// "is X at risk" / "is anything at risk" — the original motivating case
+		// for widening investigationProbeRe.
+		{"review the scaling posture of namespace-233. is anything at risk?", true},
+		{"is checkout-svc at risk", true},
+		// multiple spaces between "at" and "risk" must still match
+		{"is checkout-svc at  risk", true},
+		// (state query "is the error budget exhausted" stays false — asserted above)
+		// retrieval prefix still wins over the probe
+		{"show me any errors in the logs", false},
+		{"list any pods with issues", false},
+
+		// --- continuous / perfect tense crash-fail probes ---
+		{"is checkout-svc failing", true},
+		{"are the pods crashing", true},
+		{"is the deployment broken", true},
+		{"is checkout-svc down", true},
+		{"has checkout-svc had issues", true},
+		{"have they had failures recently", true},
+
+		// --- present tense auxiliary (does/do) joins the issues/errors branch only ---
+		{"does checkout-svc have issues", true},
+		{"do the pods have errors", true},
+		// but NOT the crash/fail branch — "does it crash" would collide with a
+		// definitional "how does a crash happen" the same way a bare crash\w*
+		// stem did on the is/are/was/were branch (see the comment above
+		// investigationProbeRe).
+		{"how does a crash happen", false},
 	}
 
 	for _, tt := range tests {

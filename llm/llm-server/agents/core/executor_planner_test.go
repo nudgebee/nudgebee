@@ -1882,3 +1882,99 @@ func TestUnmarshal_PreservesReAct4ActionFieldsOnResume(t *testing.T) {
 		"the signature is base64 in JSON and must be decoded back to bytes, "+
 			"or every replayed tool call after a write approval is rejected")
 }
+
+// TestSummarizeConversation_LLMError_PropagatesError guards a real bug found
+// via benchmark run dd7bc6b21b45 (test 111_pod_names_contain_service): when
+// the main ReAct loop's LLM call fails (there, a Vertex 429) with steps
+// already accumulated, the executor falls through to summarizeConversation to
+// synthesize a partial answer. If THAT summarization LLM call also fails,
+// summarizeConversation used to swallow the error (log it, then return
+// (nil, nil)) — the caller's (err == nil, result == nil) then falls through to
+// the generic agents.ErrNotFinished ("agent not finished before max
+// iterations"), masking the real cause (e.g. a 429) behind a message that
+// looks exactly like the sub-agent genuinely exhausted its iteration budget,
+// even though only 2 of 10 were used. summarizeConversation must propagate
+// its own LLM-call error instead.
+func TestSummarizeConversation_LLMError_PropagatesError(t *testing.T) {
+	fake := &fakeLLMModel{err: fmt.Errorf("provider API error: 429 RESOURCE_EXHAUSTED")}
+	withFakeLLMModel(t, fake)
+
+	e := &plannerExecutor{
+		ctx: llmOverrideContext(),
+		agentRequest: NBAgentRequest{
+			Query:          "get logs for pod search-engine-service in namespace app-111 since 24h",
+			AccountId:      "acct-1",
+			UserId:         "user-1",
+			ConversationId: "conv-1",
+			MessageId:      "msg-1",
+		},
+	}
+
+	result, err := e.summarizeConversation()
+
+	require.Error(t, err, "the real LLM-call error must propagate, not be swallowed into (nil, nil)")
+	assert.Contains(t, err.Error(), "429 RESOURCE_EXHAUSTED",
+		"the caller (chains.Run) sets Response: err.Error(), so the real provider "+
+			"error must be what surfaces — not the generic agents.ErrNotFinished text")
+	assert.Nil(t, result)
+}
+
+// TestSummarizeConversation_NotebookLeak_UnwrapsToInnerContent reproduces the
+// exact bug found live in benchmark run dd7bc6b21b45's 108_logs_nearby_lines
+// rerun: after a conversation spent its whole iteration budget on
+// notebook-only turns (never once producing a <final_answer>), the model
+// answered summarizeConversation's own "summarize in prose" prompt with
+// another bare <update_notebook> block instead — and that raw markup was
+// returned to the user verbatim as the final answer.
+func TestSummarizeConversation_NotebookLeak_UnwrapsToInnerContent(t *testing.T) {
+	leaked := "<update_notebook>\n# Investigation Notebook: Connection Refused Errors\n\n## Root Cause\n- api-service cannot reach db-staging.internal:5432\n</update_notebook>"
+	fake := &fakeLLMModel{response: leaked}
+	withFakeLLMModel(t, fake)
+
+	e := &plannerExecutor{
+		ctx: llmOverrideContext(),
+		agentRequest: NBAgentRequest{
+			Query:          "What is causing connection refused errors in api-service namespace app-108?",
+			AccountId:      "acct-1",
+			UserId:         "user-1",
+			ConversationId: "conv-1",
+			MessageId:      "msg-1",
+		},
+	}
+
+	result, err := e.summarizeConversation()
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	output, _ := result["output"].(string)
+	assert.NotContains(t, output, "<update_notebook>", "the raw notebook wrapper tags must never reach the user")
+	assert.NotContains(t, output, "</update_notebook>")
+	assert.Contains(t, output, "api-service cannot reach db-staging.internal:5432",
+		"the notebook's own content is genuinely informative — unwrap it, don't discard it")
+}
+
+// A genuine prose answer that merely mentions the tag name in passing must
+// pass through unchanged — only a response that IS the notebook block gets
+// unwrapped.
+func TestSummarizeConversation_ProseMentioningNotebookTagUnchanged(t *testing.T) {
+	prose := "The investigation used the <update_notebook> block to track findings; the root cause was a missing PROD_CONFIG env var."
+	fake := &fakeLLMModel{response: prose}
+	withFakeLLMModel(t, fake)
+
+	e := &plannerExecutor{
+		ctx: llmOverrideContext(),
+		agentRequest: NBAgentRequest{
+			Query:          "What is causing connection refused errors?",
+			AccountId:      "acct-1",
+			UserId:         "user-1",
+			ConversationId: "conv-1",
+			MessageId:      "msg-1",
+		},
+	}
+
+	result, err := e.summarizeConversation()
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, prose, result["output"])
+}

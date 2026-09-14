@@ -555,6 +555,29 @@ func containsActionGrammar(text string) bool {
 	return false
 }
 
+// containsToolNameGrammar reports whether text wraps a call in one of the
+// agent's own registered tool names used as an ad-hoc XML tag (observed:
+// qwen emitting "<update_notebook>...</update_notebook>" instead of either a
+// native tool call or react_3's generic grammar). containsActionGrammar only
+// catches the fixed react_3 tag set, so this shape slipped past it straight
+// into the terminal-final-answer fallback, shipping the raw XML as the
+// answer and ending the run instead of retrying.
+func containsToolNameGrammar(text string, tools []toolcore.NBTool) bool {
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		name := tool.Name()
+		if name == "" {
+			continue
+		}
+		if strings.Contains(text, "<"+name+">") || strings.Contains(text, "</"+name+">") {
+			return true
+		}
+	}
+	return false
+}
+
 // extractXMLFinalAnswer unwraps a react_3-style <final_answer> block, mirroring
 // NBReActPlanner3.processFinalAnswer: <content> becomes the answer and <thought>
 // becomes the Log (never rendered as the answer). Returns nil when the text is
@@ -639,6 +662,19 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 			// answer) so the executor retries / summarizes, matching react_3.
 			return nil, nil, fmt.Errorf("react4: empty completion with no tool calls (stop_reason=%q): %w", choice.StopReason, ErrParseFailure)
 		}
+		// Action grammar with no native tool call means the model tried to invoke a
+		// tool via react_3's TEXT protocol. Nothing was dispatched, so returning this
+		// as the final answer would ship raw XML to the user AND silently skip the
+		// tool — the worst failure shape available. Surface it as a parse failure so
+		// the executor retries, matching how react_3 treats an unusable turn. The
+		// risk is real enough to guard: this model already emits react_3 XML
+		// unprompted, and FINAL ANSWER FORMAT now teaches it one XML block, which it
+		// may over-generalize to actions.
+		if containsActionGrammar(choice.Content) || containsToolNameGrammar(choice.Content, o.tools) {
+			return nil, nil, fmt.Errorf("react4: model emitted XML action grammar instead of a native tool call (no tool ran): %w", ErrParseFailure)
+		}
+		// Check action grammar before unwrapping a final answer: a mixed response
+		// must not hide an attempted tool call that never executed.
 		// Defensive XML unwrap. react_4's prompt carries no XML answer grammar, but
 		// the model still emits react_3's <final_answer><thought>…</thought>
 		// <content>…</content></final_answer> shape in practice — residual pattern
@@ -651,17 +687,6 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		// expected react_4 shape) fall through untouched.
 		if finish := extractXMLFinalAnswer(choice.Content); finish != nil {
 			return nil, finish, nil
-		}
-		// Action grammar with no native tool call means the model tried to invoke a
-		// tool via react_3's TEXT protocol. Nothing was dispatched, so returning this
-		// as the final answer would ship raw XML to the user AND silently skip the
-		// tool — the worst failure shape available. Surface it as a parse failure so
-		// the executor retries, matching how react_3 treats an unusable turn. The
-		// risk is real enough to guard: this model already emits react_3 XML
-		// unprompted, and FINAL ANSWER FORMAT now teaches it one XML block, which it
-		// may over-generalize to actions.
-		if containsActionGrammar(choice.Content) {
-			return nil, nil, fmt.Errorf("react4: model emitted XML action grammar instead of a native tool call (no tool ran): %w", ErrParseFailure)
 		}
 		return nil, &NBAgentPlannerFinishAction{
 			Data:       choice.Content,
@@ -824,7 +849,7 @@ func (o *NBReActPlanner4) humanText(input string) string {
 	// Block order mirrors reActCreatePrompt3's human-message template so react_4
 	// presents the same context in the same sequence; only the scratchpad is
 	// absent, replaced by the reconstructed native tool turns that follow.
-	fmt.Fprintf(&b, "Today is %s.\n", time.Now().Format("January 02, 2006"))
+	fmt.Fprintf(&b, "The current date and time is %s.\n", time.Now().UTC().Format("Monday, January 2, 2006, 15:04:05 UTC"))
 	// KB pre-step content + the skill-lists menu, so KB/skill-driven flows (and
 	// the load_skills tool) have the context react_3 provides.
 	if kb := strings.TrimSpace(o.request.KBPrestepContent); kb != "" {

@@ -149,6 +149,12 @@ func resolveCredsFingerprint(accountId, provider, agentName string, appendAgentN
 		extraHeaders = append(extraHeaders, k+"="+v)
 	}
 	sort.Strings(extraHeaders)
+	// llm_disable_thinking is serialized into the client at construction time
+	// (getOpenAILLM's WithChatTemplateKwargs), same as the auth settings above —
+	// without it here, toggling the flag doesn't evict the cached client, so
+	// whichever call happened to build it first (with or without the kwarg)
+	// keeps serving every later call for this account+model until the cache
+	// TTL lapses, regardless of what the flag says now.
 	return credsFingerprint(
 		getLLMApiKey(accountId, provider, agentName, appendAgentName, resolution...),
 		getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, resolution...),
@@ -163,6 +169,7 @@ func resolveCredsFingerprint(accountId, provider, agentName string, appendAgentN
 		auth.OAuth.ClientSecret,
 		auth.OAuth.Scope,
 		strings.Join(extraHeaders, ","),
+		strconv.FormatBool(getLLMDisableThinking(accountId, res)),
 	)
 }
 

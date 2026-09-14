@@ -610,6 +610,39 @@ func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
 	return b.String(), hasAnyFailure
 }
 
+// sanitizeSummaryOutput strips a leaked <update_notebook> wrapper from the
+// summarization fallback's response. summarizeConversation's own prompt asks
+// for prose ("Summarize all the previous conversation..."), but a
+// conversation that spent its whole iteration budget on notebook-only turns
+// (every prior turn wrapped in <update_notebook>, no <final_answer> ever
+// produced) conditions the model to keep answering in that same shape even
+// when asked to summarize — observed live: benchmark run dd7bc6b21b45's
+// 108_logs_nearby_lines rerun returned raw "<update_notebook>...
+// </update_notebook>" markup (headers, tables, [NEXT] action items) as the
+// user-facing answer verbatim. Unlike parseCompletion's containsToolNameGrammar
+// check (which treats this shape as a retryable parse failure mid-loop),
+// summarizeConversation is already the last-resort fallback — there is no
+// further retry to fall back to — so the correct recovery here is to unwrap
+// the notebook and surface its content, which is genuinely informative
+// analysis text, rather than either the raw tags or a bare error.
+func sanitizeSummaryOutput(content string) string {
+	trimmed := strings.TrimSpace(content)
+	inner := strings.TrimSpace(common.XmlExtractTagContent(trimmed, "update_notebook"))
+	if inner == "" {
+		return content
+	}
+	// Only unwrap when the notebook block IS the response (give or take
+	// whitespace) — a genuine prose answer that happens to mention the tag
+	// name in passing must not be mangled.
+	withoutTags := strings.TrimSpace(strings.NewReplacer(
+		"<update_notebook>", "", "</update_notebook>", "",
+	).Replace(trimmed))
+	if withoutTags != strings.TrimSpace(inner) {
+		return content
+	}
+	return inner
+}
+
 func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 	// OTEL: Start Summarize Span
 	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Summarize")
@@ -665,11 +698,18 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 	)
 	response, err := GenerateAndTrackLLMContent(summaryCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.ParentAgentId, true, mclist, true, WithThinkingLevel(ThinkingLevelFastTask))
 	if err != nil {
+		// Propagate rather than swallow: a caller that sees (nil, nil) here falls
+		// through to the generic agents.ErrNotFinished ("agent not finished before
+		// max iterations"), masking the actual cause (e.g. a provider 429) behind a
+		// message that looks like an iteration-budget exhaustion even when, as in
+		// benchmark run dd7bc6b21b45's 111_pod_names_contain_service, only 2 of 10
+		// iterations were used.
 		slog.Error("plannerexecutor: unable to generate llm contents", "error", err)
+		return nil, err
 	}
 	if response != nil && len(response.Choices) > 0 {
 		return map[string]any{
-			"output": response.Choices[0].Content,
+			"output": sanitizeSummaryOutput(response.Choices[0].Content),
 		}, nil
 	}
 	return nil, nil

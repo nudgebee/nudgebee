@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/config"
 	nbprompts "nudgebee/llm/prompts"
@@ -1800,4 +1802,40 @@ func TestReAct3NotebookAliasAsToolCall(t *testing.T) {
 			assert.Equal(t, 1, planner.notebookUpdateCount)
 		})
 	}
+}
+
+// TestReAct3HumanPrompt_TodayIncludesTimeOfDay guards against a real bug
+// found via benchmark run dd7bc6b21b45 (test 43_current_datetime_from_prompt,
+// which routes through this exact "lean" prompt-variant path per
+// LLM_SERVER_K8S_ORCHESTRATOR_MODE=lean and reproduced live against a local
+// llm-server): the only grounded "current time" fact reaching the model for
+// a no-tool-call turn was date-only ("January 02, 2006"), so a direct "what
+// time is it" question had no time-of-day data to draw on and the model
+// fabricated 00:00:00. The injected "today" value must carry both an actual
+// UTC date AND a time-of-day component the model can read directly.
+func TestReAct3HumanPrompt_TodayIncludesTimeOfDay(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	ctx.SetContext(context.WithValue(ctx.GetContext(), ContextKeyPromptVariant, promptVariantLean))
+	agent := &MockAgent{}
+
+	req := NBAgentRequest{AgentId: "orch-1", AccountId: "acc-1"}
+	tmpl, _, err := reActCreatePrompt3(ctx, "agent prompt", []toolcore.NBTool{}, "", nil, req, agent)
+	require.NoError(t, err)
+
+	promptValue, err := tmpl.FormatPrompt(map[string]any{
+		"input":      "what time is it right now?",
+		"scratchpad": "",
+		"notebook":   "",
+	})
+	require.NoError(t, err)
+
+	messages := promptValue.Messages()
+	humanText := messages[len(messages)-1].GetContent()
+
+	assert.Regexp(t, regexp.MustCompile(`\d{2}:\d{2}:\d{2} UTC`), humanText,
+		"today must carry a real time-of-day component, not just a date")
+
+	wantDate := time.Now().UTC().Format("January 2, 2006")
+	assert.Contains(t, humanText, wantDate,
+		"today's date component must be rendered in UTC, matching time.Now().UTC()")
 }

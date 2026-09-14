@@ -59,7 +59,7 @@ func (m KubectlExecuteTool) ToolPrompt() []string {
 		"**RBAC safety:** If a command returns Forbidden / 403, report the missing permission as a finding. NEVER modify RBAC or ServiceAccount bindings to grant yourself access.",
 		"**Output-scale gotchas:** AVOID `-o json` / `-o yaml` on `-A` / `--all-namespaces` without filters — output can saturate context and time out. Prefer default output, `-o wide`, or `-o custom-columns=...` for broad checks. For counting, use `--no-headers` (with `| wc -l`) so the header row isn't counted.",
 		"**Field selectors > client-side filtering:** `--field-selector=status.phase=Running`, `--selector=app=xxx` at the API is faster than piping to grep.",
-		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods.",
+		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large and you already know what you're looking for. For a specific, already-identified resource's first read — especially one that looks healthy at the Kubernetes level — read it unfiltered (`--all-containers=true --prefix=true` plus `--tail`/`--since`); a keyword filter can only surface what you already expect, and a quietly-failing component often logs its real cause at a severity the filter excludes. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods.",
 		"**Quoting:** Always quote complex arguments with special characters — `-o custom-columns=...`, `-o jsonpath=...`, `-l`, `--field-selector`, patterns with `[`, `(`, `?`, `@`, `*`. Example: `kubectl get pods -A -o 'custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace'`.",
 	}
 }
@@ -469,12 +469,16 @@ func (m KubectlExecuteTool) Description() string {
 		**Log Commands — IMPORTANT:**
 
 		When fetching logs, ALWAYS use --tail or --since to limit output. Unfiltered logs can return hundreds of thousands of lines and overwhelm the response.
-		Combine --tail with grep/head/tail pipes to get focused, relevant output.
+		Combine --tail with grep/head/tail pipes ONLY when you already know what you're looking for (a known error string, a specific request id) or the volume genuinely needs it. When checking a specific, already-identified resource's logs for the first time — especially one that shows no restarts, no warning events, or otherwise looks healthy — read it unfiltered first: a keyword filter can only show you what you already expect, and a component that is failing quietly often logs the actual cause at INFO or without any error-shaped word at all. --tail/--since already bounds the volume; a filter on top of that is an extra, optional narrowing, not a required one.
 
 		* 'kubectl logs <pod> -n <namespace> --tail 200' — limit to recent lines
 		* 'kubectl logs <pod> -n <namespace> --tail 500 | grep -i -E "(error|exception|fatal|panic|fail|warn)"' — filter for errors
 		* 'kubectl logs <pod> -n <namespace> --since=1h | grep -i error' — recent logs with error filter
-		* 'kubectl logs <pod> -n <namespace> --tail 1000 | grep -i -E "(error|exception)" | head -50' — cap filtered output
+		* 'kubectl logs <pod> -n <namespace> --since=6h | grep -i -E "(connection|timeout|retry)" | head -50' — indirect failure signals over a widened window
+		* 'kubectl logs <pod> -n <namespace> --since=24h --timestamps | grep -i failure' — FALLBACK: use --timestamps only when the app's own logs carry no embedded time
+		* 'kubectl logs <pod> -n <namespace> --tail 200' — live snapshot only, NOT for historical investigation
+		* 'kubectl logs <pod> -n <namespace> --all-containers=true --prefix=true --tail 200' — read a specific, already-identified pod in full, no keyword filter: use this when you don't yet know what the evidence will look like, e.g. checking a suspected dependency that shows no restarts/warnings at the Kubernetes level. --all-containers=true covers every container in one call instead of guessing which one matters, and --prefix=true labels each line with its source container so multi-container output isn't ambiguous.
+		* 'kubectl logs <pod> -n <namespace> --tail 500 | grep -i -E "(error|exception|fatal|panic|fail|warn)"' — filter recent output once you know the failure is error-shaped
 		* 'kubectl logs <pod> -n <namespace> --tail 500 | grep -i -B2 -A2 error' — errors with surrounding context
 		* 'kubectl logs <pod> -n <namespace> --tail 500 | awk "/error|exception/,/^$/"' — extract error blocks
 		* 'kubectl logs <pod> -n <namespace> -p --tail 200' — previous container logs (crash loops)

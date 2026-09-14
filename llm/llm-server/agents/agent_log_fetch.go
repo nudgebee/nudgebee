@@ -1079,18 +1079,20 @@ Return ONLY a JSON object with the following fields:
 - container: Specific container name if mentioned (string)
 - tail: Number of lines to retrieve (int). Use 100 for routine "show me logs". Use 10000 for INVESTIGATION queries ("were there issues", "what is causing X", "why is Y broken") so rare errors in long streams aren't missed when combined with filter_pattern.
 - is_previous: true if requesting previously crashed logs (bool)
-- filter_pattern: Regex pattern for grep if looking for errors/warnings (string). REQUIRED for investigation queries — set to "` + kubectlErrorRegex + `" or similar so the wide tail is narrowed server-side to relevant lines only. Must be a plain POSIX extended regex (grep -E syntax): no Perl-only syntax like inline flags ("(?i)", "(?:...)"). The search is already case-insensitive (grep -i is always applied), so never add a case-insensitivity flag yourself.
+- filter_pattern: Regex pattern for grep, ONLY when the question already names a specific symptom to search for (a known error string, "OOMKilled", a request id, a status code). Leave it empty for a first read of an already-identified resource — especially one with no restarts or warning events at the Kubernetes level — because a component that is failing quietly typically logs the actual cause at INFO or without any error-shaped word at all, and a keyword filter can only surface what you already expect. An empty filter_pattern with a large tail/since window is the correct, safe default for "what is causing this" style questions; do not default to "` + kubectlErrorRegex + `" just because the question sounds investigative. When you do set one, it must be a plain POSIX extended regex (grep -E syntax): no Perl-only syntax like inline flags ("(?i)", "(?:...)"). The search is already case-insensitive (grep -i is always applied), so never add a case-insensitivity flag yourself.
 
 CRITICAL — Read the ORIGINAL USER QUESTION (when provided) to determine intent, not just the per-step query.
 A parent planner may paraphrase an investigative question into a routine-looking sub-step (e.g. user asks
 "Was the X pod affected by today's incident?" but planner forwards "get logs for pod X"). The per-step query alone is
 ambiguous; the original question carries the true intent. If the original question is investigative
 (contains phrasings like "were there issues", "what is causing", "why is X broken/failing", "did Y happen",
-"was there an outage", "what went wrong", "diagnose", "troubleshoot", "root cause"), you MUST set
-filter_pattern and tail=10000 even if the per-step query reads as routine.
+"was there an outage", "what went wrong", "diagnose", "troubleshoot", "root cause"), set tail=10000 even if the
+per-step query reads as routine — but only set filter_pattern too if that original question, or evidence already
+gathered, names a specific symptom to filter for. Investigative intent widens the window; it does not by itself
+justify narrowing what's visible inside that window.
 
-Defaults: tail=100 for routine queries, tail=10000 for investigation queries. When filter_pattern is set,
-tail SHOULD be 10000 so the grep has a meaningful window to scan.
+Defaults: tail=100 for routine queries, tail=10000 for investigation queries. filter_pattern stays empty unless
+a specific symptom is already known — when it is set, tail SHOULD be 10000 so the grep has a meaningful window to scan.
 `
 	messages := buildLogIntentMessages(systemPrompt, request)
 

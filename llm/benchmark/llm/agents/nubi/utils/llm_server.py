@@ -32,12 +32,18 @@ def get_llm_ans(query, account_id, tenant_id, user_id):
     logger.info("Sending request - %s...", query[:100])
 
     try:
-        response_data = _call_llm(query, account_id, tenant_id, user_id)
+        llm_result = _call_llm(query, account_id, tenant_id, user_id)
 
-        if not response_data:
-            logger.warning("No response from LLM")
-            return default_return
+        if not llm_result.data:
+            logger.warning(
+                "No response from LLM: %s", llm_result.error_message or "Unknown error"
+            )
+            return {
+                "response": "SYSTEM_FAILURE",
+                "conversation_id": llm_result.conversation_id,
+            }
 
+        response_data = llm_result.data
         llm_response = extract_response_text(response_data)
         if llm_response:
             conversation_id = response_data.get("data", {}).get("session_id")

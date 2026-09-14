@@ -1172,6 +1172,25 @@ func TestResolveCredsFingerprint_TierOverrideShiftsBucket(t *testing.T) {
 		"different resolved api key → different cache fingerprint → distinct llmClientCache bucket")
 }
 
+// llm_disable_thinking is serialized into the client at construction time
+// (getOpenAILLM's WithChatTemplateKwargs), same as api keys and OAuth
+// settings — so toggling it must shift the fingerprint too, or a client
+// built before the flag changed keeps being served from GetLLMModel's cache
+// for every later call on this account+model until the TTL lapses. Observed
+// live: benchmark run dd7bc6b21b45's 108 rerun never applied a freshly-set
+// llm_disable_thinking=true because an earlier call (before the flag was
+// set) had already cached a thinking-enabled client for the same key.
+func TestResolveCredsFingerprint_DisableThinkingTogglesBucket(t *testing.T) {
+	resNoThinking := &LLMConfigResolution{PinnedConfigSource: "db:test-integration:all", PinnedDisableThinking: false}
+	resThinking := &LLMConfigResolution{PinnedConfigSource: "db:test-integration:all", PinnedDisableThinking: true}
+
+	fpOff := resolveCredsFingerprint("acct-1", ProviderCustom, "", false, resNoThinking)
+	fpOn := resolveCredsFingerprint("acct-1", ProviderCustom, "", false, resThinking)
+
+	assert.NotEqual(t, fpOff, fpOn,
+		"toggling llm_disable_thinking must change the fingerprint → distinct llmClientCache bucket")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Conversation per-tier override + context-tier override (Phase 3 + 4)
 // ─────────────────────────────────────────────────────────────────────────────
