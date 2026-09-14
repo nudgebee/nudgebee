@@ -635,3 +635,23 @@ func TestWorkspaceRelayTargetResolvesOtherTenantCluster(t *testing.T) {
 	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "k8s-dev", "kubectl get pods")
 	require.ErrorContains(t, err, "unavailable", "a cluster the caller cannot read is not resolvable")
 }
+
+// The shim prints `result` and exits 1 only when `error` is set; a non-200 makes
+// it print the raw body instead of the command output. A non-zero exit from the
+// relay must therefore stay 200 with both fields.
+func TestWorkspaceExecuteReply(t *testing.T) {
+	notFound := "Error from server (NotFound): pods \"gone\" not found\n"
+
+	status, body := workspaceExecuteReply(notFound, &tools.RelayCommandExitError{ExitCode: 1})
+	assert.Equal(t, http.StatusOK, status, "non-zero exit must stay 200 so the shim prints the output")
+	assert.Equal(t, notFound, body["result"])
+	assert.Equal(t, "command exited with status 1", body["error"])
+
+	status, body = workspaceExecuteReply("pod/app-1 Running\n", nil)
+	assert.Equal(t, http.StatusOK, status)
+	assert.NotContains(t, body, "error")
+
+	status, body = workspaceExecuteReply(nil, errors.New("unable to access relay server"))
+	assert.Equal(t, http.StatusInternalServerError, status)
+	assert.Equal(t, "unable to access relay server", body["error"])
+}

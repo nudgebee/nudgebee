@@ -1130,6 +1130,58 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 	if err != nil {
 		return nil, err
 	}
+	result, err := formatRelayCommandResponse(toolContext, module, query, raw, explainQuery, responseParsed)
+	// Raw callers (the workspace shim and remediation) hand the output to
+	// something that decides success from an exit status. The agent reports
+	// the real one in exit_code, but the formatting below either merges
+	// stdout/stderr (dropping it) or passes the envelope through for the shim
+	// to print — either way a failed `kubectl describe pod gone` reached the
+	// agent as a success. Surface it as a typed error; the output is kept.
+	//
+	// kubectl only: the agent's kubectl executor is read-verb-only, where a
+	// non-zero exit always means the command failed. Other CLIs use non-zero
+	// for informative successes (`argocd app diff` exits 1 when the app has
+	// drifted), so they keep reporting success until each has its own rule.
+	if err == nil && raw && module == RelayJobKubectl {
+		if code, ok := relayExitCode(responseParsed); ok && code != 0 {
+			return result, &RelayCommandExitError{ExitCode: code}
+		}
+	}
+	return result, err
+}
+
+// RelayCommandExitError reports a command that ran on the relay target and
+// exited non-zero. It is not a transport failure: the command's output is
+// returned alongside it.
+type RelayCommandExitError struct {
+	ExitCode int
+}
+
+func (e *RelayCommandExitError) Error() string {
+	return fmt.Sprintf("command exited with status %d", e.ExitCode)
+}
+
+// relayExitCode reads exit_code from a parsed relay command response. Both
+// shapes carry it at the top level: the Go agent's {stdout, stderr, exit_code}
+// and the legacy {response, exit_code}. A missing or non-numeric value means
+// the executor did not report one.
+func relayExitCode(responseParsed map[string]any) (int, bool) {
+	switch v := responseParsed["exit_code"].(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case json.Number:
+		n, err := v.Int64()
+		return int(n), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func formatRelayCommandResponse(toolContext core.NbToolContext, module RelayJob, query string, raw, explainQuery bool, responseParsed map[string]any) (any, error) {
 	if responseAny, ok := responseParsed["response"]; ok {
 		responseStr, ok := responseAny.(string)
 		if !ok {

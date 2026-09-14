@@ -553,3 +553,112 @@ func TestClickhouseRawModeCommandRewrite(t *testing.T) {
 		})
 	}
 }
+
+// goAgentKubectlRelayResponse builds the relay reply the Go k8s-agent's
+// kubectl_command_executor produces: a Finding envelope whose evidence data is
+// a JSON block of {stdout, stderr, exit_code}.
+func goAgentKubectlRelayResponse(t *testing.T, stdout, stderr string, exitCode int) map[string]any {
+	t.Helper()
+	inner, err := json.Marshal(map[string]any{"stdout": stdout, "stderr": stderr, "exit_code": exitCode})
+	require.NoError(t, err)
+	blocks, err := json.Marshal([]any{map[string]any{"type": "json", "data": string(inner)}})
+	require.NoError(t, err)
+	return map[string]any{
+		"data": map[string]any{
+			"success":  true,
+			"findings": []any{map[string]any{"evidence": []any{map[string]any{"data": string(blocks)}}}},
+		},
+	}
+}
+
+// Regression: a kubectl command that failed on the cluster (NotFound,
+// Forbidden) came back from the workspace shim as a success, because the
+// relay's exit_code was never looked at. dev conversations 1210cd64 and
+// 039d1aa8 recorded `Error from server (NotFound)` with status success.
+func TestExecuteContainerJob_RawSurfacesNonZeroExitCode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reqCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdmin(), logger, nil, nil)
+
+	notFound := "Error from server (NotFound): pods \"payment-service-5dc5b8dc59-8zqks\" not found\n"
+	tests := []struct {
+		name         string
+		module       RelayJob
+		command      string
+		relayReply   map[string]any
+		raw          bool
+		wantExitCode int // 0 = no error expected
+		wantOutput   string
+	}{
+		{
+			name:         "go agent envelope, non-zero exit, raw",
+			relayReply:   goAgentKubectlRelayResponse(t, "", notFound, 1),
+			raw:          true,
+			wantExitCode: 1,
+			wantOutput:   "NotFound",
+		},
+		{
+			name:       "go agent envelope, zero exit, raw",
+			relayReply: goAgentKubectlRelayResponse(t, "pod/app-1 Running\n", "", 0),
+			raw:        true,
+			wantOutput: "pod/app-1 Running",
+		},
+		{
+			name:         "legacy response shape, non-zero exit, raw",
+			relayReply:   map[string]any{"data": map[string]any{"response": notFound, "exit_code": 2}},
+			raw:          true,
+			wantExitCode: 2,
+			wantOutput:   "NotFound",
+		},
+		{
+			name:       "no exit_code reported stays success",
+			relayReply: map[string]any{"data": map[string]any{"response": "ok"}},
+			raw:        true,
+			wantOutput: "ok",
+		},
+		{
+			name:       "non-kubectl modules are unchanged (argocd app diff exits 1 on drift)",
+			module:     RelayJobArgoCD,
+			command:    "argocd app diff myapp",
+			relayReply: map[string]any{"data": map[string]any{"response": "===== apps/Deployment myapp ======", "exit_code": 1}},
+			raw:        true,
+			wantOutput: "apps/Deployment myapp",
+		},
+		{
+			name:       "non-raw callers are unchanged",
+			relayReply: goAgentKubectlRelayResponse(t, "", notFound, 1),
+			raw:        false,
+			wantOutput: "NotFound",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tc.relayReply)
+			}))
+			defer srv.Close()
+			orig := config.Config.RelayServerEndpoint
+			config.Config.RelayServerEndpoint = srv.URL
+			defer func() { config.Config.RelayServerEndpoint = orig }()
+
+			module, command := tc.module, tc.command
+			if module == "" {
+				module, command = RelayJobKubectl, "kubectl describe pod payment-service-5dc5b8dc59-8zqks -n namespace-230"
+			}
+			toolCtx := core.NbToolContext{AccountId: "test-account", Ctx: reqCtx}
+			result, err := ExecuteContainerJob(toolCtx, module, command, "test-account", nil, tc.raw)
+
+			out, ok := result.(string)
+			require.True(t, ok, "result must stay a string so the output reaches the caller")
+			assert.Contains(t, out, tc.wantOutput)
+			if tc.wantExitCode == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			var exitErr *RelayCommandExitError
+			require.ErrorAs(t, err, &exitErr)
+			assert.Equal(t, tc.wantExitCode, exitErr.ExitCode)
+		})
+	}
+}

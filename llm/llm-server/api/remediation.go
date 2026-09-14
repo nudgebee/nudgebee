@@ -593,12 +593,29 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// all, so running its output through parseRelayExecResult never parsed and every cloud command
 	// was recorded "outcome unverified" even when the outcome was stated plainly.
 	exitCodeReported := false
+	var exitErr *tools.RelayCommandExitError
 	if ranOnWorkspace {
 		response.Stdout, response.Stderr, response.ExitCode, response.Success, exitCodeReported = workspaceOutcome(execErr, raw)
 		if execErr != nil {
 			ctx.GetLogger().Error("remediation_execute: command failed")
 			response.Error = execErr.Error()
 		}
+	} else if errors.As(execErr, &exitErr) {
+		// The command ran and the relay reported a non-zero exit: a definitive failure
+		// with a real exit code, not a transport error.
+		stdout, stderr, _, parsed := parseRelayExecResult(raw)
+		if !parsed {
+			stdout = raw
+		}
+		response.Stdout = stdout
+		response.Stderr = stderr
+		response.ExitCode = exitErr.ExitCode
+		response.Success = false
+		response.Error = stderr
+		if response.Error == "" {
+			response.Error = exitErr.Error()
+		}
+		exitCodeReported = true
 	} else if execErr != nil {
 		// Transport failure — the command may not have run at all.
 		ctx.GetLogger().Error("remediation_execute: command failed")

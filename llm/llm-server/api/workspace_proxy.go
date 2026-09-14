@@ -517,12 +517,25 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 		return
 	}
 	result, err := tools.ExecuteContainerJob(toolCtx, relayJob, req.Command, targetAccountId, req.Arguments, true)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result})
-		return
-	}
+	c.JSON(workspaceExecuteReply(result, err))
+}
 
-	c.JSON(http.StatusOK, gin.H{"result": result})
+// workspaceExecuteReply maps a relay execution result to the shim's HTTP reply.
+// The shim prints `result`, then exits 1 when `error` is set; a non-200 makes it
+// print the raw body instead of the output.
+//
+// A command that ran and exited non-zero therefore gets 200 with both fields:
+// the output still reaches the caller, and the workspace (and kubectl_execute's
+// status) sees a failure instead of a success.
+func workspaceExecuteReply(result any, err error) (int, gin.H) {
+	var exitErr *tools.RelayCommandExitError
+	if errors.As(err, &exitErr) {
+		return http.StatusOK, gin.H{"result": result, "error": exitErr.Error()}
+	}
+	if err != nil {
+		return http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result}
+	}
+	return http.StatusOK, gin.H{"result": result}
 }
 
 func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedConfig string, command string) (string, error) {
