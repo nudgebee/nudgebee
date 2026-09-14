@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # NB AI Gateway image. Multi-stage: static Go binary → minimal alpine runtime.
 # Depends on the published github.com/maximhq/bifrost/core module — a normal
 # `go build`, no fork or replace.
