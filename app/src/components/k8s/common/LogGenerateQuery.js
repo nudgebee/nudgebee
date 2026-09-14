@@ -55,8 +55,8 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     let dql = `timeseries val = ${aggregator}(${metricKey})`;
     if (chips.length > 0) {
       const filterExprs = chips.map((chip) => {
-        const escapedLabel = chip.label.replace(/`/g, '\\`');
-        const escapedValue = chip.value.replace(/"/g, '\\"');
+        const escapedLabel = String(chip.label).replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+        const escapedValue = String(chip.value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         switch (chip.operator) {
           case '!=':
           case '_neq':

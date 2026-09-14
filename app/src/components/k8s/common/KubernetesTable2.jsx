@@ -109,9 +109,8 @@ const KubernetesEventUtilization = ({ query }) => {
         const svgObject = parsedData.filter((evidence) => evidence.type === 'svg').map((evidence) => evidence?.data);
         let svgData = svgObject;
         svgData.forEach((base64SVG) => {
-          let svgData = base64SVG.replace("b'", '');
-          svgData = svgData.replace("'", '');
-          svgImages.push(svgData);
+          const cleaned = typeof base64SVG === 'string' ? base64SVG.replace(/^b'|'$/g, '').replace(/'/g, '') : '';
+          svgImages.push(cleaned);
         });
       }
     }
@@ -265,9 +264,8 @@ TriageRuleEventsTable.propTypes = {
 export const KubernetesEventLog = ({ query }) => {
   const [log, setLog] = useState('');
   const base64Converter = (data) => {
-    data = data.replace("b'", '');
-    data = data.replace("'", '');
-    const bufferData = Buffer.from(data, 'base64');
+    const cleaned = typeof data === 'string' ? data.replace(/^b'|'$/g, '').replace(/'/g, '') : '';
+    const bufferData = Buffer.from(cleaned, 'base64');
     return bufferData;
   };
 
