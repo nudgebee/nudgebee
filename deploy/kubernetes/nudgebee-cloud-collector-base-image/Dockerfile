@@ -1,4 +1,4 @@
-FROM alpine:3.22
+FROM public.ecr.aws/docker/library/alpine:3.22
 
 # Refresh OS packages to the latest patch level (alpine:3.19 was EOL — no more
 # security updates; 3.22 is current). apk upgrade keeps subsequent rebuilds fresh.

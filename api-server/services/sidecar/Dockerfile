@@ -1,4 +1,4 @@
-FROM alpine:3.22
+FROM public.ecr.aws/docker/library/alpine:3.22
 
 # Install curl for making HTTP requests and bc for floating point math.
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
