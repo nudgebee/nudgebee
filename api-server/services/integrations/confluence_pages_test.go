@@ -279,6 +279,7 @@ func TestConfluence_ConfigSchema_PageTreesIsAdvanced(t *testing.T) {
 	prop, ok := Confluence{}.ConfigSchema().Properties[confluencePageTreesField]
 	require.True(t, ok)
 	require.True(t, prop.Advanced)
+	require.True(t, prop.IsTestable)
 	require.Equal(t, core.ToolSchemaTypeArray, prop.Type)
 	require.Equal(t, confluenceListPagesAutogenFunc, prop.AutoGenerateFunc)
 	require.Contains(t, prop.DependsOn, "token")

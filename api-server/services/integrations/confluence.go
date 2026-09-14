@@ -169,6 +169,7 @@ func (m Confluence) ConfigSchema() core.IntegrationSchema {
 				Default:           "",
 				AutoGenerateFunc:  confluenceListPagesAutogenFunc,
 				DependsOn:         confluencePageTreesDeps,
+				IsTestable:        true,
 				Advanced:          true,
 				Priority:          40,
 			},
