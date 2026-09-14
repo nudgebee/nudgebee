@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools/core"
 	"strings"
 	"sync"
@@ -757,4 +758,202 @@ func TestESDiscoveryProvenance_SeparatesDataFromSchema(t *testing.T) {
 	assert.NotContains(t, docsOnly, "may have no data")
 
 	assert.Equal(t, "none found", esDiscoveryProvenance(0, 0))
+}
+
+// ---------------------------------------------------------------------------
+// metrics provider routing
+// ---------------------------------------------------------------------------
+
+// The relay can only reach the Prometheus behind a connected Kubernetes agent —
+// relay-server pins agentType to "k8s". A user-configured backend has no such
+// agent, so those queries have to go through the api-server instead.
+func TestMetricsProviderNeedsServicesServer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider services_server.ObservabilityProvider
+		want     bool
+		why      string
+	}{
+		{
+			name:     "user-configured CubeAPM",
+			provider: services_server.ObservabilityProvider{Provider: "cubeapm", IntegrationSource: "user"},
+			want:     true,
+			why:      "the relay has no agent that can answer for CubeAPM",
+		},
+		{
+			name:     "user-configured OpenObserve",
+			provider: services_server.ObservabilityProvider{Provider: "openobserve", IntegrationSource: "user"},
+			want:     true,
+		},
+		{
+			name:     "in-cluster Prometheus behind the k8s agent",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "agent"},
+			want:     false,
+			why:      "this is exactly what the relay path exists for",
+		},
+		{
+			name:     "cloud CLI fallback is labelled agent",
+			provider: services_server.ObservabilityProvider{Provider: "aws", IntegrationSource: "agent"},
+			want:     false,
+			why:      "GetMetricsProvider labels the cloud fallbacks agent; they are not api-server metric sources",
+		},
+		{
+			name:     "user-configured Prometheus stays on the relay",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "user"},
+			want:     false,
+			why:      "it speaks the PromQL the relay already sends; moving it would change untouched accounts",
+		},
+		{
+			name:     "unresolved provider",
+			provider: services_server.ObservabilityProvider{},
+			want:     false,
+			why:      "no provider resolved is not a reason to change where the query goes",
+		},
+		{
+			name:     "casing and padding are not significant",
+			provider: services_server.ObservabilityProvider{Provider: "  CubeAPM ", IntegrationSource: " USER "},
+			want:     true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := metricsProviderNeedsServicesServer(tc.provider)
+			assert.Equal(t, tc.want, got, tc.why)
+		})
+	}
+}
+
+// The reply has to arrive downstream in the same shape the relay produces, because
+// Call() type-asserts "values" and "timestamps" to []any before computing stats —
+// a []float64 or []int64 would fail that assertion and the series would be dropped
+// without an error, which reads as "the query returned nothing".
+func TestMetricsQueryResponseToSeries(t *testing.T) {
+	ts1, ts2 := int64(1789109005000), int64(1789109305000)
+	response := core.ObservabilityMetricsQueryResponse{
+		Results: []core.ObservabilityMetricsQueryResult{{
+			QueryKey: "promql",
+			Query:    `sum by (service) (rate(cube_apm_calls_total[5m]))`,
+			Payload: []core.ObservabilityMetricsQuerySeries{{
+				Metric:     map[string]string{"service": "payment-service"},
+				Timestamps: []int64{ts1, ts2},
+				Values:     []float64{193.5, 192.6},
+			}},
+		}},
+	}
+
+	series := metricsQueryResponseToSeries(response)
+	require.Len(t, series, 1)
+
+	got, ok := series[0].(map[string]any)
+	require.True(t, ok, "each series must be a map[string]any")
+
+	metric, ok := got["metric"].(map[string]any)
+	require.True(t, ok, "metric must be map[string]any")
+	assert.Equal(t, "payment-service", metric["service"])
+
+	timestamps, ok := got["timestamps"].([]any)
+	require.True(t, ok, "timestamps must assert to []any or Call() drops the series")
+	assert.Equal(t, []any{ts1, ts2}, timestamps)
+
+	values, ok := got["values"].([]any)
+	require.True(t, ok, "values must assert to []any or Call() drops the series")
+	assert.Equal(t, []any{193.5, 192.6}, values)
+}
+
+// Every result's payload is flattened into one list, matching the relay shape.
+func TestMetricsQueryResponseToSeriesFlattensResults(t *testing.T) {
+	response := core.ObservabilityMetricsQueryResponse{
+		Results: []core.ObservabilityMetricsQueryResult{
+			{Payload: []core.ObservabilityMetricsQuerySeries{
+				{Metric: map[string]string{"service": "a"}},
+				{Metric: map[string]string{"service": "b"}},
+			}},
+			{Payload: []core.ObservabilityMetricsQuerySeries{
+				{Metric: map[string]string{"service": "c"}},
+			}},
+		},
+	}
+	assert.Len(t, metricsQueryResponseToSeries(response), 3)
+}
+
+// An empty reply must be a non-nil empty slice: Call() ranges over it, and the
+// caller distinguishes "no series" from a failure by the error, not by nil.
+func TestMetricsQueryResponseToSeriesEmpty(t *testing.T) {
+	series := metricsQueryResponseToSeries(core.ObservabilityMetricsQueryResponse{})
+	assert.NotNil(t, series)
+	assert.Empty(t, series)
+}
+
+// Discovery has to enumerate the backend the account actually uses. Asking for
+// Prometheus metrics on a CubeAPM account returns nothing, and the agent then
+// guesses names from its Kubernetes priors — container_http_requests_total,
+// istio_requests_total — which match nothing and read as "no metrics reported".
+func TestMetricsDiscoveryProviderFor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider services_server.ObservabilityProvider
+		want     string
+		why      string
+	}{
+		{
+			name:     "user-configured CubeAPM enumerates CubeAPM",
+			provider: services_server.ObservabilityProvider{Provider: "cubeapm", IntegrationSource: "user"},
+			want:     "cubeapm",
+			why:      "this is the case that silently returned nothing",
+		},
+		{
+			name:     "user-configured OpenObserve enumerates OpenObserve",
+			provider: services_server.ObservabilityProvider{Provider: "openobserve", IntegrationSource: "user"},
+			want:     "openobserve",
+		},
+		{
+			name:     "in-cluster Prometheus stays prometheus",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "agent"},
+			want:     "prometheus",
+		},
+		{
+			name:     "cloud CLI fallback stays prometheus",
+			provider: services_server.ObservabilityProvider{Provider: "aws", IntegrationSource: "agent"},
+			want:     "prometheus",
+			why:      "the cloud agents own those metrics; discovery here must not claim them",
+		},
+		{
+			name:     "unresolved provider stays prometheus",
+			provider: services_server.ObservabilityProvider{},
+			want:     "prometheus",
+		},
+		{
+			name:     "surrounding whitespace is trimmed",
+			provider: services_server.ObservabilityProvider{Provider: " cubeapm ", IntegrationSource: " user "},
+			want:     "cubeapm",
+			why:      "the value is sent to the api-server as a provider name",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, metricsDiscoveryProviderFor(tc.provider), tc.why)
+		})
+	}
+}
+
+// Discovery and execution must never disagree about which backend is being talked
+// to: a query executed against CubeAPM while metric names were enumerated from
+// Prometheus is the failure this pair of functions exists to prevent.
+func TestMetricsDiscoveryAndExecutionAgreeOnTheBackend(t *testing.T) {
+	for _, provider := range []services_server.ObservabilityProvider{
+		{Provider: "cubeapm", IntegrationSource: "user"},
+		{Provider: "openobserve", IntegrationSource: "user"},
+		{Provider: "prometheus", IntegrationSource: "agent"},
+		{Provider: "prometheus", IntegrationSource: "user"},
+		{Provider: "aws", IntegrationSource: "agent"},
+		{},
+	} {
+		routedToApiServer := metricsProviderNeedsServicesServer(provider)
+		discovers := metricsDiscoveryProviderFor(provider)
+		if routedToApiServer {
+			assert.Equal(t, strings.TrimSpace(provider.Provider), discovers,
+				"%q executes against the api-server, so discovery must enumerate it too", provider.Provider)
+		} else {
+			assert.Equal(t, "prometheus", discovers,
+				"%q executes through the relay, so discovery must stay on prometheus", provider.Provider)
+		}
+	}
 }

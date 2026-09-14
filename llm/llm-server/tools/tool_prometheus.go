@@ -480,6 +480,22 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 	stepSeconds := int(step.Seconds())
 	stepStr := strconv.Itoa(stepSeconds) + "s"
 
+	// The relay path can only reach the Prometheus behind a connected Kubernetes
+	// agent — relay-server pins agentType to "k8s" for prometheus_enricher. An
+	// account whose metrics provider is a user-configured backend (CubeAPM,
+	// OpenObserve, …) has no such agent to answer, so the query used to fail on
+	// the relay call and never reached the provider at all. Those backends are
+	// reachable through the api-server, which resolves the provider per account
+	// exactly as the Metrics UI does — the same route fetch_logs already takes.
+	if provider, provErr := GetMetricsProvider(accountId); provErr != nil {
+		// Fall through to the relay path: a provider lookup failure is not a
+		// reason to change where the query goes.
+		slog.Warn("prometheus: could not resolve metrics provider, using the relay path",
+			"accountId", accountId, "error", provErr)
+	} else if metricsProviderNeedsServicesServer(provider) {
+		return m.executePromQlViaServicesServer(nbRequestContext, provider, query, startTime, endTime)
+	}
+
 	// Format the time to the specified string format
 	startTimeString := startTime.Format("2006-01-02 15:04:05 UTC")
 	endTimeString := endTime.Format("2006-01-02 15:04:05 UTC")
@@ -504,6 +520,136 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 	}
 	slog.Debug("prometheus response data", "data", dataFromEvidence)
 	return dataFromEvidence, nil
+}
+
+// metricsProviderNeedsServicesServer reports whether a resolved metrics provider
+// must be queried through the api-server rather than the relay.
+//
+// "agent" is the in-cluster Prometheus (and the cloud-CLI fallbacks, which
+// GetMetricsProvider also labels agent) — those keep the relay path. Anything
+// user-configured is an integration the api-server owns the credentials and the
+// query dialect for; the relay cannot reach it.
+//
+// A user-configured Prometheus is deliberately left on the relay path: it speaks
+// the same PromQL the relay already sends, and moving it would change behaviour
+// for accounts this bug never affected.
+func metricsProviderNeedsServicesServer(provider services_server.ObservabilityProvider) bool {
+	if strings.EqualFold(strings.TrimSpace(provider.IntegrationSource), "agent") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
+	case "", "prometheus":
+		return false
+	}
+	return true
+}
+
+// MetricsDiscoveryProvider resolves which provider the metric-discovery tools
+// (metrics_list, the label tools, metrics_series_match) should enumerate for an
+// account.
+//
+// PrometheusAgent is the fallback for every backend without a dedicated agent, so
+// the literal "prometheus" its tools were built with is a default, not a fact. On a
+// CubeAPM or OpenObserve account it made those tools ask the api-server to
+// enumerate PROMETHEUS metrics — a provider that account has not configured — so
+// discovery came back empty and the agent fell back to guessing metric names from
+// its Kubernetes priors (container_http_requests_total, istio_requests_total),
+// which match nothing and read as "this service reports no metrics".
+//
+// Returns "prometheus" unchanged for the agent-backed default, the cloud-CLI
+// fallbacks and a user-configured Prometheus — the same boundary
+// metricsProviderNeedsServicesServer draws for execution, so discovery and
+// execution can never disagree about which backend is being talked to.
+func MetricsDiscoveryProvider(accountId string) string {
+	provider, err := GetMetricsProvider(accountId)
+	if err != nil {
+		slog.Warn("metrics: could not resolve provider for discovery, defaulting to prometheus",
+			"accountId", accountId, "error", err)
+		return "prometheus"
+	}
+	return metricsDiscoveryProviderFor(provider)
+}
+
+// metricsDiscoveryProviderFor is the decision MetricsDiscoveryProvider makes once
+// the account's provider is known, split out so it can be exercised for backends
+// no test environment has to be wired up to.
+func metricsDiscoveryProviderFor(provider services_server.ObservabilityProvider) string {
+	if metricsProviderNeedsServicesServer(provider) {
+		return strings.TrimSpace(provider.Provider)
+	}
+	return "prometheus"
+}
+
+// executePromQlViaServicesServer runs a PromQL query through the api-server's
+// metrics_query action and reshapes the reply into the same series list the relay
+// path returns, so everything downstream (stats, sampling, rendering) is unchanged.
+func (m PrometheusExecuteTool) executePromQlViaServicesServer(
+	nbRequestContext core.NbToolContext,
+	provider services_server.ObservabilityProvider,
+	query string,
+	startTime, endTime time.Time,
+) ([]any, error) {
+	queryKey := "promql"
+	req := core.ObservabilityMetricsQueryRequest{
+		AccountId:      nbRequestContext.AccountId,
+		MetricProvider: provider.Provider,
+		Queries:        map[string]string{queryKey: query},
+		StartTime:      startTime.UnixMilli(),
+		EndTime:        endTime.UnixMilli(),
+	}
+
+	slog.Debug("prometheus query via api-server",
+		"provider", provider.Provider, "query", query,
+		"start_time", startTime, "end_time", endTime)
+
+	response, err := services_server.QueryMetrics(*nbRequestContext.Ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("executePromQl: api-server metrics_query: %w", err)
+	}
+
+	// A per-query failure arrives in results[].Error with a 200 status, so it has
+	// to be read off the body. Reporting success here would hand the model a
+	// shaped-empty payload it reads as "no data" rather than "the query failed".
+	for _, result := range response.Results {
+		if result.Error != nil && *result.Error != "" {
+			return nil, fmt.Errorf("executePromQl: %s returned an error for the query: %s",
+				provider.Provider, *result.Error)
+		}
+	}
+
+	return metricsQueryResponseToSeries(response), nil
+}
+
+// metricsQueryResponseToSeries reshapes an api-server metrics_query reply into the
+// series list the relay path returns, so everything downstream — stats, sampling,
+// rendering — reads one shape regardless of which backend answered.
+func metricsQueryResponseToSeries(response core.ObservabilityMetricsQueryResponse) []any {
+	series := make([]any, 0)
+	for _, result := range response.Results {
+		for _, s := range result.Payload {
+			metric := make(map[string]any, len(s.Metric))
+			for k, v := range s.Metric {
+				metric[k] = v
+			}
+			// Both fields are emitted as []any because the caller type-asserts
+			// them to []any before computing stats; []int64 / []float64 would
+			// fail that assertion and the series would be silently skipped.
+			timestamps := make([]any, len(s.Timestamps))
+			for i, ts := range s.Timestamps {
+				timestamps[i] = ts
+			}
+			values := make([]any, len(s.Values))
+			for i, v := range s.Values {
+				values[i] = v
+			}
+			series = append(series, map[string]any{
+				"metric":     metric,
+				"timestamps": timestamps,
+				"values":     values,
+			})
+		}
+	}
+	return series
 }
 
 func (m PrometheusExecuteTool) getDataFromRelayPrometheusResponse(relayResponse map[string]any) ([]any, error) {

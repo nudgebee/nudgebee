@@ -294,18 +294,23 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 }
 
 func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	// Resolved once rather than per tool: the lookup is an uncached call to the
+	// api-server. This agent is the fallback for every backend without a dedicated
+	// one, so the provider is only "prometheus" when the account actually uses it.
+	metricsProvider := tools.MetricsDiscoveryProvider(p.accountId)
+
 	toolList := []toolcore.NBTool{
 		tools.PrometheusExecuteTool{},
 		tools.SearchMetricsTool{},
-		tools.MetricsListTool{Provider: "prometheus"},
-		tools.ListMetricsLabelsTool{Provider: "prometheus"},
+		tools.MetricsListTool{Provider: metricsProvider},
+		tools.ListMetricsLabelsTool{Provider: metricsProvider},
 		// Label VALUES, not just names: lets the agent resolve a resource it can
 		// name (node, instance, device) to how that resource is actually spelled,
 		// instead of guessing successive label names until the budget runs out.
-		tools.ListMetricsLabelValuesTool{Provider: "prometheus"},
+		tools.ListMetricsLabelValuesTool{Provider: metricsProvider},
 		// Deterministic workload-scoped metric discovery; lets the agent resolve a
 		// workload's real metric families on an empty templated query instead of N/A.
-		tools.MetricsSeriesMatchTool{Provider: "prometheus"},
+		tools.MetricsSeriesMatchTool{Provider: metricsProvider},
 	}
 	if prom, ok := toolcore.GetNBTool(p.accountId, PromqlAgentName); ok {
 		toolList = append(toolList, prom)
