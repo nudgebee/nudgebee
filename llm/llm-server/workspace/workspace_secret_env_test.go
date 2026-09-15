@@ -9,8 +9,10 @@ import (
 
 // TestLLMSecretEnvVars asserts the code-analysis pod is handed ONLY the minimal
 // LLM_* keys (plus the non-sensitive BASE_URL) via SecretKeyRef — never the
-// whole nudgebee secret, and never the master encryption key — so app-infra
-// secrets can't reach untrusted command execution inside the pod.
+// whole nudgebee secret, never the master encryption key, and never the
+// provider API key itself (#38009: that key is forwarded per-request instead,
+// so it never sits in the pod env where any subprocess could inherit it) — so
+// app-infra secrets can't reach untrusted command execution inside the pod.
 func TestLLMSecretEnvVars(t *testing.T) {
 	const secretName = "nudgebee"
 	env := LLMSecretEnvVars(secretName)
@@ -18,7 +20,6 @@ func TestLLMSecretEnvVars(t *testing.T) {
 	wantKeys := []string{
 		"LLM_PROVIDER",
 		"LLM_MODEL_NAME",
-		"LLM_PROVIDER_API_KEY",
 		"LLM_PROVIDER_API_ENDPOINT",
 		"LLM_PROVIDER_REGION",
 		"LLM_PROVIDER_API_VERSION",
@@ -54,6 +55,7 @@ func TestLLMSecretEnvVars(t *testing.T) {
 		"APP_DATABASE_URL",
 		"RABBIT_MQ_PASSWORD",
 		"NEXTAUTH_SECRET",
+		"LLM_PROVIDER_API_KEY",
 	} {
 		assert.False(t, got[forbidden], "forbidden key %s must not be injected", forbidden)
 	}
