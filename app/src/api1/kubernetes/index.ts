@@ -3257,6 +3257,18 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       return [];
     }
   },
+  // Cluster CPU / memory / network for the Utilization charts.
+  //
+  // This used to hand-build PromQL and post it at `prometheus_queries_enricher`
+  // through the relay, which only the in-cluster Kubernetes agent answers. An
+  // account whose metrics provider is a user-configured backend (CubeAPM,
+  // Datadog, Dynatrace, ...) has no such agent, so the call returned nothing and
+  // all four charts rendered "No data to display" with no error — see #745.
+  //
+  // It now goes through `metrics_aggregate_utilisation`, which resolves the
+  // account's configured provider and builds the query in that provider's own
+  // language. The keys below are the semantic names the builders share, so this
+  // path works for every backend rather than only PromQL ones.
   async getClusterMetrices2({
     accountId,
     metric,
@@ -3270,8 +3282,8 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     startDate?: Date;
     endDate?: Date;
     groupBy?: string[];
-    limit: number;
-    dateUnit: string;
+    limit?: number;
+    dateUnit?: string;
   }) {
     if (accountId === 'demo' && metric && metric.includes('networkTransferBytes')) {
       const dashboardDemo = await getMockData('k8s-dashboard');
@@ -3284,145 +3296,132 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       };
     }
 
-    let steps = '1d';
-    if (dateUnit == 'week') {
-      steps = '1w';
-    } else if (dateUnit == 'month') {
-      steps = '30d';
+    // One bar per unit on the x-axis: the panel's frequency control decides the
+    // resolution rather than the provider's default point count.
+    let stepSeconds = 24 * 60 * 60;
+    if (dateUnit === 'week') {
+      stepSeconds = 7 * 24 * 60 * 60;
+    } else if (dateUnit === 'month') {
+      stepSeconds = 30 * 24 * 60 * 60;
     }
+
+    // Semantic keys -> the series each chart draws. `cpu_real` / `mem_real` are
+    // usage; `cpu_total` / `mem_total` are what the cluster has to give.
+    const metricKeys: string[] = [];
+    if (metric?.includes('cpu')) {
+      metricKeys.push('cpu_real', 'cpu_total');
+    }
+    if (metric?.includes('memory')) {
+      metricKeys.push('mem_real', 'mem_total');
+    }
+    if (metric?.includes('networkReceiveBytes')) {
+      metricKeys.push('network_receive_packet');
+    }
+    if (metric?.includes('networkTransferBytes')) {
+      metricKeys.push('network_transmit_packets');
+    }
+    if (metricKeys.length === 0) {
+      return { data: { cloud_resource_metrics_groupings: [] } };
+    }
+
+    if (!startDate) {
+      startDate = new Date();
+      startDate.setDate(startDate.getDate() - 7);
+    }
+    if (!endDate) {
+      endDate = new Date();
+    }
+
+    const CLUSTER_METRICS_UTILISATION = `
+    query ClusterMetricsUtilisation($accountId: String!, $jsonFilter: jsonb!, $startTime: Float!, $endTime: Float!, $stepInterval: Int!) {
+      metrics_aggregate_utilisation(request: {account_id: $accountId, request: $jsonFilter, start_time: $startTime, end_time: $endTime, step_interval: $stepInterval}) {
+        results
+      }
+    }
+    `;
+
     try {
-      const queries = [];
-      if (metric?.includes('networkReceiveBytes')) {
-        queries.push({
-          key: 'networkReceiveBytes',
-          query: `sum(increase(container_network_receive_bytes_total{__CLUSTER__}[${steps}]))`,
-        });
-      }
-      if (metric?.includes('networkTransferBytes')) {
-        queries.push({
-          key: 'networkTransferBytes',
-          query: `sum(increase(container_network_transmit_bytes_total{__CLUSTER__}[${steps}]))`,
-        });
-      }
-      if (metric?.includes('cpu')) {
-        queries.push({
-          key: 'cpu_usage',
-          query: `sum(irate(node_cpu_seconds_total{ __CLUSTER__ mode!="idle" }[${steps}]))`,
-        });
-        queries.push({
-          key: 'cpu_total',
-          query: `sum(irate(node_cpu_seconds_total{ __CLUSTER__}[${steps}]))`,
-        });
-      }
-      if (metric?.includes('memory')) {
-        queries.push({
-          key: 'memory_usage',
-          query: `sum(node_memory_Active_bytes{__CLUSTER__})`,
-        });
-        queries.push({
-          key: 'memory_total',
-          query: `sum(node_memory_MemTotal_bytes{__CLUSTER__})`,
-        });
+      const response = await queryGraphQL(CLUSTER_METRICS_UTILISATION, 'ClusterMetricsUtilisation', {
+        accountId,
+        startTime: startDate.getTime(),
+        endTime: endDate.getTime(),
+        stepInterval: stepSeconds,
+        // No scope fields: an empty namespace/workload/node is what the builders
+        // read as "the whole cluster".
+        jsonFilter: { metrics: metricKeys },
+      });
+
+      const results = response?.data?.data?.metrics_aggregate_utilisation?.results || [];
+      const seriesFor = (key: string) => results.find((r: any) => r.query_key === key)?.payload?.[0];
+
+      // Every key is evaluated over the same window with the same step, so the
+      // first series that came back defines the x-axis; the others are read at
+      // the matching index. Falling back across keys keeps a chart drawable when
+      // one of its pair is missing from the backend.
+      const axis = metricKeys.map(seriesFor).find((s: any) => s?.timestamps?.length > 0);
+      if (!axis) {
+        return { data: { cloud_resource_metrics_groupings: [] } };
       }
 
-      if (!startDate) {
-        startDate = new Date();
-        startDate.setDate(startDate.getDate() - 7);
-      }
-      if (!endDate) {
-        endDate = new Date();
-      }
-
-      const data = {
-        no_sinks: true,
-        body: {
-          account_id: accountId,
-          action_name: 'prometheus_queries_enricher',
-          action_params: {
-            promql_query: '',
-            promql_queries: queries,
-            step: steps,
-            duration: {
-              starts_at: convertNumberToTimestampPromFormat(startDate.getTime()),
-              ends_at: convertNumberToTimestampPromFormat(endDate.getTime()),
-            },
-          },
-          origin: 'Nudgebee UI',
-        },
+      const valueAt = (key: string, index: number) => {
+        const raw = seriesFor(key)?.values?.[index];
+        return raw === undefined || raw === null ? null : parseFloat(raw);
       };
-      const response = await this.relayForwardRequest(data);
-      let result: any[] = [];
-      const isSuccess = response?.data?.success || false;
-      if (isSuccess) {
-        const findings = response?.data?.findings || [];
-        if (findings && findings.length == 1) {
-          const findingEvidence = findings[0]?.evidence || [];
-          if (findingEvidence && findingEvidence.length == 1) {
-            const evidenceData = findingEvidence[0]?.data || '';
-            if (evidenceData) {
-              const evidenceParsed = JSON.parse(evidenceData);
-              if (evidenceParsed && evidenceParsed.length == 1) {
-                const promqlData = evidenceParsed[0]?.data || '';
-                if (promqlData) {
-                  const promqlParsed = JSON.parse(promqlData);
-                  const metrics = ['networkReceiveBytes', 'networkTransferBytes', 'cpu_usage', 'cpu_total', 'memory_usage', 'memory_total'];
-                  const hasData = metrics.some((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
-                  if (hasData) {
-                    const firstAvailableMetric = metrics.find((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
 
-                    if (firstAvailableMetric) {
-                      result = promqlParsed[firstAvailableMetric].series_list_result[0].timestamps.flatMap((timestamp: any, index: any) => {
-                        const response: any = [];
-                        if (metric?.includes('networkTransferBytes')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            metric: 'networkTransferBytes',
-                            avg_value: parseFloat(promqlParsed.networkTransferBytes?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        if (metric?.includes('networkReceiveBytes')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            metric: 'networkReceiveBytes',
-                            avg_value: parseFloat(promqlParsed.networkReceiveBytes?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        if (metric?.includes('cpu')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            avg_cpu_used_node: parseFloat(promqlParsed.cpu_usage?.series_list_result[0]?.values?.[index]),
-                            total_cpu_allocatable: parseFloat(promqlParsed.cpu_total?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        if (metric?.includes('memory')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            avg_memory_used_node: parseFloat(promqlParsed.memory_usage?.series_list_result[0]?.values?.[index]),
-                            total_memory_allocatable: parseFloat(promqlParsed.memory_total?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        return response;
-                      });
-                    }
-                  }
-                }
-              }
-            }
-          }
+      // The network keys resolve to a rate (bytes per second) at cluster scope,
+      // but these two charts are totals — they label the axis GB and the bar is
+      // "how much moved during this bar". Multiplying by the step converts the
+      // rate back into bytes per bucket, which is what the previous
+      // `increase(...[1d])` query returned.
+      const bytesPerStep = (key: string, index: number) => (valueAt(key, index) ?? 0) * stepSeconds;
+
+      const result = axis.timestamps.flatMap((timestamp: number, index: number) => {
+        const rows: any[] = [];
+        if (metric?.includes('networkTransferBytes')) {
+          rows.push({
+            timestamp: formatDateTime(timestamp),
+            metric: 'networkTransferBytes',
+            // Transmit is negated by the builder so it mirrors receive on a
+            // two-sided chart; this panel plots a magnitude.
+            avg_value: Math.abs(bytesPerStep('network_transmit_packets', index)),
+            account_id: accountId,
+          });
         }
-      }
+        if (metric?.includes('networkReceiveBytes')) {
+          rows.push({
+            timestamp: formatDateTime(timestamp),
+            metric: 'networkReceiveBytes',
+            avg_value: bytesPerStep('network_receive_packet', index),
+            account_id: accountId,
+          });
+        }
+        if (metric?.includes('cpu')) {
+          rows.push({
+            timestamp: formatDateTime(timestamp),
+            avg_cpu_used_node: valueAt('cpu_real', index),
+            total_cpu_allocatable: valueAt('cpu_total', index),
+            account_id: accountId,
+          });
+        }
+        if (metric?.includes('memory')) {
+          rows.push({
+            timestamp: formatDateTime(timestamp),
+            avg_memory_used_node: valueAt('mem_real', index),
+            total_memory_allocatable: valueAt('mem_total', index),
+            account_id: accountId,
+          });
+        }
+        return rows;
+      });
+
       return {
         data: {
           cloud_resource_metrics_groupings: result,
         },
       };
     } catch (error) {
-      console.log('Your Error is', error);
-      return error;
+      console.error('getClusterMetrices2 failed', error);
+      return { data: { cloud_resource_metrics_groupings: [] } };
     }
   },
   async getMetrices({

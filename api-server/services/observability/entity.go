@@ -246,6 +246,12 @@ type GetUtilisationTrendRequest struct {
 	StartTime            int64          `json:"start_time"`
 	EndTime              int64          `json:"end_time"`
 	Request              map[string]any `json:"request"`
+	// StepInterval is the range-query resolution in seconds. Zero leaves the
+	// provider on its own default (roughly 100 points across the window), which
+	// is what the gauges and trend popups want. A caller that draws one bar per
+	// day or week sends the interval it actually renders, so the panel's own
+	// frequency control decides the granularity instead of the provider.
+	StepInterval int `json:"step_interval"`
 }
 
 // OutputMetricQuery represents the response structure for metric and log group queries.

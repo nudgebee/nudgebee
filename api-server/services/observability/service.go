@@ -2651,6 +2651,7 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		Queries:              queries,
 		StartTime:            req.StartTime,
 		EndTime:              req.EndTime,
+		StepInterval:         req.StepInterval,
 		Instant:              instant,
 		Request:              swRequest,
 	})
