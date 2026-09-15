@@ -178,6 +178,25 @@ func promqlMatcherOp(token string) (string, error) {
 	}
 }
 
+// clusterPlaceholder is the token the shared PromQL builders emit where a
+// cluster-scoping label matcher belongs. It is substituted by relay-server on
+// the agent path (see relay-server handlers/request.go), which is the only hop
+// that knows the account's cluster label.
+const clusterPlaceholder = "__CLUSTER__"
+
+// stripClusterPlaceholder removes that token for providers reached by DIRECT
+// API call rather than through the relay. Those integrations are already scoped
+// to a single backend, so the correct substitution is the empty string — the
+// same thing relay-server does when an account carries no cluster label.
+//
+// Without this the placeholder survives into the query and the backend rejects
+// the whole expression as a parse error, which surfaces as an empty chart.
+// Stripping leaves `{ namespace="x"}` or a bare `{}`, both of which are valid
+// PromQL/MetricsQL selectors.
+func stripClusterPlaceholder(expr string) string {
+	return strings.ReplaceAll(expr, clusterPlaceholder, "")
+}
+
 // injectPromQLMatchers renders LabelMatchers (with operators) and the legacy
 // Labels map (eq-only, used by internal callers) into the selector portion of
 // a PromQL expression. Output is deterministic: matchers are sorted by
@@ -2520,6 +2539,17 @@ func FetchMetricLabelsList(ctx *security.RequestContext, fetchMetricLabelListReq
 }
 
 func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTrendRequest) (OutputMetricQuery, error) {
+	// Fail fast rather than resolving a provider for nothing. Every caller already
+	// checks this (the RPC handler 400s, both eventrule actions return early), and
+	// the integration lookup filters on cloud_account_id unconditionally — so an
+	// empty id yields a uuid syntax error from Postgres, not another account's
+	// integration. Stating the requirement here makes the contract the function's
+	// own instead of six callers', and matches getMetricsSourceForAccount and
+	// FetchMetricSeries, which already guard it.
+	if req.AccountId == "" {
+		return OutputMetricQuery{}, fmt.Errorf("account_id is required")
+	}
+
 	metricsProvider, integrationSource, err := GetLogsMetricsTracesProvider(ctx, req.AccountId, req.MetricProvider, "metrics", req.MetricProviderSource)
 	if err != nil {
 		return OutputMetricQuery{}, err
@@ -2555,7 +2585,14 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 			queries = buildDatadogWorkloadQueries(meta, meta.RequestedMetrics)
 		}
 
-	case "prometheus", "victoria_metrics", "chronosphere":
+	// CubeAPM serves metrics through a VictoriaMetrics engine and stores whatever
+	// its collector writes; on a Kubernetes install that is the cAdvisor /
+	// node-exporter / kube-state-metrics families these builders already target
+	// (CubeAPM's own Kubernetes infra chart scrapes them — see
+	// CubeAPMWorkloadCPUCandidates). The builders emit the relay-only __CLUSTER__
+	// placeholder, which CubeAPMMetricSource strips before querying, since a
+	// direct-API integration is already scoped to one cluster.
+	case "prometheus", "victoria_metrics", "chronosphere", "cubeapm":
 		if meta.Kind == "node" {
 			queries = buildPrometheusNodeQueries(meta, meta.RequestedMetrics)
 		} else {
