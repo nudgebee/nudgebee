@@ -130,6 +130,7 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
         metric: ['memory', 'cpu'],
         startDate: new Date(selectedDateRange.startDate),
         endDate: new Date(selectedDateRange.endDate),
+        dateUnit: chartUnit,
       })
       .then((res) => {
         setClusterData(res.data?.cloud_resource_metrics_groupings);
@@ -151,6 +152,7 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
         metric: ['networkTransferBytes', 'networkReceiveBytes'],
         startDate: new Date(selectedDateRange.startDate),
         endDate: new Date(selectedDateRange.endDate),
+        dateUnit: chartUnit,
       })
       .then((res) => {
         setNetworkData(res?.data?.cloud_resource_metrics_groupings);
@@ -225,19 +227,11 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
 
     for (const item of networkData) {
       if (!item) continue;
-      // Received bytes are what came IN (ingress); transmitted bytes are what went
-      // OUT (egress). These two were crossed, so each chart was drawing the other
-      // direction's series under the wrong title.
-      //
-      // A bucket with no sample stays null so chart.js leaves a gap. Dividing
-      // straight through would not: `null / 1073741824` is 0 in JavaScript, which
-      // would draw a confident zero over missing data.
-      const valueInGB = item.avg_value === null || item.avg_value === undefined ? null : item.avg_value / (1024 * 1024 * 1024);
-      if (item.metric === 'networkReceiveBytes') {
-        ingressData.push(valueInGB);
+      if (item.metric === 'networkTransferBytes') {
+        ingressData.push(item.avg_value / (1024 * 1024 * 1024));
         ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
-      } else if (item.metric === 'networkTransferBytes') {
-        egressData.push(valueInGB);
+      } else if (item.metric === 'networkReceiveBytes') {
+        egressData.push(item.avg_value / (1024 * 1024 * 1024));
         egressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       }
     }

@@ -3282,6 +3282,10 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     endDate?: Date;
     groupBy?: string[];
     limit?: number;
+    // Accepted but unused: the chart component passes its frequency selection,
+    // and formats the x-axis labels with it itself. Resolution is derived from
+    // the range below, so nothing here reads it.
+    dateUnit?: string;
   }) {
     if (accountId === 'demo' && metric && metric.includes('networkTransferBytes')) {
       const dashboardDemo = await getMockData('k8s-dashboard');
@@ -3367,34 +3371,32 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       }
 
       const valueAt = (key: string, index: number) => {
+        // NaN, not null, for a bucket the backend had no sample for. The chart
+        // builder divides and formats these without a null check, and in
+        // JavaScript `null / 1073741824` is 0 — a missing bucket would draw a
+        // confident zero. NaN survives both the division and formatNumber, and
+        // chart.js renders it as a gap. This is also what the query being
+        // replaced produced, via parseFloat of an absent value.
         const raw = seriesFor(key)?.values?.[index];
-        return raw === undefined || raw === null ? null : parseFloat(raw);
+        return raw === undefined || raw === null ? NaN : parseFloat(raw);
       };
 
       // The network keys resolve to a rate (bytes per second) at cluster scope,
       // but these two charts are totals — they label the axis GB and the bar is
       // "how much moved during this bar". Multiplying by the step converts the
       // rate back into bytes per bucket, which is what the previous
-      // `increase(...[1d])` query returned.
-      //
-      // A missing sample stays null rather than becoming 0: chart.js draws null
-      // as a gap, and a bucket the backend had no data for is not a bucket where
-      // nothing moved.
-      const bytesPerStep = (key: string, index: number) => {
-        const rate = valueAt(key, index);
-        return rate === null ? null : rate * stepSeconds;
-      };
+      // `increase(...[1d])` query returned. NaN propagates through both.
+      const bytesPerStep = (key: string, index: number) => valueAt(key, index) * stepSeconds;
 
       const result = axis.timestamps.flatMap((timestamp: number, index: number) => {
         const rows: any[] = [];
         if (metric?.includes('networkTransferBytes')) {
-          const transmitted = bytesPerStep('network_transmit_packets', index);
           rows.push({
             timestamp: formatDateTime(timestamp),
             metric: 'networkTransferBytes',
             // Transmit is negated by the builder so it mirrors receive on a
             // two-sided chart; this panel plots a magnitude.
-            avg_value: transmitted === null ? null : Math.abs(transmitted),
+            avg_value: Math.abs(bytesPerStep('network_transmit_packets', index)),
             account_id: accountId,
           });
         }
