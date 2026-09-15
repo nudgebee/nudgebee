@@ -130,7 +130,6 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
         metric: ['memory', 'cpu'],
         startDate: new Date(selectedDateRange.startDate),
         endDate: new Date(selectedDateRange.endDate),
-        dateUnit: chartUnit,
       })
       .then((res) => {
         setClusterData(res.data?.cloud_resource_metrics_groupings);
@@ -152,7 +151,6 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
         metric: ['networkTransferBytes', 'networkReceiveBytes'],
         startDate: new Date(selectedDateRange.startDate),
         endDate: new Date(selectedDateRange.endDate),
-        dateUnit: chartUnit,
       })
       .then((res) => {
         setNetworkData(res?.data?.cloud_resource_metrics_groupings);

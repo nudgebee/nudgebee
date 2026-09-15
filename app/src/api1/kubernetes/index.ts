@@ -3274,7 +3274,6 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     metric,
     startDate,
     endDate,
-    dateUnit = 'day',
   }: {
     accountId?: string;
     resourceId?: string;
@@ -3283,7 +3282,6 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     endDate?: Date;
     groupBy?: string[];
     limit?: number;
-    dateUnit?: string;
   }) {
     if (accountId === 'demo' && metric && metric.includes('networkTransferBytes')) {
       const dashboardDemo = await getMockData('k8s-dashboard');
@@ -3294,15 +3292,6 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       return {
         data: [],
       };
-    }
-
-    // One bar per unit on the x-axis: the panel's frequency control decides the
-    // resolution rather than the provider's default point count.
-    let stepSeconds = 24 * 60 * 60;
-    if (dateUnit === 'week') {
-      stepSeconds = 7 * 24 * 60 * 60;
-    } else if (dateUnit === 'month') {
-      stepSeconds = 30 * 24 * 60 * 60;
     }
 
     // Semantic keys -> the series each chart draws. `cpu_real` / `mem_real` are
@@ -3331,6 +3320,20 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     if (!endDate) {
       endDate = new Date();
     }
+
+    // Resolution follows the selected RANGE, not the frequency control: these
+    // charts are meant to show the shape of the window, and one bar per day
+    // flattens a month into thirty identical-looking columns. ~300 points is what
+    // promAggWindow targets for the same reason — enough to read a trend, few
+    // enough that the query stays cheap. The floor keeps a short range from
+    // asking for finer resolution than anything is scraped at.
+    //
+    // `dateUnit` still drives how the x-axis labels are formatted downstream, so
+    // the frequency control changes the labelling rather than the bar count.
+    const CHART_TARGET_POINTS = 300;
+    const MIN_STEP_SECONDS = 60;
+    const rangeSeconds = Math.max(Math.round((endDate.getTime() - startDate.getTime()) / 1000), MIN_STEP_SECONDS);
+    const stepSeconds = Math.max(Math.round(rangeSeconds / CHART_TARGET_POINTS), MIN_STEP_SECONDS);
 
     const CLUSTER_METRICS_UTILISATION = `
     query ClusterMetricsUtilisation($accountId: String!, $jsonFilter: jsonb!, $startTime: Float!, $endTime: Float!, $stepInterval: Int!) {
