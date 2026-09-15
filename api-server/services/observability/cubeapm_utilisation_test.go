@@ -177,3 +177,18 @@ func TestCubeAPMRenderQueryKeepsMatcherInjection(t *testing.T) {
 		t.Errorf("matcher was not injected: %s", got)
 	}
 }
+
+// An empty account id must be refused before any provider resolution happens.
+// Every caller already checks it, so this pins the function's own contract —
+// the same guard getMetricsSourceForAccount and FetchMetricSeries carry.
+func TestFetchMetricUtilisationRequiresAccountId(t *testing.T) {
+	_, err := FetchMetricUtilisation(nil, GetUtilisationTrendRequest{
+		Request: map[string]any{"metrics": []string{"cpu_real"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an empty account_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "account_id is required") {
+		t.Errorf("got %q, want it to mention account_id is required", err.Error())
+	}
+}

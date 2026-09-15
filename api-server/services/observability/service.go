@@ -2539,6 +2539,17 @@ func FetchMetricLabelsList(ctx *security.RequestContext, fetchMetricLabelListReq
 }
 
 func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTrendRequest) (OutputMetricQuery, error) {
+	// Fail fast rather than resolving a provider for nothing. Every caller already
+	// checks this (the RPC handler 400s, both eventrule actions return early), and
+	// the integration lookup filters on cloud_account_id unconditionally — so an
+	// empty id yields a uuid syntax error from Postgres, not another account's
+	// integration. Stating the requirement here makes the contract the function's
+	// own instead of six callers', and matches getMetricsSourceForAccount and
+	// FetchMetricSeries, which already guard it.
+	if req.AccountId == "" {
+		return OutputMetricQuery{}, fmt.Errorf("account_id is required")
+	}
+
 	metricsProvider, integrationSource, err := GetLogsMetricsTracesProvider(ctx, req.AccountId, req.MetricProvider, "metrics", req.MetricProviderSource)
 	if err != nil {
 		return OutputMetricQuery{}, err
