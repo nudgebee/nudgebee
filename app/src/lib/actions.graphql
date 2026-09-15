@@ -5402,6 +5402,7 @@ input MetricsQueryUtilisationRequest {
   start_time: Float
   end_time: Float
   request: jsonb!
+  step_interval: Int
 }
 
 input AwsOnboardStatusInput {

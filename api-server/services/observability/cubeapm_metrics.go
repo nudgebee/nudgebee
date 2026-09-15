@@ -49,9 +49,21 @@ func (s *CubeAPMMetricSource) GetSupportedOperators() []string {
 
 func (s *CubeAPMMetricSource) GetQuery(_ *security.RequestContext, req FetchMetricsRequest) (string, error) {
 	for _, q := range req.Queries {
-		return injectPromQLMatchers(q, req.LabelMatchers, req.Labels)
+		return cubeAPMRenderQuery(q, req.LabelMatchers, req.Labels)
 	}
 	return "", nil
+}
+
+// cubeAPMRenderQuery turns a caller-supplied query into the PromQL actually sent
+// on the wire. Both the GetQuery preview and the execution path go through here
+// so the query a user is shown is byte-identical to the one that ran.
+//
+// The strip matters for utilisation: those queries come from the shared
+// buildPrometheus*Queries builders, which emit the relay-only __CLUSTER__ token.
+// Nothing substitutes it on a direct-API call, so leaving it in makes
+// VictoriaMetrics reject the expression and the panel render empty.
+func cubeAPMRenderQuery(raw string, matchers []LabelMatcher, labels map[string]string) (string, error) {
+	return injectPromQLMatchers(stripClusterPlaceholder(raw), matchers, labels)
 }
 
 // cubeAPMMetricRangeParams derives the start/end/step trio for a range query.
@@ -105,7 +117,7 @@ func (s *CubeAPMMetricSource) FetchMetricsQuery(ctx *security.RequestContext, re
 	start, end, step := cubeAPMMetricRangeParams(req)
 
 	for queryKey, rawQuery := range req.Queries {
-		promQL, err := injectPromQLMatchers(rawQuery, req.LabelMatchers, req.Labels)
+		promQL, err := cubeAPMRenderQuery(rawQuery, req.LabelMatchers, req.Labels)
 		if err != nil {
 			results.Results = append(results.Results, cubeAPMQueryError(queryKey, err.Error()))
 			continue
