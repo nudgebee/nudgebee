@@ -3373,17 +3373,25 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       // "how much moved during this bar". Multiplying by the step converts the
       // rate back into bytes per bucket, which is what the previous
       // `increase(...[1d])` query returned.
-      const bytesPerStep = (key: string, index: number) => (valueAt(key, index) ?? 0) * stepSeconds;
+      //
+      // A missing sample stays null rather than becoming 0: chart.js draws null
+      // as a gap, and a bucket the backend had no data for is not a bucket where
+      // nothing moved.
+      const bytesPerStep = (key: string, index: number) => {
+        const rate = valueAt(key, index);
+        return rate === null ? null : rate * stepSeconds;
+      };
 
       const result = axis.timestamps.flatMap((timestamp: number, index: number) => {
         const rows: any[] = [];
         if (metric?.includes('networkTransferBytes')) {
+          const transmitted = bytesPerStep('network_transmit_packets', index);
           rows.push({
             timestamp: formatDateTime(timestamp),
             metric: 'networkTransferBytes',
             // Transmit is negated by the builder so it mirrors receive on a
             // two-sided chart; this panel plots a magnitude.
-            avg_value: Math.abs(bytesPerStep('network_transmit_packets', index)),
+            avg_value: transmitted === null ? null : Math.abs(transmitted),
             account_id: accountId,
           });
         }

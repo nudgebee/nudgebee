@@ -230,11 +230,16 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
       // Received bytes are what came IN (ingress); transmitted bytes are what went
       // OUT (egress). These two were crossed, so each chart was drawing the other
       // direction's series under the wrong title.
+      //
+      // A bucket with no sample stays null so chart.js leaves a gap. Dividing
+      // straight through would not: `null / 1073741824` is 0 in JavaScript, which
+      // would draw a confident zero over missing data.
+      const valueInGB = item.avg_value === null || item.avg_value === undefined ? null : item.avg_value / (1024 * 1024 * 1024);
       if (item.metric === 'networkReceiveBytes') {
-        ingressData.push(item.avg_value / (1024 * 1024 * 1024));
+        ingressData.push(valueInGB);
         ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       } else if (item.metric === 'networkTransferBytes') {
-        egressData.push(item.avg_value / (1024 * 1024 * 1024));
+        egressData.push(valueInGB);
         egressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       }
     }
