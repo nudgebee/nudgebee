@@ -63,8 +63,9 @@ const (
 	// unlocatedGroupingEnvFlag kills the co-timing attach for alerts that have
 	// no position in the graph at all. Defaults on like the other two, so the
 	// narrowness has to come from the rule rather than from the switch: it fires
-	// only when nothing else matched, only into an existing incident, and only
-	// when exactly one is open. This is the flag to pull first if grouping ever
+	// only when nothing else matched, only into an existing incident in the
+	// seed's own scope (namespace, or AWS as a whole), and only when exactly one
+	// such incident is open. This is the flag to pull first if grouping ever
 	// looks too eager.
 	unlocatedGroupingEnvFlag = "INCIDENT_UNLOCATED_GROUPING"
 	// incidentCandidateLimit bounds the window fetch; one subject+namespace
@@ -425,15 +426,14 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		// Nothing the graph or the subject could pair this alert with. If we
 		// could not place it at all, co-timing is the only evidence left — and
 		// only when it points at exactly one incident.
-		leaderID, offset, ok, err := attachUnlocatedIncident(ctx, db, event, start)
+		leaderID, offset, reason, ok, err := attachUnlocatedIncident(ctx, db, event, start)
 		if err != nil {
 			return false, err
 		}
 		if !ok {
 			return false, nil
 		}
-		if err := insertGroupLink(ctx, db, event, seedChainID, leaderID, offset, 0,
-			"no topology position; sole incident open in the attach window"); err != nil {
+		if err := insertGroupLink(ctx, db, event, seedChainID, leaderID, offset, 0, reason); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -586,13 +586,21 @@ func unlocatedGroupingEnabled() bool {
 //     An alert we can place is never routed through here.
 //   - It joins an EXISTING incident; it never starts one. A group founded on an
 //     alert we cannot locate would have nothing holding it together.
-//   - Exactly one open incident in the window, or it declines. Two incidents
+//   - The incident must be in the seed's scope (see unlocatedScopeFor). For a
+//     Kubernetes alert that is its own namespace. Co-timing says nothing about
+//     which namespace a story belongs to, and without this the path merged
+//     whatever else the account happened to be alerting about: measured on prod
+//     over 7 days, 11,633 of its 15,632 links (74%) crossed a namespace, one
+//     ImagePullBackOff group reaching 1,854 members across 29 namespaces.
+//     Cross-namespace grouping is still reachable — through a service-map edge,
+//     in collectConnectedMembers, where there is evidence for it.
+//   - Exactly one open incident in that scope, or it declines. Two incidents
 //     means co-timing does not identify which one, and picking either would
 //     attach the alert to a story it may have no part in — the same reason
 //     resourceDimensionIndex drops a dimension its namespaces disagree about.
 //
-// Returns the leader to attach to and whether to attach.
-func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *models.Event, start time.Time) (string, time.Duration, bool, error) {
+// Returns the leader to attach to, the reason to record, and whether to attach.
+func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *models.Event, start time.Time) (string, time.Duration, string, bool, error) {
 	// The account guard is redundant against today's only caller, which rejects
 	// an event without one before it gets this far. Repeated anyway because the
 	// query below is account-scoped and nothing else bounds it: reached with an
@@ -600,16 +608,22 @@ func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *mod
 	// about someone else's incidents.
 	if !unlocatedGroupingEnabled() || event == nil ||
 		event.CloudAccountId == nil || *event.CloudAccountId == "" {
-		return "", 0, false, nil
+		return "", 0, "", false, nil
 	}
 
-	// Leaders of groups that had any member firing inside the attach window.
-	// Restricted to the seed's own account: co-timing across accounts is not
-	// even weak evidence, it is coincidence.
+	// Leaders of groups that had any member firing inside the attach window, whose
+	// own subject is in the seed's scope. Restricted to the seed's own account too:
+	// co-timing across accounts is not even weak evidence, it is coincidence.
+	//
+	// The scope is matched on the LEADER, not on the firing member that keeps the
+	// group open. The leader is the story this alert would be filed under, and it
+	// is the row the operator reads; a group held open by a member elsewhere is
+	// still that leader's incident.
 	//
 	// LIMIT 2 is the whole question. The rule below attaches on exactly one open
 	// incident and declines otherwise, so "two" and "two hundred" are the same
 	// answer and there is no reason to fetch the difference.
+	scope := unlocatedScopeFor(event)
 	type leaderRow struct {
 		ID       string    `db:"id"`
 		StartsAt time.Time `db:"starts_at"`
@@ -624,24 +638,77 @@ func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *mod
 		  AND ec.cloud_account_id = $2
 		  AND m.starts_at >= $3
 		  AND m.starts_at <= $4
+		  AND `+scope.leaderPredicate+`
 		LIMIT 2`,
 		SameIncidentCorrelationType, *event.CloudAccountId,
-		start.Add(-IncidentAttachWindow), start,
+		start.Add(-IncidentAttachWindow), start, scope.arg,
 	)
 	if err != nil {
-		return "", 0, false, fmt.Errorf("failed to load open incidents for unlocated attach: %w", err)
+		return "", 0, "", false, fmt.Errorf("failed to load open incidents for unlocated attach: %w", err)
 	}
 
 	if len(leaders) != 1 {
-		// 0: nothing open to join. >1: co-timing cannot choose between them.
+		// 0: nothing open to join in this scope. >1: co-timing cannot choose
+		// between them.
 		if len(leaders) > 1 {
 			slog.InfoContext(ctx, "Unlocated alert not grouped: several open incidents in window",
-				"event_id", event.Id, "incidents", len(leaders))
+				"event_id", event.Id, "scope", scope.label, "incidents", len(leaders))
 		}
-		return "", 0, false, nil
+		return "", 0, "", false, nil
 	}
 
-	return leaders[0].ID, start.Sub(leaders[0].StartsAt), true, nil
+	reason := fmt.Sprintf("no topology position; sole %s incident open in the attach window", scope.label)
+	return leaders[0].ID, start.Sub(leaders[0].StartsAt), reason, true, nil
+}
+
+// awsAlarmSources are the event sources that carry AWS alarms. Same set
+// observability/eventrule_actions_logs.go treats as AWS.
+var awsAlarmSources = []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge"}
+
+// unlocatedScope is the boundary co-timing may not cross: a SQL predicate on the
+// leader row `l`, bound to $5, and a label for logs and link reasons.
+type unlocatedScope struct {
+	leaderPredicate string
+	arg             any
+	label           string
+}
+
+// unlocatedScopeFor picks the boundary for an alert the graph could not place.
+//
+// A Kubernetes alert stays inside its namespace — the one boundary it always
+// carries even when the graph cannot place it.
+//
+// An AWS alarm stays inside AWS, but may cross AWS services. Its namespace field
+// holds the service code (AmazonEC2, AWSELB, AmazonRDS), so a namespace match
+// would keep an ELB alarm away from the instances behind it — which is the case
+// this path exists for: AWS alarms routinely have no graph position (a
+// CloudWatch alarm on a custom namespace carries no instance id), and firing
+// together in one account is the only evidence available. It never joins a
+// Kubernetes-led incident; nothing ties the two but the clock.
+//
+// Keyed on source, not on the shape of the namespace: "amazon-cloudwatch" is a
+// real Kubernetes namespace. Azure and GCP alarms are not included — Azure VM
+// heartbeat alerts fan out across dozens of VMs at once on one tenant, and
+// widening them wants its own measurement — so they keep the namespace rule,
+// which for them means one provider service.
+func unlocatedScopeFor(event *models.Event) unlocatedScope {
+	if event.Source != nil {
+		for _, s := range awsAlarmSources {
+			if *event.Source == s {
+				return unlocatedScope{
+					leaderPredicate: "l.source = ANY($5)",
+					arg:             pq.Array(awsAlarmSources),
+					label:           "AWS",
+				}
+			}
+		}
+	}
+	ns, _ := chronicSubjectIdentity(event)
+	return unlocatedScope{
+		leaderPredicate: "lower(coalesce(btrim(l.subject_namespace), '')) = $5",
+		arg:             ns,
+		label:           fmt.Sprintf("namespace %q", ns),
+	}
 }
 
 // ownerElseName mirrors the SQL identity the chronic rate query groups on:

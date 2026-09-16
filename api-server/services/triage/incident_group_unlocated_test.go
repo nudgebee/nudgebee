@@ -3,6 +3,10 @@ package triage
 import (
 	"os"
 	"testing"
+
+	"nudgebee/services/internal/database/models"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // TestUnlocatedGroupingDefaultsOn — all three grouping switches are kill
@@ -58,4 +62,34 @@ func TestUnlocatedGroupingIsIndependentOfTheOtherSwitches(t *testing.T) {
 	if !topologyGroupingEnabled() || !incidentGroupingEnabled() {
 		t.Error("killing the co-timing path must not disturb the other two")
 	}
+}
+
+// TestUnlocatedScopeFor — Kubernetes alerts are bounded by their namespace; AWS
+// alarms by AWS as a whole, so an ELB alarm can still meet the EC2 instances
+// behind it on timing when the graph cannot connect them.
+func TestUnlocatedScopeFor(t *testing.T) {
+	src := func(s string) *string { return &s }
+
+	k8s := unlocatedScopeFor(&models.Event{Source: src("kubernetes_api_server"), SubjectNamespace: src(" Benchmark-Scenarios ")})
+	assert.Contains(t, k8s.leaderPredicate, "subject_namespace")
+	assert.Equal(t, "benchmark-scenarios", k8s.arg, "namespace normalised the way the SQL side is")
+
+	for _, s := range awsAlarmSources {
+		aws := unlocatedScopeFor(&models.Event{Source: src(s), SubjectNamespace: src("AWSELB")})
+		assert.Contains(t, aws.leaderPredicate, "l.source", "%s is scoped by source, not by service code", s)
+		assert.NotContains(t, aws.leaderPredicate, "subject_namespace", "%s may cross AWS services", s)
+		assert.Equal(t, "AWS", aws.label)
+	}
+
+	// A real Kubernetes namespace that merely looks like AWS stays a namespace.
+	lookalike := unlocatedScopeFor(&models.Event{Source: src("prometheus"), SubjectNamespace: src("amazon-cloudwatch")})
+	assert.Contains(t, lookalike.leaderPredicate, "subject_namespace")
+
+	// Other clouds keep the namespace rule (one provider service) until measured.
+	azure := unlocatedScopeFor(&models.Event{Source: src("Azure_Monitor_Alert"), SubjectNamespace: src("microsoft.compute/virtualmachines")})
+	assert.Contains(t, azure.leaderPredicate, "subject_namespace")
+
+	// No source at all falls back to the namespace rule.
+	none := unlocatedScopeFor(&models.Event{})
+	assert.Equal(t, "", none.arg)
 }
