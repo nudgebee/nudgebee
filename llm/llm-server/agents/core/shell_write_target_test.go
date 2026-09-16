@@ -45,3 +45,38 @@ func TestShellWriteTargetUsesRequestedCluster(t *testing.T) {
 	_, err = e.shellWriteTarget(owner, NBAgentPlannerToolAction{ToolInput: `{"command":"kubectl --context nope delete pod x"}`})
 	require.ErrorContains(t, err, "available clusters")
 }
+
+// A write that names another AWS account is checked against that account.
+func TestPerCallWriteTargetUsesNamedAccount(t *testing.T) {
+	const account = "aws-write-target"
+	prod := toolcore.ToolConfig{Name: "aws-prod", Values: []toolcore.ToolConfigValue{{Name: "id", Value: "prod-id"}, {Name: "account_number", Value: "1"}}}
+	demo := toolcore.ToolConfig{Name: "aws-demo", Values: []toolcore.ToolConfigValue{{Name: "id", Value: "demo-id"}, {Name: "account_number", Value: "2"}}}
+	data, err := common.MarshalJson([]toolcore.ToolConfig{prod})
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(toolcore.CacheNamespaceLlmToolConfig, fmt.Sprintf("list_tool_configs:%s:%s", account, tools.ToolExecuteAwsCliCommand), data))
+	tools.StubTenantAccounts(t, "tenant", map[string][]toolcore.ToolConfig{tools.ToolExecuteAwsCliCommand: {prod, demo}})
+
+	tool, ok := toolcore.GetNBTool(account, tools.ToolExecuteAwsCliCommand)
+	require.True(t, ok)
+	scoped, ok := tool.(toolcore.PerCallTargetTool)
+	require.True(t, ok)
+	e := &plannerExecutor{
+		ctx: security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id", "demo-id"}),
+		agentRequest: NBAgentRequest{AccountId: account, QueryConfig: toolcore.NBQueryConfig{
+			ToolConfigs: map[string]string{tools.ToolExecuteAwsCliCommand: "aws-prod"},
+		}},
+	}
+
+	got, found, err := e.perCallWriteTarget(tool, scoped, NBAgentPlannerToolAction{ToolInput: `{"command":"aws ec2 terminate-instances --instance-ids i-1","account":"aws-demo"}`})
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "aws-demo", got.Name)
+
+	_, found, err = e.perCallWriteTarget(tool, scoped, NBAgentPlannerToolAction{ToolInput: `{"command":"aws ec2 terminate-instances --instance-ids i-1"}`})
+	require.NoError(t, err)
+	require.False(t, found, "no named account: the existing authorization applies")
+
+	e.ctx = security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id"})
+	_, _, err = e.perCallWriteTarget(tool, scoped, NBAgentPlannerToolAction{ToolInput: `{"command":"aws s3 rm s3://b/k","account":"aws-demo"}`})
+	require.ErrorContains(t, err, "not connected or you do not have access")
+}

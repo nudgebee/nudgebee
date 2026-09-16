@@ -70,7 +70,7 @@ func (m ShellTool) Description() string {
 
 	**Preserve failures:** Check collection succeeded before analyzing its output. Keep stderr visible; avoid blanket error suppression or appending || true to every command. A partial or failed collection must not be presented as an empty successful result.
 
-	**Kubernetes cluster:** ` + "`kubectl`" + ` runs on the conversation's current cluster. Add ` + "`--context <cluster-name>`" + ` to run a command on another connected cluster (one cluster per command); an unknown name returns the list of available clusters.
+	**Kubernetes cluster:** ` + "`kubectl`" + ` runs on the conversation's current cluster. Add ` + "`--context <cluster-name>`" + ` to run a command on another connected cluster (one cluster per command); an unknown name returns the list of available clusters. ` + "`aws`" + ` always uses the conversation's current AWS account; use aws_execute with ` + "`account`" + ` for another one.
 
 	**Empty-match is success.** When grep-family searchers (` + "`grep` / `egrep` / `fgrep` / `rg` / `ack` / `ag`" + `) find no matches, the observation comes back as ` + "`{\"stdout\":\"\",\"no_matches\":true}`" + ` with a Success status — the command ran fine and there is nothing to find. Do NOT retry the same command — either widen the pattern or conclude that no match exists. This semantic also applies when the searcher is the last segment of a pipeline (` + "`kubectl get pods | grep ready`" + `). It does NOT apply to ` + "`find`" + ` (whose exit 1 is a real path / permission error) or plain ` + "`jq`" + ` (which exits 0 and returns ` + "`null`" + ` on missing keys).
 
@@ -106,27 +106,31 @@ func (m ShellTool) InputSchema() core.ToolSchema {
 	}
 }
 
-// resolveKubectlTarget picks the cluster for a shell kubectl command: the one
-// named by --context when present, otherwise the conversation's saved cluster.
-func (m ShellTool) resolveKubectlTarget(nbRequestContext core.NbToolContext, command string) (core.ToolConfig, error) {
-	requested, err := RequestedKubernetesCluster(command, nil)
+// resolveShellTarget picks the target for a shell command owned by a
+// config-backed CLI: the cluster kubectl --context names when present,
+// otherwise the conversation's saved target.
+func (m ShellTool) resolveShellTarget(nbRequestContext core.NbToolContext, owner, command string) (core.ToolConfig, error) {
+	requested, err := RequestedShellTarget(owner, command)
 	if err != nil {
 		return core.ToolConfig{}, err
 	}
-	if requested != "" {
-		return KubernetesTargetByName(nbRequestContext.Ctx, nbRequestContext.AccountId, requested)
+	if requested == "" {
+		return ResolveShellTarget(nbRequestContext, owner)
 	}
-	return ResolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand)
+	// The saved target may be unresolvable (no selection yet, several
+	// configs); only use it to short-circuit a request that names it.
+	saved, _ := ResolveShellTarget(nbRequestContext, owner)
+	return ResolveRequestedTarget(nbRequestContext.Ctx, nbRequestContext.AccountId, owner, saved, requested)
 }
 
-// ConfirmationKey scopes a shell kubectl write approval to the cluster named by
-// --context, so approving a write on one cluster never covers another.
+// ConfirmationKey scopes a shell kubectl write approval to the cluster the
+// command names, so approving a write on one cluster never covers another.
 func (m ShellTool) ConfirmationKey(toolInput string) string {
-	requested, err := RequestedShellKubernetesCluster(toolInput)
+	_, requested, err := RequestedShellTargetFromInput(toolInput)
 	if err != nil {
 		return m.Name() + "@" + toolInput
 	}
-	return kubernetesConfirmationKey(m.Name(), requested)
+	return targetConfirmationKey(m.Name(), requested)
 }
 
 func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -188,7 +192,11 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	// the planner to route through specialized cloud tools.
 	env := map[string]string{}
 	if ShellConfigToolName(originalCommand) == ToolExecuteKubectlCommand {
-		selected, err := m.resolveKubectlTarget(nbRequestContext, originalCommand)
+		if kubectlUsesConfigSubcommand(originalCommand) {
+			configErr := kubeconfigNotAvailable(nbRequestContext)
+			return core.NBToolResponse{Data: configErr.Error(), Status: core.NBToolResponseStatusError}, configErr
+		}
+		selected, err := m.resolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand, originalCommand)
 		if err != nil {
 			return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 		}
@@ -545,7 +553,7 @@ func (m ShellTool) buildCloudAuthEnv(nbRequestContext core.NbToolContext, comman
 		if owner == ToolExecuteKubectlCommand {
 			return nil, nil
 		}
-		selected, err := ResolveShellTarget(nbRequestContext, owner)
+		selected, err := m.resolveShellTarget(nbRequestContext, owner, command)
 		if err != nil {
 			return nil, err
 		}
@@ -568,8 +576,6 @@ func (m ShellTool) buildCloudAuthEnv(nbRequestContext core.NbToolContext, comman
 
 	provider := strings.ToLower(creds.CloudProvider)
 	switch provider {
-	case "aws":
-		return BuildAwsAuth(nbRequestContext.Ctx.GetContext(), creds)
 	case "gcp":
 		return BuildGcpAuth(creds)
 	case "azure":
@@ -900,14 +906,15 @@ func (m ShellTool) buildGitlabAuthEnv(nbRequestContext core.NbToolContext, comma
 
 // buildAuthForAccount builds cloud auth for a specific account ID.
 func buildAuthForAccount(nbRequestContext core.NbToolContext, provider, accountId string) (*CloudAuthResult, error) {
+	if provider == "aws" {
+		return awsAccountAuth(nbRequestContext.Ctx.GetContext(), accountId)
+	}
 	creds, err := GetCloudAccountCredentials(accountId)
 	if err != nil {
 		return nil, fmt.Errorf("shell: cross-account credentials unavailable for %s: %w", provider, err)
 	}
 
 	switch provider {
-	case "aws":
-		return BuildAwsAuth(nbRequestContext.Ctx.GetContext(), creds)
 	case "gcp":
 		return BuildGcpAuth(creds)
 	case "azure":

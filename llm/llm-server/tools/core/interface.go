@@ -298,6 +298,14 @@ type ToolConfirmationScope interface {
 	ConfirmationKey(toolInput string) string
 }
 
+// PerCallTargetTool is an optional interface for account-sourced tools that
+// let one call name a target (cluster, cloud account) other than the
+// conversation's saved config. The executor checks write access on the named
+// target, since that is where a write lands.
+type PerCallTargetTool interface {
+	RequestedTarget(toolInput string) (string, error)
+}
+
 // ToolConfirmationExempt is an optional interface for write tools that may skip
 // the user-confirmation card for a particular invocation. It never affects
 // authorization: the tool is still classified as a write, so the RBAC check in

@@ -82,13 +82,13 @@ func KubernetesTargetEnv(ctx core.NbToolContext, selected core.ToolConfig) (map[
 	return nil, fmt.Errorf("selected cluster has no account id")
 }
 
-// scanKubectlContextFlags finds `--context X` / `--context=X` flags that stand
-// as their own shell word. Text inside quotes and the remote command after a
-// bare `--` (e.g. `kubectl exec pod -- sh -c ...`) is never treated as a flag;
-// a shell operator (|, ;, &, newline) ends that remote command. It returns the
-// flag values and the command with those flags removed. `--kube-context`
-// (helm) does not match.
-func scanKubectlContextFlags(command string) ([]string, string) {
+// scanValueFlags finds `<flag> X` / `<flag>=X` flags that stand as their own
+// shell word. Text inside quotes and the remote command after a bare `--`
+// (e.g. `kubectl exec pod -- sh -c ...`) is never treated as a flag; a shell
+// operator (|, ;, &, newline) ends that remote command. It returns the flag
+// values and the command with those flags removed. A longer flag that merely
+// contains this one (e.g. `--kube-context` for `--context`) does not match.
+func scanValueFlags(command, flag string) ([]string, string) {
 	var values []string
 	var out strings.Builder
 	var quote byte
@@ -126,7 +126,7 @@ func scanKubectlContextFlags(command string) ([]string, string) {
 		if wordStart && quote == 0 && !afterSeparator {
 			if command[i] == '-' && strings.HasPrefix(command[i:], "--") && (i+2 == n || isShellBlank(command[i+2]) || command[i+2] == '\n') {
 				afterSeparator = true
-			} else if value, next, ok := matchContextFlag(command, i); ok {
+			} else if value, next, ok := matchValueFlag(command, i, flag); ok {
 				values = append(values, value)
 				i = next
 				continue
@@ -138,10 +138,9 @@ func scanKubectlContextFlags(command string) ([]string, string) {
 	return values, strings.TrimRight(out.String(), " \t")
 }
 
-// matchContextFlag reads a `--context` flag starting at i. It returns the
-// value and the index just past the flag and any trailing blanks.
-func matchContextFlag(command string, i int) (string, int, bool) {
-	const flag = "--context"
+// matchValueFlag reads `flag` starting at i. It returns the value and the
+// index just past the flag and any trailing blanks.
+func matchValueFlag(command string, i int, flag string) (string, int, bool) {
 	if !strings.HasPrefix(command[i:], flag) {
 		return "", 0, false
 	}
@@ -188,24 +187,23 @@ func matchContextFlag(command string, i int) (string, int, bool) {
 
 func isShellBlank(c byte) bool { return c == ' ' || c == '\t' }
 
-// RequestedKubernetesCluster returns the cluster a kubectl call explicitly asks
-// for: the `cluster` argument, else a `--context` flag in the command. Empty
-// means the call did not ask, so the conversation's saved cluster applies.
-func RequestedKubernetesCluster(command string, args map[string]any) (string, error) {
-	fromArg, _ := args["cluster"].(string)
+// requestedTarget combines an explicit argument with a selector flag in the
+// command. noun names the target in errors ("cluster", "account").
+func requestedTarget(command string, args map[string]any, argName, flag, noun string) (string, error) {
+	fromArg, _ := args[argName].(string)
 	fromArg = strings.TrimSpace(fromArg)
 	fromFlag := ""
-	values, _ := scanKubectlContextFlags(command)
+	values, _ := scanValueFlags(command, flag)
 	for _, value := range values {
 		if fromFlag != "" && !strings.EqualFold(fromFlag, value) {
-			return "", fmt.Errorf("the command names two clusters (%q and %q); run one command per cluster", fromFlag, value)
+			return "", fmt.Errorf("the command names two %ss (%q and %q); run one command per %s", noun, fromFlag, value, noun)
 		}
 		if fromFlag == "" {
 			fromFlag = value
 		}
 	}
 	if fromArg != "" && fromFlag != "" && !strings.EqualFold(fromArg, fromFlag) {
-		return "", fmt.Errorf("cluster %q and --context %q disagree; pass only one", fromArg, fromFlag)
+		return "", fmt.Errorf("%s %q and %s %q disagree; pass only one", argName, fromArg, flag, fromFlag)
 	}
 	if fromArg != "" {
 		return fromArg, nil
@@ -213,65 +211,128 @@ func RequestedKubernetesCluster(command string, args map[string]any) (string, er
 	return fromFlag, nil
 }
 
-// RequestedShellKubernetesCluster is RequestedKubernetesCluster for a raw
-// shell_execute tool input. Non-kubectl shell commands never request a cluster.
-func RequestedShellKubernetesCluster(toolInput string) (string, error) {
-	if ShellConfigToolName(toolInput) != ToolExecuteKubectlCommand {
-		return "", nil
-	}
-	return RequestedKubernetesCluster(extractCommandFromToolInput(toolInput), nil)
+// RequestedKubernetesCluster returns the cluster a kubectl call explicitly asks
+// for: the `cluster` argument, else a `--context` flag in the command. Empty
+// means the call did not ask, so the conversation's saved cluster applies.
+func RequestedKubernetesCluster(command string, args map[string]any) (string, error) {
+	return requestedTarget(command, args, "cluster", "--context", "cluster")
+}
+
+// RequestedAwsAccount returns the AWS account an aws_execute call explicitly
+// asks for via its `account` argument. Commands are not parsed for AWS: the
+// workspace has no AWS profiles, and shell aws always uses the saved account.
+func RequestedAwsAccount(args map[string]any) string {
+	account, _ := args["account"].(string)
+	return strings.TrimSpace(account)
 }
 
 // StripKubectlContextFlag removes `--context` flags. The workspace has no
 // kubeconfig contexts; the target travels in the per-call token instead.
 func StripKubectlContextFlag(command string) string {
-	_, stripped := scanKubectlContextFlags(command)
+	_, stripped := scanValueFlags(command, "--context")
 	return stripped
 }
 
-// TenantClusterLister lists every connected cluster in the caller's tenant.
-// It is a variable so tests can supply clusters without a database.
-var TenantClusterLister = core.ListTenantAccountToolConfigs
-
-// KubernetesTargetByName returns the connected cluster with this name, limited
-// to clusters the caller can read. The error lists the usable names so the
-// model can correct itself.
-func KubernetesTargetByName(ctx *security.RequestContext, accountID, name string) (core.ToolConfig, error) {
-	tool, ok := core.GetNBTool(accountID, ToolExecuteKubectlCommand)
-	if !ok {
-		return core.ToolConfig{}, fmt.Errorf("kubectl: tool %s unavailable", ToolExecuteKubectlCommand)
+// RequestedShellTarget returns the target a shell command names for the CLI
+// that owns it. Only kubectl (--context) can switch targets from a shell
+// command; other CLIs always use the saved target.
+func RequestedShellTarget(owner, command string) (string, error) {
+	if owner == ToolExecuteKubectlCommand {
+		return RequestedKubernetesCluster(command, nil)
 	}
+	return "", nil
+}
+
+// RequestedShellTargetFromInput is RequestedShellTarget for a raw
+// shell_execute tool input; it also returns the owning tool name.
+func RequestedShellTargetFromInput(toolInput string) (string, string, error) {
+	owner := ShellConfigToolName(toolInput)
+	requested, err := RequestedShellTarget(owner, extractCommandFromToolInput(toolInput))
+	return owner, requested, err
+}
+
+// TenantAccountLister lists every connected account of a tool's provider in
+// the caller's tenant. It is a variable so tests can supply accounts without a
+// database.
+var TenantAccountLister = core.ListTenantAccountToolConfigs
+
+// targetNoun names what a tool targets, for error messages.
+func targetNoun(toolName string) string {
+	if toolName == ToolExecuteKubectlCommand {
+		return "cluster"
+	}
+	return "account"
+}
+
+// AccountTargetByName returns the connected account (cluster, cloud account)
+// for an account-sourced tool that the caller can read, matched by name, or by
+// account number when exactly one readable connection has it. Account numbers
+// are not unique within a tenant, so an ambiguous number is refused. Errors
+// list the usable names so the model can correct itself.
+func AccountTargetByName(ctx *security.RequestContext, accountID, toolName, requested string) (core.ToolConfig, error) {
+	tool, ok := core.GetNBTool(accountID, toolName)
+	if !ok {
+		return core.ToolConfig{}, fmt.Errorf("tool %s unavailable", toolName)
+	}
+	noun := targetNoun(toolName)
 	// Not ShellTargetConfigs: that list is narrowed to the conversation's own
-	// cluster when the conversation was opened on one.
-	all, err := TenantClusterLister(ctx, tool)
+	// account when the conversation was opened on one.
+	all, err := TenantAccountLister(ctx, tool)
 	if err != nil {
-		return core.ToolConfig{}, fmt.Errorf("kubectl: cluster lookup: %w", err)
+		return core.ToolConfig{}, fmt.Errorf("%s lookup: %w", noun, err)
 	}
 	names := make([]string, 0, len(all))
+	var byNumber []core.ToolConfig
 	for _, c := range all {
 		if !ctx.GetSecurityContext().HasAccountAccess(KubernetesTargetAccountID(c), security.SecurityAccessTypeRead) {
 			continue
 		}
-		if strings.EqualFold(c.Name, name) {
+		if strings.EqualFold(c.Name, requested) {
 			return c, nil
+		}
+		if number := targetAccountNumber(c); number != "" && strings.EqualFold(number, requested) {
+			byNumber = append(byNumber, c)
 		}
 		names = append(names, c.Name)
 	}
-	sort.Strings(names)
-	return core.ToolConfig{}, fmt.Errorf("cluster %q is not connected or you do not have access to it; available clusters: %s", name, strings.Join(names, ", "))
+	switch len(byNumber) {
+	case 1:
+		return byNumber[0], nil
+	case 0:
+		sortNames(names)
+		return core.ToolConfig{}, fmt.Errorf("%s %q is not connected or you do not have access to it; available %ss: %s", noun, requested, noun, strings.Join(names, ", "))
+	default:
+		matches := make([]string, 0, len(byNumber))
+		for _, c := range byNumber {
+			matches = append(matches, c.Name)
+		}
+		sortNames(matches)
+		return core.ToolConfig{}, fmt.Errorf("%s number %q matches several connections (%s); pass the connection name instead", noun, requested, strings.Join(matches, ", "))
+	}
 }
 
-// ResolveKubernetesTarget picks the cluster for one kubectl call: the
-// explicitly requested one when given, otherwise the conversation's current
-// cluster. It never changes the conversation's saved selection.
-func ResolveKubernetesTarget(ctx core.NbToolContext, current core.ToolConfig, requested string) (core.ToolConfig, error) {
-	if requested == "" || strings.EqualFold(requested, current.Name) {
+// KubernetesTargetByName is AccountTargetByName for kubectl clusters.
+func KubernetesTargetByName(ctx *security.RequestContext, accountID, name string) (core.ToolConfig, error) {
+	return AccountTargetByName(ctx, accountID, ToolExecuteKubectlCommand, name)
+}
+
+// ResolveRequestedTarget picks the target for one call: the conversation's
+// current config when nothing is requested or the request names it (by name
+// or account number), otherwise the requested connection. It never changes
+// the conversation's saved selection.
+func ResolveRequestedTarget(ctx *security.RequestContext, accountID, toolName string, current core.ToolConfig, requested string) (core.ToolConfig, error) {
+	if requested == "" || current.Name != "" && (strings.EqualFold(requested, current.Name) || strings.EqualFold(requested, targetAccountNumber(current))) {
 		return current, nil
 	}
-	return KubernetesTargetByName(ctx.Ctx, ctx.AccountId, requested)
+	return AccountTargetByName(ctx, accountID, toolName, requested)
 }
 
-// KubernetesTargetAccountID returns the cloud account id behind a cluster config.
+// ResolveKubernetesTarget is ResolveRequestedTarget for kubectl clusters.
+func ResolveKubernetesTarget(ctx core.NbToolContext, current core.ToolConfig, requested string) (core.ToolConfig, error) {
+	return ResolveRequestedTarget(ctx.Ctx, ctx.AccountId, ToolExecuteKubectlCommand, current, requested)
+}
+
+// KubernetesTargetAccountID returns the cloud account id behind a config.
 func KubernetesTargetAccountID(selected core.ToolConfig) string {
 	for _, v := range selected.Values {
 		if v.Name == "id" {
@@ -281,10 +342,24 @@ func KubernetesTargetAccountID(selected core.ToolConfig) string {
 	return ""
 }
 
-// kubernetesConfirmationKey scopes a write approval to the cluster the call
-// explicitly targets, so approving a write on one cluster never covers another.
-// Calls without an explicit cluster keep the historical per-tool key ("").
-func kubernetesConfirmationKey(toolName, requested string) string {
+// sortNames orders names case-insensitively, as a person would read them.
+func sortNames(names []string) {
+	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+}
+
+func targetAccountNumber(selected core.ToolConfig) string {
+	for _, v := range selected.Values {
+		if v.Name == "account_number" {
+			return v.Value
+		}
+	}
+	return ""
+}
+
+// targetConfirmationKey scopes a write approval to the target the call
+// explicitly names, so approving a write on one cluster or account never
+// covers another. Calls without an explicit target keep the per-tool key ("").
+func targetConfirmationKey(toolName, requested string) string {
 	if requested == "" {
 		return ""
 	}

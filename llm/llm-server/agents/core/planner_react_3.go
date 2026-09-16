@@ -2609,7 +2609,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{end}}{{.skill_lists_menu}}
 {{.global_preferences_block}}
 {{.user_context_block}}
-{{if .is_top_level}}<task_context>
+{{if .execution_targets_block}}{{.execution_targets_block}}
+{{end}}{{if .is_top_level}}<task_context>
 **Previous Conversation Context:** {{.conversation_context}}
 **Previous Messages (History):**
 {{.history}}
@@ -2638,6 +2639,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"notebook",
 		"global_preferences_block",
 		"user_context_block",
+		"execution_targets_block",
 		"kb_prestep_content",
 		"rag_examples",
 		"skill_lists_menu",
@@ -2716,6 +2718,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"scratchpad":               "", // default; overridden per-iteration in fullInputs
 		"global_preferences_block": renderGlobalPreferencesBlock(request.AccountPrompt),
 		"user_context_block":       userContextBlock,
+		"execution_targets_block":  renderExecutionTargetsBlock(ctx, request, tools),
 		// Relevant knowledge is placed above the scratchpad so compression never
 		// drops it.
 		"kb_prestep_content":    request.KBPrestepContent,

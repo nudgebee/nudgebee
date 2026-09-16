@@ -2295,6 +2295,20 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}
 	}
 
+	// A write that names another cluster/account lands there, so it needs
+	// write access there, not only on the conversation's account.
+	if scoped, ok := tool.(toolcore.PerCallTargetTool); ok && (requestType == nil || *requestType != toolcore.ToolRequestTypeRead) {
+		selected, found, targetErr := e.perCallWriteTarget(tool, scoped, action)
+		if targetErr != nil {
+			return NBAgentPlannerToolActionStep{}, nil, targetErr
+		}
+		if found {
+			if accessErr := tools.CheckShellTargetWriteAccess(e.ctx, selected); accessErr != nil {
+				return NBAgentPlannerToolActionStep{}, nil, accessErr
+			}
+		}
+	}
+
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
 		if writeConfirmationRequired(tool, requestType, action) {
@@ -4837,18 +4851,29 @@ func uniqueQueries(queries ...string) []string {
 
 // configOwnerForAction preserves the shell action while selecting its configuration owner.
 // shellWriteTarget returns the config a shell write will actually run against:
-// the cluster named by --context for kubectl, otherwise the saved selection.
+// the cluster kubectl --context names, otherwise the saved selection.
 func (e *plannerExecutor) shellWriteTarget(owner toolcore.NBTool, action NBAgentPlannerToolAction) (toolcore.ToolConfig, error) {
-	if owner.Name() == tools.ToolExecuteKubectlCommand {
-		requested, err := tools.RequestedShellKubernetesCluster(action.ToolInput)
-		if err != nil {
-			return toolcore.ToolConfig{}, err
-		}
-		if requested != "" {
-			return tools.KubernetesTargetByName(e.ctx, e.agentRequest.AccountId, requested)
-		}
+	_, requested, err := tools.RequestedShellTargetFromInput(action.ToolInput)
+	if err != nil {
+		return toolcore.ToolConfig{}, err
 	}
-	return toolcore.GetToolConfigByName(e.ctx, e.agentRequest.AccountId, owner, e.agentRequest.QueryConfig.ToolConfigs[owner.Name()])
+	saved, savedErr := toolcore.GetToolConfigByName(e.ctx, e.agentRequest.AccountId, owner, e.agentRequest.QueryConfig.ToolConfigs[owner.Name()])
+	if requested == "" {
+		return saved, savedErr
+	}
+	return tools.ResolveRequestedTarget(e.ctx, e.agentRequest.AccountId, owner.Name(), saved, requested)
+}
+
+// perCallWriteTarget resolves the target a call explicitly names. found is
+// false when the call names none (the saved config applies as before).
+func (e *plannerExecutor) perCallWriteTarget(tool toolcore.NBTool, scoped toolcore.PerCallTargetTool, action NBAgentPlannerToolAction) (toolcore.ToolConfig, bool, error) {
+	requested, err := scoped.RequestedTarget(action.ToolInput)
+	if err != nil || requested == "" {
+		return toolcore.ToolConfig{}, false, err
+	}
+	saved, _ := toolcore.GetToolConfigByName(e.ctx, e.agentRequest.AccountId, tool, e.agentRequest.QueryConfig.ToolConfigs[tool.Name()])
+	selected, err := tools.ResolveRequestedTarget(e.ctx, e.agentRequest.AccountId, tool.Name(), saved, requested)
+	return selected, err == nil, err
 }
 
 func configOwnerForAction(tool toolcore.NBTool, accountID, input string) toolcore.NBTool {

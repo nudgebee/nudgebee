@@ -495,7 +495,7 @@ func (m KubectlExecuteTool) workspace() workspace.WorkspaceManager {
 }
 
 // ConfirmationKey scopes a write approval to the explicitly targeted cluster
-// (see kubernetesConfirmationKey).
+// (see targetConfirmationKey).
 func (m KubectlExecuteTool) ConfirmationKey(toolInput string) string {
 	req := core.ParseNBToolCallRequestFromInput(toolInput)
 	requested, err := RequestedKubernetesCluster(req.Command, req.Arguments)
@@ -504,7 +504,14 @@ func (m KubectlExecuteTool) ConfirmationKey(toolInput string) string {
 		// call can never reuse an earlier approval.
 		return m.Name() + "@" + toolInput
 	}
-	return kubernetesConfirmationKey(m.Name(), requested)
+	return targetConfirmationKey(m.Name(), requested)
+}
+
+// RequestedTarget returns the cluster a call explicitly names, for the
+// executor's write-access check on that cluster.
+func (m KubectlExecuteTool) RequestedTarget(toolInput string) (string, error) {
+	req := core.ParseNBToolCallRequestFromInput(toolInput)
+	return RequestedKubernetesCluster(req.Command, req.Arguments)
 }
 
 // refContextForTarget points UI links at the cluster the command ran on.
@@ -902,6 +909,10 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 	requested, err := RequestedKubernetesCluster(command, input.Arguments)
 	if err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	if kubectlUsesConfigSubcommand(command) {
+		configErr := kubeconfigNotAvailable(nbRequestContext)
+		return core.NBToolResponse{Data: configErr.Error(), Status: core.NBToolResponseStatusError}, configErr
 	}
 	if requested == "" && nbRequestContext.ToolConfig.Name == "" {
 		return core.NBToolResponse{}, fmt.Errorf("no tool configs found for - %s, please configure", m.Name())
