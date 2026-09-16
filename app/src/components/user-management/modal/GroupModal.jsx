@@ -750,7 +750,11 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   // Non-tenant-admins get an empty list → the picker stays hidden, and the fetch
   // is skipped entirely while the tenant's CUSTOM_ROLES feature is off.
   useEffect(() => {
-    if (open && isEdit && groupData?.id && isCustomRolesEnabled()) {
+    if (open && isEdit && groupData?.id) {
+      if (!isCustomRolesEnabled()) {
+        setCustomRolesLoaded(true);
+        return;
+      }
       listCustomRoles()
         .then((roles) => {
           const list = roles ?? [];
