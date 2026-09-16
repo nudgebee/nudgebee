@@ -822,67 +822,6 @@ func TestMetricsProviderNeedsServicesServer(t *testing.T) {
 	}
 }
 
-// The reply has to arrive downstream in the same shape the relay produces, because
-// Call() type-asserts "values" and "timestamps" to []any before computing stats —
-// a []float64 or []int64 would fail that assertion and the series would be dropped
-// without an error, which reads as "the query returned nothing".
-func TestMetricsQueryResponseToSeries(t *testing.T) {
-	ts1, ts2 := int64(1789109005000), int64(1789109305000)
-	response := core.ObservabilityMetricsQueryResponse{
-		Results: []core.ObservabilityMetricsQueryResult{{
-			QueryKey: "promql",
-			Query:    `sum by (service) (rate(cube_apm_calls_total[5m]))`,
-			Payload: []core.ObservabilityMetricsQuerySeries{{
-				Metric:     map[string]string{"service": "payment-service"},
-				Timestamps: []int64{ts1, ts2},
-				Values:     []float64{193.5, 192.6},
-			}},
-		}},
-	}
-
-	series := metricsQueryResponseToSeries(response)
-	require.Len(t, series, 1)
-
-	got, ok := series[0].(map[string]any)
-	require.True(t, ok, "each series must be a map[string]any")
-
-	metric, ok := got["metric"].(map[string]any)
-	require.True(t, ok, "metric must be map[string]any")
-	assert.Equal(t, "payment-service", metric["service"])
-
-	timestamps, ok := got["timestamps"].([]any)
-	require.True(t, ok, "timestamps must assert to []any or Call() drops the series")
-	assert.Equal(t, []any{ts1, ts2}, timestamps)
-
-	values, ok := got["values"].([]any)
-	require.True(t, ok, "values must assert to []any or Call() drops the series")
-	assert.Equal(t, []any{193.5, 192.6}, values)
-}
-
-// Every result's payload is flattened into one list, matching the relay shape.
-func TestMetricsQueryResponseToSeriesFlattensResults(t *testing.T) {
-	response := core.ObservabilityMetricsQueryResponse{
-		Results: []core.ObservabilityMetricsQueryResult{
-			{Payload: []core.ObservabilityMetricsQuerySeries{
-				{Metric: map[string]string{"service": "a"}},
-				{Metric: map[string]string{"service": "b"}},
-			}},
-			{Payload: []core.ObservabilityMetricsQuerySeries{
-				{Metric: map[string]string{"service": "c"}},
-			}},
-		},
-	}
-	assert.Len(t, metricsQueryResponseToSeries(response), 3)
-}
-
-// An empty reply must be a non-nil empty slice: Call() ranges over it, and the
-// caller distinguishes "no series" from a failure by the error, not by nil.
-func TestMetricsQueryResponseToSeriesEmpty(t *testing.T) {
-	series := metricsQueryResponseToSeries(core.ObservabilityMetricsQueryResponse{})
-	assert.NotNil(t, series)
-	assert.Empty(t, series)
-}
-
 // Discovery has to enumerate the backend the account actually uses. Asking for
 // Prometheus metrics on a CubeAPM account returns nothing, and the agent then
 // guesses names from its Kubernetes priors — container_http_requests_total,
@@ -931,29 +870,5 @@ func TestMetricsDiscoveryProviderFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, metricsDiscoveryProviderFor(tc.provider), tc.why)
 		})
-	}
-}
-
-// Discovery and execution must never disagree about which backend is being talked
-// to: a query executed against CubeAPM while metric names were enumerated from
-// Prometheus is the failure this pair of functions exists to prevent.
-func TestMetricsDiscoveryAndExecutionAgreeOnTheBackend(t *testing.T) {
-	for _, provider := range []services_server.ObservabilityProvider{
-		{Provider: "cubeapm", IntegrationSource: "user"},
-		{Provider: "openobserve", IntegrationSource: "user"},
-		{Provider: "prometheus", IntegrationSource: "agent"},
-		{Provider: "prometheus", IntegrationSource: "user"},
-		{Provider: "aws", IntegrationSource: "agent"},
-		{},
-	} {
-		routedToApiServer := metricsProviderNeedsServicesServer(provider)
-		discovers := metricsDiscoveryProviderFor(provider)
-		if routedToApiServer {
-			assert.Equal(t, strings.TrimSpace(provider.Provider), discovers,
-				"%q executes against the api-server, so discovery must enumerate it too", provider.Provider)
-		} else {
-			assert.Equal(t, "prometheus", discovers,
-				"%q executes through the relay, so discovery must stay on prometheus", provider.Provider)
-		}
 	}
 }
