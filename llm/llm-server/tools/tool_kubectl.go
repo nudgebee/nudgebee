@@ -1155,25 +1155,6 @@ func (m KubectlExecuteTool) InferToolRequestTypePrompt(ctx *security.RequestCont
 // fall through to InferToolRequestTypePrompt so the safety posture remains
 // fail-closed.
 func InferKubectlVerbType(command string) core.ToolRequestType {
-	// A read-only kubectl command followed by stdout filters remains a read.
-	// Pipeline transforms execute in the workspace shell without brittle in-process
-	// filter parsing. If any downstream stage invokes a mutating command (e.g.
-	// `xargs kubectl delete`), it falls through to confirmation / authorization.
-	stages := splitShellPipeline(command)
-	if len(stages) > 1 {
-		if InferKubectlVerbType(stages[0]) != core.ToolRequestTypeRead {
-			return ""
-		}
-		for _, stage := range stages[1:] {
-			if hasUnquotedShellSyntax(stage) {
-				return ""
-			}
-			if stageVerb := inferPipelineStageKubectlVerbType(stage); stageVerb != "" && stageVerb != core.ToolRequestTypeRead {
-				return ""
-			}
-		}
-		return core.ToolRequestTypeRead
-	}
 	if hasUnquotedShellSyntax(command) {
 		return ""
 	}
@@ -1248,24 +1229,6 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	return ""
 }
 
-func inferPipelineStageKubectlVerbType(stage string) core.ToolRequestType {
-	words, ok := splitShellWords(strings.TrimSpace(stage))
-	if !ok || len(words) == 0 {
-		return ""
-	}
-	if strings.EqualFold(words[0], "kubectl") {
-		return InferKubectlVerbType(stage)
-	}
-	if words[0] == "xargs" || words[0] == "parallel" {
-		for i, w := range words {
-			if strings.EqualFold(w, "kubectl") {
-				return InferKubectlVerbType(strings.Join(words[i:], " "))
-			}
-		}
-	}
-	return ""
-}
-
 // hasUnquotedShellSyntax reports command shapes whose overall intent cannot be
 // inferred from one kubectl verb. Operators inside single/double quotes are
 // arguments (for example JSONPath); substitutions remain executable inside
@@ -1293,7 +1256,7 @@ func hasUnquotedShellSyntax(command string) bool {
 		if singleQuoted {
 			continue
 		}
-		if char == '`' || char == '$' {
+		if char == '`' || (char == '$' && i+1 < len(command) && command[i+1] == '(') {
 			return true
 		}
 		if !doubleQuoted && strings.ContainsRune("|&;<>\n\r(){}", rune(char)) {
