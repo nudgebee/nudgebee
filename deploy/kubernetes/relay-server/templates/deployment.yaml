@@ -113,10 +113,25 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+          # /healthz/live fails only when a tenant has had no RabbitMQ consumer
+          # for RELAY_HEALTH_CONSUME_FAILURE_RESTART_AFTER (5m) *while the
+          # broker is reachable* — the one state a restart actually repairs. It
+          # stays healthy through a broker outage, so RabbitMQ going down does
+          # not crashloop every relay and drop its agent WebSockets. Set that
+          # duration to 0 to disable the check without redeploying the chart.
+          #
+          # failureThreshold x periodSeconds adds ~1m on top of that window, so
+          # nothing transient can reach a restart.
           livenessProbe:
             httpGet:
-              path: /status
+              path: /healthz/live
               port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          # Readiness deliberately stays on the unconditional /status. Marking
+          # the pod unready removes it from the Service but restarts nothing,
+          # and at replicaCount: 1 it would turn one stuck tenant into a total
+          # outage. It is also what external load balancers probe.
           readinessProbe:
             httpGet:
               path: /status

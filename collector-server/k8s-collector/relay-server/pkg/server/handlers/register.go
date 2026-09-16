@@ -25,6 +25,7 @@ import (
 	"nudgebee/relay-server/pkg/config"
 	"nudgebee/relay-server/pkg/db"
 	"nudgebee/relay-server/pkg/mq"
+	"nudgebee/relay-server/pkg/server/health"
 	"nudgebee/relay-server/pkg/server/metrics"
 	"nudgebee/relay-server/pkg/signing"
 	"nudgebee/relay-server/pkg/utils"
@@ -78,6 +79,7 @@ func RegisterHandler(
 	exchange string,
 	signer *signing.Signer,
 	rpcClient mq.RPCClient,
+	healthTracker *health.Tracker,
 	roottracer *trace.Tracer,
 	rootmeter *metric.Meter,
 	rootLogger *slog.Logger,
@@ -104,6 +106,11 @@ func RegisterHandler(
 			queue = fmt.Sprintf("relay_requests_%s_%s", accountID, agentType)
 		}
 		logger.Info("[Register] starting session", "account", accountID, "agent_type", agentType, "queue", queue)
+
+		// A session that has gone away is not a stuck session. Without this the
+		// last failure of a disconnecting agent would keep the relay unhealthy
+		// forever and restart the pod over a tenant that simply left.
+		defer healthTracker.SessionEnded(queue)
 
 		sessionStart := time.Now()
 		if metrics.AsyncMetricsInstance != nil {
@@ -413,10 +420,32 @@ func RegisterHandler(
 				msgs, err := sessCh.Consume(queue, consumerTag, false, false, false, false, nil)
 				if err != nil {
 					sessCh.Close() // nolint:errcheck
-					logger.Error("Consume failed, retrying", "err", err)
-					time.Sleep(time.Second)
+					logger.Error("Consume failed, re-declaring topology and retrying", "queue", queue, "err", err)
+
+					// The broker disagrees with us about this queue, so the
+					// "already declared" record is wrong. A RabbitMQ that came
+					// back without its definitions is the case that matters:
+					// Consume then fails with NOT_FOUND forever, nothing
+					// re-creates the queue, and the session sits here retrying
+					// a queue that does not exist while the agent's WebSocket
+					// stays open — so the pod looks healthy and serves nothing
+					// until someone deletes it. Re-declaring is a cheap no-op
+					// when the queue is really there.
+					healthTracker.ConsumeFailed(queue)
+					topo.ForgetTenant(accountID, agentType)
+					if derr := topo.EnsureTenantForAgentType(egCtx, accountID, agentType); derr != nil {
+						logger.Error("re-declare after consume failure failed", "queue", queue, "err", derr)
+					}
+
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					case <-time.After(time.Second):
+					}
 					continue
 				}
+
+				healthTracker.ConsumerAttached(queue)
 
 			ConsumeLoop:
 				for {

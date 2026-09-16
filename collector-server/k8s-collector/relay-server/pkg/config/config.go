@@ -19,6 +19,17 @@ type Config struct {
 		WriteTimeout time.Duration `mapstructure:"write_timeout"`
 	} `mapstructure:"http"`
 
+	Health struct {
+		// ConsumeFailureRestartAfter is how long a tenant may have no consumer,
+		// while the broker is reachable, before /healthz/live starts failing and
+		// Kubernetes restarts the pod.
+		//
+		// Set to 0 to disable. That is the escape hatch: a false positive here
+		// restarts every replica in a loop, so the check must be switchable off
+		// without a rollback.
+		ConsumeFailureRestartAfter time.Duration `mapstructure:"consume_failure_restart_after"`
+	} `mapstructure:"health"`
+
 	Postgres struct {
 		// DSN is loaded from COLLECTOR_DB_URL if set, otherwise from file
 		DSN             string        `mapstructure:"dsn"`
@@ -173,6 +184,9 @@ func Load() (*Config, error) {
 	v.SetDefault("security.secret_key", "")
 
 	v.SetDefault("http.port", 8080)
+	// Generous on purpose: well past any transient reconnect, so only a
+	// genuinely stuck session trips it.
+	v.SetDefault("health.consume_failure_restart_after", "5m")
 	v.SetDefault("http.read_timeout", "180s")
 	v.SetDefault("http.write_timeout", "180s")
 
