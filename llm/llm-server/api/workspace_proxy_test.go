@@ -447,6 +447,23 @@ func TestWorkspaceRelayTargetWriteAuthorization(t *testing.T) {
 		require.NoError(t, err, writeCmd)
 		require.Equal(t, "target-k8s", target, writeCmd)
 	}
+
+	// Nil context or nil security context fails safely without panicking
+	nilCtx := core.NbToolContext{
+		Ctx:        nil,
+		AccountId:  "workspace-acct",
+		ToolConfig: core.ToolConfig{Name: "selected-cluster", Values: []core.ToolConfigValue{{Name: "id", Value: "target-k8s"}}},
+	}
+	_, err := workspaceRelayTarget(nilCtx, tools.RelayJobKubectl, "selected-cluster", "kubectl get pods")
+	require.ErrorContains(t, err, "access denied")
+
+	nilScCtx := core.NbToolContext{
+		Ctx:        security.NewRequestContext(context.Background(), nil, slog.Default(), nil, nil),
+		AccountId:  "workspace-acct",
+		ToolConfig: core.ToolConfig{Name: "selected-cluster", Values: []core.ToolConfigValue{{Name: "id", Value: "target-k8s"}}},
+	}
+	_, err = workspaceRelayTarget(nilScCtx, tools.RelayJobKubectl, "selected-cluster", "kubectl get pods")
+	require.ErrorContains(t, err, "access denied")
 }
 
 func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {

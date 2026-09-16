@@ -489,7 +489,7 @@ func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedC
 	}
 	for _, value := range ctx.ToolConfig.Values {
 		if value.Name == "id" && value.Value != "" {
-			if !ctx.Ctx.GetSecurityContext().HasAccountAccess(value.Value, requiredAccess) {
+			if ctx.Ctx == nil || ctx.Ctx.GetSecurityContext() == nil || !ctx.Ctx.GetSecurityContext().HasAccountAccess(value.Value, requiredAccess) {
 				return "", fmt.Errorf("target cluster access denied")
 			}
 			return value.Value, nil

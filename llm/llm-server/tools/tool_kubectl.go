@@ -514,10 +514,18 @@ func (m KubectlExecuteTool) Description() string {
 
 		**Examples:**
 
-		* 'kubectl get pods'
+		* 'kubectl get pods -n <namespace> --limit=100'
+		* 'kubectl get pods -A --field-selector=status.phase!=Running'
 		* 'kubectl describe node <node-name>'
-		* 'kubectl get events --sort-by=.metadata.creationTimestamp'
-		* 'kubectl get pods -A -o "custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace"'
+		* 'kubectl get events -n <namespace> --sort-by=.metadata.creationTimestamp | tail -n 50'
+		* 'kubectl get pods -A -o "custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace" | head -n 50'
+
+		**Query Bounding & Pagination — IMPORTANT:**
+
+		* **Bound large queries:** Avoid unbounded cluster-wide listing ('kubectl get pods -A', 'kubectl get events -A'). In large clusters, use '--limit=100' (or '--limit=500') to paginate.
+		* **Filter early:** Use API selectors ('-l <selector>', '--field-selector=status.phase!=Running', '--field-selector=type!=Normal') rather than dumping everything. Provide '-n <namespace>' whenever known instead of '-A'.
+		* **Concise projections:** Use '-o custom-columns=...', '-o jsonpath=...', or pipe to 'head -n <N>' / 'tail -n <N>' / 'awk' to keep output focused. For counts, use '--no-headers | wc -l'.
+		* **Events:** Always bound event queries, e.g. 'kubectl get events -n <namespace> --sort-by=.metadata.creationTimestamp | tail -n 50'.
 
 		**Investigation surface — 'kubectl describe':**
 
