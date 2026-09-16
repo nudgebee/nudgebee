@@ -372,6 +372,83 @@ func TestWorkspaceRelayTargetPreservesWorkspaceIdentity(t *testing.T) {
 	require.ErrorContains(t, err, "access denied")
 }
 
+func TestWorkspaceRelayTargetWriteAuthorization(t *testing.T) {
+	var readOnlySc security.SecurityContext
+	_ = json.Unmarshal([]byte(`{
+		"TenantId": "t1",
+		"UserId": "u1",
+		"AccountIds": ["target-k8s"],
+		"Roles": ["account_admin_readonly"],
+		"ScopedEntityIds": {
+			"account_admin_readonly": ["target-k8s"]
+		}
+	}`), &readOnlySc)
+	readOnlyCtx := core.NbToolContext{
+		Ctx:            security.NewRequestContext(context.Background(), &readOnlySc, slog.Default(), nil, nil),
+		AccountId:      "workspace-acct",
+		ConversationId: "conv-1",
+		ToolConfig: core.ToolConfig{
+			Name:   "selected-cluster",
+			Values: []core.ToolConfigValue{{Name: "id", Value: "target-k8s"}},
+		},
+	}
+
+	// Read commands allowed for read-only user
+	for _, readCmd := range []string{
+		"kubectl get pods -A",
+		"kubectl describe pod api-1",
+		"kubectl logs api-1 --tail 100",
+		"kubectl rollout status deployment/api",
+		"kubectl auth can-i get pods",
+	} {
+		target, err := workspaceRelayTarget(readOnlyCtx, tools.RelayJobKubectl, "selected-cluster", readCmd)
+		require.NoError(t, err, readCmd)
+		require.Equal(t, "target-k8s", target, readCmd)
+	}
+
+	// Mutating commands denied for read-only user
+	for _, writeCmd := range []string{
+		"kubectl delete pod api-1",
+		"kubectl apply -f deployment.yaml",
+		"kubectl scale deployment api --replicas=3",
+		"kubectl patch deployment api -p '{}'",
+		"kubectl rollout restart deployment/api",
+	} {
+		_, err := workspaceRelayTarget(readOnlyCtx, tools.RelayJobKubectl, "selected-cluster", writeCmd)
+		require.ErrorContains(t, err, "access denied", writeCmd)
+	}
+
+	// Mutating commands allowed for write user
+	var writeSc security.SecurityContext
+	_ = json.Unmarshal([]byte(`{
+		"TenantId": "t1",
+		"UserId": "u1",
+		"AccountIds": ["target-k8s"],
+		"Roles": ["account_admin"],
+		"ScopedEntityIds": {
+			"account_admin": ["target-k8s"]
+		}
+	}`), &writeSc)
+	writeCtx := core.NbToolContext{
+		Ctx:            security.NewRequestContext(context.Background(), &writeSc, slog.Default(), nil, nil),
+		AccountId:      "workspace-acct",
+		ConversationId: "conv-1",
+		ToolConfig: core.ToolConfig{
+			Name:   "selected-cluster",
+			Values: []core.ToolConfigValue{{Name: "id", Value: "target-k8s"}},
+		},
+	}
+	for _, writeCmd := range []string{
+		"kubectl delete pod api-1",
+		"kubectl apply -f deployment.yaml",
+		"kubectl scale deployment api --replicas=3",
+	} {
+		target, err := workspaceRelayTarget(writeCtx, tools.RelayJobKubectl, "selected-cluster", writeCmd)
+		require.NoError(t, err, writeCmd)
+		require.Equal(t, "target-k8s", target, writeCmd)
+	}
+}
+
 func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {
 	security.SetTenantIdCacheForTest("bound-workspace", "bound-tenant")
 	token, err := workspace.KubernetesTargetToken(security.NewRequestContextForTenantAccountAdmin("bound-tenant", "user", []string{"bound-workspace", "selected-target"}), "bound-workspace", "selected-target")

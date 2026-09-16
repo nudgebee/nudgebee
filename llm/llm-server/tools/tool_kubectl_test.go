@@ -419,6 +419,62 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | sed 's/foo/bar/'`))
 }
 
+func TestValidateKubectlCommandAccess_Pipelines(t *testing.T) {
+	pipelines := []string{
+		// User's exact 5-stage pipeline
+		`kubectl get pods -A --no-headers -o "custom-columns=NAMESPACE:.metadata.namespace" | sort | uniq -c | awk '{print $2"\t"$1}' | sort`,
+		// Real-world multi-stage inspection pipelines
+		`kubectl get nodes -o wide | awk '$2=="NotReady" {print $1}'`,
+		`kubectl get pods | grep -v Running | grep -v Completed`,
+		`kubectl get pods | column -t`,
+		`kubectl get pods | sed 's/nudgebee-//'`,
+		`kubectl get events -A --sort-by=.metadata.creationTimestamp | tail -n 50 | head -n 10`,
+		`kubectl get pods -n kube-system --no-headers | wc -l`,
+		`kubectl get nodes -o json | jq '.items[].status.addresses[] | select(.type=="InternalIP") | .address'`,
+		`kubectl get pods | tr '[:upper:]' '[:lower:]'`,
+		`kubectl get pods | cut -d' ' -f1 | sort -u`,
+	}
+	for _, pipe := range pipelines {
+		require.NoError(t, validateKubectlCommandAccess(pipe), pipe)
+	}
+}
+
+func TestValidateKubectlCommandAccess_SecretExclusion(t *testing.T) {
+	secretCommands := []string{
+		// Secret-bearing kinds
+		`kubectl get secrets`,
+		`kubectl get secret`,
+		`kubectl get secret my-secret`,
+		`kubectl describe secret my-secret`,
+		`kubectl get secrets -A -o json`,
+		`kubectl get sealedsecrets -A`,
+		`kubectl get externalsecrets -n prod`,
+		`kubectl get secretstores`,
+		`kubectl get clustersecretstores`,
+		`kubectl get secretproviderclasses`,
+		`kubectl get secrets.v1.core`,
+		// Mounted secret filesystem paths
+		`kubectl exec api -- cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`kubectl exec api -- sh -c "cat /run/secrets/token"`,
+		`kubectl cp api:/var/run/secrets/token /tmp/token`,
+		`kubectl attach api -- cat /var/lib/kubelet/pods/uuid/volumes/kubernetes.io~secret/token`,
+		// Path obfuscations
+		`kubectl exec api -- cat /var/run/./secrets/token`,
+		`kubectl exec api -- cat /var/run/tmp/../secrets/token`,
+		`kubectl exec api -- cat /var/run/sec""rets/token`,
+		`kubectl exec api -- cat /var/run/se\crets/token`,
+		`kubectl exec api -- sh -c "cat /var/run/se*rets/token"`,
+		// Secret paths inside pipeline filters
+		`kubectl get pods | cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`kubectl get pods | grep -e. /var/run/secrets/token`,
+	}
+	for _, cmd := range secretCommands {
+		err := validateKubectlCommandAccess(cmd)
+		require.Error(t, err, cmd)
+		require.Contains(t, err.Error(), "blocked", cmd)
+	}
+}
+
 func TestValidateKubectlRelayCommand(t *testing.T) {
 	blocked := []string{
 		// Metacharacters and compound execution
