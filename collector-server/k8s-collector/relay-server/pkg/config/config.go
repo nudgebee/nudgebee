@@ -181,7 +181,11 @@ func Load() (*Config, error) {
 	v.SetDefault("postgres.conn_max_lifetime", "5m")
 	v.SetDefault("postgres.driver", "postgres")
 
-	v.SetDefault("rabbitmq.prefetch_count", 1)
+	// Per-agent-session prefetch: how many of a tenant's requests may be
+	// in flight to its agent at once. 10 was hardcoded at the consumer and
+	// production tenants pinned at it, after which the broker stopped
+	// delivering and queued requests aged out against the 1m queue TTL.
+	v.SetDefault("rabbitmq.prefetch_count", 32)
 	v.SetDefault("rabbitmq.retry_delay", "1s")
 	v.SetDefault("rabbitmq.exchange_name", "nudgebee-relay")
 	v.SetDefault("rabbitmq.request_queue", "nudgebee_relay_request")

@@ -380,8 +380,17 @@ func RegisterHandler(
 					return fmt.Errorf("get channel: %w", err)
 				}
 
-				// 2) apply QoS
-				if err := sessCh.Qos(10, 0, false); err != nil {
+				// 2) apply QoS.
+				//
+				// This bounds a single tenant's concurrent in-flight agent
+				// requests. It was hardcoded to 10, and production tenants hit
+				// that ceiling: with unacked pinned at 10 the broker stops
+				// delivering, so further requests sit in the ready queue until
+				// the 1m queue TTL dead-letters them — silently, with no error
+				// to the caller. The messages held here are requests, which are
+				// small; the large payloads are replies, bounded separately on
+				// the RPC client's own channel.
+				if err := sessCh.Qos(cfg.RabbitMQ.PrefetchCount, 0, false); err != nil {
 					sessCh.Close() // nolint:errcheck
 					logger.Error("QoS setup failed, retrying", "err", err)
 					time.Sleep(time.Second)
@@ -458,14 +467,37 @@ func RegisterHandler(
 
 							deliveryLogger.Info("processing action")
 
-							// forward to WebSocket
-							safeSend(d.Body)
+							// Spend what is left of the publisher's budget
+							// instead of starting a fresh full-length timer.
+							// See mq.HeaderRelayDeadline.
+							budget := cfg.HTTP.ReadTimeout
+							if deadline, ok := mq.DeadlineFromHeaders(d.Headers); ok {
+								// Still capped by our own timeout, so a publisher
+								// with skewed config can never buy a longer slot
+								// than this process would have granted anyway.
+								if remaining := time.Until(deadline); remaining < budget {
+									budget = remaining
+								}
+							}
+							if budget <= 0 {
+								// Already past the caller's deadline while this
+								// message queued. Forwarding it would only make
+								// the agent produce a reply nobody can receive.
+								deliveryLogger.Warn("request expired before delivery")
+								d.Ack(false) // nolint
+								metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+									metrics.AttrAccount(accountID), attribute.String("delivery", "expired")))
+								return nil
+							}
 
-							// wait for reply or timeout
+							// Register the reply channel *before* handing the
+							// request to the agent: the WebSocket reader logs
+							// and drops any reply whose request ID has no entry
+							// here, so an agent fast enough to answer before
+							// this goroutine is rescheduled had its reply lost.
 							ch := make(chan []byte, 1)
 							respMap.Lock()
 							respMap.m[d.CorrelationId] = ch
-							deliveryLogger.Debug("awaiting reply")
 							respMap.Unlock()
 
 							// Defer cleanup of response map
@@ -475,7 +507,22 @@ func RegisterHandler(
 								respMap.Unlock()
 							}()
 
-							timeout := time.NewTimer(cfg.HTTP.ReadTimeout)
+							// forward to WebSocket
+							safeSend(d.Body)
+							deliveryLogger.Debug("awaiting reply")
+
+							// When the caller is in this process, it closes this
+							// channel the moment it gives up — typically its HTTP
+							// client disconnecting, long before the budget above
+							// expires. Watching it releases the prefetch slot at
+							// the caller's real abort instead of holding it for
+							// the remainder of a wait nobody is left for.
+							var abandoned <-chan struct{}
+							if instance, _ := d.Headers[mq.HeaderRelayInstance].(string); rpcClient != nil && instance == rpcClient.InstanceID() {
+								abandoned = rpcClient.AbandonCh(d.CorrelationId)
+							}
+
+							timeout := time.NewTimer(budget)
 							defer timeout.Stop()
 
 							select {
@@ -527,10 +574,25 @@ func RegisterHandler(
 										metrics.AttrAccount(accountID), attribute.String("delivery", "amqp")))
 								}
 								logger.Debug("reply sent", "corr_id", d.CorrelationId, "account", accountID)
+							case <-abandoned:
+								// Ack rather than Nack: the request was handled
+								// to the extent anyone still cares about, so
+								// dead-lettering it would only add noise.
+								d.Ack(false) // nolint
+								deliveryLogger.Info("caller gave up, releasing prefetch slot")
+								metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+									metrics.AttrAccount(accountID), attribute.String("delivery", "abandoned")))
+
 							case <-timeout.C:
 								d.Nack(false, false) // nolint
 								deliveryLogger.Warn("request timeout")
-								metrics.WS_RequestTimeouts.Add(ctx, 1, metric.WithAttributes(metrics.AttrAccount(accountID)))
+								// Counted here as a delivery outcome, not as
+								// nb_relay_ws_request_timeouts_total: that
+								// counter is incremented by the caller-side
+								// handler for the same request, and counting it
+								// on both sides double-counted every timeout.
+								metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+									metrics.AttrAccount(accountID), attribute.String("delivery", "timeout")))
 							case <-egCtx.Done():
 								deliveryLogger.Info("context canceled, sending error reply")
 								// Send an error reply matching AgentResponse format so the

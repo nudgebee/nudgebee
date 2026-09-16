@@ -118,6 +118,8 @@ func (f fakeRPCClient) DeliverLocal(corrID string, body []byte) bool {
 	return f.deliverLocal
 }
 
+func (f fakeRPCClient) AbandonCh(corrID string) <-chan struct{} { return nil }
+
 func (f fakeRPCClient) Close() {
 }
 

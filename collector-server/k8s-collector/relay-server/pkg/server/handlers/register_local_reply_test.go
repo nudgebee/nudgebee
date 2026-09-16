@@ -28,7 +28,8 @@ func (f *localReplyRPC) DeliverLocal(corrID string, body []byte) bool {
 	f.corrID = corrID
 	return f.deliver
 }
-func (f *localReplyRPC) Close() {}
+func (f *localReplyRPC) AbandonCh(corrID string) <-chan struct{} { return nil }
+func (f *localReplyRPC) Close()                                  {}
 
 func delivery(headers amqp.Table) amqp.Delivery {
 	return amqp.Delivery{CorrelationId: "corr-1", Headers: headers}

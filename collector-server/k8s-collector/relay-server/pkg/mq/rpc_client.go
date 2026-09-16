@@ -20,6 +20,36 @@ import (
 // ID lives in its own process. See DeliverLocal.
 const HeaderRelayInstance = "x-relay-instance"
 
+// HeaderRelayDeadline carries the publishing caller's deadline as Unix
+// nanoseconds, so the register session waits out the remainder of the caller's
+// budget rather than starting a fresh full-length timer when the message is
+// delivered. Without it a message that queued behind a saturated prefetch
+// window was granted its whole timeout again on top of the time it had already
+// spent waiting.
+const HeaderRelayDeadline = "x-relay-deadline-unix-nano"
+
+// DeadlineFromHeaders reads the publisher's deadline back off a delivery,
+// reporting false when the header is absent — which is both the pre-upgrade
+// wire format and any caller whose context carried no deadline. Callers fall
+// back to their configured timeout in that case.
+//
+// AMQP field tables normalise integers to whatever width fits, so accept the
+// signed widths amqp091 can hand back rather than asserting int64.
+func DeadlineFromHeaders(headers amqp.Table) (time.Time, bool) {
+	var nanos int64
+	switch v := headers[HeaderRelayDeadline].(type) {
+	case int64:
+		nanos = v
+	case int32:
+		nanos = int64(v)
+	case int:
+		nanos = int64(v)
+	default:
+		return time.Time{}, false
+	}
+	return time.Unix(0, nanos), true
+}
+
 // RPCClient defines a simple RabbitMQ-backed RPC interface.
 type RPCClient interface {
 	Call(ctx context.Context, exchange, routingKey string, payload []byte, corrID string) ([]byte, error)
@@ -28,7 +58,39 @@ type RPCClient interface {
 	// DeliverLocal hands a reply straight to a caller blocked in Call within
 	// this process, reporting whether one was waiting.
 	DeliverLocal(corrID string, body []byte) bool
+	// AbandonCh returns a channel that closes when the caller which published
+	// corrID from this process stops waiting for it. Only meaningful for
+	// correlation IDs this process published — see the doc comment on the
+	// method for why an unknown ID yields an already-closed channel.
+	AbandonCh(corrID string) <-chan struct{}
 	Close()
+}
+
+// replyPrefetchCount bounds how many agent replies the broker may have in
+// flight to this process at once. Replies are the large payloads in this
+// system — tens of megabytes for a wide prometheus query — so this, not CPU,
+// is what sets the relay's peak memory.
+const replyPrefetchCount = 20
+
+// alreadyAbandoned is the channel AbandonCh hands back for a correlation ID it
+// no longer holds. It is closed once at init and shared: every such caller is
+// abandoned by definition, so they can all read the same closed channel.
+var alreadyAbandoned = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
+// pendingCall is the state a blocked Call leaves behind for the reply path.
+//
+// resp carries the reply. abandon is closed when the caller gives up, which is
+// the only signal the register session has that the work it is holding a
+// RabbitMQ prefetch slot for is no longer wanted: a caller's HTTP client
+// disconnecting cancels its context long before the relay's own timeout
+// expires, and nothing on the delivery side could previously observe that.
+type pendingCall struct {
+	resp    chan []byte
+	abandon chan struct{}
 }
 
 // ClientImpl manages the AMQP connection, channels, and request/response dispatch.
@@ -39,7 +101,7 @@ type ClientImpl struct {
 	pubCh      *amqp.Channel
 	consCh     *amqp.Channel
 	replyQ     amqp.Queue
-	pending    sync.Map // corrID → chan []byte
+	pending    sync.Map // corrID → *pendingCall
 	closeErrCh chan *amqp.Error
 	initOnce   sync.Once
 	logger     *slog.Logger
@@ -106,14 +168,21 @@ func (c *ClientImpl) reconnect() error {
 	}
 
 	// 4.5) apply QoS to reply consumer to avoid unbounded prefetch
-	if err := consCh.Qos(20, 0, false); err != nil {
+	if err := consCh.Qos(replyPrefetchCount, 0, false); err != nil {
 		consCh.Close() // nolint:errcheck
 		pubCh.Close()  // nolint:errcheck
 		return fmt.Errorf("reply channel qos: %w", err)
 	}
 
-	// 5) start consuming replies
-	msgs, err := consCh.Consume(replyQ.Name, "", true, true, false, false, nil)
+	// 5) start consuming replies.
+	//
+	// autoAck must stay false for the Qos above to mean anything: AMQP ignores
+	// prefetch entirely for no-ack consumers, so this channel previously had no
+	// bound at all on how many multi-megabyte agent replies the broker could
+	// push at once — the relay's OOM exposure. dispatchLoop acks every delivery
+	// unconditionally, including ones with no waiting caller, so the prefetch
+	// window can never stall.
+	msgs, err := consCh.Consume(replyQ.Name, "", false, true, false, false, nil)
 	if err != nil {
 		consCh.Close() // nolint:errcheck
 		pubCh.Close()  // nolint:errcheck
@@ -180,6 +249,11 @@ func (c *ClientImpl) dispatchLoop(msgs <-chan amqp.Delivery) {
 		if !c.deliver(d.CorrelationId, d.Body) {
 			c.logger.Warn("RPCClient: no pending channel for corrID", "corrID", d.CorrelationId)
 		}
+		// Ack regardless: an undelivered reply has nowhere else to go, and
+		// leaving it unacked would consume a prefetch slot permanently.
+		if err := d.Ack(false); err != nil {
+			c.logger.Warn("RPCClient: ack reply failed", "corrID", d.CorrelationId, "err", err)
+		}
 	}
 	c.logger.Warn("RPCClient: reply consumer closed")
 }
@@ -188,14 +262,29 @@ func (c *ClientImpl) dispatchLoop(msgs <-chan amqp.Delivery) {
 // was one. The response channel is buffered, so this never blocks even if the
 // caller has already given up.
 func (c *ClientImpl) deliver(corrID string, body []byte) bool {
-	chAny, ok := c.pending.LoadAndDelete(corrID)
+	callAny, ok := c.pending.LoadAndDelete(corrID)
 	if !ok {
 		return false
 	}
-	respCh := chAny.(chan []byte)
-	respCh <- body
-	close(respCh)
+	call := callAny.(*pendingCall)
+	call.resp <- body
+	close(call.resp)
 	return true
+}
+
+// AbandonCh returns a channel that closes once the caller which published
+// corrID from this process has stopped waiting.
+//
+// An unknown correlation ID yields an already-closed channel rather than nil.
+// Callers only ask about IDs stamped with this process's instance header, so
+// "unknown" means the Call has already retired the entry — the caller is gone,
+// which is exactly what a closed channel signals. Returning nil would instead
+// block the caller's select forever, which is the bug this exists to fix.
+func (c *ClientImpl) AbandonCh(corrID string) <-chan struct{} {
+	if callAny, ok := c.pending.Load(corrID); ok {
+		return callAny.(*pendingCall).abandon
+	}
+	return alreadyAbandoned
 }
 
 // InstanceID identifies this client, and so this process, on the wire.
@@ -225,8 +314,11 @@ func (c *ClientImpl) Call(
 	// topology should already exist from register call
 
 	// prepare a response channel
-	respCh := make(chan []byte, 1)
-	c.pending.Store(corrID, respCh)
+	call := &pendingCall{
+		resp:    make(chan []byte, 1),
+		abandon: make(chan struct{}),
+	}
+	c.pending.Store(corrID, call)
 
 	// Inject the active W3C trace context into the AMQP headers so the
 	// in-cluster agent consuming this message can continue the same trace.
@@ -236,6 +328,12 @@ func (c *ClientImpl) Call(
 	// Name ourselves so the register session consuming this request knows
 	// whether the caller it must reply to is in its own process.
 	headers[HeaderRelayInstance] = c.instanceID
+
+	// Publish our deadline so the delivery side can spend what is left of it
+	// rather than restarting the clock. See HeaderRelayDeadline.
+	if deadline, ok := ctx.Deadline(); ok {
+		headers[HeaderRelayDeadline] = deadline.UnixNano()
+	}
 
 	// publish the RPC request
 	err := c.pubCh.PublishWithContext(
@@ -258,10 +356,15 @@ func (c *ClientImpl) Call(
 
 	// wait for either the reply or context cancellation
 	select {
-	case resp := <-respCh:
+	case resp := <-call.resp:
 		return resp, nil
 	case <-ctx.Done():
-		c.pending.Delete(corrID)
+		// LoadAndDelete so this races cleanly with a reply arriving at the
+		// same instant: whichever path retires the entry wins, and abandon is
+		// only closed when we are the one who retired it.
+		if _, ours := c.pending.LoadAndDelete(corrID); ours {
+			close(call.abandon)
+		}
 		return nil, ctx.Err()
 	}
 }

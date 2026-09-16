@@ -17,9 +17,9 @@ func newTestClient() *ClientImpl {
 
 // waitFor registers a pending caller the way Call does and returns its channel.
 func waitFor(c *ClientImpl, corrID string) chan []byte {
-	respCh := make(chan []byte, 1)
-	c.pending.Store(corrID, respCh)
-	return respCh
+	call := &pendingCall{resp: make(chan []byte, 1), abandon: make(chan struct{})}
+	c.pending.Store(corrID, call)
+	return call.resp
 }
 
 func TestDeliverLocalReachesWaitingCaller(t *testing.T) {
