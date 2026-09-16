@@ -484,3 +484,32 @@ func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {
 	_, err = workspace.KubernetesTargetToken(security.NewRequestContextForTenantAccountAdmin("bound-tenant", "user", []string{"bound-workspace"}), "bound-workspace", "selected-target")
 	require.Error(t, err)
 }
+
+// The workspace's per-account config list only holds its own cluster, so a
+// per-call target on another cluster must be found by name across the tenant.
+func TestWorkspaceRelayTargetResolvesOtherTenantCluster(t *testing.T) {
+	const workspaceAccount = "relay-target-workspace"
+	clusters := []core.ToolConfig{
+		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: workspaceAccount}}},
+		{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "relay-target-dev"}}},
+	}
+	tools.StubTenantClusters(t, "relay-tenant", clusters)
+
+	ctx := core.NbToolContext{
+		Ctx:       security.NewRequestContextForTenantAccountAdmin("relay-tenant", "user", []string{workspaceAccount, "relay-target-dev"}),
+		AccountId: workspaceAccount,
+		// What NewNbToolContext yields when the requested name is not in the
+		// workspace account's narrowed list.
+		ToolConfig: core.ToolConfig{},
+	}
+	target, err := workspaceRelayTarget(ctx, tools.RelayJobKubectl, "k8s-dev", "kubectl get pods")
+	require.NoError(t, err)
+	require.Equal(t, "relay-target-dev", target)
+
+	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "k8s-unknown", "kubectl get pods")
+	require.ErrorContains(t, err, "unavailable")
+
+	ctx.Ctx = security.NewRequestContextForTenantAccountAdmin("relay-tenant", "user", []string{workspaceAccount})
+	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "k8s-dev", "kubectl get pods")
+	require.ErrorContains(t, err, "unavailable", "a cluster the caller cannot read is not resolvable")
+}

@@ -483,6 +483,36 @@ func kubectlUIReference(command string) ([]string, string) {
 }
 
 type KubectlExecuteTool struct {
+	// workspaceManager is injectable for tests; nil uses the real manager.
+	workspaceManager workspace.WorkspaceManager
+}
+
+func (m KubectlExecuteTool) workspace() workspace.WorkspaceManager {
+	if m.workspaceManager != nil {
+		return m.workspaceManager
+	}
+	return workspace.NewWorkspaceManager()
+}
+
+// ConfirmationKey scopes a write approval to the explicitly targeted cluster
+// (see kubernetesConfirmationKey).
+func (m KubectlExecuteTool) ConfirmationKey(toolInput string) string {
+	req := core.ParseNBToolCallRequestFromInput(toolInput)
+	requested, err := RequestedKubernetesCluster(req.Command, req.Arguments)
+	if err != nil {
+		// Conflicting targets fail in Call; key on the raw input so this
+		// call can never reuse an earlier approval.
+		return m.Name() + "@" + toolInput
+	}
+	return kubernetesConfirmationKey(m.Name(), requested)
+}
+
+// refContextForTarget points UI links at the cluster the command ran on.
+func refContextForTarget(ctx core.NbToolContext, target core.ToolConfig, crossCluster bool) core.NbToolContext {
+	if id := KubernetesTargetAccountID(target); crossCluster && id != "" {
+		ctx.AccountId = id
+	}
+	return ctx
 }
 
 func (m KubectlExecuteTool) Name() string {
@@ -511,6 +541,7 @@ func (m KubectlExecuteTool) Description() string {
 		* **Routing:** Availability does not make this tool the default for every Kubernetes command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns Kubernetes reads to the workspace shell, do not use this tool for those reads; keep this direct path for mutations and commands with uncertain effects so approval and resume behavior is preserved.
 		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported when the active agent routes the operation here; this support does not override its tool-routing policy. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) and secret-mounted exec/cp are blocked.
 		* **Output:** The tool will return the output of the executed command.
+		* **Cluster:** By default the command runs on the conversation's current cluster. To run it on another connected cluster, pass its name in 'cluster' (or use '--context <name>'). An unknown name returns the list of available clusters. If the conversation has no current cluster yet, the first cluster you name becomes its current cluster. Only kubectl commands switch clusters; other tools (logs, events, metrics, resource search, helm) stay on the current cluster. Output from another cluster carries a "cluster" field; cite it.
 
 		**Examples:**
 
@@ -567,6 +598,10 @@ func (m KubectlExecuteTool) InputSchema() core.ToolSchema {
 			"command": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Kubectl command to execute",
+			},
+			"cluster": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional. Name of the connected cluster to run this command on. Omit to use the conversation's current cluster.",
 			},
 		},
 		Required: []string{"command"},
@@ -863,12 +898,23 @@ func validateKubectlCommandAccess(command string) error {
 
 func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 
-	if nbRequestContext.ToolConfig.Name == "" {
+	command := strings.TrimSpace(input.Command)
+	requested, err := RequestedKubernetesCluster(command, input.Arguments)
+	if err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	if requested == "" && nbRequestContext.ToolConfig.Name == "" {
 		return core.NBToolResponse{}, fmt.Errorf("no tool configs found for - %s, please configure", m.Name())
 	}
+	target, err := ResolveKubernetesTarget(nbRequestContext, nbRequestContext.ToolConfig, requested)
+	if err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	// crossCluster marks a call that runs somewhere other than the
+	// conversation's saved cluster; its output names the cluster it came from.
+	crossCluster := !strings.EqualFold(target.Name, nbRequestContext.ToolConfig.Name)
 
-	nbRequestContext.Ctx.GetLogger().Info("k8s: executing executeShellCommand tool call", "query", input.Command)
-	command := strings.TrimSpace(input.Command)
+	nbRequestContext.Ctx.GetLogger().Info("k8s: executing executeShellCommand tool call", "query", input.Command, "cluster", target.Name, "cross_cluster", crossCluster)
 
 	if err := validateKubectlCommandAccess(command); err != nil {
 		return core.NBToolResponse{}, err
@@ -888,41 +934,26 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		}
 	}
 
-	// we want to ignor eany context related information as system always uses default context
-	if strings.Contains(command, "--context") {
-		parts := strings.Fields(command)
-		for i, p := range parts {
-			if p == "--context" {
-				// Ensure there is an argument after --context before slicing
-				if i+1 < len(parts) {
-					parts = append(parts[:i], parts[i+2:]...)
-				} else {
-					// --context is the last argument, just remove it
-					parts = parts[:i]
-				}
-				command = strings.Join(parts, " ")
-				break
-			}
-		}
-	}
+	// --context selected the target above; the workspace has no kubeconfig
+	// contexts, so the flag itself must not reach kubectl.
+	command = StripKubectlContextFlag(command)
 
 	// The shim routes the selected cluster via NB_TOOL_CONFIG_NAME. Keep files
 	// in the original conversation workspace even for cross-environment calls.
-	wm := workspace.NewWorkspaceManager()
 	requestType, classifyErr := m.InferToolRequestType(nbRequestContext.Ctx, m.Name(), command)
 	if classifyErr != nil {
 		return core.NBToolResponse{}, classifyErr
 	}
 	if requestType != core.ToolRequestTypeRead {
-		if accessErr := CheckShellTargetWriteAccess(nbRequestContext.Ctx, nbRequestContext.ToolConfig); accessErr != nil {
+		if accessErr := CheckShellTargetWriteAccess(nbRequestContext.Ctx, target); accessErr != nil {
 			return core.NBToolResponse{}, accessErr
 		}
 	}
-	env, err := KubernetesTargetEnv(nbRequestContext, nbRequestContext.ToolConfig)
+	env, err := KubernetesTargetEnv(nbRequestContext, target)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
+	response, err := m.workspace().ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
 	if err != nil {
 		// Pipeline-tail no-match reclassification (issue #32240).
 		// The LLM regularly uses kubectl with `| grep` / `| awk` /
@@ -934,11 +965,17 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		// these correctly; we just need to wire them in.
 		if isNoMatchExit(err, command) {
 			nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
+			if crossCluster {
+				return successResponseNoMatchesOnCluster(nbRequestContext, response, target.Name)
+			}
 			return successResponseNoMatches(nbRequestContext, response)
 		}
 		nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
 		if response == "" {
 			response = err.Error()
+		}
+		if crossCluster {
+			response = fmt.Sprintf("[cluster: %s] %s", target.Name, response)
 		}
 		return core.NBToolResponse{
 			Data:   response,
@@ -966,6 +1003,9 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 	outputformat := map[string]string{
 		"stdout": stdout,
 	}
+	if crossCluster {
+		outputformat["cluster"] = target.Name
+	}
 	outputformatBytes, err := common.MarshalJson(outputformat)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("kubectl: unable to marshal response", "error", err.Error())
@@ -980,7 +1020,7 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		Data:       response,
 		Type:       core.NBToolResponseTypeText,
 		Status:     core.NBToolResponseStatusSuccess,
-		References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
+		References: []core.NBToolResponseReference{kubectlUIRef(refContextForTarget(nbRequestContext, target, crossCluster), command)},
 	}
 	if stderr != "" {
 		resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
@@ -1033,6 +1073,23 @@ func kubectlErrorHint(rawError string) string {
 }
 
 func (m KubectlExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.NBToolCallRequest, availableConfigs []core.ToolConfig) (core.ToolConfig, error) {
+	// 0. A cluster the call names explicitly (cluster arg or --context) wins.
+	// The executor passes the raw tool input as Command, so parse it here.
+	parsed := core.ParseNBToolCallRequestFromInput(input.Command)
+	for k, v := range input.Arguments {
+		if parsed.Arguments == nil {
+			parsed.Arguments = map[string]any{}
+		}
+		parsed.Arguments[k] = v
+	}
+	if requested, err := RequestedKubernetesCluster(parsed.Command, parsed.Arguments); err == nil && requested != "" {
+		for _, cfg := range availableConfigs {
+			if strings.EqualFold(cfg.Name, requested) {
+				return cfg, nil
+			}
+		}
+	}
+
 	// 1. Try to match via context labels (e.g. nb_cloud_account_id from UI context)
 	if ctx.QueryConfig.Labels != nil {
 		var cloudAccountID string

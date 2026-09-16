@@ -2283,7 +2283,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				return step, finish, nil
 			}
 			if requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
-				selected, resolveErr := toolcore.GetToolConfigByName(e.ctx, e.agentRequest.AccountId, owner, e.agentRequest.QueryConfig.ToolConfigs[owner.Name()])
+				selected, resolveErr := e.shellWriteTarget(owner, action)
 				if resolveErr != nil {
 					return NBAgentPlannerToolActionStep{}, nil, resolveErr
 				}
@@ -4836,6 +4836,21 @@ func uniqueQueries(queries ...string) []string {
 }
 
 // configOwnerForAction preserves the shell action while selecting its configuration owner.
+// shellWriteTarget returns the config a shell write will actually run against:
+// the cluster named by --context for kubectl, otherwise the saved selection.
+func (e *plannerExecutor) shellWriteTarget(owner toolcore.NBTool, action NBAgentPlannerToolAction) (toolcore.ToolConfig, error) {
+	if owner.Name() == tools.ToolExecuteKubectlCommand {
+		requested, err := tools.RequestedShellKubernetesCluster(action.ToolInput)
+		if err != nil {
+			return toolcore.ToolConfig{}, err
+		}
+		if requested != "" {
+			return tools.KubernetesTargetByName(e.ctx, e.agentRequest.AccountId, requested)
+		}
+	}
+	return toolcore.GetToolConfigByName(e.ctx, e.agentRequest.AccountId, owner, e.agentRequest.QueryConfig.ToolConfigs[owner.Name()])
+}
+
 func configOwnerForAction(tool toolcore.NBTool, accountID, input string) toolcore.NBTool {
 	if !strings.EqualFold(tool.Name(), toolcore.ToolExecuteShellCommand) {
 		return tool

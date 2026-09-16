@@ -70,6 +70,8 @@ func (m ShellTool) Description() string {
 
 	**Preserve failures:** Check collection succeeded before analyzing its output. Keep stderr visible; avoid blanket error suppression or appending || true to every command. A partial or failed collection must not be presented as an empty successful result.
 
+	**Kubernetes cluster:** ` + "`kubectl`" + ` runs on the conversation's current cluster. Add ` + "`--context <cluster-name>`" + ` to run a command on another connected cluster (one cluster per command); an unknown name returns the list of available clusters.
+
 	**Empty-match is success.** When grep-family searchers (` + "`grep` / `egrep` / `fgrep` / `rg` / `ack` / `ag`" + `) find no matches, the observation comes back as ` + "`{\"stdout\":\"\",\"no_matches\":true}`" + ` with a Success status — the command ran fine and there is nothing to find. Do NOT retry the same command — either widen the pattern or conclude that no match exists. This semantic also applies when the searcher is the last segment of a pipeline (` + "`kubectl get pods | grep ready`" + `). It does NOT apply to ` + "`find`" + ` (whose exit 1 is a real path / permission error) or plain ` + "`jq`" + ` (which exits 0 and returns ` + "`null`" + ` on missing keys).
 
 	**Error responses.** A real failure comes back as a JSON envelope: ` + "`{\"error_hint\":\"<actionable advice>\",\"original_error\":\"<raw stderr verbatim>\"}`" + `. Three well-known stderr patterns are wrapped: unbalanced quotes, no-such-file on file/text readers (` + "`cat`/`grep`/`jq`" + `), and command-not-found. Read the ` + "`error_hint`" + ` first — it tells you what to fix — then ` + "`original_error`" + ` for the underlying signal. For any other failure mode the response is the raw stderr unchanged.
@@ -102,6 +104,29 @@ func (m ShellTool) InputSchema() core.ToolSchema {
 		},
 		Required: []string{"command"},
 	}
+}
+
+// resolveKubectlTarget picks the cluster for a shell kubectl command: the one
+// named by --context when present, otherwise the conversation's saved cluster.
+func (m ShellTool) resolveKubectlTarget(nbRequestContext core.NbToolContext, command string) (core.ToolConfig, error) {
+	requested, err := RequestedKubernetesCluster(command, nil)
+	if err != nil {
+		return core.ToolConfig{}, err
+	}
+	if requested != "" {
+		return KubernetesTargetByName(nbRequestContext.Ctx, nbRequestContext.AccountId, requested)
+	}
+	return ResolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand)
+}
+
+// ConfirmationKey scopes a shell kubectl write approval to the cluster named by
+// --context, so approving a write on one cluster never covers another.
+func (m ShellTool) ConfirmationKey(toolInput string) string {
+	requested, err := RequestedShellKubernetesCluster(toolInput)
+	if err != nil {
+		return m.Name() + "@" + toolInput
+	}
+	return kubernetesConfirmationKey(m.Name(), requested)
 }
 
 func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -163,10 +188,13 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	// the planner to route through specialized cloud tools.
 	env := map[string]string{}
 	if ShellConfigToolName(originalCommand) == ToolExecuteKubectlCommand {
-		selected, err := ResolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand)
+		selected, err := m.resolveKubectlTarget(nbRequestContext, originalCommand)
 		if err != nil {
-			return core.NBToolResponse{}, err
+			return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 		}
+		// --context selected the target; the workspace has no kubeconfig
+		// contexts, so the flag itself must not reach kubectl.
+		command = StripKubectlContextFlag(command)
 		env, err = KubernetesTargetEnv(nbRequestContext, selected)
 		if err != nil {
 			return core.NBToolResponse{}, err
@@ -886,4 +914,22 @@ func buildAuthForAccount(nbRequestContext core.NbToolContext, provider, accountI
 		return BuildAzureAuth(creds)
 	}
 	return nil, nil
+}
+
+// successResponseNoMatchesOnCluster is successResponseNoMatches for a kubectl
+// call that ran on a cluster other than the conversation's saved one.
+func successResponseNoMatchesOnCluster(nbRequestContext core.NbToolContext, stdout, cluster string) (core.NBToolResponse, error) {
+	resp, err := successResponseNoMatches(nbRequestContext, stdout)
+	if err != nil || !strings.HasPrefix(resp.Data, "{") {
+		return resp, err
+	}
+	payload := map[string]any{}
+	if common.UnmarshalJson([]byte(resp.Data), &payload) != nil {
+		return resp, nil
+	}
+	payload["cluster"] = cluster
+	if body, mErr := common.MarshalJson(payload); mErr == nil {
+		resp.Data = string(body)
+	}
+	return resp, nil
 }

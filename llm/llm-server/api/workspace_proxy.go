@@ -480,14 +480,26 @@ func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedC
 	if requestedConfig == "" {
 		return ctx.AccountId, nil
 	}
-	if ctx.ToolConfig.Name != requestedConfig {
-		return "", fmt.Errorf("selected cluster configuration is unavailable")
+	selected := ctx.ToolConfig
+	if selected.Name != requestedConfig {
+		// The per-account config list is narrowed to the workspace's own
+		// cluster, so a per-call target on another cluster is looked up by name
+		// across the tenant. The caller still checks the result against the
+		// token's bound target.
+		if ctx.Ctx == nil || ctx.Ctx.GetSecurityContext() == nil {
+			return "", fmt.Errorf("target cluster access denied")
+		}
+		found, err := tools.KubernetesTargetByName(ctx.Ctx, ctx.AccountId, requestedConfig)
+		if err != nil {
+			return "", fmt.Errorf("selected cluster configuration is unavailable")
+		}
+		selected = found
 	}
 	requiredAccess := security.SecurityAccessTypeRead
 	if command != "" && tools.InferKubectlVerbType(command) != core.ToolRequestTypeRead {
 		requiredAccess = security.SecurityAccessTypeCreate
 	}
-	for _, value := range ctx.ToolConfig.Values {
+	for _, value := range selected.Values {
 		if value.Name == "id" && value.Value != "" {
 			if ctx.Ctx == nil || ctx.Ctx.GetSecurityContext() == nil || !ctx.Ctx.GetSecurityContext().HasAccountAccess(value.Value, requiredAccess) {
 				return "", fmt.Errorf("target cluster access denied")

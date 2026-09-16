@@ -552,66 +552,19 @@ func ListToolConfigs(context *security.RequestContext, accountId string, tool NB
 		}
 
 	case ToolConfigSourceAccount:
-		configRows, err := dbms.Query("select id::text, account_name, account_number  from cloud_accounts where tenant = $1 and lower(cloud_provider) = lower($2) and status = 'active'", context.GetSecurityContext().GetTenantId(), toolConfigSchema.ConfigType)
+		all, err := queryTenantAccountConfigs(dbms, context.GetSecurityContext().GetTenantId(), toolConfigSchema)
 		if err != nil {
-			slog.Error("tools: failed to get tool", "error", err)
 			return configs, err
 		}
-		defer func() {
-			if err := configRows.Close(); err != nil {
-				slog.Error("tools: failed to close configRows", "error", err)
+		configs = all
+		// A conversation opened on one of these accounts is narrowed to it, so
+		// the tool auto-selects the current account. Explicit lookups of other
+		// accounts use ListTenantAccountToolConfigs instead.
+		for _, c := range all {
+			if accountIDOf(c) == accountId {
+				configs = []ToolConfig{c}
+				break
 			}
-		}()
-
-		foundSameAccountId := false
-		var sameAccountConfigs ToolConfig
-
-		for configRows.Next() {
-			var configId, configName, configNumber *string
-			err = configRows.Scan(&configId, &configName, &configNumber)
-			if err != nil {
-				slog.Error("tools: failed to scan tool", "error", err)
-				return configs, err
-			}
-
-			if configId == nil {
-				continue
-			}
-
-			safeName := ""
-			if configName != nil {
-				safeName = *configName
-			}
-			safeNumber := ""
-			if configNumber != nil {
-				safeNumber = *configNumber
-			}
-
-			labels := map[string]string{}
-			configs = append(configs, ToolConfig{
-				Name: safeName,
-				Values: []ToolConfigValue{
-					{
-						Name:  "id",
-						Value: *configId,
-					},
-					{
-						Name:  "account_number",
-						Value: safeNumber,
-					},
-				},
-				Tags:   labels,
-				Schema: toolConfigSchema,
-			})
-
-			if *configId == accountId {
-				foundSameAccountId = true
-				sameAccountConfigs = configs[len(configs)-1]
-			}
-		}
-
-		if foundSameAccountId {
-			configs = []ToolConfig{sameAccountConfigs}
 		}
 
 	case ToolConfigSourceTicketAll:
@@ -1181,4 +1134,84 @@ func unmarshalLabelsToStringMap(configLabels *string) map[string]string {
 		labels[k] = fmt.Sprintf("%v", v)
 	}
 	return labels
+}
+
+// queryTenantAccountConfigs lists every active cloud account of the schema's
+// provider in the tenant, one ToolConfig per account.
+func queryTenantAccountConfigs(dbms *common.DatabaseManager, tenantId string, toolConfigSchema ToolConfigSchema) ([]ToolConfig, error) {
+	configs := []ToolConfig{}
+	configRows, err := dbms.Query("select id::text, account_name, account_number  from cloud_accounts where tenant = $1 and lower(cloud_provider) = lower($2) and status = 'active'", tenantId, toolConfigSchema.ConfigType)
+	if err != nil {
+		slog.Error("tools: failed to get tool", "error", err)
+		return configs, fmt.Errorf("queryTenantAccountConfigs: %w", err)
+	}
+	defer func() {
+		if err := configRows.Close(); err != nil {
+			slog.Error("tools: failed to close configRows", "error", err)
+		}
+	}()
+
+	for configRows.Next() {
+		var configId, configName, configNumber *string
+		if err := configRows.Scan(&configId, &configName, &configNumber); err != nil {
+			slog.Error("tools: failed to scan tool", "error", err)
+			return configs, fmt.Errorf("queryTenantAccountConfigs: %w", err)
+		}
+		if configId == nil {
+			continue
+		}
+		safeName := ""
+		if configName != nil {
+			safeName = *configName
+		}
+		safeNumber := ""
+		if configNumber != nil {
+			safeNumber = *configNumber
+		}
+		configs = append(configs, ToolConfig{
+			Name: safeName,
+			Values: []ToolConfigValue{
+				{Name: "id", Value: *configId},
+				{Name: "account_number", Value: safeNumber},
+			},
+			Tags:   map[string]string{},
+			Schema: toolConfigSchema,
+		})
+	}
+	if err := configRows.Err(); err != nil {
+		slog.Error("tools: failed to iterate account configs", "error", err)
+		return nil, fmt.Errorf("queryTenantAccountConfigs: %w", err)
+	}
+	return configs, nil
+}
+
+func accountIDOf(c ToolConfig) string {
+	for _, v := range c.Values {
+		if v.Name == "id" {
+			return v.Value
+		}
+	}
+	return ""
+}
+
+// ListTenantAccountToolConfigs lists every account-backed config for an
+// account-sourced tool (e.g. every connected cluster for kubectl) in the
+// caller's tenant, without narrowing to the conversation's own account.
+// Callers must still filter by the caller's account access. It is not cached:
+// it only runs when a call names a target other than the saved one, and a
+// tenant-wide entry has no account tag that cluster add/remove would clear.
+func ListTenantAccountToolConfigs(context *security.RequestContext, tool NBTool) ([]ToolConfig, error) {
+	provider, ok := tool.(NBToolConfig)
+	if !ok {
+		return nil, fmt.Errorf("tools: %s has no config schema", tool.Name())
+	}
+	schema := provider.ConfigSchema(context)
+	if schema.ConfigSource != ToolConfigSourceAccount {
+		return nil, fmt.Errorf("tools: %s is not account-sourced", tool.Name())
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("ListTenantAccountToolConfigs: %w", err)
+	}
+	return queryTenantAccountConfigs(dbms, context.GetSecurityContext().GetTenantId(), schema)
 }
