@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '@ui/Modal';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import apiIntegrations from '@api1/integrations';
 import apiTicketIntegrations from '@api1/tickets';
 import { infoIcon } from '@assets';
@@ -18,12 +19,26 @@ import { ds } from 'src/utils/colors';
 // submit/test is treated as "leave the stored value untouched".
 const TOKEN_PLACEHOLDER = '••••••••';
 
+// auth_type values understood by ticket-server, services-server and llm-server.
+// Data Center personal access tokens are sent as a bearer token and carry their
+// own identity, so no username is needed; everything else uses Basic auth.
+const AUTH_TOKEN = 'token';
+const AUTH_DATACENTER_PAT = 'datacenter_pat';
+
+const HELPER_TEXT_SX = {
+  color: 'var(--ds-gray-500)',
+  fontSize: 'var(--ds-text-caption)',
+  lineHeight: 1.5,
+};
+
 const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
   const isEdit = !!editConfig;
   const [jiraName, setJiraName] = useState('');
   const [jiraAccUrl, setJiraAccUrl] = useState('');
   const [jiraToken, setJiraToken] = useState('');
   const [jiraUserName, setJiraUserName] = useState('');
+  const [authType, setAuthType] = useState(AUTH_TOKEN);
+  const isPAT = authType === AUTH_DATACENTER_PAT;
   const [validationError, setValidationError] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -35,11 +50,13 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
       setJiraAccUrl(editConfig.url || '');
       setJiraToken(TOKEN_PLACEHOLDER);
       setJiraUserName(editConfig.username || '');
+      setAuthType(editConfig.auth_type === AUTH_DATACENTER_PAT ? AUTH_DATACENTER_PAT : AUTH_TOKEN);
     } else {
       setJiraName('');
       setJiraAccUrl('');
       setJiraToken('');
       setJiraUserName('');
+      setAuthType(AUTH_TOKEN);
     }
     setValidationError({});
     setIsSubmitting(false);
@@ -65,8 +82,8 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
   };
 
   const handleTestConnection = async () => {
-    if (!jiraName?.trim() || !jiraAccUrl?.trim() || !jiraUserName?.trim()) {
-      snackbar.error('Please fill name, URL and username before testing');
+    if (!jiraName?.trim() || !jiraAccUrl?.trim() || (!isPAT && !jiraUserName?.trim())) {
+      snackbar.error(isPAT ? 'Please fill name and URL before testing' : 'Please fill name, URL and username before testing');
       return;
     }
     setIsTesting(true);
@@ -75,8 +92,9 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
         ...(isEdit ? { id: editConfig.id } : {}),
         name: jiraName.trim(),
         url: jiraAccUrl.trim(),
-        username: jiraUserName.trim(),
+        username: isPAT ? '' : jiraUserName.trim(),
         password: tokenForSubmit(),
+        auth_type: authType,
         tool: 'jira',
       });
       if (result?.success) {
@@ -97,7 +115,8 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
       name: data.jiraName,
       password: tokenForSubmit(),
       url: data.jiraAccUrl,
-      username: data.jiraUserName,
+      username: isPAT ? '' : data.jiraUserName,
+      auth_type: authType,
       tool: 'jira',
     };
     apiIntegrations
@@ -131,6 +150,7 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
               url: bodyData.url,
               username: bodyData.username,
               password: bodyData.password || undefined,
+              auth_type: bodyData.auth_type,
               tool: 'jira',
             })
             .then((res) => {
@@ -223,16 +243,41 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
             disabled={isSubmitting}
           />
 
-          <Input
-            value={jiraUserName}
-            size='sm'
-            id='jiraUserName'
-            label='User Name'
-            instructionText='The email address associated with your Jira account'
-            required
-            onChange={setJiraUserName}
-            disabled={isSubmitting}
-          />
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+            <Typography component='span' sx={{ ...HELPER_TEXT_SX, color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+              Authentication method
+            </Typography>
+            <Typography component='span' sx={HELPER_TEXT_SX}>
+              Jira Data Center personal access tokens need no username
+            </Typography>
+            <Box sx={{ alignSelf: 'flex-start' }}>
+              <ToggleGroup
+                id='jira-auth-type'
+                ariaLabel='Authentication method'
+                selection='single'
+                size='md'
+                value={authType}
+                onChange={setAuthType}
+                options={[
+                  { value: AUTH_TOKEN, label: 'Username + API Token', disabled: isSubmitting },
+                  { value: AUTH_DATACENTER_PAT, label: 'Data Center PAT', disabled: isSubmitting },
+                ]}
+              />
+            </Box>
+          </Box>
+
+          {!isPAT && (
+            <Input
+              value={jiraUserName}
+              size='sm'
+              id='jiraUserName'
+              label='User Name'
+              instructionText='The email address (Cloud) or username (Data Center) of your Jira account'
+              required
+              onChange={setJiraUserName}
+              disabled={isSubmitting}
+            />
+          )}
 
           <Input
             value={jiraToken}
@@ -249,8 +294,10 @@ const JiraAccountModal = ({ openModal, handleClose, editConfig = null }) => {
                     </Box>
                   </Tooltip>
                 </Box>
+              ) : isPAT ? (
+                'Personal access token from your Jira Data Center profile'
               ) : (
-                'API token for authentication with Jira'
+                'API token (Cloud) or password (Data Center) for authentication with Jira'
               )
             }
             required={!isEdit}
@@ -324,6 +371,7 @@ JiraAccountModal.propTypes = {
     name: PropTypes.string,
     url: PropTypes.string,
     username: PropTypes.string,
+    auth_type: PropTypes.string,
   }),
 };
 

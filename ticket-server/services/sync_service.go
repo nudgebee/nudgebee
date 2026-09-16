@@ -246,7 +246,7 @@ func SyncTickets() {
 			continue
 		}
 
-		jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+		jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 		if err != nil {
 			slog.Error("Unable to create Jira client", "error", err, "configuration_id", configuration.ID)
 			continue

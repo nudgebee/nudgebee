@@ -416,9 +416,19 @@ func getJiraIntegrationConfig(accountId string) (map[string]string, error) {
 		return nil, fmt.Errorf("jira config: error scanning row: %w", err)
 	}
 
-	// Validate required fields
-	if url == nil || username == nil || password == nil {
+	mode := ""
+	if authType != nil {
+		mode = *authType
+	}
+
+	// Validate required fields. A Data Center personal access token carries its
+	// own identity, so it has no username.
+	if url == nil || password == nil || (username == nil && !jiraIsDataCenterPAT(mode)) {
 		return nil, fmt.Errorf("jira config: missing required configuration values")
+	}
+	user := ""
+	if username != nil {
+		user = *username
 	}
 
 	decryptedPassword, err := common.Decrypt(*password)
@@ -428,13 +438,28 @@ func getJiraIntegrationConfig(accountId string) (map[string]string, error) {
 	}
 
 	return map[string]string{
-		"url":      sanitizeURL(*url),
-		"username": *username,
-		"token":    decryptedPassword,
+		"url":       sanitizeURL(*url),
+		"username":  user,
+		"token":     decryptedPassword,
+		"auth_type": mode,
 	}, nil
 }
 
+// jiraAuthDataCenterPAT is the auth_type for Jira Data Center personal access
+// tokens, which must be sent as a bearer token — Data Center rejects them over
+// Basic with 401. Every other auth_type ("token", or unset on older
+// integrations) uses Basic. Mirrors api-server/services/integrations/jira.go.
+const jiraAuthDataCenterPAT = "datacenter_pat"
+
+func jiraIsDataCenterPAT(authType string) bool {
+	return strings.TrimSpace(authType) == jiraAuthDataCenterPAT
+}
+
 func newJiraClient(config map[string]string) (*jira.Client, error) {
+	if jiraIsDataCenterPAT(config["auth_type"]) {
+		tp := jira.BearerAuthTransport{Token: config["token"]}
+		return jira.NewClient(tp.Client(), config["url"])
+	}
 	tp := jira.BasicAuthTransport{
 		Username: config["username"],
 		Password: config["token"],

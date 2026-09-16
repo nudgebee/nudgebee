@@ -49,7 +49,7 @@ func (s *JiraService) GetComments(ctx *gin.Context, config models.TicketConfigur
 }
 
 func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Jira client: %w", err)
 	}
@@ -118,7 +118,7 @@ func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, 
 }
 
 func CreateJiraIssue(configuration models.TicketConfigurations, ticket models.Ticket) (models.Ticket, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Unable to get Jira client:", "error", slog.AnyValue(err))
 		return ticket, err
@@ -347,7 +347,7 @@ func FetchFullIssueDetails(jiraClient *jira.Client, issueKey string) (*jira.Issu
 }
 
 func AddTicketComment(configuration models.TicketConfigurations, ticketId, title, description string) error {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Failed to create Jira client", "error", err, "configurationID", configuration.ID)
 		return fmt.Errorf("failed to create Jira client: %w", err)
@@ -369,7 +369,7 @@ func AddTicketComment(configuration models.TicketConfigurations, ticketId, title
 
 // FetchJiraIssueCreateMeta Function to fetch create meta of a Jira issue
 func FetchJiraIssueCreateMeta(configuration models.TicketConfigurations, projectKey string) (any, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Unable to get jira client for configuration: "+configuration.ID, "error", slog.AnyValue(err))
 		return nil, err
@@ -597,7 +597,7 @@ func contains(slice []string, str string) bool {
 }
 
 func QueryIssueFieldDetails(ctx *gin.Context, configuration models.TicketConfigurations, request models.FieldValuesRequest) (any, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Unable to get Jira client for configuration: "+configuration.ID, "error", slog.AnyValue(err))
 		return nil, err
@@ -719,7 +719,7 @@ func getEmailForUser(ctx *gin.Context, client *jira.Client, displayName string) 
 }
 
 func GetTicketComments(config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
-	jc, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jc, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -780,7 +780,7 @@ func fetchCommentsFromJira(ticketID string, jc *jira.Client) ([]models.Comments,
 }
 
 func AddCustomTicketComment(configuration models.TicketConfigurations, ticketId, comment string) ([]models.Comments, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Failed to create Jira client", "error", err, "configurationID", configuration.ID)
 		return []models.Comments{}, fmt.Errorf("failed to create Jira client: %w", err)
@@ -822,7 +822,7 @@ func validateJQLDate(field, value string) (string, error) {
 
 // List retrieves tickets from Jira using JQL search.
 func (s *JiraService) List(ctx *gin.Context, config models.TicketConfigurations, params models.ListParams) (*models.ListResult, error) {
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Jira client: %w", err)
 	}
@@ -965,7 +965,7 @@ func (s *JiraService) Update(ctx *gin.Context, config models.TicketConfiguration
 		return fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create Jira client: %w", err)
 	}
@@ -1033,7 +1033,7 @@ func (s *JiraService) Transition(ctx *gin.Context, config models.TicketConfigura
 		return fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create Jira client: %w", err)
 	}
