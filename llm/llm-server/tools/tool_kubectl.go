@@ -742,119 +742,6 @@ const kubectlCommandGrammarHint = "Send exactly one kubectl command, " +
 	"multiple kubectl calls are not accepted. To aggregate across namespaces or resources, " +
 	"issue one kubectl call per target and combine the results yourself."
 
-func isUnsafeAwkScript(script string) bool {
-	return strings.Contains(script, "system") ||
-		strings.Contains(script, "getline") ||
-		strings.Contains(script, ">") ||
-		strings.Contains(script, "|") ||
-		strings.Contains(script, "@include") ||
-		strings.Contains(script, "@load")
-}
-
-// isNumericValueFlag reports whether part is a bare short flag that takes its
-// value as the next word (rather than attached, e.g. "-n5") for the given
-// filter command. Limited to the flags actually seen taking a detached
-// numeric value in practice; anything else falls through to the normal
-// positional count.
-func isNumericValueFlag(cmd, part string) bool {
-	switch cmd {
-	case "grep", "egrep", "fgrep", "rgrep":
-		switch part {
-		case "-A", "-B", "-C", "-m":
-			return true
-		}
-	case "head", "tail":
-		switch part {
-		case "-n", "-c":
-			return true
-		}
-	case "sort":
-		switch part {
-		case "-k":
-			return true
-		}
-	}
-	return false
-}
-
-func isDigitsOnly(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// filterArgNamesFile reports whether part is an option that makes cmd read a
-// file. The positional count above cannot catch these: the option either
-// consumes the filename as its value or carries it inline after '=', so the
-// path is never counted as a positional and `... | jq -f /etc/passwd` slipped
-// through with zero. That was a direct read primitive, not just an oracle --
-// jq quotes the offending program back in its parse error, so the file's
-// contents land in stderr.
-//
-// Short options bundle (`grep -if FILE` is -i -f), so the cluster's letters are
-// tested individually; a HasPrefix check on "-f" misses every bundled form.
-func filterArgNamesFile(cmd, part string) bool {
-	if len(part) < 2 || part[0] != '-' {
-		return false
-	}
-	isGrep := strings.Contains(cmd, "grep")
-	isJq := cmd == "jq"
-	isSort := cmd == "sort"
-	isAwk := cmd == "awk"
-	// head/tail/wc/uniq/cut/tr read stdin only; they take no file-valued option, and their
-	// zero-positional budget already rejects a bare path.
-	if !isGrep && !isJq && !isSort && !isAwk {
-		return false
-	}
-
-	if strings.HasPrefix(part, "--") {
-		name := strings.TrimPrefix(part, "--")
-		if i := strings.IndexByte(name, '='); i >= 0 {
-			name = name[:i]
-		}
-		switch name {
-		case "file":
-			// grep -f/--file and awk -f/--file read patterns or programs from a file;
-			return isGrep || isAwk
-		case "regexp":
-			// grep --regexp can hide a path in the pattern operand.
-			return isGrep
-		case "from-file", "rawfile", "slurpfile", "argfile":
-			// jq reads the program (--from-file) or raw data (--rawfile and
-			// friends) straight off disk and can echo it to stdout.
-			return isJq
-		case "output", "files0-from":
-			// sort --output writes to a file; --files0-from reads input list from a file.
-			return isSort
-		case "include", "load", "exec":
-			// awk options to load external files or libraries.
-			return isAwk
-		}
-		return false
-	}
-
-	// grep: -f names a pattern file, -e a pattern that may name a path.
-	// jq: -f names a program file; its -e is --exit-status and is harmless.
-	// sort: -o writes to a file.
-	// awk: -f reads program from file, -i includes file, -l loads lib, -E executes file.
-	if isGrep {
-		return strings.ContainsAny(part[1:], "ef")
-	}
-	if isSort {
-		return strings.ContainsRune(part[1:], 'o')
-	}
-	if isAwk {
-		return strings.ContainsAny(part[1:], "filE")
-	}
-	return strings.ContainsAny(part[1:], "f")
-}
-
 // ValidateKubectlRelayCommand applies the kubectl hard-deny policy at the final
 // relay execution boundary. Callers reaching relay (workspace shims, remediation,
 // resource search) must send single kubectl commands with no unquoted shell operators,
@@ -890,7 +777,10 @@ func ValidateKubectlRelayCommand(command string) error {
 		return errors.New("kubectl: reading mounted secret filesystem paths (/var/run/secrets, /var/lib/kubelet/pods, /run/secrets) via exec/cp/attach is blocked")
 	}
 
-	words, _ := splitShellWords(trimmed)
+	words, ok := splitShellWords(trimmed)
+	if !ok {
+		return errors.New("kubectl: command has unbalanced quotes or invalid shell syntax")
+	}
 	normalizedCommand := shellQuoteStripper.Replace(trimmed)
 	for _, word := range words {
 		if strings.Contains(word, "/") {
@@ -943,7 +833,10 @@ func validateKubectlCommandAccess(command string) error {
 	if unsafe, reason := kubectlCommandHasUnsafeShellStructure(command); unsafe {
 		return fmt.Errorf("kubectl: blocked because %s. %s", reason, kubectlCommandGrammarHint)
 	}
-	words, _ := splitShellWords(command)
+	words, ok := splitShellWords(command)
+	if !ok {
+		return errors.New("kubectl: command has unbalanced quotes or invalid shell syntax")
+	}
 	normalizedCommand := shellQuoteStripper.Replace(command)
 	for _, word := range words {
 		if strings.Contains(word, "/") {
@@ -1262,12 +1155,10 @@ func (m KubectlExecuteTool) InferToolRequestTypePrompt(ctx *security.RequestCont
 // fall through to InferToolRequestTypePrompt so the safety posture remains
 // fail-closed.
 func InferKubectlVerbType(command string) core.ToolRequestType {
-	// A read-only kubectl command followed only by argument-processing filters
-	// remains a read. kubectl_execute accepts these bounded pipelines, and
-	// classifying the whole string as unknown would pay for an unnecessary LLM
-	// safety decision on the dominant aggregation shape (`get | sort | uniq`).
-	// Keep the tail allowlist deliberately narrow: shells, xargs, awk, sed, tee,
-	// substitutions, redirections, and compound operators still fall through.
+	// A read-only kubectl command followed by stdout filters remains a read.
+	// Pipeline transforms execute in the workspace shell without brittle in-process
+	// filter parsing. If any downstream stage invokes a mutating command (e.g.
+	// `xargs kubectl delete`), it falls through to confirmation / authorization.
 	stages := splitShellPipeline(command)
 	if len(stages) > 1 {
 		if InferKubectlVerbType(stages[0]) != core.ToolRequestTypeRead {
@@ -1277,8 +1168,7 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 			if hasUnquotedShellSyntax(stage) {
 				return ""
 			}
-			parts, err := shlex.Split(strings.TrimSpace(stage))
-			if err != nil || !isKnownReadOnlyKubectlPipelineFilter(parts) {
+			if stageVerb := inferPipelineStageKubectlVerbType(stage); stageVerb != "" && stageVerb != core.ToolRequestTypeRead {
 				return ""
 			}
 		}
@@ -1358,68 +1248,22 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	return ""
 }
 
-// isKnownReadOnlyKubectlPipelineFilter permits only stdout-oriented local
-// transforms after a read-only kubectl invocation. This is intentionally
-// narrower than shellArgumentOnlyUtilities: that list answers whether arguments
-// may contain command names, whereas this function must also reject utility
-// modes that can write files (for example sort -o or uniq INPUT OUTPUT).
-func isKnownReadOnlyKubectlPipelineFilter(parts []string) bool {
-	if len(parts) == 0 {
-		return false
+func inferPipelineStageKubectlVerbType(stage string) core.ToolRequestType {
+	words, ok := splitShellWords(strings.TrimSpace(stage))
+	if !ok || len(words) == 0 {
+		return ""
 	}
-	command := filepath.Base(parts[0])
-	switch command {
-	case "cat", "cut", "egrep", "fgrep", "grep", "head", "jq", "od", "rgrep", "tail", "tr", "wc":
-		for _, part := range parts[1:] {
-			if filterArgNamesFile(command, part) {
-				return false
-			}
-		}
-		return true
-	case "awk":
-		for i := 1; i < len(parts); i++ {
-			part := parts[i]
-			if filterArgNamesFile("awk", part) {
-				return false
-			}
-			if (part == "-F" || part == "-v") && i+1 < len(parts) {
-				i++
-				continue
-			}
-			if !strings.HasPrefix(part, "-") {
-				if isUnsafeAwkScript(part) {
-					return false
-				}
-			}
-		}
-		return true
-	case "sort":
-		for i := 1; i < len(parts); i++ {
-			part := parts[i]
-			if filterArgNamesFile("sort", part) {
-				return false
-			}
-			if isNumericValueFlag("sort", part) && i+1 < len(parts) && isDigitsOnly(parts[i+1]) {
-				i++
-				continue
-			}
-			if !strings.HasPrefix(part, "-") {
-				return false
-			}
-		}
-		return true
-	case "uniq":
-		// uniq accepts positional INPUT and OUTPUT files. In a pipeline it needs
-		// only flags; any positional argument makes the effect ambiguous.
-		for _, part := range parts[1:] {
-			if !strings.HasPrefix(part, "-") {
-				return false
-			}
-		}
-		return true
-	default:
-		return false
+	if strings.EqualFold(words[0], "kubectl") {
+		return InferKubectlVerbType(stage)
 	}
+	if words[0] == "xargs" || words[0] == "parallel" {
+		for i, w := range words {
+			if strings.EqualFold(w, "kubectl") {
+				return InferKubectlVerbType(strings.Join(words[i:], " "))
+			}
+		}
+	}
+	return ""
 }
 
 // hasUnquotedShellSyntax reports command shapes whose overall intent cannot be
