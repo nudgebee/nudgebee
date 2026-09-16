@@ -198,8 +198,12 @@ func TestInferKubectlVerbType(t *testing.T) {
 		{"read aggregation pipeline", "kubectl get pods -A --no-headers -o custom-columns=NAMESPACE:.metadata.namespace | sort | uniq -c", core.ToolRequestTypeRead},
 		{"read sort with flag", "kubectl get pods | sort -r", core.ToolRequestTypeRead},
 		{"read sort with detached numeric key", "kubectl get pods | sort -k 2", core.ToolRequestTypeRead},
+		{"read pipeline with awk", "kubectl get pods | awk '{print $1}'", core.ToolRequestTypeRead},
+		{"read pipeline with awk fields", `kubectl get pods -A --no-headers -o "custom-columns=NAMESPACE:.metadata.namespace" | sort | uniq -c | awk '{print $2"\t"$1}' | sort`, core.ToolRequestTypeRead},
 		{"pipeline with grep file option falls through", "kubectl get pods | grep -f /etc/passwd", ""},
 		{"pipeline with jq file option falls through", "kubectl get pods | jq -f /etc/passwd", ""},
+		{"pipeline with awk file option falls through", "kubectl get pods | awk -f /etc/passwd", ""},
+		{"pipeline with awk system falls through", `kubectl get pods | awk '{system("rm -rf /")}'`, ""},
 		{"pipeline with executable tail falls through", "kubectl get pods | xargs kubectl delete pod", ""},
 		{"pipeline with redirect falls through", "kubectl get pods | sort > pods.txt", ""},
 		{"pipeline with sort output file falls through", "kubectl get pods | sort -o pods.txt", ""},
@@ -394,6 +398,14 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 		`kubectl get pods | sort /etc/passwd`,
 		`kubectl get pods | uniq input.txt output.txt`,
 		`kubectl get pods | uniq input.txt`,
+		// File-writing and command-execution options on awk/cut.
+		`kubectl get pods | awk '{ system("rm -rf /") }'`,
+		`kubectl get pods | awk '{ print > "/tmp/file" }'`,
+		`kubectl get pods | awk '{ getline < "/tmp/file" }'`,
+		`kubectl get pods | awk -f /etc/passwd`,
+		`kubectl get pods | awk --file=/etc/passwd`,
+		`kubectl get pods | awk '{print $1}' /etc/passwd`,
+		`kubectl get pods | cut -f1 /etc/passwd`,
 	}
 	for _, command := range blocked {
 		require.Error(t, validateKubectlCommandAccess(command), command)
@@ -429,6 +441,14 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | uniq -c`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | uniq -i`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | sort | uniq -c`))
+	// awk, cut, and tr pipeline filters
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -A --no-headers -o "custom-columns=NAMESPACE:.metadata.namespace" | sort | uniq -c | awk '{print $2"\t"$1}' | sort`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk '{print $1}'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk '{print $2"\t"$1}'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk -F, '{print $1}'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk -v OFS='\t' '{print $1, $2}'`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | cut -d' ' -f1`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | tr -s ' '`))
 	// The detached-value allowance must not smuggle in a real extra
 	// positional or a non-numeric operand.
 	require.Error(t, validateKubectlCommandAccess(`kubectl get pods | tail -n 20 extra`))
@@ -581,7 +601,7 @@ func TestKubectlBlockMessageGivesTheAgentARepairPath(t *testing.T) {
 		{`kubectl get pods > /tmp/out`, "a redirection"},
 		{`kubectl get pods; rm -rf /`, "a shell operator"},
 		{`kubectl get pods $(whoami)`, "a subshell or command group"},
-		{`kubectl get pods | awk '{print $1}'`, `"awk" is not an allowed filter`},
+		{`kubectl get pods | sed 's/foo/bar/'`, `"sed" is not an allowed filter`},
 		{`kubectl get pods | grep 'unterminated`, "unbalanced quote"},
 		{`helm list`, "does not start with kubectl"},
 	} {

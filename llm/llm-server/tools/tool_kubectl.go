@@ -734,25 +734,27 @@ func splitShellWords(input string) ([]string, bool) {
 // same shape or abandoning the step. Keep it in sync with
 // isSafeKubectlPipelineFilter below.
 const kubectlCommandGrammarHint = "Send exactly one kubectl command, " +
-	"optionally piped into a single filter: grep/egrep/fgrep/rgrep/jq (at most one pattern argument) " +
-	"or head/tail/wc/sort/uniq (flags only). Loops, subshells, redirections, command substitution and " +
+	"optionally piped into safe stdout filters: grep/egrep/fgrep/rgrep/jq/awk (at most one pattern/script argument) " +
+	"or head/tail/wc/sort/uniq/cut/tr. Loops, subshells, redirections, command substitution and " +
 	"multiple kubectl calls are not accepted. To aggregate across namespaces or resources, " +
 	"issue one kubectl call per target and combine the results yourself."
 
 // isSafeKubectlPipelineFilter accepts only filters whose arguments cannot name
-// an input file. grep/jq get one positional expression; head/tail/wc/sort/uniq get none
-// and therefore must consume stdin. This intentionally rejects richer option
-// forms when their operand roles are ambiguous.
+// an input file. grep/jq/awk get one positional expression; head/tail/wc/sort/uniq/cut get none
+// and therefore must consume stdin. tr gets character sets. This intentionally rejects
+// file-reading options and unsafe script operations.
 func isSafeKubectlPipelineFilter(parts []string) bool {
 	if len(parts) == 0 {
 		return false
 	}
 	var maxPositionals int
 	switch parts[0] {
-	case "grep", "egrep", "fgrep", "rgrep", "jq":
+	case "grep", "egrep", "fgrep", "rgrep", "jq", "awk":
 		maxPositionals = 1
-	case "head", "tail", "wc", "sort", "uniq":
+	case "head", "tail", "wc", "sort", "uniq", "cut":
 		maxPositionals = 0
+	case "tr":
+		maxPositionals = 2
 	default:
 		return false
 	}
@@ -770,11 +772,31 @@ func isSafeKubectlPipelineFilter(parts []string) bool {
 			i++
 			continue
 		}
+		if parts[0] == "awk" && (part == "-F" || part == "-v") && i+1 < len(args) {
+			i++
+			continue
+		}
+		if parts[0] == "cut" && (part == "-d" || part == "-f") && i+1 < len(args) {
+			i++
+			continue
+		}
 		if !strings.HasPrefix(part, "-") {
 			positionals++
+			if parts[0] == "awk" && isUnsafeAwkScript(part) {
+				return false
+			}
 		}
 	}
 	return positionals <= maxPositionals
+}
+
+func isUnsafeAwkScript(script string) bool {
+	return strings.Contains(script, "system") ||
+		strings.Contains(script, "getline") ||
+		strings.Contains(script, ">") ||
+		strings.Contains(script, "|") ||
+		strings.Contains(script, "@include") ||
+		strings.Contains(script, "@load")
 }
 
 // isNumericValueFlag reports whether part is a bare short flag that takes its
@@ -832,9 +854,10 @@ func filterArgNamesFile(cmd, part string) bool {
 	isGrep := strings.Contains(cmd, "grep")
 	isJq := cmd == "jq"
 	isSort := cmd == "sort"
-	// head/tail/wc/uniq read stdin only; they take no file-valued option, and their
+	isAwk := cmd == "awk"
+	// head/tail/wc/uniq/cut/tr read stdin only; they take no file-valued option, and their
 	// zero-positional budget already rejects a bare path.
-	if !isGrep && !isJq && !isSort {
+	if !isGrep && !isJq && !isSort && !isAwk {
 		return false
 	}
 
@@ -844,9 +867,11 @@ func filterArgNamesFile(cmd, part string) bool {
 			name = name[:i]
 		}
 		switch name {
-		case "file", "regexp":
-			// grep -f/--file reads patterns from a file; --regexp can hide a
-			// path in the pattern operand.
+		case "file":
+			// grep -f/--file and awk -f/--file read patterns or programs from a file;
+			return isGrep || isAwk
+		case "regexp":
+			// grep --regexp can hide a path in the pattern operand.
 			return isGrep
 		case "from-file", "rawfile", "slurpfile", "argfile":
 			// jq reads the program (--from-file) or raw data (--rawfile and
@@ -855,6 +880,9 @@ func filterArgNamesFile(cmd, part string) bool {
 		case "output", "files0-from":
 			// sort --output writes to a file; --files0-from reads input list from a file.
 			return isSort
+		case "include", "load", "exec":
+			// awk options to load external files or libraries.
+			return isAwk
 		}
 		return false
 	}
@@ -862,11 +890,15 @@ func filterArgNamesFile(cmd, part string) bool {
 	// grep: -f names a pattern file, -e a pattern that may name a path.
 	// jq: -f names a program file; its -e is --exit-status and is harmless.
 	// sort: -o writes to a file.
+	// awk: -f reads program from file, -i includes file, -l loads lib, -E executes file.
 	if isGrep {
 		return strings.ContainsAny(part[1:], "ef")
 	}
 	if isSort {
 		return strings.ContainsRune(part[1:], 'o')
+	}
+	if isAwk {
+		return strings.ContainsAny(part[1:], "filE")
 	}
 	return strings.ContainsAny(part[1:], "f")
 }
@@ -1310,6 +1342,23 @@ func isKnownReadOnlyKubectlPipelineFilter(parts []string) bool {
 		for _, part := range parts[1:] {
 			if filterArgNamesFile(command, part) {
 				return false
+			}
+		}
+		return true
+	case "awk":
+		for i := 1; i < len(parts); i++ {
+			part := parts[i]
+			if filterArgNamesFile("awk", part) {
+				return false
+			}
+			if (part == "-F" || part == "-v") && i+1 < len(parts) {
+				i++
+				continue
+			}
+			if !strings.HasPrefix(part, "-") {
+				if isUnsafeAwkScript(part) {
+					return false
+				}
 			}
 		}
 		return true
