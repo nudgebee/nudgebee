@@ -110,6 +110,10 @@ export interface GenerateQueryRequest {
   // both scopes the fields the generator is shown and pins the index the
   // generated query resolves against. Ignored by backends with no index concept.
   index?: string;
+  // Optional row limit for ai_generate_log_query — the logs tab's "Limit"
+  // dropdown. Caps the limit written into the generated query (a smaller count
+  // stated in the question is kept), so the bar shows a limit the run applies.
+  limit?: number;
 }
 
 export interface InvestigateRequest {

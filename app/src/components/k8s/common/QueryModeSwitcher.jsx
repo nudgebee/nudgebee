@@ -109,6 +109,20 @@ const QueryModeSwitcher = ({
   const setCurrentQLEditor = setQLEditor || setInternalQLEditor;
   const [query, setQuery] = useState('');
   const codeQueryRef = useRef('');
+  // Provenance of the Code editor's text: the last query THIS component generated
+  // (builder preview or AI tab) as { query, where, limit } — the text, the
+  // canonical where-clause it was rendered from, and the Limit it was rendered
+  // for. Carrying the limit here rather than in a second ref is what makes the
+  // effect below answer the question that matters ("does the text on screen
+  // disagree with the toolbar?") from the text's own provenance, instead of from
+  // a separately-tracked previous prop the two can drift apart on.
+  // Held in a ref rather than diffed against the editor alone, because a render
+  // in flight blanks the editor — see the Limit effect below.
+  const generatedQueryRef = useRef(null);
+  // Monotonic render id: a slow response must not overwrite a newer one, which
+  // would put back the very limit the newer render was issued to replace.
+  const renderSeqRef = useRef(0);
+  const renderInFlightRef = useRef(false);
   const [generateQuestionText, setGenerateQuestionText] = useState('');
   const [isLoadingGenerateQuestionText, setIsLoadingGenerateQuestionText] = useState(false);
   const [helperTextForLLM, setHelperTextForLLM] = useState('');
@@ -262,12 +276,23 @@ const QueryModeSwitcher = ({
     return list;
   }, [codeSample, logProvider, metricsList]);
 
+  // Forgets the Code editor's provenance and invalidates any render still in
+  // flight. Bumping the seq is the half that matters on an account or provider
+  // change: clearing the ref alone still lets a response issued for the account
+  // the user just left land afterwards and repopulate the editor with its text.
+  const forgetGeneratedQuery = () => {
+    generatedQueryRef.current = null;
+    renderSeqRef.current += 1;
+    renderInFlightRef.current = false;
+  };
+
   const resetStates = () => {
     setQuery('');
     setHelperTextForLLM('');
     setGenerateQuestionText('');
     setIsLoadingGenerateQuestionText(false);
     setQueryItems([]);
+    forgetGeneratedQuery();
     if (onQueryChange) {
       onQueryChange({ query: '', queryKeys: [''] });
     }
@@ -277,12 +302,24 @@ const QueryModeSwitcher = ({
     if (initialQuery) {
       codeQueryRef.current = initialQuery;
       setQuery(initialQuery);
+      // The parent echoes our own text straight back here — onQueryChange sets its
+      // logQuery, which is this very prop — so arriving at a value we just produced
+      // is not new input and must not drop provenance, or the Limit re-render below
+      // can never fire. Anything else was seeded from outside (drilldown, restored
+      // history) and is not ours to re-render.
+      if (initialQuery !== generatedQueryRef.current?.query) {
+        forgetGeneratedQuery();
+      }
     }
   }, [initialQuery]);
 
   useEffect(() => {
     const whichDefaultMode = ['signoz', 'loggly', 'loki', 'otel_clickhouse'].includes(logProvider) ? 'build' : 'code';
     setCurrentQLEditor(whichDefaultMode);
+    // Query text is provider-specific, so text generated for the previous
+    // provider is not ours to re-render. CloudLogsViewer keeps this component
+    // mounted across a provider switch, so the ref has to be cleared here.
+    forgetGeneratedQuery();
   }, [logProvider]);
 
   useEffect(() => {
@@ -361,6 +398,33 @@ const QueryModeSwitcher = ({
     }
   }, [currentQLEditor]);
 
+  // Re-render the Code text when the toolbar's Limit changes. The limit is baked
+  // into the query text for most providers and Code-mode text is executed
+  // verbatim, so text left at the old limit shows a number the run will not use.
+  // Only text this component generated is replaced — anything the user typed or
+  // edited is left alone, which is why provenance is tracked rather than guessed.
+  useEffect(() => {
+    // Not gated on the editor mode: the AI tab renders its own CodeMirror over the
+    // same `query` state, so a generated query is on screen there too and goes
+    // stale the same way. Provenance, not the mode, is what says the text is ours.
+    if (!limit || providerType === 'metrics') {
+      return;
+    }
+    const generated = generatedQueryRef.current;
+    // Nothing of ours on screen, or its text was already rendered for this Limit.
+    // This second test is what makes the effect idempotent, so it can depend on
+    // everything it reads and still do work only when the text is actually stale.
+    if (!generated?.where || generated.limit === limit) {
+      return;
+    }
+    // While a render is in flight the editor is blank, so the text cannot match;
+    // re-render anyway — the in-flight response is dropped by its stale seq.
+    if (query !== generated.query && !renderInFlightRef.current) {
+      return;
+    }
+    renderQueryFromWhere(generated.where, { blankEditor: false });
+  }, [limit, providerType, query]);
+
   // Sync operations back to parent when prebuildQueryBlocks changes
   useEffect(() => {
     if (setQueryOperations && prebuildQueryBlocks.length > 0) {
@@ -432,6 +496,69 @@ const QueryModeSwitcher = ({
     _nregex: '_nregex',
   };
 
+  // Renders a canonical where-clause into provider-native query text via
+  // logs_get_query and puts it in the Code editor. Shared by the builder preview
+  // and the Limit re-render, so both produce text through one path — the limit is
+  // part of the rendered text for most providers AND is sent on execution, and
+  // those two must not disagree.
+  const renderQueryFromWhere = async (whereClause, { blankEditor = true } = {}) => {
+    const seq = ++renderSeqRef.current;
+    // Read once: the request and the provenance recorded for the response must
+    // name the same limit even if the prop changes while this is in flight.
+    const renderLimit = limit;
+    renderInFlightRef.current = true;
+    if (blankEditor) {
+      setQuery('');
+    }
+
+    try {
+      const response = await observability.getFormattedQuery({
+        account_id: accountId,
+        query_request: {
+          where: whereClause,
+        },
+        start_time: params?.startDate,
+        end_time: params?.endDate,
+        // Format the preview for the provider the user actually selected. Without
+        // this the backend falls back to the account default (e.g. Pinot SQL) even
+        // when the fetch runs against the override (e.g. Loki). Only sent when
+        // overridden, mirroring the fetch path in KubernetesLogs.handleSubmit.
+        ...(providerOverride ? { log_provider: providerOverride } : {}),
+        // Preview the query with the same row limit the fetch will use. Without
+        // it the backend falls back to the provider default (Pinot/Hive: 1000),
+        // so the generated SQL contradicted the toolbar's Limit selection — and
+        // in Code mode that SQL is executed verbatim, silently overriding it.
+        limit: renderLimit,
+      });
+
+      // A newer render started while this one was in flight: its text is the
+      // current one, so drop this response rather than overwriting it.
+      if (seq !== renderSeqRef.current) {
+        return;
+      }
+
+      if (response?.data?.errors) {
+        snackbar.error(`Failed to format query - ${parseHttpResponseBodyMessage(response?.data)}`);
+        return;
+      }
+
+      const formattedQuery = response?.data?.data?.logs_get_query?.query;
+
+      if (formattedQuery) {
+        const key = uuidv4();
+        generatedQueryRef.current = { query: formattedQuery, where: whereClause, limit: renderLimit };
+        setQuery(formattedQuery);
+        if (onQueryChange) {
+          onQueryChange({ query: formattedQuery, queryKeys: [key] });
+        }
+      }
+    } finally {
+      if (seq === renderSeqRef.current) {
+        renderInFlightRef.current = false;
+      }
+    }
+  };
+
   const handleFetchFormattedQuery = async (itemsToUse, operationsToUse = []) => {
     const validOperations = (operationsToUse || []).filter((op) => op?.value && op.value.trim() !== '');
     const hasItems = Array.isArray(itemsToUse) && itemsToUse.length > 0;
@@ -476,39 +603,7 @@ const QueryModeSwitcher = ({
         _and: [...itemClauses, ...operationClauses],
       };
 
-      const response = await observability.getFormattedQuery({
-        account_id: accountId,
-        query_request: {
-          where: whereClause,
-        },
-        start_time: params?.startDate,
-        end_time: params?.endDate,
-        // Format the preview for the provider the user actually selected. Without
-        // this the backend falls back to the account default (e.g. Pinot SQL) even
-        // when the fetch runs against the override (e.g. Loki). Only sent when
-        // overridden, mirroring the fetch path in KubernetesLogs.handleSubmit.
-        ...(providerOverride ? { log_provider: providerOverride } : {}),
-        // Preview the query with the same row limit the fetch will use. Without
-        // it the backend falls back to the provider default (Pinot/Hive: 1000),
-        // so the generated SQL contradicted the toolbar's Limit selection — and
-        // in Code mode that SQL is executed verbatim, silently overriding it.
-        limit,
-      });
-
-      if (response?.data?.errors) {
-        snackbar.error(`Failed to format query - ${parseHttpResponseBodyMessage(response?.data)}`);
-        return;
-      }
-
-      const formattedQuery = response?.data?.data?.logs_get_query?.query;
-
-      if (formattedQuery) {
-        const key = uuidv4();
-        setQuery(formattedQuery);
-        if (onQueryChange) {
-          onQueryChange({ query: formattedQuery, queryKeys: [key] });
-        }
-      }
+      await renderQueryFromWhere(whereClause);
     } catch (err) {
       snackbar.error(`Failed to format query - ${err.message}`);
     }
@@ -683,6 +778,16 @@ const QueryModeSwitcher = ({
     return false;
   };
 
+  // Records an AI-generated query the same way a builder preview is recorded, so
+  // a later Limit change re-renders it through logs_get_query instead of leaving
+  // the generator's limit on screen. `where` is the canonical clause the text was
+  // rendered from; without it (older llm-server) the text is simply left as is.
+  // `limit` is the dropdown value the text was generated for — llm-server capped
+  // the query at it — so moving the dropdown is what marks the text stale.
+  const rememberGeneratedQuery = (queryData) => {
+    generatedQueryRef.current = queryData?.where ? { query: queryData.query, where: queryData.where, limit } : null;
+  };
+
   const handleGenerateQuery = () => {
     setIsLoadingGenerateQuestionText(true);
     if (onAiLoadingChange) {
@@ -728,6 +833,9 @@ const QueryModeSwitcher = ({
           // against. Omitted when blank — the backend then falls back to the
           // account's default index and reports which one it used.
           ...(logProvider === 'ES' && selectedEsIndex ? { index: selectedEsIndex } : {}),
+          // The run uses the toolbar's Limit, so cap the generated query at it —
+          // otherwise the bar shows the generator's default (1000/5000) instead.
+          ...(limit ? { limit } : {}),
         })
         .then((res) => {
           const errors = res?.data?.errors || [];
@@ -753,6 +861,7 @@ const QueryModeSwitcher = ({
                   const queryData = safeJSONParse(result.response);
                   if (queryData?.query) {
                     const key = uuidv4();
+                    rememberGeneratedQuery(queryData);
                     setQuery(queryData.query);
                     if (onQueryChange) {
                       onQueryChange({ query: queryData.query, queryKeys: [key], ...esIndexEcho(queryData) });
@@ -769,6 +878,7 @@ const QueryModeSwitcher = ({
             const queryData = safeJSONParse(query);
             if (queryData?.query) {
               const key = uuidv4();
+              rememberGeneratedQuery(queryData);
               setQuery(queryData.query);
               if (onQueryChange) {
                 onQueryChange({ query: queryData.query, queryKeys: [key], ...esIndexEcho(queryData) });

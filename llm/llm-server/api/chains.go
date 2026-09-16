@@ -91,6 +91,10 @@ type ConversationApiRequest struct {
 	// metrics provider is Elasticsearch). Ignored for backends with no index
 	// concept (Loki, Prometheus, …) and by every other handler.
 	Index string `json:"index,omitempty"`
+	// Limit optionally caps the row limit written into /log-query's generated
+	// query at the logs tab's "Limit" dropdown. Zero keeps the generator's own
+	// choice. Ignored by every other handler.
+	Limit int `json:"limit,omitempty"`
 	// Resolution optionally resolves a pending follow-up without answering
 	// it. Only "dismiss" is supported (soft-skip the question, then end the
 	// conversation with a structured marker — see handleFollowupCancel for
@@ -1946,7 +1950,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			source = request.Source
 		}
 
-		var logQueryChain = agents.NewLogQueryAgent(request.AccountId, request.LogProvider, request.Index)
+		var logQueryChain = agents.NewLogQueryAgent(request.AccountId, request.LogProvider, request.Index, request.Limit)
 		// Check budget limits for tenant and account
 		module := budget.ModuleUserInvestigation
 		if strings.HasPrefix(request.SessionId, events.SessionIdPrefixEvent) {

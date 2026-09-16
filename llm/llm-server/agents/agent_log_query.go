@@ -35,6 +35,7 @@ type LogQueryAgent struct {
 	provider          services_server.ObservabilityProvider
 	requestedProvider string
 	requestedIndex    string
+	requestedLimit    int
 }
 
 // NewLogQueryAgent resolves the account's log provider for this request.
@@ -53,7 +54,10 @@ type LogQueryAgent struct {
 // index, so the generator is shown the fields that actually exist there instead
 // of the account default's. Ignored for backends with no index concept (Loki,
 // Pinot, …), which have no DefaultIndex to speak of.
-func NewLogQueryAgent(accountId, requestedProvider, requestedIndex string) *LogQueryAgent {
+//
+// requestedLimit optionally caps the generated query's row limit at the logs
+// tab's "Limit" dropdown (see effectiveLimit). Zero keeps the generator's choice.
+func NewLogQueryAgent(accountId, requestedProvider, requestedIndex string, requestedLimit int) *LogQueryAgent {
 	provider, err := tools.GetLogProviderWithOverride(accountId, requestedProvider)
 	// Empty provider (or unresolved) means no services-server log backend —
 	// Execute rejects those accounts outright, same as FetchLogsAgent. An
@@ -69,7 +73,7 @@ func NewLogQueryAgent(accountId, requestedProvider, requestedIndex string) *LogQ
 	if requestedIndex != "" && tools.IsESLogProvider(provider.Provider) {
 		provider.DefaultIndex = requestedIndex
 	}
-	return &LogQueryAgent{accountId: accountId, provider: provider, requestedProvider: requestedProvider, requestedIndex: requestedIndex}
+	return &LogQueryAgent{accountId: accountId, provider: provider, requestedProvider: requestedProvider, requestedIndex: requestedIndex, requestedLimit: requestedLimit}
 }
 
 func (l *LogQueryAgent) GetName() string { return LogQueryAgentName }
@@ -113,6 +117,11 @@ type logQueryResult struct {
 	// tab show which index the query in the bar will actually run against.
 	// Empty for backends with no index concept.
 	Index string `json:"index,omitempty"`
+	// Where is the canonical where-clause the query text was rendered from. The
+	// logs tab re-renders the text through logs_get_query when its Limit dropdown
+	// changes, so the bar keeps showing the limit that will run — without another
+	// generation call.
+	Where *toolcore.QueryWhereClause `json:"where,omitempty"`
 }
 
 // Execute generates a canonical log query from the user's question and resolves
@@ -150,6 +159,7 @@ func (l *LogQueryAgent) Execute(ctx *security.RequestContext, request core.NBAge
 	if index != "" {
 		configs["index"] = index
 	}
+	configs["limit"] = l.effectiveLimit(queryBuilder.Limit)
 
 	query, err := tools.GetLogsQueryPreview(ctx, l.accountId, l.provider, queryBuilder.Where, configs)
 	if err != nil {
@@ -164,6 +174,7 @@ func (l *LogQueryAgent) Execute(ctx *security.RequestContext, request core.NBAge
 		Query:    query,
 		Provider: l.provider.Provider,
 		Index:    index,
+		Where:    &queryBuilder.Where,
 	}
 	data, err := common.MarshalJson(result)
 	if err != nil {
@@ -211,6 +222,21 @@ func (l *LogQueryAgent) effectiveIndex(generatedIndex string) string {
 		return generatedIndex
 	}
 	return l.provider.DefaultIndex
+}
+
+// effectiveLimit resolves the row limit written into the generated query: the
+// smaller of the logs tab's Limit dropdown and the limit the generator chose.
+//
+// Not a hard pin like the index. The dropdown is almost always its default, so
+// pinning would turn "the last 20 errors" into 100. The minimum keeps a count
+// stated in the question, while stopping the generator's 1000/5000 default from
+// showing a limit the run never applies — the tab sends the dropdown value on
+// execution too, and a provider that applies both limits returns the smaller.
+func (l *LogQueryAgent) effectiveLimit(generatedLimit int) int {
+	if l.requestedLimit > 0 && (generatedLimit <= 0 || generatedLimit > l.requestedLimit) {
+		return l.requestedLimit
+	}
+	return generatedLimit
 }
 
 // buildCanonicalTimeConfigs parses the LLM-generated canonical query JSON into

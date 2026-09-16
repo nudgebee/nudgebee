@@ -4690,6 +4690,7 @@ input AIGetLogQueryRequest {
   async: Boolean
   log_provider: String
   index: String
+  limit: Int
 }
 
 input AiFeedbackCreateRequest {
