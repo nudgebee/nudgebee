@@ -175,9 +175,11 @@ func newJiraClient(url, authType, username, password string, timeout time.Durati
 	return client, nil
 }
 
-// ListUsers enumerates Jira users for identity sync via the bulk users/search
-// endpoint. Jira Cloud frequently omits emailAddress (GDPR), in which case the
-// account is login-only (manual-map, like GitHub); Server/DC returns the email.
+// ListUsers enumerates Jira users for identity sync. Cloud serves the bulk
+// users/search endpoint; Server/Data Center lacks it and instead matches every
+// user through user/search with a wildcard username. Jira Cloud frequently
+// omits emailAddress (GDPR), in which case the account is login-only
+// (manual-map, like GitHub); Server/DC returns the email.
 // Implements core.UserLister.
 func (j Jira) ListUsers(ctx context.Context, values []core.IntegrationConfigValue) ([]core.ExternalUser, error) {
 	url := core.ConfigValue(values, JiraConfigUrl)
@@ -193,12 +195,21 @@ func (j Jira) ListUsers(ctx context.Context, values []core.IntegrationConfigValu
 		return nil, err
 	}
 
+	cloud, err := jiraIsCloud(ctx, jiraClient)
+	if err != nil {
+		return nil, fmt.Errorf("jira: detect deployment: %w", err)
+	}
+	listPath := "rest/api/2/users/search?"
+	if !cloud {
+		listPath = "rest/api/2/user/search?username=.&"
+	}
+
 	var out []core.ExternalUser
 	for page := 0; page < jiraMaxPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		endpoint := fmt.Sprintf("rest/api/2/users/search?startAt=%d&maxResults=%d", page*jiraUserPageSize, jiraUserPageSize)
+		endpoint := fmt.Sprintf("%sstartAt=%d&maxResults=%d", listPath, page*jiraUserPageSize, jiraUserPageSize)
 		req, err := jiraClient.NewRequestWithContext(ctx, "GET", endpoint, nil)
 		if err != nil {
 			return nil, fmt.Errorf("jira: build request: %w", err)
@@ -220,6 +231,22 @@ func (j Jira) ListUsers(ctx context.Context, values []core.IntegrationConfigValu
 		}
 	}
 	return out, nil
+}
+
+// jiraIsCloud reports whether the instance is Jira Cloud rather than
+// Server/Data Center, which expose different user endpoints.
+func jiraIsCloud(ctx context.Context, jiraClient *jira.Client) (bool, error) {
+	req, err := jiraClient.NewRequestWithContext(ctx, "GET", "rest/api/2/serverInfo", nil)
+	if err != nil {
+		return false, err
+	}
+	var info struct {
+		DeploymentType string `json:"deploymentType"`
+	}
+	if _, err := jiraClient.Do(req, &info); err != nil {
+		return false, err
+	}
+	return strings.EqualFold(info.DeploymentType, "Cloud"), nil
 }
 
 // mapJiraUser converts a Jira user to an ExternalUser, skipping app/bot accounts

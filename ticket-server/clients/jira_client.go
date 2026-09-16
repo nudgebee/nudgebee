@@ -43,3 +43,20 @@ func CreateJiraClient(authType, username, password, url string) (*jira.Client, e
 
 	return client, nil
 }
+
+// IsJiraCloud reports whether the instance is Jira Cloud rather than
+// Server/Data Center. The two differ in user identity (accountId vs name),
+// in which user-search parameters they accept, and in which endpoints exist.
+func IsJiraCloud(client *jira.Client) (bool, error) {
+	req, err := client.NewRequest("GET", "rest/api/2/serverInfo", nil)
+	if err != nil {
+		return false, err
+	}
+	var info struct {
+		DeploymentType string `json:"deploymentType"`
+	}
+	if _, err := client.Do(req, &info); err != nil {
+		return false, err
+	}
+	return strings.EqualFold(info.DeploymentType, "Cloud"), nil
+}

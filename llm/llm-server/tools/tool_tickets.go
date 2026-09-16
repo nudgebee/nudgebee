@@ -140,7 +140,7 @@ func (m TicketMaster) Call(nbRequestContext core.NbToolContext, input core.NBToo
 			break
 		}
 
-		issues, err := searchIssuesV3(client, request.Query)
+		issues, err := searchIssues(client, request.Query)
 		if err != nil {
 			errResp = fmt.Errorf("ticketMaster: search failed: %v", err)
 			break
@@ -498,9 +498,42 @@ func nullableField(field any) string {
 	}
 }
 
-func searchIssuesV3(client *jira.Client, jql string) ([]jira.Issue, error) {
-	apiEndpoint := "rest/api/3/search/jql"
+// Jira Cloud removed rest/api/2/search and serves JQL search only at
+// rest/api/3/search/jql; Data Center has no v3 API and answers it with a
+// redirect to the login page, so the deployment decides the endpoint.
+const (
+	jiraSearchCloud      = "rest/api/3/search/jql"
+	jiraSearchDataCenter = "rest/api/2/search"
+)
 
+func searchIssues(client *jira.Client, jql string) ([]jira.Issue, error) {
+	cloud, err := jiraIsCloud(client)
+	if err != nil {
+		return nil, fmt.Errorf("detecting deployment type: %w", err)
+	}
+	if cloud {
+		return searchIssuesAt(client, jiraSearchCloud, jql)
+	}
+	return searchIssuesAt(client, jiraSearchDataCenter, jql)
+}
+
+// jiraIsCloud reports whether the instance is Jira Cloud rather than
+// Server/Data Center.
+func jiraIsCloud(client *jira.Client) (bool, error) {
+	req, err := client.NewRequest("GET", "rest/api/2/serverInfo", nil)
+	if err != nil {
+		return false, err
+	}
+	var info struct {
+		DeploymentType string `json:"deploymentType"`
+	}
+	if _, err := client.Do(req, &info); err != nil {
+		return false, err
+	}
+	return strings.EqualFold(info.DeploymentType, "Cloud"), nil
+}
+
+func searchIssuesAt(client *jira.Client, apiEndpoint, jql string) ([]jira.Issue, error) {
 	reqBody := map[string]any{
 		"jql":    jql,
 		"fields": []string{"*all", "-description", "-comment", "-worklog"},
