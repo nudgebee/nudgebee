@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -370,6 +371,14 @@ func RegisterHandler(
 			}
 		})
 
+		// —— answer requests that died in the queue ——
+		// Runs for as long as the session does, so a caller whose request aged
+		// out behind a full prefetch window fails fast instead of hanging until
+		// its own timeout. See consumeExpiredRequests.
+		eg.Go(func() error {
+			return consumeExpiredRequests(egCtx, connMgr, queue, accountID, logger)
+		})
+
 		consumerTag := fmt.Sprintf("reg-%s-%d", accountID, time.Now().UnixNano())
 		// —— consumer + dispatch with auto‐reconnect ——
 		eg.Go(func() error {
@@ -685,7 +694,10 @@ func RegisterHandler(
 		}
 
 		// —— wait for everything to finish ——
-		if err := eg.Wait(); err != nil && err != context.Canceled {
+		// errors.Is, not !=: several goroutines in this group wrap their cause
+		// (the consumer's "get channel: %w" among them), so a plain comparison
+		// reported every clean shutdown as a session failure.
+		if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("register session ended with error", "err", err, "account", accountID)
 		} else {
 			logger.Info("register session ended cleanly", "account", accountID)

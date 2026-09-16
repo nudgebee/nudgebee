@@ -3,6 +3,7 @@ package metrics
 import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 )
 
 var (
@@ -34,6 +35,13 @@ var (
 	//   expired   — the caller's deadline had already passed on arrival, so the
 	//               request was never forwarded to the agent
 	WS_RepliesDelivered metric.Int64Counter
+
+	// RequestsExpiredInQueue counts requests dead-lettered by the tenant queue's
+	// x-message-ttl before any agent session took them. Distinct from the
+	// delivery outcomes above, which all describe a request that *was* picked
+	// up: these never reached an agent at all. A non-zero rate means the
+	// session's prefetch window is saturated for that tenant.
+	RequestsExpiredInQueue metric.Int64Counter
 )
 
 // requestBuckets are the explicit bucket boundaries for every per-request
@@ -56,6 +64,16 @@ var requestBuckets = []float64{
 // registrations (hours).
 var sessionBuckets = []float64{
 	10, 60, 300, 900, 1800, 3600, 7200, 21600, 43200, 86400,
+}
+
+// Every instrument starts as a no-op, so a call that happens before Init — or
+// after an Init that failed — records nothing instead of panicking on a nil
+// interface. cmd/main.go overwrites these with real instruments at startup.
+//
+// Routing this through Init itself means any instrument added later is covered
+// without a second place to remember.
+func init() {
+	_ = Init(noop.NewMeterProvider().Meter("uninitialized"))
 }
 
 // Init initializes all OTel instruments using the given meter.
@@ -133,6 +151,14 @@ func Init(meter metric.Meter) error {
 	WS_RepliesDelivered, err = meter.Int64Counter(
 		"nb_relay_ws_replies_delivered_total",
 		metric.WithDescription("Agent replies by delivery route: in-process or republished via AMQP"),
+	)
+	if err != nil {
+		return err
+	}
+
+	RequestsExpiredInQueue, err = meter.Int64Counter(
+		"nb_relay_requests_expired_in_queue_total",
+		metric.WithDescription("Requests dead-lettered by the queue TTL before any agent session took them"),
 	)
 	if err != nil {
 		return err
