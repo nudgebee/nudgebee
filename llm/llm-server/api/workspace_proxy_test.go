@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -347,15 +348,27 @@ func TestHandleWorkspaceGetFileWithPayload(t *testing.T) {
 
 func TestWorkspaceRelayTargetPreservesWorkspaceIdentity(t *testing.T) {
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "original-aws", ConversationId: "original-conversation", ToolConfig: core.ToolConfig{Name: "selected-cluster", Values: []core.ToolConfigValue{{Name: "id", Value: "target-k8s"}}}}
-	target, err := workspaceRelayTarget(ctx, tools.RelayJobKubectl, "selected-cluster")
+	target, err := workspaceRelayTarget(ctx, tools.RelayJobKubectl, "selected-cluster", "kubectl get pods")
 	require.NoError(t, err)
 	require.Equal(t, "target-k8s", target)
 	require.Equal(t, "original-aws", ctx.AccountId)
 	require.Equal(t, "original-conversation", ctx.ConversationId)
-	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "stale-selection")
+	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "stale-selection", "kubectl get pods")
 	require.Error(t, err)
 	ctx.Ctx = security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"original-aws"})
-	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "selected-cluster")
+	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "selected-cluster", "kubectl get pods")
+	require.ErrorContains(t, err, "access denied")
+
+	// Read-only user attempting a write command is denied
+	var readOnlySc security.SecurityContext
+	_ = json.Unmarshal([]byte(`{
+		"RoleNames": ["account_admin_readonly"],
+		"ScopedEntityIds": {
+			"account_admin_readonly": ["target-k8s"]
+		}
+	}`), &readOnlySc)
+	ctx.Ctx = security.NewRequestContext(context.Background(), &readOnlySc, slog.Default(), nil, nil)
+	_, err = workspaceRelayTarget(ctx, tools.RelayJobKubectl, "selected-cluster", "kubectl delete pod foo")
 	require.ErrorContains(t, err, "access denied")
 }
 

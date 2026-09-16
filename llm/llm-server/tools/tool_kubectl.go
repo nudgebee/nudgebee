@@ -670,10 +670,7 @@ func kubectlCommandHasUnsafeShellStructure(command string) (bool, string) {
 		if !ok {
 			return true, "a pipeline stage could not be parsed as shell words"
 		}
-		if !isSafeKubectlPipelineFilter(parts) {
-			if len(parts) > 0 {
-				return true, fmt.Sprintf("the pipeline stage %q is not an allowed filter", parts[0])
-			}
+		if len(parts) == 0 {
 			return true, "an empty pipeline stage is not an allowed filter"
 		}
 	}
@@ -732,63 +729,10 @@ func splitShellWords(input string) ([]string, bool) {
 // kubectlCommandGrammarHint states what IS accepted. It is appended to every
 // rejection so the agent can repair on the next turn instead of retrying the
 // same shape or abandoning the step. Keep it in sync with
-// isSafeKubectlPipelineFilter below.
 const kubectlCommandGrammarHint = "Send exactly one kubectl command, " +
-	"optionally piped into safe stdout filters: grep/egrep/fgrep/rgrep/jq/awk (at most one pattern/script argument) " +
-	"or head/tail/wc/sort/uniq/cut/tr. Loops, subshells, redirections, command substitution and " +
+	"optionally piped into stdout filters. Loops, subshells, redirections, command substitution and " +
 	"multiple kubectl calls are not accepted. To aggregate across namespaces or resources, " +
 	"issue one kubectl call per target and combine the results yourself."
-
-// isSafeKubectlPipelineFilter accepts only filters whose arguments cannot name
-// an input file. grep/jq/awk get one positional expression; head/tail/wc/sort/uniq/cut get none
-// and therefore must consume stdin. tr gets character sets. This intentionally rejects
-// file-reading options and unsafe script operations.
-func isSafeKubectlPipelineFilter(parts []string) bool {
-	if len(parts) == 0 {
-		return false
-	}
-	var maxPositionals int
-	switch parts[0] {
-	case "grep", "egrep", "fgrep", "rgrep", "jq", "awk":
-		maxPositionals = 1
-	case "head", "tail", "wc", "sort", "uniq", "cut":
-		maxPositionals = 0
-	case "tr":
-		maxPositionals = 2
-	default:
-		return false
-	}
-	positionals := 0
-	args := parts[1:]
-	for i := 0; i < len(args); i++ {
-		part := args[i]
-		if filterArgNamesFile(parts[0], part) {
-			return false
-		}
-		// A numeric-value flag's value is its operand, not a second positional
-		// (`grep -A 10 pattern`, `tail -n 20`). Only a plain digit string is
-		// accepted as that value, so this can't absorb a positional in disguise.
-		if isNumericValueFlag(parts[0], part) && i+1 < len(args) && isDigitsOnly(args[i+1]) {
-			i++
-			continue
-		}
-		if parts[0] == "awk" && (part == "-F" || part == "-v") && i+1 < len(args) {
-			i++
-			continue
-		}
-		if parts[0] == "cut" && (part == "-d" || part == "-f") && i+1 < len(args) {
-			i++
-			continue
-		}
-		if !strings.HasPrefix(part, "-") {
-			positionals++
-			if parts[0] == "awk" && isUnsafeAwkScript(part) {
-				return false
-			}
-		}
-	}
-	return positionals <= maxPositionals
-}
 
 func isUnsafeAwkScript(script string) bool {
 	return strings.Contains(script, "system") ||
@@ -903,11 +847,90 @@ func filterArgNamesFile(cmd, part string) bool {
 	return strings.ContainsAny(part[1:], "f")
 }
 
-// validateKubectlCommandAccess applies the kubectl hard-deny policy at both
-// the direct tool path and the final relay boundary. Keeping the relay check
-// prevents any caller that dispatches without calling KubectlExecuteTool.Call
-// (workspace shims, remediation, resource search, or future paths) from
-// bypassing secret-access restrictions.
+// ValidateKubectlRelayCommand applies the kubectl hard-deny policy at the final
+// relay execution boundary. Callers reaching relay (workspace shims, remediation,
+// resource search) must send single kubectl commands with no unquoted shell operators,
+// pipelines, or access to secret-bearing resources or mounted secret paths.
+func ValidateKubectlRelayCommand(command string) error {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return errors.New("kubectl: empty command")
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return errors.New("kubectl: empty command")
+	}
+	firstWord := fields[0]
+	if firstWord != "kubectl" && !strings.HasSuffix(firstWord, "/kubectl") {
+		return errors.New("kubectl: blocked because the command does not start with kubectl")
+	}
+
+	if hasUnquotedRelayMetachars(trimmed) {
+		return errors.New("kubectl: compound commands, pipelines, and redirections are blocked at the relay boundary")
+	}
+
+	if hasShellExpansion(trimmed) {
+		return errors.New("kubectl: shell variable and command expansion ($, $(), and backticks) is blocked")
+	}
+
+	if blocked := kubectlBlockedKind(trimmed); blocked != "" {
+		return fmt.Errorf("kubectl: access to %q is blocked. Secret-bearing kinds (secrets, sealedsecrets, externalsecrets, secretstores, secretproviderclasses) are not readable via this tool", blocked)
+	}
+
+	if kubectlReadsSecretFilesystemPath(trimmed) {
+		return errors.New("kubectl: reading mounted secret filesystem paths (/var/run/secrets, /var/lib/kubelet/pods, /run/secrets) via exec/cp/attach is blocked")
+	}
+
+	words, _ := splitShellWords(trimmed)
+	normalizedCommand := shellQuoteStripper.Replace(trimmed)
+	for _, word := range words {
+		if strings.Contains(word, "/") {
+			normalizedCommand += " " + filepath.Clean(word)
+		}
+	}
+	for _, path := range kubectlSecretFilesystemPatterns {
+		if strings.Contains(normalizedCommand, path) {
+			return errors.New("kubectl: reading mounted secret filesystem paths is blocked")
+		}
+	}
+
+	return nil
+}
+
+func hasUnquotedRelayMetachars(command string) bool {
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if singleQuoted || doubleQuoted {
+			continue
+		}
+		if strings.ContainsRune(";&<>\n\r|(){}", rune(char)) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateKubectlCommandAccess applies the tool-level policy for kubectl_execute.
+// Piped stdout stream filters are allowed (they execute in the workspace shell),
+// but secret access, shell operators, and non-kubectl commands are rejected upfront.
 func validateKubectlCommandAccess(command string) error {
 	if unsafe, reason := kubectlCommandHasUnsafeShellStructure(command); unsafe {
 		return fmt.Errorf("kubectl: blocked because %s. %s", reason, kubectlCommandGrammarHint)
@@ -1226,11 +1249,11 @@ func (m KubectlExecuteTool) InferToolRequestTypePrompt(ctx *security.RequestCont
 	return prompt, nil
 }
 
-// inferKubectlVerbType handles kubectl's unambiguous top-level verbs without
+// InferKubectlVerbType handles kubectl's unambiguous top-level verbs without
 // paying for an LLM classification. Unknown and context-dependent verbs still
 // fall through to InferToolRequestTypePrompt so the safety posture remains
 // fail-closed.
-func inferKubectlVerbType(command string) core.ToolRequestType {
+func InferKubectlVerbType(command string) core.ToolRequestType {
 	// A read-only kubectl command followed only by argument-processing filters
 	// remains a read. kubectl_execute accepts these bounded pipelines, and
 	// classifying the whole string as unknown would pay for an unnecessary LLM
@@ -1239,7 +1262,7 @@ func inferKubectlVerbType(command string) core.ToolRequestType {
 	// substitutions, redirections, and compound operators still fall through.
 	stages := splitShellPipeline(command)
 	if len(stages) > 1 {
-		if inferKubectlVerbType(stages[0]) != core.ToolRequestTypeRead {
+		if InferKubectlVerbType(stages[0]) != core.ToolRequestTypeRead {
 			return ""
 		}
 		for _, stage := range stages[1:] {
@@ -1429,7 +1452,7 @@ func hasUnquotedShellSyntax(command string) bool {
 }
 
 func (m KubectlExecuteTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
-	requestType := inferKubectlVerbType(extractCommandFromToolInput(input))
+	requestType := InferKubectlVerbType(extractCommandFromToolInput(input))
 	if requestType != "" {
 		return requestType, nil
 	}

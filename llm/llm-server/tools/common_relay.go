@@ -676,7 +676,7 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 	// workspace shims and any current or future direct caller from reading
 	// secret-bearing resources or mounted secret paths.
 	if module == RelayJobKubectl {
-		if err := validateKubectlCommandAccess(query); err != nil {
+		if err := ValidateKubectlRelayCommand(query); err != nil {
 			return nil, err
 		}
 	}

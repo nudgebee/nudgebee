@@ -455,7 +455,7 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 
 	// The pod/token remains bound to req.AccountId; Kubernetes execution uses
 	// the selected cluster account, not the workspace's account.
-	targetAccountId, targetErr := workspaceRelayTarget(toolCtx, relayJob, req.ConfigName)
+	targetAccountId, targetErr := workspaceRelayTarget(toolCtx, relayJob, req.ConfigName, req.Command)
 	if targetErr != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": targetErr.Error()})
 		return
@@ -473,7 +473,7 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 	c.JSON(http.StatusOK, gin.H{"result": result})
 }
 
-func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedConfig string) (string, error) {
+func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedConfig string, command string) (string, error) {
 	if job != tools.RelayJobKubectl {
 		return ctx.AccountId, nil
 	}
@@ -483,9 +483,13 @@ func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedC
 	if ctx.ToolConfig.Name != requestedConfig {
 		return "", fmt.Errorf("selected cluster configuration is unavailable")
 	}
+	requiredAccess := security.SecurityAccessTypeRead
+	if command != "" && tools.InferKubectlVerbType(command) != core.ToolRequestTypeRead {
+		requiredAccess = security.SecurityAccessTypeCreate
+	}
 	for _, value := range ctx.ToolConfig.Values {
 		if value.Name == "id" && value.Value != "" {
-			if !ctx.Ctx.GetSecurityContext().HasAccountAccess(value.Value, security.SecurityAccessTypeRead) {
+			if !ctx.Ctx.GetSecurityContext().HasAccountAccess(value.Value, requiredAccess) {
 				return "", fmt.Errorf("target cluster access denied")
 			}
 			return value.Value, nil

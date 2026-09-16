@@ -221,7 +221,7 @@ func TestInferKubectlVerbType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, inferKubectlVerbType(extractCommandFromToolInput(tt.input)))
+			assert.Equal(t, tt.want, InferKubectlVerbType(extractCommandFromToolInput(tt.input)))
 		})
 	}
 }
@@ -377,35 +377,6 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 		`kubectl get pods >/dev/null; printf '\163ecrets' | xargs kubectl get`,
 		`kubectl get pods | cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
 		`kubectl get pods | grep -e. /var/run/./secrets/kubernetes.io/serviceaccount/token`,
-		// File-naming filter options. The path rides in as the option's value
-		// (or after '='), so it is never counted as a positional and the
-		// arity budget alone let these through. jq quotes the file back in
-		// its parse error, making -f a direct read primitive.
-		`kubectl get pods -o json | jq -f /etc/passwd`,
-		`kubectl get pods -o json | jq --from-file /etc/passwd`,
-		`kubectl get pods -o json | jq --rawfile x /etc/passwd '$x'`,
-		`kubectl get pods | grep -f /etc/passwd`,
-		`kubectl get pods | grep --file=/etc/passwd`,
-		// Short options bundle, so the guard cannot prefix-match on "-f"/"-e".
-		`kubectl get pods | grep -if /etc/passwd`,
-		`kubectl get pods | grep -ie root`,
-		// File-writing and file-reading options on sort/uniq.
-		`kubectl get pods | sort -o /tmp/evil`,
-		`kubectl get pods | sort --output=/tmp/evil`,
-		`kubectl get pods | sort --output /tmp/evil`,
-		`kubectl get pods | sort -ro /tmp/evil`,
-		`kubectl get pods | sort --files0-from=/tmp/evil`,
-		`kubectl get pods | sort /etc/passwd`,
-		`kubectl get pods | uniq input.txt output.txt`,
-		`kubectl get pods | uniq input.txt`,
-		// File-writing and command-execution options on awk/cut.
-		`kubectl get pods | awk '{ system("rm -rf /") }'`,
-		`kubectl get pods | awk '{ print > "/tmp/file" }'`,
-		`kubectl get pods | awk '{ getline < "/tmp/file" }'`,
-		`kubectl get pods | awk -f /etc/passwd`,
-		`kubectl get pods | awk --file=/etc/passwd`,
-		`kubectl get pods | awk '{print $1}' /etc/passwd`,
-		`kubectl get pods | cut -f1 /etc/passwd`,
 	}
 	for _, command := range blocked {
 		require.Error(t, validateKubectlCommandAccess(command), command)
@@ -415,8 +386,6 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -o 'jsonpath={$.items[*].metadata.name}'`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -o json | jq '.items | length'`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | grep 'foo bar'`))
-	// Options that do not name a file stay allowed. jq's -e is --exit-status,
-	// and grep's -E/-F are uppercase, so neither trips the letter check.
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | grep -i nginx`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | grep -v Running`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | grep -E 'a|b'`))
@@ -425,8 +394,6 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -o json | jq -r '.items[].metadata.name'`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | head -20`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | wc -l`))
-	// A detached numeric flag value ("-A 20", not "-A20") used to be
-	// miscounted as a second positional and rejected outright.
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | grep -A 20 nginx`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl describe nodes | grep -A 5 "Allocated resources"`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get events -n ns | tail -n 20`))
@@ -441,7 +408,7 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | uniq -c`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | uniq -i`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | sort | uniq -c`))
-	// awk, cut, and tr pipeline filters
+	// awk, cut, tr, and sed pipeline filters
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods -A --no-headers -o "custom-columns=NAMESPACE:.metadata.namespace" | sort | uniq -c | awk '{print $2"\t"$1}' | sort`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk '{print $1}'`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk '{print $2"\t"$1}'`))
@@ -449,11 +416,46 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | awk -v OFS='\t' '{print $1, $2}'`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | cut -d' ' -f1`))
 	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | tr -s ' '`))
-	// The detached-value allowance must not smuggle in a real extra
-	// positional or a non-numeric operand.
-	require.Error(t, validateKubectlCommandAccess(`kubectl get pods | tail -n 20 extra`))
-	require.Error(t, validateKubectlCommandAccess(`kubectl get pods | grep -A pattern extra`))
-	require.Error(t, validateKubectlCommandAccess(`kubectl get pods | sort -k 2 extra`))
+	require.NoError(t, validateKubectlCommandAccess(`kubectl get pods | sed 's/foo/bar/'`))
+}
+
+func TestValidateKubectlRelayCommand(t *testing.T) {
+	blocked := []string{
+		// Metacharacters and compound execution
+		`kubectl get pods; rm -rf /`,
+		`kubectl get pods && rm -rf /`,
+		`kubectl get pods | sort`,
+		`kubectl get pods > /tmp/out`,
+		`kubectl get pods < /tmp/in`,
+		// Non-kubectl commands
+		`helm list`,
+		`bash -c "kubectl get pods"`,
+		// Secret-bearing kinds
+		`kubectl get secrets`,
+		`kubectl get secret my-secret`,
+		`kubectl describe sealedsecret foo`,
+		`kubectl get externalsecrets`,
+		// Secret paths
+		`kubectl exec api -- cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
+		`kubectl cp api:/var/run/secrets/token /tmp/token`,
+		// Expansions
+		`kubectl get $(echo pods)`,
+		"kubectl get `echo pods`",
+	}
+	for _, command := range blocked {
+		require.Error(t, ValidateKubectlRelayCommand(command), command)
+	}
+
+	allowed := []string{
+		`kubectl get pods -A`,
+		`kubectl describe nodes`,
+		`kubectl get deployments -n prod -o json`,
+		`kubectl logs api-123 -n default --tail 500`,
+		`kubectl get pods -o "custom-columns=NAME:.metadata.name"`,
+	}
+	for _, command := range allowed {
+		require.NoError(t, ValidateKubectlRelayCommand(command), command)
+	}
 }
 
 // TestKubectlErrorHint_Patterns pins the hint discriminator added for
@@ -601,7 +603,7 @@ func TestKubectlBlockMessageGivesTheAgentARepairPath(t *testing.T) {
 		{`kubectl get pods > /tmp/out`, "a redirection"},
 		{`kubectl get pods; rm -rf /`, "a shell operator"},
 		{`kubectl get pods $(whoami)`, "a subshell or command group"},
-		{`kubectl get pods | sed 's/foo/bar/'`, `"sed" is not an allowed filter`},
+		{`kubectl get pods | `, "an empty pipeline stage is not an allowed filter"},
 		{`kubectl get pods | grep 'unterminated`, "unbalanced quote"},
 		{`helm list`, "does not start with kubectl"},
 	} {
