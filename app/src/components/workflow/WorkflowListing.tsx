@@ -2027,18 +2027,22 @@ const WorkflowListing: React.FC = () => {
           <DialogContentText>Are you sure you want to cancel the currently running execution? This action cannot be undone.</DialogContentText>
         </Modal>
 
-        <TriggerWorkflowModal
-          open={triggerModalOpen}
-          onClose={handleCloseTriggerModal}
-          workflowName={selectedWorkflow.name}
-          triggerType={getPrimaryTriggerType(selectedWorkflow)}
-          defaultInputs={getDefaultTriggerInputs(selectedWorkflow)}
-          inputSchema={getWorkflowInputSchema(selectedWorkflow)}
-          onTrigger={handleTriggerWorkflow}
-          loading={triggerLoading}
-          liveVersionNumber={selectedWorkflow.live_version_number}
-          liveVersionName={selectedWorkflow.live_version_name}
-        />
+        {/* Mounted only while open so each open seeds the inputs fresh. */}
+        {triggerModalOpen && (
+          <TriggerWorkflowModal
+            key={selectedWorkflow.id}
+            open={triggerModalOpen}
+            onClose={handleCloseTriggerModal}
+            workflowName={selectedWorkflow.name}
+            triggerType={getPrimaryTriggerType(selectedWorkflow)}
+            defaultInputs={getDefaultTriggerInputs(selectedWorkflow)}
+            inputSchema={getWorkflowInputSchema(selectedWorkflow)}
+            onTrigger={handleTriggerWorkflow}
+            loading={triggerLoading}
+            liveVersionNumber={selectedWorkflow.live_version_number}
+            liveVersionName={selectedWorkflow.live_version_name}
+          />
+        )}
 
         <AiGenerateWorkflowModal
           open={aiGenerateModalOpen}
