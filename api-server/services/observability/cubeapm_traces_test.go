@@ -2,67 +2,635 @@ package observability
 
 import (
 	"encoding/json"
-	"net/url"
-	"os"
+	"fmt"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"nudgebee/services/common"
+	"nudgebee/services/integrations"
 	"nudgebee/services/query"
 )
 
-// cubeAPMSampleSearchResponse is the traces search response from CubeAPM's HTTP
-// API reference: Jaeger protobuf-JSON, with base64 ids, typed tag values and a
-// bare nanosecond duration.
-const cubeAPMSampleSearchResponse = `[
-  {
-    "keySpanId": "2d4bjpT7FaA=",
-    "trace": {
-      "spans": [
-        {
-          "trace_id": "V5OPQPPw/3hScwih8m9RBg==",
-          "span_id": "2d4bjpT7FaA=",
-          "operation_name": "POST /v1/payment",
-          "references": [
-            {"trace_id": "V5OPQPPw/3hScwih8m9RBg==", "span_id": "901CCWrDT6M="}
-          ],
-          "start_time": "2025-10-29T03:55:04.90625352Z",
-          "duration": 40965161,
-          "tags": [
-            {"key": "http.status_code", "v_type": 2, "v_int64": 200},
-            {"key": "http.route", "v_str": "/v1/payment"},
-            {"key": "span.kind", "v_str": "server"},
-            {"key": "http.method", "v_str": "POST"}
-          ],
-          "logs": null,
-          "process": {
-            "service_name": "notify-service",
-            "tags": [
-              {"key": "telemetry.sdk.language", "v_str": "java"},
-              {"key": "k8s.namespace.name", "v_str": "payments"}
-            ]
-          }
-        }
-      ]
+// ---------------------------------------------------------------------------
+// LogsQL span queries
+// ---------------------------------------------------------------------------
+
+func eq(field, value string) query.QueryWhereClause {
+	return query.QueryWhereClause{Binary: query.BinaryWhereClause{field: {query.Eq: value}}}
+}
+
+func mustTraceBase(t *testing.T, where query.QueryWhereClause, env string) string {
+	t.Helper()
+	got, err := cubeAPMTraceBaseQuery("", where, env)
+	if err != nil {
+		t.Fatalf("cubeAPMTraceBaseQuery: %v", err)
+	}
+	return got
+}
+
+func TestCubeAPMTraceBaseQuerySelector(t *testing.T) {
+	// Every span query is scoped to span records; span_event rows (exceptions)
+	// live in the same store and would otherwise be listed and counted as spans.
+	if got := mustTraceBase(t, query.QueryWhereClause{}, ""); got != `{event.domain="span"}` {
+		t.Errorf("no filters = %q", got)
+	}
+	if got := mustTraceBase(t, query.QueryWhereClause{}, "prod"); got != `{env="prod", event.domain="span"}` {
+		t.Errorf("with env = %q", got)
+	}
+	// An empty _or (which the Traces page sends) must not render as `()`.
+	if got := mustTraceBase(t, query.QueryWhereClause{Or: []query.QueryWhereClause{}}, ""); got != `{event.domain="span"}` {
+		t.Errorf("empty _or = %q", got)
+	}
+}
+
+// The regression this change fixes: a service filter must reach CubeAPM whether it
+// is top-level or nested in _and. The per-service search only recognised the
+// top-level form, so a nested filter fell back to a capped fan-out that never
+// searched the service at all.
+func TestCubeAPMTraceServiceFilterTopLevelAndNested(t *testing.T) {
+	want := `service:="services-server"`
+
+	top := mustTraceBase(t, eq("workload_name", "services-server"), "")
+	nested := mustTraceBase(t, query.QueryWhereClause{And: []query.QueryWhereClause{eq("workload_name", "services-server")}}, "")
+
+	for name, got := range map[string]string{"top-level": top, "nested in _and": nested} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%s: %q does not filter on %s", name, got, want)
+		}
+	}
+}
+
+func TestCubeAPMTraceWhereRendering(t *testing.T) {
+	tests := []struct {
+		name  string
+		where query.QueryWhereClause
+		want  []string
+		deny  []string
+	}{
+		{
+			name:  "canonical label maps to the LogsQL field",
+			where: eq("span_name", "GET /health"),
+			want:  []string{`span_name:="GET /health"`},
+		},
+		{
+			name:  "unmapped raw field is used verbatim",
+			where: eq("_resource.k8s.pod.name", "api-0"),
+			want:  []string{`_resource.k8s.pod.name:="api-0"`},
+		},
+		{
+			name:  "alias label ORs every backing field",
+			where: eq("workload_namespace", "payments"),
+			want:  []string{`((_resource.k8s.namespace.name:="payments") OR (_resource.service.namespace:="payments"))`},
+		},
+		{
+			// NOT (a OR b), never NOT a OR NOT b — the latter is true for every span
+			// whose two alias fields differ.
+			name:  "negation wraps the whole alias OR",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{"workload_namespace": {query.Nq: "payments"}}},
+			want:  []string{`NOT (((_resource.k8s.namespace.name:="payments") OR (_resource.service.namespace:="payments")))`},
+			deny:  []string{`NOT (_resource.k8s.namespace.name:="payments") OR`},
+		},
+		{
+			name:  "_in expands to OR-ed equalities",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{"workload_name": {query.In: []any{"a", "b"}}}},
+			want:  []string{`((service:="a") OR (service:="b"))`},
+		},
+		{
+			name:  "_not_in negates the OR",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{"workload_name": {query.NotIn: []any{"a", "b"}}}},
+			want:  []string{`NOT (((service:="a") OR (service:="b")))`},
+		},
+		{
+			// The Traces page sends the ClickHouse spelling; CubeAPM stores ERROR and
+			// LogsQL equality is case-sensitive.
+			name:  "status value is normalised to CubeAPM's spelling",
+			where: eq("status_code", "STATUS_CODE_ERROR"),
+			want:  []string{`status_code:="ERROR"`},
+		},
+		{
+			// Not field:"*value*": in LogsQL a quoted phrase takes the asterisks
+			// literally and matches nothing.
+			name:  "contains renders an escaped case-insensitive regex",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{"span_name": {query.Contains: "GET /a.b"}}},
+			want:  []string{`span_name:~"(?i)GET /a\\.b"`},
+			deny:  []string{`*GET`},
+		},
+		{
+			name: "two labels on the same field do not overwrite each other",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{
+				"workload_name": {query.Eq: "a"},
+				"service_name":  {query.Eq: "b"},
+			}},
+			want: []string{`service:="a"`, `service:="b"`},
+		},
+		{
+			name: "or and not subtrees are kept",
+			where: query.QueryWhereClause{
+				Or:  []query.QueryWhereClause{eq("workload_name", "a"), eq("workload_name", "b")},
+				Not: &query.QueryWhereClause{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "GET /health"}}},
+			},
+			want: []string{` OR `, `NOT (`, `span_name:="GET /health"`},
+		},
+		{
+			// A value is always quoted, so it cannot close the filter and append a pipe.
+			name:  "hostile value stays inside the quotes",
+			where: eq("workload_name", `x" | delete`),
+			want:  []string{`service:="x\" | delete"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mustTraceBase(t, tt.where, "")
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("query %q is missing %q", got, w)
+				}
+			}
+			for _, d := range tt.deny {
+				if strings.Contains(got, d) {
+					t.Errorf("query %q must not contain %q", got, d)
+				}
+			}
+		})
+	}
+}
+
+func TestCubeAPMTraceWhereRejectsUnsupportedOperator(t *testing.T) {
+	_, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{"duration_ns": {query.Gt: "10"}},
+	}, "")
+	if err == nil {
+		t.Fatal("an operator the builder cannot render must fail, not be dropped silently")
+	}
+}
+
+func TestCubeAPMTraceWhereRejectsUnsafeField(t *testing.T) {
+	_, err := cubeAPMTraceBaseQuery("", eq("x | delete", "y"), "")
+	if err == nil {
+		t.Fatal("a field name carrying query syntax must be rejected")
+	}
+}
+
+// Every operator advertised for traces must render, or the builder offers a filter
+// that errors at query time.
+func TestCubeAPMTraceSupportedOperatorsRender(t *testing.T) {
+	s := &CubeAPMTraceSource{}
+	for _, op := range s.GetSupportedOperators() {
+		t.Run(op, func(t *testing.T) {
+			_, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"span_name": {query.BinaryWhereClauseType(op): "POST /pay"}},
+			}, "")
+			if err != nil {
+				t.Errorf("advertised operator %q does not render: %v", op, err)
+			}
+		})
+	}
+}
+
+func TestBuildCubeAPMTraceListQuery(t *testing.T) {
+	tests := []struct {
+		name string
+		req  TracesV3Request
+		want string
+	}{
+		{
+			name: "defaults to newest first, default page",
+			req:  TracesV3Request{},
+			want: `{event.domain="span"} | sort by (_time desc) | limit 100`,
+		},
+		{
+			name: "duration ascending with offset",
+			req: TracesV3Request{QueryRequest: TracesQueryBuilderRequest{
+				Limit: 20, Offset: 40,
+				OrderBy: []query.QueryOrderBy{{Column: "duration_ns", Order: query.Asc}},
+			}},
+			want: `{event.domain="span"} | sort by (duration asc) | offset 40 | limit 20`,
+		},
+		{
+			name: "limit is clamped",
+			req:  TracesV3Request{QueryRequest: TracesQueryBuilderRequest{Limit: 50000}},
+			want: `{event.domain="span"} | sort by (_time desc) | limit 1000`,
+		},
+		{
+			name: "unknown sort column falls back to time",
+			req: TracesV3Request{QueryRequest: TracesQueryBuilderRequest{
+				OrderBy: []query.QueryOrderBy{{Column: "span_name", Order: query.Asc}},
+			}},
+			want: `{event.domain="span"} | sort by (_time asc) | limit 100`,
+		},
+		{
+			// A Code-mode query is the user's; it is sent exactly as typed.
+			name: "raw query passes through untouched",
+			req:  TracesV3Request{Query: " service:=x | limit 3 "},
+			want: `service:=x | limit 3`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildCubeAPMTraceListQuery(tt.req, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got  %q\nwant %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildCubeAPMTraceGroupQuery(t *testing.T) {
+	got, err := buildCubeAPMTraceGroupQuery(TracesV3Request{
+		QueryRequest: TracesQueryBuilderRequest{Where: eq("workload_name", "checkout"), Limit: 10},
+	}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		`service:="checkout"`,
+		`| stats by (service, span_name, _resource.k8s.namespace.name) count() count, `,
+		`count() if (status_code:=ERROR) error_count`,
+		`quantile(0.95, duration) p95`,
+		`quantile(0.99, duration) p99`,
+		`| sort by (count desc) | limit 10`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("group query %q is missing %q", got, want)
+		}
+	}
+}
+
+// cubeAPMSampleTraceRow is one span record as the LogsQL trace store returns it,
+// trimmed from a live instance: flat fields, hex ids, a numeric-string nanosecond
+// duration, and resource attributes under `_resource.`.
+const cubeAPMSampleTraceRow = `{"_time":"2026-09-16T10:25:43.824673071Z","_stream_id":"0000000100","_stream":"{env=\"UNSET\",event.domain=\"span\",service=\"checkout\"}","_msg":"UNSET","_resource.k8s.namespace.name":"payments","_resource.k8s.pod.name":"checkout-7d9f-abcde","_resource.telemetry.sdk.language":"go","duration":"681975630","env":"UNSET","error":"true","event.domain":"span","http.request.method":"GET","http.response.status_code":"404","server.address":"api.example.com","service":"checkout","span_id":"194f0803a0b7b7a8","parent_id":"d511c08047db2e19","span_kind":"client","span_name":"HTTP GET","status_code":"ERROR","trace_id":"a6ae1df77ad4cf48711a3763d7c2317d","url.full":"https://api.example.com/v1/items"}`
+
+func decodeTraceRows(t *testing.T, ndjson string) []map[string]any {
+	t.Helper()
+	rows, err := decodeCubeAPMNDJSON(strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return rows
+}
+
+// service.go rewrites a where clause through GetLabelMapping() before calling the
+// source, so alias labels arrive already mapped. The OR across alias fields must
+// survive that step, not only the canonical spelling the other tests use.
+func TestCubeAPMTraceAliasesSurviveUpstreamMapping(t *testing.T) {
+	src := &CubeAPMTraceSource{}
+	tests := []struct {
+		label string
+		want  []string
+	}{
+		{"workload_namespace", []string{`_resource.k8s.namespace.name:="payments"`, `_resource.service.namespace:="payments"`}},
+		{"http_status_code", []string{`http.response.status_code:="payments"`, `http.status_code:="payments"`}},
+		{"destination_workload_name", []string{`peer.service:="payments"`, `server.address:="payments"`}},
+		{"resource", []string{`http.route:="payments"`, `url.path:="payments"`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			mapped := convertWhereClauseWithMApping(eq(tt.label, "payments"), src.GetLabelMapping())
+			got := mustTraceBase(t, mapped, "")
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("after upstream mapping, %q is missing %q", got, w)
+				}
+			}
+		})
+	}
+}
+
+// A Code-mode query that is already a pipeline (e.g. ends in its own `| limit`)
+// cannot have stats appended: the count would be of that page, not the total.
+func TestCubeAPMTraceRawPipelineCountsAndGroups(t *testing.T) {
+	fake := newFakeCubeAPM(t, map[string]func(map[string]string) (int, string){
+		cubeAPMTracesQueryPath: func(map[string]string) (int, string) { return http.StatusOK, `{"count":"3"}` + "\n" },
+	})
+
+	n, err := cubeAPMTraceCount(fake.cfg(), TracesV3Request{Query: "service:=x | limit 3"}, "count()")
+	if err != nil || n != -1 {
+		t.Errorf("pipeline count = %d, %v; want the -1 estimate", n, err)
+	}
+	if len(fake.forms) != 0 {
+		t.Errorf("a pipeline count must not query CubeAPM, sent %v", fake.forms)
+	}
+
+	n, err = cubeAPMTraceCount(fake.cfg(), TracesV3Request{Query: "service:=x"}, "count()")
+	if err != nil || n != 3 {
+		t.Errorf("bare filter count = %d, %v; want 3", n, err)
+	}
+	if got := fake.forms[0]["query"]; got != "service:=x | stats count() count" {
+		t.Errorf("bare filter query = %q", got)
+	}
+
+	if _, err := buildCubeAPMTraceGroupQuery(TracesV3Request{Query: "service:=x | limit 3"}, ""); err == nil {
+		t.Error("grouping a pipeline query must fail rather than aggregate one page")
+	}
+	if _, err := buildCubeAPMTraceGroupQuery(TracesV3Request{Query: "service:=x"}, ""); err != nil {
+		t.Errorf("grouping a bare filter: %v", err)
+	}
+}
+
+func TestCubeAPMTraceRowToSpan(t *testing.T) {
+	span := cubeAPMTraceRowToSpan(decodeTraceRows(t, cubeAPMSampleTraceRow)[0])
+
+	checks := map[string][2]string{
+		"TraceID":           {span.TraceID, "a6ae1df77ad4cf48711a3763d7c2317d"},
+		"SpanID":            {span.SpanID, "194f0803a0b7b7a8"},
+		"ParentSpanID":      {span.ParentSpanID, "d511c08047db2e19"},
+		"SpanName":          {span.SpanName, "HTTP GET"},
+		"SpanKind":          {span.SpanKind, "client"},
+		"ServiceName":       {span.ServiceName, "checkout"},
+		"WorkloadName":      {span.WorkloadName, "checkout"},
+		"WorkloadNamespace": {span.WorkloadNamespace, "payments"},
+		"HTTPStatusCode":    {span.HTTPStatusCode, "404"},
+		"DestinationName":   {span.DestinationName, "api.example.com"},
+		"Resource":          {span.Resource, "https://api.example.com/v1/items"},
+		"StatusCode":        {span.StatusCode, "ERROR"},
+		"Timestamp":         {span.Timestamp, "2026-09-16T10:25:43.824673071Z"},
+		"TraceSource":       {span.TraceSource, "cubeapm"},
+	}
+	for name, c := range checks {
+		if c[0] != c[1] {
+			t.Errorf("%s = %q, want %q", name, c[0], c[1])
+		}
+	}
+
+	if span.DurationNs != 681975630 {
+		t.Errorf("DurationNs = %d, want 681975630 (the field is nanoseconds)", span.DurationNs)
+	}
+	if span.EndTime == "" {
+		t.Error("EndTime should be derived from _time + duration")
+	}
+
+	// Resource attributes lose their prefix and gain service.name.
+	if span.ResourceAttributes["k8s.pod.name"] != "checkout-7d9f-abcde" {
+		t.Errorf("ResourceAttributes = %v", span.ResourceAttributes)
+	}
+	if span.ResourceAttributes["service.name"] != "checkout" {
+		t.Error("service.name should be present in ResourceAttributes")
+	}
+
+	// Span attributes carry the free-form fields, not engine metadata or the
+	// fields already promoted to columns.
+	if span.SpanAttributes["http.request.method"] != "GET" {
+		t.Errorf("SpanAttributes = %v", span.SpanAttributes)
+	}
+	for _, hidden := range []string{"_time", "_msg", "_stream", "trace_id", "service", "duration", "event.domain", "_resource.k8s.pod.name"} {
+		if _, ok := span.SpanAttributes[hidden]; ok {
+			t.Errorf("SpanAttributes must not carry %q", hidden)
+		}
+	}
+}
+
+func TestCubeAPMTraceRowStatusFallsBackToErrorFlag(t *testing.T) {
+	span := cubeAPMTraceRowToSpan(map[string]any{"error": "true"})
+	if span.StatusCode != "ERROR" {
+		t.Errorf("StatusCode = %q, want ERROR from error=true", span.StatusCode)
+	}
+}
+
+func TestCubeAPMTraceGroupRowToValues(t *testing.T) {
+	rows := decodeTraceRows(t, `{"count":"1538","service":"checkout","span_name":"sql.query","_resource.k8s.namespace.name":"payments","error_count":"3","p95":"1768549","p99":"2500000.5","max_duration":"10392193","total_duration":"1185111982"}`)
+	g := cubeAPMTraceGroupRowToValues(rows[0])
+
+	if g.Count != 1538 || g.ErrorCount != 3 {
+		t.Errorf("Count/ErrorCount = %d/%d", g.Count, g.ErrorCount)
+	}
+	if g.P95Latency != 1768549 || g.P99Latency != 2500000 || g.MaxLatency != 10392193 {
+		t.Errorf("latencies = %d/%d/%d", g.P95Latency, g.P99Latency, g.MaxLatency)
+	}
+	if g.WorkloadName != "checkout" || g.WorkloadNamespace != "payments" || g.SpanName != "sql.query" {
+		t.Errorf("dimensions = %q/%q/%q", g.WorkloadName, g.WorkloadNamespace, g.SpanName)
+	}
+	if g.DurationNS != 1185111982 {
+		t.Errorf("DurationNS = %d", g.DurationNS)
+	}
+}
+
+// fakeCubeAPM serves the LogsQL trace endpoints from a handler per path and records
+// every request form it saw.
+type fakeCubeAPM struct {
+	server *httptest.Server
+	forms  []map[string]string
+}
+
+func newFakeCubeAPM(t *testing.T, handlers map[string]func(form map[string]string) (int, string)) *fakeCubeAPM {
+	t.Helper()
+	f := &fakeCubeAPM{}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		form := map[string]string{"path": r.URL.Path}
+		for k := range r.PostForm {
+			form[k] = r.PostForm.Get(k)
+		}
+		f.forms = append(f.forms, form)
+
+		handler, ok := handlers[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprintf(w, "unsupported path requested: %q", r.URL.Path)
+			return
+		}
+		status, body := handler(form)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fakeCubeAPM) cfg() integrations.CubeAPMConfig {
+	return integrations.CubeAPMConfig{URL: f.server.URL}
+}
+
+func TestQueryCubeAPMTracesAgainstServer(t *testing.T) {
+	fake := newFakeCubeAPM(t, map[string]func(map[string]string) (int, string){
+		cubeAPMTracesQueryPath: func(map[string]string) (int, string) {
+			return http.StatusOK, cubeAPMSampleTraceRow + "\n" + strings.Replace(cubeAPMSampleTraceRow, `"span_id":"194f0803a0b7b7a8"`, `"span_id":"0000000000000002"`, 1) + "\n"
+		},
+	})
+
+	req := TracesV3Request{StartTime: 1_789_552_581_856, EndTime: 1_789_553_481_856,
+		QueryRequest: TracesQueryBuilderRequest{Limit: 5}}
+	logsQL, err := buildCubeAPMTraceListQuery(req, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spans, err := queryCubeAPMTraces(fake.cfg(), logsQL, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(spans) != 2 || spans[1].SpanID != "0000000000000002" {
+		t.Fatalf("got %d spans: %+v", len(spans), spans)
+	}
+
+	form := fake.forms[0]
+	if form["query"] != logsQL {
+		t.Errorf("sent query %q, want %q", form["query"], logsQL)
+	}
+	// start/end are sent in seconds.
+	if form["start"] != "1789552581" || form["end"] != "1789553481" {
+		t.Errorf("window = %s..%s", form["start"], form["end"])
+	}
+	if form["limit"] != "5" {
+		t.Errorf("limit = %q", form["limit"])
+	}
+}
+
+func TestCubeAPMTraceCountAgainstServer(t *testing.T) {
+	fake := newFakeCubeAPM(t, map[string]func(map[string]string) (int, string){
+		cubeAPMTracesQueryPath: func(map[string]string) (int, string) {
+			return http.StatusOK, `{"count":"5071"}` + "\n"
+		},
+	})
+
+	n, err := cubeAPMTraceCount(fake.cfg(), TracesV3Request{
+		QueryRequest: TracesQueryBuilderRequest{Where: eq("workload_name", "checkout")},
+	}, "count_uniq(trace_id)")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 5071 {
+		t.Errorf("count = %d, want 5071", n)
+	}
+	want := `{event.domain="span"} (service:="checkout") | stats count_uniq(trace_id) count`
+	if got := fake.forms[0]["query"]; got != want {
+		t.Errorf("query = %q, want %q", got, want)
+	}
+}
+
+func TestCubeAPMTraceLabelValuesUnionsAliasFields(t *testing.T) {
+	fake := newFakeCubeAPM(t, map[string]func(map[string]string) (int, string){
+		cubeAPMTracesFieldValuesPath: func(form map[string]string) (int, string) {
+			switch form["field"] {
+			case "_resource.k8s.namespace.name":
+				return http.StatusOK, `{"values":[{"value":"payments","hits":9},{"value":"demo","hits":3}]}`
+			case "_resource.service.namespace":
+				return http.StatusOK, `{"values":[{"value":"demo","hits":1},{"value":"","hits":1},{"value":"shop","hits":1}]}`
+			}
+			return http.StatusOK, `{"values":[]}`
+		},
+	})
+
+	values, err := queryCubeAPMTraceLabelValues(fake.cfg(), TracesV3LabelValuesRequest{Label: "workload_namespace"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Join(values, ",") != "demo,payments,shop" {
+		t.Errorf("values = %v, want the sorted, de-duplicated union without blanks", values)
+	}
+	if len(fake.forms) != 2 {
+		t.Errorf("made %d requests, want one per backing field", len(fake.forms))
+	}
+}
+
+func TestCubeAPMTraceLabelsHideEngineFields(t *testing.T) {
+	fake := newFakeCubeAPM(t, map[string]func(map[string]string) (int, string){
+		cubeAPMTracesFieldNamesPath: func(map[string]string) (int, string) {
+			return http.StatusOK, `{"values":[{"value":"_time"},{"value":"service"},{"value":"_stream"},{"value":"_resource.k8s.pod.name"},{"value":"event.domain"}]}`
+		},
+	})
+
+	labels, err := queryCubeAPMTraceLabels(fake.cfg(), FetchTraceLabelRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var names []string
+	for _, l := range labels {
+		names = append(names, l.Label)
+	}
+	if strings.Join(names, ",") != "_resource.k8s.pod.name,service" {
+		t.Errorf("labels = %v", names)
+	}
+}
+
+// An instance without the LogsQL trace API must fail loudly. The alternative — an
+// empty result — reads as "this service has no traces".
+func TestCubeAPMTraceMissingEndpointIsReported(t *testing.T) {
+	fake := newFakeCubeAPM(t, nil)
+
+	_, err := queryCubeAPMTraces(fake.cfg(), `{event.domain="span"}`, TracesV3Request{})
+	if err == nil {
+		t.Fatal("expected an error when the endpoint is missing")
+	}
+	if !strings.Contains(err.Error(), "does not serve the trace query API") {
+		t.Errorf("error = %v, want it to name the missing API", err)
+	}
+}
+
+func TestIsCubeAPMMissingTraceEndpoint(t *testing.T) {
+	if !isCubeAPMMissingTraceEndpoint(fmt.Errorf(`CubeAPM returned HTTP 400: unsupported path requested: "/select/logsql/query"`)) {
+		t.Error("CubeAPM's unknown-path answer should be recognised")
+	}
+	if !isCubeAPMMissingTraceEndpoint(fmt.Errorf("CubeAPM returned HTTP 404: not found")) {
+		t.Error("a proxy 404 should be recognised")
+	}
+	if isCubeAPMMissingTraceEndpoint(fmt.Errorf("CubeAPM returned HTTP 400: cannot parse query")) {
+		t.Error("a query parse error is not a missing endpoint")
+	}
+	if isCubeAPMMissingTraceEndpoint(nil) {
+		t.Error("nil is not a missing endpoint")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trace waterfall: by-id endpoint, Jaeger protobuf-JSON
+// ---------------------------------------------------------------------------
+
+// cubeAPMSampleTraceFetch is the by-id trace response from CubeAPM's HTTP API
+// reference: Jaeger protobuf-JSON, with base64 ids, typed tag values and a bare
+// nanosecond duration.
+const cubeAPMSampleTraceFetch = `{
+  "spans": [
+    {
+      "trace_id": "V5OPQPPw/3hScwih8m9RBg==",
+      "span_id": "2d4bjpT7FaA=",
+      "operation_name": "POST /v1/payment",
+      "references": [
+        {"trace_id": "V5OPQPPw/3hScwih8m9RBg==", "span_id": "901CCWrDT6M="}
+      ],
+      "start_time": "2025-10-29T03:55:04.90625352Z",
+      "duration": 40965161,
+      "tags": [
+        {"key": "http.status_code", "v_type": 2, "v_int64": 200},
+        {"key": "http.route", "v_str": "/v1/payment"},
+        {"key": "span.kind", "v_str": "server"},
+        {"key": "http.method", "v_str": "POST"}
+      ],
+      "logs": null,
+      "process": {
+        "service_name": "notify-service",
+        "tags": [
+          {"key": "telemetry.sdk.language", "v_str": "java"},
+          {"key": "k8s.namespace.name", "v_str": "payments"}
+        ]
+      }
     }
-  }
-]`
+  ]
+}`
 
 func decodeSampleSpans(t *testing.T) []common.OpenTelemetryTrace {
 	t.Helper()
-	var matches []cubeAPMSearchMatch
-	dec := json.NewDecoder(strings.NewReader(cubeAPMSampleSearchResponse))
+	var fetched cubeAPMTraceFetch
+	dec := json.NewDecoder(strings.NewReader(cubeAPMSampleTraceFetch))
 	dec.UseNumber()
-	if err := dec.Decode(&matches); err != nil {
+	if err := dec.Decode(&fetched); err != nil {
 		t.Fatalf("failed to decode sample response: %v", err)
 	}
 
 	var spans []common.OpenTelemetryTrace
-	for _, m := range matches {
-		for _, s := range m.Trace.Spans {
-			spans = append(spans, cubeAPMSpanToTrace(s))
-		}
+	for _, s := range fetched.Spans {
+		spans = append(spans, cubeAPMSpanToTrace(s))
 	}
 	return spans
 }
@@ -262,189 +830,6 @@ func TestCubeAPMEndTime(t *testing.T) {
 	}
 }
 
-func TestCubeAPMWhereHasFilters(t *testing.T) {
-	if cubeAPMWhereHasFilters(query.QueryWhereClause{}) {
-		t.Error("an empty clause has no filters")
-	}
-	for name, where := range map[string]query.QueryWhereClause{
-		"binary": {Binary: query.BinaryWhereClause{"span_name": {query.Eq: "a"}}},
-		"and":    {And: []query.QueryWhereClause{{}}},
-		"or":     {Or: []query.QueryWhereClause{{}}},
-		"not":    {Not: &query.QueryWhereClause{}},
-	} {
-		if !cubeAPMWhereHasFilters(where) {
-			t.Errorf("%s clause should report filters", name)
-		}
-	}
-}
-
-func testCubeAPMSpans() []common.OpenTelemetryTrace {
-	return []common.OpenTelemetryTrace{
-		{SpanName: "POST /pay", ServiceName: "checkout", HTTPStatusCode: "500",
-			WorkloadNamespace: "payments",
-			SpanAttributes:    map[string]string{"http.method": "POST"}, ResourceAttributes: map[string]string{}},
-		{SpanName: "GET /health", ServiceName: "checkout", HTTPStatusCode: "200",
-			WorkloadNamespace: "payments",
-			SpanAttributes:    map[string]string{"http.method": "GET"}, ResourceAttributes: map[string]string{}},
-		{SpanName: "GET /balance", ServiceName: "ledger", HTTPStatusCode: "200",
-			WorkloadNamespace: "payments",
-			SpanAttributes:    map[string]string{"http.method": "GET"}, ResourceAttributes: map[string]string{}},
-	}
-}
-
-func filterNames(t *testing.T, where query.QueryWhereClause) []string {
-	t.Helper()
-	got, err := filterCubeAPMSpans(testCubeAPMSpans(), where)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	names := make([]string, 0, len(got))
-	for _, span := range got {
-		names = append(names, span.SpanName)
-	}
-	return names
-}
-
-func TestFilterCubeAPMSpans(t *testing.T) {
-	t.Run("no filters returns everything", func(t *testing.T) {
-		if got := filterNames(t, query.QueryWhereClause{}); len(got) != 3 {
-			t.Errorf("got %v, want all three spans", got)
-		}
-	})
-
-	t.Run("eq", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"http_status_code": {query.Eq: "500"},
-		}})
-		if len(got) != 1 || got[0] != "POST /pay" {
-			t.Errorf("got %v", got)
-		}
-	})
-
-	t.Run("neq", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"http_status_code": {query.Nq: "500"},
-		}})
-		if len(got) != 2 {
-			t.Errorf("got %v", got)
-		}
-	})
-
-	t.Run("contains is case-insensitive", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"span_name": {query.Contains: "PAY"},
-		}})
-		if len(got) != 1 || got[0] != "POST /pay" {
-			t.Errorf("got %v", got)
-		}
-	})
-
-	t.Run("span attribute lookup", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"http.method": {query.Eq: "GET"},
-		}})
-		if len(got) != 2 {
-			t.Errorf("got %v", got)
-		}
-	})
-
-	t.Run("conditions in one clause are ANDed", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"http.method":      {query.Eq: "POST"},
-			"http_status_code": {query.Eq: "200"},
-		}})
-		if len(got) != 0 {
-			t.Errorf("got %v, want no matches", got)
-		}
-	})
-
-	t.Run("in and not_in", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"span_name": {query.In: []any{"POST /pay", "GET /balance"}},
-		}})
-		if len(got) != 2 {
-			t.Errorf("got %v", got)
-		}
-		got = filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"span_name": {query.NotIn: []any{"POST /pay"}},
-		}})
-		if len(got) != 2 {
-			t.Errorf("got %v", got)
-		}
-	})
-}
-
-// An OR-shaped filter used to be dropped entirely by the flat filter collector,
-// so the query returned every span as though the filter had matched — the exact
-// failure this source refuses to accept from the server.
-func TestFilterCubeAPMSpansEvaluatesOrAndNot(t *testing.T) {
-	t.Run("or matches either branch", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Or: []query.QueryWhereClause{
-			{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "POST /pay"}}},
-			{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "GET /balance"}}},
-		}})
-		if len(got) != 2 {
-			t.Fatalf("got %v, want exactly the two OR branches", got)
-		}
-		for _, name := range got {
-			if name == "GET /health" {
-				t.Error("a span matching neither OR branch was returned")
-			}
-		}
-	})
-
-	t.Run("not excludes", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Not: &query.QueryWhereClause{
-			Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "ledger"}},
-		}})
-		if len(got) != 2 {
-			t.Errorf("got %v, want the two non-ledger spans", got)
-		}
-	})
-
-	t.Run("nested and inside or", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{Or: []query.QueryWhereClause{
-			{And: []query.QueryWhereClause{
-				{Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "checkout"}}},
-				{Binary: query.BinaryWhereClause{"http_status_code": {query.Eq: "500"}}},
-			}},
-			{Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "ledger"}}},
-		}})
-		if len(got) != 2 {
-			t.Errorf("got %v, want POST /pay and GET /balance", got)
-		}
-	})
-
-	// A top-level binary is ANDed with the OR group, so the service equality that
-	// gets pushed down as the API's `service` parameter stays correct.
-	t.Run("top-level binary ands with an or group", func(t *testing.T) {
-		got := filterNames(t, query.QueryWhereClause{
-			Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "checkout"}},
-			Or: []query.QueryWhereClause{
-				{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "POST /pay"}}},
-				{Binary: query.BinaryWhereClause{"span_name": {query.Eq: "GET /balance"}}},
-			},
-		})
-		if len(got) != 1 || got[0] != "POST /pay" {
-			t.Errorf("got %v, want only POST /pay (GET /balance is on the other service)", got)
-		}
-	})
-}
-
-// Silently treating an unevaluatable operator as a match would return unfiltered
-// spans as though the filter had been applied.
-func TestFilterCubeAPMSpansRejectsUnsupportedOperator(t *testing.T) {
-	_, err := filterCubeAPMSpans(testCubeAPMSpans(), query.QueryWhereClause{
-		Binary: query.BinaryWhereClause{"span_name": {query.Between: "a"}},
-	})
-	if err == nil {
-		t.Fatal("expected an error rather than a silently unfiltered result")
-	}
-	if !strings.Contains(err.Error(), "unsupported operator") {
-		t.Errorf("error = %v", err)
-	}
-}
-
 func TestSortCubeAPMSpans(t *testing.T) {
 	newSpans := func() []common.OpenTelemetryTrace {
 		return []common.OpenTelemetryTrace{
@@ -477,177 +862,6 @@ func TestSortCubeAPMSpans(t *testing.T) {
 			t.Errorf("durations = %d %d %d", spans[0].DurationNs, spans[1].DurationNs, spans[2].DurationNs)
 		}
 	})
-}
-
-func TestAggregateCubeAPMTraceGroups(t *testing.T) {
-	spans := []common.OpenTelemetryTrace{
-		{ServiceName: "checkout", SpanName: "POST /pay", WorkloadNamespace: "payments", DurationNs: 100, StatusCode: "OK"},
-		{ServiceName: "checkout", SpanName: "POST /pay", WorkloadNamespace: "payments", DurationNs: 300, StatusCode: "ERROR"},
-		{ServiceName: "checkout", SpanName: "POST /pay", WorkloadNamespace: "payments", DurationNs: 200, HTTPStatusCode: "503"},
-		{ServiceName: "ledger", SpanName: "GET /balance", WorkloadNamespace: "payments", DurationNs: 50},
-	}
-
-	groups := aggregateCubeAPMTraceGroups(spans)
-	if len(groups) != 2 {
-		t.Fatalf("got %d groups, want 2", len(groups))
-	}
-
-	var pay *TraceGroupingValues
-	for i := range groups {
-		if groups[i].SpanName == "POST /pay" {
-			pay = &groups[i]
-		}
-	}
-	if pay == nil {
-		t.Fatal("missing the POST /pay group")
-	}
-
-	if pay.Count != 3 {
-		t.Errorf("Count = %d, want 3", pay.Count)
-	}
-	// An OTel ERROR status and a 5xx HTTP status both mark a failed span.
-	if pay.ErrorCount != 2 {
-		t.Errorf("ErrorCount = %d, want 2", pay.ErrorCount)
-	}
-	if pay.MaxLatency != 300 {
-		t.Errorf("MaxLatency = %d, want 300", pay.MaxLatency)
-	}
-	if pay.DurationNS != 600 {
-		t.Errorf("DurationNS = %d, want the group total 600", pay.DurationNS)
-	}
-	if pay.WorkloadNamespace != "payments" {
-		t.Errorf("WorkloadNamespace = %q", pay.WorkloadNamespace)
-	}
-	if pay.P95Latency == 0 || pay.P99Latency == 0 {
-		t.Errorf("percentiles not computed: p95=%d p99=%d", pay.P95Latency, pay.P99Latency)
-	}
-}
-
-func TestIsCubeAPMErrorSpan(t *testing.T) {
-	tests := []struct {
-		name string
-		span common.OpenTelemetryTrace
-		want bool
-	}{
-		{"otel error", common.OpenTelemetryTrace{StatusCode: "ERROR"}, true},
-		{"otel numeric error", common.OpenTelemetryTrace{StatusCode: "2"}, true},
-		{"http 500", common.OpenTelemetryTrace{HTTPStatusCode: "500"}, true},
-		{"http 503", common.OpenTelemetryTrace{HTTPStatusCode: "503"}, true},
-		// A 4xx is a client error, not a failure of the span's own service.
-		{"http 404 is not an error span", common.OpenTelemetryTrace{HTTPStatusCode: "404"}, false},
-		{"http 200", common.OpenTelemetryTrace{HTTPStatusCode: "200"}, false},
-		{"empty", common.OpenTelemetryTrace{}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isCubeAPMErrorSpan(tt.span); got != tt.want {
-				t.Errorf("isCubeAPMErrorSpan(%+v) = %v, want %v", tt.span, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCubeAPMPercentile(t *testing.T) {
-	sorted := []int64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
-	if got := cubeAPMPercentile(sorted, 0.95); got != 90 {
-		t.Errorf("p95 = %d, want 90", got)
-	}
-	if got := cubeAPMPercentile(sorted, 0.99); got != 90 {
-		t.Errorf("p99 = %d, want 90", got)
-	}
-	if got := cubeAPMPercentile(nil, 0.95); got != 0 {
-		t.Errorf("empty slice = %d, want 0", got)
-	}
-	if got := cubeAPMPercentile([]int64{5}, 0.99); got != 5 {
-		t.Errorf("single element = %d, want 5", got)
-	}
-}
-
-func TestCubeAPMSearchParams(t *testing.T) {
-	req := TracesV3Request{
-		StartTime: 1_700_000_000_000,
-		EndTime:   1_700_003_600_000,
-	}
-
-	params, err := url.ParseQuery(strings.TrimPrefix(
-		cubeAPMSearchParams(req, "prod", "checkout", 100), "?"))
-	if err != nil {
-		t.Fatalf("not a valid query string: %v", err)
-	}
-
-	// Every one of these is mandatory: omitting any produces a 400 from the
-	// search API, and none of them appear in CubeAPM's published example.
-	for key, want := range map[string]string{
-		"query":    "*",
-		"index":    cubeAPMTraceIndex,
-		"spanKind": cubeAPMTraceSpanKind,
-		"env":      "prod",
-		"service":  "checkout",
-		"limit":    "100",
-		"start":    "1700000000",
-		"end":      "1700003600",
-	} {
-		if got := params.Get(key); got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
-		}
-	}
-}
-
-// env has no wildcard — "*" is accepted but matches nothing — so an unconfigured
-// integration must still send a concrete value rather than omitting the param.
-func TestCubeAPMSearchParamsAlwaysSendsEnvAndService(t *testing.T) {
-	params, _ := url.ParseQuery(strings.TrimPrefix(
-		cubeAPMSearchParams(TracesV3Request{StartTime: 1, EndTime: 2}, "", "checkout", 10), "?"))
-
-	if params.Get("env") != cubeAPMDefaultEnv {
-		t.Errorf("env = %q, want the %q default", params.Get("env"), cubeAPMDefaultEnv)
-	}
-	for _, key := range []string{"index", "spanKind", "env", "service"} {
-		if params.Get(key) == "" {
-			t.Errorf("%s must never be empty; the API rejects the request with a 400", key)
-		}
-	}
-}
-
-// "all" is deliberate: the parameter is required but ignored today, so if a later
-// version starts honouring it we want a loud 400 rather than the silent loss of
-// every client and internal span that "server" would cause.
-func TestCubeAPMTraceSpanKindIsNotARealSpanKind(t *testing.T) {
-	for _, realKind := range []string{"server", "client", "internal", "producer", "consumer"} {
-		if cubeAPMTraceSpanKind == realKind {
-			t.Errorf("spanKind is %q; a real span kind risks silently filtering spans "+
-				"if the server ever honours the parameter", realKind)
-		}
-	}
-}
-
-func TestCubeAPMRequestedService(t *testing.T) {
-	got := cubeAPMRequestedService(TracesV3Request{
-		QueryRequest: TracesQueryBuilderRequest{Where: query.QueryWhereClause{
-			Binary: query.BinaryWhereClause{"workload_name": {query.Eq: "checkout"}},
-		}},
-	})
-	if got != "checkout" {
-		t.Errorf("got %q, want checkout", got)
-	}
-
-	// No service filter means the caller must fan out over discovered services.
-	if got := cubeAPMRequestedService(TracesV3Request{}); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestCubeAPMTraceLimit(t *testing.T) {
-	if got := cubeAPMTraceLimit(TracesV3Request{}); got != cubeAPMDefaultTraceLimit {
-		t.Errorf("got %d, want the default %d", got, cubeAPMDefaultTraceLimit)
-	}
-	if got := cubeAPMTraceLimit(TracesV3Request{QueryRequest: TracesQueryBuilderRequest{Limit: 25}}); got != 25 {
-		t.Errorf("got %d, want 25", got)
-	}
-	if got := cubeAPMTraceLimit(TracesV3Request{QueryRequest: TracesQueryBuilderRequest{Limit: 99999}}); got != cubeAPMMaxTraceLimit {
-		t.Errorf("got %d, want the cap %d", got, cubeAPMMaxTraceLimit)
-	}
 }
 
 func TestCubeAPMHeatmapWindowSeconds(t *testing.T) {
@@ -717,62 +931,6 @@ func TestCubeAPMTraceSourceRoutedFromDispatcher(t *testing.T) {
 	}
 }
 
-func TestCubeAPMTraceCountsAreEstimates(t *testing.T) {
-	s := &CubeAPMTraceSource{}
-
-	count, err := s.CountTraces(nil, TracesV3Request{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// CubeAPM exposes no trace-count endpoint; -1 is the contract's "estimate"
-	// signal, which the frontend already handles for pagination.
-	if count.Count != -1 {
-		t.Errorf("CountTraces = %d, want -1", count.Count)
-	}
-}
-
-// Every operator advertised for traces must be one the evaluator actually
-// implements, or the builder offers a filter that errors at query time.
-func TestCubeAPMTraceSupportedOperatorsAreEvaluated(t *testing.T) {
-	s := &CubeAPMTraceSource{}
-	for _, op := range s.GetSupportedOperators() {
-		t.Run(op, func(t *testing.T) {
-			_, err := filterCubeAPMSpans(testCubeAPMSpans(), query.QueryWhereClause{
-				Binary: query.BinaryWhereClause{"span_name": {query.BinaryWhereClauseType(op): "POST /pay"}},
-			})
-			if err != nil {
-				t.Errorf("advertised operator %q is not evaluated: %v", op, err)
-			}
-		})
-	}
-}
-
-// The service equality is pushed down as the API's `service` parameter AND
-// re-evaluated locally. Re-checking is free — it is already true of every fetched
-// span — and keeps the evaluator free of push-down special cases, which would be
-// wrong inside an OR branch.
-func TestCubeAPMServiceFilterIsEvaluatedLocallyToo(t *testing.T) {
-	got := filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-		"workload_name": {query.Eq: "ledger"},
-	}})
-	if len(got) != 1 || got[0] != "GET /balance" {
-		t.Errorf("got %v, want only the ledger span", got)
-	}
-
-	// A non-equality on the service has no server-side equivalent at all, so the
-	// local evaluator is the only thing enforcing it.
-	got = filterNames(t, query.QueryWhereClause{Binary: query.BinaryWhereClause{
-		"workload_name": {query.Nq: "ledger"},
-	}})
-	if len(got) != 2 {
-		t.Errorf("got %v, want the two checkout spans", got)
-	}
-}
-
-// Regression: sorting the RFC3339 strings directly inverts order when two spans
-// differ in fractional-second digit width. 100ms renders as ".1Z" and 120ms as
-// ".12Z", which compare on 'Z' (0x5A) against '2' (0x32) — putting the later span
-// first. Sub-millisecond spacing is what a trace waterfall is made of.
 func TestSortCubeAPMSpansHandlesFractionalSecondWidths(t *testing.T) {
 	spans := []common.OpenTelemetryTrace{
 		{SpanName: "later", Timestamp: "2025-10-29T03:55:04.12Z"},
@@ -820,64 +978,21 @@ func TestCubeAPMSpanStartNanos(t *testing.T) {
 // bisection against a live instance (100 -> 200, 101 -> 400). This is a server
 // constraint, not a policy choice, and exceeding it fails the request outright
 // rather than degrading it, so it needs a guard CI can see: the live test that
-// found it does not run in CI.
-func TestCubeAPMTraceLimitRespectsServerCap(t *testing.T) {
-	if cubeAPMMaxTraceLimit > 100 {
-		t.Errorf("cubeAPMMaxTraceLimit = %d; the CubeAPM search API rejects limit > 100 with a 400",
-			cubeAPMMaxTraceLimit)
+
+func TestCubeAPMCount(t *testing.T) {
+	tests := []struct {
+		in   any
+		want int
+	}{
+		{"5071", 5071},
+		{"-3", 0},
+		{"99999999999", math.MaxInt32},
+		{"12.9", 12},
+		{nil, 0},
 	}
-
-	// Requests above the cap must be clamped, not passed through.
-	if got := cubeAPMTraceLimit(TracesV3Request{
-		QueryRequest: TracesQueryBuilderRequest{Limit: 5000},
-	}); got > 100 {
-		t.Errorf("cubeAPMTraceLimit(5000) = %d, want it clamped to at most 100", got)
-	}
-
-	// The over-fetch multiplier must also stay under the cap, or a filtered query
-	// turns into a 400 instead of a wider scan.
-	fetch := min(cubeAPMDefaultTraceLimit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
-	if fetch > 100 {
-		t.Errorf("over-fetch resolves to %d, above the server cap of 100", fetch)
-	}
-}
-
-// Label and label-value discovery must summarise the WHOLE fan-out, not one page.
-//
-// The search API caps each request at 100 traces and takes no wildcard service, so
-// an unfiltered query issues one request per discovered service. Truncating that
-// union to a page size keeps only the most recent spans — which in practice all
-// belong to whichever service is busiest. Live, that made the Traces filter offer
-// exactly one service out of five.
-//
-// This pins the wiring: the two discovery methods must not go through the paged
-// helper. It is a source-level check because reproducing it needs a multi-service
-// backend, which the unit suite has no access to.
-func TestCubeAPMDiscoveryDoesNotUsePagedFetch(t *testing.T) {
-	src, err := os.ReadFile("cubeapm_traces.go")
-	if err != nil {
-		t.Fatalf("could not read source: %v", err)
-	}
-	body := string(src)
-
-	for _, method := range []string{"GetLabelValues", "QueryLabels"} {
-		start := strings.Index(body, "func (s *CubeAPMTraceSource) "+method+"(")
-		if start < 0 {
-			t.Fatalf("could not locate %s", method)
-		}
-		// Bound the scan at the next top-level func so we only read this method.
-		end := strings.Index(body[start+1:], "\nfunc ")
-		if end < 0 {
-			end = len(body) - start - 1
-		}
-		section := body[start : start+1+end]
-
-		if strings.Contains(section, "s.fetchSpans(") {
-			t.Errorf("%s calls the paged fetchSpans; label discovery would describe "+
-				"only the newest page and drop entire services", method)
-		}
-		if !strings.Contains(section, "s.collectSpans(") {
-			t.Errorf("%s must call collectSpans so it summarises the full fan-out", method)
+	for _, tt := range tests {
+		if got := cubeAPMCount(tt.in); got != tt.want {
+			t.Errorf("cubeAPMCount(%v) = %d, want %d", tt.in, got, tt.want)
 		}
 	}
 }

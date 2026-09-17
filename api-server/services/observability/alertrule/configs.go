@@ -443,9 +443,9 @@ func getCubeAPMConfigs(sc *security.RequestContext, accountId string) (cubeAPMCo
 		}
 		switch c.Name {
 		case "cubeapm_url":
-			conn.QueryURL = normalizeCubeAPMBaseURL(value)
+			conn.QueryURL = normalizeCubeAPMBaseURL(value, cubeAPMQueryPort)
 		case "cubeapm_admin_url":
-			conn.AdminURL = normalizeCubeAPMBaseURL(value)
+			conn.AdminURL = normalizeCubeAPMBaseURL(value, cubeAPMAdminPort)
 		case "cubeapm_admin_token":
 			conn.AdminToken = strings.TrimSpace(value)
 		}
@@ -460,7 +460,11 @@ func getCubeAPMConfigs(sc *security.RequestContext, accountId string) (cubeAPMCo
 // normalizeCubeAPMBaseURL strips any path/query/fragment so a URL pasted from the
 // browser still resolves. The port is preserved deliberately — for CubeAPM it
 // selects which server answers.
-func normalizeCubeAPMBaseURL(raw string) string {
+//
+// An http:// URL with no port gets defaultPort; https:// is left alone because
+// it means a TLS-terminating proxy on 443. Must match integrations'
+// normalizeCubeAPMURL, or queries and alert rules resolve different hosts.
+func normalizeCubeAPMBaseURL(raw, defaultPort string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
@@ -469,7 +473,11 @@ func normalizeCubeAPMBaseURL(raw string) string {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return strings.TrimRight(raw, "/")
 	}
-	return parsed.Scheme + "://" + parsed.Host
+	host := parsed.Host
+	if parsed.Scheme == "http" && parsed.Port() == "" && defaultPort != "" {
+		host = net.JoinHostPort(parsed.Hostname(), defaultPort)
+	}
+	return parsed.Scheme + "://" + host
 }
 
 // deriveCubeAPMAdminBaseURL turns a query URL into the admin URL by swapping the

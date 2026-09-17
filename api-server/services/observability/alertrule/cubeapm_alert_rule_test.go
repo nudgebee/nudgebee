@@ -317,11 +317,21 @@ func TestNormalizeCubeAPMBaseURL(t *testing.T) {
 		"http://cube:3199/api/alerts": "http://cube:3199",
 		"  https://cube:3199  ":       "https://cube:3199",
 		"":                            "",
+		"http://cube":                 "http://cube:3199",
+		"http://cube/api/alerts":      "http://cube:3199",
+		"https://cube.example.com":    "https://cube.example.com",
 	}
 	for in, want := range tests {
-		if got := normalizeCubeAPMBaseURL(in); got != want {
+		if got := normalizeCubeAPMBaseURL(in, cubeAPMAdminPort); got != want {
 			t.Errorf("normalizeCubeAPMBaseURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+
+	// The query URL goes through the same normalization before the admin URL is
+	// derived from it, so a port-less query URL must still yield an admin URL.
+	query := normalizeCubeAPMBaseURL("http://cubeapm.cubeapm.svc.cluster.local", cubeAPMQueryPort)
+	if got := deriveCubeAPMAdminBaseURL(query); got != "http://cubeapm.cubeapm.svc.cluster.local:3199" {
+		t.Errorf("admin URL from port-less query URL = %q, want http://cubeapm.cubeapm.svc.cluster.local:3199", got)
 	}
 }
 

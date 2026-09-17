@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	neturl "net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations"
@@ -19,73 +20,43 @@ import (
 
 // CubeAPMTraceSource implements TraceSource for CubeAPM.
 //
-// CubeAPM's trace API speaks Jaeger's protobuf-JSON: ids are base64-encoded byte
-// arrays rather than hex strings, tag values are carried in a typed union
-// (v_str / v_int64 / v_float64 / v_bool), and durations are bare nanosecond
-// counts. Everything in this file that looks like ceremony is that translation.
+// Span queries — the listing, counts, grouping and label discovery — run against
+// CubeAPM's LogsQL trace store, the same engine and query language as its logs.
+// That store answers across every service in one request and applies filters,
+// sorting and aggregation server-side.
+//
+// It replaced CubeAPM's documented search API (/api/traces/api/v1/search), which
+// takes exactly one service per request: "show recent traces" had to fan out one
+// request per service, so a cap on that fan-out silently hid whole services, and
+// every filter had to be evaluated in Go over an over-fetched page. The search API
+// is also not a complete view — on a live instance it returned 92 traces for a
+// service that had 704 in the same window — so counts here intentionally do not
+// match CubeAPM's own search screen.
+//
+// The trace waterfall (QueryTracesHeatmap) still uses the documented by-id
+// endpoint, which speaks Jaeger's protobuf-JSON; the decoding for that shape lives
+// at the bottom of this file.
 type CubeAPMTraceSource struct{}
 
 const (
-	cubeAPMTraceSearchPath = "/api/traces/api/v1/search"
-	cubeAPMTraceFetchPath  = "/api/traces/api/v1/traces/"
+	cubeAPMTracesQueryPath       = integrations.CubeAPMTracesQueryPath
+	cubeAPMTracesFieldValuesPath = "/api/traces/select/logsql/field_values"
+	cubeAPMTracesFieldNamesPath  = "/api/traces/select/logsql/field_names"
+	cubeAPMTraceFetchPath        = "/api/traces/api/v1/traces/"
 )
 
 const (
 	cubeAPMTraceQueryTimeout = 30 * time.Second
 	cubeAPMDefaultTraceLimit = 100
 
-	// cubeAPMMaxTraceLimit is the server's hard cap, not a policy of ours: the
-	// search API answers 400 {"error":"invalid limit"} for anything above 100.
-	// Verified by bisection against a live instance — limit=100 returns 200 and
-	// limit=101 returns 400. Exceeding it is not a degraded result, it is a
-	// failed request, which is how the trace label-value dropdown broke.
-	cubeAPMMaxTraceLimit = 100
+	// cubeAPMMaxTraceLimit bounds one page. The response is streamed NDJSON with
+	// no server-side cursor, so an unbounded limit asks for the whole window.
+	cubeAPMMaxTraceLimit = 1000
+
+	// cubeAPMTraceLabelValueLimit bounds a filter dropdown. field_values returns
+	// the most frequent values first, so the cap drops only the long tail.
+	cubeAPMTraceLabelValueLimit = 1000
 )
-
-// cubeAPMTraceOverFetch multiplies the requested page size when filters have to be
-// applied locally (see filterCubeAPMSpans). Without it, a filter that matches one
-// span in ten would return a tenth of a page and read as "no more data".
-//
-// It is bounded by cubeAPMMaxTraceLimit, so at the default page size the server
-// cap absorbs it entirely. The breadth that makes local filtering workable comes
-// from the per-service fan-out instead: each service is a separate request with
-// its own cap, and every span of every matched trace is returned, so one page of
-// traces yields far more than one page of spans.
-const cubeAPMTraceOverFetch = 5
-
-// The trace search API rejects a request missing any of index, env, service or
-// spanKind with a 400 — none of which appear in CubeAPM's published example
-// (`?query=*&env=UNSET&service=order&start=…&end=…&limit=10`). Verified against a
-// live instance, where omitting each in turn produced "index is required",
-// "env is required", "service is required", "spanKind is required".
-const (
-	// cubeAPMTraceIndex is the traces index to search. The server accepts any
-	// value here; "traces" is the meaningful one.
-	cubeAPMTraceIndex = "traces"
-
-	// cubeAPMTraceSpanKind is sent because the parameter is mandatory, not because
-	// it selects anything: on a live instance every value (server/client/internal/
-	// producer/consumer/all/*) returned an identical 32 matches, so the server
-	// requires it to be present and non-empty and then ignores it.
-	//
-	// "all" rather than a real span kind on purpose. If a later version starts
-	// honouring the parameter, "all" most likely fails loudly with a 400, whereas
-	// "server" would silently drop every client and internal span — data loss that
-	// looks like a quiet trace backend.
-	cubeAPMTraceSpanKind = "all"
-
-	// cubeAPMDefaultEnv is the environment tag searched when the integration has
-	// none configured. CubeAPM files telemetry with no explicit env under "UNSET",
-	// and env accepts no wildcard — "*" is accepted but matches nothing — so a
-	// concrete value has to be sent.
-	cubeAPMDefaultEnv = "UNSET"
-)
-
-// cubeAPMMaxFanoutServices bounds how many services an unfiltered trace query
-// fans out over. The search API requires an exact service name and supports no
-// wildcard, so "show me recent traces" has to be answered by asking per service;
-// the cap keeps that from becoming an unbounded request burst on a large install.
-const cubeAPMMaxFanoutServices = 20
 
 // cubeAPMHeatmapDefaultLookback is how far back a by-id trace fetch searches when
 // the caller supplies no window. The trace-detail view asks by trace_id alone, and
@@ -93,38 +64,82 @@ const cubeAPMMaxFanoutServices = 20
 // trap the OpenObserve and New Relic heatmaps document.
 const cubeAPMHeatmapDefaultLookback = 30 * 24 * time.Hour
 
-// cubeAPMTraceLabelMapping maps canonical trace field names onto the span
-// attribute a filter should compare against. Unmapped names are matched verbatim,
-// so any raw OTel attribute the user types still works.
+// cubeAPMTraceSpanSelector restricts every query to span records. The trace store
+// also holds `span_event` records (exceptions and other OTel span events) as
+// separate rows; without this they would be listed and counted as spans.
+const cubeAPMTraceSpanSelector = `event.domain="span"`
+
+// cubeAPMTraceLabelMapping maps canonical trace field names onto the LogsQL field
+// that carries them. Unmapped names are used verbatim, so any raw field the user
+// types — including `_resource.*` resource attributes — still works.
 var cubeAPMTraceLabelMapping = map[string]string{
-	"workload_name":             "service.name",
-	"service_name":              "service.name",
-	"workload_namespace":        "k8s.namespace.name",
-	"destination_workload_name": "net.peer.name",
-	"span_name":                 "operation_name",
-	"http_status_code":          "http.status_code",
-	"status_code":               "otel.status_code",
+	"workload_name":             "service",
+	"service_name":              "service",
+	"service.name":              "service",
+	"workload_namespace":        "_resource.k8s.namespace.name",
+	"destination_workload_name": "peer.service",
+	"span_name":                 "span_name",
+	"span_kind":                 "span_kind",
+	"http_status_code":          "http.response.status_code",
+	"status_code":               "status_code",
 	"trace_id":                  "trace_id",
 	"span_id":                   "span_id",
-	"parent_id":                 "parent_span_id",
+	"parent_id":                 "parent_id",
+	"parent_span_id":            "parent_id",
+}
+
+// cubeAPMTraceFieldAliases lists every LogsQL field a label may be backed by, for
+// labels whose field depends on the SDK. A cluster runs several OTel
+// semantic-convention generations at once (http.status_code was renamed to
+// http.response.status_code), so a filter ORs across all of them rather than
+// matching only the spans from one generation.
+//
+// Keyed by the PRIMARY LogsQL field — the value cubeAPMTraceLabelMapping maps a
+// canonical label to — not by the canonical label. service.go rewrites a where
+// clause through GetLabelMapping() before calling this source, so by the time a
+// filter arrives here `workload_namespace` is already `_resource.k8s.namespace.name`;
+// an alias table keyed by the canonical name would never match on that path.
+// `resource` has no single-field mapping and so reaches the source unmapped.
+var cubeAPMTraceFieldAliases = map[string][]string{
+	"_resource.k8s.namespace.name": {"_resource.k8s.namespace.name", "_resource.service.namespace"},
+	"http.response.status_code":    {"http.response.status_code", "http.status_code", "rpc.grpc.status_code"},
+	"peer.service":                 {"peer.service", "server.address", "net.peer.name", "net.sock.peer.addr", "http.host"},
+	"resource":                     {"http.route", "http.target", "url.path", "url.full", "http.url", "db.statement"},
 }
 
 // cubeAPMTraceFieldCandidates lists accepted attribute names per rendered column,
-// in priority order. A cluster runs SDKs from several OpenTelemetry
-// semantic-convention generations at once — HTTP attributes were renamed between
-// them (http.status_code → http.response.status_code, http.target → url.path) —
-// so reading a single name leaves the column blank for every span using another.
+// in priority order, matched against span attributes and then resource attributes.
 var cubeAPMTraceFieldCandidates = struct {
 	Resource       []string
 	HTTPStatusCode []string
 	Destination    []string
 	Namespace      []string
+	StatusMessage  []string
 }{
 	Resource:       []string{"http.route", "http.target", "url.path", "url.full", "http.url", "db.statement"},
 	HTTPStatusCode: []string{"http.response.status_code", "http.status_code", "rpc.grpc.status_code"},
 	Destination:    []string{"peer.service", "server.address", "net.peer.name", "net.sock.peer.addr", "http.host"},
 	Namespace:      []string{"k8s.namespace.name", "service.namespace"},
+	StatusMessage:  []string{"status_message", "otel.status_description", "exception.message"},
 }
+
+// cubeAPMTraceRowFields are the LogsQL fields promoted onto dedicated span columns,
+// so they are not repeated in SpanAttributes. Fields starting with "_" are engine
+// metadata (_time, _stream, _msg) or resource attributes (_resource.*) and are
+// handled separately.
+var cubeAPMTraceRowFields = map[string]struct{}{
+	"trace_id": {}, "span_id": {}, "parent_id": {}, "span_name": {}, "span_kind": {},
+	"service": {}, "duration": {}, "status_code": {}, "env": {}, "event.domain": {},
+}
+
+// cubeAPMTraceInternalFields are engine fields no user filters on, hidden from the
+// label picker.
+var cubeAPMTraceInternalFields = map[string]struct{}{
+	"_time": {}, "_stream": {}, "_stream_id": {}, "_msg": {}, "event.domain": {},
+}
+
+// cubeAPMTraceResourcePrefix marks a resource attribute in a LogsQL span record.
+const cubeAPMTraceResourcePrefix = "_resource."
 
 func (s *CubeAPMTraceSource) GetLabelMapping() map[string]string {
 	return cubeAPMTraceLabelMapping
@@ -133,6 +148,659 @@ func (s *CubeAPMTraceSource) GetLabelMapping() map[string]string {
 func (s *CubeAPMTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_contains"}
 }
+
+// cubeAPMTraceFieldsFor returns the LogsQL fields a filter label resolves to. It
+// accepts both a canonical label and an already-mapped field (see
+// cubeAPMTraceFieldAliases for why both arrive here).
+func cubeAPMTraceFieldsFor(label string) []string {
+	if mapped, ok := cubeAPMTraceLabelMapping[label]; ok {
+		label = mapped
+	}
+	if aliases, ok := cubeAPMTraceFieldAliases[label]; ok {
+		return aliases
+	}
+	return []string{label}
+}
+
+// cubeAPMNormalizeTraceValue adapts a filter value to how CubeAPM stores it.
+// LogsQL equality is case-sensitive and CubeAPM writes the bare upper-case OTel
+// status (ERROR / OK / UNSET), while the Traces page sends the ClickHouse spelling
+// STATUS_CODE_ERROR — so without this the status filter never matches.
+func cubeAPMNormalizeTraceValue(field, value string) string {
+	if field == "status_code" {
+		return strings.TrimPrefix(strings.ToUpper(value), "STATUS_CODE_")
+	}
+	return value
+}
+
+// cubeAPMFilterValues normalizes a filter operand into the list of strings to
+// compare against, so the scalar and list operators share one code path.
+func cubeAPMFilterValues(val any) []string {
+	switch v := val.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, fmt.Sprintf("%v", item))
+		}
+		return out
+	default:
+		return []string{fmt.Sprintf("%v", val)}
+	}
+}
+
+// cubeAPMTraceWhere rewrites a canonical where-clause into one over LogsQL field
+// names, ready for buildCubeAPMConditions.
+//
+// Each predicate becomes its own AND term, which is what lets a label with several
+// backing fields expand to an OR, and keeps two labels that map to the same field
+// (workload_name and service_name) from overwriting each other in one binary map.
+// A negative operator wraps the whole OR in NOT: distributing it (NOT a OR NOT b)
+// is true whenever the fields differ, which for an alias pair is every span.
+// `_in` / `_nin` expand to OR-ed equalities because the LogsQL builder renders
+// only scalar operators.
+func cubeAPMTraceWhere(where query.QueryWhereClause) (query.QueryWhereClause, error) {
+	var out query.QueryWhereClause
+
+	labels := make([]string, 0, len(where.Binary))
+	for label := range where.Binary {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	for _, label := range labels {
+		fields := cubeAPMTraceFieldsFor(label)
+
+		ops := make([]string, 0, len(where.Binary[label]))
+		for op := range where.Binary[label] {
+			ops = append(ops, string(op))
+		}
+		sort.Strings(ops)
+
+		for _, opName := range ops {
+			op := query.BinaryWhereClauseType(opName)
+			values := cubeAPMFilterValues(where.Binary[label][op])
+
+			var matchOp query.BinaryWhereClauseType
+			negate := false
+			switch op {
+			case query.Eq, query.In:
+				matchOp = query.Eq
+			case query.Nq, query.NotIn:
+				matchOp, negate = query.Eq, true
+			case query.Contains, query.ILike, query.Regex:
+				matchOp = op
+			default:
+				return query.QueryWhereClause{}, fmt.Errorf("unsupported operator %q for CubeAPM traces (field %q)", op, label)
+			}
+
+			var terms []query.QueryWhereClause
+			for _, field := range fields {
+				for _, v := range values {
+					terms = append(terms, query.QueryWhereClause{Binary: query.BinaryWhereClause{
+						field: {matchOp: cubeAPMNormalizeTraceValue(field, v)},
+					}})
+				}
+			}
+			if len(terms) == 0 {
+				continue
+			}
+
+			term := terms[0]
+			if len(terms) > 1 {
+				term = query.QueryWhereClause{Or: terms}
+			}
+			if negate {
+				inner := term
+				term = query.QueryWhereClause{Not: &inner}
+			}
+			out.And = append(out.And, term)
+		}
+	}
+
+	for _, sub := range where.And {
+		rewritten, err := cubeAPMTraceWhere(sub)
+		if err != nil {
+			return query.QueryWhereClause{}, err
+		}
+		out.And = append(out.And, rewritten)
+	}
+
+	if len(where.Or) > 0 {
+		var ors []query.QueryWhereClause
+		for _, sub := range where.Or {
+			rewritten, err := cubeAPMTraceWhere(sub)
+			if err != nil {
+				return query.QueryWhereClause{}, err
+			}
+			ors = append(ors, rewritten)
+		}
+		out.And = append(out.And, query.QueryWhereClause{Or: ors})
+	}
+
+	if where.Not != nil {
+		rewritten, err := cubeAPMTraceWhere(*where.Not)
+		if err != nil {
+			return query.QueryWhereClause{}, err
+		}
+		out.And = append(out.And, query.QueryWhereClause{Not: &rewritten})
+	}
+
+	return out, nil
+}
+
+// cubeAPMTraceBaseQuery renders the filter half of every span query: the span
+// stream selector plus the request's conditions. A raw query typed in Code mode is
+// passed through untouched, matching the logs source — rewriting it would fight
+// the user.
+func cubeAPMTraceBaseQuery(rawQuery string, where query.QueryWhereClause, env string) (string, error) {
+	if raw := strings.TrimSpace(rawQuery); raw != "" {
+		return raw, nil
+	}
+
+	selector := "{" + cubeAPMTraceSpanSelector + "}"
+	if env != "" {
+		selector = fmt.Sprintf("{env=%s, %s}", cubeAPMQuote(env), cubeAPMTraceSpanSelector)
+	}
+
+	rewritten, err := cubeAPMTraceWhere(where)
+	if err != nil {
+		return "", err
+	}
+	// The mapping is already applied by cubeAPMTraceWhere, so the builder gets
+	// LogsQL field names and must not remap them.
+	conditions, err := buildCubeAPMConditions(rewritten, nil)
+	if err != nil {
+		return "", err
+	}
+	if conditions == "" {
+		return selector, nil
+	}
+	return selector + " " + conditions, nil
+}
+
+func cubeAPMTraceLimit(requested int) int {
+	if requested <= 0 {
+		return cubeAPMDefaultTraceLimit
+	}
+	if requested > cubeAPMMaxTraceLimit {
+		return cubeAPMMaxTraceLimit
+	}
+	return requested
+}
+
+// cubeAPMTracePage appends the offset and limit pipes for one page.
+func cubeAPMTracePage(offset, limit int) string {
+	page := ""
+	if offset > 0 {
+		page += fmt.Sprintf(" | offset %d", offset)
+	}
+	return page + fmt.Sprintf(" | limit %d", cubeAPMTraceLimit(limit))
+}
+
+// cubeAPMTraceSort renders the sort pipe. Only time and duration are sortable
+// span columns; anything else falls back to newest first. duration is stored as a
+// numeric string, which LogsQL sorts numerically.
+func cubeAPMTraceSort(orderBy []query.QueryOrderBy) string {
+	field, dir := "_time", "desc"
+	if len(orderBy) > 0 {
+		if orderBy[0].Column == "duration_ns" || orderBy[0].Column == "duration" {
+			field = "duration"
+		}
+		if strings.HasPrefix(strings.ToLower(string(orderBy[0].Order)), "asc") {
+			dir = "asc"
+		}
+	}
+	return fmt.Sprintf(" | sort by (%s %s)", field, dir)
+}
+
+// buildCubeAPMTraceListQuery renders the span listing query. A raw Code-mode query
+// is sent as typed; the page size still applies through the request's limit.
+func buildCubeAPMTraceListQuery(req TracesV3Request, env string) (string, error) {
+	base, err := cubeAPMTraceBaseQuery(req.Query, req.QueryRequest.Where, env)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(req.Query) != "" {
+		return base, nil
+	}
+	return base + cubeAPMTraceSort(req.QueryRequest.OrderBy) +
+		cubeAPMTracePage(req.QueryRequest.Offset, req.QueryRequest.Limit), nil
+}
+
+// cubeAPMRawQueryHasPipes reports whether a Code-mode query is already a pipeline
+// rather than a bare filter. Only a bare filter can have count or grouping pipes
+// appended to it. A `|` inside a quoted value also counts, which errs towards the
+// safe answer (an estimate) rather than a wrong total.
+func cubeAPMRawQueryHasPipes(raw string) bool {
+	return strings.Contains(raw, "|")
+}
+
+// cubeAPMTraceGroupFields are the dimensions of the grouped view.
+const cubeAPMTraceGroupFields = "service, span_name, _resource.k8s.namespace.name"
+
+// buildCubeAPMTraceGroupQuery renders the grouped view: one row per (service,
+// operation, namespace) with call count, error count and latency percentiles,
+// computed by CubeAPM over every matching span rather than over one page.
+func buildCubeAPMTraceGroupQuery(req TracesV3Request, env string) (string, error) {
+	if cubeAPMRawQueryHasPipes(req.Query) {
+		return "", fmt.Errorf("the grouped trace view needs a filter-only LogsQL query; " +
+			"remove the pipes (|) from the query to group its spans")
+	}
+	base, err := cubeAPMTraceBaseQuery(req.Query, req.QueryRequest.Where, env)
+	if err != nil {
+		return "", err
+	}
+	return base + " | stats by (" + cubeAPMTraceGroupFields + ") " +
+		"count() count, " +
+		"count() if (status_code:=ERROR) error_count, " +
+		"quantile(0.95, duration) p95, " +
+		"quantile(0.99, duration) p99, " +
+		"max(duration) max_duration, " +
+		"sum(duration) total_duration" +
+		" | sort by (count desc)" +
+		cubeAPMTracePage(req.QueryRequest.Offset, req.QueryRequest.Limit), nil
+}
+
+// isCubeAPMMissingTraceEndpoint reports whether a request failed because this
+// CubeAPM does not serve the LogsQL trace API, as opposed to a bad query or an
+// unreachable server. CubeAPM answers an unknown path with a 400 "unsupported path
+// requested"; a reverse proxy in front of it answers 404.
+func isCubeAPMMissingTraceEndpoint(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unsupported path requested") || strings.Contains(msg, "HTTP 404")
+}
+
+// cubeAPMTracePost runs one LogsQL trace request. A missing endpoint is reported
+// as such instead of surfacing as an opaque 400 or, worse, an empty result that
+// reads as "no traces".
+func cubeAPMTracePost(cfg integrations.CubeAPMConfig, path string, form neturl.Values, startMs, endMs int64) ([]byte, error) {
+	startMs, endMs = cubeAPMTimeRangeMillis(startMs, endMs, time.Now())
+	form.Set("start", strconv.FormatInt(startMs/1000, 10))
+	form.Set("end", strconv.FormatInt(endMs/1000, 10))
+
+	body, err := cubeAPMPostForm(cfg, cfg.URL+path, form, cubeAPMTraceQueryTimeout)
+	if err != nil {
+		if isCubeAPMMissingTraceEndpoint(err) {
+			return nil, fmt.Errorf("CubeAPM at %s does not serve the trace query API (%s); "+
+				"traces need a CubeAPM version that supports LogsQL trace search: %w", cfg.URL, path, err)
+		}
+		return nil, err
+	}
+	return body, nil
+}
+
+// cubeAPMTraceRows runs a LogsQL query and decodes the NDJSON rows.
+func cubeAPMTraceRows(cfg integrations.CubeAPMConfig, logsQL string, startMs, endMs int64, limit int) ([]map[string]any, error) {
+	form := neturl.Values{}
+	form.Set("query", logsQL)
+	if limit > 0 {
+		form.Set("limit", strconv.Itoa(limit))
+	}
+	body, err := cubeAPMTracePost(cfg, cubeAPMTracesQueryPath, form, startMs, endMs)
+	if err != nil {
+		return nil, err
+	}
+	return decodeCubeAPMNDJSON(bytes.NewReader(body))
+}
+
+// cubeAPMTraceValues decodes a field_names / field_values response.
+func cubeAPMTraceValues(body []byte) ([]string, error) {
+	var decoded struct {
+		Values []struct {
+			Value string `json:"value"`
+		} `json:"values"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("failed to parse CubeAPM trace field response: %w", err)
+	}
+	out := make([]string, 0, len(decoded.Values))
+	for _, v := range decoded.Values {
+		out = append(out, v.Value)
+	}
+	return out, nil
+}
+
+// cubeAPMInt reads an integer stats column. Quantiles can come back fractional.
+func cubeAPMInt(v any) int64 {
+	s := cubeAPMString(v)
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return int64(f)
+	}
+	return 0
+}
+
+// cubeAPMCount reads a count column into an int. A count is never negative, and it
+// saturates rather than wrapping when the platform int cannot hold the value.
+func cubeAPMCount(v any) int {
+	n := cubeAPMInt(v)
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int(n)
+}
+
+// cubeAPMTraceRowToSpan projects one LogsQL span record onto the shared span model.
+func cubeAPMTraceRowToSpan(row map[string]any) common.OpenTelemetryTrace {
+	spanAttrs := map[string]string{}
+	resourceAttrs := map[string]string{}
+	for key, value := range row {
+		switch {
+		case strings.HasPrefix(key, cubeAPMTraceResourcePrefix):
+			resourceAttrs[strings.TrimPrefix(key, cubeAPMTraceResourcePrefix)] = cubeAPMString(value)
+		case strings.HasPrefix(key, "_"):
+			continue
+		default:
+			if _, promoted := cubeAPMTraceRowFields[key]; !promoted {
+				spanAttrs[key] = cubeAPMString(value)
+			}
+		}
+	}
+
+	serviceName := cubeAPMString(row["service"])
+	if serviceName != "" {
+		resourceAttrs["service.name"] = serviceName
+	}
+
+	startTime := cubeAPMString(row["_time"])
+	durationNs := cubeAPMInt(row["duration"])
+	spanName := cubeAPMString(row["span_name"])
+
+	statusCode := strings.ToUpper(cubeAPMString(row["status_code"]))
+	if statusCode == "" && strings.EqualFold(spanAttrs["error"], "true") {
+		statusCode = "ERROR"
+	}
+
+	out := common.OpenTelemetryTrace{
+		Timestamp:          startTime,
+		StartTime:          startTime,
+		EndTime:            cubeAPMEndTime(startTime, durationNs),
+		TraceID:            cubeAPMString(row["trace_id"]),
+		SpanID:             cubeAPMString(row["span_id"]),
+		ParentSpanID:       cubeAPMString(row["parent_id"]),
+		SpanName:           spanName,
+		Operation:          spanName,
+		SpanKind:           cubeAPMString(row["span_kind"]),
+		ServiceName:        serviceName,
+		Service:            serviceName,
+		WorkloadName:       serviceName,
+		WorkloadNamespace:  cubeAPMFirstAttr(spanAttrs, resourceAttrs, cubeAPMTraceFieldCandidates.Namespace),
+		ResourceAttributes: resourceAttrs,
+		SpanAttributes:     spanAttrs,
+		DurationNs:         durationNs,
+		Resource:           cubeAPMFirstAttr(spanAttrs, resourceAttrs, cubeAPMTraceFieldCandidates.Resource),
+		HTTPStatusCode:     cubeAPMFirstAttr(spanAttrs, resourceAttrs, cubeAPMTraceFieldCandidates.HTTPStatusCode),
+		DestinationName:    cubeAPMFirstAttr(spanAttrs, resourceAttrs, cubeAPMTraceFieldCandidates.Destination),
+		StatusCode:         statusCode,
+		StatusMessage:      cubeAPMFirstAttr(spanAttrs, resourceAttrs, cubeAPMTraceFieldCandidates.StatusMessage),
+		TraceSource:        "cubeapm",
+	}
+	out.DestinationWorkload = out.DestinationName
+	return out
+}
+
+// cubeAPMTraceGroupRowToValues projects one grouped-view stats row.
+func cubeAPMTraceGroupRowToValues(row map[string]any) TraceGroupingValues {
+	return TraceGroupingValues{
+		Count:             cubeAPMCount(row["count"]),
+		ErrorCount:        cubeAPMCount(row["error_count"]),
+		P95Latency:        cubeAPMInt(row["p95"]),
+		P99Latency:        cubeAPMInt(row["p99"]),
+		MaxLatency:        cubeAPMInt(row["max_duration"]),
+		WorkloadName:      cubeAPMString(row["service"]),
+		WorkloadNamespace: cubeAPMString(row["_resource.k8s.namespace.name"]),
+		SpanName:          cubeAPMString(row["span_name"]),
+		DurationNS:        cubeAPMInt(row["total_duration"]),
+	}
+}
+
+// cubeAPMTraceCount runs `<base> | stats <expr> count` and reads the number. A
+// Code-mode query that already carries pipes returns -1, the contract's "estimate"
+// signal: appending stats after the user's own `| limit` would count only that
+// page and present it as the total.
+func cubeAPMTraceCount(cfg integrations.CubeAPMConfig, req TracesV3Request, expr string) (int, error) {
+	if cubeAPMRawQueryHasPipes(req.Query) {
+		return -1, nil
+	}
+	base, err := cubeAPMTraceBaseQuery(req.Query, req.QueryRequest.Where, cfg.Env)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := cubeAPMTraceRows(cfg, base+" | stats "+expr+" count", req.StartTime, req.EndTime, 0)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return cubeAPMCount(rows[0]["count"]), nil
+}
+
+func (s *CubeAPMTraceSource) GetQuery(ctx *security.RequestContext, req TracesV3Request) (string, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return "", fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	return buildCubeAPMTraceListQuery(req, cfg.Env)
+}
+
+func (s *CubeAPMTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	logsQL, err := buildCubeAPMTraceListQuery(req, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	ctx.GetLogger().Info("CubeAPM Trace Query", "query", logsQL)
+	return queryCubeAPMTraces(cfg, logsQL, req)
+}
+
+// queryCubeAPMTraces runs a rendered listing query. Split from QueryTraces so it
+// can be exercised against a test server without integration config lookup.
+func queryCubeAPMTraces(cfg integrations.CubeAPMConfig, logsQL string, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	rows, err := cubeAPMTraceRows(cfg, logsQL, req.StartTime, req.EndTime, cubeAPMTraceLimit(req.QueryRequest.Limit))
+	if err != nil {
+		return nil, err
+	}
+	spans := make([]common.OpenTelemetryTrace, 0, len(rows))
+	for _, row := range rows {
+		spans = append(spans, cubeAPMTraceRowToSpan(row))
+	}
+	return spans, nil
+}
+
+func (s *CubeAPMTraceSource) CountTraces(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	n, err := cubeAPMTraceCount(cfg, req, "count()")
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	return common.OpenTelemetryTraceCount{Count: n}, nil
+}
+
+func (s *CubeAPMTraceSource) CountTracesByTrace(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	n, err := cubeAPMTraceCount(cfg, req, "count_uniq(trace_id)")
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	return common.OpenTelemetryTraceCount{Count: n}, nil
+}
+
+// QueryRootSpansByTrace backs the "By Traces" listing, reducing the span result to
+// one representative root per trace via the shared helper.
+func (s *CubeAPMTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, s, req)
+}
+
+// GetLabelValues answers a filter dropdown from field_values, which reads the
+// distinct values across the whole window rather than a sample of spans. A label
+// backed by several fields unions their values.
+func (s *CubeAPMTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
+	empty := common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: []string{}}
+	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "traces") {
+		return empty, fmt.Errorf("access denied for account: %s", req.AccountId)
+	}
+
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return empty, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+
+	values, err := queryCubeAPMTraceLabelValues(cfg, req)
+	if err != nil {
+		return empty, err
+	}
+	return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: values}, nil
+}
+
+func queryCubeAPMTraceLabelValues(cfg integrations.CubeAPMConfig, req TracesV3LabelValuesRequest) ([]string, error) {
+	base, err := cubeAPMTraceBaseQuery("", req.QueryRequest.Where, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{}
+	values := []string{}
+	for _, field := range cubeAPMTraceFieldsFor(req.Label) {
+		if !isSafeCubeAPMField(field) {
+			return nil, fmt.Errorf("invalid or unsafe field name: %q", field)
+		}
+		form := neturl.Values{}
+		form.Set("query", base)
+		form.Set("field", field)
+		form.Set("limit", strconv.Itoa(cubeAPMTraceLabelValueLimit))
+
+		body, err := cubeAPMTracePost(cfg, cubeAPMTracesFieldValuesPath, form, req.StartTime, req.EndTime)
+		if err != nil {
+			return nil, err
+		}
+		fieldValues, err := cubeAPMTraceValues(body)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range fieldValues {
+			if v == "" {
+				continue
+			}
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+			values = append(values, v)
+		}
+	}
+	sort.Strings(values)
+	return values, nil
+}
+
+// QueryLabels lists the span field names present in the window. Names are returned
+// as LogsQL fields — resource attributes keep their `_resource.` prefix — because
+// a label picked here is sent back verbatim as a filter field.
+func (s *CubeAPMTraceSource) QueryLabels(ctx *security.RequestContext, req FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	labels, err := queryCubeAPMTraceLabels(cfg, req)
+	if err != nil {
+		// An empty list is the documented "no backend discovery" answer, and
+		// FetchTraceLabels falls back to the canonical set — a better outcome than
+		// failing the whole label request.
+		ctx.GetLogger().Warn("CubeAPMTraceSource.QueryLabels: field_names query failed", "error", err)
+		return []OutputTraceLabel{}, nil
+	}
+	return labels, nil
+}
+
+func queryCubeAPMTraceLabels(cfg integrations.CubeAPMConfig, req FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	base, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{}, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	form := neturl.Values{}
+	form.Set("query", base)
+
+	body, err := cubeAPMTracePost(cfg, cubeAPMTracesFieldNamesPath, form, req.StartTime, req.EndTime)
+	if err != nil {
+		return nil, err
+	}
+	names, err := cubeAPMTraceValues(body)
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Strings(names)
+	labels := make([]OutputTraceLabel, 0, len(names))
+	for _, name := range names {
+		if _, internal := cubeAPMTraceInternalFields[name]; internal {
+			continue
+		}
+		labels = append(labels, OutputTraceLabel{Label: name, Attributes: map[string]any{"type": "string"}})
+	}
+	return labels, nil
+}
+
+func (s *CubeAPMTraceSource) QueryGroupedTraces(ctx *security.RequestContext, req TracesV3Request) ([]TraceGroupingValues, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	logsQL, err := buildCubeAPMTraceGroupQuery(req, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	ctx.GetLogger().Info("CubeAPM Trace Group Query", "query", logsQL)
+
+	rows, err := cubeAPMTraceRows(cfg, logsQL, req.StartTime, req.EndTime, 0)
+	if err != nil {
+		return nil, err
+	}
+	groups := make([]TraceGroupingValues, 0, len(rows))
+	for _, row := range rows {
+		groups = append(groups, cubeAPMTraceGroupRowToValues(row))
+	}
+	return groups, nil
+}
+
+func (s *CubeAPMTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceGroupCount, error) {
+	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
+	if err != nil {
+		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("failed to get CubeAPM configs: %w", err)
+	}
+	n, err := cubeAPMTraceCount(cfg, req, "count_uniq("+cubeAPMTraceGroupFields+")")
+	if err != nil {
+		return common.OpenTelemetryTraceGroupCount{}, err
+	}
+	return common.OpenTelemetryTraceGroupCount{Count: n}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Trace waterfall: CubeAPM's by-id endpoint, in Jaeger protobuf-JSON.
+//
+// Ids arrive as base64-encoded byte arrays rather than hex strings, tag values are
+// carried in a typed union (v_str / v_int64 / v_float64 / v_bool), and durations
+// are bare nanosecond counts. Everything below that looks like ceremony is that
+// translation.
+// ---------------------------------------------------------------------------
 
 // cubeAPMTag is one Jaeger protobuf-JSON tag. Exactly one v_* field is populated,
 // selected by v_type — which is itself omitted for the string case, since 0 is
@@ -196,15 +864,6 @@ type cubeAPMSpan struct {
 	Tags          []cubeAPMTag     `json:"tags"`
 	Logs          []cubeAPMSpanLog `json:"logs"`
 	Process       *cubeAPMProcess  `json:"process"`
-}
-
-// cubeAPMSearchMatch is one entry of the search response: a key span plus the
-// trace it belongs to.
-type cubeAPMSearchMatch struct {
-	KeySpanID string `json:"keySpanId"`
-	Trace     struct {
-		Spans []cubeAPMSpan `json:"spans"`
-	} `json:"trace"`
 }
 
 // cubeAPMTraceFetch is the by-id fetch response — a bare span list, with no
@@ -428,384 +1087,6 @@ func cubeAPMEndTime(startTime string, durationNs int64) string {
 	return parsed.Add(time.Duration(durationNs)).UTC().Format(time.RFC3339Nano)
 }
 
-func cubeAPMTraceLimit(req TracesV3Request) int {
-	limit := req.QueryRequest.Limit
-	if limit <= 0 {
-		limit = cubeAPMDefaultTraceLimit
-	}
-	if limit > cubeAPMMaxTraceLimit {
-		limit = cubeAPMMaxTraceLimit
-	}
-	return limit
-}
-
-// cubeAPMSearchParams builds the query string for one search call.
-//
-// index, env, service and spanKind are all mandatory (see the constants above);
-// service is the caller's because an unfiltered query has to fan out over
-// discovered services. `query` is sent as the documented wildcard: every real
-// filter is applied to the decoded spans (see filterCubeAPMSpans) rather than
-// guessed at in an undocumented query syntax — a filter the server silently
-// ignored would render unfiltered results as though they were filtered, which is
-// worse than fetching a little more than needed.
-func cubeAPMSearchParams(req TracesV3Request, env, service string, fetchLimit int) string {
-	params := neturl.Values{}
-	params.Set("query", "*")
-	params.Set("index", cubeAPMTraceIndex)
-	params.Set("spanKind", cubeAPMTraceSpanKind)
-	params.Set("limit", strconv.Itoa(fetchLimit))
-
-	startMs, endMs := cubeAPMTimeRangeMillis(req.StartTime, req.EndTime, time.Now())
-	params.Set("start", strconv.FormatInt(startMs/1000, 10))
-	params.Set("end", strconv.FormatInt(endMs/1000, 10))
-
-	if env == "" {
-		env = cubeAPMDefaultEnv
-	}
-	params.Set("env", env)
-	params.Set("service", service)
-
-	return "?" + params.Encode()
-}
-
-// cubeAPMRequestedService reads the service a query is scoped to, if any. This is
-// the one filter the API can apply itself.
-func cubeAPMRequestedService(req TracesV3Request) string {
-	return extractFirstValueFromBinaryFilter(req.QueryRequest.Where.Binary,
-		"workload_name", "service_name", "service.name")
-}
-
-// discoverCubeAPMServices lists the services that have trace data in the window.
-//
-// The traces API exposes no services endpoint (/services, /indexes and /streams
-// all answer "unsupported path requested"), so the service list is read from the
-// `service` label on CubeAPM's own APM metrics — the same label its alert-rule
-// examples use, and verified on a live instance to return exactly the services
-// that have spans.
-func discoverCubeAPMServices(cfg integrations.CubeAPMConfig, startMs, endMs int64) ([]string, error) {
-	endpoint := cfg.URL + cubeAPMMetricsAPIPath + "/label/service/values" +
-		cubeAPMMetadataQuery(startMs, endMs, nil, time.Now())
-
-	services, err := cubeAPMStringList(cfg, endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover CubeAPM services: %w", err)
-	}
-
-	sort.Strings(services)
-	if len(services) > cubeAPMMaxFanoutServices {
-		services = services[:cubeAPMMaxFanoutServices]
-	}
-	return services, nil
-}
-
-func (s *CubeAPMTraceSource) GetQuery(ctx *security.RequestContext, req TracesV3Request) (string, error) {
-	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
-	if err != nil {
-		return "", fmt.Errorf("failed to get CubeAPM configs: %w", err)
-	}
-	// Reports the shape of the call; an unfiltered query actually issues one of
-	// these per discovered service.
-	service := cubeAPMRequestedService(req)
-	return cfg.URL + cubeAPMTraceSearchPath +
-		cubeAPMSearchParams(req, cfg.Env, service, cubeAPMTraceLimit(req)), nil
-}
-
-func (s *CubeAPMTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
-	spans, err := s.fetchSpans(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return spans, nil
-}
-
-// fetchSpans runs the search, decodes every span of every matched trace, applies
-// the filters the API could not, and truncates to the requested page size.
-// fetchSpans returns one PAGE of spans: the full fan-out result, truncated to the
-// requested limit. Callers that summarise the whole result — label and label-value
-// discovery — must use collectSpans instead, or the summary describes only the page.
-func (s *CubeAPMTraceSource) fetchSpans(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
-	spans, err := s.collectSpans(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	if limit := cubeAPMTraceLimit(req); len(spans) > limit {
-		spans = spans[:limit]
-	}
-	return spans, nil
-}
-
-// collectSpans runs the per-service fan-out and returns EVERY span it matched,
-// filtered and sorted but not truncated.
-//
-// The distinction matters because the search API caps each request at 100 traces
-// and accepts no wildcard service, so a query with no service filter is answered
-// by one request per discovered service. Truncating that union to a page size
-// keeps only the most recent spans, which in practice all belong to whichever
-// service is busiest — so label-value discovery over a truncated page reported a
-// single service out of five.
-func (s *CubeAPMTraceSource) collectSpans(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
-	cfg, err := integrations.GetCubeAPMConfigs(ctx, req.AccountId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get CubeAPM configs: %w", err)
-	}
-
-	fetchLimit := cubeAPMTraceLimit(req)
-	if cubeAPMWhereHasFilters(req.QueryRequest.Where) {
-		fetchLimit = min(fetchLimit*cubeAPMTraceOverFetch, cubeAPMMaxTraceLimit)
-	}
-
-	// The API requires an exact service and supports no wildcard, so a query that
-	// names one asks only about it, and a query that does not has to ask about
-	// each service that has traces in the window.
-	services := []string{cubeAPMRequestedService(req)}
-	if services[0] == "" {
-		startMs, endMs := cubeAPMTimeRangeMillis(req.StartTime, req.EndTime, time.Now())
-		services, err = discoverCubeAPMServices(cfg, startMs, endMs)
-		if err != nil {
-			return nil, err
-		}
-		if len(services) == 0 {
-			return nil, nil
-		}
-	}
-
-	var spans []common.OpenTelemetryTrace
-	var firstErr error
-	failures := 0
-
-	for _, service := range services {
-		endpoint := cfg.URL + cubeAPMTraceSearchPath +
-			cubeAPMSearchParams(req, cfg.Env, service, fetchLimit)
-		ctx.GetLogger().Info("CubeAPM Trace Search", "endpoint", endpoint)
-
-		body, err := cubeAPMGet(cfg, endpoint, cubeAPMTraceQueryTimeout)
-		if err != nil {
-			// One service failing says nothing about the others, so the fan-out
-			// keeps going and only reports if every leg failed.
-			failures++
-			if firstErr == nil {
-				firstErr = err
-			}
-			ctx.GetLogger().Warn("CubeAPM trace search failed for service", "service", service, "error", err)
-			continue
-		}
-
-		var matches []cubeAPMSearchMatch
-		dec := json.NewDecoder(bytes.NewReader(body))
-		dec.UseNumber()
-		if err := dec.Decode(&matches); err != nil {
-			failures++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("failed to decode CubeAPM trace search response: %w", err)
-			}
-			continue
-		}
-
-		for _, match := range matches {
-			for _, span := range match.Trace.Spans {
-				spans = append(spans, cubeAPMSpanToTrace(span))
-			}
-		}
-	}
-
-	// Every leg failing means the backend is unreachable, not that there are no
-	// traces — surfacing it beats returning a misleading empty result.
-	if failures == len(services) && firstErr != nil {
-		return nil, firstErr
-	}
-
-	spans, err = filterCubeAPMSpans(spans, req.QueryRequest.Where)
-	if err != nil {
-		return nil, err
-	}
-	sortCubeAPMSpans(spans, req.QueryRequest.OrderBy)
-	return spans, nil
-}
-
-// cubeAPMWhereHasFilters reports whether a where-clause carries any predicate at
-// all, which is what decides whether the fetch needs to over-fetch.
-func cubeAPMWhereHasFilters(where query.QueryWhereClause) bool {
-	if len(where.Binary) > 0 || len(where.And) > 0 || len(where.Or) > 0 || where.Not != nil {
-		return true
-	}
-	return false
-}
-
-// cubeAPMSpanFieldValue resolves a filter field against a decoded span, checking
-// the promoted columns before falling back to the raw attribute maps.
-func cubeAPMSpanFieldValue(span common.OpenTelemetryTrace, field string) string {
-	if mapped, ok := cubeAPMTraceLabelMapping[field]; ok {
-		field = mapped
-	}
-	switch field {
-	case "operation_name", "span_name":
-		return span.SpanName
-	case "service.name":
-		return span.ServiceName
-	case "k8s.namespace.name":
-		return span.WorkloadNamespace
-	case "trace_id":
-		return span.TraceID
-	case "span_id":
-		return span.SpanID
-	case "parent_span_id":
-		return span.ParentSpanID
-	case "otel.status_code":
-		return span.StatusCode
-	case "http.status_code":
-		return span.HTTPStatusCode
-	case "span.kind":
-		return span.SpanKind
-	}
-	if v := span.SpanAttributes[field]; v != "" {
-		return v
-	}
-	return span.ResourceAttributes[field]
-}
-
-// cubeAPMFilterValues normalizes a filter operand into the list of strings to
-// compare against, so the scalar and list operators share one code path.
-func cubeAPMFilterValues(val any) []string {
-	switch v := val.(type) {
-	case []string:
-		return v
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			out = append(out, fmt.Sprintf("%v", item))
-		}
-		return out
-	default:
-		return []string{fmt.Sprintf("%v", val)}
-	}
-}
-
-// evalCubeAPMBinary evaluates one binary clause against a span. Conditions within
-// a clause are ANDed, matching how every other provider here reads the shape.
-func evalCubeAPMBinary(span common.OpenTelemetryTrace, binary query.BinaryWhereClause) (bool, error) {
-	for field, ops := range binary {
-		actual := cubeAPMSpanFieldValue(span, field)
-		for op, val := range ops {
-			values := cubeAPMFilterValues(val)
-
-			matchesAny := func() bool {
-				for _, want := range values {
-					if strings.EqualFold(actual, want) {
-						return true
-					}
-				}
-				return false
-			}
-
-			var ok bool
-			switch op {
-			case query.Eq:
-				ok = matchesAny()
-			case query.Nq:
-				ok = !matchesAny()
-			case query.In:
-				ok = matchesAny()
-			case query.NotIn:
-				ok = !matchesAny()
-			case query.Contains, query.ILike:
-				ok = false
-				for _, want := range values {
-					if strings.Contains(strings.ToLower(actual), strings.ToLower(want)) {
-						ok = true
-						break
-					}
-				}
-			default:
-				// Refusing beats guessing. An operator evaluated as "matches" would
-				// return unfiltered spans as though the filter had been applied —
-				// the same failure this source avoids by not inventing a server-side
-				// query syntax.
-				return false, fmt.Errorf("unsupported operator %q for CubeAPM traces (field %q)", op, field)
-			}
-			if !ok {
-				return false, nil
-			}
-		}
-	}
-	return true, nil
-}
-
-// evalCubeAPMWhere evaluates a full where-clause tree against one span.
-//
-// This is recursive rather than a flat predicate list on purpose. CubeAPM's search
-// API documents no filter syntax beyond `service` and `env`, so every other
-// predicate has to be decided here — and a flat list silently drops OR and NOT
-// subtrees, which means an OR-shaped filter returns every span as though it had
-// matched. That is the precise failure mode this source refuses to accept from the
-// server, so it must not introduce it on the client.
-func evalCubeAPMWhere(span common.OpenTelemetryTrace, where query.QueryWhereClause) (bool, error) {
-	if len(where.Binary) > 0 {
-		ok, err := evalCubeAPMBinary(span, where.Binary)
-		if err != nil || !ok {
-			return false, err
-		}
-	}
-
-	for _, sub := range where.And {
-		ok, err := evalCubeAPMWhere(span, sub)
-		if err != nil || !ok {
-			return false, err
-		}
-	}
-
-	if len(where.Or) > 0 {
-		matched := false
-		for _, sub := range where.Or {
-			ok, err := evalCubeAPMWhere(span, sub)
-			if err != nil {
-				return false, err
-			}
-			if ok {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false, nil
-		}
-	}
-
-	if where.Not != nil {
-		ok, err := evalCubeAPMWhere(span, *where.Not)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-// filterCubeAPMSpans keeps the spans matching the where-clause. An equality on the
-// service is also re-evaluated here even though it was pushed down as the API's
-// `service` parameter: it is already true of every span fetched, so re-checking
-// costs nothing and keeps the evaluator free of push-down special cases that would
-// be wrong inside an OR branch.
-func filterCubeAPMSpans(spans []common.OpenTelemetryTrace, where query.QueryWhereClause) ([]common.OpenTelemetryTrace, error) {
-	if !cubeAPMWhereHasFilters(where) {
-		return spans, nil
-	}
-
-	kept := spans[:0]
-	for _, span := range spans {
-		ok, err := evalCubeAPMWhere(span, where)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			kept = append(kept, span)
-		}
-	}
-	return kept, nil
-}
-
 // cubeAPMSpanStartNanos parses a span's start timestamp into a comparable value.
 //
 // Ordering the RFC3339 strings directly is wrong, and wrong in a way that looks
@@ -868,208 +1149,6 @@ func sortCubeAPMSpans(spans []common.OpenTelemetryTrace, orderBy []query.QueryOr
 	for i := range rows {
 		spans[i] = rows[i].span
 	}
-}
-
-// CountTraces returns -1: CubeAPM exposes no trace-count endpoint, and the
-// frontend already treats -1 as an estimate for pagination.
-func (s *CubeAPMTraceSource) CountTraces(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
-	return common.OpenTelemetryTraceCount{Count: -1}, nil
-}
-
-func (s *CubeAPMTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
-	return countTracesByTraceEstimate()
-}
-
-// QueryRootSpansByTrace backs the "By Traces" listing, reducing the span result to
-// one representative root per trace via the shared helper.
-func (s *CubeAPMTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
-	return queryRootSpansViaSpans(ctx, s, req)
-}
-
-// GetLabelValues answers the filter dropdowns from a sample of real spans.
-// CubeAPM has no tag-value endpoint, so the values offered are the ones actually
-// present in the window — which is also the only set that can return results.
-func (s *CubeAPMTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
-	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "traces") {
-		return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: []string{}},
-			fmt.Errorf("access denied for account: %s", req.AccountId)
-	}
-
-	spans, err := s.collectSpans(ctx, TracesV3Request{
-		AccountId:    req.AccountId,
-		StartTime:    req.StartTime,
-		EndTime:      req.EndTime,
-		QueryRequest: TracesQueryBuilderRequest{Limit: cubeAPMMaxTraceLimit},
-	})
-	if err != nil {
-		return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: []string{}}, err
-	}
-
-	field := req.Label
-	if mapped, ok := cubeAPMTraceLabelMapping[field]; ok {
-		field = mapped
-	}
-
-	seen := map[string]struct{}{}
-	values := []string{}
-	for _, span := range spans {
-		v := cubeAPMSpanFieldValue(span, field)
-		if v == "" {
-			continue
-		}
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
-		values = append(values, v)
-	}
-	sort.Strings(values)
-
-	return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: values}, nil
-}
-
-// QueryLabels reports the attribute keys actually present on recent spans. Unlike
-// most sources here this is answerable for CubeAPM — the span payload carries its
-// full tag set — so the label picker lists this deployment's real attributes
-// instead of falling back to the derived canonical set.
-func (s *CubeAPMTraceSource) QueryLabels(ctx *security.RequestContext, req FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
-	spans, err := s.collectSpans(ctx, TracesV3Request{
-		AccountId:    req.AccountId,
-		StartTime:    req.StartTime,
-		EndTime:      req.EndTime,
-		QueryRequest: TracesQueryBuilderRequest{Limit: cubeAPMDefaultTraceLimit},
-	})
-	if err != nil {
-		// An empty list is the documented "no backend discovery" answer, and
-		// FetchTraceLabels falls back to the canonical set — a better outcome than
-		// failing the whole label request because the sample query timed out.
-		ctx.GetLogger().Warn("CubeAPMTraceSource.QueryLabels: sample query failed", "error", err)
-		return []OutputTraceLabel{}, nil
-	}
-
-	keys := map[string]struct{}{}
-	for _, span := range spans {
-		for k := range span.SpanAttributes {
-			keys[k] = struct{}{}
-		}
-		for k := range span.ResourceAttributes {
-			keys[k] = struct{}{}
-		}
-	}
-
-	names := make([]string, 0, len(keys))
-	for k := range keys {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-
-	labels := make([]OutputTraceLabel, 0, len(names))
-	for _, name := range names {
-		labels = append(labels, OutputTraceLabel{Label: name, Attributes: map[string]any{"type": "string"}})
-	}
-	return labels, nil
-}
-
-// QueryGroupedTraces aggregates the span page into (service, operation) groups.
-// CubeAPM has no server-side aggregation for traces, so this groups what the
-// search returned — the same approach the Splunk source takes.
-func (s *CubeAPMTraceSource) QueryGroupedTraces(ctx *security.RequestContext, req TracesV3Request) ([]TraceGroupingValues, error) {
-	spans, err := s.fetchSpans(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return aggregateCubeAPMTraceGroups(spans), nil
-}
-
-func (s *CubeAPMTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceGroupCount, error) {
-	groups, err := s.QueryGroupedTraces(ctx, req)
-	if err != nil {
-		return common.OpenTelemetryTraceGroupCount{}, err
-	}
-	return common.OpenTelemetryTraceGroupCount{Count: len(groups)}, nil
-}
-
-// aggregateCubeAPMTraceGroups rolls spans up by (service, operation), reporting
-// call count, error count and latency percentiles.
-func aggregateCubeAPMTraceGroups(spans []common.OpenTelemetryTrace) []TraceGroupingValues {
-	type groupKey struct{ service, operation, namespace string }
-
-	type groupAgg struct {
-		count      int
-		errCount   int
-		totalDurNs int64
-		maxDurNs   int64
-		durations  []int64
-	}
-
-	groups := map[groupKey]*groupAgg{}
-	order := []groupKey{}
-
-	for _, span := range spans {
-		key := groupKey{
-			service:   span.ServiceName,
-			operation: span.SpanName,
-			namespace: span.WorkloadNamespace,
-		}
-		g, exists := groups[key]
-		if !exists {
-			g = &groupAgg{}
-			groups[key] = g
-			order = append(order, key)
-		}
-		g.count++
-		if isCubeAPMErrorSpan(span) {
-			g.errCount++
-		}
-		g.totalDurNs += span.DurationNs
-		if span.DurationNs > g.maxDurNs {
-			g.maxDurNs = span.DurationNs
-		}
-		g.durations = append(g.durations, span.DurationNs)
-	}
-
-	result := make([]TraceGroupingValues, 0, len(order))
-	for _, key := range order {
-		g := groups[key]
-		sort.Slice(g.durations, func(i, j int) bool { return g.durations[i] < g.durations[j] })
-		result = append(result, TraceGroupingValues{
-			Count:             g.count,
-			ErrorCount:        g.errCount,
-			P95Latency:        cubeAPMPercentile(g.durations, 0.95),
-			P99Latency:        cubeAPMPercentile(g.durations, 0.99),
-			MaxLatency:        g.maxDurNs,
-			WorkloadName:      key.service,
-			WorkloadNamespace: key.namespace,
-			SpanName:          key.operation,
-			DurationNS:        g.totalDurNs,
-		})
-	}
-	return result
-}
-
-func isCubeAPMErrorSpan(span common.OpenTelemetryTrace) bool {
-	if strings.EqualFold(span.StatusCode, "ERROR") || span.StatusCode == "2" {
-		return true
-	}
-	if code, err := strconv.Atoi(span.HTTPStatusCode); err == nil && code >= 500 {
-		return true
-	}
-	return false
-}
-
-// cubeAPMPercentile returns the nearest-rank percentile of a sorted slice.
-func cubeAPMPercentile(sorted []int64, p float64) int64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := int(float64(len(sorted)-1) * p)
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
-	}
-	return sorted[idx]
 }
 
 // QueryTracesHeatmap returns every span of one trace, which the UI lays out as the
