@@ -458,6 +458,63 @@ func TestCubeAPMRowToOutputLog(t *testing.T) {
 	}
 }
 
+// The log-row dropdown renders the canonical `timestamp` label as epoch
+// nanoseconds. Letting normalizeOutputLogLabels alias the ISO-8601 `_time` into
+// it instead made that render throw `RangeError: Invalid time value` and killed
+// the whole log screen, so the nanosecond form has to be set at the source.
+func TestCubeAPMRowToOutputLogTimestampLabelIsEpochNanos(t *testing.T) {
+	row := map[string]any{
+		"_time": "2026-09-16T06:18:01.630729233Z",
+		"_msg":  "upstream timeout",
+	}
+
+	out := cubeAPMRowToOutputLog(row)
+
+	want := time.Date(2026, 9, 16, 6, 18, 1, 630729233, time.UTC).UnixNano()
+	if got, ok := out.Labels["timestamp"].(int64); !ok || got != want {
+		t.Errorf("Labels[timestamp] = %#v; want epoch nanos %d", out.Labels["timestamp"], want)
+	}
+	// `_time` keeps the provider's own spelling — it is a filterable field.
+	if out.Labels["_time"] != "2026-09-16T06:18:01.630729233Z" {
+		t.Errorf("Labels[_time] = %#v; want the raw ISO value", out.Labels["_time"])
+	}
+
+	// normalizeOutputLogLabels only aliases a canonical key that is absent, so the
+	// nanosecond value must survive the pass that would otherwise overwrite it
+	// with the ISO string.
+	logs := []OutputLog{out}
+	normalizeOutputLogLabels(logs, cubeAPMLogLabelMapping)
+	if got, ok := logs[0].Labels["timestamp"].(int64); !ok || got != want {
+		t.Errorf("after normalizeOutputLogLabels: Labels[timestamp] = %#v; want epoch nanos %d", logs[0].Labels["timestamp"], want)
+	}
+}
+
+// A record whose _time CubeAPM did not render as RFC3339 must not carry an
+// unparseable `timestamp` label — that value is what crashed the dropdown.
+// Asserting on the conversion alone is not enough: normalizeOutputLogLabels keys
+// off the label's EXISTENCE, so a merely-absent key gets the bad string aliased
+// straight back in. The check that matters is the one after that pass.
+func TestCubeAPMRowToOutputLogUnparseableTimeHasNoTimestampLabel(t *testing.T) {
+	out := cubeAPMRowToOutputLog(map[string]any{
+		"_time": "not-a-timestamp",
+		"_msg":  "upstream timeout",
+	})
+
+	logs := []OutputLog{out}
+	normalizeOutputLogLabels(logs, cubeAPMLogLabelMapping)
+
+	if v := logs[0].Labels["timestamp"]; v != nil {
+		t.Errorf("Labels[timestamp] = %#v; want no usable value when _time does not parse, even after normalization", v)
+	}
+	// `_time` is still there: the raw value stays visible and filterable.
+	if logs[0].Labels["_time"] != "not-a-timestamp" {
+		t.Errorf("Labels[_time] = %#v; want the raw value kept", logs[0].Labels["_time"])
+	}
+	if logs[0].Timestamp != "not-a-timestamp" {
+		t.Errorf("Timestamp = %q; the raw value still passes through", logs[0].Timestamp)
+	}
+}
+
 func TestCubeAPMRowToOutputLogFallbackFields(t *testing.T) {
 	// An ingestion pipeline configured with a different _msg_field leaves the
 	// original key in place; the message must still resolve.

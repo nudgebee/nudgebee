@@ -368,8 +368,30 @@ func cubeAPMRowToOutputLog(row map[string]any) OutputLog {
 
 	// `_time` is already ISO 8601 from CubeAPM, which is what the log table
 	// renders, so it is passed through rather than reformatted.
+	//
+	// The canonical `timestamp` label is a different contract and has to be set
+	// here. cubeAPMLogLabelMapping maps timestamp → _time, so normalizeOutputLogLabels
+	// would otherwise alias the ISO string into `timestamp` — and the log-row
+	// dropdown reads that label as epoch nanoseconds (`new Date(value / 1e6)`).
+	// An ISO string divides to NaN there, and the resulting Invalid Date throws
+	// `RangeError: Invalid time value` out of the row's date formatter, taking the
+	// whole log screen down rather than just that one cell. Emitting the
+	// nanosecond form pre-empts the alias, which is only added when the canonical
+	// key is absent; `_time` stays in Labels as the provider's own field.
 	if ts := cubeAPMString(row["_time"]); ts != "" {
 		out.Timestamp = ts
+		if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+			out.Labels["timestamp"] = parsed.UnixNano()
+		} else {
+			// A `_time` we cannot parse has no nanosecond form, but leaving the key
+			// absent is not an option: normalizeOutputLogLabels tests for the key's
+			// EXISTENCE, not its value, so it would alias the unparseable string in
+			// and the dropdown would crash on it exactly as before. An explicit nil
+			// claims the key and renders as no row at all — the label list drops
+			// null values. `_time` itself stays, so the raw value is still visible
+			// and filterable.
+			out.Labels["timestamp"] = nil
+		}
 	}
 	out.Message = cubeAPMFirstString(row, cubeAPMLogMessageFields)
 	out.Severity = cubeAPMFirstString(row, cubeAPMLogSeverityFields)
