@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools/core"
 	"strings"
 	"sync"
@@ -757,4 +758,117 @@ func TestESDiscoveryProvenance_SeparatesDataFromSchema(t *testing.T) {
 	assert.NotContains(t, docsOnly, "may have no data")
 
 	assert.Equal(t, "none found", esDiscoveryProvenance(0, 0))
+}
+
+// ---------------------------------------------------------------------------
+// metrics provider routing
+// ---------------------------------------------------------------------------
+
+// The relay can only reach the Prometheus behind a connected Kubernetes agent —
+// relay-server pins agentType to "k8s". A user-configured backend has no such
+// agent, so those queries have to go through the api-server instead.
+func TestMetricsProviderNeedsServicesServer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider services_server.ObservabilityProvider
+		want     bool
+		why      string
+	}{
+		{
+			name:     "user-configured CubeAPM",
+			provider: services_server.ObservabilityProvider{Provider: "cubeapm", IntegrationSource: "user"},
+			want:     true,
+			why:      "the relay has no agent that can answer for CubeAPM",
+		},
+		{
+			name:     "user-configured OpenObserve",
+			provider: services_server.ObservabilityProvider{Provider: "openobserve", IntegrationSource: "user"},
+			want:     true,
+		},
+		{
+			name:     "in-cluster Prometheus behind the k8s agent",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "agent"},
+			want:     false,
+			why:      "this is exactly what the relay path exists for",
+		},
+		{
+			name:     "cloud CLI fallback is labelled agent",
+			provider: services_server.ObservabilityProvider{Provider: "aws", IntegrationSource: "agent"},
+			want:     false,
+			why:      "GetMetricsProvider labels the cloud fallbacks agent; they are not api-server metric sources",
+		},
+		{
+			name:     "user-configured Prometheus stays on the relay",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "user"},
+			want:     false,
+			why:      "it speaks the PromQL the relay already sends; moving it would change untouched accounts",
+		},
+		{
+			name:     "unresolved provider",
+			provider: services_server.ObservabilityProvider{},
+			want:     false,
+			why:      "no provider resolved is not a reason to change where the query goes",
+		},
+		{
+			name:     "casing and padding are not significant",
+			provider: services_server.ObservabilityProvider{Provider: "  CubeAPM ", IntegrationSource: " USER "},
+			want:     true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := metricsProviderNeedsServicesServer(tc.provider)
+			assert.Equal(t, tc.want, got, tc.why)
+		})
+	}
+}
+
+// Discovery has to enumerate the backend the account actually uses. Asking for
+// Prometheus metrics on a CubeAPM account returns nothing, and the agent then
+// guesses names from its Kubernetes priors — container_http_requests_total,
+// istio_requests_total — which match nothing and read as "no metrics reported".
+func TestMetricsDiscoveryProviderFor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider services_server.ObservabilityProvider
+		want     string
+		why      string
+	}{
+		{
+			name:     "user-configured CubeAPM enumerates CubeAPM",
+			provider: services_server.ObservabilityProvider{Provider: "cubeapm", IntegrationSource: "user"},
+			want:     "cubeapm",
+			why:      "this is the case that silently returned nothing",
+		},
+		{
+			name:     "user-configured OpenObserve enumerates OpenObserve",
+			provider: services_server.ObservabilityProvider{Provider: "openobserve", IntegrationSource: "user"},
+			want:     "openobserve",
+		},
+		{
+			name:     "in-cluster Prometheus stays prometheus",
+			provider: services_server.ObservabilityProvider{Provider: "prometheus", IntegrationSource: "agent"},
+			want:     "prometheus",
+		},
+		{
+			name:     "cloud CLI fallback stays prometheus",
+			provider: services_server.ObservabilityProvider{Provider: "aws", IntegrationSource: "agent"},
+			want:     "prometheus",
+			why:      "the cloud agents own those metrics; discovery here must not claim them",
+		},
+		{
+			name:     "unresolved provider stays prometheus",
+			provider: services_server.ObservabilityProvider{},
+			want:     "prometheus",
+		},
+		{
+			name:     "surrounding whitespace is trimmed",
+			provider: services_server.ObservabilityProvider{Provider: " cubeapm ", IntegrationSource: " user "},
+			want:     "cubeapm",
+			why:      "the value is sent to the api-server as a provider name",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, metricsDiscoveryProviderFor(tc.provider), tc.why)
+		})
+	}
 }

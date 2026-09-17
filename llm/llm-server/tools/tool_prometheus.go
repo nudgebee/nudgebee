@@ -506,6 +506,64 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 	return dataFromEvidence, nil
 }
 
+// metricsProviderNeedsServicesServer reports whether a resolved metrics provider
+// must be queried through the api-server rather than the relay.
+//
+// "agent" is the in-cluster Prometheus (and the cloud-CLI fallbacks, which
+// GetMetricsProvider also labels agent) — those keep the relay path. Anything
+// user-configured is an integration the api-server owns the credentials and the
+// query dialect for; the relay cannot reach it.
+//
+// A user-configured Prometheus is deliberately left on the relay path: it speaks
+// the same PromQL the relay already sends, and moving it would change behaviour
+// for accounts this bug never affected.
+func metricsProviderNeedsServicesServer(provider services_server.ObservabilityProvider) bool {
+	if strings.EqualFold(strings.TrimSpace(provider.IntegrationSource), "agent") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
+	case "", "prometheus":
+		return false
+	}
+	return true
+}
+
+// MetricsDiscoveryProvider resolves which provider the metric-discovery tools
+// (metrics_list, the label tools, metrics_series_match) should enumerate for an
+// account.
+//
+// PrometheusAgent is the fallback for every backend without a dedicated agent, so
+// the literal "prometheus" its tools were built with is a default, not a fact. On a
+// CubeAPM or OpenObserve account it made those tools ask the api-server to
+// enumerate PROMETHEUS metrics — a provider that account has not configured — so
+// discovery came back empty and the agent fell back to guessing metric names from
+// its Kubernetes priors (container_http_requests_total, istio_requests_total),
+// which match nothing and read as "this service reports no metrics".
+//
+// Returns "prometheus" unchanged for the agent-backed default, the cloud-CLI
+// fallbacks and a user-configured Prometheus — the same boundary
+// metricsProviderNeedsServicesServer draws for execution, so discovery and
+// execution can never disagree about which backend is being talked to.
+func MetricsDiscoveryProvider(accountId string) string {
+	provider, err := GetMetricsProvider(accountId)
+	if err != nil {
+		slog.Warn("metrics: could not resolve provider for discovery, defaulting to prometheus",
+			"accountId", accountId, "error", err)
+		return "prometheus"
+	}
+	return metricsDiscoveryProviderFor(provider)
+}
+
+// metricsDiscoveryProviderFor is the decision MetricsDiscoveryProvider makes once
+// the account's provider is known, split out so it can be exercised for backends
+// no test environment has to be wired up to.
+func metricsDiscoveryProviderFor(provider services_server.ObservabilityProvider) string {
+	if metricsProviderNeedsServicesServer(provider) {
+		return strings.TrimSpace(provider.Provider)
+	}
+	return "prometheus"
+}
+
 func (m PrometheusExecuteTool) getDataFromRelayPrometheusResponse(relayResponse map[string]any) ([]any, error) {
 	dataFromResponse, ok := relayResponse["data"].(map[string]any)
 	if !ok || dataFromResponse == nil {
