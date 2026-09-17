@@ -493,6 +493,7 @@ const apiAccount = {
         'splunk_observability_platform',
         'splunk_enterprise',
         'splunk_webhook',
+        'openobserve',
         'cubeapm',
         'cubeapm_webhook',
         'dynatrace',
