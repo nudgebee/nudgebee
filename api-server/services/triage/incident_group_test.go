@@ -568,6 +568,42 @@ func TestAttachUnlocatedIncident_Scoped_E2E(t *testing.T) {
 	strayChild, err := attachSameSubjectIncident(ctx, tx, stray)
 	require.NoError(t, err)
 	assert.False(t, strayChild, "the AWS incident is not a Kubernetes alert's incident")
+
+	// Co-timing is the fallback for alerts the graph cannot place. The two seeds
+	// below sit in incidentNS, where exactly one incident is open, so the old rule
+	// would have attached both.
+	mkWith := func(owner, aggKey, findingType, evidence string, startsAt time.Time) *models.Event {
+		ev := mkEvent(incidentNS, owner, aggKey, startsAt)
+		_, err := tx.ExecContext(ctx,
+			`UPDATE events SET finding_type = $2, evidences = $3::jsonb WHERE id = $1`,
+			ev.Id, findingType, evidence)
+		require.NoError(t, err)
+		ev.FindingType = strPtr(findingType)
+		var j models.Json
+		require.NoError(t, j.Scan([]uint8(evidence)))
+		ev.Evidences = &j
+		return ev
+	}
+
+	// Placed by its own stored map, with nothing connected alerting: no group.
+	placedMap := `[{"type": "knowledge_graph", "nodes": [
+	  {"id": "n1", "node_type": "Workload", "properties": {"kind": "Deployment", "name": "search", "namespace": "` + incidentNS + `"}},
+	  {"id": "n2", "node_type": "Workload", "properties": {"kind": "Deployment", "name": "search-db", "namespace": "` + incidentNS + `"}}
+	], "edges": [
+	  {"relationship_type": "CALLS", "source_node_id": "n1", "dest_node_id": "n2"}
+	]}]`
+	placed := mkWith("search", "HighLatency", "issue", placedMap, anchor.Add(8*time.Minute))
+	placed.SubjectType = strPtr("deployment")
+	placed.SubjectOwnerKind = strPtr("Deployment")
+	placedChild, err := attachSameSubjectIncident(ctx, tx, placed)
+	require.NoError(t, err)
+	assert.False(t, placedChild, "the graph placed it and nothing connected is alerting — timing must not group it")
+
+	// A deploy event carries no map but is a Kubernetes object the graph knows.
+	deploy := mkWith("relay", "ConfigurationChange/deployment", "configuration_change", "[]", anchor.Add(9*time.Minute))
+	deployChild, err := attachSameSubjectIncident(ctx, tx, deploy)
+	require.NoError(t, err)
+	assert.False(t, deployChild, "a configuration change never groups on timing alone")
 }
 
 func TestSubjectKey_OwnerHashStripped(t *testing.T) {
