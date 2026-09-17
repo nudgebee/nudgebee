@@ -218,7 +218,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                           data-testid={`widget-${widget.id}`}
                           sx={{
                             ...(selected?.id === widget.id
-                              ? { borderColor: ds.blue[300], background: ds.blue[100], boxShadow: '0 4px 8px rgba(0, 0, 0, 0.08)' }
+                              ? { borderColor: ds.blue[300], background: ds.blue[100], boxShadow: `0 4px 8px ${ds.gray.alpha[200]}` }
                               : {}),
                             ...(blocked ? { opacity: 0.55, cursor: 'not-allowed', background: ds.background[200] } : {}),
                             // Card's `interactive` hover always adds a lift shadow regardless of `elevation` — flat here means flat.
@@ -356,7 +356,7 @@ const PanelLibraryModal: React.FC<Props> = ({ open, existingPanels, accountOptio
                 p: 2,
                 textAlign: 'center',
                 border: `1px dashed ${ds.gray[300]}`,
-                borderRadius: '8px',
+                borderRadius: ds.radius.lg,
                 background: ds.background[100],
               }}
               data-testid='panel-library-preview-empty'

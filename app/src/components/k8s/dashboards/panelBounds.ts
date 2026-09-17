@@ -83,6 +83,86 @@ export function capSeries(raw: RawSeries[], max: number): { kept: RawSeries[]; d
   return { kept: ranked, dropped: raw.length - max };
 }
 
+/**
+ * Keeps the busiest series from EACH account, rather than the busiest overall.
+ *
+ * `capSeries` ranks one pool by magnitude, which on a multi-account panel is a
+ * popularity contest between accounts: a cluster whose numbers are an order of
+ * magnitude larger takes every slot, and the quieter accounts vanish from the
+ * chart with nothing to say they were ever queried. That is the failure the cap
+ * exists to prevent, one level up.
+ *
+ * So the chart's budget is divided evenly and each account is ranked inside its
+ * own share — one series each at worst, since an account represented by nothing
+ * is exactly what this avoids. Order within an account is the provider's, and
+ * accounts keep the order they were queried in.
+ */
+export function capSeriesByAccount(raw: RawSeries[], maxTotal: number): { kept: RawSeries[]; perAccount: AccountCap[] } {
+  const order: string[] = [];
+  const byAccount = new Map<string, RawSeries[]>();
+  for (const series of raw) {
+    // A panel that queried one account labels no series with it; they all share
+    // one bucket and the split degenerates to plain capSeries, as it should.
+    const key = series.accountLabel || '';
+    if (!byAccount.has(key)) {
+      byAccount.set(key, []);
+      order.push(key);
+    }
+    byAccount.get(key)!.push(series);
+  }
+
+  const share = Math.max(1, Math.floor(maxTotal / Math.max(1, order.length)));
+  const kept: RawSeries[] = [];
+  const perAccount: AccountCap[] = [];
+  for (const key of order) {
+    const mine = byAccount.get(key)!;
+    const capped = capSeries(mine, share);
+    kept.push(...capped.kept);
+    perAccount.push({ account: key, kept: capped.kept.length, total: mine.length });
+  }
+  return { kept, perAccount };
+}
+
+/** How much of one account's answer a capped chart is showing. */
+export interface AccountCap {
+  account: string;
+  kept: number;
+  total: number;
+}
+
+/**
+ * The warning a per-account cap shows.
+ *
+ * Names the accounts that were ACTUALLY trimmed and their real counts, because
+ * a share is not what every account hit: two accounts matching 177 and 5 series
+ * against a share of 10 draw 10 and 5, and "the 10 busiest from each" is false
+ * for the second and overstates what was dropped.
+ *
+ * The single-account message's advice survives — an aggregation really does
+ * reduce a per-account count — with the other lever named alongside it, since
+ * the share shrinks as accounts are added and filtering to one account restores
+ * the full budget.
+ */
+export function accountCappedWarning(perAccount: AccountCap[]): string {
+  const trimmed = perAccount.filter((a) => a.kept < a.total);
+  if (trimmed.length === 0) return '';
+  // One account is the ordinary cap, and keeps the message it always had —
+  // "each of 1 accounts" is both wrong and worse.
+  if (perAccount.length === 1) return cappedSeriesWarning(perAccount[0].kept, perAccount[0].total);
+
+  const advice = 'Add an aggregation such as sum by (…), or filter to one account, to see the rest.';
+  // Past a few accounts the per-account list stops being readable and the share
+  // is the fact that carries; the true total still says how much was dropped.
+  if (trimmed.length > 3) {
+    const total = trimmed.reduce((sum, a) => sum + a.total, 0);
+    const share = trimmed[0].kept;
+    return `Showing the ${share} busiest series from each of ${trimmed.length} accounts — ${total} matched. ${advice}`;
+  }
+  const parts = trimmed.map((a) => `${a.kept} of ${a.total} from ${a.account}`);
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return `Showing ${list}. ${advice}`;
+}
+
 /** The warning a capped panel shows, so the cap is a fact the viewer sees rather than data that silently vanished. */
 export function cappedSeriesWarning(kept: number, total: number): string {
   return `Showing the ${kept} busiest of ${total} series. Add an aggregation such as sum by (…) to the query to see the rest.`;

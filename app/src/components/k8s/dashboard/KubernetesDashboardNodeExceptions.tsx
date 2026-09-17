@@ -71,13 +71,14 @@ const KubernetesDashboardNodeExceptions: React.FC<KubernetesTable2Props> = ({ id
       threshold: 0.5,
     };
     const observer = new IntersectionObserver(observerCallback, observerOptions);
-    if (tableRef.current) {
-      observer.observe(tableRef.current);
+    // Captured here rather than read in the cleanup: React nulls the ref before cleanup runs
+    // on unmount, so `tableRef.current` there is null and the observer is never released.
+    const element = tableRef.current;
+    if (element) {
+      observer.observe(element);
     }
     return () => {
-      if (tableRef.current) {
-        observer.unobserve(tableRef.current);
-      }
+      observer.disconnect();
     };
   }, []);
 

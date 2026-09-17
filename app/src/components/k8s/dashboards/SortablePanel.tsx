@@ -17,6 +17,9 @@ import type { VariableValues } from './templating';
 interface Props {
   panel: Panel;
   accounts: AccountOption[];
+  /** The dashboard's account filter — see DashboardPanel. */
+  dashboardAccountIds: string[];
+  onClearDashboardFilter: () => void;
   variables: VariableValues;
   startTime: number;
   endTime: number;
@@ -51,6 +54,8 @@ interface Props {
 const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
   panel,
   accounts,
+  dashboardAccountIds,
+  onClearDashboardFilter,
   variables,
   startTime,
   endTime,
@@ -123,7 +128,7 @@ const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
         opacity: isDragging ? 0.4 : 1,
         outline: resizing ? `2px solid ${ds.blue[500]}` : 'none',
         outlineOffset: '-2px',
-        borderRadius: '8px',
+        borderRadius: ds.radius.lg,
         /*
          * Charts own their pointer events — a Chart.js canvas swallows the mousemove a drag needs, and
          * tooltips chase a cursor that is dragging rather than pointing.
@@ -134,6 +139,8 @@ const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
       <DashboardPanel
         panel={panel}
         accounts={accounts}
+        dashboardAccountIds={dashboardAccountIds}
+        onClearDashboardFilter={onClearDashboardFilter}
         variables={variables}
         startTime={startTime}
         endTime={endTime}

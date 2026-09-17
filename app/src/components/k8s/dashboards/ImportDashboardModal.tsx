@@ -384,7 +384,7 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
         )}
 
         {parseError && (
-          <Box sx={{ p: 1.5, border: `1px solid ${ds.red[300]}`, background: ds.red[100], borderRadius: '6px' }}>
+          <Box sx={{ p: 1.5, border: `1px solid ${ds.red[300]}`, background: ds.red[100], borderRadius: ds.radius.md }}>
             <Typography variant='body2' sx={{ color: ds.red[600] }} data-testid='import-parse-error'>
               {parseError}
             </Typography>
@@ -410,7 +410,7 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
             {/* Shown before the import, not after: a dashboard that lost four
                 panels is worth knowing about while it can still be cancelled. */}
             {preview.warnings.length > 0 && (
-              <Box sx={{ mt: 1.5, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: '6px' }}>
+              <Box sx={{ mt: 1.5, p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: ds.radius.md }}>
                 <Typography variant='body2' sx={{ color: ds.gray[700], fontWeight: 600, mb: 0.5 }}>
                   What will not come across
                 </Typography>

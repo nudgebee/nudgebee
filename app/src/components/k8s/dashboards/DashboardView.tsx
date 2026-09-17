@@ -14,6 +14,7 @@ import {
 } from '@dnd-kit/core';
 import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { Button } from '@ui/Button';
+import FilterDropdown from '@ui/FilterDropdown';
 import { Chip } from '@ui/Chip';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import { EmptyState } from '@ui/EmptyState';
@@ -38,6 +39,7 @@ import { downloadNodeAsPng, waitForPanels } from './panelImage';
 import PanelEditorModal from './PanelEditorModal';
 import PanelLibraryModal from './PanelLibraryModal';
 import { blankPanel, panelSpan } from './panelDefaults';
+import { resolvePanelAccounts } from './panelAccounts';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -127,9 +129,18 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   // variables of their own.
   const variables = useMemo(() => context || {}, [context]);
 
-  // Account narrowing is per PANEL, not per dashboard — each panel is scoped to its own accounts, so a shared
-  // filter would offer accounts most panels never query.
   const savedPanels = dashboard.definition?.panels || [];
+
+  /*
+   * One account filter for the whole dashboard. Each panel is still scoped to
+   * its own accounts — that is authored — but a viewer comparing clusters wants
+   * to narrow every panel to the same ones at once, not pick the same account
+   * in each panel's header in turn. Empty means no filter, the toolbar-filter
+   * convention, so every panel shows all of its accounts. A panel's own picker
+   * survives and narrows further, within this selection.
+   */
+  const [accountFilter, setAccountFilter] = useState<string[]>([]);
+  const clearAccountFilter = useCallback(() => setAccountFilter([]), []);
 
   /*
    * Editing happens HERE rather than on a separate editor screen: a panel is authored against what the
@@ -446,6 +457,25 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
    * so pressing Edit changes what a panel can do without remounting it, and a
    * panel that is not remounted does not run its query again.
    */
+  /*
+   * The filter offers only the accounts some panel on this dashboard actually
+   * queries — the union of the panels' scopes, resolved against what the viewer
+   * can see — rather than every account the viewer has, most of which no panel
+   * here would answer for. Hidden when there is only one: nothing to narrow.
+   */
+  const accountFilterOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: { label: string; value: string; group: string }[] = [];
+    for (const panel of panels) {
+      for (const a of resolvePanelAccounts(panel, accounts)) {
+        if (seen.has(a.value)) continue;
+        seen.add(a.value);
+        options.push({ label: a.label, value: a.value, group: a.cloud_provider || 'Other' });
+      }
+    }
+    return options;
+  }, [panels, accounts]);
+
   const grid = (
     <Box ref={gridRef} sx={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: `${GRID_GAP}px`, background: ds.background[300] }}>
       {panels.map((panel) => (
@@ -453,6 +483,8 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           key={panel.id}
           panel={panel}
           accounts={accounts}
+          dashboardAccountIds={accountFilter}
+          onClearDashboardFilter={clearAccountFilter}
           variables={variables}
           startTime={range.startDate}
           endTime={range.endDate}
@@ -507,13 +539,28 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   );
 
   /*
-   * Time range sits before the actions: it changes what you are looking at, and what adds to the page
-   * goes last. None of the three reading controls appear in edit mode.
+   * Accounts, then time range, then the actions: the two that change what you are looking at come first,
+   * and what adds to the page goes last. None of the reading controls appear in edit mode.
    */
   const actions = (
     <Stack direction='row' gap={1} alignItems='center'>
       {!editing && (
         <>
+          {accountFilterOptions.length > 1 && (
+            <FilterDropdown
+              id='dashboard-account-filter'
+              label='Accounts'
+              size='sm'
+              multiple
+              grouped
+              limitTag={2}
+              value={accountFilter}
+              options={accountFilterOptions}
+              searchPlaceholder='Search accounts…'
+              // Multi-select hands back the chosen option objects; an empty list is the filter cleared.
+              onSelect={(_e: unknown, next: { value: string }[]) => setAccountFilter((next || []).map((o) => o.value))}
+            />
+          )}
           <CustomDateTimeRangePicker
             onChange={(ranges: any) =>
               setRange({
@@ -714,7 +761,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
                     gap: ds.space[2],
                     px: ds.space[3],
                     py: ds.space[2],
-                    borderRadius: '8px',
+                    borderRadius: ds.radius.lg,
                     border: `1px solid ${ds.blue[500]}`,
                     background: ds.background[100],
                     boxShadow: 'var(--ds-overlay-shadow)',

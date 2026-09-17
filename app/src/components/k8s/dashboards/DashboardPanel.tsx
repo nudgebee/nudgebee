@@ -23,14 +23,28 @@ import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
 import PanelGauge from './PanelGauge';
 import PanelState, { type PanelStateTone } from './PanelState';
-import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind } from './usePanelData';
-import { describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
-import { lastValue, statCaption } from './panelSeries';
+import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
+import { applyAccountFilter, describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
+import { consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import type { VariableValues } from './templating';
 
 /** Plot height, excluding the legend the chart renders beneath it. */
 const CHART_HEIGHT = 160;
+
+/** One shared empty list, so an absent dashboard filter is a stable prop for the memoised panel. */
+const NO_FILTER: string[] = [];
+
+/** One Chart.js dataset for a timeseries panel's line. */
+function lineDataset(s: PanelSeries) {
+  return {
+    label: s.label,
+    data: s.values,
+    pointRadius: 0,
+    borderWidth: s.consolidated ? 2.5 : 1,
+    ...(s.consolidated ? { borderDash: [6, 4] } : {}),
+  };
+}
 
 /**
  * How far outside the viewport a panel starts loading. Kept short: panel height
@@ -73,6 +87,14 @@ interface Props {
   panel: Panel;
   /** Every account the viewer can see; the panel's scope resolves against it. */
   accounts: AccountOption[];
+  /**
+   * The dashboard's account filter, applied to every panel at once. Narrows this
+   * panel's scope before its own picker does; empty means no filter. A panel none
+   * of these accounts belong to shows the filter message, with the action that
+   * clears the dashboard filter rather than the panel's own pick.
+   */
+  dashboardAccountIds?: string[];
+  onClearDashboardFilter?: () => void;
   variables: VariableValues;
   startTime: number;
   endTime: number;
@@ -147,6 +169,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   panel,
   accounts,
   variables,
+  dashboardAccountIds = NO_FILTER,
+  onClearDashboardFilter,
   startTime,
   endTime,
   refreshToken = 0,
@@ -157,11 +181,14 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   actions,
 }) {
   /**
-   * Narrowing is per PANEL and single-select: the options are exactly the accounts THIS panel is scoped to —
-   * every account of the provider when it is type-scoped, or just the ones it names.
+   * The panel's own picker is single-select and narrows WITHIN the dashboard's filter: its options are the
+   * accounts THIS panel is scoped to — every account of the provider when it is type-scoped, or just the ones
+   * it names — less any the dashboard filter left out. So the two filters compose rather than compete: the
+   * dashboard's picks every panel's accounts at once, the panel's picks one of those.
    */
   const [accountId, setAccountId] = React.useState('');
-  const panelAccounts = React.useMemo(() => resolvePanelAccounts(panel, accounts), [panel, accounts]);
+  const scopedAccounts = React.useMemo(() => resolvePanelAccounts(panel, accounts), [panel, accounts]);
+  const panelAccounts = React.useMemo(() => applyAccountFilter(scopedAccounts, dashboardAccountIds), [scopedAccounts, dashboardAccountIds]);
   const filterOptions = React.useMemo(
     () => panelAccounts.map((a) => ({ label: a.label, value: a.value, group: a.cloud_provider || 'Other' })),
     [panelAccounts]
@@ -169,11 +196,20 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // Nothing picked yet means the first account, not "no account": a panel that waits for a choice shows an
   // empty box, and one account costs the same single request whether it was chosen or defaulted to. A pick
   // the panel has since been re-scoped away from falls back to that same default — see the rule for why.
-  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts);
+  // Metrics is the exception: those panels answer for every account at once — a chart merges the accounts'
+  // series, a stat adds their numbers up — so an unmade choice means ALL of them and the picker stays empty
+  // until the viewer narrows it. Unless "all of them" is ONE account — the panel's scope, or what the dashboard
+  // filter left of it — in which case the picker shows that account as the selection it effectively is.
+  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts, panel.datasource === 'metrics' && panelAccounts.length !== 1);
   const selectedOption = filterOptions.find((o) => o.value === effectiveAccountId) || null;
   // The hook takes a list so a panel scoped to one account still works without a
-  // selection; the picker just never supplies more than one.
-  const accountFilter = React.useMemo(() => (effectiveAccountId ? [effectiveAccountId] : []), [effectiveAccountId]);
+  // selection; the picker just never supplies more than one. With no pick, the
+  // dashboard's filter is the list — and when that names no account of this
+  // panel's, the hook reports the filter miss rather than querying nothing.
+  const accountFilter = React.useMemo(
+    () => (effectiveAccountId ? [effectiveAccountId] : dashboardAccountIds),
+    [effectiveAccountId, dashboardAccountIds]
+  );
 
   // Composite rather than a sum: either counter moving changes the key, and no
   // pair of values can collide the way `dashboard + panel` could.
@@ -233,15 +269,32 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
 
   /** Nothing to draw yet — no data and no error. */
   const pending = panel.type !== 'text' && !data && !error;
-  // Describes the panel's own scope, not the filtered view — the chip should
-  // keep saying what the panel IS while the filter changes what it shows.
+  /*
+   * The chip says what the panel is SHOWING. Unfiltered, that is its scope —
+   * "All K8S", "3 accounts" — which is what tells two otherwise identical
+   * panels apart. Narrowed, by the dashboard filter or the panel's own pick,
+   * it is the account name(s), so a viewer who picked prod-us in the toolbar
+   * sees "prod-us" on every panel that pick applies to; past two it counts.
+   * The full scope stays on hover.
+   */
   const scopeLabel = describePanelScope(panel, accounts);
+  const shownAccounts = effectiveAccountId ? panelAccounts.filter((a) => a.value === effectiveAccountId) : panelAccounts;
+  const narrowed = shownAccounts.length > 0 && shownAccounts.length < scopedAccounts.length;
+  const shownLabel = !narrowed
+    ? scopeLabel
+    : shownAccounts.length <= 2
+    ? shownAccounts.map((a) => a.label).join(', ')
+    : `${shownAccounts.length} of ${scopedAccounts.length} accounts`;
 
   /** The one thing worth doing about each failure. */
   const errorAction = (kind: PanelErrorKind) => {
     if (editing) return undefined;
     if (kind === 'config') return onEdit ? { label: 'Edit panel', onClick: onEdit } : undefined;
-    if (kind === 'filter') return { label: 'Show all accounts', onClick: () => setAccountId('') };
+    // The miss is the panel's own pick when it has one, else the dashboard's filter.
+    if (kind === 'filter') {
+      if (accountId || !onClearDashboardFilter) return { label: 'Show all accounts', onClick: () => setAccountId('') };
+      return { label: 'Show all accounts', onClick: onClearDashboardFilter };
+    }
     // The same refetch the overflow menu's Refresh fires, one click instead of two.
     if (kind === 'failed') return { label: 'Retry', onClick: () => setPanelRefresh((n) => n + 1) };
     return undefined;
@@ -341,72 +394,116 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     }
 
     switch (panel.type) {
-      case 'stat': {
-        // The last point can be a gap, so read back to the newest reported one
-        // rather than showing "—" for a series that has data.
-        const last = lastValue(data.series[0]?.values);
-        // Omitted entirely for an aggregate, whose series carries no labels to
-        // name it — see statCaption.
-        const caption = statCaption(
-          data.series[0]?.label,
-          (panel.targets || []).map((t) => t.ref_id || 'A')
+      case 'stat':
+      case 'gauge': {
+        // One number, adding up every account that answered — a panel scoped to
+        // four clusters used to render series[0], which reads as the total and is
+        // one cluster's figure. The breakdown behind it is on hover, because a
+        // total nobody can take apart is a number nobody can check.
+        const stat = statTotal(
+          data.series,
+          (panel.targets || []).map((t) => t.ref_id || 'A'),
+          data.failedAccounts || []
         );
+        const answered = stat.rows.filter((r) => !r.failed).length;
+        // "2 of 3 accounts" is the partial total's caveat, in the place the viewer
+        // already reads the account count; the hover names the account that did
+        // not answer. Neither a bare asterisk nor a banner above the card.
+        const countCaption = stat.partial ? `${answered} of ${stat.rows.length} accounts` : `${stat.rows.length} accounts`;
+        const breakdown = stat.rows.length > 1 && (
+          <Box sx={{ display: 'grid', gap: 0.4, py: 0.25 }}>
+            {stat.rows.map((row) => (
+              <Box key={row.account} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                <span>{row.account}</span>
+                <span style={{ fontVariantNumeric: 'tabular-nums', opacity: row.failed ? 0.7 : 1 }}>
+                  {row.failed ? 'no answer' : formatValue(row.value, panel.unit)}
+                </span>
+              </Box>
+            ))}
+          </Box>
+        );
+        // The dial is a stat with a bounded scale, and takes the same total.
+        if (panel.type === 'gauge') {
+          return (
+            <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%' }}>
+              <Tooltip title={breakdown || ''}>
+                <Box sx={{ height: '100%' }}>
+                  <PanelGauge value={stat.total} caption={stat.partial ? countCaption : stat.caption} />
+                </Box>
+              </Tooltip>
+            </Box>
+          );
+        }
         return (
-          <Box>
-            <Typography sx={{ fontSize: 28, fontWeight: 650, letterSpacing: '-0.02em', color: ds.gray[700] }}>
-              {formatValue(last, panel.unit)}
-            </Typography>
-            {caption && (
+          <Box data-testid={`panel-stat-${panel.id}`}>
+            <Tooltip title={breakdown || ''}>
+              <Typography component='div' sx={{ fontSize: 28, fontWeight: 650, letterSpacing: '-0.02em', color: ds.gray[700], width: 'fit-content' }}>
+                {formatValue(stat.total, panel.unit)}
+              </Typography>
+            </Tooltip>
+            {stat.caption && (
               <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-                {caption}
+                {stat.caption}
+              </Typography>
+            )}
+            {stat.rows.length > 1 && (
+              <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
+                {countCaption}
               </Typography>
             )}
           </Box>
         );
       }
-      case 'gauge': {
-        // Same read as the stat panel — the dial is a stat with a bounded scale.
-        const last = lastValue(data.series[0]?.values);
-        const caption = statCaption(
-          data.series[0]?.label,
-          (panel.targets || []).map((t) => t.ref_id || 'A')
-        );
-        return (
-          <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%' }}>
-            <PanelGauge value={last} caption={caption} />
-          </Box>
-        );
-      }
       case 'table': {
-        const headers = [
-          { name: 'Series', width: '60%' },
-          { name: 'Latest', width: '40%' },
-        ];
+        // Several accounts: the account is its own column rather than a prefix
+        // folded into the series text, so it can be read — and scanned — as one.
+        const byAccount = data.series.some((s) => s.accountLabel);
+        const headers = byAccount
+          ? [
+              { name: 'Account', width: '25%' },
+              { name: 'Series', width: '45%' },
+              { name: 'Latest', width: '30%' },
+            ]
+          : [
+              { name: 'Series', width: '60%' },
+              { name: 'Latest', width: '40%' },
+            ];
         const rows = data.series.map((s) => {
           const latest = formatValue(lastValue(s.values), panel.unit);
+          const series = byAccount ? metricLabel(s) : s.label;
           return [
-            { text: s.label, value: s.label },
+            ...(byAccount ? [{ text: s.accountLabel || '', value: s.accountLabel || '' }] : []),
+            { text: series, value: series },
             { text: latest, value: latest },
           ];
         });
         return <CustomTable headers={headers} tableData={rows} />;
       }
       case 'bar':
+        // Stacked, so on a multi-account panel each account is a segment and the
+        // stack's height is the consolidated view — no total series needed, and
+        // one would double the stack.
         return <Chart.Bar data={data.series.map((s) => s.values)} labels={data.labels} chartLabel={data.series.map((s) => s.label)} />;
       case 'timeseries':
-      default:
+      default: {
+        // Each account's own lines, then the series that adds them up — dashed
+        // and heavier, so the total reads as a different kind of line from the
+        // parts it sums. Its colour is left to the chart, as every line's is:
+        // naming one colour would switch off the automatic palette for the rest.
+        const drawn = [...data.series, ...consolidatedSeries(data.series)];
         // Chart.Line = @shared/charts/LineCharts (chart.js).
         return (
           <Chart.Line
-            data={data.series.map((s) => s.values)}
+            dataset={drawn.map(lineDataset)}
             labels={data.labels}
             timestamps={data.timestamps}
-            chartLabel={data.series.map((s) => s.label)}
+            chartLabel={drawn.map((s) => s.label)}
             minHeight={CHART_HEIGHT}
             dynamicHeight={false}
             legendOptions={{ renderer: 'html', unit: panel.unit }}
           />
         );
+      }
     }
   }, [panel, data]);
 
@@ -447,7 +544,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         display: 'flex',
         flexDirection: 'column',
         border: `1px solid ${ds.gray[300]}`,
-        borderRadius: '8px',
+        borderRadius: ds.radius.lg,
         background: ds.background[100],
       }}
     >
@@ -494,14 +591,20 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             Showing the scope here is the only way to tell two otherwise
             identical panels apart. */}
         {panel.type !== 'text' && (
-          <Chip size='2xs' tone='neutral'>
-            {scopeLabel}
-          </Chip>
+          <Tooltip title={narrowed ? `Scope: ${scopeLabel}` : ''}>
+            <Box component='span' data-testid={`panel-scope-${panel.id}`} sx={{ display: 'inline-flex' }}>
+              <Chip size='2xs' tone='neutral'>
+                {shownLabel}
+              </Chip>
+            </Box>
+          </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
         {/* A toolbar filter, not a form field: empty means "no filter applied"
-            (DS §1.6). Hidden when there is only one account to narrow to. */}
-        {!editing && filterOptions.length > 1 && (
+            (DS §1.6). Hidden when the panel's own scope is one account. Shown
+            even when the dashboard filter has narrowed it to one, so the
+            viewer can see which account this panel is showing and why. */}
+        {!editing && scopedAccounts.length > 1 && (
           <FilterDropdown
             id={`panel-account-filter-${panel.id}`}
             label='Account'

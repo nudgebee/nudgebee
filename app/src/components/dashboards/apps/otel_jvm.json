@@ -108,14 +108,14 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.memory.usage|process_runtime_jvm_memory_usage_bytes\",namespace=\"$namespaceName\", $podNameFilter}/(1024*1024))",
+          "expr": "avg({__name__=~\"process.runtime.jvm.memory.usage|process_runtime_jvm_memory_usage|process_runtime_jvm_memory_usage_bytes|jvm.memory.used|jvm_memory_used|jvm_memory_used_bytes\",namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
           "refId": "A"
         },
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.memory.limit|process_runtime_jvm_memory_limit_bytes\",namespace=\"$namespaceName\", $podNameFilter}/(1024*1024))",
+          "expr": "avg({__name__=~\"process.runtime.jvm.memory.limit|process_runtime_jvm_memory_limit|process_runtime_jvm_memory_limit_bytes|jvm.memory.limit|jvm_memory_limit|jvm_memory_limit_bytes\",namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
@@ -201,7 +201,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.classes.loaded|process_runtime_jvm_classes_loaded_total\", namespace=\"$namespaceName\", $podNameFilter})",
+          "expr": "avg({__name__=~\"process.runtime.jvm.classes.loaded|process_runtime_jvm_classes_loaded_total|jvm.class.count|jvm_class_count\", namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "interval": "",
           "intervalFactor": 5,
@@ -293,7 +293,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.gc.duration_sum|process_runtime_jvm_gc_duration_seconds_sum\", namespace=\"$namespaceName\", $podNameFilter})",
+          "expr": "avg({__name__=~\"process.runtime.jvm.gc.duration_sum|process_runtime_jvm_gc_duration_seconds_sum|jvm.gc.duration_sum|jvm_gc_duration_sum\", namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "interval": "60s",
           "intervalFactor": 1,
@@ -383,7 +383,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.gc.duration_count|process_runtime_jvm_gc_duration_seconds_count\",namespace=\"$namespaceName\", $podNameFilter})",
+          "expr": "avg({__name__=~\"process.runtime.jvm.gc.duration_count|process_runtime_jvm_gc_duration_seconds_count|jvm.gc.duration_count|jvm_gc_duration_count\",namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "interval": "60s",
           "intervalFactor": 1,
@@ -476,7 +476,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.threads.count|process_runtime_jvm_threads_count\",namespace=\"$namespaceName\", $podNameFilter})",
+          "expr": "avg({__name__=~\"process.runtime.jvm.threads.count|process_runtime_jvm_threads_count|jvm.thread.count|jvm_thread_count\",namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "intervalFactor": 5,
           "legendFormat": "pod",
@@ -485,7 +485,7 @@
           "step": 10
         },
         {
-          "expr": "avg({__name__=~\"process.runtime.jvm.threads.count|process_runtime_jvm_threads_count\", daemon=\"true\", namespace=\"$namespaceName\", $podNameFilter})",
+          "expr": "avg({__name__=~\"process.runtime.jvm.threads.count|process_runtime_jvm_threads_count\", daemon=\"true\", namespace=\"$namespaceName\", $podNameFilter} or {__name__=~\"jvm.thread.count|jvm_thread_count\", jvm_thread_daemon=\"true\", namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "intervalFactor": 5,
           "legendFormat": "pod",
