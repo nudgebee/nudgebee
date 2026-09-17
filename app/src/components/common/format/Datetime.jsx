@@ -25,8 +25,12 @@ function parseDateValue(value) {
   return new Date(value);
 }
 
-function formatDateShort(date) {
-  return `${pad2(date.getDate())}-${MONTH_ABBR[date.getMonth()]}`;
+// The year is carried only when it differs from the reference year, so this
+// year's dates stay narrow in tight table columns while an older one can no
+// longer be mistaken for a recent date.
+function formatDateShort(date, refDate) {
+  const base = `${pad2(date.getDate())}-${MONTH_ABBR[date.getMonth()]}`;
+  return date.getFullYear() === refDate.getFullYear() ? base : `${base}-${date.getFullYear()}`;
 }
 
 function formatTooltip(date) {
@@ -36,7 +40,7 @@ function formatTooltip(date) {
   const mmm = MONTH_ABBR[date.getMonth()];
   const tzPart = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(date).find((p) => p.type === 'timeZoneName');
   const tz = tzPart ? tzPart.value : '';
-  return `${hh}:${mm} ${tz}, ${dd}-${mmm}`;
+  return `${hh}:${mm} ${tz}, ${dd}-${mmm}-${date.getFullYear()}`;
 }
 
 // Buckets per redesign:
@@ -45,7 +49,7 @@ function formatTooltip(date) {
 //   < 1 hour  → "X m"            + ago/in
 //   < 1 day   → "X hr[s] [Y m]"  + ago/in   (drops "0 m" when minutes are zero)
 //   < 3 days  → "X d"            + ago/in
-//   ≥ 3 days  → "dd-mmm"          (absolute, no ago/in)
+//   ≥ 3 days  → "dd-mmm"          (absolute, no ago/in; "dd-mmm-yyyy" off-year)
 function formatRelative(deltaMs) {
   if (deltaMs < ONE_SEC) {
     return { mainText: 'now', useRelativeAffix: false };
@@ -90,7 +94,10 @@ export default function Datetime({
   sxSecondary = false,
   sxPrefixSecondary = true,
 }) {
-  if (!value) {
+  const parsed = value ? parseDateValue(value) : null;
+  // An unparseable value falls back to the same placeholder as a missing one;
+  // it used to reach the formatters and render as "NaN-undefined".
+  if (!parsed || Number.isNaN(parsed.getTime())) {
     return (
       <Typography
         key='empty'
@@ -108,14 +115,14 @@ export default function Datetime({
     );
   }
 
-  const dateValue = parseDateValue(value);
+  const dateValue = parsed;
   const ref = baseDate || new Date();
   const deltaMs = Math.abs(ref.getTime() - dateValue.getTime());
   const isFuture = dateValue > ref;
 
   const { mainText: relativeText, useRelativeAffix } = formatRelative(deltaMs);
   const isAbsolute = relativeText === null;
-  const mainText = isAbsolute ? formatDateShort(dateValue) : relativeText;
+  const mainText = isAbsolute ? formatDateShort(dateValue, ref) : relativeText;
 
   const valueStyle = {
     color: sxSecondary ? 'var(--ds-gray-500)' : 'var(--ds-gray-700)',
