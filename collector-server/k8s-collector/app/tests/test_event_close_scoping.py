@@ -143,14 +143,20 @@ class TestWorkloadRecoveryClose(unittest.TestCase):
         enabled = mock.patch.object(dh.Configs, "EVENT_CLOSE_ON_WORKLOAD_RECOVERY", True)
         enabled.start()
         self.addCleanup(enabled.stop)
+        self.unready_rows = []
+        pods = mock.patch.object(dh.database, "run_query", side_effect=lambda *a, **k: self.unready_rows)
+        self.pod_query = pods.start()
+        self.addCleanup(pods.stop)
 
     # utc_from_epoch_millis() returns NAIVE UTC and WorkloadDetails.last_seen carries
     # its .isoformat(), so naive is the shape production actually delivers.
     OBSERVED_AT = datetime(2026, 8, 19, 8, 30)
 
-    def _workload(self, resource_id, total, ready, last_seen="default"):
+    def _workload(self, resource_id, total, ready, last_seen="default", name="web"):
         w = mock.Mock()
         w.cloud_resource_id = resource_id
+        w.namespace = "default"
+        w.name = name
         w.total_pods = total
         w.ready_pods = ready
         w.last_seen = self.OBSERVED_AT.isoformat() if last_seen == "default" else last_seen
@@ -213,6 +219,43 @@ class TestWorkloadRecoveryClose(unittest.TestCase):
         with mock.patch.object(dh, "close_events_with_history") as closer:
             dh.close_events_for_recovered_workloads(ACCOUNT, [self._workload(LIVE_RESOURCE, 1, 0)])
         closer.assert_not_called()
+
+    def test_stuck_rollout_is_not_recovered(self):
+        """spec.replicas == readyReplicas while a new pod is stuck in ImagePullBackOff.
+
+        The old ReplicaSet keeps the Deployment at 2/2, so the counts say healthy; the
+        unready pod row is what says otherwise, and only that workload is held open.
+        """
+        self.unready_rows = [("default", "web")]
+        with mock.patch.object(dh, "close_events_with_history") as closer:
+            dh.close_events_for_recovered_workloads(
+                ACCOUNT,
+                [
+                    self._workload(LIVE_RESOURCE, 2, 2),
+                    self._workload(GONE_RESOURCE, 1, 1, name="api"),
+                ],
+            )
+        closer.assert_called_once()
+        self.assertEqual(closer.call_args.kwargs["params"][0], [GONE_RESOURCE])
+        query, params = self.pod_query.call_args.args
+        self.assertIn("FROM k8s_pods", query)
+        self.assertIn("is_active", query)
+        # A pod's ready_pods counts containers and total_pods is always 1, so the
+        # comparison has to be against the spec's container count.
+        self.assertIn("jsonb_array_length(meta->'config'->'containers')", query)
+        self.assertEqual(params[0], ACCOUNT)
+
+    def test_only_unready_workload_closes_nothing(self):
+        self.unready_rows = [("default", "web")]
+        with mock.patch.object(dh, "close_events_with_history") as closer:
+            dh.close_events_for_recovered_workloads(ACCOUNT, [self._workload(LIVE_RESOURCE, 2, 2)])
+        closer.assert_not_called()
+
+    def test_same_name_in_another_namespace_does_not_block(self):
+        self.unready_rows = [("staging", "web")]
+        with mock.patch.object(dh, "close_events_with_history") as closer:
+            dh.close_events_for_recovered_workloads(ACCOUNT, [self._workload(LIVE_RESOURCE, 2, 2)])
+        closer.assert_called_once()
 
     def test_scaled_to_zero_is_not_recovered(self):
         with mock.patch.object(dh, "close_events_with_history") as closer:
