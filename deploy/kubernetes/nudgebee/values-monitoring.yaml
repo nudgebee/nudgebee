@@ -1,0 +1,30 @@
+# Prometheus Operator overlay.
+#
+# Apply this on clusters that HAVE the Prometheus Operator installed (i.e.
+# `kubectl get crd servicemonitors.monitoring.coreos.com` succeeds):
+#
+#   helm install nudgebee oci://ghcr.io/nudgebee/charts/nudgebee \
+#     -n nudgebee --create-namespace \
+#     -f values-monitoring.yaml
+#
+# It creates the ServiceMonitor and PrometheusRule objects for the bundled
+# datastores, so Prometheus discovers their exporters and the shipped alert
+# rules (defined in values.yaml) start evaluating. Without it the exporters
+# still run and still serve /metrics - nothing scrapes them automatically.
+#
+# On a cluster WITHOUT the operator, applying this overlay makes the install
+# fail with `no matches for kind "ServiceMonitor"`. That is why it is a
+# separate file rather than the default.
+postgresql:
+  metrics:
+    serviceMonitor:
+      enabled: true
+    prometheusRule:
+      enabled: true
+
+rabbitmq:
+  metrics:
+    serviceMonitor:
+      enabled: true
+    prometheusRule:
+      enabled: true
