@@ -1,4 +1,5 @@
 import { queryGraphQL } from '@lib/HttpService';
+import { getBrandTitle, whenBrandingReady } from '@hooks/useTenantBranding';
 import type {
   WorkflowCreateRequest,
   WorkflowTriggerRequest,
@@ -849,7 +850,24 @@ const apiWorkflow = {
     try {
       const query = LIST_TASK_DEFINITIONS;
 
-      const response = await queryGraphQL(query, 'ListTaskDefinitions', {});
+      // A stalled branding fetch must not hold back the task list; fall back to the default title.
+      let brandingTimer: ReturnType<typeof setTimeout> | undefined;
+      const brandingReady = Promise.race([
+        whenBrandingReady(),
+        new Promise((resolve) => {
+          brandingTimer = setTimeout(resolve, 3000);
+        }),
+      ]);
+      const [response] = await Promise.all([queryGraphQL(query, 'ListTaskDefinitions', {}), brandingReady]).finally(() =>
+        clearTimeout(brandingTimer)
+      );
+      // runbook-server has no tenant branding. Task descriptions get copied into
+      // workflow node state, so brand them here once, after branding resolves.
+      const brandTitle = getBrandTitle();
+      response?.data?.data?.workflow_list_taskdefinitions?.tasks?.forEach((task: { description?: string }) => {
+        // Replacer function: a brand containing `$` must not be read as a replacement pattern
+        if (task.description) task.description = task.description.replace(/\bNudgebee\b/g, () => brandTitle);
+      });
       return {
         data: response?.data?.data,
         errors: response?.data?.errors,

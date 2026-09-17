@@ -69,6 +69,11 @@ if (typeof window !== 'undefined') {
   fetchBrandingConfig();
 }
 
+// Resolves once the branding config has loaded (or failed), so non-React code
+// that bakes the brand into stored data can read getBrandTitle() without
+// latching the default.
+export const whenBrandingReady = () => fetchBrandingConfig();
+
 /**
  * Derive a tenant key from the tenant name.
  * e.g., "Acme Corp" → "acme_corp"

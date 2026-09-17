@@ -394,7 +394,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   const currentTaskDefinition = taskDefinitions.find((def) => def.name === selectedActionType);
   // Task descriptions come from runbook-server, which has no tenant branding
   const { title: brandTitle } = useBrandingConfig();
-  const currentTaskDescription = currentTaskDefinition?.description?.replace(/\bNudgebee\b/g, brandTitle);
+  const currentTaskDescription = currentTaskDefinition?.description?.replace(/\bNudgebee\b/g, () => brandTitle);
 
   // Use centralized hook for node config access
   const { selectedNode: hookSelectedNode, taskConfig } = useSelectedNodeConfig(nodes);
