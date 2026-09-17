@@ -242,8 +242,8 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
               Real-time alerts are enabled for project <strong>{projectId}</strong>.
             </Alert>
             <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.brand[500], mb: ds.space[4] }}>
-              A webhook notification channel is configured and attached to alert policies in this GCP project. Alerts will be forwarded to Nudgebee
-              automatically.
+              A webhook notification channel is configured and attached to alert policies in this GCP project. Alerts will be forwarded to{' '}
+              {getBrandTitle()} automatically.
             </Typography>
             <Box
               sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[4], mt: ds.space[2], '& button': { minWidth: ds.space.mul(1, 35) } }}

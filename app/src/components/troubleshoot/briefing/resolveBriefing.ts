@@ -1,5 +1,6 @@
 import { formatCount, formatPercent, formatShare } from './format';
 import { classifyDisagreement, MAPPING_DISCLOSURE, RANK_ORDER, SOURCE_SEVERITY_TO_RANK, type NubiRank, type SourceSeverity } from './severityRank';
+import { getAssistantLabel } from '@hooks/useTenantBranding';
 
 export const INCIDENT_P1_THRESHOLD = 3;
 export const BACKLOG_THRESHOLD = 25;
@@ -346,7 +347,7 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
       kind: 'BACKLOG',
       tone: 'danger',
       title: `${formatCount(unscored)} untriaged`,
-      detail: `above the ${BACKLOG_THRESHOLD} threshold — Nubi is behind`,
+      detail: `above the ${BACKLOG_THRESHOLD} threshold — ${getAssistantLabel()} is behind`,
       rank: 2,
     });
   }

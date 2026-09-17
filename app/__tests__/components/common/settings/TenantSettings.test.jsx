@@ -41,7 +41,12 @@ jest.mock('@api1/user', () => ({
 }));
 
 jest.mock('@hooks/useTenantBranding', () => ({
-  useBrandingConfig: () => ({ title: 'Nudgebee' }),
+  useBrandingConfig: () => ({ title: 'Nudgebee', assistantName: 'nubi' }),
+  toAssistantLabel: (name) => (name ? name.charAt(0).toUpperCase() + name.slice(1) : name),
+  fillBrandTokens: (text) =>
+    String(text)
+      .replace(/\{Assistant\}/g, 'Nubi')
+      .replace(/\{brand\}/g, 'Nudgebee'),
 }));
 
 jest.mock('@ui/Toast', () => ({

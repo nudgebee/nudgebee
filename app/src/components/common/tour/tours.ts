@@ -10,7 +10,7 @@
  * / data-testid that already ships in the product. If you retarget a flow,
  * update the selector here in the same change.
  */
-import { getAssistantName, getBrandTitle } from '@hooks/useTenantBranding';
+import { fillBrandTokens, getAssistantName } from '@hooks/useTenantBranding';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { isUiFeatureEnabled, hasFeatureAccessCached, getUserSession, isTenantAdmin } from '@lib/auth';
 import apiUser from '@api1/user';
@@ -31,7 +31,7 @@ import apiUser from '@api1/user';
  * `TourProvider`, `GuidesMenu`, `TourLauncher`, `FirstLoginTour`,
  * `SectionFirstVisitTour`.
  */
-export const brandText = (text: string): string => text.replaceAll('{brand}', getBrandTitle()).replaceAll('{assistant}', getAssistantName());
+export const brandText = (text: string): string => fillBrandTokens(text);
 
 export type TourSide = 'top' | 'right' | 'bottom' | 'left';
 export type TourAlign = 'start' | 'center' | 'end';
@@ -394,7 +394,7 @@ const appOverviewTour: TourDef = {
     {
       element: '#home-sidenavbutton',
       title: 'Home',
-      description: 'Your starting point — ask Nubi anything and see a live snapshot of every connected cluster and cloud account.',
+      description: 'Your starting point — ask {Assistant} anything and see a live snapshot of every connected cluster and cloud account.',
       side: 'right',
       align: 'start',
     },
@@ -446,9 +446,9 @@ const appOverviewTour: TourDef = {
     },
     {
       element: '[data-testid="nav-bcortex-btn"]',
-      title: 'Nubi',
+      title: '{Assistant}',
       description:
-        'Nubi is the AI that runs alongside you — ask it anything from Home, or about any finding you’re looking at. b-Cortex is its memory: what it has learned about your estate and past incidents, so its answers get sharper over time.',
+        '{Assistant} is the AI that runs alongside you — ask it anything from Home, or about any finding you’re looking at. b-Cortex is its memory: what it has learned about your estate and past incidents, so its answers get sharper over time.',
       side: 'right',
       align: 'start',
       // Hidden in OSS deployments (NUDGEBEE_DEPLOYMENT_MODE=oss) — see
@@ -1434,7 +1434,7 @@ const optimizeTour: TourDef = {
       element: '#optimize-recommendations-table',
       title: 'The recommendations',
       description:
-        'One row per finding, with its estimated saving. Click a row to open the details panel — that’s where you review the change, ask Nubi about it, raise a ticket, or apply it.',
+        'One row per finding, with its estimated saving. Click a row to open the details panel — that’s where you review the change, ask {Assistant} about it, raise a ticket, or apply it.',
       side: 'top',
       align: 'center',
     },

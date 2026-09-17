@@ -2,6 +2,7 @@ import type { AccountOption, Panel, PanelTarget, PanelType } from '@api1/dashboa
 import { buildEntityQuery, defaultDraft, findTable, type EntityQueryDraft } from './entityQuery';
 import { panelScopeFromTypes, type PanelScope } from './panelAccounts';
 import { nextPanelId } from './panelDefaults';
+import { fillBrandTokens } from '@hooks/useTenantBranding';
 
 /**
  * The widget library — one authored panel each, ready to drop onto a dashboard.
@@ -469,7 +470,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     summary: 'What is open right now and still needs someone.',
     panel: entityPanel({
       title: 'Active incident queue',
-      description: 'Events Nudgebee still considers open or needing action, newest first — the on-call working list rather than a history.',
+      description: 'Events {brand} still considers open or needing action, newest first — the on-call working list rather than a history.',
       draft: {
         table: 'events_v2',
         columns: ['starts_at', 'title', 'priority', 'subject_type', 'subject_name', 'subject_namespace', 'nb_status'],
@@ -542,7 +543,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     summary: 'The ticket backlog, by status and severity.',
     panel: entityPanel({
       title: 'Ticket volume',
-      description: 'Tickets raised from Nudgebee grouped by status and severity — how much work this is creating, and how much of it is still open.',
+      description: 'Tickets raised from {brand} grouped by status and severity — how much work this is creating, and how much of it is still open.',
       draft: {
         table: 'ticket_groupings_v2',
         columns: ['status', 'severity', 'count'],
@@ -1230,6 +1231,12 @@ export function defaultWidgetScope(widget: PanelTemplate, accounts: AccountOptio
 export function panelFromTemplate(template: PanelTemplate, existing: Panel[], accounts: AccountOption[] = []): Panel {
   return {
     ...template.panel,
+    // Catalogue copy carries a `{brand}` placeholder rather than a literal
+    // product name (PANEL_TEMPLATES is a module-level constant — see
+    // fillBrandTokens). This is the single funnel: the library preview renders
+    // the panel this call produces, and Add persists the same object, so the
+    // tenant's own brand is what gets shown and what gets saved.
+    description: template.panel.description ? fillBrandTokens(template.panel.description) : template.panel.description,
     id: nextPanelId(existing),
     ...defaultWidgetScope(template, accounts),
     // Deep-copied: the catalogue is a module-level singleton, and a panel edited

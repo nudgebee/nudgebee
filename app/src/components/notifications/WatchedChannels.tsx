@@ -14,6 +14,7 @@ import { toast as snackbar } from '@ui/Toast';
 import apiNotifications from '@api1/notification';
 import { hasWriteAccess, fetchFeatureFlagsForTenant, hasFeatureAccessCached } from '@lib/auth';
 import { ds } from '@utils/colors';
+import { useBrandingConfig, toAssistantLabel } from '@hooks/useTenantBranding';
 
 interface WatchedChannelsProps {
   provider: string;
@@ -32,6 +33,10 @@ interface WatchableChannel {
 }
 
 const WatchedChannels: React.FC<WatchedChannelsProps> = ({ provider, isConfigured }) => {
+  // Copy on this screen names the assistant repeatedly; read it once from
+  // branding rather than hardcoding the house assistant name.
+  const { assistantName } = useBrandingConfig();
+  const assistantLabel = toAssistantLabel(assistantName);
   const [flagEnabled, setFlagEnabled] = useState(false);
   const [allChannels, setAllChannels] = useState<WatchableChannel[]>([]);
   const [teamId, setTeamId] = useState('');
@@ -213,8 +218,8 @@ const WatchedChannels: React.FC<WatchedChannelsProps> = ({ provider, isConfigure
               {watched.length > 0
                 ? `${watched.length} ${
                     watched.length === 1 ? 'channel' : 'channels'
-                  } watched — Nubi uses them for context when someone @mentions it there.`
-                : 'The only places Nubi listens. Everything else is untouched.'}
+                  } watched — ${assistantLabel} uses them for context when someone @mentions it there.`
+                : `The only places ${assistantLabel} listens. Everything else is untouched.`}
             </Typography>
           </Box>
         </ListingLayout.Toolbar>
@@ -230,7 +235,7 @@ const WatchedChannels: React.FC<WatchedChannelsProps> = ({ provider, isConfigure
               <Banner
                 tone='info'
                 surface='section'
-                message='Watching a channel posts a public notice there, and Nubi only ever acts when explicitly @mentioned. Anyone with write access can turn watching off.'
+                message={`Watching a channel posts a public notice there, and ${assistantLabel} only ever acts when explicitly @mentioned. Anyone with write access can turn watching off.`}
               />
             )}
             <CustomTable
@@ -239,7 +244,7 @@ const WatchedChannels: React.FC<WatchedChannelsProps> = ({ provider, isConfigure
               tableData={tableData}
               loading={isLoading}
               emptyHeading='No channels watched yet'
-              emptySubHeading='Use "Watch channels" to pick where Nubi should listen.'
+              emptySubHeading={`Use "Watch channels" to pick where ${assistantLabel} should listen.`}
             />
           </Box>
         </ListingLayout.Body>
@@ -327,7 +332,7 @@ const WatchedChannels: React.FC<WatchedChannelsProps> = ({ provider, isConfigure
               </Typography>
             )}
           </Box>
-          <Banner tone='info' surface='section' message='Nubi joins each selected channel and posts a notice there.' />
+          <Banner tone='info' surface='section' message={`${assistantLabel} joins each selected channel and posts a notice there.`} />
         </Box>
       </Modal>
     </Box>

@@ -40,6 +40,7 @@ import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
 import { isTenantAdmin } from '@lib/auth';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { isUrlFieldName, urlFieldStatus } from 'src/utils/url';
 import { DurationField, TemplateExpressionField, FailurePolicyField, HooksField, KeyValueField, MatrixField } from './components/advanced-config';
 import CollapsableCard from '@ui/CollapsableCard';
@@ -391,6 +392,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   // Find the current task definition
   const currentTaskDefinition = taskDefinitions.find((def) => def.name === selectedActionType);
+  // Task descriptions come from runbook-server, which has no tenant branding
+  const { title: brandTitle } = useBrandingConfig();
+  const currentTaskDescription = currentTaskDefinition?.description?.replace(/\bNudgebee\b/g, brandTitle);
 
   // Use centralized hook for node config access
   const { selectedNode: hookSelectedNode, taskConfig } = useSelectedNodeConfig(nodes);
@@ -4774,7 +4778,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   const renderWorkflowActionContent = () => {
     // Use currentTaskDefinition if available, otherwise create a minimal title/description from selectedActionType
-    const description = currentTaskDefinition?.description || `Configure ${selectedActionType} task parameters`;
+    const description = currentTaskDescription || `Configure ${selectedActionType} task parameters`;
 
     return renderDynamicForm(currentTaskDefinition, '', description);
   };
@@ -4800,9 +4804,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       >
         <Box>
           <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-foreground)' }}>
-            {`Action Details - ${
-              selectedNode?.data?.label || currentTaskDefinition?.display_name || currentTaskDefinition?.description || selectedActionType
-            }`}
+            {`Action Details - ${selectedNode?.data?.label || currentTaskDefinition?.display_name || currentTaskDescription || selectedActionType}`}
           </Typography>
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mt: 0.25 }}>
             {'Configure and test this automation action'}

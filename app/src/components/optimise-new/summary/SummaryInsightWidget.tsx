@@ -6,6 +6,7 @@ import { Label } from '@ui/Label';
 import Tooltip from '@ui/Tooltip';
 import { subtotal, formatDollars, formatWholeCurrency, type InsightItem, type MainCategory } from './insights';
 import { resourceAnchorName } from './ResourceLabel';
+import { toAssistantLabel, useBrandingConfig } from '@hooks/useTenantBranding';
 
 // Findings open longer than this are surfaced in the "Flagged" column. Not an
 // SLA — there is no SLA field, config or policy anywhere in the recommendation
@@ -443,6 +444,10 @@ const SummaryInsightWidget = ({
   onViewCritical,
   onOpenResource,
 }: SummaryInsightWidgetProps) => {
+  // Read through the hook, not the imperative getter: this heading is visible on
+  // the Optimize summary and the branding config resolves over a server round
+  // trip, so an unsubscribed read can paint the house assistant and never repaint.
+  const { assistantName } = useBrandingConfig();
   const data = useMemo(() => buildInsightWidgetData(items), [items]);
 
   const breakdownRows: BreakdownRow[] = useMemo(
@@ -493,7 +498,7 @@ const SummaryInsightWidget = ({
           </TileStack>
         </ColumnShell>
 
-        <ColumnShell title='What Nubi found'>
+        <ColumnShell title={`What ${toAssistantLabel(assistantName)} found`}>
           <TileStack>
             <Tile
               label='Potential savings'

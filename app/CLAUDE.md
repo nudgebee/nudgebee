@@ -254,6 +254,76 @@ If the visual styles changed (new size, new state, new tone), also update `primi
 
 Refactors with no public-API or visual change don't require a spec update — but mention it explicitly in the PR body so reviewers don't have to guess.
 
+## Brand copy: never hardcode the product title or assistant name (REQUIRED)
+
+One deployment fronts several partner hostnames, each with its own brand kit. Any
+user-visible string that spells out `Nudgebee` or `Nubi` is wrong on every one of
+them, and it is wrong silently — nothing in `lint2`, `type-check` or the unit
+suite can see it.
+
+**The rule: user-facing copy reads the name from branding. Always.**
+
+| You need                                                      | Use                                                                         | From                       |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------- | -------------------------- |
+| Product title, in a component                                 | `const { title } = useBrandingConfig()`                                     | `@hooks/useTenantBranding` |
+| Product title + assistant, in a component                     | `const { baseTitle, assistantName } = useTenantBranding()`                  | `@hooks/useTenantBranding` |
+| Product title, outside a component (event handlers, builders) | `getBrandTitle()`                                                           | `@hooks/useTenantBranding` |
+| Assistant name, outside a component                           | `getAssistantName()`                                                        | `@hooks/useTenantBranding` |
+| Assistant name that opens a sentence or names a UI surface    | `toAssistantLabel(assistantName)` / `getAssistantLabel()`                   | `@hooks/useTenantBranding` |
+| Copy held in a **static table** (see below)                   | `{brand}` / `{assistant}` / `{Assistant}` placeholder + `fillBrandTokens()` | `@hooks/useTenantBranding` |
+
+`useTenantBranding()` also calls `useSession()`, so adding it to a component breaks
+any test rendering without a `SessionProvider` — for brand-only needs prefer
+`useBrandingConfig()`.
+
+### Static string tables must carry a placeholder, not a name
+
+Module-level constants (`AGENT_USAGE_GUIDANCE`, `PANEL_TEMPLATES`, `ENTITY_TABLES`,
+`TOURS`, `DATASOURCES`, feature-flag copy, …) evaluate **at import**, before
+`/api/public/app_config` resolves. A name interpolated where the table is declared
+latches the house brand for the life of the tab — the same defect class as the
+permanent `NUDGEBEE SYSTEM AGENT` badge. So:
+
+1. Put `{brand}` / `{assistant}` / `{Assistant}` in the table.
+2. Call `fillBrandTokens()` in whatever accessor the render path already goes
+   through (`getAgentUsageGuidance`, `findTable`/`tablesFor`, `panelFromTemplate`,
+   `brandText` for tours), never in the table itself.
+
+### Branding resolves asynchronously — write copy that survives the gap
+
+`/api/public/app_config` is a real server round trip. Until it answers, the
+getters hand back the built-in defaults, so a partner sees the house name and
+then a repaint. Two consequences for copy you write:
+
+- Prefer reading the name where it renders. A value snapshotted into `useState`
+  or built inside a `useEffect` keyed on anything but the brand never repaints.
+- Where a sentence would read broken if the name were ever absent, gate it and
+  give the brand-free variant, rather than reaching for a `|| 'Nudgebee'`
+  fallback:
+
+```jsx
+value={baseTitle ? `Track this event outside ${baseTitle}.` : 'Track this event externally.'}
+```
+
+### Deliberately still literal
+
+Not everything named "Nudgebee" is copy. Leave these alone:
+
+- CloudFormation parameters (`NudgebeeExternalId`, `NudgebeeSsmAccess`, `NudgebeeWebhookUrl`), Helm values keys (`runner.nudgebee.*`), `role/NudgebeeRole`
+- Wire values and datasource keys (`origin: 'Nudgebee UI'`, `datasource: 'nudgebee'`), storage keys, env vars (`NUDGEBEE_*`)
+- Backend-supplied node/type names (`NudgebeeUser`) — rebrand those at the source, not in the badge formatter
+- Code identifiers, file paths, and comments
+- The Slack app handle (`@Nubi`) — it names an installed external app, not our copy
+
+### Before you commit
+
+```bash
+cd app && grep -rIn "Nudgebee\|Nubi" src --include="*.jsx" --include="*.tsx" --include="*.js" --include="*.ts"
+```
+
+Read every hit inside a quote, a JSX text node, or a template literal. If a user
+can see it, it must come from branding.
+
 ## Keeping Global Search in sync (REQUIRED, HIGH PRIORITY)
 
 Every navigable tab/sub-tab must be reachable from the header's global search (`GlobalPageSearch.jsx`). Its data lives in [`src/lib/navSearchPages.ts`](src/lib/navSearchPages.ts):

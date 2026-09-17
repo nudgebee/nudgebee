@@ -16,6 +16,8 @@
  * API). Agents with no entry -- and every user-created agent -- render an
  * em dash instead of the info icon.
  */
+import { fillBrandTokens } from '@hooks/useTenantBranding';
+
 export interface AgentUsageGuidance {
   /** One-line "what it is" summary (catalog entries). */
   brief?: string;
@@ -46,7 +48,7 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
     brief: 'Same job as the Kubernetes Troubleshooter, but every cluster read and write goes straight through kubectl instead of through sub-agents.',
     whenToUse:
       'Direct cluster diagnostics where kubectl is the answer: describe a resource, read live events, exec into a container, apply a change. Also when historical metrics or traces are a side question rather than the main one.',
-    why: 'Fewer hops means faster and more literal answers when you already know you want cluster-side truth - describe output, live events, an exec into a pod, or an actual change. Nudgebee selects it automatically when you or the caller have declared K8s-native intent.',
+    why: 'Fewer hops means faster and more literal answers when you already know you want cluster-side truth - describe output, live events, an exec into a pod, or an actual change. {brand} selects it automatically when you or the caller have declared K8s-native intent.',
     notFor:
       'Accounts whose logs and metrics only exist in Datadog, Loki or Elasticsearch - the standard Kubernetes Troubleshooter routes to those properly.',
   },
@@ -212,7 +214,7 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
   traces: {
     brief: 'Answers questions about distributed traces held in ClickHouse - one request followed across every service it touched.',
     whenToUse: '"Where is the latency in this request?", "which downstream call is failing?", "show me slow traces for checkout".',
-    why: "Traces answer the question logs and metrics cannot: which hop in the chain actually spent the time or threw the error. This is the default trace agent for accounts using Nudgebee's own ClickHouse trace store.",
+    why: "Traces answer the question logs and metrics cannot: which hop in the chain actually spent the time or threw the error. This is the default trace agent for accounts using {brand}'s own ClickHouse trace store.",
     notFor: 'Accounts on Datadog APM or a cloud-native tracer - use the matching reader below.',
   },
   aws_traces: {
@@ -252,7 +254,7 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
       'Answers "what happened, and when?" - alerts, config changes, deployments, Kubernetes events, anomalies, SLO violations and incident investigations.',
     whenToUse:
       '"What changed before this broke?", "show me alerts for this namespace today", "why did this OOM?", "what deployments went out this morning?"',
-    why: "Most outages are explained by a change, not by a metric. This agent owns Nudgebee's event timeline and can explain why an event was triaged the way it was, show the evidence behind it, and assemble related events into one incident.",
+    why: "Most outages are explained by a change, not by a metric. This agent owns {brand}'s event timeline and can explain why an event was triaged the way it was, show the evidence behind it, and assemble related events into one incident.",
     notFor: 'Raw pod logs (Log Investigator) or metric trends (Metrics Analyst) - though this agent is usually the right first stop before either.',
   },
   webhook_subject_name_extractor: {
@@ -266,7 +268,7 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
     brief: 'Fetches event information from Datadog for a plain-English question.',
     whenToUse: '"What events fired in Datadog around 14:00?"',
     why: 'Reads the Datadog event stream directly - deploy markers, monitor state changes and custom events posted by your own tooling.',
-    notFor: "Nudgebee's own event timeline (Event & Alert Investigator). Declared incidents (Datadog Incident Reader).",
+    notFor: "{brand}'s own event timeline (Event & Alert Investigator). Declared incidents (Datadog Incident Reader).",
   },
   datadog_incident: {
     brief: 'Fetches incident information from Datadog Incident Management for a plain-English question.',
@@ -301,7 +303,7 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
   clickhouse: {
     brief: 'Investigates ClickHouse issues from plain-English questions.',
     whenToUse: '"Why are these queries slow?", "is the merge queue backing up?", or when trace data looks incomplete.',
-    why: "ClickHouse is both a customer database and the store behind Nudgebee's own traces, so problems here can look like missing telemetry rather than a database fault.",
+    why: "ClickHouse is both a customer database and the store behind {brand}'s own traces, so problems here can look like missing telemetry rather than a database fault.",
     notFor: "Reading traces stored in ClickHouse - that is the Trace Investigator's job, and it is much easier to use.",
   },
   service_dependency_graph: {
@@ -320,8 +322,8 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
   datadog_containers: {
     brief: "Answers container, pod, node and workload questions using Datadog's infrastructure data.",
     whenToUse: '"Which pods are restarting?", "list containers on this node", where Datadog is the source of truth.',
-    why: 'For Datadog-first shops, this reads workload state without needing cluster credentials - useful when Nudgebee can see Datadog but not the cluster directly.',
-    notFor: 'Clusters Nudgebee can reach directly - kubectl through the Kubernetes Troubleshooter is more accurate and current.',
+    why: 'For Datadog-first shops, this reads workload state without needing cluster credentials - useful when {brand} can see Datadog but not the cluster directly.',
+    notFor: 'Clusters {brand} can reach directly - kubectl through the Kubernetes Troubleshooter is more accurate and current.',
   },
   datadog_hosts: {
     brief: 'Returns host details from Datadog for a plain-English question.',
@@ -372,16 +374,16 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
   },
   recommendations: {
     brief:
-      "Returns Nudgebee's recommendations - rightsizing, security, infra upgrade, spot, configuration, K8s version - along with what has already been tried on each.",
+      "Returns {brand}'s recommendations - rightsizing, security, infra upgrade, spot, configuration, K8s version - along with what has already been tried on each.",
     whenToUse: '"What rightsizing recommendations are open?", "has anyone acted on this one?", "show me security recommendations for this cluster".',
     why: 'The resolution history is the part that matters: it shows the PRs, tickets, deployment changes and previous attempt outcomes attached to a recommendation, so you do not re-litigate something the team already rejected or already shipped.',
     notFor: 'A full cost investigation with evidence and follow-through (FinOps Cost Advisor).',
   },
   cost_optimizer: {
     brief:
-      'Reviews a finished Nudgebee conversation and says how to run it cheaper: which calls could use a lighter model, which agents were redundant, where retries burned spend. Give it a session ID.',
+      'Reviews a finished {brand} conversation and says how to run it cheaper: which calls could use a lighter model, which agents were redundant, where retries burned spend. Give it a session ID.',
     whenToUse: 'After an expensive or slow conversation, and when tuning an automation that runs often. Input is the session ID, not a question.',
-    why: 'This is about the cost of the AI, not the cost of your cloud - the one agent in this catalogue whose subject is Nudgebee itself. It is how you tune expensive agent flows before rolling them out widely.',
+    why: 'This is about the cost of the AI, not the cost of your cloud - the one agent in this catalogue whose subject is {brand} itself. It is how you tune expensive agent flows before rolling them out widely.',
     notFor:
       'Cloud bills and infrastructure savings - that is the FinOps Cost Advisor. The similar names are the single most common mix-up in this list.',
   },
@@ -515,5 +517,22 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
 };
 
 /** Lookup helper -- normalises the agent name the API returns. */
-export const getAgentUsageGuidance = (agentName?: string): AgentUsageGuidance | undefined =>
-  agentName ? AGENT_USAGE_GUIDANCE[agentName.toLowerCase()] : undefined;
+// The catalog copy above carries a `{brand}` placeholder rather than a literal
+// product name, and it is filled in HERE rather than in the table. The table is
+// a module-level constant: anything it interpolated would be evaluated at import
+// time, before /api/public/app_config resolves, and would latch the house brand
+// forever for a white-label tenant (same class as the `NUDGEBEE SYSTEM AGENT`
+// badge latch). Substituting inside the getter makes it a call-time read.
+export const getAgentUsageGuidance = (agentName?: string): AgentUsageGuidance | undefined => {
+  const entry = agentName ? AGENT_USAGE_GUIDANCE[agentName.toLowerCase()] : undefined;
+  if (!entry) return undefined;
+  return {
+    ...entry,
+    brief: entry.brief ? fillBrandTokens(entry.brief) : entry.brief,
+    whenToUse: fillBrandTokens(entry.whenToUse),
+    why: fillBrandTokens(entry.why),
+    notFor: entry.notFor ? fillBrandTokens(entry.notFor) : entry.notFor,
+    example: entry.example ? fillBrandTokens(entry.example) : entry.example,
+    advantages: entry.advantages ? entry.advantages.map(fillBrandTokens) : entry.advantages,
+  };
+};

@@ -2032,8 +2032,7 @@ const IntegrationDynamicFormModal = ({
           Alert delivery
         </Typography>
         <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400], mt: ds.space[1] }}>
-          A Prometheus connected without an agent delivers alerts through its Alertmanager. Add a webhook receiver pointing at the URL below; the
-          account name rides along as the cluster. Rules created in Nudgebee are written to the ruler configured above.
+          {`A Prometheus connected without an agent delivers alerts through its Alertmanager. Add a webhook receiver pointing at the URL below; the account name rides along as the cluster. Rules created in ${getBrandTitle()} are written to the ruler configured above.`}
         </Typography>
         {receivers.length === 0 ? (
           <Typography

@@ -7,6 +7,8 @@
  * fetching it) is what lets the editor offer type-appropriate operators.
  */
 
+import { fillBrandTokens } from '@hooks/useTenantBranding';
+
 export type EntityColumnType = 'string' | 'number' | 'datetime' | 'boolean' | 'json';
 
 /**
@@ -92,7 +94,7 @@ const EVENT_COLUMNS: EntityColumn[] = [
   { name: 'computed_priority', label: 'Computed priority', type: 'string' },
   { name: 'computed_score', label: 'Computed score', type: 'number', format: 'number' },
   { name: 'status', label: 'Status', type: 'string' },
-  { name: 'nb_status', label: 'Nudgebee status', type: 'string' },
+  { name: 'nb_status', label: '{brand} status', type: 'string' },
   { name: 'category', label: 'Category', type: 'string' },
   { name: 'finding_type', label: 'Finding type', type: 'string' },
   { name: 'source', label: 'Source', type: 'string' },
@@ -428,7 +430,7 @@ export const ENTITY_TABLES: EntityTable[] = [
     label: 'Events',
     description: 'One row per event occurrence.',
     detail:
-      'Every event Nudgebee has recorded — alerts, K8s findings and detections — one row each, newest first. Each row names what it happened to ' +
+      'Every event {brand} has recorded — alerts, K8s findings and detections — one row each, newest first. Each row names what it happened to ' +
       '(subject type, name, namespace, node), how it was rated (priority, computed score, status) and when it started and ended. Use this to read ' +
       'the individual events behind an incident; use Event groups to count them.',
     columns: EVENT_COLUMNS,
@@ -460,7 +462,7 @@ export const ENTITY_TABLES: EntityTable[] = [
     label: 'Recommendations',
     description: 'One row per recommendation.',
     detail:
-      'Every recommendation Nudgebee has raised — right-sizing, idle resources, configuration and security findings — one row each. Each row names ' +
+      'Every recommendation {brand} has raised — right-sizing, idle resources, configuration and security findings — one row each. Each row names ' +
       'the resource it is about (name, type, cloud service, region), how it was rated (category, severity, status, safety band) and what it is ' +
       'worth (estimated savings). Filter on Is primary to count a finding once rather than once per revision.',
     columns: RECOMMENDATION_COLUMNS,
@@ -536,7 +538,7 @@ export const ENTITY_TABLES: EntityTable[] = [
     label: 'Ticket groups',
     description: 'Ticket counts by status, severity or assignee.',
     detail:
-      'Tickets raised from Nudgebee collapsed by whichever of status, severity, assignee, platform or type you select. This is the backlog and ' +
+      'Tickets raised from {brand} collapsed by whichever of status, severity, assignee, platform or type you select. This is the backlog and ' +
       'inflow view — how much work is open, who holds it and where it was filed.',
     columns: TICKET_GROUPING_COLUMNS,
     timeColumns: ['created_at'],
@@ -650,7 +652,7 @@ export const ENTITY_TABLES: EntityTable[] = [
     label: 'Agent health',
     description: 'One row per collector agent, with when it last checked in.',
     detail:
-      'The agents feeding Nudgebee: their type, version, cluster version and when each last connected. A stale Last seen is why a dashboard has ' +
+      'The agents feeding {brand}: their type, version, cluster version and when each last connected. A stale Last seen is why a dashboard has ' +
       'gone quiet, and it is the first thing to check before believing an empty panel.',
     columns: AGENT_HEALTH_COLUMNS,
     timeColumns: ['last_connected_at', 'created_at'],
@@ -699,9 +701,25 @@ export const ENTITY_TABLES: EntityTable[] = [
   },
 ];
 
+/**
+ * `ENTITY_TABLES` is a module-level constant, so its user-facing copy carries a
+ * `{brand}` placeholder instead of a literal product name — interpolating at
+ * declaration would evaluate before /api/public/app_config resolves and latch
+ * the house brand for a white-label tenant. `tablesFor` and `findTable` are the
+ * only ways the render paths reach a table, so the substitution happens here.
+ */
+function brandTable(table: EntityTable): EntityTable {
+  return {
+    ...table,
+    description: fillBrandTokens(table.description),
+    detail: fillBrandTokens(table.detail),
+    columns: table.columns.map((c) => ({ ...c, label: fillBrandTokens(c.label) })),
+  };
+}
+
 /** The tables a panel of this datasource may query. */
 export function tablesFor(datasource: string): EntityTable[] {
-  return ENTITY_TABLES.filter((t) => t.datasource === datasource);
+  return ENTITY_TABLES.filter((t) => t.datasource === datasource).map(brandTable);
 }
 
 /**
@@ -784,7 +802,7 @@ export interface EntityQuery {
 }
 
 export function findTable(value: string): EntityTable {
-  return ENTITY_TABLES.find((t) => t.value === value) || ENTITY_TABLES[0];
+  return brandTable(ENTITY_TABLES.find((t) => t.value === value) || ENTITY_TABLES[0]);
 }
 
 export function findColumn(table: EntityTable, name: string): EntityColumn | undefined {

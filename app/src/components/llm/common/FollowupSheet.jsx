@@ -13,7 +13,7 @@ import { DropdownMenu } from '@ui/DropdownMenu';
 import { toast } from '@ui/Toast';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import { getNubiIconUrl } from '@hooks/useTenantBranding';
+import { getNubiIconUrl, getAssistantName } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
 import { unwrapTypedValueString } from '@utils/common';
 
@@ -122,7 +122,7 @@ const NubiBeeIcon = () => (
   <Box
     component='img'
     src={getNubiIconUrl()}
-    alt='Nudgebee'
+    alt={getAssistantName()}
     sx={{ flexShrink: 0, width: ds.space.mul(0, 11), height: ds.space.mul(0, 11), display: 'block' }}
   />
 );

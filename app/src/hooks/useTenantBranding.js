@@ -147,6 +147,35 @@ export const getNubiIconCircleUrl = () => _configCache?.nubiIconCircleUrl || _co
 export const getLoaderUrl = () => _configCache?.loaderUrl || DEFAULT_LOADER_URL;
 export const getAssistantName = () => _configCache?.assistantName || DEFAULT_ASSISTANT_NAME;
 export const getBrandTitle = () => _configCache?.title || DEFAULT_TITLE;
+
+// Sentence-cased assistant name, for copy that opens a sentence or names a UI
+// surface ("Ask Nubi > Memory"). The configured name is lowercase by default,
+// so callers must not hand-capitalise it — that is what hardcodes the house
+// assistant back in.
+export const toAssistantLabel = (name) => (name ? name.charAt(0).toUpperCase() + name.slice(1) : name);
+export const getAssistantLabel = () => toAssistantLabel(getAssistantName());
+
+// Fill `{brand}` / `{assistant}` / `{Assistant}` placeholders in STATIC copy, at
+// call time.
+//
+// Static string tables (agent catalogue copy, dashboard widget and entity-table
+// descriptions, tour steps, …) are module-level constants. A brand name
+// interpolated where they are DECLARED evaluates at import, before
+// /api/public/app_config resolves, so a white-label tenant latches the house
+// brand for the life of the tab — the same defect class as the permanent
+// `NUDGEBEE SYSTEM AGENT` badge. Keep the placeholder in the data and call this
+// from whatever accessor the render path already goes through.
+//
+// `{Assistant}` is the sentence-cased form, for copy that opens a sentence.
+export const fillBrandTokens = (text) => {
+  if (typeof text !== 'string') return text;
+  const assistant = getAssistantName();
+  return text
+    .replace(/\{brand\}/g, getBrandTitle())
+    .replace(/\{Assistant\}/g, toAssistantLabel(assistant))
+    .replace(/\{assistant\}/g, assistant);
+};
+
 // True on white-labeled (partner) deployments — driven by TENANT_BRANDING_FILE server-side.
 // Use this (not the session tenant name) to gate Nudgebee-specific assets like the mascots.
 export const getIsWhiteLabel = () => !!_configCache?.isWhiteLabel;

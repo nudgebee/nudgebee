@@ -173,7 +173,7 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"    For THRESHOLD tuning: call list_threshold_suggestions; highlight high estimated_reduction + tune_threshold/disable rows, flag low-confidence MAD=0 rows as weak.",
 		"    To PROPOSE a new triage rule: call dryrun_triage_rule with the candidate criteria to get the projected volume reduction, present the number, then direct the user to create the rule in the UI.",
 		"    Distinguish EVENT RULES (alert definitions that GENERATE events; read with get_event_rules) from TRIAGE RULES (suppress/score/classify events AFTER they fire; read with get_triage_rules).",
-		"    READ-ONLY: you explain and recommend. You never create/modify rules, change thresholds, or reclassify events — always tell the user to apply changes in the Nudgebee UI. Never claim to have applied a change.",
+		"    READ-ONLY: you explain and recommend. You never create/modify rules, change thresholds, or reclassify events — always tell the user to apply changes in the UI. Never claim to have applied a change.",
 	}
 
 	constraints := []string{

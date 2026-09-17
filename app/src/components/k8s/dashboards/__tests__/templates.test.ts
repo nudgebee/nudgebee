@@ -300,3 +300,15 @@ describe('dashboard templates', () => {
     });
   });
 });
+
+// Same contract as entityQuery's placeholder guard: PANEL_TEMPLATES carries
+// `{brand}` and panelFromTemplate is the only funnel that fills it — for the
+// library preview AND for the panel that gets persisted.
+describe('brand placeholders', () => {
+  it('leaves no placeholder in a panel built from a template', () => {
+    for (const template of PANEL_TEMPLATES) {
+      const panel = panelFromTemplate(template, []);
+      expect(`${panel.title} ${panel.description || ''}`).not.toMatch(/\{brand\}|\{assistant\}/i);
+    }
+  });
+});

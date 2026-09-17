@@ -29,7 +29,7 @@ import DsTooltip from '@ui/Tooltip';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { infoIcon } from '@assets';
 import { ds } from '@utils/colors';
-import { useBrandingConfig } from '@hooks/useTenantBranding';
+import { useBrandingConfig, fillBrandTokens, toAssistantLabel } from '@hooks/useTenantBranding';
 import {
   deleteTenantAttributes,
   getFeatures,
@@ -111,7 +111,7 @@ const SectionHeader = ({ title, description }) => (
 // Hand-maintained: the DB catalog (public.feature) has no when/why columns yet, so a flag missing here just falls back to its own description.
 // A function taking the brand, not a constant: two entries name the product, which
 // is tenant-branded and only resolved once /api/public/app_config has landed.
-const featureRecommendedContent = (baseTitle) => ({
+const featureRecommendedContent = (baseTitle, assistantName) => ({
   ANOMALY_DETECTION: {
     description:
       'Watches CPU, memory, latency, replica counts, error rates and cloud spend, and raises an event when a metric leaves its learned baseline.',
@@ -173,7 +173,9 @@ const featureRecommendedContent = (baseTitle) => ({
     why: 'Built-in analysis is general. A function encodes the check a team always runs for a particular alert and makes it automatic.',
   },
   CHANNEL_AWARENESS: {
-    description: 'Nubi follows the messaging channels you opt in and uses the recent conversation as context when mentioned.',
+    description: `${toAssistantLabel(
+      assistantName
+    )} follows the messaging channels you opt in and uses the recent conversation as context when mentioned.`,
     whenToTurnOn: 'Incident work happens in chat and re-pasting context into every mention is the friction.',
     why: 'Reading a channel is sensitive, so it is opt-in per channel: enabling joins the channel and posts a visible disclosure, and reverts if the disclosure fails.',
   },
@@ -255,15 +257,15 @@ const FEATURE_NAVIGATION = {
     reason: 'Only appears while investigating a specific event, not as a standalone screen.',
   },
   LLM_FUNCTION: {
-    path: 'Ask Nubi Settings, or Kubernetes › Create Alert',
+    path: 'Ask {Assistant} Settings, or Kubernetes › Create Alert',
     reason: 'Lives inside existing modals — there is no dedicated screen to link to.',
   },
   MEMORY_MODULE: {
-    path: 'Ask Nubi › Memory',
+    path: 'Ask {Assistant} › Memory',
     reason: 'Lives inside the chat assistant panel — there is no dedicated screen to link to.',
   },
   AI_ANSWER_CONFIDENCE: {
-    path: 'Ask Nubi › a completed investigation answer',
+    path: 'Ask {Assistant} › a completed investigation answer',
     reason: 'The badge sits on the answer itself, so it only appears once an investigation has run.',
   },
   WEBHOOK_LLM_RESOLUTION: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
@@ -289,7 +291,7 @@ const FeatureNavigationIcon = ({ feature }) => {
     );
   }
   return (
-    <DsTooltip title={nav.path ? `${nav.path} — ${nav.reason}` : nav.reason} placement='top'>
+    <DsTooltip title={nav.path ? `${fillBrandTokens(nav.path)} — ${nav.reason}` : nav.reason} placement='top'>
       <Box component='span' aria-label={`${label} has no direct link`} sx={{ display: 'inline-flex', opacity: 0.4 }}>
         <OpenInNewIcon sx={{ fontSize: 13 }} />
       </Box>
@@ -372,7 +374,7 @@ const ALL_FEATURES_GROUP_ID = 'all';
 // blank the page out from under the user — that used `loading` alone via the
 // old modal wrapper's own overlay, which no longer exists here.
 const TenantSettings = () => {
-  const { title: baseTitle } = useBrandingConfig();
+  const { title: baseTitle, assistantName } = useBrandingConfig();
   const { data: session, update } = useSession();
   const VALID_ROLES = ['tenant_admin', 'tenant_admin_readonly'];
 
@@ -660,7 +662,7 @@ const TenantSettings = () => {
   };
 
   const buildFeatureRow = (f) => {
-    const content = featureRecommendedContent(baseTitle)[f.value];
+    const content = featureRecommendedContent(baseTitle, assistantName)[f.value];
     return [
       {
         component: (
@@ -963,7 +965,9 @@ const TenantSettings = () => {
                 <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: ds.space[3] }}>
                   <SectionHeader
                     title='Feature Flags'
-                    description='Control which Nubi capabilities are active for your tenant. Toggle a feature on or off, changes apply immediately.'
+                    description={`Control which ${toAssistantLabel(
+                      assistantName
+                    )} capabilities are active for your tenant. Toggle a feature on or off, changes apply immediately.`}
                   />
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
                     {canEdit && (

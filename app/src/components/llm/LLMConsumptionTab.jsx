@@ -19,7 +19,7 @@ import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import { getUserSession, isTenantAdmin } from '@lib/auth';
 import { ds } from '@utils/colors';
-import { useTenantBranding } from '@hooks/useTenantBranding';
+import { useTenantBranding, toAssistantLabel } from '@hooks/useTenantBranding';
 import apiUser from '@api1/user';
 import WidgetCard from '@ui/WidgetCard';
 import { ProgressBar } from '@ui/ProgressBar';
@@ -867,7 +867,7 @@ const BudgetEditModal = ({ open, onClose, onSaved, config, maxCaps, systemDefaul
             options={[
               ...(isEdit ? [] : [{ value: 'both', label: 'Both Modules' }]),
               { value: 'investigation', label: 'Event Analysis (Automated)' },
-              { value: 'user_investigation', label: 'Nubi Chat (User)' },
+              { value: 'user_investigation', label: `${toAssistantLabel(assistantName)} Chat (User)` },
             ]}
             disabled={isEdit}
             size='sm'
