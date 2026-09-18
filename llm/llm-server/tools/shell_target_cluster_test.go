@@ -108,6 +108,7 @@ func TestKubectlExecutePerCallCluster(t *testing.T) {
 		resp, err := tool.Call(kubectlCallCtx(t, account, tool), core.NBToolCallRequest{Command: "kubectl get pods -A"})
 		require.NoError(t, err)
 		require.Equal(t, "k8s-prod", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME])
+		require.Equal(t, "prod-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID])
 		require.NotContains(t, resp.Data, `"cluster"`)
 	})
 
@@ -118,6 +119,7 @@ func TestKubectlExecutePerCallCluster(t *testing.T) {
 		resp, err := tool.Call(ctx, core.NBToolCallRequest{Command: "kubectl get pods -A", Arguments: map[string]any{"cluster": "k8s-dev"}})
 		require.NoError(t, err)
 		require.Equal(t, "k8s-dev", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME])
+		require.Equal(t, "dev-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID], "the execution token is bound to the selected cluster")
 		require.Equal(t, account, capture.account, "the conversation workspace does not move")
 		require.Equal(t, "conversation", capture.conversation)
 		out := map[string]string{}

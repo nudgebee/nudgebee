@@ -591,6 +591,12 @@ type appConfig struct {
 	// this past that ceiling buys nothing, since the caller would already have
 	// given up and the result would never reach the LLM.
 	LlmServerWorkspaceCommandTimeout string `mapstructure:"llm_server_workspace_command_timeout"`
+	// LlmServerWorkspaceExecuteRequireScopedToken makes /api/v1/workspace/execute
+	// accept only per-command execution tokens (#38588). Off: the pod's own
+	// long-lived token is still accepted there and counted in
+	// nb_llm_workspace_execute_auth_total{audience="workspace-pod"}; turn it on
+	// once that series stays at zero.
+	LlmServerWorkspaceExecuteRequireScopedToken bool `mapstructure:"llm_server_workspace_execute_require_scoped_token"`
 
 	// LlmServerKnowledgeWorkspaceEnabled enables exact document materialization and selective reads.
 	LlmServerKnowledgeWorkspaceEnabled bool `mapstructure:"llm_server_knowledge_workspace_enabled"`
@@ -1399,6 +1405,7 @@ func init() {
 	// comments above — this default is computed, not hand-picked, so it can't
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
+	viper.SetDefault("llm_server_workspace_execute_require_scoped_token", false)
 	viper.SetDefault("llm_server_knowledge_workspace_enabled", true)
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
 	viper.SetDefault("llm_server_event_evidence_overflow_threshold", 2000)

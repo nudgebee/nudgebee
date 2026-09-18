@@ -203,6 +203,12 @@ func NewWorkspaceExecuteHandler(
 	}
 }
 
+// workspaceExecuteAudience is the audience llm-server puts on per-command
+// execution tokens. The workspace pod's own long-lived token has another
+// audience (or none) and must not execute tools here: this route has no
+// per-user authorization of its own.
+const workspaceExecuteAudience = "workspace-execute"
+
 // parseWorkspaceToken validates the JWT and returns its claims.
 func parseWorkspaceToken(tokenString, jwtSecret string) (*workspaceTokenClaims, error) {
 	if jwtSecret == "" {
@@ -213,7 +219,7 @@ func parseWorkspaceToken(tokenString, jwtSecret string) (*workspaceTokenClaims, 
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(jwtSecret), nil
-	})
+	}, jwt.WithAudience(workspaceExecuteAudience))
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}

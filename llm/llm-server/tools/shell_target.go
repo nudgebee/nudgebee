@@ -68,16 +68,15 @@ func CheckShellTargetWriteAccess(ctx *security.RequestContext, selected core.Too
 	return fmt.Errorf("shell: write access to the selected target account is required")
 }
 
-// KubernetesTargetEnv binds the shim's authority to the selected target, keeping
-// its workspace account and files unchanged.
+// KubernetesTargetEnv binds the command's execution token to the selected
+// target, keeping its workspace account and files unchanged.
 func KubernetesTargetEnv(ctx core.NbToolContext, selected core.ToolConfig) (map[string]string, error) {
 	for _, v := range selected.Values {
 		if v.Name == "id" && v.Value != "" {
-			token, err := workspace.KubernetesTargetToken(ctx.Ctx, ctx.AccountId, v.Value)
-			if err != nil {
-				return nil, err
+			if !ctx.Ctx.GetSecurityContext().HasAccountAccess(v.Value, security.SecurityAccessTypeRead) {
+				return nil, fmt.Errorf("target cluster access denied")
 			}
-			return map[string]string{workspace.ENV_NB_TOOL_CONFIG_NAME: selected.Name, workspace.ENV_NB_WORKSPACE_TOKEN: token}, nil
+			return map[string]string{workspace.ENV_NB_TOOL_CONFIG_NAME: selected.Name, workspace.ENV_NB_TARGET_ACCOUNT_ID: v.Value}, nil
 		}
 	}
 	return nil, fmt.Errorf("selected cluster has no account id")

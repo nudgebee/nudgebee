@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -189,26 +190,74 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 		return nil, fmt.Errorf("invalid account id")
 	}
 
-	if claims, ok := token.Claims.(*workspace.WorkspaceTokenClaims); ok && token.Valid {
-		if _, found := common.CacheGet(workspace.CacheNamespaceWorkspaceTokens, tokenString); found {
-			return nil, fmt.Errorf("token has been revoked")
-		}
-		allowedTarget := claims.AccountId
-		if claims.TargetAccountId != "" {
-			allowedTarget = claims.TargetAccountId
-		}
-		c.Set("workspace_allowed_target", allowedTarget)
-		if claims.AccountId != requestedAccountId {
-			return nil, fmt.Errorf("token does not match account")
-		}
-		if claims.TenantId != "" && claims.TenantId != tenantId {
-			return nil, fmt.Errorf("token does not match tenant")
-		}
-	} else {
+	claims, ok := token.Claims.(*workspace.WorkspaceTokenClaims)
+	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
+	if _, found := common.CacheGet(workspace.CacheNamespaceWorkspaceTokens, tokenString); found {
+		return nil, fmt.Errorf("token has been revoked")
+	}
+	allowedTarget := claims.AccountId
+	if claims.TargetAccountId != "" {
+		allowedTarget = claims.TargetAccountId
+	}
+	c.Set("workspace_allowed_target", allowedTarget)
+	if claims.AccountId != requestedAccountId {
+		return nil, fmt.Errorf("token does not match account")
+	}
+	if claims.TenantId != "" && claims.TenantId != tenantId {
+		return nil, fmt.Errorf("token does not match tenant")
+	}
 
-	return security.NewRequestContextForTenantAdmin(tenantId), nil
+	isExecutionToken := slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute)
+	if isExecutionToken != (claims.Grants != nil) {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+	if !isExecutionToken {
+		// The pod's own token (or one issued before audiences existed).
+		c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspacePod)
+		return security.NewRequestContextForTenantAdmin(tenantId), nil
+	}
+	c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspaceExecute)
+	if claims.TenantId == "" {
+		return nil, fmt.Errorf("token does not match tenant")
+	}
+	sc, err := security.NewSecurityContextFromWorkspaceGrants(tenantId, *claims.Grants)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token grants: %w", err)
+	}
+	if claims.TargetAccountId != "" && !sc.HasAccountAccess(claims.TargetAccountId, security.SecurityAccessTypeRead) {
+		return nil, fmt.Errorf("token does not permit its target")
+	}
+	return security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter), nil
+}
+
+// workspaceTokenAudienceKey records which kind of workspace token
+// authenticated the request (set only on the workspace-token path).
+const workspaceTokenAudienceKey = "workspace_token_audience"
+
+// requireExecutionToken enforces, and counts, that tool execution through the
+// workspace token path uses a per-command execution token rather than the
+// pod's own token. Requests authenticated another way (action gateway, global
+// token) carry no workspace token and are not affected. It reports whether the
+// request may continue.
+func requireExecutionToken(c *gin.Context, ctx *security.RequestContext, accountId string) bool {
+	value, viaWorkspaceToken := c.Get(workspaceTokenAudienceKey)
+	if !viaWorkspaceToken {
+		return true
+	}
+	audience, _ := value.(string)
+	enforced := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
+	allowed := audience == workspace.AudienceWorkspaceExecute || !enforced
+	recordWorkspaceExecuteAuth(c.Request.Context(), audience, enforced, allowed)
+	if audience == workspace.AudienceWorkspaceExecute {
+		return true
+	}
+	ctx.GetLogger().Warn("workspace: execute called with the pod token", "account_id", accountId, "enforced", enforced)
+	if !allowed {
+		c.JSON(http.StatusUnauthorized, common.ErrorActionBadRequest("workspace execution requires a per-command execution token; run the command through a Nudgebee tool"))
+	}
+	return allowed
 }
 
 func handleWorkspaceListFilesWithPayload(c *gin.Context, payload map[string]any, ctx *security.RequestContext) {
@@ -346,6 +395,9 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 
 	var req WorkspaceExecuteRequest
 	_ = common.DecodeMapToStruct(payload, &req)
+	if !requireExecutionToken(c, ctx, req.AccountId) {
+		return
+	}
 
 	var relayJob tools.RelayJob
 	var registeredToolName string
@@ -477,11 +529,12 @@ func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedC
 	if job != tools.RelayJobKubectl {
 		return ctx.AccountId, nil
 	}
-	if requestedConfig == "" {
-		return ctx.AccountId, nil
-	}
 	selected := ctx.ToolConfig
-	if selected.Name != requestedConfig {
+	if requestedConfig == "" {
+		// The workspace's own cluster: still checked, so a read-only user's
+		// write is refused here and not only by the planner's approval gate.
+		selected = core.ToolConfig{Values: []core.ToolConfigValue{{Name: "id", Value: ctx.AccountId}}}
+	} else if selected.Name != requestedConfig {
 		// The per-account config list is narrowed to the workspace's own
 		// cluster, so a per-call target on another cluster is looked up by name
 		// across the tenant. The caller still checks the result against the
@@ -501,7 +554,13 @@ func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedC
 	}
 	for _, value := range selected.Values {
 		if value.Name == "id" && value.Value != "" {
-			if ctx.Ctx == nil || ctx.Ctx.GetSecurityContext() == nil || !ctx.Ctx.GetSecurityContext().HasAccountAccess(value.Value, requiredAccess) {
+			if ctx.Ctx == nil || ctx.Ctx.GetSecurityContext() == nil {
+				return "", fmt.Errorf("target cluster access denied")
+			}
+			// Same union that admits the user to run Nubi (and remediation) on
+			// the account: a built-in role, or a custom-role grant to run AI.
+			sc := ctx.Ctx.GetSecurityContext()
+			if !sc.HasAccountAccess(value.Value, requiredAccess) && !grantedRun(sc, value.Value, moduleAiMisc) {
 				return "", fmt.Errorf("target cluster access denied")
 			}
 			return value.Value, nil

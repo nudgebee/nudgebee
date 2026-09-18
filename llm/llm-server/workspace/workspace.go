@@ -62,6 +62,9 @@ type WorkspaceTokenClaims struct {
 	AccountId       string `json:"account_id"`
 	TenantId        string `json:"tenant_id"`
 	TargetAccountId string `json:"target_account_id,omitempty"`
+	// Grants is set only on execution tokens (audience AudienceWorkspaceExecute):
+	// the authority of the user whose command is running.
+	Grants *security.WorkspaceGrants `json:"grants,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -70,6 +73,7 @@ func signWorkspaceToken(accountID, tenantID string) (string, error) {
 		AccountId: accountID,
 		TenantId:  tenantID,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Audience:  jwt.ClaimStrings{AudienceWorkspacePod},
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(workspaceTokenLifetime)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "llm-server",
@@ -1126,12 +1130,9 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	}
 	logger.Info("workspace: executing command", "command_preview", cmdLog, "account_id", accountId, "conversation_id", conversationId)
 
-	if env == nil {
-		env = make(map[string]string)
-	}
-	env["nb_account_id"] = accountId
-	if ctx.GetSecurityContext() != nil {
-		env["nb_tenant_id"] = ctx.GetSecurityContext().GetTenantId()
+	env, err := w.commandEnv(ctx, accountId, env)
+	if err != nil {
+		return "", err
 	}
 	payload := executePayload{
 		Command:        command,
@@ -1927,15 +1928,4 @@ func getKubeClient(qps float32, burst int) (*kubernetes.Clientset, error) {
 		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 	return clientset, nil
-}
-
-// KubernetesTargetToken permits the shim to route only to this selected cluster.
-// It authenticates the original workspace and cannot choose a different target.
-func KubernetesTargetToken(ctx *security.RequestContext, workspaceAccount, targetAccount string) (string, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(targetAccount, security.SecurityAccessTypeRead) {
-		return "", fmt.Errorf("target cluster access denied")
-	}
-	claims := WorkspaceTokenClaims{AccountId: workspaceAccount, TenantId: ctx.GetSecurityContext().GetTenantId(), TargetAccountId: targetAccount,
-		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)), IssuedAt: jwt.NewNumericDate(time.Now()), Issuer: "llm-server"}}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(config.Config.LlmServerJwtSecret))
 }

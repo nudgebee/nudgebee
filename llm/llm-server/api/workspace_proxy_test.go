@@ -466,14 +466,27 @@ func TestWorkspaceRelayTargetWriteAuthorization(t *testing.T) {
 	require.ErrorContains(t, err, "access denied")
 }
 
-func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {
-	security.SetTenantIdCacheForTest("bound-workspace", "bound-tenant")
-	token, err := workspace.KubernetesTargetToken(security.NewRequestContextForTenantAccountAdmin("bound-tenant", "user", []string{"bound-workspace", "selected-target"}), "bound-workspace", "selected-target")
-	require.NoError(t, err)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
+func stubTenantAccounts(t *testing.T, accounts ...string) {
+	t.Helper()
+	orig := security.WorkspaceTenantAccounts
+	security.WorkspaceTenantAccounts = func(string) ([]string, error) { return accounts, nil }
+	t.Cleanup(func() { security.WorkspaceTenantAccounts = orig })
+}
+
+func workspaceTokenRequest(token string) *gin.Context {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/workspace/execute", nil)
 	c.Request.Header.Set("X-Workspace-Token", token)
+	return c
+}
+
+func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("bound-workspace", "bound-tenant")
+	stubTenantAccounts(t, "bound-workspace", "selected-target")
+	token, err := workspace.ExecutionToken(security.NewRequestContextForTenantAccountAdmin("bound-tenant", "user", []string{"bound-workspace", "selected-target"}), "bound-workspace", "selected-target", time.Minute)
+	require.NoError(t, err)
+	c := workspaceTokenRequest(token)
 	_, err = authorizeWorkspaceRequest(c, "bound-workspace", nil, nil)
 	require.NoError(t, err)
 	allowed, ok := c.Get("workspace_allowed_target")
@@ -481,8 +494,117 @@ func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {
 	require.Equal(t, "selected-target", allowed)
 	_, err = authorizeWorkspaceRequest(c, "selected-target", nil, nil)
 	require.Error(t, err)
-	_, err = workspace.KubernetesTargetToken(security.NewRequestContextForTenantAccountAdmin("bound-tenant", "user", []string{"bound-workspace"}), "bound-workspace", "selected-target")
+	_, err = workspace.ExecutionToken(security.NewRequestContextForTenantAccountAdmin("bound-tenant", "user", []string{"bound-workspace"}), "bound-workspace", "selected-target", time.Minute)
 	require.Error(t, err)
+}
+
+// An execution token authorizes the shim call as the user who ran the command:
+// a read-only user can read the cluster through the shim but not write to it.
+func TestExecutionTokenAuthorizesAsTheUser(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("ws-acct", "t1")
+	stubTenantAccounts(t, "ws-acct")
+	var readOnly security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"t1","UserId":"u1","AccountIds":["ws-acct"],"Roles":["account_admin_readonly"],"ScopedEntityIds":{"account_admin_readonly":["ws-acct"]}}`), &readOnly))
+	token, err := workspace.ExecutionToken(security.NewRequestContext(context.Background(), &readOnly, slog.Default(), nil, nil), "ws-acct", "", time.Minute)
+	require.NoError(t, err)
+
+	c := workspaceTokenRequest(token)
+	ctx, err := authorizeWorkspaceRequest(c, "ws-acct", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "u1", ctx.GetSecurityContext().GetUserId())
+	assert.False(t, ctx.GetSecurityContext().IsTenantAdmin())
+	audience, _ := c.Get(workspaceTokenAudienceKey)
+	assert.Equal(t, workspace.AudienceWorkspaceExecute, audience)
+
+	toolCtx := core.NbToolContext{Ctx: ctx, AccountId: "ws-acct"}
+	target, err := workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl get pods")
+	require.NoError(t, err)
+	assert.Equal(t, "ws-acct", target)
+	_, err = workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl delete pod api-1")
+	require.ErrorContains(t, err, "access denied")
+}
+
+// A user whose only access is a custom-role grant to run AI on the account
+// (no built-in account role) could run Nubi before execution tokens existed
+// and must still be able to.
+func TestExecutionTokenAdmitsCustomRoleGrant(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("ws-acct", "t1")
+	stubTenantAccounts(t, "ws-acct", "other-acct")
+	var customOnly security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"t1","UserId":"u1","AccountIds":["ws-acct","other-acct"],"ScopedCustomPermissions":{"ws-acct":{"ai_misc:Execute":true}}}`), &customOnly))
+	token, err := workspace.ExecutionToken(security.NewRequestContext(context.Background(), &customOnly, slog.Default(), nil, nil), "ws-acct", "", time.Minute)
+	require.NoError(t, err)
+	ctx, err := authorizeWorkspaceRequest(workspaceTokenRequest(token), "ws-acct", nil, nil)
+	require.NoError(t, err)
+
+	toolCtx := core.NbToolContext{Ctx: ctx, AccountId: "ws-acct"}
+	_, err = workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl get pods")
+	require.NoError(t, err)
+	_, err = workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl rollout restart deployment/api")
+	require.NoError(t, err, "the grant that admits running Nubi also admits its writes, as for remediation")
+
+	toolCtx.AccountId = "other-acct"
+	_, err = workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl get pods")
+	require.ErrorContains(t, err, "access denied", "the grant is scoped to ws-acct")
+}
+
+func TestExecutionTokenClaimsAreValidated(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("ws-acct", "t1")
+	stubTenantAccounts(t, "ws-acct")
+	sign := func(claims workspace.WorkspaceTokenClaims) string {
+		s, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(config.Config.LlmServerJwtSecret))
+		require.NoError(t, err)
+		return s
+	}
+	live := jwt.RegisteredClaims{Audience: jwt.ClaimStrings{workspace.AudienceWorkspaceExecute}, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))}
+	user := &security.WorkspaceGrants{UserId: "u1", Roles: []string{security.AUTH_TENANT_ADMIN_ROLE}, AccountIds: []string{"ws-acct"}}
+
+	for name, claims := range map[string]workspace.WorkspaceTokenClaims{
+		"super admin grants":                  {AccountId: "ws-acct", TenantId: "t1", Grants: &security.WorkspaceGrants{UserId: "u1", Roles: []string{security.AUTH_SUPER_ADMIN_FULL_ROLE}}, RegisteredClaims: live},
+		"grants without the execute audience": {AccountId: "ws-acct", TenantId: "t1", Grants: user, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: live.ExpiresAt}},
+		"execute audience without grants":     {AccountId: "ws-acct", TenantId: "t1", RegisteredClaims: live},
+		"execute token without tenant":        {AccountId: "ws-acct", Grants: user, RegisteredClaims: live},
+		"target outside the grants":           {AccountId: "ws-acct", TenantId: "t1", TargetAccountId: "not-granted", Grants: user, RegisteredClaims: live},
+		"expired": {AccountId: "ws-acct", TenantId: "t1", Grants: user, RegisteredClaims: jwt.RegisteredClaims{
+			Audience: live.Audience, ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Second)),
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := authorizeWorkspaceRequest(workspaceTokenRequest(sign(claims)), "ws-acct", nil, nil)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestRequireExecutionToken(t *testing.T) {
+	orig := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
+	t.Cleanup(func() { config.Config.LlmServerWorkspaceExecuteRequireScopedToken = orig })
+	ctx := security.NewRequestContextForSuperAdmin()
+	request := func(audience string) (*gin.Context, *httptest.ResponseRecorder) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/workspace/execute", nil)
+		if audience != "" {
+			c.Set(workspaceTokenAudienceKey, audience)
+		}
+		return c, w
+	}
+
+	config.Config.LlmServerWorkspaceExecuteRequireScopedToken = false
+	c, _ := request(workspace.AudienceWorkspacePod)
+	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"), "pod token is still accepted while the flag is off")
+
+	config.Config.LlmServerWorkspaceExecuteRequireScopedToken = true
+	c, w := request(workspace.AudienceWorkspacePod)
+	assert.False(t, requireExecutionToken(c, ctx, "ws-acct"))
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	c, _ = request(workspace.AudienceWorkspaceExecute)
+	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"))
+	c, _ = request("")
+	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"), "gateway-authenticated calls carry no workspace token")
 }
 
 // The workspace's per-account config list only holds its own cluster, so a
