@@ -36,10 +36,23 @@ export const EMITTED_LIFECYCLE_PHASES: { value: LifecyclePhase; label: string; n
 export interface EventMockOverrides {
   event_type?: string;
   cluster?: string;
+  cloud_account_id?: string;
   subject_namespace?: string;
   source?: string;
   priority?: string;
 }
+
+/**
+ * The Cluster picker stores an account id (matched on `event.cloud_account_id`), while
+ * `event.cluster` carries the account's name, so the pick feeds both fields.
+ */
+export const eventAccountOverrides = (
+  accountId: string,
+  accounts: { label: string; value: string }[]
+): Pick<EventMockOverrides, 'cluster' | 'cloud_account_id'> => ({
+  cloud_account_id: accountId,
+  cluster: accounts.find((a) => a.value === accountId)?.label || '',
+});
 
 export interface OptimizationMockOverrides {
   category?: string;
@@ -111,7 +124,7 @@ export const buildEventTriggerMock = (phase: string = DEFAULT_LIFECYCLE_PHASE, o
     starts_at: isoMinutesAgo(10),
     fingerprint: 'a91f3c7d5b204e68',
     tenant: '8c1b7e40-5f2a-4d93-8b16-0a7e4c9d3f52',
-    cloud_account_id: 'd47a1e93-2b60-4c85-9f31-6e0a8b5c2d17',
+    cloud_account_id: overrides.cloud_account_id || 'd47a1e93-2b60-4c85-9f31-6e0a8b5c2d17',
     cloud_resource_id: 'arn:aws:eks:us-east-1:123456789012:cluster/prod-us-east-1',
     status: 'FIRING',
     nb_status: 'ACTIVE',

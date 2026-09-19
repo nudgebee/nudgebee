@@ -23,7 +23,7 @@ import {
   structuredFieldDescription,
 } from '../utils/eventFilter';
 import { useAccountOptions } from '../hooks/useAccountOptions';
-import { DEFAULT_LIFECYCLE_PHASE } from '../utils/triggerPayloadMock';
+import { DEFAULT_LIFECYCLE_PHASE, eventAccountOverrides } from '../utils/triggerPayloadMock';
 import TriggerSimulatorPanel from './TriggerSimulatorPanel';
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
 import { validateCron } from '@utils/cron';
@@ -1517,7 +1517,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                   ? undefined
                   : {
                       event_type: filterEventType,
-                      cluster: filterCluster,
+                      ...eventAccountOverrides(filterCluster, accountOptions),
                       subject_namespace: filterNamespace,
                       source: filterSource,
                       priority: filterPriority,

@@ -2,6 +2,7 @@ import {
   buildEventTriggerMock,
   buildOptimizationTriggerMock,
   buildTriggerMock,
+  eventAccountOverrides,
   flattenPayloadFields,
   EMITTED_LIFECYCLE_PHASES,
 } from '../triggerPayloadMock';
@@ -54,6 +55,42 @@ describe('buildEventTriggerMock', () => {
 
     expect(payload.cluster).toBeTruthy();
     expect(payload.priority).toBeTruthy();
+  });
+});
+
+describe('eventAccountOverrides', () => {
+  const accounts = [
+    { label: 'prod-eks', value: '11111111-1111-1111-1111-111111111111' },
+    { label: 'aws-billing', value: '22222222-2222-2222-2222-222222222222' },
+  ];
+
+  it('puts the picked account id in cloud_account_id and its name in cluster', () => {
+    const payload = buildEventTriggerMock('event.created', eventAccountOverrides('22222222-2222-2222-2222-222222222222', accounts));
+
+    expect(payload.cloud_account_id).toBe('22222222-2222-2222-2222-222222222222');
+    expect(payload.cluster).toBe('aws-billing');
+  });
+
+  it('follows the picker when the account changes', () => {
+    const first = buildEventTriggerMock('event.created', eventAccountOverrides(accounts[0].value, accounts));
+    const second = buildEventTriggerMock('event.created', eventAccountOverrides(accounts[1].value, accounts));
+
+    expect(first.cloud_account_id).not.toBe(second.cloud_account_id);
+    expect(second.cluster).toBe('aws-billing');
+  });
+
+  it('still carries the picked id while the account list has not loaded', () => {
+    const payload = buildEventTriggerMock('event.created', eventAccountOverrides(accounts[1].value, []));
+
+    expect(payload.cloud_account_id).toBe(accounts[1].value);
+    expect(payload.cluster).toBeTruthy();
+  });
+
+  it('keeps the sample values when no account is picked', () => {
+    const payload = buildEventTriggerMock('event.created', eventAccountOverrides('', accounts));
+
+    expect(payload.cloud_account_id).toBeTruthy();
+    expect(payload.cluster).toBeTruthy();
   });
 });
 
