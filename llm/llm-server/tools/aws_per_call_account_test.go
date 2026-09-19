@@ -195,7 +195,7 @@ func TestRenderExecutionTargets(t *testing.T) {
 	require.Empty(t, RenderExecutionTargets(sc, account, saved, []string{"logs"}), "no targetable tool, no block")
 }
 
-func TestKubectlConfigIsRefusedWithClusterList(t *testing.T) {
+func TestKubectlConfigDiscoveryRoutesThroughShim(t *testing.T) {
 	require.True(t, kubectlUsesConfigSubcommand("kubectl config get-contexts"))
 	require.True(t, kubectlUsesConfigSubcommand("kubectl --request-timeout 5s config view | head"))
 	require.True(t, kubectlUsesConfigSubcommand("echo x && /usr/local/bin/kubectl config current-context"))
@@ -205,10 +205,14 @@ func TestKubectlConfigIsRefusedWithClusterList(t *testing.T) {
 
 	const account = "kubectl-config-refused"
 	clusterFixture(t, account)
-	for _, tool := range []core.NBTool{KubectlExecuteTool{workspaceManager: &targetWorkspaceCapture{}}, ShellTool{AccountId: account, workspaceManager: &targetWorkspaceCapture{}}} {
-		resp, err := tool.Call(kubectlCallCtx(t, account, tool), core.NBToolCallRequest{Command: "kubectl config get-contexts"})
-		require.Error(t, err, tool.Name())
-		require.Contains(t, resp.Data, "Current cluster: k8s-prod. Other clusters you can use: k8s-dev, k8s-dev-oss.")
-		require.Contains(t, resp.Data, `cluster="<name>"`)
-	}
+	kubectl := KubectlExecuteTool{workspaceManager: &targetWorkspaceCapture{}}
+	resp, err := kubectl.Call(kubectlCallCtx(t, account, kubectl), core.NBToolCallRequest{Command: "kubectl config get-contexts"})
+	require.Error(t, err, kubectl.Name())
+	require.Contains(t, resp.Data, "Current cluster: k8s-prod. Other clusters you can use: k8s-dev, k8s-dev-oss.")
+
+	capture := &targetWorkspaceCapture{}
+	shell := ShellTool{AccountId: account, workspaceManager: capture}
+	_, err = shell.Call(kubectlCallCtx(t, account, shell), core.NBToolCallRequest{Command: "kubectl config get-contexts"})
+	require.NoError(t, err)
+	require.Equal(t, "kubectl config get-contexts", capture.command)
 }

@@ -9,6 +9,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -191,21 +192,25 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	// This allows the shell tool to run cloud CLI commands (aws, gcloud, az) without requiring
 	// the planner to route through specialized cloud tools.
 	env := map[string]string{}
+	if selected := nbRequestContext.QueryConfig.ToolConfigs[ToolExecuteKubectlCommand]; selected != "" {
+		env[workspace.ENV_NB_TOOL_CONFIG_NAME] = selected
+	}
 	if ShellConfigToolName(originalCommand) == ToolExecuteKubectlCommand {
-		if kubectlUsesConfigSubcommand(originalCommand) {
-			configErr := kubeconfigNotAvailable(nbRequestContext)
-			return core.NBToolResponse{Data: configErr.Error(), Status: core.NBToolResponseStatusError}, configErr
-		}
-		selected, err := m.resolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand, originalCommand)
-		if err != nil {
-			return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
-		}
-		// --context selected the target; the workspace has no kubeconfig
-		// contexts, so the flag itself must not reach kubectl.
-		command = StripKubectlContextFlag(command)
-		env, err = KubernetesTargetEnv(nbRequestContext, selected)
-		if err != nil {
-			return core.NBToolResponse{}, err
+		// Keep the existing target-bound credential path for writes that were
+		// visible to the planner and passed its confirmation gate. Reads and
+		// kubeconfig discovery are resolved from concrete argv by the shim.
+		if directShellKubectlType(originalCommand) != core.ToolRequestTypeRead && !kubectlUsesConfigSubcommand(originalCommand) {
+			selected, err := m.resolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand, originalCommand)
+			if err != nil {
+				return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+			}
+			targetEnv, err := KubernetesTargetEnv(nbRequestContext, selected)
+			if err != nil {
+				return core.NBToolResponse{}, err
+			}
+			for k, v := range targetEnv {
+				env[k] = v
+			}
 		}
 	}
 	cloudAuth, err := m.buildCloudAuthEnv(nbRequestContext, command)
@@ -304,6 +309,30 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// directShellKubectlType classifies the kubectl argv portion of a direct shell
+// command without treating local redirection as part of the Kubernetes verb.
+// Opaque, chained, and pipelined shapes remain unknown and therefore fail
+// secure into the target-bound token path.
+func directShellKubectlType(command string) core.ToolRequestType {
+	if hasShellGateControlSyntax(command) || len(splitShellPipeline(command)) > 1 {
+		return ""
+	}
+	words, err := shlex.Split(command)
+	if err != nil || len(words) == 0 || filepath.Base(words[0]) != "kubectl" {
+		return ""
+	}
+	argv := make([]string, 0, len(words))
+	for _, word := range words {
+		switch word {
+		case "|", "||", "&", "&&", ";", ">", ">>", "<":
+			return InferKubectlVerbType(strings.Join(argv, " "))
+		default:
+			argv = append(argv, word)
+		}
+	}
+	return InferKubectlVerbType(strings.Join(argv, " "))
 }
 
 // successResponseNoMatches renders an exit-1-as-empty-match outcome

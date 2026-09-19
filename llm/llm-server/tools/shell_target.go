@@ -316,6 +316,29 @@ func KubernetesTargetByName(ctx *security.RequestContext, accountID, name string
 	return AccountTargetByName(ctx, accountID, ToolExecuteKubectlCommand, name)
 }
 
+// ListKubernetesTargets returns every connected cluster the current caller may
+// read. It powers the workspace shim's virtual kubeconfig discovery commands.
+func ListKubernetesTargets(ctx *security.RequestContext, accountID string) ([]core.ToolConfig, error) {
+	tool, ok := core.GetNBTool(accountID, ToolExecuteKubectlCommand)
+	if !ok {
+		return nil, fmt.Errorf("kubectl unavailable")
+	}
+	all, err := TenantAccountLister(ctx, tool)
+	if err != nil {
+		return nil, err
+	}
+	readable := make([]core.ToolConfig, 0, len(all))
+	for _, candidate := range all {
+		if ctx.GetSecurityContext().HasAccountAccess(KubernetesTargetAccountID(candidate), security.SecurityAccessTypeRead) {
+			readable = append(readable, candidate)
+		}
+	}
+	sort.Slice(readable, func(i, j int) bool {
+		return strings.ToLower(readable[i].Name) < strings.ToLower(readable[j].Name)
+	})
+	return readable, nil
+}
+
 // ResolveRequestedTarget picks the target for one call: the conversation's
 // current config when nothing is requested or the request names it (by name
 // or account number), otherwise the requested connection. It never changes

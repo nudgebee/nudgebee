@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/audit"
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -498,6 +500,20 @@ func TestWorkspaceTokenBindsCrossClusterTarget(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWorkspaceExecutionTokenWithoutTargetUsesSignedUserGrants(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("grant-workspace", "grant-tenant")
+	stubTenantAccounts(t, "grant-workspace", "grant-target")
+	token, err := workspace.ExecutionToken(security.NewRequestContextForTenantAccountAdmin("grant-tenant", "user", []string{"grant-workspace", "grant-target"}), "grant-workspace", "", time.Minute)
+	require.NoError(t, err)
+	c := workspaceTokenRequest(token)
+	ctx, err := authorizeWorkspaceRequest(c, "grant-workspace", nil, nil)
+	require.NoError(t, err)
+	_, bound := c.Get("workspace_allowed_target")
+	require.False(t, bound)
+	require.True(t, ctx.GetSecurityContext().HasAccountAccess("grant-target", security.SecurityAccessTypeRead))
+}
+
 // An execution token authorizes the shim call as the user who ran the command:
 // a read-only user can read the cluster through the shim but not write to it.
 func TestExecutionTokenAuthorizesAsTheUser(t *testing.T) {
@@ -579,6 +595,90 @@ func TestExecutionTokenClaimsAreValidated(t *testing.T) {
 	}
 }
 
+func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
+	const workspaceAccount = "virtual-config-workspace"
+	tools.StubTenantClusters(t, "virtual-config-tenant", []core.ToolConfig{
+		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: workspaceAccount}}},
+		{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "virtual-config-dev"}}},
+		{Name: "k8s: dev #1", Values: []core.ToolConfigValue{{Name: "id", Value: "virtual-config-special"}}},
+		{Name: "k8s-secret", Values: []core.ToolConfigValue{{Name: "id", Value: "virtual-config-secret"}}},
+	})
+	ctx := security.NewRequestContextForTenantAccountAdmin("virtual-config-tenant", "user", []string{workspaceAccount, "virtual-config-dev", "virtual-config-special"})
+
+	request := WorkspaceExecuteRequest{
+		AccountId:  workspaceAccount,
+		ConfigName: "k8s-prod",
+		Command:    "kubectl config get-contexts -o name",
+	}
+	result, handled, err := virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Equal(t, "k8s-dev\nk8s-prod\nk8s: dev #1\n", result)
+	require.NotContains(t, result, "k8s-secret")
+
+	request.Command = "kubectl config current-context"
+	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Equal(t, "k8s-prod\n", result)
+
+	request.Command = "kubectl config use-context k8s-dev"
+	_, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.True(t, handled)
+	require.ErrorContains(t, err, "read-only")
+
+	request.Command = "kubectl config view"
+	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	parsed, err := common.DecodeYamlToMap(result)
+	require.NoError(t, err, "context names must be safely serialized as YAML")
+	require.Equal(t, "k8s-prod", parsed["current-context"])
+}
+
+func TestKubectlConfigIndexOnlyMatchesSubcommand(t *testing.T) {
+	require.Equal(t, 0, kubectlConfigIndex([]string{"config", "get-contexts"}))
+	require.Equal(t, 2, kubectlConfigIndex([]string{"--request-timeout", "5s", "config", "view"}))
+	require.Equal(t, 2, kubectlConfigIndex([]string{"-v", "5", "config", "view"}))
+	require.Equal(t, 1, kubectlConfigIndex([]string{"--v=5", "config", "view"}))
+	require.Equal(t, 2, kubectlConfigIndex([]string{"--vmodule", "loader=2", "config", "view"}))
+	require.Equal(t, -1, kubectlConfigIndex([]string{"get", "config", "-n", "default"}))
+}
+
+func TestNormalizeKubectlProxyRequestExtractsConcreteContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantCmd    string
+		wantTarget string
+		wantErr    string
+	}{
+		{name: "separate", command: "kubectl get pods --context prod -A", wantCmd: "kubectl 'get' 'pods' '-A'", wantTarget: "prod"},
+		{name: "equals and quoting", command: "kubectl --context=dev logs 'api pod'", wantCmd: "kubectl 'logs' 'api pod'", wantTarget: "dev"},
+		{name: "default", command: "kubectl get nodes", wantCmd: "kubectl 'get' 'nodes'"},
+		{name: "jsonpath braces", command: "kubectl get namespace kube-system -o 'jsonpath={.metadata.uid}'", wantCmd: "kubectl 'get' 'namespace' 'kube-system' '-o' 'jsonpath={.metadata.uid}'"},
+		{name: "single quote", command: `kubectl get pods -l 'owner=o'\''reilly'`, wantCmd: "kubectl 'get' 'pods' '-l' 'owner=o'\\''reilly'"},
+		{name: "missing", command: "kubectl get pods --context", wantErr: "requires a value"},
+		{name: "conflict", command: "kubectl --context=a get pods --context b", wantErr: "more than one context"},
+		{name: "wrong executable", command: "helm get pods", wantErr: "must start with kubectl"},
+		{name: "invalid quoting", command: "kubectl get 'pods", wantErr: "unable to parse"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := WorkspaceExecuteRequest{Command: tc.command}
+			err := normalizeKubectlProxyRequest(&req)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantCmd, req.Command)
+			require.Equal(t, tc.wantTarget, req.TargetName)
+		})
+	}
+
+}
+
 func TestRequireExecutionToken(t *testing.T) {
 	orig := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
 	t.Cleanup(func() { config.Config.LlmServerWorkspaceExecuteRequireScopedToken = orig })
@@ -654,4 +754,44 @@ func TestWorkspaceExecuteReply(t *testing.T) {
 	status, body = workspaceExecuteReply(nil, errors.New("unable to access relay server"))
 	assert.Equal(t, http.StatusInternalServerError, status)
 	assert.Equal(t, "unable to access relay server", body["error"])
+}
+
+func TestWorkspaceProxyResolvesTwoConcreteContextsIndependently(t *testing.T) {
+	const workspaceAccount = "relay-multi-context-workspace"
+	tools.StubTenantClusters(t, "relay-multi-context-tenant", []core.ToolConfig{
+		{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "relay-multi-dev"}}},
+		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "relay-multi-prod"}}},
+	})
+	toolCtx := core.NbToolContext{
+		Ctx:       security.NewRequestContextForTenantAccountAdmin("relay-multi-context-tenant", "user", []string{workspaceAccount, "relay-multi-dev", "relay-multi-prod"}),
+		AccountId: workspaceAccount,
+	}
+
+	for _, tc := range []struct {
+		context string
+		account string
+	}{
+		{context: "k8s-dev", account: "relay-multi-dev"},
+		{context: "k8s-prod", account: "relay-multi-prod"},
+	} {
+		req := WorkspaceExecuteRequest{Command: "kubectl --context " + common.ShellEscape(tc.context) + " get pods"}
+		require.NoError(t, normalizeKubectlProxyRequest(&req))
+		require.Equal(t, "kubectl 'get' 'pods'", req.Command)
+		target, err := workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, req.TargetName, req.Command)
+		require.NoError(t, err)
+		require.Equal(t, tc.account, target)
+	}
+}
+
+func TestWorkspaceExecuteAuditUsesResolvedTargetAndOutcome(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("audit-tenant", "audit-user", []string{"workspace", "target"})
+	req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "kubectl", Command: "kubectl get pods", TargetName: "k8s-dev"}
+
+	success := workspaceExecuteAudit(ctx, req, "kubectl", "target", true).Audits[0]
+	require.Equal(t, "target", success.AccountId)
+	require.Equal(t, audit.EventStatusSuccess, success.EventStatus)
+	require.Equal(t, "workspace", success.EventAttr["workspace_account_id"])
+
+	failure := workspaceExecuteAudit(ctx, req, "kubectl", "target", false).Audits[0]
+	require.Equal(t, audit.EventStatusFailure, failure.EventStatus)
 }

@@ -165,15 +165,36 @@ func TestShellKubectlPerCallCluster(t *testing.T) {
 	ctx := kubectlCallCtx(t, account, tool)
 	_, err := tool.Call(ctx, core.NBToolCallRequest{Command: "kubectl --context k8s-dev get pods -A > dev_pods.txt"})
 	require.NoError(t, err)
-	require.Equal(t, "k8s-dev", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME])
+	require.Equal(t, "k8s-prod", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME], "saved context remains the default")
 	require.Equal(t, account, capture.account)
-	require.Equal(t, "kubectl get pods -A > dev_pods.txt", capture.command)
+	require.Equal(t, "kubectl --context k8s-dev get pods -A > dev_pods.txt", capture.command, "the concrete shim resolves and strips context")
 
 	capture = &targetWorkspaceCapture{}
 	tool.workspaceManager = capture
 	_, err = tool.Call(ctx, core.NBToolCallRequest{Command: "kubectl --context k8s-secret get pods"})
-	require.ErrorContains(t, err, "not connected or you do not have access")
-	require.Empty(t, capture.command)
+	require.NoError(t, err, "outer shell does not guess the concrete target")
+	require.Equal(t, "kubectl --context k8s-secret get pods", capture.command)
+}
+
+func TestShellKubectlVisibleWriteKeepsTargetBoundToken(t *testing.T) {
+	const account = "shell-write-per-call"
+	clusterFixture(t, account)
+
+	capture := &targetWorkspaceCapture{}
+	tool := ShellTool{AccountId: account, workspaceManager: capture}
+	ctx := kubectlCallCtx(t, account, tool)
+	_, err := tool.Call(ctx, core.NBToolCallRequest{Command: "kubectl --context k8s-dev delete pod api"})
+	require.NoError(t, err)
+	require.Equal(t, "k8s-dev", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME])
+	require.Equal(t, "dev-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID])
+}
+
+func TestDirectShellKubectlTypeFailsSecureForCompoundCommands(t *testing.T) {
+	require.Equal(t, core.ToolRequestTypeRead, directShellKubectlType("kubectl get pods"))
+	require.Equal(t, core.ToolRequestTypeDelete, directShellKubectlType("kubectl delete pod api"))
+	require.Empty(t, directShellKubectlType("kubectl get pods;kubectl delete pod api"))
+	require.Empty(t, directShellKubectlType("kubectl get pods|kubectl delete pod api"))
+	require.Empty(t, directShellKubectlType("kubectl get pods && kubectl delete pod api"))
 }
 
 func TestKubernetesConfirmationKeyIsPerCluster(t *testing.T) {
