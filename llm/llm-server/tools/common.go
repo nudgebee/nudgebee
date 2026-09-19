@@ -680,11 +680,12 @@ func ExtractStartEndtimeFromLabels(nbRequestContext core.NbToolContext, labels m
 	// long-standing bug where an explicit range lost to the event's start/end
 	// pair: within a single set the explicit-pair check runs before the range
 	// check, so a merged event pair would always shadow a caller range.
+	// Returned in UTC so a caller that formats the window never mixes offsets.
 	if start, end, ok := resolveWindowFromLabels(labels); ok {
-		return start, end, nil
+		return start.UTC(), end.UTC(), nil
 	}
 	if start, end, ok := resolveWindowFromLabels(nbRequestContext.QueryConfig.Labels); ok {
-		return start, end, nil
+		return start.UTC(), end.UTC(), nil
 	}
 	return time.Time{}, time.Time{}, errors.New("no valid start/end time key pair or range found in labels")
 }
@@ -728,27 +729,54 @@ func resolveWindowFromLabels(labels map[string]any) (time.Time, time.Time, bool)
 		return startTime, endTime, true
 	}
 
-	// 2. Range/duration, anchored to an explicit end key if present, else now.
-	endTime := time.Now()
-	for _, k := range []string{"end_time", "end", "endtime"} {
-		if val, ok := labels[k]; ok {
-			if parsedEnd, err := parseTimeValue(val); err == nil {
-				endTime = parsedEnd
-				break
-			}
-		}
-	}
+	// 2. Range/duration, anchored to an explicit end key if present; else it runs
+	// forward from an explicit start key; else back from now. A start plus a range
+	// ("75m from 10:30") used to be anchored to now, which silently replaced an
+	// incident window from hours ago with the last 75 minutes — the query came back
+	// empty and the investigation read that as "logs expired".
+	var duration time.Duration
+	hasRange := false
 	for _, k := range []string{"range", "duration"} {
 		if val, ok := labels[k]; ok {
 			if valStr, ok := val.(string); ok {
-				if duration, err := ParseDuration(valStr); err == nil {
-					return endTime.Add(-duration), endTime, true
+				if d, err := ParseDuration(valStr); err == nil {
+					// "-1h" means the last hour, not an hour into the future.
+					if d < 0 {
+						d = -d
+					}
+					duration, hasRange = d, true
+					break
 				}
 			}
 		}
 	}
+	if !hasRange {
+		return time.Time{}, time.Time{}, false
+	}
+	if endTime, ok := firstTimeValue(labels, "end_time", "end", "endtime"); ok {
+		return endTime.Add(-duration), endTime, true
+	}
+	now := time.Now().UTC()
+	if startTime, ok := firstTimeValue(labels, "start_time", "start", "starttime"); ok && startTime.Before(now) {
+		endTime := startTime.Add(duration)
+		if endTime.After(now) {
+			endTime = now
+		}
+		return startTime, endTime, true
+	}
+	return now.Add(-duration), now, true
+}
 
-	return time.Time{}, time.Time{}, false
+// firstTimeValue returns the first of keys that holds a parseable time.
+func firstTimeValue(labels map[string]any, keys ...string) (time.Time, bool) {
+	for _, k := range keys {
+		if val, ok := labels[k]; ok {
+			if t, err := parseTimeValue(val); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 // ExpandNarrowTimeWindow widens a time range that is too narrow for log queries.

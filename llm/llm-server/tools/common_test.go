@@ -462,6 +462,54 @@ func TestExtractStartEndtimeFromLabels_Range(t *testing.T) {
 		assert.Equal(t, endTimeStr, end.Format(time.RFC3339))
 		assert.Equal(t, "2023-01-04T00:00:00Z", start.Format(time.RFC3339))
 	})
+
+	// The investigation asked for "75m from 10:30" on a day-old incident; anchoring
+	// the range to now queried the last 75 minutes instead and found nothing.
+	t.Run("range with explicit start time runs forward from the start", func(t *testing.T) {
+		labels := map[string]any{
+			"start_time": "2023-01-05T10:30:00Z",
+			"range":      "75m",
+		}
+		start, end, err := ExtractStartEndtimeFromLabels(toolContext, labels)
+		assert.NoError(t, err)
+		assert.Equal(t, "2023-01-05T10:30:00Z", start.Format(time.RFC3339))
+		assert.Equal(t, "2023-01-05T11:45:00Z", end.Format(time.RFC3339))
+	})
+
+	t.Run("range from a recent start stops at now", func(t *testing.T) {
+		startTime := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Second)
+		labels := map[string]any{
+			"start_time": startTime.Format(time.RFC3339),
+			"range":      "1h",
+		}
+		start, end, err := ExtractStartEndtimeFromLabels(toolContext, labels)
+		assert.NoError(t, err)
+		assert.True(t, start.Equal(startTime))
+		assert.WithinDuration(t, time.Now(), end, 2*time.Second)
+	})
+
+	t.Run("a negative range means the same span back", func(t *testing.T) {
+		labels := map[string]any{
+			"range":    "-1h",
+			"end_time": "2023-01-05T00:00:00Z",
+		}
+		start, end, err := ExtractStartEndtimeFromLabels(toolContext, labels)
+		assert.NoError(t, err)
+		assert.Equal(t, "2023-01-04T23:00:00Z", start.Format(time.RFC3339))
+		assert.Equal(t, "2023-01-05T00:00:00Z", end.Format(time.RFC3339))
+	})
+
+	t.Run("an explicit end still wins over the start", func(t *testing.T) {
+		labels := map[string]any{
+			"start":    "2023-01-01T00:00:00Z",
+			"end_time": "2023-01-05T00:00:00Z",
+			"range":    "1d",
+		}
+		start, end, err := ExtractStartEndtimeFromLabels(toolContext, labels)
+		assert.NoError(t, err)
+		assert.Equal(t, "2023-01-04T00:00:00Z", start.Format(time.RFC3339))
+		assert.Equal(t, "2023-01-05T00:00:00Z", end.Format(time.RFC3339))
+	})
 }
 
 func TestExtractStartEndtimeFromLabels_MergePriority(t *testing.T) {
