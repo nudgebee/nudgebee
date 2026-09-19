@@ -11,7 +11,15 @@ import Tooltip from '@ui/Tooltip';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
-import { isCommandDatasource, type AccountOption, type Panel, type PanelColumn, type PanelDatasource, type PanelType } from '@api1/dashboards';
+import {
+  isCommandDatasource,
+  type AccountOption,
+  type Panel,
+  type PanelColumn,
+  type PanelDatasource,
+  type PanelTarget,
+  type PanelType,
+} from '@api1/dashboards';
 import EntityQueryBuilder from './EntityQueryBuilder';
 import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPreview';
 import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
@@ -90,6 +98,21 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
  * it is mapped back to an absent `column` before the panel is stored.
  */
 const NEW_COLUMN = '__new_column__';
+
+/**
+ * A ref id no other query on the panel holds. The metrics request is keyed by
+ * ref id, so two queries sharing one would come back as a single series.
+ */
+const nextRefId = (targets: PanelTarget[]): string => {
+  const used = new Set(targets.map((t) => t.ref_id));
+  for (let code = 65; code <= 90; code++) {
+    const id = String.fromCharCode(code);
+    if (!used.has(id)) return id;
+  }
+  let n = targets.length + 1;
+  while (used.has(`Q${n}`)) n++;
+  return `Q${n}`;
+};
 
 /** A card's heading: what the group is, and why its fields are together. */
 const GroupHeader: React.FC<{ title: string; description: string }> = ({ title, description }) => (
@@ -224,24 +247,32 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     [providerEntries, draft?.provider]
   );
 
-  const expr = draft?.targets?.[0]?.expr || '';
-  const templateVars = useMemo(() => referencedVariables(expr), [expr]);
+  const targets = draft?.targets || [];
+  const expr = targets[0]?.expr || '';
+  // Every query, not just the first: a variable in query B is filled in (or
+  // refused) exactly like one in query A.
+  const allExprs = targets.map((t) => t.expr || '').join('\n');
+  const templateVars = useMemo(() => referencedVariables(allExprs), [allExprs]);
 
   if (!draft) return null;
 
   const patch = (next: Partial<Panel>) => setDraft((prev) => (prev ? { ...prev, ...next } : prev));
 
-  // Every edit rewrites target A in place, preserving the fields it does not
-  // touch (legend_format, hide, …).
-  const patchTarget = (next: Partial<NonNullable<Panel['targets']>[number]>) =>
-    setDraft((prev) =>
-      prev
-        ? {
-            ...prev,
-            targets: [{ ref_id: prev.targets?.[0]?.ref_id || 'A', ...(prev.targets?.[0] || {}), ...next }],
-          }
-        : prev
-    );
+  // Rewrites one query in place, preserving the fields it does not touch
+  // (legend_format, hide, …) and every other query on the panel.
+  const patchTarget = (next: Partial<PanelTarget>, index = 0) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const nextTargets = [...(prev.targets || [])];
+      nextTargets[index] = { ...nextTargets[index], ...next, ref_id: nextTargets[index]?.ref_id || 'A' };
+      return { ...prev, targets: nextTargets };
+    });
+
+  const addTarget = () =>
+    setDraft((prev) => (prev ? { ...prev, targets: [...(prev.targets || []), { ref_id: nextRefId(prev.targets || []), expr: '' }] } : prev));
+
+  const removeTarget = (index: number) =>
+    setDraft((prev) => (prev ? { ...prev, targets: (prev.targets || []).filter((_, i) => i !== index) } : prev));
 
   /**
    * Column settings live in one list on `options`, and an empty one is dropped
@@ -286,7 +317,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     // no provider at all.
     patch({ provider: next || undefined, provider_index: next === ES_PROVIDER ? draft?.provider_index : undefined });
 
-  /** Changing the data source clears the query. */
+  /** Changing the data source clears the query — all of them, back to a single empty one. */
   const changeDatasource = (next: string) => {
     const datasource = next as PanelDatasource;
     const datasourceTables = tablesFor(datasource);
@@ -394,7 +425,9 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   const hasScope = accountTypes.length > 0 || accountIds.length > 0;
   const canSave =
     draft.title.trim().length > 0 &&
-    (isText || (hasScope && (isEntity ? Boolean(draft.targets?.[0]?.query) : expr.trim().length > 0))) &&
+    // The server refuses a panel if any one of its queries is empty, not only the first.
+    (isText ||
+      (hasScope && (isEntity ? Boolean(targets[0]?.query) : targets.length > 0 && targets.every((t) => (t.expr || '').trim().length > 0)))) &&
     // The server refuses these too; catching them here saves a round trip that
     // comes back as a message about a panel the author can no longer see.
     columns.every(isCompleteColumn);
@@ -636,13 +669,61 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                           <Input value={expr} onChange={(v) => patchTarget({ expr: v })} placeholder='{namespace="$namespace"} |= "error"' />
                         </Form.Field>
                       ) : (
-                        <Form.Field label='Query' required>
-                          <Input
-                            value={expr}
-                            onChange={(v) => patchTarget({ expr: v })}
-                            placeholder='sum(rate(http_requests_total{namespace="$namespace"}[5m]))'
-                          />
-                        </Form.Field>
+                        // Metrics is the one datasource that runs every query on the panel, each
+                        // drawing its own series — so every one is shown here. The others read
+                        // only the first. A lone query stays the plain field it always was; the
+                        // legend only earns its place once there are lines to tell apart. Rows are
+                        // numbered by position: a ref id is an internal key (an import's own names,
+                        // or the next free letter), and the legend is what names the line.
+                        <>
+                          {(targets.length > 0 ? targets : [{ ref_id: 'A', expr: '' }]).map((target, i) => (
+                            <Stack
+                              key={i}
+                              direction={{ xs: 'column', sm: 'row' }}
+                              gap={1}
+                              alignItems={{ xs: 'stretch', sm: 'flex-end' }}
+                              data-testid='panel-query-row'
+                            >
+                              <Box sx={{ flex: 3, minWidth: 0 }}>
+                                <Form.Field label={targets.length > 1 ? `Query ${i + 1}` : 'Query'} required id={`panel-query-${i}`}>
+                                  <Input
+                                    value={target.expr || ''}
+                                    onChange={(v) => patchTarget({ expr: v }, i)}
+                                    placeholder='sum(rate(http_requests_total{namespace="$namespace"}[5m]))'
+                                  />
+                                </Form.Field>
+                              </Box>
+                              {targets.length > 1 && (
+                                <>
+                                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                                    <Form.Field label='Legend' id={`panel-query-legend-${i}`}>
+                                      <Input
+                                        value={target.legend_format || ''}
+                                        onChange={(v) => patchTarget({ legend_format: v || undefined }, i)}
+                                        placeholder='Series name or {{label}}'
+                                      />
+                                    </Form.Field>
+                                  </Box>
+                                  <Box sx={{ alignSelf: { xs: 'flex-end', sm: 'auto' } }}>
+                                    <Button
+                                      tone='ghost'
+                                      composition='icon-only'
+                                      aria-label={`Remove query ${i + 1}`}
+                                      icon={<DeleteOutlineIcon sx={{ fontSize: 18 }} />}
+                                      onClick={() => removeTarget(i)}
+                                      id={`panel-remove-query-${i}`}
+                                    />
+                                  </Box>
+                                </>
+                              )}
+                            </Stack>
+                          ))}
+                          <Box>
+                            <Button tone='secondary' size='sm' onClick={addTarget} id='panel-add-query-btn'>
+                              Add query
+                            </Button>
+                          </Box>
+                        </>
                       )}
                       {templateVars.length > 0 && (
                         <Box sx={{ p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: ds.radius.md }}>

@@ -40,8 +40,9 @@ export interface PanelTarget {
    */
   time_column?: string;
   /**
-   * Series naming, e.g. `{{route}}`. Not hand-editable — set by dashboard
-   * import, which is where a legend format realistically comes from.
+   * Series naming, e.g. `{{route}}`. Set by dashboard import, and editable in
+   * the panel editor once a metrics panel has more than one query — the point
+   * at which its lines need telling apart.
    */
   legend_format?: string;
   hide?: boolean;
