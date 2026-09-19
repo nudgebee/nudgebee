@@ -561,7 +561,7 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 		return "", true, fmt.Errorf("kubectl config requires a subcommand")
 	}
 	subcommand := argv[configIndex+1]
-	if subcommand != "current-context" && subcommand != "get-contexts" && subcommand != "view" {
+	if subcommand != "current-context" && subcommand != "get-contexts" && subcommand != "get-clusters" && subcommand != "view" {
 		return "", true, fmt.Errorf("kubectl config %s is unavailable: workspace kubeconfig is virtual and read-only", subcommand)
 	}
 	contexts, err := tools.ListKubernetesTargets(ctx, req.AccountId)

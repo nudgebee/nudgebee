@@ -12,9 +12,9 @@ can discover the clusters available to the caller.
 1. Every workspace command receives the generic short-lived
    `workspace-execute` token from the workspace manager. It carries the
    workspace account and the caller's reduced, tenant-scoped grants.
-2. The `kubectl` shim sends the real process argv unchanged. llm-server removes
-   `--context NAME` / `--context=NAME`, resolves the requested context, and
-   reconstructs the relay command.
+2. The `kubectl` shim sends the concrete command it was invoked with. llm-server
+   parses that command, removes `--context NAME` / `--context=NAME`, resolves
+   the requested context, and safely reconstructs the relay command.
 3. llm-server reconstructs the caller security context from signed grants and
    resolves the named cluster only from integrations that caller can read.
 4. Kubernetes target authorization is enforced again at the proxy. A separate
@@ -23,9 +23,9 @@ can discover the clusters available to the caller.
 5. With no `--context`, execution continues to use `NB_TOOL_CONFIG_NAME`, then
    the existing workspace-account fallback. Existing target-bound tokens keep
    their current behavior.
-6. `kubectl config current-context`, `get-contexts`, and `view` are answered
-   from the caller's authorized integrations. Commands that mutate kubeconfig
-   remain blocked.
+6. `kubectl config current-context`, `get-contexts`, `get-clusters`, and `view`
+   are answered from the caller's authorized integrations. Commands that
+   mutate kubeconfig remain blocked.
 
 ## Adversarial pre-implementation pass
 
@@ -34,9 +34,9 @@ can discover the clusters available to the caller.
 - **Target-name spoofing:** the proxy ignores client-supplied account ids for
   target selection and resolves the context name against the signed caller
   grants.
-- **Parser bypass:** target extraction happens from the concrete argv sent by
-  the shim, not from the outer shell program text. Both supported kubectl flag
-  forms are removed by llm-server before relay execution.
+- **Parser bypass:** target extraction happens from the concrete kubectl command
+  sent by the shim, not from the outer `shell_execute` program text. Both
+  supported kubectl flag forms are removed by llm-server before relay execution.
 - **Hidden writes in Python or shell:** target access is enforced, but operation
   approval is not yet encoded in the generic execution token. Add a read/write
   capability claim before this path is considered complete for opaque writes.
@@ -46,9 +46,20 @@ can discover the clusters available to the caller.
   `use-context`, `set-context`, credential changes, and file-backed mutations
   fail explicitly.
 
-Verdict: **PROCEED AFTER CAPABILITY BINDING**. Target authorization remains
-server-side; operation authorization must also be bound to the short-lived
-token before merge.
+Verdict: **READ-ONLY SLICE DELIVERED; CROSS-TARGET WRITES REMAIN PENDING**.
+Target authorization remains server-side. Operation approval must also be
+bound to the short-lived token before opaque scripts can safely write.
+
+## Retry and resume constraints
+
+- A command retry must mint a fresh token from the original target request; it
+  must not reuse an expired token or silently fall back to the workspace account.
+- A resumed run must persist the selected target independently of the default
+  tool configuration.
+- Any future write approval must bind the original target and normalized command
+  so a retry cannot reuse approval for a different cluster or operation.
+- Target lookup failure is terminal for that invocation. Falling back to the
+  default cluster would turn an availability problem into wrong-cluster output.
 
 ## Acceptance criteria
 
@@ -56,10 +67,10 @@ token before merge.
   authorized `--context` values in one `shell_execute` call.
 - An inaccessible or unknown context fails closed and reports only authorized
   context names.
-- The execution token's operation capability is enforced at the proxy; opaque
-  writes without a write capability are rejected.
-- `kubectl config get-contexts`, `current-context`, and `view` return useful
-  virtual data; kubeconfig mutation remains rejected.
+- Before enabling opaque cross-target writes, the execution token's operation
+  capability is enforced at the proxy and writes without it are rejected.
+- `kubectl config get-contexts`, `get-clusters`, `current-context`, and `view`
+  return useful virtual data; kubeconfig mutation remains rejected.
 - A kubectl command without `--context` follows the pre-existing default path.
 - Focused shim, proxy, workspace-token, and shell-tool tests pass.
 
@@ -103,7 +114,7 @@ go test -tags=e2e -v ./tools -run '^TestCrossAccountKubernetes' -count=1
 The suite verifies:
 
 1. One Python process can invoke kubectl against both authorized contexts.
-2. Virtual kubeconfig discovery lists both contexts and hides the unauthorized one.
+2. Virtual kubeconfig discovery lists both contexts/clusters and hides the unauthorized one.
 3. Direct use of an unauthorized context fails closed.
 4. Omitting `--context` preserves the saved/default cluster behavior.
 5. A kubectl failure keeps a non-zero tool result and actionable stderr.

@@ -514,6 +514,59 @@ func TestWorkspaceExecutionTokenWithoutTargetUsesSignedUserGrants(t *testing.T) 
 	require.True(t, ctx.GetSecurityContext().HasAccountAccess("grant-target", security.SecurityAccessTypeRead))
 }
 
+func TestWorkspaceExecutionTokenRevocation(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("revoked-workspace", "revoked-tenant")
+	stubTenantAccounts(t, "revoked-workspace")
+	token, err := workspace.ExecutionToken(security.NewRequestContextForTenantAccountAdmin("revoked-tenant", "user", []string{"revoked-workspace"}), "revoked-workspace", "", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, common.CacheSet(workspace.CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(time.Minute)))
+	t.Cleanup(func() { _ = common.CacheDelete(workspace.CacheNamespaceWorkspaceTokens, token) })
+
+	_, err = authorizeWorkspaceRequest(workspaceTokenRequest(token), "revoked-workspace", nil, nil)
+	require.ErrorContains(t, err, "token has been revoked")
+}
+
+func TestWorkspaceExecutionTokensKeepConcurrentUsersIsolated(t *testing.T) {
+	const workspaceAccount = "isolation-workspace"
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest(workspaceAccount, "isolation-tenant")
+	stubTenantAccounts(t, workspaceAccount, "cluster-a", "cluster-b")
+	tools.StubTenantClusters(t, "isolation-tenant", []core.ToolConfig{
+		{Name: "shared", Values: []core.ToolConfigValue{{Name: "id", Value: workspaceAccount}}},
+		{Name: "only-a", Values: []core.ToolConfigValue{{Name: "id", Value: "cluster-a"}}},
+		{Name: "only-b", Values: []core.ToolConfigValue{{Name: "id", Value: "cluster-b"}}},
+	})
+
+	for _, tc := range []struct {
+		user    string
+		account string
+		visible string
+		hidden  string
+	}{
+		{user: "user-a", account: "cluster-a", visible: "only-a", hidden: "only-b"},
+		{user: "user-b", account: "cluster-b", visible: "only-b", hidden: "only-a"},
+	} {
+		t.Run(tc.user, func(t *testing.T) {
+			caller := security.NewRequestContextForTenantAccountAdmin("isolation-tenant", tc.user, []string{workspaceAccount, tc.account})
+			token, err := workspace.ExecutionToken(caller, workspaceAccount, "", time.Minute)
+			require.NoError(t, err)
+			ctx, err := authorizeWorkspaceRequest(workspaceTokenRequest(token), workspaceAccount, nil, nil)
+			require.NoError(t, err)
+			require.Equal(t, tc.user, ctx.GetSecurityContext().GetUserId())
+
+			result, handled, err := virtualKubectlConfig(ctx, WorkspaceExecuteRequest{
+				AccountId: workspaceAccount,
+				Command:   "kubectl config get-contexts -o name",
+			}, "shared")
+			require.NoError(t, err)
+			require.True(t, handled)
+			require.Contains(t, result, tc.visible)
+			require.NotContains(t, result, tc.hidden)
+		})
+	}
+}
+
 // An execution token authorizes the shim call as the user who ran the command:
 // a read-only user can read the cluster through the shim but not write to it.
 func TestExecutionTokenAuthorizesAsTheUser(t *testing.T) {
@@ -856,8 +909,12 @@ func TestWorkspaceExecuteAuditUsesResolvedTargetAndOutcome(t *testing.T) {
 
 	success := workspaceExecuteAudit(ctx, req, "kubectl", "target", true).Audits[0]
 	require.Equal(t, "target", success.AccountId)
+	require.Equal(t, "audit-tenant", success.TenantId)
+	require.Equal(t, "audit-user", success.UserId)
 	require.Equal(t, audit.EventStatusSuccess, success.EventStatus)
 	require.Equal(t, "workspace", success.EventAttr["workspace_account_id"])
+	require.Equal(t, "k8s-dev", success.EventAttr["target_context"])
+	require.Equal(t, "kubectl get pods", success.EventAttr["command"])
 
 	failure := workspaceExecuteAudit(ctx, req, "kubectl", "target", false).Audits[0]
 	require.Equal(t, audit.EventStatusFailure, failure.EventStatus)

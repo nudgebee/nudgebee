@@ -138,6 +138,14 @@ func TestCrossAccountKubernetesVirtualConfigListsAuthorizedContextsE2E(t *testin
 	if fixture.unauthorized != "" {
 		require.NotContains(t, body, fixture.unauthorized)
 	}
+
+	response, err = fixture.runShell(t, "kubectl config get-clusters")
+	body = requireShellSuccess(t, response, err)
+	require.Contains(t, body, fixture.context1)
+	require.Contains(t, body, fixture.context2)
+	if fixture.unauthorized != "" {
+		require.NotContains(t, body, fixture.unauthorized)
+	}
 }
 
 func TestCrossAccountKubernetesUnauthorizedContextFailsClosedE2E(t *testing.T) {
