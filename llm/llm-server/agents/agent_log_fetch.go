@@ -17,6 +17,7 @@ import (
 	"nudgebee/llm/workspace"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,15 +130,12 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		}
 		return errorResponse(a.GetName(), fmt.Errorf("kubectl fetch failed: %s", reason)), nil
 	}
-	// A filter_pattern narrows kubectl logs server-side (buildKubectlLogCommand
-	// pipes it through grep). Zero lines back proves only that nothing matched
-	// THIS filter, not that the container has no relevant output — but
-	// makeFetchResponse's logs_complete=true reads as "nothing to see here"
-	// either way. Flag the ambiguity explicitly rather than let a narrow,
-	// LLM-chosen keyword list (see kubectlErrorRegex) stand in for "the pod is
-	// healthy".
-	if strings.TrimSpace(intent.FilterPattern) != "" && kubectlStdoutFieldIsEmpty(logs) {
-		logs = filteredEmptyLogsCaveat(intent.FilterPattern, logs)
+	// kubectl silently resolves a workload target to one pod and announces it
+	// in stdout. Keep that control line out of the logs and disclose the
+	// narrowed coverage in the response envelope.
+	logs, podCount, usedPod := stripKubectlPodBanner(logs)
+	if kubectlStdoutFieldIsEmpty(logs) {
+		logs = noMatchingKubectlLogsCaveat(intent.FilterPattern, logs)
 	}
 
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, "kubectl", logs)
@@ -145,7 +143,72 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}
-	return makeFetchResponse(a.GetName(), cmd, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	resp := makeFetchResponse(a.GetName(), cmd, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs))
+	return withKubectlDisclosure(resp, kubectlDisclosureNote(intent, podCount, usedPod)), nil
+}
+
+var kubectlPodBannerRe = regexp.MustCompile(`^Found (\d+) pods, using pod/(\S+)\n?`)
+
+func stripKubectlPodBanner(raw string) (cleaned string, podCount int, usedPod string) {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &envelope) != nil {
+		return raw, 0, ""
+	}
+	stdoutRaw, ok := envelope["stdout"]
+	if !ok {
+		return raw, 0, ""
+	}
+	var stdout string
+	if json.Unmarshal(stdoutRaw, &stdout) != nil {
+		return raw, 0, ""
+	}
+	loc := kubectlPodBannerRe.FindStringSubmatchIndex(stdout)
+	if loc == nil {
+		return raw, 0, ""
+	}
+	n, err := strconv.Atoi(stdout[loc[2]:loc[3]])
+	if err != nil {
+		return raw, 0, ""
+	}
+	usedPod = stdout[loc[4]:loc[5]]
+	newStdout, err := json.Marshal(stdout[:loc[0]] + stdout[loc[1]:])
+	if err != nil {
+		return raw, 0, ""
+	}
+	envelope["stdout"] = newStdout
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return raw, 0, ""
+	}
+	return string(body), n, usedPod
+}
+
+func kubectlDisclosureNote(intent kubectlLogQuery, podCount int, usedPod string) string {
+	var parts []string
+	if podCount > 1 {
+		parts = append(parts, fmt.Sprintf("read pod %s only — %d other pod(s) of this workload were not read", usedPod, podCount-1))
+	}
+	if pat := strings.TrimSpace(intent.FilterPattern); pat != "" {
+		parts = append(parts, fmt.Sprintf("filtered to lines matching /%s/ and capped at 200 matching lines", pat))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func withKubectlDisclosure(resp core.NBAgentResponse, note string) core.NBAgentResponse {
+	if note == "" || len(resp.Response) == 0 {
+		return resp
+	}
+	var envelope map[string]any
+	if json.Unmarshal([]byte(resp.Response[0]), &envelope) != nil {
+		return resp
+	}
+	envelope["kubectl_disclosure"] = note
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return resp
+	}
+	resp.Response[0] = string(body)
+	return resp
 }
 
 // isNotFoundReason excludes forbidden/unauthorized/connection errors, which a
@@ -222,11 +285,11 @@ func kubectlStdoutFieldIsEmpty(out string) bool {
 // then fail to parse — caught in review before this shipped. fallback is
 // returned unchanged if marshaling somehow fails (never expected for a
 // map[string]string, but this must never itself panic or emit broken JSON).
-func filteredEmptyLogsCaveat(pattern, fallback string) string {
-	msg := fmt.Sprintf(
-		"[FILTERED — zero lines matched the pattern %q. This does NOT mean the container has no relevant output, only that nothing matched this specific filter. Re-fetch without a filter_pattern (or with a broader one) before concluding there is no issue.]",
-		pattern,
-	)
+func noMatchingKubectlLogsCaveat(pattern, fallback string) string {
+	msg := "[NO MATCHING LINES — kubectl returned zero log lines for this target/time window. This does NOT confirm the workload has no relevant output; verify the target, time window, and (if the pod was picked automatically) which pod was read before concluding there is no issue.]"
+	if pattern = strings.TrimSpace(pattern); pattern != "" {
+		msg = fmt.Sprintf("[FILTERED — zero lines matched the pattern %q. This does NOT mean the container has no relevant output, only that nothing matched this specific filter. Re-fetch without a filter_pattern (or with a broader one) before concluding there is no issue.]", pattern)
+	}
 	payload, err := json.Marshal(map[string]string{"stdout": msg})
 	if err != nil {
 		return fallback
@@ -1134,6 +1197,8 @@ Return ONLY a JSON object with the following fields:
 - tail: Number of lines to retrieve (int). Use 100 for routine "show me logs". Use 10000 for INVESTIGATION queries ("were there issues", "what is causing X", "why is Y broken") so rare errors in long streams aren't missed when combined with filter_pattern.
 - is_previous: true if requesting previously crashed logs (bool)
 - filter_pattern: Regex pattern for grep, ONLY when the question already names a specific symptom to search for (a known error string, "OOMKilled", a request id, a status code). Leave it empty for a first read of an already-identified resource — especially one with no restarts or warning events at the Kubernetes level — because a component that is failing quietly typically logs the actual cause at INFO or without any error-shaped word at all, and a keyword filter can only surface what you already expect. An empty filter_pattern with a large tail/since window is the correct, safe default for "what is causing this" style questions; do not default to "` + kubectlErrorRegex + `" just because the question sounds investigative. When you do set one, it must be a plain POSIX extended regex (grep -E syntax): no Perl-only syntax like inline flags ("(?i)", "(?:...)"). The search is already case-insensitive (grep -i is always applied), so never add a case-insensitivity flag yourself.
+- time_range: Relative lookback such as "30m", "6h", "24h", or "7d". Set it for an explicit past window.
+- start_time: RFC3339 timestamp when the user gives an absolute start instant; prefer it over time_range.
 
 CRITICAL — Read the ORIGINAL USER QUESTION (when provided) to determine intent, not just the per-step query.
 A parent planner may paraphrase an investigative question into a routine-looking sub-step (e.g. user asks
@@ -1144,6 +1209,9 @@ ambiguous; the original question carries the true intent. If the original questi
 per-step query reads as routine — but only set filter_pattern too if that original question, or evidence already
 gathered, names a specific symptom to filter for. Investigative intent widens the window; it does not by itself
 justify narrowing what's visible inside that window.
+
+If the question names an explicit window, set time_range or start_time. Otherwise use time_range="24h" for
+investigations and leave both fields empty for routine requests.
 
 Defaults: tail=100 for routine queries, tail=10000 for investigation queries. filter_pattern stays empty unless
 a specific symptom is already known — when it is set, tail SHOULD be 10000 so the grep has a meaningful window to scan.
@@ -1371,6 +1439,8 @@ type kubectlLogQuery struct {
 	Tail          int    `json:"tail"`
 	IsPrevious    bool   `json:"is_previous"`
 	FilterPattern string `json:"filter_pattern"`
+	TimeRange     string `json:"time_range"`
+	StartTime     string `json:"start_time"`
 }
 
 // podHashSuffix conservatively matches Deployment-managed pod names of the
@@ -1416,6 +1486,15 @@ func buildKubectlLogCommand(intent kubectlLogQuery) string {
 		tail = 100
 	}
 	args = append(args, fmt.Sprintf("--tail=%d", tail))
+	if st := strings.TrimSpace(intent.StartTime); st != "" {
+		if _, err := time.Parse(time.RFC3339, st); err == nil {
+			args = append(args, fmt.Sprintf("--since-time=%s", st))
+		}
+	} else if tr := strings.TrimSpace(intent.TimeRange); tr != "" {
+		if d, ok := parseRelativeWindow(tr); ok {
+			args = append(args, fmt.Sprintf("--since=%s", d))
+		}
+	}
 
 	cmd := strings.Join(args, " ")
 	if pat := strings.TrimSpace(intent.FilterPattern); pat != "" {

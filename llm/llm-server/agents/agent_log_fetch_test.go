@@ -1025,13 +1025,13 @@ func TestFilteredEmptyLogsCaveat(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := filteredEmptyLogsCaveat(tc.pattern, `{"stdout":""}`)
+			got := noMatchingKubectlLogsCaveat(tc.pattern, `{"stdout":""}`)
 
 			var env struct {
 				Stdout string `json:"stdout"`
 			}
 			err := json.Unmarshal([]byte(got), &env)
-			require.NoError(t, err, "filteredEmptyLogsCaveat must always produce valid JSON, got: %s", got)
+			require.NoError(t, err, "noMatchingKubectlLogsCaveat must always produce valid JSON, got: %s", got)
 			// %q Go-escapes characters inside the pattern too (a quote in
 			// the pattern becomes \" in the rendered message) — check for
 			// the same %q-rendered form, not the raw pattern.
@@ -1043,9 +1043,36 @@ func TestFilteredEmptyLogsCaveat(t *testing.T) {
 	t.Run("marshal failure falls back to the original value unchanged", func(t *testing.T) {
 		// map[string]string never actually fails to marshal, so this proves
 		// the fallback branch statically rather than by construction.
-		got := filteredEmptyLogsCaveat("anything", `{"stdout":""}`)
+		got := noMatchingKubectlLogsCaveat("anything", `{"stdout":""}`)
 		assert.NotEmpty(t, got)
 	})
+}
+
+func TestBuildKubectlLogCommandHonorsRequestedWindow(t *testing.T) {
+	absolute := buildKubectlLogCommand(kubectlLogQuery{
+		ResourceName: "web-0", Namespace: "default", Tail: 100,
+		StartTime: "2026-08-13T04:50:15Z", TimeRange: "24h",
+	})
+	assert.Contains(t, absolute, "--since-time=2026-08-13T04:50:15Z")
+	assert.NotContains(t, absolute, "--since=24h")
+
+	relative := buildKubectlLogCommand(kubectlLogQuery{ResourceName: "web-0", Tail: 100, TimeRange: "7d"})
+	assert.Contains(t, relative, "--since=168h0m0s")
+}
+
+func TestStripKubectlPodBannerAndDisclosure(t *testing.T) {
+	raw := `{"stdout":"Found 4 pods, using pod/checkout-74fb7f54d5-kpl75\nreal log line\n","stderr":"warn"}`
+	cleaned, podCount, usedPod := stripKubectlPodBanner(raw)
+	assert.Equal(t, 4, podCount)
+	assert.Equal(t, "checkout-74fb7f54d5-kpl75", usedPod)
+	assert.NotContains(t, cleaned, "Found 4 pods")
+	assert.Contains(t, cleaned, "real log line")
+
+	note := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "error"}, podCount, usedPod)
+	assert.Contains(t, note, "3 other pod(s)")
+	assert.Contains(t, note, "error")
+	resp := withKubectlDisclosure(core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}, note)
+	assert.Contains(t, resp.Response[0], "kubectl_disclosure")
 }
 
 func TestParseKubectlDiscoveryCandidates(t *testing.T) {
