@@ -332,21 +332,6 @@ func eventRuleAlertType(streamType string) string {
 	return "metric"
 }
 
-// eventRuleAlertType maps the OpenObserve stream type onto the only two values
-// the event_rules.alert_type column accepts (FK -> event_rule_alert_type:
-// "metric", "log").
-//
-// Leaving it empty lands the row on the column default, "metric". For an alert
-// over a log stream that is simply the wrong kind: the rule is mis-typed in rule
-// management, and the metric playbook actions then treat the OpenObserve
-// condition ("> 5 over 5") as PromQL and fail to parse it on every investigation.
-func eventRuleAlertType(streamType string) string {
-	if strings.EqualFold(strings.TrimSpace(streamType), "logs") {
-		return "log"
-	}
-	return "metric"
-}
-
 // createOpenObserveEventRule fire-and-forgets the event-rule upsert on a
 // detached context. The inbound request context is cancelled as soon as the
 // webhook handler responds, so reusing it would abort the insert mid-flight.
