@@ -9,7 +9,7 @@ package agents
 // Kept in one place so the input contract can't drift per-agent.
 var resourceSearchToolUsage = []string{
 	"Resolve a resource name to its real identity/namespace from the inventory DB.",
-	"Input: JSON with search_type ('fuzzy', 'suggestions', 'namespace', 'label'), plus resource_name, resource_type, namespace, and label_selector (required for 'label') as relevant.",
-	"Output: JSON with resource suggestions and search strategies.",
+	"Input: JSON with search_type ('fuzzy', 'suggestions', 'namespace', 'label'), plus resource_name, resource_type, namespace, label_selector (required for 'label'), and optional cluster (connected Kubernetes cluster name) as relevant.",
+	"Output: JSON with resource suggestions, search strategies, and the actual target cluster provenance.",
 	"Examples: {\"resource_type\": \"podss\", \"search_type\": \"fuzzy\"} or {\"resource_name\": \"llm-server\", \"namespace\": \"default\", \"search_type\": \"suggestions\"}",
 }

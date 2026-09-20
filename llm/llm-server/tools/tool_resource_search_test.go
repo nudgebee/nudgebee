@@ -2,11 +2,13 @@ package tools
 
 import (
 	"encoding/json"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -1432,6 +1434,129 @@ func TestK8sResourceSearchTool_EmptySearchTypeIsTreatedAsAbsent(t *testing.T) {
 		assert.Equal(t, "", req.SearchType,
 			"processSearchRequest normalizes this to suggestions; pinned here so the two paths cannot diverge")
 	})
+}
+
+func TestResourceSearchPerCallCluster(t *testing.T) {
+	const account = "resource-search-per-call"
+	clusterFixture(t, account)
+	tool := K8sResourceSearchTool{}
+	prod := core.ToolConfig{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}}
+	newContext := func(allowed ...string) core.NbToolContext {
+		ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", append([]string{account}, allowed...))
+		return core.NbToolContext{
+			Ctx:            ctx,
+			AccountId:      account,
+			ConversationId: "conversation",
+			ToolConfig:     prod,
+		}
+	}
+	call := func(ctx core.NbToolContext, cluster string) (core.NBToolResponse, error) {
+		args := map[string]any{"resource_type": "podss", "search_type": searchTypeFuzzy}
+		if cluster != "" {
+			args["cluster"] = cluster
+		}
+		return tool.Call(ctx, core.NBToolCallRequest{
+			Command:   `{"resource_type":"podss","search_type":"fuzzy"}`,
+			Arguments: args,
+		})
+	}
+
+	t.Run("authorized cluster is selected and attributed", func(t *testing.T) {
+		resp, err := call(newContext("prod-id", "dev-id"), "k8s-dev")
+		require.NoError(t, err)
+		assert.Equal(t, "dev-id", resp.AdditionalDetails["target_account_id"])
+		assert.Equal(t, "k8s-dev", resp.AdditionalDetails["target_name"])
+		assert.Equal(t, "k8s-dev", resp.AdditionalDetails["cluster_name"])
+		assert.Equal(t, "k8s-prod", resp.AdditionalDetails["config_name"])
+		assert.Equal(t, account, resp.AdditionalDetails["origin_account_id"])
+
+		var result map[string]any
+		require.NoError(t, common.UnmarshalJson([]byte(resp.Data), &result))
+		target := result["target"].(map[string]any)
+		assert.Equal(t, "k8s-dev", target["name"])
+		assert.Equal(t, "k8s-dev", target["cluster_name"])
+		assert.Equal(t, "k8s-prod", target["config_name"])
+		assert.Equal(t, "dev-id", target["account_id"])
+	})
+
+	t.Run("omitted cluster preserves current selection", func(t *testing.T) {
+		resp, err := call(newContext("prod-id", "dev-id"), "")
+		require.NoError(t, err)
+		assert.Equal(t, "prod-id", resp.AdditionalDetails["target_account_id"])
+		assert.Equal(t, "k8s-prod", resp.AdditionalDetails["target_name"])
+		assert.Equal(t, "k8s-prod", resp.AdditionalDetails["cluster_name"])
+		assert.Equal(t, "k8s-prod", resp.AdditionalDetails["config_name"])
+	})
+
+	t.Run("omitted cluster replaces generic account-agent provenance", func(t *testing.T) {
+		ctx := newContext("prod-id", "dev-id")
+		ctx.AccountId = "prod-id"
+		ctx.ToolConfig = core.ToolConfig{Name: "Agent"}
+
+		resp, err := call(ctx, "")
+		require.NoError(t, err)
+		assert.Equal(t, "prod-id", resp.AdditionalDetails["target_account_id"])
+		assert.Equal(t, "k8s-prod", resp.AdditionalDetails["target_name"])
+		assert.Equal(t, "k8s-prod", resp.AdditionalDetails["cluster_name"])
+		assert.Equal(t, "Agent", resp.AdditionalDetails["config_name"])
+
+		var result map[string]any
+		require.NoError(t, common.UnmarshalJson([]byte(resp.Data), &result))
+		target := result["target"].(map[string]any)
+		assert.Equal(t, "k8s-prod", target["name"])
+		assert.Equal(t, "k8s-prod", target["cluster_name"])
+		assert.Equal(t, "Agent", target["config_name"])
+		assert.Equal(t, "prod-id", target["account_id"])
+	})
+
+	t.Run("live fallback keeps the origin workspace and binds the selected cluster", func(t *testing.T) {
+		origWm := wm
+		capture := &targetWorkspaceCapture{}
+		wm = capture
+		defer func() { wm = origWm }()
+
+		ctx := newContext("prod-id", "dev-id")
+		ctx.AccountId = "dev-id"
+		ctx.Stats = &core.ToolCallStats{}
+		selected := core.ToolConfig{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "dev-id"}}}
+		selectedTool := K8sResourceSearchTool{workspaceAccountID: account, targetConfig: selected}
+		assert.NotEmpty(t, selectedTool.executeKubectlCommand("kubectl get pods -A", ctx))
+		assert.Equal(t, account, capture.account, "the conversation workspace must not move to the target account")
+		assert.Equal(t, "k8s-dev", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME])
+		assert.Equal(t, "dev-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID])
+	})
+
+	t.Run("unknown or unauthorized cluster fails without leaking hidden names", func(t *testing.T) {
+		for _, requested := range []string{"missing", "k8s-secret"} {
+			_, err := call(newContext("prod-id", "dev-id"), requested)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "available clusters: k8s-dev, k8s-prod")
+			available := strings.SplitN(err.Error(), "available clusters:", 2)
+			require.Len(t, available, 2)
+			assert.NotContains(t, available[1], "k8s-secret",
+				"the rejected user-supplied name may be echoed, but it must not appear in the authorized correction list")
+		}
+	})
+}
+
+func TestResourceSearchTargetContract(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+	requested, err := tool.RequestedTarget(`{"resource_name":"api","cluster":"k8s-dev"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "k8s-dev", requested)
+	assert.Contains(t, tool.InputSchema().Properties, "cluster")
+	assert.Equal(t, "k8s-dev", RequestedResourceSearchCluster(
+		core.ParseNBToolCallRequestFromInput(`{"resource_name":"api","cluster":"k8s-dev"}`).Arguments),
+		"legacy direct callers that keep raw JSON in Command must resolve the same structured field")
+}
+
+func TestExecutionTargetsIncludesResourceSearch(t *testing.T) {
+	const account = "resource-search-targets"
+	clusterFixture(t, account)
+	block := RenderExecutionTargets(clusterCtx(account), account,
+		map[string]string{ToolExecuteKubectlCommand: "k8s-prod"}, []string{ToolResourceSearch})
+	assert.Contains(t, block, "resource_search_execute")
+	assert.Contains(t, block, "k8s-dev")
 }
 
 // TestGetCurrentOtelHosts_NilContextReturnsEmpty guards the caller side of the

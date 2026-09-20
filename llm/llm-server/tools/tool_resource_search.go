@@ -25,7 +25,12 @@ func init() {
 	})
 }
 
-type K8sResourceSearchTool struct{}
+type K8sResourceSearchTool struct {
+	// workspaceAccountID stays on the conversation's origin account while an
+	// explicit cluster changes the inventory and relay target for this call.
+	workspaceAccountID string
+	targetConfig       core.ToolConfig
+}
 
 // Accepted values for K8sResourceSearchRequest.SearchType. Kept in sync with the
 // `search_type` enum in InputSchema and the switch in processSearchRequest —
@@ -43,6 +48,7 @@ type K8sResourceSearchRequest struct {
 	Namespace     string `json:"namespace,omitempty"`
 	LabelSelector string `json:"label_selector,omitempty"`
 	SearchType    string `json:"search_type,omitempty"` // see searchType* consts; empty = suggestions
+	Cluster       string `json:"cluster,omitempty"`
 }
 
 type K8sResourceSearchResponse struct {
@@ -197,6 +203,20 @@ func (r K8sResourceSearchTool) GetType() core.NBToolType {
 	return core.NBToolTypeTool
 }
 
+// RequestedTarget lets the executor authorize an explicitly selected cluster
+// independently from the conversation account. Resource search is read-only,
+// but implementing the common contract keeps target handling consistent with
+// kubectl_execute and protects it if request classification changes later.
+func (r K8sResourceSearchTool) RequestedTarget(toolInput string) (string, error) {
+	req := core.ParseNBToolCallRequestFromInput(toolInput)
+	return RequestedResourceSearchCluster(req.Arguments), nil
+}
+
+func RequestedResourceSearchCluster(arguments map[string]any) string {
+	cluster, _ := arguments["cluster"].(string)
+	return strings.TrimSpace(cluster)
+}
+
 func (r K8sResourceSearchTool) Description() string {
 	return `Searches for Kubernetes resources using fuzzy matching and provides suggestions for resource discovery.
 
@@ -212,6 +232,7 @@ func (r K8sResourceSearchTool) Description() string {
 * namespace (optional): Namespace to search in
 * label_selector (optional): Kubernetes label selector, required when search_type is "label" (e.g. 'app=nginx,tier=frontend')
 * search_type (optional): Type of search - one of "fuzzy", "suggestions", "namespace", or "label" ("label" requires label_selector). Defaults to "suggestions" when omitted.
+* cluster (optional): Connected Kubernetes cluster name. Omit to use the conversation's current cluster.
 
 **Examples:**
 * Fuzzy resource type: {"resource_type": "podss", "search_type": "fuzzy"}
@@ -248,6 +269,10 @@ func (r K8sResourceSearchTool) InputSchema() core.ToolSchema {
 				Description: "OPTIONAL. Type of search: 'fuzzy', 'suggestions', 'namespace', or 'label' ('label' requires label_selector). Defaults to 'suggestions'.",
 				Enum:        []any{searchTypeFuzzy, searchTypeSuggestions, searchTypeNamespace, searchTypeLabel},
 				Default:     searchTypeSuggestions,
+			},
+			"cluster": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional. Name of the connected Kubernetes cluster to search. Omit to use the conversation's current cluster.",
 			},
 		},
 		// search_type is deliberately NOT required: processSearchRequest already
@@ -294,6 +319,43 @@ func (r K8sResourceSearchTool) NormalizeInputForSchemaValidation(input string) s
 func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext.Ctx.GetLogger().Info("resource-search: executing tool call", "command", input.Command)
 
+	configName := nbRequestContext.ToolConfig.Name
+	requested := RequestedResourceSearchCluster(input.Arguments)
+	if requested == "" {
+		// Production callNbTool splits top-level fields into Arguments, while
+		// direct/internal callers may still pass the legacy raw JSON in Command.
+		// Support both without treating arbitrary shell/text as target syntax.
+		requested = RequestedResourceSearchCluster(core.ParseNBToolCallRequestFromInput(input.Command).Arguments)
+	}
+	target := nbRequestContext.ToolConfig
+	var err error
+	if requested != "" {
+		target, err = ResolveKubernetesTarget(nbRequestContext, nbRequestContext.ToolConfig, requested)
+		if err != nil {
+			return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+		}
+	}
+	targetAccountID := KubernetesTargetAccountID(target)
+	if targetAccountID == "" {
+		// Direct/internal callers historically supplied only AccountId. Preserve
+		// that default shape; an explicit target must always resolve to a concrete
+		// authorized connection above and can never use this fallback.
+		targetAccountID = nbRequestContext.AccountId
+		if requested == "" {
+			// Account-agent configs use the generic name "Agent" and carry no id.
+			// Recover the actual connected cluster config for provenance and relay
+			// targeting instead of exposing "Agent" as though it were a cluster.
+			target = resourceSearchTargetForAccount(nbRequestContext, targetAccountID)
+		}
+	}
+	originAccountID := nbRequestContext.AccountId
+	r.workspaceAccountID = originAccountID
+	if target.Name != "" {
+		r.targetConfig = target
+	}
+	nbRequestContext.AccountId = targetAccountID
+	nbRequestContext.ToolConfig = target
+
 	// Attach the accumulator before any downstream work. NbToolContext is copied
 	// by value into every helper and fan-out goroutine, but they all carry this
 	// same pointer — so the DB/relay split covers the whole call tree. Without it
@@ -302,20 +364,64 @@ func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input c
 	nbRequestContext.Stats = stats
 
 	result, err := r.processSearchRequest(input.Command, nbRequestContext)
+	provenance := map[string]any{
+		"origin_account_id": originAccountID,
+		"target_account_id": targetAccountID,
+		"target_name":       target.Name,
+		"cluster_name":      target.Name,
+		"config_name":       configName,
+		"target_provider":   "kubernetes",
+	}
 	if err != nil {
 		return core.NBToolResponse{
-			Data:     err.Error(),
-			Status:   core.NBToolResponseStatusError,
-			Metadata: stats.ApplyTo(nil),
+			Data:              err.Error(),
+			Status:            core.NBToolResponseStatusError,
+			Metadata:          stats.ApplyTo(nil),
+			AdditionalDetails: provenance,
 		}, err
 	}
+	result = tagResourceSearchResult(result, target.Name, targetAccountID, configName)
 
 	return core.NBToolResponse{
-		Data:     result,
-		Type:     core.NBToolResponseTypeJson,
-		Status:   core.NBToolResponseStatusSuccess,
-		Metadata: stats.ApplyTo(nil),
+		Data:              result,
+		Type:              core.NBToolResponseTypeJson,
+		Status:            core.NBToolResponseStatusSuccess,
+		Metadata:          stats.ApplyTo(nil),
+		AdditionalDetails: provenance,
 	}, nil
+}
+
+func resourceSearchTargetForAccount(ctx core.NbToolContext, accountID string) core.ToolConfig {
+	targets, err := ListKubernetesTargets(ctx.Ctx, ctx.AccountId)
+	if err == nil {
+		for _, target := range targets {
+			if KubernetesTargetAccountID(target) == accountID {
+				return target
+			}
+		}
+	}
+	// An unresolved generic account-agent label is not a cluster name. Keep the
+	// concrete account id in provenance and leave the display name unknown.
+	return core.ToolConfig{}
+}
+
+func tagResourceSearchResult(result, targetName, targetAccountID, configName string) string {
+	var payload map[string]any
+	if err := common.UnmarshalJson([]byte(result), &payload); err != nil || payload == nil {
+		return result
+	}
+	payload["target"] = map[string]string{
+		"provider":     "kubernetes",
+		"name":         targetName,
+		"cluster_name": targetName,
+		"config_name":  configName,
+		"account_id":   targetAccountID,
+	}
+	tagged, err := common.MarshalJson(payload)
+	if err != nil {
+		return result
+	}
+	return string(tagged)
 }
 
 func (r K8sResourceSearchTool) sanitizeInput(input string, allowSpaces bool) string {
@@ -350,6 +456,7 @@ func (r K8sResourceSearchTool) processSearchRequest(input string, nbRequestConte
 	request.ResourceType = r.sanitizeInput(request.ResourceType, true) // Allow spaces for multi-type
 	request.Namespace = r.sanitizeInput(request.Namespace, false)
 	request.LabelSelector = r.sanitizeLabelSelector(request.LabelSelector)
+	request.Cluster = "" // target selection is handled from structured tool arguments in Call
 
 	// Fix for queries like "notifications pods" where the type is included in the name
 	if request.ResourceName != "" {
@@ -1621,7 +1728,21 @@ func (r K8sResourceSearchTool) executeKubectlCommand(command string, nbRequestCo
 	// wm (tool_shell.go) is the package-wide WorkspaceManager; reuse it rather than
 	// constructing a new http.Client per call — resource_search fans out into many
 	// of these in one tool invocation.
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{})
+	workspaceAccountID := r.workspaceAccountID
+	if workspaceAccountID == "" {
+		workspaceAccountID = nbRequestContext.AccountId
+	}
+	env := map[string]string{}
+	if r.targetConfig.Name != "" {
+		var envErr error
+		env, envErr = KubernetesTargetEnv(nbRequestContext, r.targetConfig)
+		if envErr != nil {
+			nbRequestContext.Stats.RecordRelay(command, "", envErr, time.Since(relayStart))
+			nbRequestContext.Ctx.GetLogger().Error("resource-search: target environment rejected", "error", envErr.Error(), "command", command)
+			return ""
+		}
+	}
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, workspaceAccountID, nbRequestContext.ConversationId, command, env)
 	if err != nil && isNoMatchExit(err, command) {
 		// grep exiting 1 with no matches is normal Unix semantics, not a relay
 		// failure — record it as a successful empty result so the conversation

@@ -43,6 +43,7 @@ type crossAccountKubernetesE2E struct {
 //	CROSS_ACCOUNT_DEFAULT_CONTEXT, CROSS_ACCOUNT_DEFAULT_EXPECTED_UID
 //	CROSS_ACCOUNT_CONTEXT_1, CROSS_ACCOUNT_ACCOUNT_1, CROSS_ACCOUNT_EXPECTED_UID_1
 //	CROSS_ACCOUNT_CONTEXT_2, CROSS_ACCOUNT_ACCOUNT_2, CROSS_ACCOUNT_EXPECTED_UID_2
+//	CROSS_ACCOUNT_RESOURCE_NAME_2 (for TestCrossAccountResourceSearchE2E; unique to context 2)
 //
 // Optional: CROSS_ACCOUNT_UNAUTHORIZED_CONTEXT names a connected context the
 // caller cannot access. When provided, the suite verifies that it fails closed.
@@ -171,4 +172,90 @@ func TestCrossAccountKubernetesExitStatusAndStderrE2E(t *testing.T) {
 			strings.Contains(strings.ToLower(response.Data), "error"),
 		"expected actionable kubectl stderr, got: %s", response.Data,
 	)
+}
+
+// TestCrossAccountResourceSearchE2E exercises the resource_search_execute seam
+// added on top of the shared per-call Kubernetes target contract. The named
+// resource should exist in context2's inventory; use a resource unique to that
+// cluster so a wrong-account lookup cannot accidentally pass.
+func TestCrossAccountResourceSearchE2E(t *testing.T) {
+	fixture := loadCrossAccountKubernetesE2E(t)
+	resourceName := strings.TrimSpace(os.Getenv("CROSS_ACCOUNT_RESOURCE_NAME_2"))
+	require.NotEmpty(t, resourceName, "CROSS_ACCOUNT_RESOURCE_NAME_2 must name a resource unique to CROSS_ACCOUNT_CONTEXT_2")
+
+	tool := K8sResourceSearchTool{}
+	sc := security.NewRequestContextForTenantAccountAdmin(fixture.tenant, fixture.user, []string{
+		fixture.workspaceAccount,
+		fixture.account1,
+		fixture.account2,
+	})
+	origin := core.ToolConfig{Name: fixture.context1, Values: []core.ToolConfigValue{{Name: "id", Value: fixture.account1}}}
+	newContext := func() core.NbToolContext {
+		return core.NbToolContext{
+			Ctx:            sc,
+			AccountId:      fixture.workspaceAccount,
+			UserId:         fixture.user,
+			ConversationId: "resource-search-e2e-" + uuid.NewString(),
+			MessageId:      uuid.NewString(),
+			ToolCallId:     uuid.NewString(),
+			ToolConfig:     origin,
+		}
+	}
+
+	t.Run("omitted cluster keeps the saved target", func(t *testing.T) {
+		response, err := tool.Call(newContext(), core.NBToolCallRequest{
+			Command: `{"resource_type":"podss","search_type":"fuzzy"}`,
+			Arguments: map[string]any{
+				"resource_type": "podss",
+				"search_type":   "fuzzy",
+			},
+		})
+		require.NoError(t, err, "response: %s", response.Data)
+		require.Equal(t, fixture.account1, response.AdditionalDetails["target_account_id"])
+		require.Equal(t, fixture.context1, response.AdditionalDetails["target_name"])
+	})
+
+	t.Run("explicit cluster scopes inventory and provenance", func(t *testing.T) {
+		command, err := common.MarshalJson(map[string]any{
+			"resource_name": resourceName,
+			"resource_type": "pod",
+			"search_type":   "suggestions",
+			"cluster":       fixture.context2,
+		})
+		require.NoError(t, err)
+		response, callErr := tool.Call(newContext(), core.NBToolCallRequest{
+			Command: string(command),
+			Arguments: map[string]any{
+				"resource_name": resourceName,
+				"resource_type": "pod",
+				"search_type":   "suggestions",
+				"cluster":       fixture.context2,
+			},
+		})
+		require.NoError(t, callErr, "response: %s", response.Data)
+		require.Equal(t, fixture.account2, response.AdditionalDetails["target_account_id"])
+		require.Equal(t, fixture.context2, response.AdditionalDetails["target_name"])
+		require.Equal(t, fixture.workspaceAccount, response.AdditionalDetails["origin_account_id"])
+		require.NotNil(t, response.Metadata)
+		require.Greater(t, response.Metadata.DBQueries, 0, "the call must exercise the target-scoped inventory lookup")
+		require.Greater(t, response.Metadata.RelayCalls, 0, "owner enrichment must exercise the target-bound live kubectl path")
+
+		var result K8sResourceSearchResponse
+		require.NoError(t, common.UnmarshalJson([]byte(response.Data), &result))
+		found := false
+		for _, resource := range result.Resources {
+			if resource.Name == resourceName {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "target resource %q not found in response: %s", resourceName, response.Data)
+
+		var payload map[string]any
+		require.NoError(t, common.UnmarshalJson([]byte(response.Data), &payload))
+		target, ok := payload["target"].(map[string]any)
+		require.True(t, ok, "target provenance missing: %s", response.Data)
+		require.Equal(t, fixture.context2, target["name"])
+		require.Equal(t, fixture.account2, target["account_id"])
+	})
 }

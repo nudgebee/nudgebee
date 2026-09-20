@@ -27,8 +27,8 @@ var executionTargetKinds = []executionTargetKind{
 	{
 		tool:      ToolExecuteKubectlCommand,
 		title:     "Kubernetes clusters",
-		usage:     `kubectl_execute: pass cluster="<name>". shell_execute: kubectl --context <name> .... kubectl config does not list these clusters.`,
-		usedByAny: []string{ToolExecuteKubectlCommand, core.ToolExecuteShellCommand},
+		usage:     `kubectl_execute and resource_search_execute: pass cluster="<name>". shell_execute: kubectl --context <name> .... kubectl config does not list these clusters.`,
+		usedByAny: []string{ToolExecuteKubectlCommand, ToolResourceSearch, core.ToolExecuteShellCommand},
 	},
 	{
 		tool:      ToolExecuteAwsCliCommand,
