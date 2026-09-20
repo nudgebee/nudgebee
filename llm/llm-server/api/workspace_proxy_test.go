@@ -613,7 +613,7 @@ func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
 	result, handled, err := virtualKubectlConfig(ctx, request, "k8s-prod")
 	require.NoError(t, err)
 	require.True(t, handled)
-	require.Equal(t, "k8s-dev\nk8s-prod\nk8s: dev #1\n", result)
+	require.Equal(t, "k8s-dev\nk8s-prod\nk8s-dev-1\n", result)
 	require.NotContains(t, result, "k8s-secret")
 
 	request.Command = "kubectl config current-context"
@@ -621,6 +621,13 @@ func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, handled)
 	require.Equal(t, "k8s-prod\n", result)
+
+	request.Command = "kubectl config get-clusters"
+	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Equal(t, "NAME\nk8s-dev\nk8s-prod\nk8s-dev-1\n", result)
+	require.NotContains(t, result, "k8s-secret")
 
 	request.Command = "kubectl config use-context k8s-dev"
 	_, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
@@ -634,6 +641,64 @@ func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
 	parsed, err := common.DecodeYamlToMap(result)
 	require.NoError(t, err, "context names must be safely serialized as YAML")
 	require.Equal(t, "k8s-prod", parsed["current-context"])
+	contexts := parsed["contexts"].([]any)
+	require.Equal(t, "k8s-dev-1", contexts[2].(map[string]any)["name"])
+}
+
+func TestKubectlContextAliasesAreShellSafeAndResolvable(t *testing.T) {
+	const workspaceAccount = "context-alias-workspace"
+	tools.StubTenantClusters(t, "context-alias-tenant", []core.ToolConfig{
+		{Name: "solar winds POC", Values: []core.ToolConfigValue{{Name: "id", Value: "solar-account"}}},
+		{Name: "plain", Values: []core.ToolConfigValue{{Name: "id", Value: workspaceAccount}}},
+	})
+	ctx := security.NewRequestContextForTenantAccountAdmin("context-alias-tenant", "user", []string{workspaceAccount, "solar-account"})
+
+	result, handled, err := virtualKubectlConfig(ctx, WorkspaceExecuteRequest{
+		AccountId: workspaceAccount,
+		Command:   "kubectl config get-contexts -o name",
+	}, "plain")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Equal(t, "plain\nsolar-winds-POC\n", result)
+
+	req := WorkspaceExecuteRequest{Command: "kubectl --context solar-winds-POC get pods"}
+	require.NoError(t, normalizeKubectlProxyRequest(&req))
+	require.Equal(t, "solar-winds-POC", req.TargetName)
+	require.Equal(t, "solar winds POC", mustResolveKubectlContextName(t, ctx, workspaceAccount, req.TargetName))
+
+	// Existing callers that quote the original integration name remain valid.
+	require.Equal(t, "solar winds POC", mustResolveKubectlContextName(t, ctx, workspaceAccount, "solar winds POC"))
+}
+
+func TestKubectlContextAliasesDisambiguateSanitizedCollisions(t *testing.T) {
+	contexts := []core.ToolConfig{
+		{Name: "solar winds", Values: []core.ToolConfigValue{{Name: "id", Value: "account-a"}}},
+		{Name: "solar-winds", Values: []core.ToolConfigValue{{Name: "id", Value: "account-b"}}},
+	}
+	aliases := tools.KubernetesTargetAliases(contexts)
+	require.Len(t, aliases, 2)
+	require.NotEqual(t, strings.ToLower(aliases[0].Name), strings.ToLower(aliases[1].Name))
+	require.Regexp(t, `^solar-winds-[0-9a-f]{8}$`, aliases[0].Name)
+	require.Regexp(t, `^solar-winds-[0-9a-f]{8}$`, aliases[1].Name)
+
+	// Force a second-order collision with the first stable hashed alias. Its
+	// fallback must retain that hash rather than reverting to an order-sensitive
+	// suffix on the unhashed base.
+	hashedAlias := aliases[0].Name
+	aliases = tools.KubernetesTargetAliases([]core.ToolConfig{
+		{Name: hashedAlias, Values: []core.ToolConfigValue{{Name: "id", Value: "account-c"}}},
+		contexts[0],
+		contexts[1],
+	})
+	require.Equal(t, hashedAlias, aliases[0].Name)
+	require.Equal(t, hashedAlias+"-2", aliases[1].Name)
+}
+
+func mustResolveKubectlContextName(t *testing.T, ctx *security.RequestContext, accountID, requested string) string {
+	t.Helper()
+	target, err := resolveKubectlContext(ctx, accountID, requested)
+	require.NoError(t, err)
+	return target.Name
 }
 
 func TestKubectlConfigIndexOnlyMatchesSubcommand(t *testing.T) {
@@ -761,9 +826,10 @@ func TestWorkspaceProxyResolvesTwoConcreteContextsIndependently(t *testing.T) {
 	tools.StubTenantClusters(t, "relay-multi-context-tenant", []core.ToolConfig{
 		{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "relay-multi-dev"}}},
 		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "relay-multi-prod"}}},
+		{Name: "solar winds POC", Values: []core.ToolConfigValue{{Name: "id", Value: "relay-multi-solar"}}},
 	})
 	toolCtx := core.NbToolContext{
-		Ctx:       security.NewRequestContextForTenantAccountAdmin("relay-multi-context-tenant", "user", []string{workspaceAccount, "relay-multi-dev", "relay-multi-prod"}),
+		Ctx:       security.NewRequestContextForTenantAccountAdmin("relay-multi-context-tenant", "user", []string{workspaceAccount, "relay-multi-dev", "relay-multi-prod", "relay-multi-solar"}),
 		AccountId: workspaceAccount,
 	}
 
@@ -773,6 +839,7 @@ func TestWorkspaceProxyResolvesTwoConcreteContextsIndependently(t *testing.T) {
 	}{
 		{context: "k8s-dev", account: "relay-multi-dev"},
 		{context: "k8s-prod", account: "relay-multi-prod"},
+		{context: "solar-winds-POC", account: "relay-multi-solar"},
 	} {
 		req := WorkspaceExecuteRequest{Command: "kubectl --context " + common.ShellEscape(tc.context) + " get pods"}
 		require.NoError(t, normalizeKubectlProxyRequest(&req))

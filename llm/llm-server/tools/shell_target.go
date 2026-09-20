@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -313,7 +314,111 @@ func AccountTargetByName(ctx *security.RequestContext, accountID, toolName, requ
 
 // KubernetesTargetByName is AccountTargetByName for kubectl clusters.
 func KubernetesTargetByName(ctx *security.RequestContext, accountID, name string) (core.ToolConfig, error) {
-	return AccountTargetByName(ctx, accountID, ToolExecuteKubectlCommand, name)
+	targets, err := ListKubernetesTargets(ctx, accountID)
+	if err != nil {
+		return core.ToolConfig{}, err
+	}
+	aliases := KubernetesTargetAliases(targets)
+	// Prefer persisted names so an alias can never shadow a real connection.
+	for _, target := range aliases {
+		if strings.EqualFold(target.Config.Name, name) {
+			return target.Config, nil
+		}
+	}
+	for _, target := range aliases {
+		if strings.EqualFold(target.Name, name) {
+			return target.Config, nil
+		}
+	}
+	var byNumber []core.ToolConfig
+	for _, target := range aliases {
+		if number := targetAccountNumber(target.Config); number != "" && strings.EqualFold(number, name) {
+			byNumber = append(byNumber, target.Config)
+		}
+	}
+	if len(byNumber) == 1 {
+		return byNumber[0], nil
+	}
+	if len(byNumber) > 1 {
+		matches := make([]string, 0, len(byNumber))
+		for _, target := range byNumber {
+			matches = append(matches, target.Name)
+		}
+		sortNames(matches)
+		return core.ToolConfig{}, fmt.Errorf("cluster number %q matches several connections (%s); pass the connection name instead", name, strings.Join(matches, ", "))
+	}
+	names := make([]string, 0, len(aliases))
+	for _, target := range aliases {
+		names = append(names, target.Name)
+	}
+	return core.ToolConfig{}, fmt.Errorf("cluster %q is not connected or you do not have access to it; available clusters: %s", name, strings.Join(names, ", "))
+}
+
+// KubernetesTargetAlias pairs the shell-safe virtual kubeconfig name with the
+// persisted integration config it resolves to.
+type KubernetesTargetAlias struct {
+	Name   string
+	Config core.ToolConfig
+}
+
+// KubernetesTargetAliases exposes connection names as tokens that can be
+// copied into unquoted shell commands. Persisted integration names are never
+// mutated; colliding aliases receive a stable account-bound suffix.
+func KubernetesTargetAliases(targets []core.ToolConfig) []KubernetesTargetAlias {
+	baseCounts := make(map[string]int, len(targets))
+	bases := make([]string, len(targets))
+	for i, target := range targets {
+		bases[i] = shellSafeKubernetesContext(target.Name)
+		baseCounts[strings.ToLower(bases[i])]++
+	}
+
+	aliases := make([]KubernetesTargetAlias, 0, len(targets))
+	used := make(map[string]struct{}, len(targets))
+	for i, target := range targets {
+		name := bases[i]
+		if baseCounts[strings.ToLower(name)] > 1 {
+			sum := sha256.Sum256([]byte(target.Name + "\x00" + KubernetesTargetAccountID(target)))
+			name = fmt.Sprintf("%s-%x", name, sum[:4])
+		}
+		baseName := name
+		for suffix := 2; ; suffix++ {
+			key := strings.ToLower(name)
+			if _, exists := used[key]; !exists {
+				used[key] = struct{}{}
+				break
+			}
+			name = fmt.Sprintf("%s-%d", baseName, suffix)
+		}
+		aliases = append(aliases, KubernetesTargetAlias{Name: name, Config: target})
+	}
+	return aliases
+}
+
+func shellSafeKubernetesContext(name string) string {
+	var b strings.Builder
+	separator := false
+	lastHyphen := false
+	for _, r := range name {
+		allowed := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
+		if allowed {
+			if separator && b.Len() > 0 && !lastHyphen && r != '-' {
+				b.WriteByte('-')
+			}
+			b.WriteRune(r)
+			lastHyphen = r == '-'
+			separator = false
+			continue
+		}
+		separator = true
+	}
+	result := strings.Trim(b.String(), "-")
+	if result == "" {
+		result = "context"
+	}
+	if result[0] == '.' {
+		result = "context-" + result
+	}
+	return result
 }
 
 // ListKubernetesTargets returns every connected cluster the current caller may
@@ -352,7 +457,10 @@ func ResolveRequestedTarget(ctx *security.RequestContext, accountID, toolName st
 
 // ResolveKubernetesTarget is ResolveRequestedTarget for kubectl clusters.
 func ResolveKubernetesTarget(ctx core.NbToolContext, current core.ToolConfig, requested string) (core.ToolConfig, error) {
-	return ResolveRequestedTarget(ctx.Ctx, ctx.AccountId, ToolExecuteKubectlCommand, current, requested)
+	if requested == "" || current.Name != "" && (strings.EqualFold(requested, current.Name) || strings.EqualFold(requested, targetAccountNumber(current))) {
+		return current, nil
+	}
+	return KubernetesTargetByName(ctx.Ctx, ctx.AccountId, requested)
 }
 
 // KubernetesTargetAccountID returns the cloud account id behind a config.

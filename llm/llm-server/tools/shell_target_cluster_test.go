@@ -92,6 +92,32 @@ func TestKubernetesTargetByName(t *testing.T) {
 	require.NotContains(t, err.Error(), "k8s-secret", "clusters the caller cannot read are not listed")
 }
 
+func TestKubernetesTargetByNameAcceptsVirtualContextAlias(t *testing.T) {
+	const account = "cluster-alias"
+	cacheShellTargets(t, account, ToolExecuteKubectlCommand, []core.ToolConfig{
+		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
+	})
+	cacheTenantClusters(t, "tenant", []core.ToolConfig{
+		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
+		{Name: "solar winds POC", Values: []core.ToolConfigValue{{Name: "id", Value: "solar-id"}}},
+	})
+	ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id", "solar-id"})
+
+	target, err := KubernetesTargetByName(ctx, account, "solar-winds-POC")
+	require.NoError(t, err)
+	require.Equal(t, "solar winds POC", target.Name)
+
+	capture := &targetWorkspaceCapture{}
+	tool := KubectlExecuteTool{workspaceManager: capture}
+	nbCtx := core.NewNbToolContext(ctx, tool, account, "user", "conversation", "message", "agent", "", nil, "",
+		core.NBQueryConfig{ToolConfigs: map[string]string{ToolExecuteKubectlCommand: "k8s-prod"}}, "call")
+	_, err = tool.Call(nbCtx, core.NBToolCallRequest{Command: "kubectl --context solar-winds-POC get pods"})
+	require.NoError(t, err)
+	require.Equal(t, "solar winds POC", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME])
+	require.Equal(t, "solar-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID])
+	require.Equal(t, "kubectl get pods", capture.command)
+}
+
 func kubectlCallCtx(t *testing.T, account string, tool core.NBTool) core.NbToolContext {
 	t.Helper()
 	return core.NewNbToolContext(clusterCtx(account), tool, account, "user", "conversation", "message", "agent", "", nil, "",
@@ -218,6 +244,7 @@ func TestKubectlIdentifyConfigPrefersExplicitCluster(t *testing.T) {
 		{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
 		{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "dev-id"}}},
 		{Name: "k8s-dev-oss", Values: []core.ToolConfigValue{{Name: "id", Value: "oss-id"}}},
+		{Name: "solar winds POC", Values: []core.ToolConfigValue{{Name: "id", Value: "solar-id"}}},
 	}
 	ctx := core.NbToolContext{QueryConfig: core.NBQueryConfig{Labels: map[string]any{"nb_cloud_account_id": "prod-id"}}}
 	tool := KubectlExecuteTool{}
@@ -233,6 +260,10 @@ func TestKubectlIdentifyConfigPrefersExplicitCluster(t *testing.T) {
 	got, err = tool.IdentifyConfig(ctx, core.NBToolCallRequest{Command: "kubectl get pods --context=k8s-dev"}, configs)
 	require.NoError(t, err)
 	require.Equal(t, "k8s-dev", got.Name, "a raw (non-JSON) command is parsed too")
+
+	got, err = tool.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"kubectl --context solar-winds-POC get pods"}`}, configs)
+	require.NoError(t, err)
+	require.Equal(t, "solar winds POC", got.Name, "virtual kubeconfig aliases select the persisted config")
 
 	got, err = tool.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"kubectl get pods"}`}, configs)
 	require.NoError(t, err)

@@ -568,6 +568,7 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 	if err != nil {
 		return "", true, fmt.Errorf("unable to list Kubernetes contexts: %w", err)
 	}
+	aliases := tools.KubernetesTargetAliases(contexts)
 	current := req.TargetName
 	if current == "" {
 		current = req.ConfigName
@@ -577,11 +578,20 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 	}
 	if current != "" {
 		found := false
-		for _, target := range contexts {
-			if strings.EqualFold(target.Name, current) {
+		for _, target := range aliases {
+			if strings.EqualFold(target.Config.Name, current) {
 				current = target.Name
 				found = true
 				break
+			}
+		}
+		if !found {
+			for _, target := range aliases {
+				if strings.EqualFold(target.Name, current) {
+					current = target.Name
+					found = true
+					break
+				}
 			}
 		}
 		if !found {
@@ -597,14 +607,14 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 	if subcommand == "get-contexts" {
 		if outputFlag(argv) == "name" {
 			var names []string
-			for _, target := range contexts {
+			for _, target := range aliases {
 				names = append(names, target.Name)
 			}
 			return strings.Join(names, "\n") + trailingNewline(names), true, nil
 		}
 		var b strings.Builder
 		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   NAMESPACE\n")
-		for _, target := range contexts {
+		for _, target := range aliases {
 			marker := " "
 			if strings.EqualFold(target.Name, current) {
 				marker = "*"
@@ -613,11 +623,18 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 		}
 		return b.String(), true, nil
 	}
+	if subcommand == "get-clusters" {
+		var names []string
+		for _, target := range aliases {
+			names = append(names, target.Name)
+		}
+		return "NAME\n" + strings.Join(names, "\n") + trailingNewline(names), true, nil
+	}
 
 	config := map[string]any{"apiVersion": "v1", "kind": "Config", "current-context": current}
 	var entries []map[string]any
 	var clusters []map[string]any
-	for _, target := range contexts {
+	for _, target := range aliases {
 		entries = append(entries, map[string]any{"name": target.Name, "context": map[string]string{"cluster": target.Name, "user": "nubi-user"}})
 		clusters = append(clusters, map[string]any{"name": target.Name, "cluster": map[string]string{"server": "nubi://" + target.Name}})
 	}
@@ -630,6 +647,10 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 	}
 	encoded, marshalErr := common.EncodeYaml(config)
 	return string(encoded), true, marshalErr
+}
+
+func resolveKubectlContext(ctx *security.RequestContext, accountID, requested string) (core.ToolConfig, error) {
+	return tools.KubernetesTargetByName(ctx, accountID, requested)
 }
 
 // normalizeKubectlProxyRequest parses the concrete kubectl command forwarded
@@ -785,7 +806,7 @@ func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedC
 		if ctx.Ctx == nil || ctx.Ctx.GetSecurityContext() == nil {
 			return "", fmt.Errorf("target cluster access denied")
 		}
-		found, err := tools.KubernetesTargetByName(ctx.Ctx, ctx.AccountId, requestedConfig)
+		found, err := resolveKubectlContext(ctx.Ctx, ctx.AccountId, requestedConfig)
 		if err != nil {
 			return "", fmt.Errorf("selected cluster configuration is unavailable")
 		}

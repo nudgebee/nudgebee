@@ -548,7 +548,7 @@ func (m KubectlExecuteTool) Description() string {
 		* **Routing:** Availability does not make this tool the default for every Kubernetes command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns Kubernetes reads to the workspace shell, do not use this tool for those reads; keep this direct path for mutations and commands with uncertain effects so approval and resume behavior is preserved.
 		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported when the active agent routes the operation here; this support does not override its tool-routing policy. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) and secret-mounted exec/cp are blocked.
 		* **Output:** The tool will return the output of the executed command.
-		* **Cluster:** By default the command runs on the conversation's current cluster. To run it on another connected cluster, pass its name in 'cluster' (or use '--context <name>'). An unknown name returns the list of available clusters. If the conversation has no current cluster yet, the first cluster you name becomes its current cluster. Only kubectl commands switch clusters; other tools (logs, events, metrics, resource search, helm) stay on the current cluster. Output from another cluster carries a "cluster" field; cite it.
+		* **Cluster:** By default the command runs on the conversation's current cluster. To run it on another connected cluster, pass its name in 'cluster' (or use '--context <name>'). Shell-safe names returned by 'kubectl config get-contexts' are accepted here too; copy them exactly rather than inventing a normalized name. An unknown name returns the list of available clusters. If the conversation has no current cluster yet, the first cluster you name becomes its current cluster. Only kubectl commands switch clusters; other tools (logs, events, metrics, resource search, helm) stay on the current cluster. Output from another cluster carries a "cluster" field; cite it.
 
 		**Examples:**
 
@@ -608,7 +608,7 @@ func (m KubectlExecuteTool) InputSchema() core.ToolSchema {
 			},
 			"cluster": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Optional. Name of the connected cluster to run this command on. Omit to use the conversation's current cluster.",
+				Description: "Optional. Persisted cluster name or shell-safe alias returned by kubectl config get-contexts. Omit to use the conversation's current cluster.",
 			},
 		},
 		Required: []string{"command"},
@@ -1094,9 +1094,9 @@ func (m KubectlExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.NB
 		parsed.Arguments[k] = v
 	}
 	if requested, err := RequestedKubernetesCluster(parsed.Command, parsed.Arguments); err == nil && requested != "" {
-		for _, cfg := range availableConfigs {
-			if strings.EqualFold(cfg.Name, requested) {
-				return cfg, nil
+		for _, target := range KubernetesTargetAliases(availableConfigs) {
+			if strings.EqualFold(target.Config.Name, requested) || strings.EqualFold(target.Name, requested) {
+				return target.Config, nil
 			}
 		}
 	}
