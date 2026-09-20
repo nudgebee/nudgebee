@@ -51,10 +51,15 @@ type Event struct {
 // element. It is stamped onto `additional_info.source_workflow` by event.AddEvidence
 // and read back by the Investigate page (to name the automation behind a card) and
 // by RefreshInvestigation (to know the element is not its own to regenerate).
+// TaskID is the task within that automation. It exists because AddEvidence
+// replaces an automation's own previous output rather than stacking it, and
+// without a task to scope the replacement to, a workflow whose second task
+// attaches evidence would delete what its first task just attached.
 type EvidenceSourceWorkflow struct {
 	WorkflowID   string `json:"workflow_id" mapstructure:"workflow_id"`
 	WorkflowName string `json:"workflow_name" mapstructure:"workflow_name"`
 	ExecutionID  string `json:"execution_id" mapstructure:"execution_id"`
+	TaskID       string `json:"task_id,omitempty" mapstructure:"task_id"`
 }
 
 type EventResolution struct {

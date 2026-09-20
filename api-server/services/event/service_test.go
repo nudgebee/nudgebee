@@ -688,6 +688,31 @@ func TestStampEvidencesWithSourceWorkflow(t *testing.T) {
 		assert.Equal(t, expected, additionalInfo[evidenceSourceWorkflowKey])
 	})
 
+	t.Run("carries task_id when the caller names a task", func(t *testing.T) {
+		// The replace filter scopes to (workflow, task); without the task id a
+		// workflow's second attaching task deletes what its first one attached.
+		evidences := []any{map[string]any{"type": "gz", "filename": "heap.pprof.gz"}}
+		withTask := &models.EvidenceSourceWorkflow{
+			WorkflowID: "wf-1", WorkflowName: "pprof collector", ExecutionID: "run-9", TaskID: "profile-heap-2",
+		}
+
+		stampEvidencesWithSourceWorkflow(evidences, withTask)
+
+		stamp := evidences[0].(map[string]any)["additional_info"].(map[string]any)[evidenceSourceWorkflowKey]
+		assert.Equal(t, "profile-heap-2", stamp.(map[string]any)["task_id"])
+	})
+
+	t.Run("omits task_id rather than writing it empty", func(t *testing.T) {
+		// An empty string is a distinct value from a legacy element's absent one,
+		// and the filter's coalesce() relies on absence to mean "legacy".
+		evidences := []any{map[string]any{"type": "markdown", "data": "hello"}}
+
+		stampEvidencesWithSourceWorkflow(evidences, source)
+
+		stamp := evidences[0].(map[string]any)["additional_info"].(map[string]any)[evidenceSourceWorkflowKey]
+		assert.NotContains(t, stamp.(map[string]any), "task_id")
+	})
+
 	t.Run("tolerates a typed nil additional_info map", func(t *testing.T) {
 		// A JSON `null` fails the map assertion and takes the create-fresh path, but a
 		// Go-constructed typed nil map passes it — and writing to a nil map panics.

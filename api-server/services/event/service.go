@@ -3579,6 +3579,19 @@ func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any, 
 		// alert that re-fires daily grows this row per run, and `evidences` is a
 		// TOASTed column already holding 150KB-900KB blobs.
 		//
+		// The replacement is scoped to (workflow, task), not to the workflow alone.
+		// Two tasks in one automation each attaching evidence is a real shape — the
+		// pprof collector captures two heap profiles and attaches both — and keying
+		// on the workflow alone made the second attach delete the first.
+		//
+		// A legacy element stamped before task_id existed carries none, and is
+		// treated as the current task's to replace: it is a straggler from the same
+		// automation, and leaving it would strand a copy nothing can ever clean up.
+		//
+		// Both predicates are IS DISTINCT FROM rather than <>/=, so an element with
+		// no source_workflow at all (every enricher-produced card) compares as
+		// "different" and is kept. A NULL-propagating form here would drop them all.
+		//
 		// Still one statement, so the atomicity argument above holds: the filter
 		// and the append are evaluated against the same row version under a single
 		// row lock. A concurrent append from another workflow cannot be lost
@@ -3593,10 +3606,13 @@ func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any, 
 			                     END) AS elem
 			             WHERE elem->'additional_info'->'source_workflow'->>'workflow_id'
 			                   IS DISTINCT FROM $4
+			                OR coalesce(
+			                     elem->'additional_info'->'source_workflow'->>'task_id',
+			                     $5) IS DISTINCT FROM $5
 			        ) || $1::jsonb,
 			        updated_at = $2
 			  WHERE id = $3`,
-			string(evidencesJson), time.Now().UTC(), eventId, source.WorkflowID)
+			string(evidencesJson), time.Now().UTC(), eventId, source.WorkflowID, source.TaskID)
 	} else {
 		res, err = dbms.Db.Exec(
 			`UPDATE events
@@ -3639,10 +3655,16 @@ func stampEvidencesWithSourceWorkflow(evidences []any, source *models.EvidenceSo
 		}
 		// Overwrites any caller-supplied value: the server is the authority on
 		// which run this is.
-		additionalInfo[evidenceSourceWorkflowKey] = map[string]any{
+		stamp := map[string]any{
 			"workflow_id":   source.WorkflowID,
 			"workflow_name": source.WorkflowName,
 			"execution_id":  source.ExecutionID,
 		}
+		// Omitted rather than written empty when the caller has no task to name,
+		// so the replace filter's coalesce() treats it as a legacy element.
+		if source.TaskID != "" {
+			stamp["task_id"] = source.TaskID
+		}
+		additionalInfo[evidenceSourceWorkflowKey] = stamp
 	}
 }

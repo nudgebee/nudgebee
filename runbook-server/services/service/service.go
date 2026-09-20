@@ -1200,6 +1200,10 @@ type EvidenceSourceWorkflow struct {
 	WorkflowID   string `json:"workflow_id"`
 	WorkflowName string `json:"workflow_name"`
 	ExecutionID  string `json:"execution_id"`
+	// TaskID scopes api-server's "replace my own previous output" rule to one
+	// task. Two tasks in the same workflow both attaching evidence is a real
+	// shape, and without this the later one deletes the earlier one's cards.
+	TaskID string `json:"task_id,omitempty"`
 }
 
 // AddEventEvidence appends evidences to an event that already exists, via the
@@ -1230,11 +1234,19 @@ func AddEventEvidence(tenantId string, eventId string, evidences []any, source E
 	// Omitted for a task running outside a workflow context (no id to attribute
 	// to); api-server then appends unstamped, exactly as before.
 	if source.WorkflowID != "" {
-		input["source_workflow"] = map[string]any{
+		sourceWorkflow := map[string]any{
 			"workflow_id":   source.WorkflowID,
 			"workflow_name": source.WorkflowName,
 			"execution_id":  source.ExecutionID,
 		}
+		// Omitted rather than sent empty, matching the `omitempty` on TaskID.
+		// Absence is meaningful on the far side: api-server's replace filter
+		// treats an element with no task_id as a legacy one, so "unset" and
+		// "the empty task" must not arrive looking the same.
+		if source.TaskID != "" {
+			sourceWorkflow["task_id"] = source.TaskID
+		}
+		input["source_workflow"] = sourceWorkflow
 	}
 
 	serviceRequest := map[string]any{

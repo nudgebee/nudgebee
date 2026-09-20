@@ -65,6 +65,7 @@ func (t *EventsAddEvidenceTask) Execute(taskCtx types.TaskContext, params map[st
 		WorkflowID:   taskCtx.GetWorkflowID(),
 		WorkflowName: taskCtx.GetWorkflowName(),
 		ExecutionID:  taskCtx.GetWorkflowRunID(),
+		TaskID:       taskCtx.GetTaskID(),
 	}
 
 	if err := service.AddEventEvidence(taskCtx.GetTenantID(), eventId, evidences, source); err != nil {
@@ -90,7 +91,7 @@ func (t *EventsAddEvidenceTask) InputSchema() *types.Schema {
 			},
 			"evidences": {
 				Type:        types.PropertyTypeArray,
-				Description: "Evidence objects to append. Note that the Investigate page renders evidence by a fixed action-name list, so set additional_info.actual_action_name to text_enricher for a markdown card to be visible.",
+				Description: "Evidence objects to append. For prose, set additional_info.actual_action_name to text_enricher and put the markdown in `data` as a plain string — an object there renders nothing. Not every card dispatches on the action name: artefact cards (profiles, log files) select on the element's own `type` and `filename` instead, so do not wrap an artefact in a text_enricher card. To put a profile on an event, set the k8s.profile task's event_id rather than forwarding its output here.",
 				Required:    true,
 				Order:       2,
 			},

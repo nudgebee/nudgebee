@@ -347,10 +347,12 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			if workflowId != "" {
 				workflowName, _ := rawSource["workflow_name"].(string)
 				executionId, _ := rawSource["execution_id"].(string)
+				taskId, _ := rawSource["task_id"].(string)
 				source = &models.EvidenceSourceWorkflow{
 					WorkflowID:   workflowId,
 					WorkflowName: workflowName,
 					ExecutionID:  executionId,
+					TaskID:       taskId,
 				}
 			}
 		}
