@@ -66,12 +66,12 @@ def _drop_dead_kb_collections(collections, account_id, tenant_id):
     if live_names is None:
         logger.warning(
             "Could not resolve live knowledge bases for account %s / tenant %s - "
-            "searching all %d matched collections",
+            "excluding %d KB-backed collections",
             account_id,
             tenant_id,
-            len(collections),
+            len(kb_backed),
         )
-        return [collection.name for collection in collections]
+        return [collection.name for collection in collections if collection.name not in kb_backed]
 
     kept, dropped = [], []
     for collection in collections:
@@ -101,8 +101,9 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
     account in the tenant without listing every account on the collection.
 
     Visible is not the same as live: a matched collection is dropped again by
-    ``_drop_dead_kb_collections`` when its knowledge base is gone. An explicitly
-    requested ``collection_name`` bypasses both passes — the caller named it.
+    ``_drop_dead_kb_collections`` when its knowledge base is unavailable. An
+    explicitly requested collection may bypass the module tag, but never the
+    visibility scope or live-KB gate.
     """
     matched = []
     for collection in collections:
@@ -110,7 +111,8 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
         if not metadata:
             continue
 
-        if metadata.get("module") != module:
+        explicit = collection.name == collection_name
+        if metadata.get("module") != module and not explicit:
             continue
 
         is_matching_account = metadata.get("account") == account_id if account_id else False
@@ -123,8 +125,6 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
             matched.append(collection)
 
     collection_names = _drop_dead_kb_collections(matched, account_id, tenant_id)
-    if collection_name and collection_name not in collection_names:
-        collection_names.append(collection_name)
     return collection_names
 
 
