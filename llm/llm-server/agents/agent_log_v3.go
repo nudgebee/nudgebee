@@ -579,7 +579,7 @@ func (t *fetchLogsV3Tool) InputSchema() toolcore.ToolSchema {
 // uses both in that translator call — dropping them silently degrades intent
 // framing and account field guidance rather than erroring.
 func buildFetchLogsV3Request(nbCtx toolcore.NbToolContext, input toolcore.NBToolCallRequest) core.NBAgentRequest {
-	return core.NBAgentRequest{
+	request := core.NBAgentRequest{
 		Query:          input.Command,
 		AccountId:      nbCtx.AccountId,
 		ConversationId: nbCtx.ConversationId,
@@ -594,6 +594,10 @@ func buildFetchLogsV3Request(nbCtx toolcore.NbToolContext, input toolcore.NBTool
 		AccountContext: nbCtx.AccountContext,
 		AccountPrompt:  nbCtx.AccountPrompt,
 	}
+	// Translators (including kubectl fallback) consume ConversationContext;
+	// retain QueryContext as well for downstream tool execution.
+	request.ConversationContext = nbCtx.QueryContext
+	return request
 }
 
 // Call invokes FetchLogsAgentV2.Execute() directly using the request built by
