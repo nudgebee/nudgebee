@@ -102,6 +102,87 @@ func StripFirstAgentMention(query string) string {
 	return query
 }
 
+var titleFieldKeys = []string{"title", "subject", "summary", "name", "alertname", "description", "message", "text"}
+
+// maxDerivedTitleRunes caps a JSON-derived title. Aligned with the short-query
+// title path's 100-char cap so both title routes bound length the same way.
+const maxDerivedTitleRunes = 100
+
+// leadingMarkdownHeadingRegex matches a leading markdown heading marker ("#" ..
+// "######") plus its trailing space, so "# grafana Alert" renders as "grafana Alert".
+var leadingMarkdownHeadingRegex = regexp.MustCompile(`^\s*#{1,6}\s+`)
+
+// whitespaceRunRegex collapses any run of whitespace (incl. newlines/tabs) to one space.
+var whitespaceRunRegex = regexp.MustCompile(`\s+`)
+
+func DeriveTitleFromJSONQuery(query string) (string, bool) {
+	trimmed := strings.TrimSpace(query)
+	// Only object payloads — arrays / scalars / plain text are left to the caller.
+	if !strings.HasPrefix(trimmed, "{") {
+		return "", false
+	}
+	var obj map[string]any
+	if err := UnmarshalJson([]byte(trimmed), &obj); err != nil {
+		return "", false
+	}
+	// Case-insensitive key resolution, preferring titleFieldKeys order.
+	byLowerKey := make(map[string]string, len(obj))
+	for k := range obj {
+		byLowerKey[strings.ToLower(k)] = k
+	}
+	for _, want := range titleFieldKeys {
+		actual, ok := byLowerKey[want]
+		if !ok {
+			continue
+		}
+		val, ok := obj[actual].(string)
+		if !ok {
+			continue
+		}
+		if cleaned := cleanTitleLine(val); cleaned != "" {
+			return cleaned, true
+		}
+	}
+	return "", false
+}
+
+// cleanTitleLine reduces a (possibly multi-line, markdown) field value to one
+// title line, capped at maxDerivedTitleRunes runes. Returns "" when the value has
+// no non-empty line.
+func cleanTitleLine(s string) string {
+	for rest := s; rest != ""; {
+		line := rest
+		if idx := strings.IndexByte(rest, '\n'); idx >= 0 {
+			line, rest = rest[:idx], rest[idx+1:]
+		} else {
+			rest = ""
+		}
+		line = leadingMarkdownHeadingRegex.ReplaceAllString(line, "")
+		line = whitespaceRunRegex.ReplaceAllString(line, " ")
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return truncateAtWord(line, maxDerivedTitleRunes)
+		}
+	}
+	return ""
+}
+
+// truncateAtWord shortens s to at most maxRunes runes, preferring to cut on the
+// last word boundary, and appends a single-character ellipsis when it truncates.
+func truncateAtWord(s string, maxRunes int) string {
+	if len(s) <= maxRunes {
+		return s
+	}
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	cut := string([]rune(s)[:maxRunes])
+	if idx := strings.LastIndexByte(cut, ' '); idx > 0 {
+		cut = cut[:idx]
+	}
+	return strings.TrimRight(cut, " ") + "…"
+}
+
 // TruncateHead truncates s to at most maxBytes from the start, ensuring the cut
 // does not split a multi-byte UTF-8 character.
 func TruncateHead(s string, maxBytes int) string {

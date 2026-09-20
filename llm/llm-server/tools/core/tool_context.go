@@ -258,6 +258,11 @@ type NbToolContext struct {
 	KBPrestepContent  string
 	KBPrestepExecuted bool
 	KBReferences      any
+	// Knowledge policy is resolved once per top-level invocation and propagated
+	// through in-process delegation. Strings avoid a tools/core -> agents/core
+	// dependency; only framework code reads these fields.
+	KnowledgePolicy         string
+	KnowledgePolicyResolved bool
 	// Stats accumulates the DB/relay split for the in-flight tool call. A tool
 	// that records sets this on its local copy of the context at the top of
 	// Call(); because NbToolContext is passed by value the pointer — not the

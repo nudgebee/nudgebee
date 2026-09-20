@@ -31,76 +31,20 @@ const CacheNamespaceLlmKbMapping = "llm_kb_mapping"
 // Declared here (in tools/core) so KB update/delete paths can invalidate it.
 const CacheNamespaceLlmSkillContent = "llm_skill_content"
 
-// KB cache entries carry no TTL under the redis cache provider: common.CacheSet
-// only attaches an expiration when the caller passes one, and the
-// CacheNamespaceWithExpiration options in init() configure the in-memory store
-// only. A missed invalidation is therefore permanent, not a 15/30-minute
-// window — every create, update and delete must clear both the per-name skill
-// bodies and the per-agent skill menus.
+// KBAgentWildcard is the agent_id a knowledge base is mapped to when the user
+// picks "All agents" in the KB form. It is stored as an ordinary row in
+// llm_kb_agent_mappings, so callers include this sentinel alongside the
+// concrete agent names they resolve.
+const KBAgentWildcard = "*"
 
-// invalidateSkillContentCache drops the cached body of each supplied name.
-// Callers must pass every name the KB has been known by: load_skills keys on
-// the name the model asks for, not the KB id, so after a rename it is the OLD
-// name's entry that keeps serving stale content.
-func invalidateSkillContentCache(accountId string, names ...string) {
-	seen := make(map[string]bool, len(names))
-	for _, name := range names {
-		name = strings.ToLower(strings.TrimSpace(name))
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		key := fmt.Sprintf("skill:%s:%s", accountId, name)
-		if err := common.CacheDelete(CacheNamespaceLlmSkillContent, key); err != nil {
-			slog.Warn("kb: failed to invalidate skill content cache", "error", err, "key", key)
-		}
-	}
-}
-
-// invalidateKBMappingCache drops the cached per-agent skill menu (the
-// `<skill-lists>` block built from ListAgentKBs) for each supplied agent.
-func invalidateKBMappingCache(accountId string, agentIds ...string) {
-	for _, agentId := range agentIds {
-		if agentId == "" {
-			continue
-		}
-		key := fmt.Sprintf("kb_mapping:%s:%s", accountId, agentId)
-		if err := common.CacheDelete(CacheNamespaceLlmKbMapping, key); err != nil {
-			slog.Warn("kb: failed to invalidate KB mapping cache", "error", err, "key", key)
-		}
-	}
-}
-
-// kbMappedAgentIds returns the agents a KB is mapped to. ok is false when the
-// lookup fails, so callers can fall back to a namespace-wide clear instead of
-// leaving a menu pinned to a name that no longer exists. Read it before
-// deleting the KB — the mapping rows go with it.
-func kbMappedAgentIds(dbms *common.DatabaseManager, accountId, kbId string) ([]string, bool) {
-	var agentIds []string
-	if err := dbms.Db.Select(&agentIds,
-		`SELECT agent_id FROM llm_kb_agent_mappings WHERE kb_id = $1 AND account_id = $2`,
-		kbId, accountId); err != nil {
-		slog.Error("kb: failed to list mapped agents for cache invalidation", "error", err, "kb_id", kbId)
-		return nil, false
-	}
-	return agentIds, true
-}
-
-// invalidateKBCaches clears every cached view of one KB: the skill bodies under
-// each supplied name, and the skill menu of every agent it is mapped to.
-func invalidateKBCaches(dbms *common.DatabaseManager, accountId, kbId string, names ...string) {
-	invalidateSkillContentCache(accountId, names...)
-	if kbId == "" {
-		return
-	}
-	agentIds, ok := kbMappedAgentIds(dbms, accountId, kbId)
-	if !ok {
-		if err := common.CacheClear(CacheNamespaceLlmKbMapping); err != nil {
-			slog.Error("kb: failed to clear KB mapping cache", "error", err)
-		}
-		return
-	}
-	invalidateKBMappingCache(accountId, agentIds...)
+// WithKBAgentWildcard returns names plus the all-agents sentinel.
+//
+// Always return a fresh slice because callers may pass a slice whose backing
+// array is shared with another list.
+func WithKBAgentWildcard(names []string) []string {
+	out := make([]string, 0, len(names)+1)
+	out = append(out, names...)
+	return append(out, KBAgentWildcard)
 }
 
 // KB cache entries carry no TTL under the redis cache provider: common.CacheSet

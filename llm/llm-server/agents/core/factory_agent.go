@@ -12,6 +12,17 @@ import (
 
 var nbSystemAgents = map[string]func(accountId string) (NBAgent, error){}
 
+// nbSystemAgentAliases records lowercased alias names registered via
+// RegisterNBAgentFactoryWithAliases. Aliases remain resolvable through
+// nbSystemAgents, while callers such as ListAgents can omit duplicate picker
+// entries.
+var nbSystemAgentAliases = map[string]bool{}
+
+// IsSystemAgentAlias reports whether agent was registered as an alias.
+func IsSystemAgentAlias(agent string) bool {
+	return nbSystemAgentAliases[strings.ToLower(agent)]
+}
+
 func RegisterNBAgentFactory(agent string, agentFactory func(accountId string) (NBAgent, error)) {
 	slog.Info("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
@@ -29,6 +40,7 @@ func RegisterNBAgentFactoryWithAliases(agent string, agentFactory func(accountId
 	RegisterNBAgentFactory(agent, agentFactory)
 	for _, alias := range aliases {
 		RegisterNBAgentFactory(alias, agentFactory)
+		nbSystemAgentAliases[strings.ToLower(alias)] = true
 	}
 }
 
