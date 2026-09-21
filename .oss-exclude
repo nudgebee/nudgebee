@@ -74,6 +74,11 @@ app/src/pages/api/auth/saml/
 # Same pages-router filesystem constraint as the SAML pages above.
 app/src/pages/api/marketplace/
 
+# Legacy AWS marketplace callback left under integrations/ rather than the
+# canonical marketplace/ route tree. It calls the same EE-only marketplace
+# backend and must be stripped from an OSS snapshot as well.
+app/src/pages/api/integrations/marketplace/
+
 # Self-signup form — creates a new tenant per sign-up. SaaS-only flow:
 # EE pre-provisions tenant via license, OSS is singleton-tenant by
 # design. Same pages-router constraint as the SAML pages above forces
@@ -242,6 +247,7 @@ api-server/migrations/migrations/app/1785846046269_V845_confirmed_inferred_prefe
 # OSS keeps only public validation workflows.
 .claude/skills/loki-logs/SKILL.md
 .gemini/skills/loki-logs/SKILL.md
+
 .github/workflows/app-dev-gke.yaml
 .github/workflows/app-e2e-tests-dev.yaml
 .github/workflows/app-e2e-tests-hourly.yaml
