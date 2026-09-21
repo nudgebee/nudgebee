@@ -1227,10 +1227,43 @@ func AddEventEvidence(tenantId string, eventId string, evidences []any, source E
 		return errors.New("at least one evidence is required")
 	}
 
-	input := map[string]any{
+	return postEventEvidence(tenantId, map[string]any{
 		"event_id":  eventId,
 		"evidences": evidences,
+	}, source)
+}
+
+// AuthoredEvidence is a card an automation author filled in by hand: the type
+// they picked plus the fields that type takes. api-server owns the envelope the
+// Investigate page reads, and rejects a type it cannot draw — which is the
+// point of sending the fields rather than a hand-built evidence object.
+type AuthoredEvidence struct {
+	Type     string   `json:"type"`
+	Title    string   `json:"title,omitempty"`
+	Summary  string   `json:"summary,omitempty"`
+	Severity string   `json:"severity,omitempty"`
+	Content  string   `json:"content,omitempty"`
+	JsonData string   `json:"json_data,omitempty"`
+	Headers  []string `json:"headers,omitempty"`
+	Rows     string   `json:"rows,omitempty"`
+}
+
+// AddAuthoredEventEvidence attaches one authored card to an existing event.
+func AddAuthoredEventEvidence(tenantId string, eventId string, evidence AuthoredEvidence, source EvidenceSourceWorkflow) error {
+	if eventId == "" {
+		return errors.New("event_id is required")
 	}
+	if evidence.Type == "" {
+		return errors.New("type is required")
+	}
+
+	return postEventEvidence(tenantId, map[string]any{
+		"event_id": eventId,
+		"evidence": evidence,
+	}, source)
+}
+
+func postEventEvidence(tenantId string, input map[string]any, source EvidenceSourceWorkflow) error {
 	// Omitted for a task running outside a workflow context (no id to attribute
 	// to); api-server then appends unstamped, exactly as before.
 	if source.WorkflowID != "" {

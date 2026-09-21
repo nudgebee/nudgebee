@@ -47,6 +47,7 @@ function CollapsableCard({
   eventResolution = null,
   onCloseResolveComponent,
   sourceWorkflow = null,
+  authoredByAutomation = false,
 }) {
   // Computed once: the same status is rendered in two places on this card, and describeResolution
   // was being called for each field of each.
@@ -190,7 +191,7 @@ function CollapsableCard({
                 event.AddEvidence). Enricher cards carry no stamp and render unchanged.
                 Sits in the header rather than the body so the answer to "where did this
                 card come from" survives the card being collapsed. */}
-            {sourceWorkflow?.workflow_id && sourceWorkflow?.workflow_name && (
+            {sourceWorkflow?.workflow_id && sourceWorkflow?.workflow_name ? (
               // The testid sits on the wrapper, not on Link: Link takes a fixed prop
               // list and does not spread the rest, so a data-* passed to it never
               // reaches the DOM. Link also stops click propagation itself, which is
@@ -200,6 +201,19 @@ function CollapsableCard({
                   via {sourceWorkflow.workflow_name}
                 </Link>
               </Box>
+            ) : (
+              // Running one step on its own (the builder's Run Task) has no workflow
+              // run to open, so the card says where it came from in plain text
+              // rather than leaving the reader to guess.
+              authoredByAutomation && (
+                <Typography
+                  component='span'
+                  data-testid='card-source-automation-label'
+                  sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[600], whiteSpace: 'nowrap' }}
+                >
+                  added by an automation step
+                </Typography>
+              )
             )}
           </Grid>
 
@@ -407,6 +421,7 @@ export default React.memo(CollapsableCard, (prevProps, nextProps) => {
     prevIsExpanded === nextIsExpanded &&
     prevProps.collapsedObj[prevProps.idx] === nextProps.collapsedObj[nextProps.idx] &&
     prevProps.eventResolution === nextProps.eventResolution &&
-    prevProps.sourceWorkflow === nextProps.sourceWorkflow
+    prevProps.sourceWorkflow === nextProps.sourceWorkflow &&
+    prevProps.authoredByAutomation === nextProps.authoredByAutomation
   );
 });

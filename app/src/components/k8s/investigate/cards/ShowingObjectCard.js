@@ -17,6 +17,10 @@ class ShowingObjectCard {
     this.enricherData = evidenceData;
     this.tableData = {};
     this.disabled = evidenceData?.additional_info?.status == 'skipped';
+    // Automation-written JSON evidence says so in its header, linking to the run
+    // when there was one. Enricher evidence carries neither and renders as before.
+    this.sourceWorkflow = evidenceData?.additional_info?.source_workflow;
+    this.authoredByAutomation = evidenceData?.additional_info?.actual_action_name === 'workflow_evidence';
   }
 
   canRenderContent = async () => {

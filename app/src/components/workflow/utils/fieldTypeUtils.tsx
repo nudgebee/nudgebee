@@ -200,6 +200,12 @@ export const resolveFieldType = (fieldName: string, fieldSchema: SchemaProperty,
     return 'textarea';
   }
 
+  // A field declaring JSON gets the code editor, whatever it is called; the
+  // name-based rule below only catches fields called script/command/query.
+  if (fieldSchema.sub_type === 'json') {
+    return 'script';
+  }
+
   // Check for nested schema objects
   // Schema can have properties directly under schema or under schema.properties
   if (fieldSchema.type === 'object' && fieldSchema.schema && Object.keys(fieldSchema.schema).length > 0) {

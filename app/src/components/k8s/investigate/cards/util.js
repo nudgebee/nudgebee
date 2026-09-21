@@ -8,10 +8,18 @@ export const getTableData = (t) => {
   const headers = t.data.headers || t.data.rows?.[0]?.map((_, i) => `Column ${i + 1}`);
   let apiPath = '';
   let tableInsight = [];
+  // A nested object or array cannot be rendered as a React child — it throws and
+  // takes the page down — so anything that is not a primitive becomes JSON text.
+  // Booleans are stringified too: React renders them as nothing, so a `false`
+  // cell would otherwise look empty rather than false.
+  const cellText = (value) => {
+    if (value === null || value === undefined) return '';
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  };
   let convertedJson = (t.data.rows || []).map((row) => {
     const rowData = {};
     headers.forEach((header, index) => {
-      rowData[header] = row[index];
+      rowData[header] = cellText(row[index]);
     });
     return rowData;
   });
@@ -133,6 +141,14 @@ export const getTableData3 = (data) => {
     return { headers: [], convertedJson2: [] };
   }
   const headers = ['key', 'value'];
+  // A nested object or array cannot be rendered as a React child — it throws and
+  // takes the whole card down — so anything that is not a primitive is shown as
+  // its JSON text. Booleans are stringified too: React renders them as nothing,
+  // so a `false` value would otherwise look like an empty cell.
+  const asText = (value) => {
+    if (value === null || value === undefined) return '';
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  };
   const convertedJson2 = Object.entries(data).map(([key, value]) => [
     {
       component: (
@@ -156,7 +172,7 @@ export const getTableData3 = (data) => {
             fontSize: 'var(--ds-text-body)',
           }}
         >
-          {value}
+          {asText(value)}
         </Typography>
       ),
     },

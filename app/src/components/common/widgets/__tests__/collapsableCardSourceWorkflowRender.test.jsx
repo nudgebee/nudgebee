@@ -56,3 +56,27 @@ describe('CollapsableCard source-workflow attribution', () => {
     expect(screen.queryByTestId('card-source-workflow-link')).not.toBeInTheDocument();
   });
 });
+
+describe('CollapsableCard attribution without a run to link to', () => {
+  // The builder's Run Task executes one step on its own, so there is no workflow
+  // run to open — but the reader still needs to know an automation wrote it.
+  it('says an automation added the card when there is no run', () => {
+    render(<CollapsableCard {...baseProps} sourceWorkflow={null} authoredByAutomation />);
+
+    expect(screen.getByTestId('card-source-automation-label')).toHaveTextContent('added by an automation step');
+    expect(screen.queryByTestId('card-source-workflow-link')).not.toBeInTheDocument();
+  });
+
+  it('prefers the link when the card does carry a run', () => {
+    render(<CollapsableCard {...baseProps} sourceWorkflow={sourceWorkflow} authoredByAutomation />);
+
+    expect(screen.getByTestId('card-source-workflow-link')).toBeInTheDocument();
+    expect(screen.queryByTestId('card-source-automation-label')).not.toBeInTheDocument();
+  });
+
+  it('stays silent for enricher evidence', () => {
+    render(<CollapsableCard {...baseProps} sourceWorkflow={null} />);
+
+    expect(screen.queryByTestId('card-source-automation-label')).not.toBeInTheDocument();
+  });
+});

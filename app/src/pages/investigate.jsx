@@ -1228,9 +1228,12 @@ const Investigate = () => {
         const d = result[i];
         const actionType =
           d?.additional_info?.actual_action_name || d?.additional_info?.action_name || d?.additional_info?.type || d.type || d.source;
-        const isCritical = d.insight?.some((insight) => insight.severity === 'Critical');
-        const isHigh = d.insight?.some((insight) => insight.severity === 'High');
-        const isInfo = d.insight?.some((insight) => insight.severity === 'Info');
+        // Evidence an automation wrote carries its severity here, because it only
+        // emits an insight when the author wrote a highlight to go with it.
+        const authoredSeverity = d?.additional_info?.severity;
+        const isCritical = d.insight?.some((insight) => insight.severity === 'Critical') || authoredSeverity === 'Critical';
+        const isHigh = d.insight?.some((insight) => insight.severity === 'High') || authoredSeverity === 'High';
+        const isInfo = d.insight?.some((insight) => insight.severity === 'Info') || authoredSeverity === 'Info';
 
         // Helper to push card and track severity (for cloud sorting)
         const pushCard = (card) => {
@@ -1241,6 +1244,22 @@ const Investigate = () => {
             else if (isInfo) infoCards.push(card);
           }
         };
+
+        // Evidence an automation wrote (events.add_evidence). One dispatch key
+        // for every type it offers, switching on the element's own `type` from
+        // here — the author picks the type, and api-server refuses one this
+        // block cannot draw, so a saved card always appears.
+        if (actionType === 'workflow_evidence') {
+          let card;
+          if (d.type === 'json') {
+            card = new ShowingObjectCard(d, row, i);
+          } else if (d.type === 'table') {
+            card = new ShowingTableCard(d, i);
+          } else {
+            card = new TextEnricherDynamicCard(d, i);
+          }
+          if (await card.canRenderContent()) pushCard(card);
+        }
 
         // Shared action types
         if (actionType === 'text_enricher') {
@@ -3042,6 +3061,7 @@ const Investigate = () => {
                                     maxWidth='100%'
                                     eventResolution={isK8s ? getResolutionForCard(option?.id) : undefined}
                                     sourceWorkflow={option?.sourceWorkflow}
+                                    authoredByAutomation={option?.authoredByAutomation}
                                   />
                                 </div>
                               ))}
