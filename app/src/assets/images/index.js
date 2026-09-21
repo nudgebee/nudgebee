@@ -7,6 +7,7 @@ import TroubleshootIcon1Comp from '@assets/sidebar-icon/troubleshoot.icon.svg';
 import WhiteOptimizeIconComp from '@assets/header/whiteOptimizeIcon.icon.svg';
 import ProfileOutlineIconComp from '@assets/new/profile-outline-icon.icon.svg';
 import KubernetesClusterIconComp from '@assets/home/new-cluster-icon.icon.svg';
+import VmIconComp from '@assets/sidebar-icon/vm.icon.svg';
 import SummaryIconBlueComp from '@assets/header/SummaryIconBlue.icon.svg';
 import AppsInfraIconBlueComp from '@assets/header/AppsInfraIconBlue.icon.svg';
 import MonitoringIconBlueComp from '@assets/header/MonitoringIconBlue.icon.svg';
@@ -178,10 +179,7 @@ export const troubleshootIconBlack = require('@assets/sidebar-icon/troubleshootB
 export const GroupOfUsersIcon = require('@assets/group-users.svg');
 
 export const CloudAccountIcon = require('@assets/sidebar-icon/cloud-account.svg');
-// Two variants because the two placements sit on opposite backgrounds: the
-// sidebar draws icons white on the brand-navy rail, the tab bar draws them dark
-// on white. SafeIcon renders an <img>, so the colour is baked into the file.
-export const VmIcon = require('@assets/sidebar-icon/vm.svg');
+export const VmIcon = VmIconComp;
 export const VmServerIcon = require('@assets/new/vm-server.svg');
 export const CloudIconBlackOutline = require('@assets/sidebar-icon/cloud-black-outline.svg');
 export const ToolIcon = require('@assets/Tool.svg');

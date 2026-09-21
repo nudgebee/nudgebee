@@ -186,20 +186,22 @@ func TestGenerateFollowup_LateralToolConfigDedup_3SiblingsCollapseToOne(t *testi
 	agentC := uuid.New()
 
 	mkReq := func(agentId uuid.UUID, agentName string) (NBAgentRequest, FollowupRequest) {
-		return NBAgentRequest{
-				MessageId:      "msg-1",
-				ConversationId: "conv-1",
-				AccountId:      "acct-1",
-				UserId:         "user-1",
-				AgentId:        agentId.String(),
-			}, FollowupRequest{
-				Question:        "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:",
-				FollowupType:    FollowupTypeToolConfig,
-				ToolName:        "aws_execute",
-				FollowupOptions: []string{"aws-prod", "aws-dev"},
-				AgentName:       agentName,
-				AgentId:         agentId,
-			}
+		req := NBAgentRequest{
+			MessageId:      "msg-1",
+			ConversationId: "conv-1",
+			AccountId:      "acct-1",
+			UserId:         "user-1",
+			AgentId:        agentId.String(),
+		}
+		followup := FollowupRequest{
+			Question:        "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:",
+			FollowupType:    FollowupTypeToolConfig,
+			ToolName:        "aws_execute",
+			FollowupOptions: []string{"aws-prod", "aws-dev"},
+			AgentName:       agentName,
+			AgentId:         agentId,
+		}
+		return req, followup
 	}
 
 	// Sibling A: no existing sibling → falls through to create path, inserts.
@@ -289,20 +291,22 @@ func TestGenerateFollowup_LateralToolConfigDedup_ConcurrentSiblings(t *testing.T
 	defer SetConversationDao(original)
 
 	mkReq := func(agentId uuid.UUID) (NBAgentRequest, FollowupRequest) {
-		return NBAgentRequest{
-				MessageId:      "msg-1",
-				ConversationId: "conv-1",
-				AccountId:      "acct-1",
-				UserId:         "user-1",
-				AgentId:        agentId.String(),
-			}, FollowupRequest{
-				Question:        "Select tool config:",
-				FollowupType:    FollowupTypeToolConfig,
-				ToolName:        "aws_execute",
-				FollowupOptions: []string{"aws-prod", "aws-dev"},
-				AgentName:       "aws_observability",
-				AgentId:         agentId,
-			}
+		req := NBAgentRequest{
+			MessageId:      "msg-1",
+			ConversationId: "conv-1",
+			AccountId:      "acct-1",
+			UserId:         "user-1",
+			AgentId:        agentId.String(),
+		}
+		followup := FollowupRequest{
+			Question:        "Select tool config:",
+			FollowupType:    FollowupTypeToolConfig,
+			ToolName:        "aws_execute",
+			FollowupOptions: []string{"aws-prod", "aws-dev"},
+			AgentName:       "aws_observability",
+			AgentId:         agentId,
+		}
+		return req, followup
 	}
 
 	agents := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}

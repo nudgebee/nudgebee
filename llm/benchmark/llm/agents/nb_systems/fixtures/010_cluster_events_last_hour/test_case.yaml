@@ -1,0 +1,20 @@
+user_prompt: "what happened in namespace app-010 in the last hour? show me all events sorted by time"
+
+expected_output:
+  - The response must list Kubernetes events from namespace app-010, such as Scheduled, Pulling, Pulled, Created, and Started for the event-generator pods.
+  - The response should present the events ordered chronologically (sorted by time), as asked.
+  - The response should show that 2 replicas of event-generator were created in namespace app-010.
+
+before_test: |
+  kubectl create namespace app-010 || true
+  kubectl label namespace app-010 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n app-010
+  kubectl wait --for=condition=ready pod -l app=event-generator -n app-010 --timeout=60s
+
+after_test: |
+  kubectl delete namespace app-010 --ignore-not-found
+
+tags:
+  - kubernetes
+  - events
+  - orchestrator

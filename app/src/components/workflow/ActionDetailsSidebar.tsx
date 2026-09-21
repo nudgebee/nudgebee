@@ -39,6 +39,7 @@ import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
 import { isTenantAdmin } from '@lib/auth';
+import { isUrlFieldName, urlFieldStatus } from 'src/utils/url';
 import { DurationField, TemplateExpressionField, FailurePolicyField, HooksField, KeyValueField, MatrixField } from './components/advanced-config';
 import CollapsableCard from '@ui/CollapsableCard';
 import {
@@ -3016,8 +3017,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     id={`action-sidebar-options-source-${fieldName}-input`}
                     size='small'
                     placeholder={placeholder}
-                    error={!!validationErrors[fieldName]}
-                    helperText={validationErrors[fieldName] || ''}
+                    error={!!validationErrors[fieldName] || !!sourceData?.error}
+                    helperText={validationErrors[fieldName] || sourceData?.error || ''}
                   />
                 )}
                 size='small'
@@ -3875,6 +3876,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   multiline={isMultilineField}
                   rows={isMultilineField ? 6 : undefined}
                   maxRows={isMultilineField ? 10 : undefined}
+                  validationStatus={isUrlFieldName(fieldName) ? urlFieldStatus(fieldValue) : undefined}
                   fullWidth={true}
                 />
               </Box>

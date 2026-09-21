@@ -180,6 +180,8 @@ const apiNotifications = {
       }
       if (query.source) {
         queryParams['source'] = { _eq: query.source };
+      } else if (query.excludeSource) {
+        queryParams['source'] = { _neq: query.excludeSource };
       }
       if (query.namespace) {
         queryParams['namespace'] = { _eq: query.namespace };

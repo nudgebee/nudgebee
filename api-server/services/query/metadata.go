@@ -68,6 +68,15 @@ type ColumnDefinition struct {
 	IsAggregated bool
 	DefGenerator func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error)
 	WhereDef     string
+	// NumericCompareDef opts a string-typed column into ordered comparison (< <= > >=)
+	// by supplying an explicit numeric projection of itself, e.g.
+	// "toInt32OrZero(http_status_code)". Ordered operators on a string column are
+	// otherwise rejected on purpose: comparing lexicographically against a value the
+	// caller means numerically returns plausible wrong rows instead of an error. Set
+	// this only where the column genuinely holds a number stored as text, and only the
+	// ordered operators use it -- _eq/_like/label-values keep the string Def, so the
+	// column's existing behaviour (and the UI built on it) is unchanged.
+	NumericCompareDef string
 }
 
 type TableDefinition struct {
@@ -294,6 +303,15 @@ func GetTracesProviderAndUrl(ctx *security.RequestContext, accountId string) (st
 		}
 	}
 	return traceProvider, traceProviderConfig, hasMaterializedColumn
+}
+
+func TracesConfigured(accountId string) bool {
+	agentDetails, err := account.GetAgentConnectionDetails(accountId)
+	if err != nil {
+		return false
+	}
+	f := agentDetails.Features
+	return f.TracesEnabled != nil && *f.TracesEnabled && f.TracesUrl != nil && *f.TracesUrl != ""
 }
 
 func getSource(tableName string) database.DatabaseManagerType {
@@ -1326,9 +1344,15 @@ var table_metadata = map[string]TableDefinition{
 					FROM event_correlations WHERE correlation_type = 'same_incident'
 					ORDER BY event_id, cloud_account_id, related_event_id) ecl
 					ON ecl.event_id = events.id AND ecl.cloud_account_id = events.cloud_account_id`
-				from += ` LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
-					FROM event_correlations WHERE correlation_type = 'same_incident'
-					GROUP BY related_event_id, cloud_account_id) ecc
+				// Distinct ALERTS, not links. Group links join firings, so one alert firing repeatedly inside an incident contributes several rows
+				// counting them would report an incident with two alerts in it
+				// as having six members.
+				from += ` LEFT JOIN (SELECT ec.related_event_id, ec.cloud_account_id,
+					       count(DISTINCT me.fingerprint) AS incident_member_count
+					FROM event_correlations ec
+					JOIN events me ON me.id = ec.event_id AND me.cloud_account_id = ec.cloud_account_id
+					WHERE ec.correlation_type = 'same_incident'
+					GROUP BY ec.related_event_id, ec.cloud_account_id) ecc
 					ON ecc.related_event_id = events.id AND ecc.cloud_account_id = events.cloud_account_id`
 			}
 			// One row per analysed event, not per analysis stage. event_log_analysis
@@ -1793,9 +1817,13 @@ var table_metadata = map[string]TableDefinition{
 						FROM event_correlations WHERE correlation_type = 'same_incident'
 						ORDER BY event_id, cloud_account_id, related_event_id) ecl
 						ON ecl.event_id = e.id AND ecl.cloud_account_id = e.cloud_account_id`,
-					`LEFT JOIN (SELECT related_event_id, cloud_account_id, count(*) AS incident_member_count
-						FROM event_correlations WHERE correlation_type = 'same_incident'
-						GROUP BY related_event_id, cloud_account_id) ecc
+					// Distinct alerts, not links — see the matching join above.
+					`LEFT JOIN (SELECT ec.related_event_id, ec.cloud_account_id,
+						       count(DISTINCT me.fingerprint) AS incident_member_count
+						FROM event_correlations ec
+						JOIN events me ON me.id = ec.event_id AND me.cloud_account_id = ec.cloud_account_id
+						WHERE ec.correlation_type = 'same_incident'
+						GROUP BY ec.related_event_id, ec.cloud_account_id) ecc
 						ON ecc.related_event_id = e.id AND ecc.cloud_account_id = e.cloud_account_id`)
 			}
 			if requestReferencesColumns(request, investigationStatusDependentColumns) {
@@ -2929,7 +2957,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT workload_zone, destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, cloud_availability_zone, workload_namespace,workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source FROM %s) AS traces_grouping_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availablity_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, traceSourceExpr(tableName), tableName)
+				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availability_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, span.displayName.value AS span_name, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.attributes.attributeMap._http_status_code as http_status_code, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace FROM %s) AS traces_grouping_v2`, traceProviderUrl)
@@ -10099,14 +10127,36 @@ var table_metadata = map[string]TableDefinition{
 			"updated_at": {Type: ColumnDefinitionTypeDatetime, Def: "updated_at"},
 		},
 	},
+	// Joined to feature_category so the settings screen gets a readable group
+	// label and a stable order without hard-coding either in the frontend.
+	// feature.category is NOT NULL with an FK to feature_category, so the inner
+	// join cannot drop a row.
 	"feature_v2": {
-		Type:   Normal,
+		Type:   Derived,
 		Source: database.Metastore,
 		Name:   "feature_v2",
-		Def:    "feature",
+		Def: `(
+			SELECT
+				f.value as value,
+				f.description as description,
+				f.display_name as display_name,
+				f.category as category,
+				c.label as category_label,
+				c.sort_order as category_sort_order,
+				f.polarity as polarity,
+				f.stored_value_inverted as stored_value_inverted
+			FROM feature f
+			INNER JOIN feature_category c ON c.id = f.category
+		) as feature_v2`,
 		Columns: map[string]ColumnDefinition{
-			"value":       {Type: ColumnDefinitionTypeString, Def: "value"},
-			"description": {Type: ColumnDefinitionTypeString, Def: "description"},
+			"value":                 {Type: ColumnDefinitionTypeString, Def: "value"},
+			"description":           {Type: ColumnDefinitionTypeString, Def: "description"},
+			"display_name":          {Type: ColumnDefinitionTypeString, Def: "display_name"},
+			"category":              {Type: ColumnDefinitionTypeString, Def: "category"},
+			"category_label":        {Type: ColumnDefinitionTypeString, Def: "category_label"},
+			"category_sort_order":   {Type: ColumnDefinitionTypeInt, Def: "category_sort_order"},
+			"polarity":              {Type: ColumnDefinitionTypeString, Def: "polarity"},
+			"stored_value_inverted": {Type: ColumnDefinitionTypeBoolean, Def: "stored_value_inverted"},
 		},
 	},
 	"tenant_by_user_v2": {

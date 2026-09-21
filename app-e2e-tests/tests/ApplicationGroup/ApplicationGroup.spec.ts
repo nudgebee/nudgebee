@@ -22,7 +22,7 @@ test.beforeEach(() => {
 test.describe("Application Group", () => {
   test(
     "Application Group sanity - open the Application Grouping tab, verify the six column headers and the toolbar's search, download and create controls",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -48,7 +48,7 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - search the groups listing for a term no group name can match, verify the table empties and shows the No Data Available panel",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@search", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -64,7 +64,7 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - search a term no group can match, clear the search, verify every original group row is restored",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@search", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -87,7 +87,7 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - open Create Application Group, verify the Create Grouping modal offers an empty required name and both application counters at zero",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openCreateModal(locators);
@@ -112,7 +112,7 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - open Create Grouping, leave the required name empty, submit, verify the This field required error",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openCreateModal(locators);
@@ -130,7 +130,7 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - open Create Grouping, enter a name starting with a digit, verify the Should start with an alphabet error",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openCreateModal(locators);
@@ -146,12 +146,17 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - open Create Grouping, enter the name of a group that already exists, submit, verify the Group name already in use error",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
       const existing = await firstGroupName(locators);
-      expect(existing, NO_GROUP_HINT).not.toBeNull();
+      // Skipped, not failed: this suite deliberately creates no groups (the module
+      // has no delete on any layer, so anything it created would be permanent), and
+      // a tenant that happens to hold none is a missing fixture rather than a defect
+      // in the product. Same treatment Dashboards.spec.ts gives its own read-only
+      // test on an empty listing.
+      test.skip(existing === null, NO_GROUP_HINT);
 
       await openCreateModal(locators);
       await locators.nameInput.fill(existing as string);
@@ -181,7 +186,7 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - open Create Grouping, enter a valid name, cancel the modal, verify the group is not added to the listing",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       const baseline = await locators.rowCount();
@@ -210,12 +215,17 @@ test.describe("Application Group", () => {
 
   test(
     "Application Group - open a group from the listing, verify the detail view's Summary, Events and Applications tabs and its Edit Application Group action, then return to the listing",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
       const existing = await firstGroupName(locators);
-      expect(existing, NO_GROUP_HINT).not.toBeNull();
+      // Skipped, not failed: this suite deliberately creates no groups (the module
+      // has no delete on any layer, so anything it created would be permanent), and
+      // a tenant that happens to hold none is a missing fixture rather than a defect
+      // in the product. Same treatment Dashboards.spec.ts gives its own read-only
+      // test on an empty listing.
+      test.skip(existing === null, NO_GROUP_HINT);
 
       await test.step("The group name opens its detail view", async () => {
         await locators.rowLinkByName(existing as string).click();

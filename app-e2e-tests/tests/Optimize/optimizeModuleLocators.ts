@@ -172,7 +172,7 @@ export class OptimizeModuleLocators extends OptimizeLocators {
   // so getByRole is the higher rung and scoping it to the tab's own listing keeps it
   // off the identically named filters on the other tabs. The id it also renders,
   // `auto-complete-${toKebabCase(id)}`, is the fallback.
-  private filterTrigger(id: string, label: string, scope: Locator): Locator {
+  protected filterTrigger(id: string, label: string, scope: Locator): Locator {
     return scope
       .getByRole("button", { name: new RegExp(`^${label}`) })
       .or(this.page.locator(`#auto-complete-${id}`))

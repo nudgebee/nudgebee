@@ -1,0 +1,10 @@
+agent: aws
+user_prompt: "show me all RDS instances across my accounts — which ones are up and which are stopped?"
+expected_output:
+  - The response must enumerate every RDS instance found across the connected AWS account(s).
+  - For each instance, the response must explicitly state whether it is currently running/available or stopped.
+  - The agent must invoke a real AWS tool call to gather this rather than fabricating instance names or statuses.
+tags:
+  - aws
+  - cloud
+  - tool

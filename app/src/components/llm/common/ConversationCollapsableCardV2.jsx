@@ -37,7 +37,7 @@ function ConversationCollapsableCard({
       id={id}
       sx={{
         background: (toolData.tool || toolData.type) === 'question' ? 'var(--ds-background-200)' : 'transparent',
-        fontFamily: toolData.type === 'response' && '"Poppins", sans-serif',
+        fontFamily: toolData.type === 'response' && ds.font.display,
         backgroundColor: (toolData.tool || toolData.type) === 'question' && 'var(--ds-background-200)',
         borderTop: 'none',
         borderBottom:
@@ -137,7 +137,7 @@ function ConversationCollapsableCard({
                   sx={{
                     fontSize: 'var(--ds-text-body-lg)',
                     color: 'var(--ds-gray-700)',
-                    fontFamily: toolData?.tool === 'question' || toolData?.type === 'question' ? '"Poppins", sans-serif' : 'Roboto',
+                    fontFamily: toolData?.tool === 'question' || toolData?.type === 'question' ? ds.font.display : 'Roboto',
                   }}
                 >
                   {text}

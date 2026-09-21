@@ -17,7 +17,7 @@ const configName = process.env.CLICKHOUSE_INTEGRATION_CONFIG_NAME!;
 test.describe.serial("Clickhouse Account Integration", () => {
   let integrationExists = false;
 
-  test("Check if Clickhouse integration exists", async ({ page }) => {
+  test("Check if Clickhouse integration exists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -33,7 +33,7 @@ test.describe.serial("Clickhouse Account Integration", () => {
     });
   });
 
-  test("Delete Clickhouse integration if present", async ({ page }) => {
+  test("Delete Clickhouse integration if present", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -50,7 +50,7 @@ test.describe.serial("Clickhouse Account Integration", () => {
     });
   });
 
-  test("Add Clickhouse Account Integration", async ({ page }) => {
+  test("Add Clickhouse Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.setTimeout(180000);
     test.skip(
       missingEnv.length > 0,
@@ -90,7 +90,7 @@ test.describe.serial("Clickhouse Account Integration", () => {
     });
   });
 
-  test("Disable Clickhouse integration", async ({ page }) => {
+  test("Disable Clickhouse integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -100,7 +100,7 @@ test.describe.serial("Clickhouse Account Integration", () => {
     await disableIntegration(page, { configName, serviceName: "Clickhouse" });
   });
 
-  test("Enable Clickhouse integration", async ({ page }) => {
+  test("Enable Clickhouse integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

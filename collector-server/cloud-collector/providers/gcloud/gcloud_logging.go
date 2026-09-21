@@ -14,8 +14,11 @@ import (
 )
 
 const (
-	defaultLogLimit    = 1000
-	maxLogLimit        = 50000
+	defaultLogLimit = 1000
+	maxLogLimit     = 50000
+	// Cloud Logging caps entries.list at 1000 entries per page; asking for more per
+	// request gains nothing and a larger read simply spans more pages.
+	maxLogPageSize     = 1000
 	defaultLogDuration = 1 * time.Hour
 )
 
@@ -70,9 +73,10 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 		}
 	}
 
-	// Resolve log filter from service if not provided
+	// Resolve log filter from service if not provided (see usePerServiceLogFilter for
+	// why native log alerts are excluded).
 	resourceFilter := ""
-	if query.LogGroupName == "" && query.ServiceName != "" {
+	if usePerServiceLogFilter(query) {
 		if service, ok := GetGcloudService(query.ServiceName); ok {
 			resourceFilter = service.GetLogFilter(ctx, account, query.ResourceId)
 		}
@@ -125,6 +129,17 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 	logger.Info("querying GCP logs", "projectId", session.ProjectId, "filter", filter, "limit", limit)
 
 	it := client.Entries(ctx.GetContext(), logadmin.Filter(filter))
+	// Read the limit in as few ListLogEntries calls as possible. The "Read requests per
+	// minute" quota counts *requests*, not entries, and the iterator otherwise pages at
+	// the server default (~50), so a 1000-entry read cost ~20 requests and a burst of
+	// events exhausted the project quota mid-batch — the tail queries then returned 0
+	// rows and rendered no evidence at all.
+	it.PageInfo().MaxSize = min(limit, maxLogPageSize)
+
+	// Status distinguishes "this resource genuinely has no logs" from "the query died
+	// before it finished". Both previously returned Complete with zero rows, so a quota
+	// failure was indistinguishable from emptiness to every caller.
+	status := "Complete"
 
 	messages := make([]providers.LogMessage, 0, limit)
 	for i := 0; i < limit; i++ {
@@ -135,6 +150,7 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 		if err != nil {
 			RecordGCPPermissionError(ctx, err)
 			logger.Error("error reading log entry", "error", err)
+			status = "Failed"
 			break
 		}
 		messages = append(messages, logEntryToMessage(entry))
@@ -142,12 +158,31 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 
 	// Result count makes a systemically-empty account (wrong scope, no matching logs)
 	// visible in collector logs rather than silently returning nothing.
-	logger.Info("GCP log query complete", "projectId", session.ProjectId, "filter", filter, "results", len(messages))
+	logger.Info("GCP log query complete", "projectId", session.ProjectId, "filter", filter,
+		"results", len(messages), "status", status)
 
 	return providers.QueryLogsResponse{
-		Status:  "Complete",
+		Status:  status,
 		Results: messages,
 	}, nil
+}
+
+// usePerServiceLogFilter reports whether the mapped per-service log filter
+// (gkeService.GetLogFilter and friends) should scope this query.
+//
+// Native log alerts are excluded. The policy's own log-match condition is what made the
+// alert fire and is the only filter that selects the entries it is about; a per-service
+// filter scopes to the resource but drops that condition. Because a non-empty
+// per-service filter also short-circuits resolveGcloudScope, it was silently pre-empting
+// that resolver's step 0 (alertPolicies.get) for every *mapped* service — the unfixed
+// residual on #33166. Excluding native log alerts here loses no scoping: step 1 rebuilds
+// the same resource-scoped filter from resource.labels when alertPolicies.get fails.
+func usePerServiceLogFilter(query providers.QueryLogsRequest) bool {
+	if query.LogGroupName != "" || query.ServiceName == "" {
+		return false
+	}
+	nativeLogAlert := query.AlertType == "log" && query.PolicyID != ""
+	return !nativeLogAlert
 }
 
 func buildLogFilter(query providers.QueryLogsRequest, resourceFilter string) string {

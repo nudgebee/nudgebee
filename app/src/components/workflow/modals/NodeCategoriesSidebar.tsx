@@ -129,7 +129,7 @@ const NodeCategoriesSidebar: React.FC<NodeCategoriesSidebarProps> = ({
               sx={{
                 fontSize: 'var(--ds-text-title)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
-                fontFamily: 'poppins',
+                fontFamily: 'var(--ds-font-display)',
                 color: colors.text.secondary,
                 letterSpacing: '-0.025em',
               }}
@@ -228,7 +228,7 @@ const NodeCategoriesSidebar: React.FC<NodeCategoriesSidebarProps> = ({
                           fontWeight: 'var(--ds-font-weight-semibold)',
                           color: colors.text.secondary,
                           letterSpacing: '-0.015em',
-                          fontFamily: 'poppins',
+                          fontFamily: 'var(--ds-font-display)',
                         }}
                       >
                         {category.label}
@@ -280,7 +280,7 @@ const NodeCategoriesSidebar: React.FC<NodeCategoriesSidebarProps> = ({
                               fontSize: 'var(--ds-text-body)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
                               color: 'var(--ds-brand-500)',
-                              fontFamily: 'poppins',
+                              fontFamily: 'var(--ds-font-display)',
                             }}
                           >
                             {sub.label}
@@ -303,7 +303,7 @@ const NodeCategoriesSidebar: React.FC<NodeCategoriesSidebarProps> = ({
                               padding: 'var(--ds-space-1) var(--ds-space-2)',
                               fontSize: 'var(--ds-text-caption)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
-                              fontFamily: 'poppins',
+                              fontFamily: 'var(--ds-font-display)',
                               marginLeft: 'var(--ds-space-2)',
                               flexShrink: 0,
                             }}

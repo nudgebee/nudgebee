@@ -27,7 +27,9 @@ import {
 import SafeIcon from '@shared/icons/SafeIcon';
 
 // --- CONFIGURATION ---
-const DISABLED_PROVIDERS = new Set([
+// Exported so navSearchPages.ts's hand-synced `integrationProviders` list can
+// be tested against this, the actual source of truth, for drift.
+export const DISABLED_PROVIDERS = new Set([
   'SPLUNK',
   'SPLUNK_OBSERVABILITY_PLATFORM',
   'SPLUNK_WEBHOOK',
@@ -83,7 +85,8 @@ const PROVIDERS = {
   SERVER: ['SSH', 'VM_AGENT'],
 };
 
-const SECTIONS_CONFIG = [
+// Exported for the same reason DISABLED_PROVIDERS is (see its own comment).
+export const SECTIONS_CONFIG = [
   {
     id: 'cloud',
     label: 'Kubernetes & Cloud',

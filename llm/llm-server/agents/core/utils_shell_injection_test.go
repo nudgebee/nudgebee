@@ -363,6 +363,42 @@ func TestFilterAndInjectDefaultTools_CustomAgentOptsOut(t *testing.T) {
 	assert.Equal(t, "postgres_execute", result[0].Name())
 }
 
+func TestFilterAndInjectDefaultTools_CustomAgentCanLoadDiscoveredKnowledge(t *testing.T) {
+	custom := &nbCustomAgent{
+		agent: AgentDto{
+			Name:         "user_defined_db_agent",
+			ExecutorType: AgentPlannerTypeReAct,
+		},
+		accountId: "test-account",
+	}
+	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
+
+	result := FilterAndInjectDefaultTools("test-account", custom, "<skill-lists>foo</skill-lists>", tools, toolcore.AgentCapabilities{})
+
+	assert.True(t, hasLoadSkills(result),
+		"declarative custom agents must be able to load knowledge advertised by discovery")
+	assert.False(t, HasShellTool(result),
+		"the knowledge carve-out must not enable unrelated default tools")
+}
+
+func TestFilterAndInjectDefaultTools_CustomAgentWithoutCandidatesKeepsConfiguredTools(t *testing.T) {
+	custom := &nbCustomAgent{
+		agent: AgentDto{
+			Name:         "user_defined_db_agent",
+			ExecutorType: AgentPlannerTypeReAct,
+		},
+		accountId: "test-account",
+	}
+	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
+
+	result := FilterAndInjectDefaultTools("test-account", custom, "", tools, toolcore.AgentCapabilities{})
+
+	assert.False(t, hasLoadSkills(result),
+		"load_skills must not be added when discovery did not advertise candidates")
+	assert.False(t, HasShellTool(result))
+	require.Len(t, result, 1)
+}
+
 func TestFilterAndInjectDefaultTools_PlainAgentStillGetsInjection(t *testing.T) {
 	// Sanity: a regular NBAgent that doesn't implement the opt-out interface
 	// must still get shell injection — we don't want a silent regression for
@@ -406,6 +442,33 @@ func hasLoadSkills(tools []toolcore.NBTool) bool {
 		}
 	}
 	return false
+}
+
+func TestFilterAndInjectDefaultTools_SearchSkillsRequiresLoaderWithoutMenu(t *testing.T) {
+	for _, agent := range []NBAgent{mockPlainAgent{name: "orchestrator"}, &nbCustomAgent{}, mockOptOutAgent{name: "curated"}} {
+		t.Run(agent.GetName(), func(t *testing.T) {
+			result := FilterAndInjectDefaultTools("test-account", agent, "",
+				[]toolcore.NBTool{mockTool{name: "search_skills"}}, toolcore.AgentCapabilities{})
+			assert.True(t, hasLoadSkills(result))
+			if optOut, ok := agent.(DefaultToolsOptOut); ok && optOut.OptOutDefaultTools() {
+				assert.False(t, HasShellTool(result))
+			}
+		})
+	}
+}
+
+func TestFilterAndInjectDefaultTools_SearchSkillsLoaderHonorsRestrictions(t *testing.T) {
+	for name, capabilities := range map[string]toolcore.AgentCapabilities{
+		"loader denied":      {DisabledTools: []string{"load_skills"}},
+		"loader not allowed": {AllowedTools: []string{"search_skills"}},
+		"search denied":      {DisabledTools: []string{"search_skills"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := FilterAndInjectDefaultTools("test-account", &nbCustomAgent{}, "",
+				[]toolcore.NBTool{mockTool{name: "search_skills"}}, capabilities)
+			assert.False(t, hasLoadSkills(result))
+		})
+	}
 }
 
 func TestFilterAndInjectDefaultTools_SkillsInjectOverrideKeepsLoadSkills(t *testing.T) {

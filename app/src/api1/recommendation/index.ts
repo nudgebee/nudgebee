@@ -71,6 +71,10 @@ export function invalidateOptimisationSummaryRecommendations() {
   cache.delWithSuffix(OPTIMISE_SUMMARY_RECS_CACHE_KEY);
 }
 
+// severity_weight must stay in the selection even though no consumer renders
+// it: the query engine resolves an order_by column against the SELECT list, so
+// callers ordering by severity_weight get an error - and an empty table - the
+// moment it is dropped.
 export const LIST_k8_RECOMMENDATIONS = `
 query list_k8_recommendation($limit:Int, $offset:Int) {
   recommendation: recommendations_list(where: __WHERE__, limit: $limit, offset:$offset,order_by: __ORDER_BY__) {
@@ -82,6 +86,7 @@ query list_k8_recommendation($limit:Int, $offset:Int) {
       resource_id
       resource_cloud_service
       severity
+      severity_weight
       category
       rule_name
       recommendation
@@ -362,6 +367,26 @@ query list_k8_recommendation {
 // Cloud posture checks rolled up by rule. The cloud page lists these flat, one
 // row per resource; across accounts that is thousands of rows for ~99 distinct
 // checks, so the cross-account view groups and drills down instead.
+/**
+ * Open Security findings per rule, for the sub-tab count badges.
+ *
+ * One grouped aggregate rather than four aliased ones: `rule_name` already
+ * determines which sub-tab a finding belongs to, so a single group_by answers
+ * all four counts and the caller buckets the ~100 rows locally. Four separate
+ * COUNTs would make the query engine scan the same rows four times to produce
+ * strictly less information.
+ */
+export const GET_SECURITY_TAB_COUNTS = `
+query security_tab_counts {
+  recommendation: recommendation_groupings_v2(where: __WHERE__, group_by: ["rule_name"]) {
+    rows {
+      rule_name
+      count
+    }
+  }
+}
+`;
+
 export const GET_CLOUD_POSTURE_RULES = `
 query cloud_posture_rules {
   recommendation: recommendation_groupings_v2(where: __WHERE__, group_by: ["rule_name", "severity", "account_id"]) {
@@ -2222,11 +2247,17 @@ const apiRecommendations = {
     category,
     status = ['Open', 'InProgress'],
     excludeRuleNames,
+    safetyBand,
+    updatedAtGte,
+    updatedAtLt,
   }: {
     accountId: string | string[];
     category: string;
     status?: string[];
     excludeRuleNames?: string[];
+    safetyBand?: string[];
+    updatedAtGte?: string;
+    updatedAtLt?: string;
   }) {
     if (!accountId || (Array.isArray(accountId) && accountId.length === 0) || accountId === 'demo') {
       return [];
@@ -2239,8 +2270,54 @@ const apiRecommendations = {
     if (excludeRuleNames?.length) {
       where.rule_name = { _not_in: excludeRuleNames };
     }
+    applyFacetFilters(where, { safetyBand, updatedAtGte, updatedAtLt });
     const response = await queryGraphQL(GET_CLOUD_POSTURE_RULES.replaceAll('__WHERE__', gqlStringify(where)), 'cloud_posture_rules', {});
     return response?.data?.data?.recommendation?.rows || [];
+  },
+
+  /**
+   * Open-finding counts for the four Security sub-tabs.
+   *
+   * Scoped to every account the caller can see rather than to one type per
+   * sub-tab: `rule_name` already separates the surfaces (only k8s accounts carry
+   * `image_scan`, only VM accounts carry `vm_package_vulnerability`), so the
+   * account list is doing permission work, not routing work. Keeping it means
+   * the badges never count findings in an account a custom role cannot open.
+   */
+  async getSecurityTabCounts({
+    accountIds,
+    status = ['Open', 'InProgress'],
+  }: {
+    accountIds: string[];
+    status?: string[];
+  }): Promise<{ imageScan: number; cisScan: number; vmVulnerabilities: number; cloudPosture: number }> {
+    const counts = { imageScan: 0, cisScan: 0, vmVulnerabilities: 0, cloudPosture: 0 };
+    if (!accountIds.length) return counts;
+
+    const where = { account_id: accountIdClause(accountIds), category: { _eq: 'Security' }, status: { _in: status } };
+
+    try {
+      const response = await queryGraphQL(GET_SECURITY_TAB_COUNTS.replaceAll('__WHERE__', gqlStringify(where)), 'security_tab_counts', {});
+      for (const row of response?.data?.data?.recommendation?.rows || []) {
+        const rule = row?.rule_name;
+        const n = Number(row?.count) || 0;
+        // Only the CVE rows. `image_scan_summary` is a different grain — one row
+        // per image carrying its scan outcome — so adding it would count each
+        // scanned image once more on top of its own findings.
+        if (rule === 'image_scan') counts.imageScan += n;
+        else if (rule === 'k8s-cis-1.23' || rule === 'CIS') counts.cisScan += n;
+        else if (rule === 'vm_package_vulnerability') counts.vmVulnerabilities += n;
+        // Everything else is cloud posture — the same "not a k8s/vm scanner"
+        // rule listCloudPostureRules uses, because the cloud vocabulary is
+        // open-ended and an allowlist would silently drop new providers.
+        else if (!K8S_SECURITY_RULE_NAMES.includes(rule)) counts.cloudPosture += n;
+      }
+      return counts;
+    } catch (error) {
+      // A missing badge is better than a broken tab strip.
+      console.error('Failed to fetch security tab counts:', error);
+      return counts;
+    }
   },
 
   /**

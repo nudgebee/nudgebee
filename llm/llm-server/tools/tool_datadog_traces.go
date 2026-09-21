@@ -76,7 +76,9 @@ func (m DatadogTracesExecuteTool) Call(nbRequestContext core.NbToolContext, inpu
 	})
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("datadog: unable to execute traces api call", "error", err.Error())
-		return core.NBToolResponse{Data: "Trace data is unavailable for this request.", Status: core.NBToolResponseStatusError}, err
+		// Same reason as the ClickHouse tool: without the provider error the agent cannot
+		// distinguish a failed query from an empty one, and retries blindly.
+		return core.NBToolResponse{Data: "Trace data is unavailable for this request. " + err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
 
 	var jsonStr []byte

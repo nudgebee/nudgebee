@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { isCronExpressionValid, validateCron } from 'src/utils/cron';
 import { validateDateTemplate } from 'src/utils/templateValidation';
+import { isTemplateString, isValidUrl, isUrlFieldName } from 'src/utils/url';
 import { SUBTASK_BLOCKED_TYPES } from '../constants/subtaskConstants';
 
 // Validate a container node's nested sub-task list ({id, type, params} entries)
@@ -299,10 +300,8 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
     }
 
     // URL validation
-    if ((fieldName.toLowerCase().includes('url') || fieldName.toLowerCase().includes('endpoint')) && typeof value === 'string' && value.trim()) {
-      try {
-        new URL(value);
-      } catch {
+    if (isUrlFieldName(fieldName) && typeof value === 'string' && value.trim()) {
+      if (!isTemplateString(value) && !isValidUrl(value)) {
         errors[fieldName] = `${fieldName
           .replace(/_/g, ' ')
           .replace(/([A-Z])/g, ' $1')

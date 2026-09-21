@@ -3,7 +3,7 @@ import { LoginPage } from "../../../../pages/LoginPage";
 import { AWSLocators } from "../AWSLocators";
 import { waitForGraphQLAndValidate } from "../../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cloud Account -> AWS -> Optimize -> Infra Upgrade", async ({
+test("API testing Cloud Account -> AWS -> Optimize -> Infra Upgrade", { tag: ["@dev", "@test", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);

@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"nudgebee/llm/security"
 )
@@ -41,6 +42,12 @@ type ConversationMetrics struct {
 	ApiTimeSeconds              *float64         `json:"api_time_seconds,omitempty"`
 	ApiTimePercentage           *float64         `json:"api_time_percentage,omitempty"`
 	ToolTimePercentage          *float64         `json:"tool_time_percentage,omitempty"`
+	// Streaming-latency averages over calls that reported them. Nil when no call
+	// streamed. AvgTtftMs is how long until the first token appeared; AvgItlMs is
+	// the per-token gap after that — together they separate "slow to start" from
+	// "slow to generate", which total latency alone cannot.
+	AvgTtftMs *float64 `json:"avg_ttft_ms,omitempty"`
+	AvgItlMs  *float64 `json:"avg_itl_ms,omitempty"`
 	// ReasoningByToolCall maps a tool_call_id to the reasoning (LLM thinking) its
 	// owning agent spent across the conversation, so the UI can show, in a tool's
 	// details, how long that tool's agent reasoned. Keyed by tool_call_id because
@@ -103,6 +110,15 @@ type AgentMetrics struct {
 	CostUsd                float64         `json:"cost_usd"`
 	ModelProviderName      sql.NullString  `json:"model_provider_name"`
 	ModelName              sql.NullString  `json:"model_name"`
+	ModelTier              string          `json:"model_tier"`
+	LLMConfigSource        string          `json:"llm_config_source"`
+	LLMConfigName          string          `json:"llm_config_name"`
+	// True when LLMConfigName names an actual configured slot, false when it
+	// describes the resolution layer instead (nothing was pinned). The UI must
+	// not present the second kind as a config name.
+	LLMConfigIsSlot bool `json:"llm_config_is_slot"`
+	Requests        int  `json:"requests"`
+	FailedRequests  int  `json:"failed_requests"`
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
@@ -166,6 +182,10 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			CostUsd:                agent.Cost,
 			ModelProviderName:      agent.ModelProviderName,
 			ModelName:              agent.ModelName,
+			ModelTier:              agent.ModelTier,
+			Requests:               agent.Requests,
+			FailedRequests:         agent.FailedRequests,
+			LLMConfigSource:        agent.LLMConfigSource,
 		}
 
 		messageMap[agent.MessageId] = append(messageMap[agent.MessageId], agentMetric)
@@ -230,6 +250,31 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		}
 	}
 
+	// Resolve source ids to readable config names once, then stamp them on the
+	// agents. Done here rather than per-agent so the integration list is fetched
+	// at most once for the whole conversation.
+	sourceSet := make(map[string]struct{})
+	for _, agentsList := range messageMap {
+		for _, a := range agentsList {
+			if a.LLMConfigSource != "" {
+				sourceSet[a.LLMConfigSource] = struct{}{}
+			}
+		}
+	}
+	if len(sourceSet) > 0 {
+		names := configSourceDisplayNames(ctx, request.AccountId, sourceSet)
+		for msgId, agentsList := range messageMap {
+			for i := range agentsList {
+				if n, ok := names[agentsList[i].LLMConfigSource]; ok {
+					agentsList[i].LLMConfigName = n
+					_, isLayer := resolutionLayerLabels[agentsList[i].LLMConfigSource]
+					agentsList[i].LLMConfigIsSlot = !isLayer
+				}
+			}
+			messageMap[msgId] = agentsList
+		}
+	}
+
 	// Build messages array
 	messages := []MessageMetrics{}
 	for messageId, agentsList := range messageMap {
@@ -291,6 +336,9 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// Calculate latency statistics (API time)
 	totalLatency, avgLatency := calculateLatencyStats(detailedRecords)
 
+	// Streaming-latency averages, over the calls that reported them.
+	avgTtftMs, avgItlMs := calculateStreamingLatencyStats(detailedRecords)
+
 	// Calculate time breakdown percentages
 	var wallTimePtr *float64
 	var agentActiveTimePtr *float64
@@ -337,6 +385,8 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		SuccessfulToolCalls:         toolStats.SuccessfulToolCalls,
 		TotalLatencySeconds:         totalLatency,
 		AverageLatencySeconds:       avgLatency,
+		AvgTtftMs:                   avgTtftMs,
+		AvgItlMs:                    avgItlMs,
 		WallTimeSeconds:             wallTimePtr,
 		AgentActiveTimeSeconds:      agentActiveTimePtr,
 		ToolTimeSeconds:             toolTimePtr,
@@ -525,6 +575,33 @@ func calculateSuccessRate(records []TokenUsageDetailedRecord) (*float64, int, in
 }
 
 // calculateLatencyStats computes total and average latency
+// calculateStreamingLatencyStats averages ttft_ms and itl_ms_avg over the calls
+// that recorded them. Non-streaming and legacy rows carry NULL and are skipped
+// rather than counted as zero, which would drag both averages toward 0.
+func calculateStreamingLatencyStats(records []TokenUsageDetailedRecord) (avgTtftMs *float64, avgItlMs *float64) {
+	var ttftSum, itlSum float64
+	var ttftN, itlN int
+	for _, r := range records {
+		if r.TTFTMs.Valid && r.TTFTMs.Int64 > 0 {
+			ttftSum += float64(r.TTFTMs.Int64)
+			ttftN++
+		}
+		if r.ITLMsAvg.Valid && r.ITLMsAvg.Float64 > 0 {
+			itlSum += r.ITLMsAvg.Float64
+			itlN++
+		}
+	}
+	if ttftN > 0 {
+		v := ttftSum / float64(ttftN)
+		avgTtftMs = &v
+	}
+	if itlN > 0 {
+		v := itlSum / float64(itlN)
+		avgItlMs = &v
+	}
+	return
+}
+
 func calculateLatencyStats(records []TokenUsageDetailedRecord) (*float64, *float64) {
 	totalLatency := 0.0
 	latencyCount := 0
@@ -546,4 +623,76 @@ func calculateLatencyStats(records []TokenUsageDetailedRecord) (*float64, *float
 	}
 
 	return totalLatencyPtr, avgLatencyPtr
+}
+
+// resolutionLayerLabels renders the layered walk's own outcome — recorded when a
+// request pinned nothing — as something a reader can act on. These are layers,
+// not configs: there is no integration id behind them to resolve to a name.
+var resolutionLayerLabels = map[string]string{
+	"env-global":            "system default",
+	"env-tier":              "system tier setting",
+	"env-agent":             "system agent setting",
+	"db-global":             "account default",
+	"db-tier":               "account tier setting",
+	"db-agent":              "account agent setting",
+	"conversation":          "conversation override",
+	"conversation-tier":     "conversation tier override",
+	"context-override":      "request override",
+	"context-override-tier": "request tier override",
+}
+
+// configSourceDisplayNames maps the source ids seen on a conversation's usage
+// rows to something a user can read: the integration's own name for db sources,
+// a plain label for env ones. Ids like "db:a0186cfa-…" are meaningless in the UI.
+//
+// Integrations are fetched once per call (they are cached account-wide), and any
+// id that cannot be resolved is simply absent from the map — the caller falls
+// back to showing the raw source rather than an empty cell.
+func configSourceDisplayNames(ctx *security.RequestContext, accountId string, sources map[string]struct{}) map[string]string {
+	names := make(map[string]string, len(sources))
+	var integrations []llmIntegration
+	loaded := false
+
+	for src := range sources {
+		if src == "" {
+			continue
+		}
+		if label, ok := resolutionLayerLabels[src]; ok {
+			// Not a config id at all — the layered walk records which LAYER won,
+			// and there is no integration behind it to name. Labelling these
+			// "config: db-tier" claimed a config identity that does not exist.
+			names[src] = label
+			continue
+		}
+		parsed, err := parseConfigSourceId(src)
+		if err != nil {
+			continue
+		}
+		if parsed.Layer != "db" {
+			// env sources carry no integration; "env:tier:reasoning" already reads
+			// well enough once the layer prefix is dropped.
+			names[src] = strings.ReplaceAll(strings.TrimPrefix(src, "env:"), ":", " · ")
+			continue
+		}
+		if !loaded {
+			var err error
+			// Naming is cosmetic: a lookup failure costs the config label, not the
+			// token and latency figures, so degrade rather than fail the panel.
+			if integrations, err = getLLMIntegrationsForAccount(ctx, accountId); err != nil {
+				ctx.GetLogger().Warn("usage metrics: unable to load LLM integrations, config names will be omitted", "error", err, "account_id", accountId)
+			}
+			loaded = true
+		}
+		for _, integ := range integrations {
+			if integ.Id == parsed.IntegrationUuid {
+				label := integ.Name
+				if parsed.Scope == "tier" && parsed.Name != "" {
+					label += " · " + parsed.Name
+				}
+				names[src] = label
+				break
+			}
+		}
+	}
+	return names
 }

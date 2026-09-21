@@ -4,7 +4,7 @@ import { navigateToTicketingTab, testConnection, saveAndHandleAlreadyExists } fr
 const requiredEnv = ["JIRA_NAME", "JIRA_ACCOUNT_URL", "JIRA_USERNAME", "JIRA_TOKEN"];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
-test("Add Jira Account Integration", async ({ page }) => {
+test("Add Jira Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.skip(
     missingEnv.length > 0,
     `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

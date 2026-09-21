@@ -10,7 +10,7 @@ const requiredEnv = [
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
-test("Add GitLab Account Integration", async ({ page }) => {
+test("Add GitLab Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.skip(
     missingEnv.length > 0,
     `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

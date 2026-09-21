@@ -454,6 +454,39 @@ func resolveCostReportDefinition(ctx providers.CloudProviderContext, account pro
 // errors; those are broken credentials, not an account without cost reporting,
 // and classifying them as not-configured would silently swallow a real
 // credential failure behind an empty cost page.
+// classifyCurReadError maps AWS refusing to read the CUR's S3 objects onto
+// ErrCostNotConfigured, which the ETL treats as a supported steady state rather
+// than a fault.
+//
+// Onboarding already accepts an account whose CUR S3 access is missing: the
+// validator reports "CUR S3 Bucket Access" under MissingPermissions and still
+// returns Success=true. Without this, the runtime disagreed with that decision —
+// the spend sync returned a hard error, so /v1/cloud/store_usage answered 500
+// ("Sync now" failed), and agentStatusForUsageSync marked the WHOLE agent
+// disconnected, putting a red banner over a feature table whose every other row
+// read Connected. That is precisely the outcome that function's comment exists to
+// prevent, reached by a different route.
+//
+// A denial is deliberately treated the same whether or not CUR config is stored.
+// The stored-config case is not necessarily a regression: onboarding
+// auto-discovers a report via cur:DescribeReportDefinitions, so a role that may
+// list reports but not read the bucket — an explicit s3:GetObject Deny, say —
+// stores config it was never able to use. Either way there is nothing the system
+// can do differently, and the reason is not lost: it is wrapped, so it still
+// reaches the Spends error column, and the permission audit records it.
+//
+// A missing object is already benign (NoSuchKey, handled at each read site); this
+// closes the gap where a *denied* object was not.
+func classifyCurReadError(err error) error {
+	if err == nil || errors.Is(err, providers.ErrCostNotConfigured) {
+		return err
+	}
+	if isCurAuthorizationDenied(err) {
+		return fmt.Errorf("%w: %w", providers.ErrCostNotConfigured, err)
+	}
+	return err
+}
+
 func isCurAuthorizationDenied(err error) bool {
 	_, code, _, ok := IsAWSPermissionError(err)
 	if !ok {
@@ -575,7 +608,7 @@ func getAwsUsageReport(ctx providers.CloudProviderContext, account providers.Acc
 	s3Keys, err := getS3KeysFromUsageReport(s3Svc, s3Bucket, pathPrefix, reportVersion, reportName, month, year, timeUnit)
 	if err != nil {
 		ctx.GetLogger().Warn("unable to find cost report", "bucket", s3Bucket, "pathPrefix", pathPrefix)
-		return providers.GetUsageReportResponse{}, err
+		return providers.GetUsageReportResponse{}, classifyCurReadError(err)
 	}
 
 	if len(s3Keys) == 0 {
@@ -687,7 +720,7 @@ func getAwsUsageReport(ctx providers.CloudProviderContext, account providers.Acc
 			return items2, nil
 		}(key)
 		if iterErr != nil {
-			return providers.GetUsageReportResponse{}, iterErr
+			return providers.GetUsageReportResponse{}, classifyCurReadError(iterErr)
 		}
 		items = append(items, moreItems...)
 	}

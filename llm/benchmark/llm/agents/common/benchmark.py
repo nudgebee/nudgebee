@@ -21,7 +21,6 @@ from typing import Any, Callable, Dict, List, Optional
 import pytest
 import yaml
 
-
 # ---------------------------------------------------------------------------
 # Agent-specific conftest.py loading is handled by llm/agents/conftest.py
 # (pytest_configure hooks only work in conftest.py files, not test modules)
@@ -31,6 +30,8 @@ from datasets import Dataset
 from dotenv import load_dotenv
 from ragas import evaluate
 from ragas.llms import LangchainLLMWrapper
+
+from .eval_markers import METRIC_FAILED, PLANNER_LABEL
 
 from benchmark_server.common.llm import get_llm, get_embeddings
 
@@ -247,7 +248,10 @@ def _evaluate_planner(execution_trace: str, query: str, llm):
         return score, reason
     except Exception as e:
         logger.warning("Planner evaluation failed: %s", e)
-        return 0.0, ""
+        # The marker is the aggregation side's only way to tell "the judge
+        # crashed" from "the agent planned badly" — without it this 0 is
+        # averaged in and never counted as a judge failure.
+        return 0.0, f"{METRIC_FAILED} {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -658,7 +662,7 @@ def test_agent_benchmark(
         if trace:
             planner_score, planner_reason = _evaluate_planner(trace, user_prompt, llm)
             if planner_reason:
-                eval_result.reason += f"\n[Planner] {planner_reason}"
+                eval_result.reason += f"\n{PLANNER_LABEL} {planner_reason}"
         else:
             logger.warning(
                 "[%s] No execution trace or planner response found (convo_id=%s, account_id=%s)",

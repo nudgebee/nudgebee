@@ -196,6 +196,10 @@ func (s *AzureAppInsightsTraceSource) QueryTracesHeatmap(ctx *security.RequestCo
 	return nil, fmt.Errorf("not implemented")
 }
 
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// KQL `| distinct <field>` returns every distinct value for the window.
+func (s *AzureAppInsightsTraceSource) TraceLabelValuesAreComplete() {}
+
 func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext, tracesRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	azureInsightsObj := integrations.AzureAppInsights{}
 	azureConf, err := integrations.GetAzureAppInsightConfigs(sc, tracesRequest.AccountId)
@@ -433,7 +437,7 @@ func (s *AzureAppInsightsTraceSource) convertAzureTraceToOpenteleMetry(azureTrac
 					switch k {
 					case "cloud.account.id":
 						otelTrace.ResourceAttributes["cloud.account.id"] = fmt.Sprintf("%v", v)
-					case "destination.cloud.availablity_zone":
+					case "destination.cloud.availability_zone":
 						otelTrace.ResourceAttributes["cloud.availability_zone"] = fmt.Sprintf("%v", v)
 					case "cloud.region":
 						otelTrace.ResourceAttributes["cloud.region"] = fmt.Sprintf("%v", v)

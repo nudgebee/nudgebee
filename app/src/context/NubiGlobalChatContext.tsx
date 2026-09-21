@@ -24,6 +24,10 @@ export interface NubiChatContext {
   source?: string;
   categorySource?: string;
   aboveModal?: boolean;
+  // The event this chat is scoped to, so a triggered automation gets tagged
+  // back to it (see llm-server's tool_workflow_automation.go) and shows up in
+  // the event's automation history.
+  eventId?: string;
 }
 
 interface NubiGlobalChatContextValue {

@@ -41,7 +41,7 @@ func TestToolCache_SetGetDelete(t *testing.T) {
 	assert.False(t, okAfterDelete)
 }
 
-func TestToolCache_InvalidateLocalCaches(t *testing.T) {
+func TestToolCache_InvalidateCachesForAccount(t *testing.T) {
 	accountID := "test-acct-tool-cache-2"
 	tool1 := dummyTestTool{name: "MyCustomTool"}
 
@@ -49,8 +49,8 @@ func TestToolCache_InvalidateLocalCaches(t *testing.T) {
 	_, ok := toolCacheInstance.getFromCache(accountID, "MyCustomTool")
 	assert.True(t, ok)
 
-	// invalidateLocalCaches must clear toolCacheInstance
-	invalidateLocalCaches(accountID)
+	// invalidateCachesForAccount must clear toolCacheInstance
+	invalidateCachesForAccount(accountID)
 
 	_, okAfter := toolCacheInstance.getFromCache(accountID, "MyCustomTool")
 	assert.False(t, okAfter)

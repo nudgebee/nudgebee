@@ -72,13 +72,15 @@ type MatchingStrategy interface {
 // unique within a per-account MatchingContext for IP-named ExternalServices.
 // The map is immutable for the lifetime of ctx — no per-iteration mutation.
 type MatchingContext struct {
-	CloudAccountID       string
-	EndpointIndex        map[string]endpointHit
-	NodeMatcher          *NodeMatcher
-	CloudResourcesMap    map[string]*CloudResourceRow
-	AWSAccountIDs        []string
-	ZoneCache            *Route53ZoneCache
-	RecordCache          *Route53RecordCache
+	CloudAccountID    string
+	EndpointIndex     map[string]endpointHit
+	NodeMatcher       *NodeMatcher
+	CloudResourcesMap map[string]*CloudResourceRow
+	AWSAccountIDs     []string
+	ZoneCache         *Route53ZoneCache
+	RecordCache       *Route53RecordCache
+	// Topology serves Route 53 lookups from cloud_resourses; nil means CLI-only.
+	Topology             *CloudTopologyStore
 	ReqCtx               *security.RequestContext
 	Logger               *slog.Logger
 	K8sServiceIPResolver *K8sServiceIPResolver

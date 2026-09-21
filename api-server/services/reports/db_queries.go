@@ -2,6 +2,7 @@ package reports
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
@@ -18,6 +19,7 @@ type k8sInsightRow struct {
 	UniqueId     string          `json:"unique_id" db:"unique_id"`
 	Applications json.RawMessage `json:"applications" db:"applications"`
 	AccountId    string          `json:"account_id" db:"account_id"`
+	RedirectUrl  string          `json:"redirect_url" db:"redirect_url"`
 }
 
 // k8sAccountRow mirrors the cloud_accounts projection used by both
@@ -60,6 +62,9 @@ func toAnySlice(in any) ([]interface{}, error) {
 // Returns a GqlResponse-shaped result so existing payload handling (filtering,
 // isPayloadEmpty, MQ publish) continues to work unchanged.
 func fetchDailyK8sInsights(tenantId string) (common.GqlResponse, error) {
+	if tenantId == "" {
+		return common.GqlResponse{}, fmt.Errorf("fetchDailyK8sInsights: tenantId is empty")
+	}
 	dbm, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return common.GqlResponse{}, err
@@ -67,7 +72,8 @@ func fetchDailyK8sInsights(tenantId string) (common.GqlResponse, error) {
 
 	insights := []k8sInsightRow{}
 	if err := dbm.Db.Select(&insights,
-		`SELECT title, type, unique_id, applications, account_id
+		`SELECT title, type, unique_id, applications, account_id,
+		        COALESCE(rule->>'redirect_url', '') AS redirect_url
 		 FROM insight
 		 WHERE status = 'Open' AND tenant = $1`, tenantId); err != nil {
 		return common.GqlResponse{}, err

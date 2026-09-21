@@ -19,17 +19,29 @@ import (
 // when one subject produces several distinct alert types in a short burst (a pod
 // OOMKilled, then CrashLoopBackOff, then NotReady), link them into one group by
 // writing a `same_incident` row (child -> leader) to event_correlations. The
-// leader is the group's earliest non-chronic alert; every child points straight
-// at the leader (a star, never child -> child), so resolving a group is one hop
-// — the same shape event_duplicates uses per-fingerprint via first_event_id,
-// applied across fingerprints on one subject.
+// leader is elected from the group (see decideSameSubjectAttach); every child
+// points straight at it (a star, never child -> child), so resolving a group is
+// one hop.
 //
-// Membership is evidence-based, not scored: same SubjectKey, inside a rolling
-// attach window, non-chronic. Re-fires never attach — only dedup-chain leaders
-// (occurrence 1) participate, so a group member represents its whole chain.
-// Chronic pairs (>= ChronicWeeklyThreshold firings/week, chronic.go) neither
-// lead nor extend a group: a flapper must not become an immortal leader
-// vacuuming up everything on its subject.
+// A group is the alerts firing together in one window — nothing more. Links join
+// the FIRINGS, so an incident has a beginning and an end without needing a record
+// of its own: a fresh burst links fresh events, an older burst's links fall
+// outside the window, and the headline is always something that fired in it.
+//
+// Links used to hang off each alert's first-ever event instead, which made a
+// group a permanent association rather than an incident. It never ended: any
+// member firing held it open while the alert that named it could have stopped
+// days ago. Measured on an anonymized production tenant over 14 days — 1,337 of 1,445 links
+// (93%) named a headline whose alert had not fired in the preceding 15 minutes,
+// average 38.8 hours quiet; one group had collected 17 members, one headline was
+// 158 days old, and none of it was visible in a time-scoped view because the
+// events predated the window being looked at.
+//
+// Membership is evidence-based, not scored: same SubjectKey (or connected to it),
+// inside a rolling attach window. One row per ALERT, carrying its latest firing,
+// so an alert firing ten times is one member. Chronic pairs
+// (>= ChronicWeeklyThreshold firings/week, chronic.go) still join — they only
+// lose the leader election, so a flapper never becomes the headline.
 //
 // On by default; INCIDENT_GROUPING_ENABLED=false is the kill switch. The
 // promotion train (main -> test -> prod) gives dev/test a validation window
@@ -43,19 +55,33 @@ const (
 	// IncidentAttachWindow is the rolling quiet-time bound: a new alert joins
 	// only while the group's newest member started less than this ago
 	// (re-armed by each join).
-	IncidentAttachWindow = 15 * time.Minute
-	// IncidentAbsorptionCap bounds a group's total age: alerts starting more
-	// than this after the leader open a new group instead. Keeps one leader
-	// from absorbing a whole day of a subject's history.
-	IncidentAbsorptionCap = 90 * time.Minute
-
+	IncidentAttachWindow    = 15 * time.Minute
 	incidentGroupingEnvFlag = "INCIDENT_GROUPING_ENABLED"
 	// topologyGroupingEnvFlag kills only the cross-service (stored-map) attach
 	// path; same-subject grouping keeps its own switch above.
 	topologyGroupingEnvFlag = "INCIDENT_TOPOLOGY_GROUPING"
+	// unlocatedGroupingEnvFlag kills the co-timing attach for alerts that have
+	// no position in the graph at all. Defaults on like the other two, so the
+	// narrowness has to come from the rule rather than from the switch: it fires
+	// only when nothing else matched, only into an existing incident, and only
+	// when exactly one is open. This is the flag to pull first if grouping ever
+	// looks too eager.
+	unlocatedGroupingEnvFlag = "INCIDENT_UNLOCATED_GROUPING"
 	// incidentCandidateLimit bounds the window fetch; one subject+namespace
 	// rarely has more than a handful of distinct fingerprints in 90 minutes.
 	incidentCandidateLimit = 200
+	// maxIncidentHops is how far a connected service can sit from the one that
+	// started the group. One hop misses a calling c through b, which is the shape
+	// of the reported case (payment and inventory both call order, and all three
+	// call database). More than two swallows an estate: node degree on the
+	// anonymized production tenant is median 1 but one node has 1,047 edges.
+	maxIncidentHops = 2
+	// incidentGroupSubjectCap bounds how many machines one incident can span.
+	// Across 14 days the number of subjects alerting at once in a 15-minute window
+	// averages 5, with 25 at the 99th percentile and 29 at worst — for the WHOLE
+	// account, not one connected set. Past this it is a fleet-wide event and wants
+	// different treatment, so grouping stops adding rather than grows.
+	incidentGroupSubjectCap = 20
 )
 
 // incidentGroupingEnabled defaults to true; only an explicit "false"/"0"
@@ -90,62 +116,56 @@ func eventAlertIdentity(ev *models.Event) AlertIdentity {
 type groupCandidate struct {
 	ID             string
 	AggregationKey string
-	// StartsAt is the fingerprint's earliest start in the window — the chain
-	// leader's, which is the row that can carry group links.
+	// StartsAt is the firing this candidate represents — the alert's most recent
+	// one inside the window, which is the event its group link points at.
 	StartsAt time.Time
-	// LastSeen is the fingerprint's newest start in the window: re-fires keep
-	// a group's attach timer alive even though only chain leaders join.
+	// LastSeen is the alert's newest start in the window: re-fires keep a
+	// group's attach timer alive.
 	LastSeen time.Time
 }
 
 // decideSameSubjectAttach picks the leader the seed should attach to, or
 // reports there is none. Pure — all I/O happens in the caller.
 //
-//   - members: chain-first events sharing the seed's SubjectKey, started within
-//     [seed - IncidentAbsorptionCap, seed).
+//   - members: chains sharing the seed's SubjectKey, or connected to it, that
+//     FIRED within [seed - IncidentAttachWindow, seed). Membership is liveness,
+//     not arrival time: a group is live while something in it is still firing.
 //   - edges: existing same_incident links among the members (child -> leader;
 //     the leader itself may be older than the member window).
 //   - leaderStarts: starts_at for every distinct edge target.
 //   - chronicPairs: the subject's aggregation_keys whose trailing rate is
-//     chronic; they neither lead nor re-arm the attach timer.
+//     chronic. They do NOT decide membership — a chronic alert firing alongside
+//     others on one subject is part of that incident and an operator wants to see
+//     it. They only lose the leader election, so a flapper never becomes the
+//     headline. Measured on an anonymized production tenant: gating membership on the rate
+//     left two of three reported machines unable to form a group at all, because
+//     every alert on them was chronic, and the third qualified only because one
+//     counter sat at 9 against a threshold of 10.
 func decideSameSubjectAttach(
 	seed groupCandidate,
 	members []groupCandidate,
 	edges map[string]string,
 	leaderStarts map[string]time.Time,
 	chronicPairs map[string]bool,
+	dependedOnBy map[string]int,
 ) (string, time.Duration, bool) {
-	capStart := seed.StartsAt.Add(-IncidentAbsorptionCap)
-
-	// Split the leaders referenced by existing links into live (inside the
-	// absorption cap) and stale (their group is over; members bound to them
-	// are history, not attachable activity).
+	// Every member reaching here fired inside the attach window, so every group
+	// they belong to is live by construction. There is no staleness test any more:
+	// a group ends when everything in it goes quiet, which this query expresses by
+	// simply not returning it. The old test asked whether the LEADER started
+	// recently, which would have rejected exactly the case this change exists for
+	// — the reported chains lead from events several days old and are still firing.
 	liveLeaders := map[string]bool{}
-	staleLeaders := map[string]bool{}
 	for _, m := range members {
-		l, linked := edges[m.ID]
-		if !linked {
-			continue
-		}
-		if ls, known := leaderStarts[l]; known && !ls.Before(capStart) {
+		if l, linked := edges[m.ID]; linked {
 			liveLeaders[l] = true
-		} else {
-			staleLeaders[l] = true
 		}
 	}
 
-	// Activity that can hold a group open or found a new one: non-chronic
-	// members not bound to a capped-out group.
+	// Chronic members count as activity — see the doc comment; they are excluded
+	// from LEADING below, not from belonging.
 	active := make([]groupCandidate, 0, len(members))
-	for _, m := range members {
-		if chronicPairs[m.AggregationKey] {
-			continue
-		}
-		if l, linked := edges[m.ID]; linked && staleLeaders[l] {
-			continue
-		}
-		active = append(active, m)
-	}
+	active = append(active, members...)
 	if len(active) == 0 {
 		return "", 0, false
 	}
@@ -166,9 +186,11 @@ func decideSameSubjectAttach(
 		return "", 0, false
 	}
 
-	// An existing live group wins; with several (shouldn't happen, but links
-	// written concurrently can race), the earliest-started leader is the
-	// deterministic choice.
+	// An existing group wins. Its links were written in this same window against
+	// these same firings, so its headline is firing too — that is what anchoring
+	// on firings buys, and why this needs no liveness check of its own. With
+	// several leaders (links written concurrently can race) the earliest-started
+	// is the deterministic choice.
 	if len(liveLeaders) > 0 {
 		var leader string
 		for l := range liveLeaders {
@@ -181,8 +203,30 @@ func decideSameSubjectAttach(
 		return leader, seed.StartsAt.Sub(leaderStarts[leader]), true
 	}
 
-	// No group yet: the earliest active member becomes the leader.
+	// No group yet: elect a leader.
+	//
+	// A non-chronic member always beats a chronic one, so a flapper never becomes
+	// the headline of an incident it merely accompanies. Within that class the
+	// member the most others DEPEND ON leads: an alert on a thing its neighbours
+	// need is the cause, and the alerts on the things that need it are the
+	// symptoms. Timing cannot express that and gets it backwards on the ordinary
+	// shape of an outage — a load balancer reports errors before a health check
+	// notices the backend behind it is down, so earliest-start makes the 5xx the
+	// headline and files "the service is down" underneath it.
+	//
+	// Start time only breaks a tie between members nothing distinguishes
+	// structurally (the common same-subject case, where every member scores 0),
+	// and the id breaks that in turn so the choice is deterministic under
+	// concurrent attaches. When every member is chronic one of them still leads —
+	// the group exists, it just ranks low.
 	sort.Slice(active, func(i, j int) bool {
+		ci, cj := chronicPairs[active[i].AggregationKey], chronicPairs[active[j].AggregationKey]
+		if ci != cj {
+			return !ci
+		}
+		if di, dj := dependedOnBy[active[i].ID], dependedOnBy[active[j].ID]; di != dj {
+			return di > dj
+		}
 		if !active[i].StartsAt.Equal(active[j].StartsAt) {
 			return active[i].StartsAt.Before(active[j].StartsAt)
 		}
@@ -222,6 +266,23 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	}
 	start := *event.StartsAt
 
+	// A group is the alerts firing together in this window, and a link joins the
+	// FIRINGS — not the first events of their chains.
+	//
+	// Anchoring on the chain's first event made a group a permanent association
+	// rather than an incident. It never ended: any member firing held it open,
+	// while the alert that named it could have stopped days ago. Measured on the
+	// anonymized production tenant over 14 days, 1,337 of 1,445 links (93%) named a headline
+	// whose alert had not fired in the preceding 15 minutes, average 38.8 hours
+	// quiet; one group had collected 17 members and one headline was 158 days
+	// old. It also made the group invisible to any time-scoped view, because the
+	// events it pointed at were older than the window being looked at.
+	//
+	// Anchoring on firings gives an incident a beginning and an end for free: a
+	// fresh burst links fresh events, an old burst's links simply fall outside
+	// the window, and the headline is always something that fired in it.
+	seedChainID := event.Id
+
 	// One grouped query gives every pair's trailing rate on this subject: the
 	// seed's own chronic gate plus the chronic flags for candidate pairs. Uses
 	// the same raw owner-else-name identity as LoadChronicStats (hash-suffixed
@@ -229,45 +290,36 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	type pairRate struct {
 		AggregationKey string `db:"aggregation_key"`
 		Weekly         int    `db:"weekly"`
-		LastHour       int    `db:"last_hour"`
 	}
 	var rates []pairRate
 	err := sqlx.SelectContext(ctx, db, &rates, `
 		SELECT aggregation_key,
-		       count(*) AS weekly,
-		       count(*) FILTER (WHERE starts_at >= $5) AS last_hour
+		       count(*) AS weekly
 		FROM events
 		WHERE tenant = $1
 		  AND cloud_account_id = $2
 		  AND lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))) = $3
 		  AND lower(coalesce(btrim(subject_namespace), '')) = $4
-		  AND starts_at >= $6 AND starts_at < $7
-		  AND id != $8
+		  AND starts_at >= $5 AND starts_at < $6
+		  AND id != $7
 		  AND aggregation_key IS NOT NULL
 		GROUP BY aggregation_key`,
 		*event.Tenant, *event.CloudAccountId, roughSubj, ns,
-		start.Add(-time.Hour), start.Add(-ChronicLookback), start, event.Id,
+		start.Add(-ChronicLookback), start, event.Id,
 	)
 	if err != nil {
 		return false, fmt.Errorf("failed to load subject pair rates: %w", err)
 	}
+	// The rates are now only used to decide who LEADS, never who belongs. The
+	// seed's own rate is therefore no longer a gate: a chronic alert firing
+	// alongside others on its subject joins their group and simply loses the
+	// leader election. The trailing-hour burst escape went with the gate, since
+	// there is nothing left for it to escape.
 	chronicPairs := make(map[string]bool, len(rates))
-	var seedStats ChronicStats
-	seedLastHour := 0
 	for _, r := range rates {
-		stats := ChronicStats{WeeklyCount: r.Weekly}
-		if stats.Chronic() {
+		if (ChronicStats{WeeklyCount: r.Weekly}).Chronic() {
 			chronicPairs[r.AggregationKey] = true
 		}
-		if r.AggregationKey == *event.AggregationKey {
-			seedStats = stats
-			seedLastHour = r.LastHour
-		}
-	}
-	// Chronic seeds neither declare nor extend — unless bursting far past
-	// their own baseline (+1 counts the seed firing itself).
-	if seedStats.Chronic() && !seedStats.IsBursting(seedLastHour+1) {
-		return false, nil
 	}
 
 	// Chain-first candidates on the subject's namespace inside the absorption
@@ -283,27 +335,36 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		StartsAt         time.Time `db:"starts_at"`
 		LastSeen         time.Time `db:"last_seen"`
 	}
-	// One row per fingerprint: the EARLIEST occurrence (the chain leader — the
-	// row that can carry group links) plus the fingerprint's newest start in
-	// the window (last_seen), so re-fires keep the attach timer alive.
+	// Candidates are alerts that FIRED inside the attach window, not alerts whose
+	// chain started inside it. That is the whole point of the change: on the
+	// anonymized production tenant the two chains in the reported case opened 19 hours apart
+	// and have been firing every few minutes ever since, so a start-time search
+	// could never pair them however wide the window got. Widening was measured
+	// and rejected — 15 minutes to 24 hours multiplies candidate pairs 96x, and
+	// the median gap between two chain starts on one subject is 4.1 days.
+	//
+	// One row per ALERT (DISTINCT ON fingerprint), carrying that alert's most
+	// recent firing in the window — so an alert firing ten times is still one
+	// candidate, without needing its chain. The event_duplicates join went with
+	// the chain anchoring; fingerprint is the alert's identity here.
 	var rows []candidateRow
 	err = sqlx.SelectContext(ctx, db, &rows, `
-		SELECT DISTINCT ON (fingerprint, lower(coalesce(btrim(subject_namespace), '')), lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))))
-		       id, subject_type, subject_name, subject_namespace, subject_owner,
-		       aggregation_key, starts_at,
-		       max(starts_at) OVER (PARTITION BY fingerprint, lower(coalesce(btrim(subject_namespace), '')), lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name)))) AS last_seen
-		FROM events
-		WHERE tenant = $1
-		  AND cloud_account_id = $2
-		  AND lower(coalesce(btrim(subject_namespace), '')) = $3
-		  AND starts_at >= $4 AND starts_at < $5
-		  AND id != $6
-		  AND fingerprint IS DISTINCT FROM $7
-		  AND lower(coalesce(finding_type, '')) NOT IN ('slo', 'anomaly')
-		ORDER BY fingerprint, lower(coalesce(btrim(subject_namespace), '')), lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))), starts_at ASC
+		SELECT DISTINCT ON (e.fingerprint)
+		       e.id, e.subject_type, e.subject_name, e.subject_namespace, e.subject_owner,
+		       e.aggregation_key, e.starts_at,
+		       max(e.starts_at) OVER (PARTITION BY e.fingerprint) AS last_seen
+		FROM events e
+		WHERE e.tenant = $1
+		  AND e.cloud_account_id = $2
+		  AND lower(coalesce(btrim(e.subject_namespace), '')) = $3
+		  AND e.starts_at >= $4 AND e.starts_at < $5
+		  AND e.id != $6
+		  AND e.fingerprint IS DISTINCT FROM $7
+		  AND lower(coalesce(e.finding_type, '')) NOT IN ('slo', 'anomaly')
+		ORDER BY e.fingerprint, e.starts_at DESC
 		LIMIT `+fmt.Sprint(incidentCandidateLimit),
 		*event.Tenant, *event.CloudAccountId, ns,
-		start.Add(-IncidentAbsorptionCap), start, event.Id, event.Fingerprint,
+		start.Add(-IncidentAttachWindow), start, seedChainID, event.Fingerprint,
 	)
 	if err != nil {
 		return false, fmt.Errorf("failed to load group candidates: %w", err)
@@ -336,27 +397,63 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		})
 		memberStarts[r.ID] = r.StartsAt
 	}
-	seed := groupCandidate{ID: event.Id, AggregationKey: *event.AggregationKey, StartsAt: start}
-	if len(members) == 0 {
-		// First alert on this subject — implicit group of one. It may still
-		// join a neighbor subject's group by topology (slice 2).
-		return tryTopologyAttach(ctx, db, event, seed, seedKey, start)
-	}
+	// ID is the chain, StartsAt is THIS firing: the link is written for the chain,
+	// but "is anything else firing right now" is asked about the firing in hand.
+	seed := groupCandidate{ID: seedChainID, AggregationKey: *event.AggregationKey, StartsAt: start}
+	// No early return when the seed's own subject has nothing: an alert that is
+	// alone on its machine can still belong to a connected service's incident,
+	// which the merge below covers.
 
-	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, members, memberStarts, chronicPairs)
+	// Merge the seed's own subject with every connected subject that is alerting
+	// in the same window, then elect ONE leader over the union. Trying the two in
+	// sequence meant a machine whose own alerts grouped never looked at its
+	// neighbours at all.
+	pool, err := collectConnectedMembers(ctx, db, event, seed, seedKey, start)
 	if err != nil {
-		return false, err
+		// Connected-set evidence is additive: losing it must not cost the group
+		// the seed can already form on its own subject.
+		slog.WarnContext(ctx, "Failed to collect connected members", "error", err, "event_id", event.Id)
 	}
-	if ok {
-		if err := insertGroupLink(ctx, db, event, leaderID, offset, 0,
-			fmt.Sprintf("same subject (%s) within incident attach window", seedKey)); err != nil {
+	members = append(members, pool.members...)
+	for id, ts := range pool.memberStarts {
+		memberStarts[id] = ts
+	}
+	for k := range pool.chronicPairs {
+		chronicPairs[k] = true
+	}
+	if len(members) == 0 {
+		// Nothing the graph or the subject could pair this alert with. If we
+		// could not place it at all, co-timing is the only evidence left — and
+		// only when it points at exactly one incident.
+		leaderID, offset, ok, err := attachUnlocatedIncident(ctx, db, event, start)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+		if err := insertGroupLink(ctx, db, event, seedChainID, leaderID, offset, 0,
+			"no topology position; sole incident open in the attach window"); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-	// The subject's own group is closed (window/cap) — a neighbor subject's
-	// group may still be the story (slice 2).
-	return tryTopologyAttach(ctx, db, event, seed, seedKey, start)
+
+	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, members, memberStarts, chronicPairs, pool.dependedOnBy)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	reason := fmt.Sprintf("same subject (%s) within incident attach window", seedKey)
+	if h := pool.hops[leaderID]; h > 0 {
+		reason = fmt.Sprintf("%s is %d hop(s) away, both firing within the incident attach window", seedKey, h)
+	}
+	if err := insertGroupLink(ctx, db, event, seedChainID, leaderID, offset, pool.hops[leaderID], reason); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // resolveOpenGroupLeader loads the members' existing group links, resolves
@@ -370,6 +467,7 @@ func resolveOpenGroupLeader(
 	members []groupCandidate,
 	memberStarts map[string]time.Time,
 	chronicPairs map[string]bool,
+	dependedOnBy map[string]int,
 ) (string, time.Duration, bool, error) {
 	memberIDs := make([]string, len(members))
 	for i, m := range members {
@@ -424,12 +522,15 @@ func resolveOpenGroupLeader(
 		}
 	}
 
-	leaderID, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, chronicPairs)
+	leaderID, offset, ok := decideSameSubjectAttach(seed, members, edges, leaderStarts, chronicPairs, dependedOnBy)
 	return leaderID, offset, ok, nil
 }
 
 // insertGroupLink writes one child -> leader star edge.
-func insertGroupLink(ctx context.Context, db sqlx.ExtContext, event *models.Event, leaderID string, offset time.Duration, depDistance int, reason string) error {
+func insertGroupLink(ctx context.Context, db sqlx.ExtContext, event *models.Event, childID, leaderID string, offset time.Duration, depDistance int, reason string) error {
+	if childID == leaderID {
+		return nil // a chain never links to itself
+	}
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO event_correlations (
 			event_id, related_event_id, cloud_account_id, tenant_id,
@@ -437,7 +538,7 @@ func insertGroupLink(ctx context.Context, db sqlx.ExtContext, event *models.Even
 			time_offset_minutes, dependency_distance
 		) VALUES ($1, $2, $3, $4, $5, 1.0, $6, $7, $8)
 		ON CONFLICT DO NOTHING`,
-		event.Id, leaderID, *event.CloudAccountId, event.Tenant,
+		childID, leaderID, *event.CloudAccountId, event.Tenant,
 		SameIncidentCorrelationType, reason, int(offset.Minutes()), depDistance,
 	)
 	if err != nil {
@@ -445,6 +546,7 @@ func insertGroupLink(ctx context.Context, db sqlx.ExtContext, event *models.Even
 	}
 	slog.InfoContext(ctx, "Attached event to incident group",
 		"event_id", event.Id,
+		"chain_event_id", childID,
 		"leader_event_id", leaderID,
 		"reason", reason,
 		"offset_minutes", int(offset.Minutes()),
@@ -460,7 +562,197 @@ func topologyGroupingEnabled() bool {
 	return !strings.EqualFold(v, "false") && v != "0"
 }
 
-// tryTopologyAttach is slice 2 (#34655): join a NEIGHBOR subject's open group
+// unlocatedGroupingEnabled defaults to true; only an explicit "false"/"0"
+// disables, matching the other two grouping switches — a default-off flag
+// nobody flips leaves the path dead in config.
+func unlocatedGroupingEnabled() bool {
+	v := strings.TrimSpace(os.Getenv(unlocatedGroupingEnvFlag))
+	return !strings.EqualFold(v, "false") && v != "0"
+}
+
+// attachUnlocatedIncident is the last resort for an alert that the graph cannot
+// place at all: a CloudWatch alarm on a custom namespace dimensioned by a
+// logical service ("Service=nginx") resolves to no node, gets no service-map
+// evidence, and is therefore invisible to both the same-subject and the
+// connected-set pools. It is not that such an alert belongs to nothing — the one
+// that prompted this ran on a host whose load balancer and target groups were
+// alarming in the same two minutes — it is that we have no edge to prove it.
+//
+// So this groups on co-timing. That is the weakest claim this file makes, and it
+// runs by default, so the narrowness lives in the rule: it refuses every case
+// where co-timing is not decisive.
+//
+//   - It runs only when the seed reached this point with no members of its own.
+//     An alert we can place is never routed through here.
+//   - It joins an EXISTING incident; it never starts one. A group founded on an
+//     alert we cannot locate would have nothing holding it together.
+//   - Exactly one open incident in the window, or it declines. Two incidents
+//     means co-timing does not identify which one, and picking either would
+//     attach the alert to a story it may have no part in — the same reason
+//     resourceDimensionIndex drops a dimension its namespaces disagree about.
+//
+// Returns the leader to attach to and whether to attach.
+func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *models.Event, start time.Time) (string, time.Duration, bool, error) {
+	// The account guard is redundant against today's only caller, which rejects
+	// an event without one before it gets this far. Repeated anyway because the
+	// query below is account-scoped and nothing else bounds it: reached with an
+	// empty account it would scan every correlation in the table and answer
+	// about someone else's incidents.
+	if !unlocatedGroupingEnabled() || event == nil ||
+		event.CloudAccountId == nil || *event.CloudAccountId == "" {
+		return "", 0, false, nil
+	}
+
+	// Leaders of groups that had any member firing inside the attach window.
+	// Restricted to the seed's own account: co-timing across accounts is not
+	// even weak evidence, it is coincidence.
+	//
+	// LIMIT 2 is the whole question. The rule below attaches on exactly one open
+	// incident and declines otherwise, so "two" and "two hundred" are the same
+	// answer and there is no reason to fetch the difference.
+	type leaderRow struct {
+		ID       string    `db:"id"`
+		StartsAt time.Time `db:"starts_at"`
+	}
+	var leaders []leaderRow
+	err := sqlx.SelectContext(ctx, db, &leaders, `
+		SELECT DISTINCT l.id, l.starts_at
+		FROM event_correlations ec
+		JOIN events m ON m.id = ec.event_id
+		JOIN events l ON l.id = ec.related_event_id
+		WHERE ec.correlation_type = $1
+		  AND ec.cloud_account_id = $2
+		  AND m.starts_at >= $3
+		  AND m.starts_at <= $4
+		LIMIT 2`,
+		SameIncidentCorrelationType, *event.CloudAccountId,
+		start.Add(-IncidentAttachWindow), start,
+	)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("failed to load open incidents for unlocated attach: %w", err)
+	}
+
+	if len(leaders) != 1 {
+		// 0: nothing open to join. >1: co-timing cannot choose between them.
+		if len(leaders) > 1 {
+			slog.InfoContext(ctx, "Unlocated alert not grouped: several open incidents in window",
+				"event_id", event.Id, "incidents", len(leaders))
+		}
+		return "", 0, false, nil
+	}
+
+	return leaders[0].ID, start.Sub(leaders[0].StartsAt), true, nil
+}
+
+// ownerElseName mirrors the SQL identity the chronic rate query groups on:
+// lower(coalesce(nullif(btrim(subject_owner), ”), btrim(subject_name))). Trims
+// before the emptiness test so a whitespace-only owner falls back to the name.
+func ownerElseName(owner, name string) string {
+	if s := strings.ToLower(strings.TrimSpace(owner)); s != "" {
+		return s
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// connectedCandidate is one alerting chain, with the two identities the connected-set
+// decision needs: which machine it is on, and which service node it maps to.
+type connectedCandidate struct {
+	candidate  groupCandidate
+	subjectKey string
+	serviceKey string
+	// subject is the owner-else-name identity the chronic rate query matches on,
+	// carried here rather than parsed back out of subjectKey. SubjectKey is not
+	// reversible: its datastore form is "db|namespace|series", so splitting on a
+	// separator yields the series list rather than a subject.
+	subject string
+}
+
+// poolConnectedMembers picks every candidate whose service sits within
+// maxIncidentHops of the seed's, in either direction, and returns them as one
+// pool. Pure — all I/O happens in the caller.
+//
+// This replaces "pick the single most recently active neighbour". If a, b and c
+// are connected and all three are alerting, they are one incident; the old rule
+// joined one of them, so whether all three ended up together was luck. The
+// reported case needs two hops, not one: payment and inventory both call order,
+// and all three call database.
+//
+// Reports the distinct subjects pooled and whether the subject cap stopped it
+// adding more, so the caller can say so rather than silently truncating.
+func poolConnectedMembers(
+	graph *DependencyGraph,
+	seedSvcKey, seedKey string,
+	cands []connectedCandidate,
+) ([]groupCandidate, map[string]int, map[string]string, bool, map[string]int) {
+	members := make([]groupCandidate, 0, len(cands))
+	hopsByMember := make(map[string]int, len(cands))
+	dependedOnBy := make(map[string]int, len(cands))
+	subjects := map[string]string{}
+	capped := false
+
+	for _, c := range cands {
+		if c.subjectKey == seedKey || strings.HasSuffix(c.subjectKey, "|") || c.serviceKey == "" {
+			continue
+		}
+		hops := graph.getDependencyDistance(seedSvcKey, c.serviceKey)
+		if hops <= 0 || hops > maxIncidentHops {
+			rev := graph.getDependencyDistance(c.serviceKey, seedSvcKey)
+			if rev <= 0 || rev > maxIncidentHops {
+				continue
+			}
+			hops = rev
+		}
+		if _, seen := subjects[c.subjectKey]; !seen {
+			if len(subjects) >= incidentGroupSubjectCap {
+				capped = true
+				continue
+			}
+			subjects[c.subjectKey] = c.subject
+		}
+		members = append(members, c.candidate)
+		hopsByMember[c.candidate.ID] = hops
+	}
+
+	// Who depends on whom, among the members that made it in. getDependencyDistance
+	// walks the "depends on" direction, so a positive distance from A to B means A
+	// needs B — and B is the better candidate for the headline. Counted rather
+	// than treated as a flag so the member the most others need wins, which is
+	// what a shared backend looks like from the alerts around it.
+	//
+	// The seed is scored too: it is a member like any other, and on the case this
+	// exists for it is the one the rest depend on.
+	keys := make(map[string]string, len(cands)+1)
+	keys[seedKey] = seedSvcKey
+	for _, c := range cands {
+		if _, kept := hopsByMember[c.candidate.ID]; kept {
+			keys[c.candidate.ID] = c.serviceKey
+		}
+	}
+	for id, svcKey := range keys {
+		for otherID, otherKey := range keys {
+			if id == otherID || otherKey == "" || svcKey == "" {
+				continue
+			}
+			if d := graph.getDependencyDistance(otherKey, svcKey); d > 0 && d <= maxIncidentHops {
+				dependedOnBy[id]++
+			}
+		}
+	}
+
+	return members, hopsByMember, subjects, capped, dependedOnBy
+}
+
+// collectConnectedMembers gathers the alerts on OTHER subjects that are connected
+// to the seed's and firing in the same window, so the caller can elect one leader
+// over the same-subject and connected pools together.
+//
+// It used to attach on its own, and only when the same-subject path had already
+// declined. That ordering meant the reported case could never reach it: order's
+// own two alerts group, the function returns, and payment, inventory and database
+// are never considered — the connected-set rule could not fire on the case it was
+// written for. The pools are now merged before a leader is chosen.
+//
+// Original note: join a NEIGHBOR subject's open group
 // when the seed's own stored service map places the two subjects one CALLS hop
 // apart. Evidence is stored-only (the map embedded in the event at enrichment
 // time — topology as it was when the alert fired); precision rests on three
@@ -468,28 +760,44 @@ func topologyGroupingEnabled() bool {
 // by the caller), and the neighbor group's members' chronic gate inside the
 // shared attach decision. Events without a stored map (cloud alerts, plain
 // webhooks) never topology-attach — correct, not a bug.
-func tryTopologyAttach(
+type connectedPool struct {
+	members      []groupCandidate
+	memberStarts map[string]time.Time
+	hops         map[string]int
+	chronicPairs map[string]bool
+	// dependedOnBy counts how many other members of this pool depend on each
+	// member. It is the only causal signal the group has: everything else the
+	// election looks at is timing, and timing gets the direction wrong exactly
+	// when it matters. A load balancer starts erroring before the operator's
+	// health check notices the backend is down, so earliest-start crowns the
+	// symptom and files the cause underneath it.
+	dependedOnBy map[string]int
+}
+
+func collectConnectedMembers(
 	ctx context.Context,
 	db sqlx.ExtContext,
 	event *models.Event,
 	seed groupCandidate,
 	seedKey string,
 	start time.Time,
-) (bool, error) {
+) (connectedPool, error) {
+	var empty connectedPool
 	if !topologyGroupingEnabled() {
-		return false, nil
+		return empty, nil
 	}
 	graph, err := parseServiceMapFromEvent(event)
 	if err != nil || graph == nil {
-		return false, nil // no stored topology — nothing to reason with
+		return empty, nil // no stored topology — nothing to reason with
 	}
 	seedSvcKey := getServiceKeyFromEvent(event)
 	if seedSvcKey == "" {
-		return false, nil
+		return empty, nil
 	}
 
-	// Account-wide chain-leader candidates in the absorption window, any
-	// namespace (cross-service stories cross namespaces).
+	// Alerts that FIRED inside the attach window, account-wide, one row per
+	// chain. Same shape as the same-subject query: a cross-service story is made
+	// of alerts happening now, not of chains that happened to open together.
 	type candidateRow struct {
 		ID               string    `db:"id"`
 		SubjectType      *string   `db:"subject_type"`
@@ -504,24 +812,25 @@ func tryTopologyAttach(
 	}
 	var rows []candidateRow
 	err = sqlx.SelectContext(ctx, db, &rows, `
-		SELECT DISTINCT ON (fingerprint, lower(coalesce(btrim(subject_namespace), '')), lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))))
-		       id, subject_type, subject_name, subject_namespace, subject_owner, subject_owner_kind,
-		       service_key, aggregation_key, starts_at,
-		       max(starts_at) OVER (PARTITION BY fingerprint, lower(coalesce(btrim(subject_namespace), '')), lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name)))) AS last_seen
-		FROM events
-		WHERE tenant = $1
-		  AND cloud_account_id = $2
-		  AND starts_at >= $3 AND starts_at < $4
-		  AND id != $5
-		  AND fingerprint IS DISTINCT FROM $6
-		  AND lower(coalesce(finding_type, '')) NOT IN ('slo', 'anomaly')
-		ORDER BY fingerprint, lower(coalesce(btrim(subject_namespace), '')), lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))), starts_at ASC
+		SELECT DISTINCT ON (e.fingerprint)
+		       e.id, e.subject_type, e.subject_name, e.subject_namespace,
+		       e.subject_owner, e.subject_owner_kind, e.service_key, e.aggregation_key,
+		       e.starts_at,
+		       max(e.starts_at) OVER (PARTITION BY e.fingerprint) AS last_seen
+		FROM events e
+		WHERE e.tenant = $1
+		  AND e.cloud_account_id = $2
+		  AND e.starts_at >= $3 AND e.starts_at < $4
+		  AND e.id != $5
+		  AND e.fingerprint IS DISTINCT FROM $6
+		  AND lower(coalesce(e.finding_type, '')) NOT IN ('slo', 'anomaly')
+		ORDER BY e.fingerprint, e.starts_at DESC
 		LIMIT `+fmt.Sprint(incidentCandidateLimit),
 		*event.Tenant, *event.CloudAccountId,
-		start.Add(-IncidentAbsorptionCap), start, event.Id, event.Fingerprint,
+		start.Add(-IncidentAttachWindow), start, seed.ID, event.Fingerprint,
 	)
 	if err != nil {
-		return false, fmt.Errorf("failed to load topology candidates: %w", err)
+		return empty, fmt.Errorf("failed to load topology candidates: %w", err)
 	}
 
 	deref := func(p *string) string {
@@ -530,120 +839,89 @@ func tryTopologyAttach(
 		}
 		return ""
 	}
-	// Bucket candidates by subject, keeping only subjects one CALLS hop from
-	// the seed in its stored map (either direction — caller or callee).
-	type neighborGroup struct {
-		members      []groupCandidate
-		memberStarts map[string]time.Time
-		newest       time.Time
-		ns, subj     string
-	}
-	neighbors := map[string]*neighborGroup{}
+
+	cands := make([]connectedCandidate, 0, len(rows))
 	for _, r := range rows {
-		candIdentity := AlertIdentity{
-			ID:               r.ID,
-			SubjectType:      deref(r.SubjectType),
-			SubjectName:      deref(r.SubjectName),
-			SubjectNamespace: deref(r.SubjectNamespace),
-			SubjectOwner:     deref(r.SubjectOwner),
-		}
-		candKey := SubjectKey(candIdentity)
-		if candKey == seedKey || strings.HasSuffix(candKey, "|") {
-			continue
-		}
-		candSvcKey := getServiceKeyFromEvent(&models.Event{
-			ServiceKey:       r.ServiceKey,
-			SubjectName:      r.SubjectName,
-			SubjectNamespace: r.SubjectNamespace,
-			SubjectOwner:     r.SubjectOwner,
-			SubjectOwnerKind: r.SubjectOwnerKind,
-			SubjectType:      r.SubjectType,
+		cands = append(cands, connectedCandidate{
+			candidate: groupCandidate{
+				ID:             r.ID,
+				AggregationKey: deref(r.AggregationKey),
+				StartsAt:       r.StartsAt,
+				LastSeen:       r.LastSeen,
+			},
+			subjectKey: SubjectKey(AlertIdentity{
+				ID:               r.ID,
+				SubjectType:      deref(r.SubjectType),
+				SubjectName:      deref(r.SubjectName),
+				SubjectNamespace: deref(r.SubjectNamespace),
+				SubjectOwner:     deref(r.SubjectOwner),
+			}),
+			serviceKey: getServiceKeyFromEvent(&models.Event{
+				ServiceKey:       r.ServiceKey,
+				SubjectName:      r.SubjectName,
+				SubjectNamespace: r.SubjectNamespace,
+				SubjectOwner:     r.SubjectOwner,
+				SubjectOwnerKind: r.SubjectOwnerKind,
+				SubjectType:      r.SubjectType,
+			}),
+			subject: ownerElseName(deref(r.SubjectOwner), deref(r.SubjectName)),
 		})
-		if candSvcKey == "" {
-			continue
+	}
+	members, hopsByMember, subjects, capped, dependedOnBy := poolConnectedMembers(graph, seedSvcKey, seedKey, cands)
+	memberStarts := make(map[string]time.Time, len(members))
+	for _, m := range members {
+		memberStarts[m.ID] = m.StartsAt
+	}
+	if len(members) == 0 {
+		return empty, nil
+	}
+	if capped {
+		slog.InfoContext(ctx, "Incident group hit the subject cap; not adding more",
+			"event_id", event.Id, "cap", incidentGroupSubjectCap, "seed_subject", seedKey)
+	}
+
+	// Chronic rates across every pooled subject, so the leader election prefers a
+	// non-chronic alert over a flapper wherever it sits in the connected set.
+	subjectList := make([]string, 0, len(subjects))
+	for _, subj := range subjects {
+		if subj != "" {
+			subjectList = append(subjectList, subj)
 		}
-		d1 := graph.getDependencyDistance(seedSvcKey, candSvcKey)
-		d2 := graph.getDependencyDistance(candSvcKey, seedSvcKey)
-		if d1 != 1 && d2 != 1 {
-			continue
+	}
+	chronicPairs := map[string]bool{}
+	if len(subjectList) > 0 {
+		type pairRate struct {
+			AggregationKey string `db:"aggregation_key"`
+			Weekly         int    `db:"weekly"`
 		}
-		ng := neighbors[candKey]
-		if ng == nil {
-			ng = &neighborGroup{memberStarts: map[string]time.Time{}}
-			subjNs := strings.ToLower(strings.TrimSpace(deref(r.SubjectNamespace)))
-			subj := strings.ToLower(strings.TrimSpace(deref(r.SubjectOwner)))
-			if subj == "" && r.SubjectName != nil {
-				subj = strings.ToLower(strings.TrimSpace(*r.SubjectName))
+		var rates []pairRate
+		err = sqlx.SelectContext(ctx, db, &rates, `
+			SELECT aggregation_key, count(*) AS weekly
+			FROM events
+			WHERE tenant = $1
+			  AND cloud_account_id = $2
+			  AND lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))) = ANY($3)
+			  AND starts_at >= $4 AND starts_at < $5
+			  AND aggregation_key IS NOT NULL
+			GROUP BY aggregation_key`,
+			*event.Tenant, *event.CloudAccountId, pq.Array(subjectList),
+			start.Add(-ChronicLookback), start,
+		)
+		if err != nil {
+			return empty, fmt.Errorf("failed to load neighbor pair rates: %w", err)
+		}
+		for _, r := range rates {
+			if (ChronicStats{WeeklyCount: r.Weekly}).Chronic() {
+				chronicPairs[r.AggregationKey] = true
 			}
-			ng.ns, ng.subj = subjNs, subj
-			neighbors[candKey] = ng
-		}
-		ng.members = append(ng.members, groupCandidate{
-			ID:             r.ID,
-			AggregationKey: deref(r.AggregationKey),
-			StartsAt:       r.StartsAt,
-			LastSeen:       r.LastSeen,
-		})
-		ng.memberStarts[r.ID] = r.StartsAt
-		if r.LastSeen.After(ng.newest) {
-			ng.newest = r.LastSeen
-		}
-	}
-	if len(neighbors) == 0 {
-		return false, nil
-	}
-
-	// Most recently active neighbor subject is the story we join; determinism
-	// on ties via key order.
-	var bestKey string
-	for k, ng := range neighbors {
-		if bestKey == "" || ng.newest.After(neighbors[bestKey].newest) ||
-			(ng.newest.Equal(neighbors[bestKey].newest) && k < bestKey) {
-			bestKey = k
-		}
-	}
-	best := neighbors[bestKey]
-
-	// Chronic gate for the neighbor subject's pairs (same rates the
-	// same-subject path uses, scoped to the neighbor).
-	type pairRate struct {
-		AggregationKey string `db:"aggregation_key"`
-		Weekly         int    `db:"weekly"`
-	}
-	var rates []pairRate
-	err = sqlx.SelectContext(ctx, db, &rates, `
-		SELECT aggregation_key, count(*) AS weekly
-		FROM events
-		WHERE tenant = $1
-		  AND cloud_account_id = $2
-		  AND lower(coalesce(nullif(btrim(subject_owner), ''), btrim(subject_name))) = $3
-		  AND lower(coalesce(btrim(subject_namespace), '')) = $4
-		  AND starts_at >= $5 AND starts_at < $6
-		  AND aggregation_key IS NOT NULL
-		GROUP BY aggregation_key`,
-		*event.Tenant, *event.CloudAccountId, best.subj, best.ns,
-		start.Add(-ChronicLookback), start,
-	)
-	if err != nil {
-		return false, fmt.Errorf("failed to load neighbor pair rates: %w", err)
-	}
-	neighborChronic := make(map[string]bool, len(rates))
-	for _, r := range rates {
-		if (ChronicStats{WeeklyCount: r.Weekly}).Chronic() {
-			neighborChronic[r.AggregationKey] = true
 		}
 	}
 
-	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, best.members, best.memberStarts, neighborChronic)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		return false, nil
-	}
-	if err := insertGroupLink(ctx, db, event, leaderID, offset, 1,
-		fmt.Sprintf("calls edge between %s and %s within incident attach window", seedKey, bestKey)); err != nil {
-		return false, err
-	}
-	return true, nil
+	return connectedPool{
+		members:      members,
+		memberStarts: memberStarts,
+		hops:         hopsByMember,
+		dependedOnBy: dependedOnBy,
+		chronicPairs: chronicPairs,
+	}, nil
 }

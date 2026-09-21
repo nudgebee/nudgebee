@@ -1,16 +1,83 @@
 package tools
 
 import (
+	"encoding/json"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
 	"os"
 	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
+
+// TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace guards against the
+// bug where a namespace-specific query silently searched the whole account:
+// with a namespace given, the query must add the meta->>'namespace' predicate
+// and bind it as the 3rd arg; with none, the predicate and 3rd arg must be
+// absent so the unscoped account-wide search is unaffected.
+func TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace(t *testing.T) {
+	patterns := []string{"%relay-server%"}
+
+	query, args := buildResourceSearchDBQuery("acct-1", "team-alpha", patterns)
+	assert.Contains(t, query, "AND meta->>'namespace' = $3")
+	require.Len(t, args, 3)
+	assert.Equal(t, "acct-1", args[0])
+	assert.Equal(t, "team-alpha", args[2])
+
+	queryUnscoped, argsUnscoped := buildResourceSearchDBQuery("acct-1", "", patterns)
+	assert.NotContains(t, queryUnscoped, "AND meta->>'namespace' = $3")
+	require.Len(t, argsUnscoped, 2)
+}
+
+// grepNoMatchWorkspaceManager stubs ExecuteOrLazyCreate to fail exactly the
+// way a grep with no matches does — every other WorkspaceManager method is
+// picked up as a nil-valued no-op via the embedded interface, since this test
+// never calls them.
+type grepNoMatchWorkspaceManager struct {
+	workspace.WorkspaceManager
+}
+
+func (grepNoMatchWorkspaceManager) ExecuteOrLazyCreate(ctx *security.RequestContext, accountId, conversationId, command string, env map[string]string) (string, error) {
+	return "", &workspace.CommandFailure{Status: "failed", StdErr: "exit status 1"}
+}
+
+// TestExecuteKubectlCommand_GrepNoMatchIsNotRecordedAsError guards the
+// resource_search_execute-specific instance of the grep-exit-1 bug: unlike
+// kubectl_execute/shell_execute (see isNoMatchExit's other callers), this
+// tool's executeKubectlCommand recorded every unmatched search term as a
+// failed relay step, which the LLM sees as a string of tool [ERROR]s and
+// reacts to by abandoning grep-based narrowing for an exhaustive brute-force
+// scan across every resource kind/label-selector combination (confirmed via
+// benchmark run dd7bc6b21b45, test 100a_historical_logs: 66 tool calls to
+// confirm one empty namespace). A grep that finds nothing is a normal,
+// successful outcome and must be recorded as one.
+func TestExecuteKubectlCommand_GrepNoMatchIsNotRecordedAsError(t *testing.T) {
+	origWm := wm
+	wm = grepNoMatchWorkspaceManager{}
+	defer func() { wm = origWm }()
+
+	stats := &core.ToolCallStats{}
+	nbCtx := core.NbToolContext{
+		Ctx:            security.NewRequestContextForSuperAdmin(),
+		AccountId:      "acct-1",
+		ConversationId: "conv-1",
+		Stats:          stats,
+	}
+
+	tool := K8sResourceSearchTool{}
+	response := tool.executeKubectlCommand(`kubectl get pods -n app-100a --no-headers | grep -i -- 'payment-api'`, nbCtx)
+	assert.Equal(t, "", response, "no-match grep should surface as empty output, same as before the fix")
+
+	steps, dropped := stats.Steps()
+	require.Equal(t, 0, dropped)
+	require.Len(t, steps, 1)
+	assert.Empty(t, steps[0].Err, "a no-match grep must not be recorded as a failed relay step")
+}
 
 func TestResourceSearchTool(t *testing.T) {
 
@@ -1186,5 +1253,183 @@ func TestFilterResourcesByRelevance_SeparatorClasses(t *testing.T) {
 	t.Run("empty and whitespace-only queries do not prune", func(t *testing.T) {
 		assert.Len(t, r.filterResourcesByRelevance(resources, ""), 2)
 		assert.Len(t, r.filterResourcesByRelevance(resources, "   "), 2)
+	})
+}
+
+// TestIsNonResourceOutputLine guards against kubectl status messages, errors,
+// and table headers being mistaken for real resources (e.g. "No resources found in..."
+// parsing into a phantom pod named "No").
+func TestIsNonResourceOutputLine(t *testing.T) {
+	nonResourceLines := []string{
+		"",
+		"   ",
+		"No resources found in app-100a namespace.",
+		"No resources found.",
+		"no resources found in default namespace",
+		"Error from server (NotFound): namespaces \"unknown\" not found",
+		"error: the server could not find the requested resource",
+		"Warning: v1 ComponentStatus is deprecated in v1.19+",
+		"NAME READY STATUS RESTARTS AGE",
+		"NAMESPACE NAME READY STATUS RESTARTS AGE",
+		"name ready status restarts age",
+		"NAME   DATA   AGE",
+		"NAME   SCHEDULE   SUSPEND   ACTIVE   LAST SCHEDULE   AGE",
+	}
+
+	for _, line := range nonResourceLines {
+		t.Run("rejects "+line, func(t *testing.T) {
+			assert.True(t, isNonResourceOutputLine(line), "must recognize line as non-resource")
+		})
+	}
+
+	validResourceLines := []string{
+		"payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d",
+		"app-100a payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d",
+		"payment-api 1/1 1 1 5d",
+		"pod/payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d",
+		"error-service-7f68c47b56-k6mzp 1/1 Running 0 2d",
+		"warning-collector-56bdf-q91a 1/1 Running 0 1d",
+		"name 1/1 Running 0 1d",
+		"error 1/1 Running 0 1d",
+		"warning 1/1 Running 0 1d",
+	}
+
+	for _, line := range validResourceLines {
+		t.Run("accepts "+line, func(t *testing.T) {
+			assert.False(t, isNonResourceOutputLine(line), "must recognize valid resource line")
+		})
+	}
+}
+
+func TestParsers_IgnoreNonResourceLines(t *testing.T) {
+	r := K8sResourceSearchTool{}
+	noResourcesOutput := "No resources found in app-100a namespace."
+	headerOutput := "NAME READY STATUS RESTARTS AGE"
+	errorOutput := "Error from server (NotFound): namespaces \"test\" not found"
+
+	// parseGenericResourceLine must return nil for status/header/error lines
+	assert.Nil(t, r.parseGenericResourceLine(noResourcesOutput, "pods", "app-100a", false))
+	assert.Nil(t, r.parseGenericResourceLine(headerOutput, "pods", "app-100a", false))
+	assert.Nil(t, r.parseGenericResourceLine(errorOutput, "pods", "app-100a", false))
+
+	// parsePodLine must return nil for status/header/error lines
+	assert.Nil(t, r.parsePodLine(noResourcesOutput, "app-100a", false))
+	assert.Nil(t, r.parsePodLine(headerOutput, "app-100a", false))
+	assert.Nil(t, r.parsePodLine(errorOutput, "app-100a", false))
+
+	// parseDeploymentLine must return nil for status/header/error lines
+	assert.Nil(t, r.parseDeploymentLine(noResourcesOutput, "app-100a", false))
+	assert.Nil(t, r.parseDeploymentLine(headerOutput, "app-100a", false))
+	assert.Nil(t, r.parseDeploymentLine(errorOutput, "app-100a", false))
+
+	// parseAllResourceLine must return nil for status/header/error lines
+	assert.Nil(t, r.parseAllResourceLine(noResourcesOutput, "app-100a", false))
+	assert.Nil(t, r.parseAllResourceLine(headerOutput, "app-100a", false))
+	assert.Nil(t, r.parseAllResourceLine(errorOutput, "app-100a", false))
+
+	// Valid pod line parses correctly into actual resource fields
+	validPod := "payment-api-7b89f899c7-xk6lp 1/1 Running 0 5d"
+	pod := r.parsePodLine(validPod, "app-100a", false)
+	require.NotNil(t, pod)
+	assert.Equal(t, "payment-api-7b89f899c7-xk6lp", pod.Name)
+	assert.Equal(t, "app-100a", pod.Namespace)
+	assert.Equal(t, "Running", pod.Status)
+
+	// Valid pod named "error" parses correctly and is not dropped
+	errorNamedPod := "error 1/1 Running 0 1d"
+	podError := r.parsePodLine(errorNamedPod, "app-100a", false)
+	require.NotNil(t, podError)
+	assert.Equal(t, "error", podError.Name)
+}
+
+// search_type was declared Required while processSearchRequest had always
+// routed an absent value to handleResourceSuggestions. Pre-execution schema
+// validation therefore rejected calls that would have worked — 15 of them in
+// 14 days on dev, the single largest tool-input failure in the service. These
+// pin the corrected contract: optional, enumerated, defaulting to suggestions.
+func TestK8sResourceSearchTool_SearchTypeContract(t *testing.T) {
+	schema := K8sResourceSearchTool{}.InputSchema()
+
+	t.Run("search_type is not required", func(t *testing.T) {
+		assert.NotContains(t, schema.Required, "search_type",
+			"Call() defaults an absent search_type to suggestions, so requiring it only lets the validator reject working calls")
+	})
+
+	t.Run("search_type enumerates exactly the values the switch handles", func(t *testing.T) {
+		assert.ElementsMatch(t,
+			[]any{searchTypeFuzzy, searchTypeSuggestions, searchTypeNamespace, searchTypeLabel},
+			schema.Properties["search_type"].Enum,
+			"an enum that drifts from processSearchRequest's switch would reject values the tool actually supports")
+	})
+
+	t.Run("search_type advertises its default", func(t *testing.T) {
+		assert.Equal(t, searchTypeSuggestions, schema.Properties["search_type"].Default)
+	})
+
+	t.Run("the description tells the model the field is optional", func(t *testing.T) {
+		assert.Contains(t, K8sResourceSearchTool{}.Description(), "search_type (optional)",
+			"Description() is the only input contract some planners render, so it must agree with the schema")
+	})
+}
+
+// The exact production shape: a search with no search_type at all must now pass
+// validation instead of being rejected before Call() runs.
+func TestK8sResourceSearchTool_InputWithoutSearchTypeValidates(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+
+	t.Run("omitting search_type is accepted", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_name":"nginx","namespace":"default"}`),
+			"this is the call the agent was making when it got 'missing required field \"search_type\"'")
+	})
+
+	t.Run("an explicit valid search_type is still accepted", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_type":"podss","search_type":"fuzzy"}`))
+	})
+
+	t.Run("an unrecognised search_type is now rejected with the valid list", func(t *testing.T) {
+		got := core.ValidateToolInput(tool, `{"namespace":"default","search_type":"fuzzyy"}`)
+		if assert.NotNil(t, got, "a typo used to fall through to suggestions silently; the enum should catch it") {
+			assert.Contains(t, *got, "search_type")
+		}
+	})
+}
+
+// Adding the search_type enum must not swap one pre-execution rejection for
+// another. Native tool-calling providers routinely emit every declared property,
+// filling unset ones with "" rather than omitting them — and "" already meant
+// "not specified" to Call(). Without the normalizer these would fail the enum
+// check with `value  not in allowed enum`.
+func TestK8sResourceSearchTool_EmptySearchTypeIsTreatedAsAbsent(t *testing.T) {
+	tool := K8sResourceSearchTool{}
+
+	t.Run("an explicitly empty search_type still validates", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_name":"nginx","search_type":""}`),
+			"\"\" means unspecified; rejecting it would break the same tool this change is fixing")
+	})
+
+	t.Run("a whitespace-only search_type still validates", func(t *testing.T) {
+		assert.Nil(t, core.ValidateToolInput(tool, `{"resource_name":"nginx","search_type":"   "}`))
+	})
+
+	t.Run("the normalizer drops only the empty key and leaves the rest intact", func(t *testing.T) {
+		got := tool.NormalizeInputForSchemaValidation(`{"resource_name":"nginx","search_type":""}`)
+		assert.NotContains(t, got, "search_type")
+		assert.Contains(t, got, "nginx", "normalization must not discard the rest of the call")
+	})
+
+	t.Run("a populated search_type is passed through untouched", func(t *testing.T) {
+		in := `{"resource_type":"podss","search_type":"fuzzy"}`
+		assert.Equal(t, in, tool.NormalizeInputForSchemaValidation(in))
+	})
+
+	t.Run("non-JSON input is passed through untouched", func(t *testing.T) {
+		assert.Equal(t, "kubectl get pods", tool.NormalizeInputForSchemaValidation("kubectl get pods"))
+	})
+
+	t.Run("an empty search_type routes to suggestions in Call's parser", func(t *testing.T) {
+		var req K8sResourceSearchRequest
+		assert.NoError(t, json.Unmarshal([]byte(`{"resource_name":"nginx","search_type":""}`), &req))
+		assert.Equal(t, "", req.SearchType,
+			"processSearchRequest normalizes this to suggestions; pinned here so the two paths cannot diverge")
 	})
 }

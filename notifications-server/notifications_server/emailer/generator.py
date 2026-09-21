@@ -119,6 +119,8 @@ def format_date(params):
     elif title == "Events Summary":
         events_data = params.get("events_summarised", {})
         format_string_to_date(events_data, "events")
+        event_counts_data = params.get("event_counts", {})
+        format_string_to_date(event_counts_data, "events")
 
 
 def _generate_context(template_params):

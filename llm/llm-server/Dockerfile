@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Dockerfile (for your Go application)
 # Build this after building your base image: docker build -t your-app-image .
 

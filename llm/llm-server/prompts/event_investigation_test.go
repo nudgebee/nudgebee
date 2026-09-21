@@ -30,4 +30,9 @@ func TestEventInvestigationPrompt_RendersCleanly(t *testing.T) {
 	assert.NotContains(t, rendered, "%!", "prompt must render without Sprintf artifacts")
 	assert.Contains(t, rendered, "Incident Window", "prompt must surface the incident window")
 	assert.Contains(t, rendered, "Evidence Discipline", "prompt must carry the evidence-discipline rules")
+	assert.Contains(t, rendered, "Do NOT reacquire event details", "prompt must reuse evidence already collected by internal tools")
+	assert.Contains(t, rendered, "not mandatory checkboxes", "prompt must make telemetry retrieval gap-driven")
+	assert.Contains(t, rendered, "not a completed investigation", "prompt must not confuse evidence reuse with investigation completion")
+	assert.Contains(t, rendered, "Do not stop after selecting, listing, or restating events", "prompt must require causal investigation beyond event selection")
+	assert.NotContains(t, rendered, "use your available tools to pull the logs, metrics, and traces", "prompt must not mandate redundant modality-wide retrieval")
 }

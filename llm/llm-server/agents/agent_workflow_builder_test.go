@@ -674,6 +674,52 @@ func TestWorkflowSessionId(t *testing.T) {
 	assert.Equal(t, "", workflowSessionId(map[string]interface{}{"name": "x"}))
 }
 
+// TestWorkflowLastExecutionError covers the fast path that lets the edit loop read the most recent
+// failure straight off the automation record instead of spending list_executions + get_execution to
+// rediscover it. The empty cases matter as much as the populated ones: a successful or never-run
+// automation leaves the column blank (and reconciliation can blank it), so the RPC fallback in the
+// prompt has to stay reachable.
+func TestWorkflowLastExecutionError(t *testing.T) {
+	assert.Equal(t, "boom", workflowLastExecutionError(map[string]interface{}{"last_execution_status_message": "boom"}))
+	assert.Equal(t, "nested boom", workflowLastExecutionError(map[string]interface{}{"definition": map[string]interface{}{"last_execution_status_message": "nested boom"}}))
+	assert.Equal(t, "", workflowLastExecutionError(map[string]interface{}{"name": "x"}), "never-run automation must fall back to the RPC path")
+	assert.Equal(t, "", workflowLastExecutionError(map[string]interface{}{"last_execution_status_message": "   "}), "a whitespace-only message is not evidence")
+	assert.Equal(t, "", workflowLastExecutionError(nil))
+
+	long := strings.Repeat("e", maxLastExecutionError+500)
+	got := workflowLastExecutionError(map[string]interface{}{"last_execution_status_message": long})
+	assert.Len(t, []rune(got), maxLastExecutionError, "an oversized error must be clipped to the prompt budget")
+	assert.True(t, strings.HasSuffix(got, "[...]"), "truncation must be visible to the model")
+}
+
+// TestEditSystemPrompt_LastFailureIsFallbackOnly pins the precedence between the three failure
+// hints. A user/UI-supplied error context and a target execution id are both more specific than the
+// automation's last recorded failure — which can predate the change being asked about — so the
+// record-derived message is only surfaced when neither is present.
+func TestEditSystemPrompt_LastFailureIsFallbackOnly(t *testing.T) {
+	schema := getWorkflowSchema()
+
+	// The bare phrase also appears in the static DEBUG rules, so assert on the injected block's
+	// header (and the message itself) rather than on the phrase alone.
+	const sectionHeader = "LAST RECORDED FAILURE (already on the automation record"
+
+	withLast := getEditSystemPrompt("", "", "connection refused to db-1", schema)
+	assert.Contains(t, withLast, sectionHeader)
+	assert.Contains(t, withLast, "connection refused to db-1")
+	assert.Contains(t, withLast, "call list_executions/get_execution only when you need the failing task",
+		"the drill-down must stay available — the record only carries the workflow-level error")
+
+	withContext := getEditSystemPrompt("user said it 500s", "", "connection refused to db-1", schema)
+	assert.NotContains(t, withContext, sectionHeader, "an explicit error context wins")
+	assert.NotContains(t, withContext, "connection refused to db-1")
+
+	withTarget := getEditSystemPrompt("", "exec-9", "connection refused to db-1", schema)
+	assert.NotContains(t, withTarget, sectionHeader, "a target execution id wins")
+	assert.NotContains(t, withTarget, "connection refused to db-1")
+
+	assert.NotContains(t, getEditSystemPrompt("", "", "", schema), sectionHeader)
+}
+
 // TestAutoSaveWorkflow_CreateConflict_ConvergesWhenOwnedBySession verifies the Fix B idempotency
 // path: a create POST that collides on the name uniqueness constraint converges to a PUT-update when
 // the existing workflow was created from THIS session, and otherwise fails cleanly WITHOUT updating a
@@ -736,111 +782,6 @@ func TestAutoSaveWorkflow_CreateConflict_ConvergesWhenOwnedBySession(t *testing.
 }
 
 // TestWorkflowBuilderAgent_FixMode_Integration tests the full fix mode flow against a real workflow
-
-func TestCoerceWorkflowTypes(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    map[string]interface{}
-		expected map[string]interface{}
-	}{
-		{
-			name: "converts whole-number floats to int",
-			input: map[string]interface{}{
-				"name": "test",
-				"definition": map[string]interface{}{
-					"tasks": []interface{}{
-						map[string]interface{}{
-							"id":   "task-1",
-							"type": "http",
-							"params": map[string]interface{}{
-								"concurrency": float64(5),
-								"timeout":     float64(30),
-								"url":         "https://example.com",
-							},
-						},
-					},
-				},
-			},
-			expected: map[string]interface{}{
-				"name": "test",
-				"definition": map[string]interface{}{
-					"tasks": []interface{}{
-						map[string]interface{}{
-							"id":   "task-1",
-							"type": "http",
-							"params": map[string]interface{}{
-								"concurrency": 5,
-								"timeout":     30,
-								"url":         "https://example.com",
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "preserves non-whole floats",
-			input: map[string]interface{}{
-				"value": float64(3.14),
-				"whole": float64(42),
-			},
-			expected: map[string]interface{}{
-				"value": float64(3.14),
-				"whole": 42,
-			},
-		},
-		{
-			name: "handles arrays with mixed types",
-			input: map[string]interface{}{
-				"items": []interface{}{
-					float64(1),
-					float64(2.5),
-					"string",
-					map[string]interface{}{
-						"nested": float64(10),
-					},
-				},
-			},
-			expected: map[string]interface{}{
-				"items": []interface{}{
-					1,
-					float64(2.5),
-					"string",
-					map[string]interface{}{
-						"nested": 10,
-					},
-				},
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			coerceWorkflowTypes(tc.input)
-			assert.Equal(t, tc.expected, tc.input)
-		})
-	}
-}
-
-func TestCoerceWorkflowTypes_RoundTrip(t *testing.T) {
-	// Simulate the actual scenario: JSON unmarshal produces float64, coercion fixes it
-	jsonStr := `{"name":"test","definition":{"tasks":[{"id":"task-1","params":{"concurrency":5}}]}}`
-	var workflow map[string]interface{}
-	err := json.Unmarshal([]byte(jsonStr), &workflow)
-	assert.Nil(t, err)
-
-	// Before coercion: Go's json.Unmarshal produces float64
-	def := workflow["definition"].(map[string]interface{})
-	tasks := def["tasks"].([]interface{})
-	params := tasks[0].(map[string]interface{})["params"].(map[string]interface{})
-	assert.IsType(t, float64(0), params["concurrency"])
-
-	// After coercion: should be int
-	coerceWorkflowTypes(workflow)
-	params = tasks[0].(map[string]interface{})["params"].(map[string]interface{})
-	assert.IsType(t, int(0), params["concurrency"])
-	assert.Equal(t, 5, params["concurrency"])
-}
 
 // ==================== AGENTIC INTEGRATION TESTS ====================
 // These tests exercise the full runToolLoop() end-to-end with actual LLM calls.
@@ -1656,7 +1597,7 @@ func TestWorkflowBuilder_BuildSystemPromptHasAccountIdUUIDRule(t *testing.T) {
 // the same runbook-server validation.
 
 func TestWorkflowBuilder_EditSystemPromptHasAccountIdUUIDRule(t *testing.T) {
-	prompt := getEditSystemPrompt("test error context", "", getWorkflowSchema())
+	prompt := getEditSystemPrompt("test error context", "", "", getWorkflowSchema())
 	assert.Contains(t, prompt, "CLOUD ACCOUNT IDs")
 	assert.Contains(t, prompt, "account_id")
 	assert.Contains(t, prompt, "UUID")
@@ -1674,7 +1615,7 @@ func TestWorkflowBuilder_PromptsCoverAllFiveTriggerTypes(t *testing.T) {
 	surfaces := map[string]string{
 		"schema":           getWorkflowSchema(),
 		"build_prompt":     getBuildSystemPrompt("intent", "plan", getWorkflowSchema()),
-		"edit_prompt":      getEditSystemPrompt("err", "", getWorkflowSchema()),
+		"edit_prompt":      getEditSystemPrompt("err", "", "", getWorkflowSchema()),
 		"planning_context": getWorkflowPlanningContext(),
 	}
 

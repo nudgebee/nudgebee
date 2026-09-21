@@ -660,13 +660,22 @@ func reduceEventData(event events.Event) map[string]any {
 		eventData["logs"] = logData
 	}
 
-	if event.Evidences.AlertLabels.Data != nil && len(event.Evidences.AlertLabels.Data.([]any)) > 0 {
+	if labelsData, ok := event.Evidences.AlertLabels.Data.([]any); ok && len(labelsData) > 0 {
 		alertLabels := map[string]any{}
-		for _, labelAny := range event.Evidences.AlertLabels.Data.([]any) {
-			label := labelAny.(map[string]any)
-			alertLabels[label["label"].(string)] = label["value"]
+		for _, labelAny := range labelsData {
+			label, ok := labelAny.(map[string]any)
+			if !ok {
+				continue
+			}
+			key, ok := label["label"].(string)
+			if !ok {
+				continue
+			}
+			alertLabels[key] = label["value"]
 		}
-		eventData["labels"] = alertLabels
+		if len(alertLabels) > 0 {
+			eventData["labels"] = alertLabels
+		}
 	}
 
 	if event.Evidences.Markdowns != nil {
@@ -767,10 +776,10 @@ func reduceEventData(event events.Event) map[string]any {
 	if event.Evidences.Traces.Data != nil {
 		if len(event.Evidences.Traces.Insight) > 0 {
 			eventData["traces_insight"] = event.Evidences.Traces.Insight
-		} else {
+		} else if tracesMap, ok := event.Evidences.Traces.Data.(map[string]any); ok {
 			traces := []map[string]any{}
-			traceData := event.Evidences.Traces.Data.(map[string]any)["data"]
-			for _, traceAny := range traceData.([]any) {
+			traceData, _ := tracesMap["data"].([]any)
+			for _, traceAny := range traceData {
 				trace, ok := traceAny.(map[string]any)
 				if !ok {
 					continue

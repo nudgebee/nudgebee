@@ -60,6 +60,20 @@ func ecsTaskStatusToNbStatus(lastStatus *string) providers.ResourceStatus {
 	}
 }
 
+// ecsServiceNameFromTaskGroup extracts the ECS service name from a task's Group
+// field. ECS sets Group to "service:<serviceName>" for tasks launched by a
+// service; standalone tasks carry "family:<taskDefinitionFamily>" instead.
+func ecsServiceNameFromTaskGroup(group *string) (string, bool) {
+	if group == nil {
+		return "", false
+	}
+	name, ok := strings.CutPrefix(*group, "service:")
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
 type amazonEcs struct {
 	DefaultAwsServiceImpl
 }
@@ -264,6 +278,9 @@ func (a *amazonEcs) GetResources(ctx providers.CloudProviderContext, account pro
 			}
 			resources = append(resources, resource)
 
+			// Populated while walking the cluster's services so tasks enumerated
+			// below can be attributed back to the service that launched them.
+			serviceArnByName := map[string]string{}
 			servicesPaginator := ecs.NewListServicesPaginator(svc, &ecs.ListServicesInput{Cluster: cluster.ClusterArn})
 			for servicesPaginator.HasMorePages() {
 				servicesOutput, err := servicesPaginator.NextPage(ctx.GetContext())
@@ -315,64 +332,69 @@ func (a *amazonEcs) GetResources(ctx providers.CloudProviderContext, account pro
 							Type:        getAwsServiceResourceType(ServiceNameECS, "service"),
 						}
 						resources = append(resources, serviceResource)
+						serviceArnByName[*service.ServiceName] = *service.ServiceArn
+					}
+				}
+			}
 
-						tasksPaginator := ecs.NewListTasksPaginator(svc, &ecs.ListTasksInput{
-							Cluster:     cluster.ClusterArn,
-							ServiceName: service.ServiceName,
-						})
-						for tasksPaginator.HasMorePages() {
-							tasksOutput, err := tasksPaginator.NextPage(ctx.GetContext())
-							if err != nil {
-								ctx.GetLogger().Error("failed to list ecs tasks for service", "error", err, "serviceArn", *service.ServiceArn, "clusterArn", *cluster.ClusterArn)
-								break
-							}
+			// Tasks are enumerated per cluster, not per service: ListTasks filtered
+			// by ServiceName only returns service-launched tasks, so standalone
+			// tasks (RunTask, scheduled tasks) were never collected at all.
+			tasksPaginator := ecs.NewListTasksPaginator(svc, &ecs.ListTasksInput{Cluster: cluster.ClusterArn})
+			for tasksPaginator.HasMorePages() {
+				tasksOutput, err := tasksPaginator.NextPage(ctx.GetContext())
+				if err != nil {
+					ctx.GetLogger().Error("failed to list ecs tasks for cluster", "error", err, "clusterArn", *cluster.ClusterArn, "region", regionName)
+					break
+				}
 
-							taskChunks := lo.Chunk(tasksOutput.TaskArns, 100)
-							for _, taskChunk := range taskChunks {
-								describeTasksInput := &ecs.DescribeTasksInput{
-									Cluster: cluster.ClusterArn,
-									Tasks:   taskChunk,
-									Include: []types.TaskField{types.TaskFieldTags},
-								}
-								describedTasksOutput, err := svc.DescribeTasks(ctx.GetContext(), describeTasksInput)
-								if err != nil {
-									ctx.GetLogger().Error("failed to describe ecs tasks", "error", err, "clusterArn", *cluster.ClusterArn)
-									continue
-								}
+				taskChunks := lo.Chunk(tasksOutput.TaskArns, 100)
+				for _, taskChunk := range taskChunks {
+					describeTasksInput := &ecs.DescribeTasksInput{
+						Cluster: cluster.ClusterArn,
+						Tasks:   taskChunk,
+						Include: []types.TaskField{types.TaskFieldTags},
+					}
+					describedTasksOutput, err := svc.DescribeTasks(ctx.GetContext(), describeTasksInput)
+					if err != nil {
+						ctx.GetLogger().Error("failed to describe ecs tasks", "error", err, "clusterArn", *cluster.ClusterArn)
+						continue
+					}
 
-								for _, task := range describedTasksOutput.Tasks {
-									if task.TaskArn == nil || task.LastStatus == nil || task.CreatedAt == nil {
-										ctx.GetLogger().Warn("Skipping ECS task due to missing essential fields", "task", task)
-										continue
-									}
-									taskArnSplits := strings.Split(*task.TaskArn, "/")
-									taskID := taskArnSplits[len(taskArnSplits)-1]
-									taskTags := make(map[string][]string)
-									for _, tag := range task.Tags {
-										if tag.Key != nil && tag.Value != nil {
-											taskTags[*tag.Key] = append(taskTags[*tag.Key], *tag.Value)
-										}
-									}
-									taskMeta := structToMap(task)
-									taskMeta["ClusterArn"] = *cluster.ClusterArn
-									taskMeta["ServiceArn"] = *service.ServiceArn
-
-									taskResource := providers.Resource{
-										Id:          taskID,
-										ServiceName: ServiceNameECS,
-										Name:        taskID,
-										Status:      ecsTaskStatusToNbStatus(task.LastStatus),
-										Region:      regionName,
-										Tags:        taskTags,
-										Meta:        taskMeta,
-										Arn:         *task.TaskArn,
-										CreatedAt:   *task.CreatedAt,
-										Type:        getAwsServiceResourceType(ServiceNameECS, "task"),
-									}
-									resources = append(resources, taskResource)
-								}
+					for _, task := range describedTasksOutput.Tasks {
+						if task.TaskArn == nil || task.LastStatus == nil || task.CreatedAt == nil {
+							ctx.GetLogger().Warn("Skipping ECS task due to missing essential fields", "task", task)
+							continue
+						}
+						taskArnSplits := strings.Split(*task.TaskArn, "/")
+						taskID := taskArnSplits[len(taskArnSplits)-1]
+						taskTags := make(map[string][]string)
+						for _, tag := range task.Tags {
+							if tag.Key != nil && tag.Value != nil {
+								taskTags[*tag.Key] = append(taskTags[*tag.Key], *tag.Value)
 							}
 						}
+						taskMeta := structToMap(task)
+						taskMeta["ClusterArn"] = *cluster.ClusterArn
+						if serviceName, ok := ecsServiceNameFromTaskGroup(task.Group); ok {
+							if serviceArn, ok := serviceArnByName[serviceName]; ok {
+								taskMeta["ServiceArn"] = serviceArn
+							}
+						}
+
+						taskResource := providers.Resource{
+							Id:          taskID,
+							ServiceName: ServiceNameECS,
+							Name:        taskID,
+							Status:      ecsTaskStatusToNbStatus(task.LastStatus),
+							Region:      regionName,
+							Tags:        taskTags,
+							Meta:        taskMeta,
+							Arn:         *task.TaskArn,
+							CreatedAt:   *task.CreatedAt,
+							Type:        getAwsServiceResourceType(ServiceNameECS, "task"),
+						}
+						resources = append(resources, taskResource)
 					}
 				}
 			}

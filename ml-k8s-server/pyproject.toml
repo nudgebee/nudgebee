@@ -14,7 +14,7 @@ numpy = "^1.26.2"
 gunicorn = "23.0.0"
 
 # stubs
-boto3-stubs = "1.43.67"
+boto3-stubs = "1.43.78"
 pandas-stubs = "2.0.3.230814"
 types-tensorflow = "2.18.0.20260724"
 sqlalchemy-stubs = "0.4"
@@ -66,7 +66,7 @@ build-backend = "poetry.core.masonry.api"
 
 
 [tool.poetry.group.dev.dependencies]
-pre-commit = "4.6.1"
+pre-commit = "4.6.2"
 black = "26.5.1"
 mypy = "1.5.1"
 flake8 = "7.3.0"

@@ -99,19 +99,26 @@ func (t *WhoisTask) Execute(taskCtx types.TaskContext, params map[string]any) (a
 	// internal services, cloud metadata endpoints (169.254.169.254), etc.
 	// We also pin the connection to the validated IP to close the DNS
 	// rebinding (TOCTOU) window between validation and dial.
-	server := "whois.iana.org"
+	//
+	// serverHost and dialIP are deliberately kept apart: dialIP is the pinned
+	// address we actually connect to, serverHost is the hostname we report, so
+	// the output stays readable and stable across registry IP changes.
+	serverHost := "whois.iana.org"
 	if s, ok := params["server"].(string); ok && s != "" {
-		server = s
+		serverHost = s
 	}
-	pinnedServer, err := validateWhoisServer(taskCtx.GetContext(), server)
+	dialIP, err := validateWhoisServer(taskCtx.GetContext(), serverHost)
 	if err != nil {
 		return nil, fmt.Errorf("invalid whois server: %w", err)
 	}
-	server = pinnedServer
 
-	response, err := t.queryWhois(taskCtx, domain, server)
+	response, err := t.queryWhois(taskCtx, domain, dialIP)
 	if err != nil {
-		return nil, err
+		// Soft-fail: a lookup that never completed is an outcome, not a task
+		// error. Mirrors network.tcp, which reports unreachable hosts the same
+		// way rather than failing the run.
+		return whoisResult(domain, serverHost, "", false, whoisStatusLookupFailed,
+			whoisRecord{}, fmt.Sprintf("whois query to %s failed: %v", serverHost, err)), nil
 	}
 
 	// Step 2: Look for referral (refer: or whois:)
@@ -120,30 +127,87 @@ func (t *WhoisTask) Execute(taskCtx types.TaskContext, params map[string]any) (a
 	// compromised upstream could redirect us to internal addresses. Pin the
 	// referral to its resolved IP for the same reason as the initial server.
 	referral := t.findReferral(response)
-	if referral != "" && referral != server {
+	referralFollowed := false
+	referralErr := ""
+	// Scope the bootstrap handling to a response we actually got from IANA.
+	// Registries in RPSL-ish formats can carry a "source: IANA" line of their
+	// own; treating one of those as a bootstrap record would throw away a
+	// perfectly good answer.
+	fromIANA := strings.EqualFold(strings.TrimSpace(serverHost), "whois.iana.org") && isIANABootstrap(response)
+	// Some registries (Nominet, for one) publish no WHOIS server to IANA, so
+	// the bootstrap record comes back with an empty `refer:` / `whois:` field.
+	// Without a fallback we would hand back IANA's record for the TLD itself
+	// and report every .uk domain as registered. whois.nic.<tld> is the
+	// convention those registries follow.
+	if referral == "" && fromIANA {
+		referral = nicServerForDomain(domain)
+	}
+	if referral != "" && referral != serverHost {
 		pinnedReferral, err := validateWhoisServer(taskCtx.GetContext(), referral)
 		if err != nil {
 			taskCtx.GetLogger().Warn("Skipping whois referral to restricted server", "server", referral, "error", err.Error())
+			referralErr = fmt.Sprintf("skipped referral to %s: %v", referral, err)
 		} else {
 			// Follow referral
-			server = pinnedReferral
-			response, err = t.queryWhois(taskCtx, domain, server)
+			referred, err := t.queryWhois(taskCtx, domain, pinnedReferral)
 			if err != nil {
-				return nil, fmt.Errorf("referral query to %s failed: %w", server, err)
+				referralErr = fmt.Sprintf("referral query to %s failed: %v", referral, err)
+			} else {
+				serverHost = referral
+				response = referred
+				referralFollowed = true
 			}
 		}
 	}
 
-	// Basic parsing (Expiration Date)
-	// Key names vary wildly: "Registry Expiry Date", "Expiration Date", "paid-till", "expire", etc.
-	// We will return the raw text and maybe attempt to extract a few common fields.
+	rec := parseWhois(response)
+	registered, status := classify(response, rec)
+	// referralErr is only ever set when the referral was not followed, so this
+	// surfaces a skipped or failed referral instead of burying it in the log.
+	errMsg := referralErr
 
+	// If we never followed the referral, `response` is the bootstrap server's
+	// TLD record (which carries its own created/changed dates and the registry's
+	// name servers) rather than a record for the domain. Reporting that as
+	// "found" would be a lie.
+	if !referralFollowed && fromIANA {
+		registered = false
+		rec = whoisRecord{}
+		if referralErr != "" {
+			status = whoisStatusLookupFailed
+		} else {
+			status = whoisStatusParseError
+		}
+	}
+
+	return whoisResult(domain, serverHost, response, registered, status, rec, errMsg), nil
+}
+
+// whoisResult builds the task's structured output. Every key is always present
+// so consumers can branch on `status` / `registered` without probing for
+// missing fields.
+func whoisResult(domain, server, raw string, registered bool, status string, rec whoisRecord, errMsg string) map[string]any {
+	if rec.Nameservers == nil {
+		rec.Nameservers = []string{}
+	}
+	if rec.DomainStatus == nil {
+		rec.DomainStatus = []string{}
+	}
 	return map[string]any{
-		"domain": domain,
-		"server": server,
-		"raw":    response,
-		"expiry": extractExpiry(response),
-	}, nil
+		"domain":             domain,
+		"server":             server,
+		"raw":                raw,
+		"registered":         registered,
+		"status":             status,
+		"expiry":             rec.Expiry,
+		"registrar":          rec.Registrar,
+		"created":            rec.Created,
+		"updated":            rec.Updated,
+		"nameservers":        rec.Nameservers,
+		"domain_status":      rec.DomainStatus,
+		"registrant_country": rec.RegistrantCountry,
+		"error":              errMsg,
+	}
 }
 
 func (t *WhoisTask) queryWhois(taskCtx types.TaskContext, domain, server string) (string, error) {
@@ -194,6 +258,35 @@ func (t *WhoisTask) findReferral(raw string) string {
 	return ""
 }
 
+// ianaBootstrapPatterns identify a response that came from IANA's bootstrap
+// server, which answers with a record for the TLD rather than for the domain.
+var ianaBootstrapPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?im)^%\s*IANA WHOIS server`),
+	regexp.MustCompile(`(?im)^source:\s*IANA\s*$`),
+}
+
+func isIANABootstrap(raw string) bool {
+	for _, re := range ianaBootstrapPatterns {
+		if re.MatchString(raw) {
+			return true
+		}
+	}
+	return false
+}
+
+// nicServerForDomain returns the conventional registry WHOIS host for a
+// domain's TLD, or "" when the domain has no usable TLD. The result is still
+// run through validateWhoisServer before anything is dialed.
+func nicServerForDomain(domain string) string {
+	// A fully qualified name may carry a trailing root dot.
+	domain = strings.TrimSuffix(strings.TrimSpace(domain), ".")
+	tld := domain[strings.LastIndex(domain, ".")+1:]
+	if tld == "" || tld == domain {
+		return ""
+	}
+	return "whois.nic." + strings.ToLower(tld)
+}
+
 func (t *WhoisTask) InputSchema() *types.Schema {
 	return &types.Schema{
 		Properties: map[string]types.Property{
@@ -214,6 +307,21 @@ func (t *WhoisTask) InputSchema() *types.Schema {
 func (t *WhoisTask) OutputSchema() *types.Schema {
 	return &types.Schema{
 		Properties: map[string]types.Property{
+			"domain": {
+				Type:        "string",
+				Description: "The domain that was queried.",
+				Required:    true,
+			},
+			"registered": {
+				Type:        "boolean",
+				Description: "True when the registry returned a record for the domain.",
+				Required:    true,
+			},
+			"status": {
+				Type:        "string",
+				Description: "Outcome of the lookup: found, not_found, rate_limited, parse_error or lookup_failed.",
+				Required:    true,
+			},
 			"raw": {
 				Type:        "string",
 				Description: "Raw WHOIS response text.",
@@ -221,8 +329,48 @@ func (t *WhoisTask) OutputSchema() *types.Schema {
 			},
 			"server": {
 				Type:        "string",
-				Description: "The authoritative WHOIS server that answered.",
+				Description: "Hostname of the authoritative WHOIS server that answered.",
 				Required:    true,
+			},
+			"expiry": {
+				Type:        "string",
+				Description: "Domain expiration date (RFC3339), null when not present or unparseable.",
+				Required:    false,
+			},
+			"registrar": {
+				Type:        "string",
+				Description: "Sponsoring registrar.",
+				Required:    false,
+			},
+			"created": {
+				Type:        "string",
+				Description: "Domain creation date (RFC3339 when parseable, otherwise as reported).",
+				Required:    false,
+			},
+			"updated": {
+				Type:        "string",
+				Description: "Date the record was last updated (RFC3339 when parseable, otherwise as reported).",
+				Required:    false,
+			},
+			"nameservers": {
+				Type:        "array",
+				Description: "Authoritative name servers, lowercased and deduplicated.",
+				Required:    false,
+			},
+			"domain_status": {
+				Type:        "array",
+				Description: "EPP/registry status codes for the domain.",
+				Required:    false,
+			},
+			"registrant_country": {
+				Type:        "string",
+				Description: "Registrant country as reported by the registry.",
+				Required:    false,
+			},
+			"error": {
+				Type:        "string",
+				Description: "Error message when the lookup could not be completed.",
+				Required:    false,
 			},
 		},
 	}

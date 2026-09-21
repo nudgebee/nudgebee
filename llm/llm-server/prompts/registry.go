@@ -74,7 +74,7 @@ const (
 )
 
 // promptCategories records which category directory each prompt lives in.
-// Resolution is {provider}/{version}/{category}/{name}.yaml, so this is the only
+// Resolution is {model}/{version}/{category}/{name}.yaml, so this is the only
 // thing the caller cannot derive from the name alone.
 var promptCategories = map[string]PromptCategory{
 	PromptAsyncCompletionRules:               CategoryFragments,
@@ -164,7 +164,7 @@ func GetPromptStrict(ctx context.Context, module string, accountID string, args 
 	resp, err := loader.GetPrompt(ctx, PromptRequest{
 		Name:      module,
 		Category:  category,
-		Provider:  providerForRequest(ctx),
+		Model:     modelForRequest(ctx),
 		AccountID: accountID,
 	})
 	if err != nil {
@@ -211,8 +211,8 @@ func MustResolveAll() error {
 
 	var missing []string
 	for _, module := range modules {
-		// Verified against the default provider at v1: that is the final fallback of
-		// every resolution path, so if it exists no provider/version can resolve to nothing.
+		// Verified against the default model at v1: that is the final fallback of
+		// every resolution path, so if it exists no model/version can resolve to nothing.
 		if _, _, err := loader.loadPromptFile(module, promptCategories[module], "default", "v1"); err != nil {
 			missing = append(missing, fmt.Sprintf("%s/%s: %v", promptCategories[module], module, err))
 		}
@@ -249,60 +249,51 @@ func RenderPrompt(ctx context.Context, module string, accountID string, data map
 	return buf.String()
 }
 
-// GetProviderFromConfig returns the LLM provider from config
-// requestProviderKey carries the LLM provider resolved for the current request
+// requestModelKey carries the LLM model resolved for the current request
 // (conversation override → pinned source → tier config → env, reconciled by
-// agents/core.ResolveLLMConfig). Set via WithRequestProvider at the start of an
-// agent execution so prompt resolution matches the provider that will actually
-// serve the call, instead of the deployment-wide LLM_PROVIDER env var.
-type requestProviderKey struct{}
+// agents/core.ResolveLLMConfig). Set via WithRequestModel at the start of an
+// agent execution so prompt resolution matches the model that will actually
+// serve the call, instead of the deployment-wide LLM_MODEL env var.
+type requestModelKey struct{}
 
-// WithRequestProvider returns a context carrying the provider prompt resolution
-// should use for this request. The value is normalized to prompt-tree provider
-// names at read time. A nil ctx is tolerated and treated as context.Background().
-func WithRequestProvider(ctx context.Context, provider string) context.Context {
+// WithRequestModel returns a context carrying the model prompt resolution
+// should use for this request. The value is normalized (lowercased/trimmed) at
+// read time. A nil ctx is tolerated and treated as context.Background().
+func WithRequestModel(ctx context.Context, model string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, requestProviderKey{}, provider)
+	return context.WithValue(ctx, requestModelKey{}, model)
 }
 
-// providerForRequest resolves the provider for a prompt load: the per-request
-// value when one was attached, otherwise the deployment-wide config default.
-// Background jobs and startup validation carry no request provider and keep
+// modelForRequest resolves the model for a prompt load: the per-request value
+// when one was attached, otherwise the deployment-wide config default.
+// Background jobs and startup validation carry no request model and keep
 // today's env-based behavior.
-func providerForRequest(ctx context.Context) string {
+func modelForRequest(ctx context.Context) string {
 	if ctx != nil {
-		if p, ok := ctx.Value(requestProviderKey{}).(string); ok && p != "" {
-			return NormalizeProviderName(p)
+		if m, ok := ctx.Value(requestModelKey{}).(string); ok && m != "" {
+			return NormalizeModelName(m)
 		}
 	}
-	return GetProviderFromConfig()
+	return GetModelFromConfig()
 }
 
-func GetProviderFromConfig() string {
-	return NormalizeProviderName(config.Config.LlmProvider)
+// GetModelFromConfig returns the deployment-wide default model from config.
+func GetModelFromConfig() string {
+	return NormalizeModelName(config.Config.LlmModel)
 }
 
-// NormalizeProviderName maps config provider names to prompt-tree provider names.
-func NormalizeProviderName(provider string) string {
-	provider = strings.ToLower(provider)
-
-	// Map config provider names to prompt system provider names
-	switch provider {
-	case "bedrock", "aws_bedrock":
-		return "bedrock"
-	case "azure", "azure_openai":
-		return "azure"
-	case "openai":
-		return "openai"
-	case "google", "googleai", "gemini":
-		return "googleai"
-	case "anthropic":
-		return "anthropic"
-	case "vertexai", "vertex":
-		return "vertexai"
-	default:
+// NormalizeModelName lowercases/trims a model identifier for use as a
+// prompt-tree lookup key. Unlike the provider scheme this replaces, models
+// aren't a fixed enum — any non-empty string is a valid exact-match key as-is;
+// only whitespace/casing is normalized so "Qwen3-235B-Vertex" and
+// "qwen3-235b-vertex" resolve to the same override. Empty normalizes to
+// "default", matching the resolution chain's global fallback tier.
+func NormalizeModelName(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
 		return "default"
 	}
+	return model
 }

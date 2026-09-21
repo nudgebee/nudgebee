@@ -180,24 +180,14 @@ func CreateIntegrationConfig(
 		}
 	}
 
-	// Auto-allow default_filters (per-account always-apply log filters) on log and
-	// observability-platform integrations. Applied centrally in observability.FetchLogs,
-	// so each ConfigSchema doesn't have to declare it. Clone before injecting so a
-	// shared/static schema map is never mutated in place (see the webhook block above).
-	if integration.Category() == IntegrationCategoryLog || integration.Category() == IntegrationCategoryObservabilityPlatform {
-		cloned := make(map[string]IntegrationSchemaProperty, len(integrationConfigSchema.Properties)+1)
-		for k, v := range integrationConfigSchema.Properties {
-			cloned[k] = v
-		}
-		integrationConfigSchema.Properties = cloned
-		if _, exists := integrationConfigSchema.Properties["default_filters"]; !exists {
-			integrationConfigSchema.Properties["default_filters"] = IntegrationSchemaProperty{
-				Type:        ToolSchemaTypeString,
-				Description: "JSON array of per-account always-apply log filters",
-				Default:     "",
-				Hidden:      true,
-			}
-		}
+	integrationConfigSchema = injectSharedLogConfigProperties(integrationConfigSchema, integration.Category())
+
+	// Shape-validate log_label_mappings before it reaches the schema check below.
+	// Deliberately lenient, mirroring the index_account_mapping contract: only the
+	// array shape and a non-empty accountId are enforced, because an unknown account
+	// or a blank field name simply contributes nothing at resolution time.
+	if err := validateLogLabelMappings(integrationConfigValues); err != nil {
+		return IntegrationDto{}, err
 	}
 
 	// Inject schema defaults that the frontend doesn't send (e.g. hidden
@@ -1010,6 +1000,16 @@ func ListIntegrationConfigs(context *security.RequestContext, accountId string, 
 	if !found {
 		slog.Error("integrations: not found")
 		return configs, errors.New("integrations: not found")
+	}
+
+	// Preview path: answer from the caller's unsaved values instead of the database,
+	// but only for the exact (account, integration) they asked about. Placed after the
+	// tenant and registry checks so a probe is still refused a tenant it cannot see,
+	// and before the query so no DB round trip happens at all. Nothing here is cached —
+	// a cached entry built from unsaved credentials would then be served to real
+	// queries.
+	if override, ok := configOverrideFor(context, accountId, integrationName); ok {
+		return []IntegrationDto{override.syntheticDto()}, nil
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -2125,6 +2125,10 @@ func IntegrationConfigs(context *security.RequestContext, integrationName string
 
 	schema := integration.ConfigSchema()
 	schema.Category = integration.Category()
+	// Same injection CreateIntegrationConfig applies, so the schema the form is built
+	// from lists exactly the keys a save will accept. Without it the form would have no
+	// way to know the shared log blobs are allowed.
+	schema = injectSharedLogConfigProperties(schema, integration.Category())
 	return schema, nil
 }
 

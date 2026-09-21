@@ -105,6 +105,7 @@ func (a *K8sNativeAgent) GetSupportedTools(ctx *security.RequestContext) []toolc
 		tools.ToolStandardDiagnosticGrep, // categorised crash-bundle grep on saved log files
 		MetricsAgentName,                 // historical + custom metrics via PromQL wrapper (Prometheus discovery is non-trivial)
 		TracesAgentName,                  // in-cluster trace queries
+		NudgebeeAgentName,                // Nudgebee product docs and authorized configuration state
 	}
 	// shell_execute handles post-processing (grep/awk/sort) of kubectl
 	// output saved to workspace files. standard_diagnostic_grep also

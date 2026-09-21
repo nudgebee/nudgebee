@@ -427,7 +427,7 @@ const MessageItem = ({
                           fontWeight: isResponse ? '500' : '400',
                           fontSize: isQuestion ? 'var(--ds-text-body)' : isResponse ? 'var(--ds-text-title)' : 'var(--ds-text-small)',
                           color: 'var(--ds-gray-700)',
-                          fontFamily: isQuestion ? "'Poppins', sans-serif" : 'Roboto',
+                          fontFamily: isQuestion ? ds.font.display : 'Roboto',
                           wordBreak: 'break-all',
                           lineHeight: isQuestion ? 1.5 : undefined,
                         }}

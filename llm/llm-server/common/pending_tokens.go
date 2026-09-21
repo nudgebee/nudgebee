@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/config"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +125,40 @@ func RemovePendingToken(ctx context.Context, eventID, token string) (bool, error
 		}
 	}
 	return false, nil
+}
+
+// ScanPendingTokenEvents enumerates a bounded page without consuming tokens.
+// The caller carries the cursor across ticks; Redis SCAN keeps work bounded even
+// when this registry shares a database with a much larger application cache.
+func ScanPendingTokenEvents(ctx context.Context, cursor uint64) ([]string, uint64, error) {
+	const pageSize = 100
+	if client, ok := redisClientForPendingTokens(); ok {
+		keys, next, err := client.Scan(ctx, cursor, pendingTokensKeyPrefix+"*", 1000).Result()
+		if err != nil {
+			return nil, cursor, fmt.Errorf("pending_tokens: scan failed: %w", err)
+		}
+		ids := make([]string, 0, len(keys))
+		for _, key := range keys {
+			ids = append(ids, strings.TrimPrefix(key, pendingTokensKeyPrefix))
+		}
+		return ids, next, nil
+	}
+	inMemoryPendingTokensMu.Lock()
+	defer inMemoryPendingTokensMu.Unlock()
+	ids := make([]string, 0, len(inMemoryPendingTokens))
+	for id := range inMemoryPendingTokens {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if cursor >= uint64(len(ids)) {
+		cursor = 0
+	}
+	end := min(cursor+pageSize, uint64(len(ids)))
+	next := end
+	if end == uint64(len(ids)) {
+		next = 0
+	}
+	return ids[cursor:end], next, nil
 }
 
 // redisClientForPendingTokens returns the package-level Redis client when

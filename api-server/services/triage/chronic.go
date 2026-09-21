@@ -3,7 +3,6 @@ package triage
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -31,12 +30,6 @@ const (
 	ChronicWeeklyThreshold = 10
 	// ChronicLookback is the trailing window the firing count is measured over.
 	ChronicLookback = 7 * 24 * time.Hour
-	// chronicBurstMinCount floors the burst escape: with a chronic baseline as
-	// low as 10/week, expected firings in any short window round to zero and a
-	// factor-only rule would let every single firing escape. Requiring at
-	// least this many firings in the burst window keeps the escape for real
-	// flare-ups only.
-	chronicBurstMinCount = 3
 )
 
 // ChronicStats is a subject+alert-type pair's trailing firing history.
@@ -46,24 +39,17 @@ type ChronicStats struct {
 }
 
 // Chronic reports whether the pair's trailing rate classifies it as background
-// noise. Chronic alerts never declare incidents and never re-arm an incident's
-// attach timer; they can still surface as context, and a burst or severity
-// escalation (checked by the caller with IsBursting / chain priority) re-opens
-// the door — a service that OOMs daily must not go dark after week one.
+// noise. A chronic pair does not become the LEADER of an incident group — a
+// flapper must not be the headline — but it still belongs to one when it fires
+// alongside others, and it still surfaces as context.
+//
+// It used to gate membership as well, with a burst escape for pairs firing far
+// past their own baseline. Both were removed: measured on an anonymized production tenant,
+// the gate left machines whose every alert was chronic unable to form a group at
+// all, and the escape's floor of three firings in an hour was never reached by
+// the alerts it would have had to rescue, which average under two.
 func (s ChronicStats) Chronic() bool {
 	return s.WeeklyCount >= ChronicWeeklyThreshold
-}
-
-// IsBursting is the escalation escape for chronic pairs: the pair is firing
-// far past its own baseline right now. observedLastHour is the number of
-// firings in the trailing hour (the caller counts it over whatever window it
-// already fetched). The bar is chronicBurstFactor x the pair's baseline hourly
-// rate, floored at chronicBurstMinCount so a single firing of a low-rate
-// chronic pair does not escape.
-func (s ChronicStats) IsBursting(observedLastHour int) bool {
-	baselineHourly := float64(s.WeeklyCount) / ChronicLookback.Hours()
-	bar := math.Max(chronicBurstMinCount, chronicBurstFactor*baselineHourly)
-	return float64(observedLastHour) >= bar
 }
 
 // chronicSubjectIdentity mirrors the SQL-side expression in LoadChronicStats:

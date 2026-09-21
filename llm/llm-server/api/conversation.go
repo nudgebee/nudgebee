@@ -53,6 +53,12 @@ type ModelPricingDeleteApiRequest struct {
 	ModelName    string `json:"model_name"`
 }
 
+// AiCostReportScheduleUpsertApiRequest carries the UTC hour (0-23) a tenant
+// wants their AI Cost Daily Report dispatched at.
+type AiCostReportScheduleUpsertApiRequest struct {
+	SendHourUTC int `json:"send_hour_utc"`
+}
+
 type ConversationReferenceListApiRequest struct {
 	AccountId      string `json:"account_id" mapstructure:"required" validate:"required"`
 	ConversationId string `json:"conversation_id"`
@@ -316,6 +322,69 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 		c.JSON(200, buildApiResponse(map[string]any{"removed": removed}, nil))
+	})
+
+	// AI Cost Daily Report per-tenant send hour (UTC-only).
+	groupV2.POST("/ai_get_cost_report_schedule", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_get_cost_report_schedule")
+		var request struct{}
+		agentContext, ok := bindPricingRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		sc := agentContext.GetSecurityContext()
+		// Read-only — seeing the configured hour is not privileged within a
+		// tenant, matching the read gate on ai_list_model_pricing.
+		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
+			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+
+		dbManager, err := common.GetDatabaseManager(common.Metastore)
+		if err != nil {
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		sendHourUTC, err := core.GetAiCostReportSchedule(dbManager, sc.GetTenantId())
+		if err != nil {
+			agentContext.GetLogger().Error("api: error reading cost report schedule", "error", err)
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]any{"send_hour_utc": sendHourUTC}, nil))
+	})
+
+	groupV2.POST("/ai_upsert_cost_report_schedule", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_upsert_cost_report_schedule")
+		var request AiCostReportScheduleUpsertApiRequest
+		agentContext, ok := bindPricingRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		// The report is published once per tenant (every account in it), so
+		// changing when it arrives is a tenant-admin action, same gate as
+		// model pricing — plus super admins, since the read handler below
+		// already grants them visibility and the frontend gear is shown to
+		// both roles.
+		sc := agentContext.GetSecurityContext()
+		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+			c.JSON(403, buildApiResponse(nil, []error{errors.New("cost report schedule can only be changed by a tenant admin")}))
+			return
+		}
+
+		dbManager, err := common.GetDatabaseManager(common.Metastore)
+		if err != nil {
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		if err := core.UpsertAiCostReportSchedule(dbManager, sc.GetTenantId(), sc.GetUserId(), request.SendHourUTC); err != nil {
+			agentContext.GetLogger().Error("api: error saving cost report schedule", "error", err)
+			// Validation failures (out-of-range hour) are the caller's fault —
+			// 400 with the message intact, not a blanket 500.
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]any{"send_hour_utc": request.SendHourUTC}, nil))
 	})
 
 	groupV2.POST("/ai_list_models", func(c *gin.Context) {

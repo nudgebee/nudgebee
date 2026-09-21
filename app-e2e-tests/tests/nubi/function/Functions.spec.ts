@@ -130,7 +130,7 @@ function trackMutation(page: Page, opName: string): { count: number } {
 test.describe("Nubi Functions Tab", () => {
   // ═══════════════════════════════════════════════════════════════════════════
   test.describe("CRUD", () => {
-    test("FN 01: Create Nubi function", async ({ page }) => {
+    test("FN 01: Create Nubi function", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
       const name = randomName();
@@ -150,7 +150,7 @@ test.describe("Nubi Functions Tab", () => {
       await deleteFunction(page, locators, name, false);
     });
 
-    test("FN 02: Update function description and validate AiEditFunction", async ({ page }) => {
+    test("FN 02: Update function description and validate AiEditFunction", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openFunctionsTab(page);
       const name = randomName();
@@ -179,7 +179,7 @@ test.describe("Nubi Functions Tab", () => {
       await deleteFunction(page, locators, name, false);
     });
 
-    test("FN 03: Delete function and validate AiDeleteFunction", async ({ page }) => {
+    test("FN 03: Delete function and validate AiDeleteFunction", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openFunctionsTab(page);
       const name = randomName();
@@ -199,7 +199,7 @@ test.describe("Nubi Functions Tab", () => {
       console.log(`[FN 03] '${name}' confirmed removed.`);
     });
 
-    test("FN 04: Search filters the function list by name", async ({ page }) => {
+    test("FN 04: Search filters the function list by name", { tag: ["@dev", "@test", "@regression", "@functional", "@search", "@crud"] }, async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openFunctionsTab(page);
       const name = randomName();
@@ -226,7 +226,7 @@ test.describe("Nubi Functions Tab", () => {
 
   // ═══════════════════════════════════════════════════════════════════════════
   test.describe("Validation", () => {
-    test("FN 05: Reject invalid function names (no mutation)", async ({ page }) => {
+    test("FN 05: Reject invalid function names (no mutation)", { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
       const mutations = trackMutation(page, OP_CREATE);
@@ -247,7 +247,7 @@ test.describe("Nubi Functions Tab", () => {
       console.log("[FN 05] invalid names rejected; zero mutations.");
     });
 
-    test("FN 06: Reject empty required fields (no mutation)", async ({ page }) => {
+    test("FN 06: Reject empty required fields (no mutation)", { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
       const mutations = trackMutation(page, OP_CREATE);
@@ -264,7 +264,7 @@ test.describe("Nubi Functions Tab", () => {
       console.log("[FN 06] empty fields rejected; zero mutations.");
     });
 
-    test("FN 07: Reject description over 200 words (no mutation)", async ({ page }) => {
+    test("FN 07: Reject description over 200 words (no mutation)", { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
       const mutations = trackMutation(page, OP_CREATE);
@@ -284,7 +284,7 @@ test.describe("Nubi Functions Tab", () => {
       console.log("[FN 07] over-200-word description blocked; zero mutations.");
     });
 
-    test("FN 08: Reject invalid variable name in prompt (no mutation)", async ({ page }) => {
+    test("FN 08: Reject invalid variable name in prompt (no mutation)", { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
       const mutations = trackMutation(page, OP_CREATE);
@@ -301,7 +301,7 @@ test.describe("Nubi Functions Tab", () => {
 
   // ═══════════════════════════════════════════════════════════════════════════
   test.describe("Variables & Status", () => {
-    test("FN 09: Detect variables, render defaults table and persist them", async ({ page }) => {
+    test("FN 09: Detect variables, render defaults table and persist them", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openFunctionsTab(page);
       const name = randomName();
@@ -347,7 +347,7 @@ test.describe("Nubi Functions Tab", () => {
       await deleteFunction(page, locators, name, false);
     });
 
-    test("FN 10: Create as Draft then change to Active (validates AiEditFunction)", async ({ page }) => {
+    test("FN 10: Create as Draft then change to Active (validates AiEditFunction)", { tag: ["@dev", "@test", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openFunctionsTab(page);
       const name = randomName();
@@ -391,7 +391,7 @@ test.describe("Nubi Functions Tab", () => {
 
   // ═══════════════════════════════════════════════════════════════════════════
   test.describe("Form features", () => {
-    test("FN 11: Rewrite Prompt requires a prompt", async ({ page }) => {
+    test("FN 11: Rewrite Prompt requires a prompt", { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
 
@@ -402,7 +402,7 @@ test.describe("Nubi Functions Tab", () => {
       console.log("[FN 11] empty-prompt rewrite guard shows error.");
     });
 
-    test("FN 12: View Agent List modal opens and is searchable", async ({ page }) => {
+    test("FN 12: View Agent List modal opens and is searchable", { tag: ["@dev", "@test", "@sanity", "@functional"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
 
@@ -415,7 +415,7 @@ test.describe("Nubi Functions Tab", () => {
       console.log("[FN 12] Available Agents modal opened and searchable.");
     });
 
-    test("FN 13: Cancel discards a new function without persisting", async ({ page }) => {
+    test("FN 13: Cancel discards a new function without persisting", { tag: ["@dev", "@test", "@regression", "@negative"] }, async ({ page }) => {
       test.setTimeout(120000);
       const locators = await openFunctionsTab(page);
       const mutations = trackMutation(page, OP_CREATE);

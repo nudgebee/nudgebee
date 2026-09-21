@@ -106,6 +106,45 @@ def test_submit_followup_uses_bound_conversation_session_id_and_reply_ref(monkey
     assert events_svc.common_service.updated_blocks
 
 
+def test_submit_followup_event_analysis_branch(monkeypatch, events_svc):
+    """An "Ask Nubi to Analyse!" clarification answer resumes the analysis's own
+    `event-<fingerprint>` conversation (followup_session_id), sends no reply_ref,
+    and starts no chat progress panel -- the still-running event-analysis poller
+    is the sole output path."""
+    thread_ts = "1786000000.000300"
+    channel_id = "C0BRFTQCQ48"
+    team_id = "T05JWTTH3NH"
+    cached_entry = {
+        "text": "Analysis for event with id evt-1",
+        "account_id": "acc-1",
+        "user_id": "user-1",
+        "tenant_id": "tenant-1",
+        "session_id": f"{channel_id}-{thread_ts}",
+        "channel_id": channel_id,
+        "agent_id": "agent-9",
+        "message_id": "msg-9",
+        "followup_msg_ts": "1786000000.000250",
+        "followup_question": "What is the correct namespace?",
+        "followup_session_id": "event-fp-xyz",
+        "event_analysis_followup": True,
+    }
+    captured = _stub_dispatch(monkeypatch)
+    poller_calls = []
+    monkeypatch.setattr(events_module.slack_progress, "start_progress_poller", lambda *a, **k: poller_calls.append(a))
+
+    events_svc._submit_followup(cached_entry, channel_id, team_id, thread_ts, "U1", "kube-system")
+
+    payload = captured["payload"]
+    assert payload["session_id"] == "event-fp-xyz"
+    assert "reply_ref" not in payload
+    assert payload["agent_id"] == "agent-9"
+    assert payload["message_id"] == "msg-9"
+    assert poller_calls == []
+    assert ("event_analysis_followup" in events_svc.cache.removed_keys[1]) and (
+        "followup_session_id" in events_svc.cache.removed_keys[1]
+    )
+
+
 def test_submit_followup_plain_conversation_session_id_unaffected(monkeypatch, events_svc):
     thread_ts = "1786000000.000200"
     channel_id = "C0BRFTQCQ48"

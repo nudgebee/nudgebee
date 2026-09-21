@@ -1,0 +1,10 @@
+agent: gcp
+user_prompt: "which GCP project is consuming the most resources this month, use bigquery"
+expected_output:
+  - The response must name a specific GCP project as the top resource consumer for the current month (if only one project is connected, correctly identifying that project as the answer is acceptable).
+  - The response must indicate it queried BigQuery (e.g. billing export tables) to determine this, as explicitly requested, rather than just listing resource counts from gcloud directly.
+tags:
+  - gcp
+  - cloud
+  - finops
+  - tool

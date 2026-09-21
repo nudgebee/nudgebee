@@ -128,45 +128,16 @@ func loadModelLimitsCatalog(tenantId string) map[string]modelTokenLimits {
 	return byKey
 }
 
-var (
-	// "…-v1" / "-v2" invocation suffix left after cutting a Bedrock ":0" tail.
-	trailingInvocationVersionRE = regexp.MustCompile(`-v\d+$`)
-	// "-20250929"-style date suffix on point-release ids.
-	trailingDateRE = regexp.MustCompile(`-\d{8}$`)
-	// digit-hyphen-digit → digit-dot-digit, so Bedrock's "claude-sonnet-4-6"
-	// meets the catalog's "claude-sonnet-4.6".
-	versionSeparatorRE = regexp.MustCompile(`(\d)-(\d)`)
-)
+// trailingDateRE matches a "-20250929"-style date suffix on point-release ids.
+var trailingDateRE = regexp.MustCompile(`-\d{8}$`)
 
 // canonicalModelID reduces a provider-qualified model id to the bare dotted
-// form the built-in catalog rows use. Bedrock cross-region ids stack several
-// decorations the fixed-list normalizeModel cannot remove — a region segment
-// ("us." / "eu."), the vendor segment, an invocation suffix ("-v1:0") and
-// hyphenated version numbers — and any one of them alone was enough to miss
-// the catalog and land the model back on the 4096 floor (#36449's original
-// customer id, "us.anthropic.claude-sonnet-4-6"). Applied to BOTH catalog keys
-// and lookup probes, so both sides meet in the same space regardless of which
-// convention a row or caller uses.
+// form the built-in catalog rows use. Delegates to common.CanonicalModelID,
+// shared with the prompts package's model-scoped resolution (both need the
+// same normalization so a Bedrock cross-region id and its short name resolve
+// to the same catalog row / prompt override).
 func canonicalModelID(model string) string {
-	m := strings.ToLower(strings.TrimSpace(model))
-	if i := strings.IndexByte(m, ':'); i >= 0 {
-		m = m[:i]
-	}
-	for _, p := range []string{"us.", "eu.", "apac.", "jp.", "au.", "ca.", "global."} {
-		if strings.HasPrefix(m, p) {
-			m = strings.TrimPrefix(m, p)
-			break
-		}
-	}
-	for _, p := range []string{"anthropic.", "amazon.", "meta.", "google.", "vertex.", "vertex/", "openai.", "azure.", "mistral.", "cohere.", "ai21.", "models/"} {
-		if strings.HasPrefix(m, p) {
-			m = strings.TrimPrefix(m, p)
-			break
-		}
-	}
-	m = trailingInvocationVersionRE.ReplaceAllString(m, "")
-	m = versionSeparatorRE.ReplaceAllString(m, "$1.$2")
-	return m
+	return common.CanonicalModelID(model)
 }
 
 // lookupModelTokenLimits finds a catalog row for (provider, model): exact

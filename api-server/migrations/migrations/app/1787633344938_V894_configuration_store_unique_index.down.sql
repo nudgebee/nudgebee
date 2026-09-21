@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS configuration_store_tenant_config_key;

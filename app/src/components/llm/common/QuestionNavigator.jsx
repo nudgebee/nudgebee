@@ -240,7 +240,12 @@ const QuestionNavigator = ({ questions, scrollContainerRef, popup = false, spyOf
         <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], padding: '11px 13px 9px', borderBottom: `1px solid var(--ds-gray-200)` }}>
           <Box
             component='span'
-            sx={{ fontFamily: 'var(--ds-font-display)', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: '12px', color: 'var(--ds-gray-700)' }}
+            sx={{
+              fontFamily: 'var(--ds-font-display)',
+              fontWeight: 'var(--ds-font-weight-semibold)',
+              fontSize: ds.text.small,
+              color: 'var(--ds-gray-700)',
+            }}
           >
             Questions
           </Box>

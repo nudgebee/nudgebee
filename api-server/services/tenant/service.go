@@ -27,6 +27,10 @@ import (
 
 const featureFlagCacheSentinelDefault = "default"
 
+// FeatureFlagStatusDefault is accepted by UpsertFeatureFlags to mean "delete
+// any explicit row for this tenant", returning the flag to its catalog default.
+const FeatureFlagStatusDefault = "default"
+
 const FEATURE_RBACK_K8S_ACCESS = "RBAC_K8S"
 const FEATURE_EVENT_AUTO_AI_SUMMARY = "EVENT_AUTO_AI_SUMMARY"
 const FEATURE_ANOMALY_DETECTION = "ANOMALY_DETECTION"
@@ -35,7 +39,6 @@ const FEATURE_ANOMALY_DETECTION_ERROR_RATE = "ANOMALY_DETECTION_ERROR_RATE"
 // FEATURE_TRIAGE_LLM_SCORING gates the LLM-assisted per-class triage scoring path (real P0–P3)
 // vs the legacy severity×environment formula. Rolled out per-tenant via Tenant Settings.
 const FEATURE_TRIAGE_LLM_SCORING = "TRIAGE_LLM_SCORING"
-const FEATURE_VERTICAL_RIGHTSIZING = "VERTICAL_RIGHTSIZING"
 const FEATURE_WEBHOOK_LLM_RESOLUTION = "WEBHOOK_LLM_RESOLUTION"
 
 // FEATURE_OPENCOST_SERVER_SIDE_SPEND is a default-ON kill-switch for the
@@ -1578,6 +1581,30 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 	defer func() { _ = tx.Rollback() }()
 
 	for _, f := range request.Features {
+		// "default" is not a stored status: it means the tenant has expressed no
+		// preference, which the schema represents as the absence of a row. The
+		// settings screen offers it as the third state so an explicit choice can
+		// be taken back -- without it, a flag set once could never return to the
+		// behaviour described by feature.polarity.
+		if f.Status == FeatureFlagStatusDefault {
+			if f.AccountId != "" {
+				_, err = tx.Exec(
+					`DELETE FROM feature_flag WHERE feature_id = $1 AND tenant_id = $2 AND account_id = $3`,
+					f.FeatureId, tenantId, f.AccountId,
+				)
+			} else {
+				_, err = tx.Exec(
+					`DELETE FROM feature_flag WHERE feature_id = $1 AND tenant_id = $2 AND account_id IS NULL`,
+					f.FeatureId, tenantId,
+				)
+			}
+			if err != nil {
+				ctx.GetLogger().Error("Error clearing feature flag", "error", err, "feature_id", f.FeatureId)
+				return FeatureFlagUpsertResponse{}, common.ErrorInternal("Error clearing feature flag")
+			}
+			continue
+		}
+
 		if f.AccountId != "" {
 			// Account-level feature flag
 			_, err = tx.Exec(
@@ -2353,6 +2380,7 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "knowledge_graph_node"},
 		{name: "knowledge_graph_tenant_filters"},
 		// llm
+		{name: "ai_cost_report_dispatch_log"},
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},

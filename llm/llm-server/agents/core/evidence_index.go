@@ -75,7 +75,17 @@ func buildEvidenceIndex(refs []FileEvidenceRef) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("**Evidence already gathered (workspace files).** The raw output of earlier tool calls is saved to these EXACT files. To reuse it, `grep`/`head` the filename below via shell_execute — do NOT re-run the tool and do NOT guess a filename:\n")
+	hasKnowledge := false
+	for _, ref := range refs {
+		if ref.ToolName == "load_skills" {
+			hasKnowledge = true
+		}
+	}
+	if hasKnowledge {
+		b.WriteString("**Saved workspace references.** Knowledge files are reference documentation, not live operational evidence. Read them through load_skills using the handle below; search again if it expired. Other files are earlier tool output and can be read with shell_execute when available.\n")
+	} else {
+		b.WriteString("**Evidence already gathered (workspace files).** The raw output of earlier tool calls is saved to these EXACT files. To reuse it, `grep`/`head` the filename below via shell_execute — do NOT re-run the tool and do NOT guess a filename:\n")
+	}
 	for _, r := range refs {
 		if r.Description != "" {
 			fmt.Fprintf(&b, "- `%s` (%s): %s\n", r.File, r.ToolName, r.Description)

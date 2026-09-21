@@ -49,7 +49,7 @@ test("Task Runner - select account, select task(k8s.cli), leave required command
   console.log("Empty required parameter surfaced the task's validation error");
 });
 
-test("Task Runner - select account, select a task (core.switch) without individual-run support, verify Run Task is disabled with the reason", { tag: ["@dev", "@test", "@oss", "@task-runner", "@automation", "@regression", "@validation"] }, async ({ page }) => {
+test("Task Runner - select account, select a task (core.switch) without individual-run support, verify Run Task is disabled with the reason", { tag: ["@dev", "@test", "@oss", "@task-runner", "@automation", "@regression", "@validation", "@negative"] }, async ({ page }) => {
   test.setTimeout(150000);
 
   const locators = await openTaskRunner(page);

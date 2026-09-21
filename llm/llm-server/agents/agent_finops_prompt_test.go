@@ -138,6 +138,47 @@ func TestFinOpsPrompt_TotalsQuestionSkipsResourceVerification(t *testing.T) {
 		"the verification layer must state when it does NOT apply")
 }
 
+// TestFinOpsPrompt_DestructiveCliContract pins that the CLI tool's destructive
+// gate is explained in the rendered prompt. The tool refuses ungated
+// destructive commands regardless, but without the contract in the prompt the
+// agent learns the flag from the refusal text mid-conversation instead of
+// presenting safety facts up front.
+func TestFinOpsPrompt_DestructiveCliContract(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	agent := &FinOpsAgent{accountId: "test-finops-prompt"}
+	flat := flattenAgentPrompt(agent.GetSystemPrompt(ctx, core.NBAgentRequest{}))
+
+	assert.Contains(t, flat, "acknowledge_risk",
+		"the destructive-gate flag must be documented in the prompt")
+	assert.Contains(t, flat, "NEVER advise granting the missing permission",
+		"the UnauthorizedOperation guidance must reach the prompt — advising IAM widening defeats the safety boundary")
+	assert.Contains(t, flat, "offer a snapshot first",
+		"storage deletion must carry the snapshot-first rule")
+}
+
+// TestFinOpsPrompt_CaveatTravelsInsideTheTable pins where the non-additivity
+// warning is carried. An orchestrator relaying a FinOps answer keeps tables and
+// drops surrounding prose, so a warning that exists only as prose never reaches
+// the user — they see a commitment total and a workload total with nothing
+// saying the two don't stack.
+func TestFinOpsPrompt_CaveatTravelsInsideTheTable(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	agent := &FinOpsAgent{accountId: "test-finops-prompt"}
+	flat := flattenAgentPrompt(agent.GetSystemPrompt(ctx, core.NBAgentRequest{}))
+
+	assert.Contains(t, flat, "right-size first — commitments are sized against current usage",
+		"the split table's commitment row must carry the warning verbatim")
+	assert.Contains(t, flat, "must live inside the table",
+		"the output format must say WHY the warning goes in the table, or the next edit moves it back to prose")
+	assert.Contains(t, flat, "Carry that warning inside the split table",
+		"the tool-strategy bullet must match the output-format rule")
+
+	recFlat := flattenAgentPrompt(newRecommendationAgent("test-recommendations-prompt").
+		GetSystemPrompt(ctx, core.NBAgentRequest{}))
+	assert.Contains(t, recFlat, "in-table placement survives",
+		"the recommendations agent's citation must stay in the table for the same relay reason")
+}
+
 // TestRecommendationsPrompt_AggregateIsTheAnswer pins the rule that stops the
 // most expensive query this agent runs. Having computed an aggregate that
 // answers the question, the agent was following it with an unlimited

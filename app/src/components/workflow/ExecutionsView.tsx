@@ -1168,7 +1168,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                     fontSize: 'var(--ds-text-title)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: ds.gray[700],
-                    fontFamily: 'Poppins, sans-serif',
+                    fontFamily: ds.font.display,
                     letterSpacing: '-0.2px',
                   }}
                 >
@@ -2039,7 +2039,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                               fontSize: 'var(--ds-text-small)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
                               color: ds.gray[700],
-                              fontFamily: 'Poppins, sans-serif',
+                              fontFamily: ds.font.display,
                             }}
                           >
                             Input
@@ -2131,7 +2131,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                               fontSize: 'var(--ds-text-small)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
                               color: ds.gray[700],
-                              fontFamily: 'Poppins, sans-serif',
+                              fontFamily: ds.font.display,
                             }}
                           >
                             Output
@@ -2241,7 +2241,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                                 fontSize: 'var(--ds-text-small)',
                                 fontWeight: 'var(--ds-font-weight-semibold)',
                                 color: ds.red[600],
-                                fontFamily: 'Poppins, sans-serif',
+                                fontFamily: ds.font.display,
                               }}
                             >
                               Error

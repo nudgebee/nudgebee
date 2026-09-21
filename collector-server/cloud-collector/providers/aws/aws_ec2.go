@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"sort"
@@ -223,8 +224,141 @@ func (a *amazonEc2) ApplyRecommendation(ctx providers.CloudProviderContext, acco
 		return nil
 	}
 
+	// gp2 -> gp3 EBS volume upgrade: kicks off an asynchronous ModifyVolume.
+	if recommendation.RuleName == "aws_ec2_ebs_generation_upgrade" {
+		return a.applyEBSGp3Upgrade(ctx, account, recommendation)
+	}
+
 	// Other recommendations not yet supported
 	return errors.ErrUnsupported
+}
+
+// ebsModifyParams reads the gp3 IOPS/throughput to apply from a recommendation's Data.
+// In production these arrive as float64 (the Data map is JSON round-tripped through the
+// DB), so a plain `.(int)` assertion would silently miss them; positiveInt32 accepts both
+// float64 and int to be robust to either path. Absent/zero values mean "leave gp3 at its
+// defaults" — safe for volumes <=170 GiB, which PR1 intentionally leaves without a matched
+// config because gp3's defaults already exceed their gp2 performance.
+func ebsModifyParams(data map[string]any) (iops, throughput int32) {
+	return positiveInt32(data["recommended_iops"]), positiveInt32(data["recommended_throughput"])
+}
+
+// positiveInt32 returns v as an int32 when it is a positive float64 or int, else 0.
+func positiveInt32(v any) int32 {
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return int32(n)
+		}
+	case int:
+		if n > 0 {
+			return int32(n)
+		}
+	}
+	return 0
+}
+
+// ebsModificationInProgress reports whether a volume already has an in-flight
+// modification (state modifying or optimizing), in which case a new ModifyVolume must not
+// be attempted. Completed/failed modifications do not block here: AWS enforces its own
+// ~6-hour cooldown and rejects a too-soon retry, and that error is surfaced honestly
+// rather than re-derived from timestamps.
+func ebsModificationInProgress(mods []types.VolumeModification) bool {
+	for _, m := range mods {
+		if m.ModificationState == types.VolumeModificationStateModifying ||
+			m.ModificationState == types.VolumeModificationStateOptimizing {
+			return true
+		}
+	}
+	return false
+}
+
+// applyEBSGp3Upgrade converts a gp2 volume to gp3 via ModifyVolume. It is asynchronous:
+// the volume enters the "modifying" state and completes in the background, so on success
+// it returns a *providers.AsyncInitiatedError (a success signal carrying the user-facing
+// message). For volumes that need it, the gp3 IOPS/throughput matched to the gp2 (from
+// PR1's Data) are passed so the upgrade never becomes a downgrade.
+func (a *amazonEc2) applyEBSGp3Upgrade(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
+	data := recommendation.Data
+	volumeID, _ := data["volume_id"].(string)
+	region, _ := data["volume_region"].(string)
+	if region == "" {
+		region = recommendation.ResourceRegion
+	}
+
+	// Audit every outcome, including the early-return failures below. resultErr stays nil
+	// on the async-success path (which returns a non-nil *AsyncInitiatedError), so that
+	// path is correctly audited as SUCCESS.
+	var resultErr error
+	var resultMsg string
+	cmd := providers.ApplyCommandRequest{
+		ServiceName: recommendation.ResourceServiceName,
+		Region:      region,
+		ResourceId:  volumeID,
+		Command:     "modify_volume",
+		Args:        data,
+	}
+	defer func() {
+		status := "SUCCESS"
+		if resultErr != nil {
+			status = "FAILURE"
+		}
+		if auditErr := logResourceActionAudit(ctx, cmd, account, status, resultMsg); auditErr != nil {
+			ctx.GetLogger().Warn("failed to log audit record", "error", auditErr)
+		}
+	}()
+
+	if volumeID == "" {
+		resultErr = fmt.Errorf("EBS gp3 upgrade: missing volume_id in recommendation data")
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		resultErr = fmt.Errorf("failed to create aws config: %w", err)
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+	cfg.Region = region
+	client := ec2.NewFromConfig(cfg)
+
+	// Guard: don't stack a modification on a volume that is already being modified.
+	// A DescribeVolumesModifications error is non-fatal — proceed and let ModifyVolume
+	// (which enforces the cooldown authoritatively) decide.
+	if modsOut, descErr := client.DescribeVolumesModifications(ctx.GetContext(), &ec2.DescribeVolumesModificationsInput{
+		VolumeIds: []string{volumeID},
+	}); descErr == nil && ebsModificationInProgress(modsOut.VolumesModifications) {
+		resultErr = fmt.Errorf("volume %s already has a modification in progress; try again once it completes", volumeID)
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+
+	input := &ec2.ModifyVolumeInput{
+		VolumeId:   aws.String(volumeID),
+		VolumeType: types.VolumeTypeGp3,
+	}
+	// Only provision IOPS/throughput that exceed gp3's free baseline (3000 IOPS / 125 MiB/s);
+	// ModifyVolume rejects values below the gp3 minimums. PR1 only emits matched values that
+	// already exceed these, but guarding here keeps apply robust to malformed/future Data.
+	iops, throughput := ebsModifyParams(data)
+	if iops > gp3DefaultIOPS {
+		input.Iops = aws.Int32(iops)
+	}
+	if throughput > gp3DefaultThroughput {
+		input.Throughput = aws.Int32(throughput)
+	}
+
+	if _, err := client.ModifyVolume(ctx.GetContext(), input); err != nil {
+		resultErr = fmt.Errorf("failed to modify volume %s to gp3: %w", volumeID, err)
+		resultMsg = resultErr.Error()
+		return resultErr
+	}
+
+	resultMsg = fmt.Sprintf("Initiated gp3 modification for volume %s", volumeID)
+	return &providers.AsyncInitiatedError{
+		Message: "Volume modification to gp3 has been initiated. It runs in the background and may take a while to complete; the volume cannot be modified again for up to 6 hours.",
+	}
 }
 
 func (a *amazonEc2) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
@@ -592,6 +726,59 @@ func (a *amazonEc2) fetchVolumesAndSnapshots(ctx providers.CloudProviderContext,
 }
 
 // https://www.trendmicro.com/cloudoneconformity-staging/knowledge-base/aws/EC2/
+// gp3 baseline performance is included free in the per-GB price (AWS EBS docs).
+// gp2 performance instead scales with volume size, so gp3 at these defaults is a
+// downgrade for larger gp2 volumes unless matching IOPS/throughput are provisioned.
+//
+// gp2 IOPS = clamp(3*GiB, 100, 16000); baseline exceeds gp3's 3000 above ~1000 GiB.
+// gp2 throughput = up to 128 MiB/s at <=170 GiB (within noise of gp3's 125), and up to
+// 250 MiB/s above 170 GiB (bursting from 171-333 GiB, sustained from 334 GiB) — above
+// gp3's flat 125 default, so every gp2 volume larger than 170 GiB needs gp3 throughput
+// provisioned to avoid a silent downgrade.
+const (
+	gp3DefaultIOPS       = 3000
+	gp3DefaultThroughput = 125 // MiB/s
+	gp2MaxThroughput     = 250 // MiB/s, gp2's ceiling above gp2ThroughputTierSizeGiB
+	gp2MinIOPS           = 100
+	gp2MaxIOPS           = 16000
+
+	// gp2 volumes larger than 170 GiB can deliver more than gp3's 125 MiB/s default
+	// (up to 250 MiB/s), so from here up gp3 needs throughput provisioned to match.
+	gp2ThroughputTierSizeGiB = 170
+)
+
+// gp3MatchConfig describes the gp3 IOPS/throughput needed to match a gp2 volume's
+// size-derived performance. Zero values mean gp3's free defaults already suffice.
+type gp3MatchConfig struct {
+	RecommendIOPS       int
+	RecommendThroughput int
+	NeedsProvisioning   bool // true => gp3 at defaults would be a downgrade
+}
+
+// gp2ToGp3Match computes, from a gp2 volume's size in GiB, whether upgrading to gp3
+// at default settings would lose performance and, if so, the gp3 IOPS/throughput that
+// keep parity. Pure function of size — see aws_ec2_test.go for the boundary table.
+func gp2ToGp3Match(sizeGiB float64) gp3MatchConfig {
+	gp2IOPS := int(math.Round(3 * sizeGiB))
+	if gp2IOPS < gp2MinIOPS {
+		gp2IOPS = gp2MinIOPS
+	}
+	if gp2IOPS > gp2MaxIOPS {
+		gp2IOPS = gp2MaxIOPS
+	}
+
+	cfg := gp3MatchConfig{}
+	if gp2IOPS > gp3DefaultIOPS { // size > ~1000 GiB
+		cfg.RecommendIOPS = gp2IOPS
+		cfg.NeedsProvisioning = true
+	}
+	if sizeGiB > gp2ThroughputTierSizeGiB { // gp2 above 170 GiB can exceed gp3's 125 MiB/s
+		cfg.RecommendThroughput = gp2MaxThroughput
+		cfg.NeedsProvisioning = true
+	}
+	return cfg
+}
+
 func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 
@@ -682,20 +869,36 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 			// check for gp2 volumes and recommend to upgrade to gp3
 			if volumeType, ok := resource.Meta["VolumeType"].(string); ok && volumeType == "gp2" {
+				data := map[string]any{
+					"volume_id":                resource.Id,
+					"volume_arn":               resource.Arn,
+					"volume_type":              resource.Meta["VolumeType"],
+					"volume_region":            resource.Region,
+					"volume_size":              size,
+					"recommendded_volume_type": "gp3",
+					"volume_state":             resource.Meta["State"],
+				}
+
+				// gp3 at its free defaults (3000 IOPS / 125 MiB/s) is a downgrade for larger
+				// gp2 volumes, whose performance scales with size. When so, carry the gp3
+				// IOPS/throughput needed to match the gp2 so the upgrade is never a silent
+				// downgrade, and disclose that matching performance is billed separately.
+				if match := gp2ToGp3Match(size); match.NeedsProvisioning {
+					if match.RecommendIOPS > 0 {
+						data["recommended_iops"] = match.RecommendIOPS
+					}
+					if match.RecommendThroughput > 0 {
+						data["recommended_throughput"] = match.RecommendThroughput
+					}
+					data["note"] = "To preserve current performance, gp3 must be provisioned with the recommended IOPS/throughput (billed separately). The saving shown reflects storage cost only."
+				}
+
 				recommendation := providers.Recommendation{
-					CategoryName: providers.RecommendationCategoryInfraUpgrade,
-					RuleName:     "aws_ec2_ebs_generation_upgrade",
-					Severity:     providers.RecommendationSeverityMedium,
-					Savings:      size * 0.02,
-					Data: map[string]any{
-						"volume_id":                resource.Id,
-						"volume_arn":               resource.Arn,
-						"volume_type":              resource.Meta["VolumeType"],
-						"volume_region":            resource.Region,
-						"volume_size":              size,
-						"recommendded_volume_type": "gp3",
-						"volume_state":             resource.Meta["State"],
-					},
+					CategoryName:        providers.RecommendationCategoryInfraUpgrade,
+					RuleName:            "aws_ec2_ebs_generation_upgrade",
+					Severity:            providers.RecommendationSeverityMedium,
+					Savings:             size * 0.02,
+					Data:                data,
 					Action:              providers.RecommendationActionModify,
 					ResourceServiceName: resource.ServiceName,
 					ResourceId:          resource.Id,

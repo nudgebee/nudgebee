@@ -133,6 +133,9 @@ func compressObservation(obs string) string {
 func fileRecallHandle(step *NBAgentPlannerToolActionStep) string {
 	for _, ref := range step.References {
 		if ref.Type == "file" && ref.Url != "" {
+			if strings.HasPrefix(ref.Query, "knowledge:") {
+				return fmt.Sprintf("\n[Reference documentation saved at %q; use load_skills skill_name=%s with keyword or start_line. If the handle expired, search again.]", ref.Url, ref.Query)
+			}
 			return fmt.Sprintf("\n[full output saved to workspace file %q — use shell_execute (grep/head) to read specific lines instead of re-running this tool]", ref.Url)
 		}
 	}

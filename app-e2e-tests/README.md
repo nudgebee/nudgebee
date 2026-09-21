@@ -101,6 +101,8 @@ test('Magic link Sent Successfully', async ({ page }) => {
 
 When you need a new UI interaction, prefer adding/extending a Page Object over inlining `page.locator(...)` calls in specs.
 
+Every new test also needs a category tag (`@smoke`/`@sanity`/`@functional`/`@regression`/`@negative`) and an environment tag (`@dev`/`@test`/`@oss`) — see [`TAGGING.md`](TAGGING.md).
+
 ## CI
 
 Three GitHub Actions workflows run this suite:

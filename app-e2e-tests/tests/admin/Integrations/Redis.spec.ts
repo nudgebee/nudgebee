@@ -17,7 +17,7 @@ const configName = process.env.REDIS_INTEGRATION_CONFIG_NAME!;
 test.describe.serial("Redis Account Integration", () => {
   let integrationExists = false;
 
-  test("Check if Redis integration exists", async ({ page }) => {
+  test("Check if Redis integration exists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -33,7 +33,7 @@ test.describe.serial("Redis Account Integration", () => {
     });
   });
 
-  test("Delete Redis integration if present", async ({ page }) => {
+  test("Delete Redis integration if present", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -50,7 +50,7 @@ test.describe.serial("Redis Account Integration", () => {
     });
   });
 
-  test("Add Redis Account Integration", async ({ page }) => {
+  test("Add Redis Account Integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -91,7 +91,7 @@ test.describe.serial("Redis Account Integration", () => {
     });
   });
 
-  test("Disable Redis integration", async ({ page }) => {
+  test("Disable Redis integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
@@ -101,7 +101,7 @@ test.describe.serial("Redis Account Integration", () => {
     await disableIntegration(page, { configName, serviceName: "Redis" });
   });
 
-  test("Enable Redis integration", async ({ page }) => {
+  test("Enable Redis integration", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     test.skip(
       missingEnv.length > 0,
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,

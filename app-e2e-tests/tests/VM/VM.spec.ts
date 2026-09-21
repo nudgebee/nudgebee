@@ -13,7 +13,7 @@ test.describe.configure({ timeout: 180000 });
 // the filter working rather than about what the dev fleet happens to hold.
 const NO_MATCH_TERM = `zz-no-such-vm-${Date.now()}`;
 
-test("VM Summary tab renders the five fleet tiles and the scan-coverage breakdown", async ({ page }) => {
+test("VM Summary tab renders the five fleet tiles and the scan-coverage breakdown", { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "summary");
 
   await test.step("The headline tiles are present", async () => {
@@ -23,11 +23,18 @@ test("VM Summary tab renders the five fleet tiles and the scan-coverage breakdow
   });
 
   await test.step("Counts are rendered as values, not blanks", async () => {
-    // Virtual Machines / Packages Tracked / Open Vulnerabilities are plain counts.
-    await expect(vm.statVms).toContainText(/\d+/);
-    await expect(vm.statPackages).toContainText(/\d+/);
-    await expect(vm.statVulnerabilities).toContainText(/\d+/);
-    // Proxy Agents Connected is rendered as "<connected> / <total>".
+    // Virtual Machines / Packages Tracked / Open Vulnerabilities are plain counts,
+    // and a count of zero renders as "-", not "0": ds/Stat formats numbers through
+    // lib/formatter.ts formatNumber, which treats 0 as "no value" and substitutes
+    // its placeholder. An empty fleet is a normal state for the dev tenant, so the
+    // tile settling on either a number or that placeholder is what proves it
+    // rendered — what this step is really guarding against is a tile still blank on
+    // its skeleton. The label prefix anchors each one to its own tile.
+    await expect(vm.statVms).toHaveText(/^Virtual Machines(?:[\d,]+|-)$/);
+    await expect(vm.statPackages).toHaveText(/^Packages Tracked(?:[\d,]+|-)$/);
+    await expect(vm.statVulnerabilities).toHaveText(/^Open Vulnerabilities(?:[\d,]+|-)$/);
+    // Proxy Agents Connected is a pre-built "<connected> / <total>" string, so it
+    // never goes through formatNumber and reads "0 / 0" on an empty fleet.
     await expect(vm.statAgents).toContainText(/\d+\s*\/\s*\d+/);
   });
 
@@ -39,7 +46,7 @@ test("VM Summary tab renders the five fleet tiles and the scan-coverage breakdow
   });
 });
 
-test("VM tab strip exposes all four views and lands on Summary by default", async ({ page }) => {
+test("VM tab strip exposes all four views and lands on Summary by default", { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "summary");
 
   await expect(vm.summaryTab).toBeVisible();
@@ -56,7 +63,7 @@ test("VM tab strip exposes all four views and lands on Summary by default", asyn
   await expectSelectedTab(vm.summaryTab);
 });
 
-test("Virtual Machines tab lists the fleet inventory with its toolbar", async ({ page }) => {
+test("Virtual Machines tab lists the fleet inventory with its toolbar", { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "instances");
 
   await expect(vm.inventoryRoot).toBeVisible();
@@ -77,7 +84,7 @@ test("Virtual Machines tab lists the fleet inventory with its toolbar", async ({
   }
 });
 
-test("Inventory search filters the VM list and restores it when cleared", async ({ page }) => {
+test("Inventory search filters the VM list and restores it when cleared", { tag: ["@dev", "@test", "@regression", "@search", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "instances");
 
   const baseline = await vm.rowCount(INVENTORY_TABLE, vm.inventoryRoot);
@@ -99,7 +106,7 @@ test("Inventory search filters the VM list and restores it when cleared", async 
   });
 });
 
-test("Vulnerabilities tab regroups findings across all four grouping tabs", async ({ page }) => {
+test("Vulnerabilities tab regroups findings across all four grouping tabs", { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "vulnerabilities");
 
   await expect(vm.vulnerabilitiesRoot).toBeVisible();
@@ -135,7 +142,7 @@ test("Vulnerabilities tab regroups findings across all four grouping tabs", asyn
 // option's accessible name is evidently not the plain label. Left uncovered and written
 // up in the PR instead of weakening it into a test that asserts nothing.
 
-test("Packages tab search filters the installed-package inventory", async ({ page }) => {
+test("Packages tab search filters the installed-package inventory", { tag: ["@dev", "@test", "@regression", "@search", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "packages");
 
   await expect(vm.packagesRoot).toBeVisible();
@@ -159,7 +166,7 @@ test("Packages tab search filters the installed-package inventory", async ({ pag
   });
 });
 
-test("Account scan dialog opens and cancels without starting a scan", async ({ page }) => {
+test("Account scan dialog opens and cancels without starting a scan", { tag: ["@dev", "@test", "@regression", "@negative", "@functional", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "instances");
 
   await expect(vm.inventoryRoot).toBeVisible();
@@ -185,7 +192,7 @@ test("Account scan dialog opens and cancels without starting a scan", async ({ p
   });
 });
 
-test("Summary tiles deep-link into the tab that owns their numbers", async ({ page }) => {
+test("Summary tiles deep-link into the tab that owns their numbers", { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] }, async ({ page }) => {
   const vm = await openVmTab(page, "summary");
 
   await test.step("Virtual Machines tile opens the inventory tab", async () => {

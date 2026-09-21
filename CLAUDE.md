@@ -109,6 +109,9 @@ Each service has its own CLAUDE.md where one exists — **always read it before 
 - `api-server/services/knowledge_graph/CLAUDE.md` — Knowledge graph subsystem
 - `api-server/services/anomoly/CLAUDE.md` — Anomaly detection subsystem
 
+Subsystem guides that live under `docs/` rather than beside their code:
+- [`docs/ownership.md`](docs/ownership.md) — Resource ownership (manual assignments + lazily-evaluated rules)
+
 ## Key Files & Locations
 
 | Path | Purpose |

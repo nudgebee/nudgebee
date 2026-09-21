@@ -1430,6 +1430,36 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 	}
 }
 
+// resolveResourceIdentity decides the (resourse_id, external_resource_id) pair a
+// realtime-updated resource is stored under.
+//
+// The bulk sync (account.StoreResources) writes every resource as
+// resourse_id = <the provider's own resource id> and external_resource_id =
+// common.BuildExternalResourceId(...). This path used to store the action's lookup
+// key as resourse_id and the raw ARN as external_resource_id, so the two writers
+// disagreed and neither unique index on cloud_resourses matched. For ECS tasks —
+// where the lookup key is a full task ARN because GetResourcesByIds parses the
+// cluster out of it — the sync inserted a second row beside this one. Elsewhere
+// (EC2, RDS, …) resourse_id happened to agree, so the two rows collapsed into one
+// whose external_resource_id the two reconcile steps then rewrote past each other.
+// Deriving both fields from the provider's own id, through the same helper the sync
+// uses, makes the writers land on one row by construction.
+//
+// canonicalId is empty when the live lookup failed or found nothing (typically a
+// delete event). There is then nothing canonical to derive from, so the previous
+// behaviour is kept rather than running BuildExternalResourceId over a lookup key
+// that may itself be an ARN — that would produce a doubly-prefixed pseudo-ARN.
+func resolveResourceIdentity(
+	canonicalId, lookupKey, arn string,
+	accountNumber, region, serviceName, resourceType string,
+) (resourceId, externalResourceId string) {
+	if canonicalId == "" {
+		return lookupKey, arn
+	}
+	return canonicalId, common.BuildExternalResourceId(
+		"AWS", accountNumber, region, serviceName, resourceType, canonicalId, "")
+}
+
 // updateCloudResource updates a resource in the cloud_resourses table based on EventBridge event
 func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	pCtx providers.CloudProviderContext,
@@ -1476,6 +1506,12 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	var resourceType string
 	var resourceTags = "{}"
 	var resourceMeta = "{}"
+	// canonicalId is the provider's own resource id, set only when the live lookup
+	// below succeeds. params.ResourceId is the AWS *lookup key* and is not always the
+	// same string: the ECS task rule passes a full task ARN because GetResourcesByIds
+	// parses the cluster out of it. Storing the lookup key as resourse_id is what made
+	// this path disagree with the bulk sync — see the comment above resourceIdentity.
+	var canonicalId string
 
 	cloudProvider, ok := providers.GetProvider("AWS")
 	if ok {
@@ -1521,6 +1557,7 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 			resourceArn = resource.Arn
 			resourceName = resource.Name
 			resourceType = resource.Type // Use the actual type from AWS, not from params
+			canonicalId = resource.Id    // Same reason as type: trust the provider, not the params
 
 			if len(resource.Tags) > 0 {
 				tagsJsonBytes, err := common.MarshalJson(resource.Tags)
@@ -1557,6 +1594,10 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	if resourceType == "" {
 		resourceType = params.ResourceType
 	}
+
+	resourceIdentity, resourceErid := resolveResourceIdentity(
+		canonicalId, params.ResourceId, resourceArn,
+		awsAccount.AccountNumber, params.Region, params.ServiceName, resourceType)
 
 	// Build UPSERT query (INSERT...ON CONFLICT...DO UPDATE)
 	args := []any{}
@@ -1629,8 +1670,8 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 		tenantID,
 		accountID,
 		"AWS", // cloud_provider - required NOT NULL field
-		params.ResourceId,
-		resourceArn, // external_resource_id - use ARN from fetched resource
+		resourceIdentity,
+		resourceErid, // external_resource_id - canonical, matches the bulk sync
 		params.ServiceName,
 		params.Region,
 		resourceType,  // Use actual type from AWS API
@@ -1665,13 +1706,13 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 		fmt.Sprintf("name = $%d", argIndex+1),
 		fmt.Sprintf("type = $%d", argIndex+2),
 		fmt.Sprintf("arn = $%d", argIndex+3),
-		fmt.Sprintf("external_resource_id = $%d", argIndex+4), // Update ARN if we get it later
+		fmt.Sprintf("external_resource_id = $%d", argIndex+4), // Canonical identity, may firm up once the lookup succeeds
 		fmt.Sprintf("tags = $%d::jsonb", argIndex+5),
 		fmt.Sprintf("resourse_id = $%d", argIndex+6),
 		fmt.Sprintf("service_name = $%d", argIndex+7),
 		fmt.Sprintf("region = $%d", argIndex+8),
 	}
-	args = append(args, now, resourceName, resourceType, resourceArn, resourceArn, resourceTags, params.ResourceId, params.ServiceName, params.Region)
+	args = append(args, now, resourceName, resourceType, resourceArn, resourceErid, resourceTags, resourceIdentity, params.ServiceName, params.Region)
 	argIndex += 9
 
 	// Update status if provided - with timestamp check to prevent out-of-order updates
@@ -1730,10 +1771,31 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	// Pre-reconcile: if a row exists with the same natural key (account, resourse_id, type, region, service_name)
 	// but a different external_resource_id, update its external_resource_id so the ON CONFLICT below catches it.
 	// This prevents "duplicate key violates unique constraint cloud_resourses_account_resourse_service_type_region_key".
+	//
+	// The NOT EXISTS guard mirrors account.reconcileExternalResourceIds: BuildExternalResourceId
+	// is a lossy normalization, so two rows distinct under the natural key can want the same
+	// external_resource_id. Without the guard this UPDATE can violate the unique index on
+	// (account, external_resource_id) — and the error is swallowed here, which would leave the
+	// upsert below to fail on the natural key instead. If another row already holds the
+	// canonical id, do nothing: the ON CONFLICT will land on that row.
+	//
+	// Failure here stays non-fatal — the upsert below is still worth attempting — but it
+	// is logged, because this is the step that keeps the two unique indexes from
+	// disagreeing. A silent failure here surfaces later as a confusing natural-key
+	// violation on the upsert, with nothing pointing back to the real cause.
 	reconcileQuery := `UPDATE cloud_resourses SET external_resource_id = $1
 		WHERE account = $2 AND resourse_id = $3 AND type = $4 AND region = $5 AND service_name = $6
-		AND (external_resource_id IS NULL OR external_resource_id != $1)`
-	_, _ = dbms.Exec(reconcileQuery, resourceArn, accountID, params.ResourceId, resourceType, params.Region, params.ServiceName)
+		AND (external_resource_id IS NULL OR external_resource_id != $1)
+		AND NOT EXISTS (
+			SELECT 1 FROM cloud_resourses existing
+			WHERE existing.account = $2 AND existing.external_resource_id = $1
+		)`
+	if _, reconcileErr := dbms.Exec(reconcileQuery, resourceErid, accountID, resourceIdentity, resourceType, params.Region, params.ServiceName); reconcileErr != nil {
+		logger.Warn("eventprocessor: pre-reconcile of external_resource_id failed, continuing to upsert",
+			"error", reconcileErr,
+			"resourceId", resourceIdentity,
+			"externalResourceId", resourceErid)
+	}
 
 	// Construct UPSERT query with RETURNING xmax to detect INSERT vs UPDATE
 	upsertQuery := fmt.Sprintf(
@@ -1771,16 +1833,20 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	// No post-INSERT UPDATE needed - all data is already in the initial INSERT
 	// because we fetched resource details BEFORE the UPSERT
 
+	// Report the identity the row was actually stored under, which is not always the
+	// lookup key the action was called with.
 	logger.Info("eventprocessor: resource upserted successfully",
 		"operation", operation,
-		"resourceId", params.ResourceId,
+		"resourceId", resourceIdentity,
+		"lookupKey", params.ResourceId,
+		"externalResourceId", resourceErid,
 		"newStatus", finalStatus,
 		"xmax", xmax)
 
 	return map[string]any{
 		"operation":    operation,
 		"was_insert":   wasInsert,
-		"resource_id":  params.ResourceId,
+		"resource_id":  resourceIdentity,
 		"service_name": params.ServiceName,
 		"new_status":   finalStatus,
 	}, nil

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"nudgebee/services/cloud"
 	"nudgebee/services/knowledge_graph/core"
+	"nudgebee/services/knowledge_graph/flow_sources"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"strings"
@@ -29,6 +30,10 @@ const portKeyFormat = "%s:%d"
 // This runs after both aws_source and k8s_source complete, creating cross-source relationships
 type LoadBalancerK8sEnricher struct {
 	logger *slog.Logger
+	// topology serves load-balancer target groups from cloud_resourses. Set per
+	// run in EnrichCrossSources — the registry builds a fresh enricher per graph
+	// build, so this is not shared across tenants. Nil means CLI-only.
+	topology *flow_sources.CloudTopologyStore
 }
 
 // NewLoadBalancerK8sEnricher creates a new LoadBalancerK8sEnricher
@@ -51,6 +56,15 @@ func (e *LoadBalancerK8sEnricher) EnrichCrossSources(
 	allEdges []*core.DbEdge,
 	tenantID string,
 ) ([]*core.DbNode, []*core.DbEdge, error) {
+
+	topology, err := flow_sources.NewCloudTopologyStore(tenantID, e.logger)
+	if err != nil {
+		e.logger.Warn("failed to build cloud topology store, falling back to cloud CLI",
+			"tenant_id", tenantID, "error", err)
+		topology = nil
+	}
+	e.topology = topology
+	defer topology.LogStats("aws_lb_k8s_enricher")
 
 	// 1. Filter LoadBalancer nodes from aws_source
 	lbNodes := make([]*core.DbNode, 0)
@@ -539,37 +553,14 @@ func (e *LoadBalancerK8sEnricher) getTargetGroups(
 	awsAccountID, arn, region string,
 ) ([]map[string]interface{}, error) {
 
-	tgCommand := fmt.Sprintf(
-		"aws elbv2 describe-target-groups --region %s --load-balancer-arn %s --output json",
-		region, arn,
-	)
-
-	tgResp, err := cloud.ExecuteCli(reqCtx, cloud.CloudExecuteCliCommandRequest{
-		AccountID: awsAccountID,
-		Command:   tgCommand,
-	})
+	targetGroups, err := flow_sources.FetchLoadBalancerTargetGroups(reqCtx, awsAccountID, region, arn, e.topology)
 	if err != nil {
 		e.logger.Debug("Failed to query target groups",
 			"arn", arn,
 			"error", err)
 		return nil, err
 	}
-
-	// Parse target groups
-	data, ok := tgResp["data"].(string)
-	if !ok || data == "" || !strings.HasPrefix(strings.TrimSpace(data), "{") {
-		return nil, fmt.Errorf("unexpected or non-JSON response format from cloud collector")
-	}
-
-	var tgData struct {
-		TargetGroups []map[string]interface{} `json:"TargetGroups"`
-	}
-	if err := json.Unmarshal([]byte(data), &tgData); err != nil {
-		e.logger.Debug("Failed to parse target groups response", "error", err)
-		return nil, err
-	}
-
-	return tgData.TargetGroups, nil
+	return targetGroups, nil
 }
 
 // collectTargetIPs collects all target IPs from target groups, resolving EC2 instances to IPs

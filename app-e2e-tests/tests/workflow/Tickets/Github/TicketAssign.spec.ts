@@ -45,7 +45,7 @@ const WORKFLOW_JSON_TEMPLATE = {
 
 test(
   "Automation workflow Github Ticket Assign",
-  { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@oss", "@crud"] },
   async ({ page }) => {
     test.setTimeout(120000);
 

@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+var _ core.NBAgentParentTerminalProvider = (*WorkflowBuilderAgent)(nil)
+
 // postProcessCtx builds a DB-free request context for the pass-through tests.
 func postProcessCtx() *security.RequestContext {
 	return security.NewRequestContextForTenantAccountAdmin("tenant-1", "user-1", []string{"acct-1"})

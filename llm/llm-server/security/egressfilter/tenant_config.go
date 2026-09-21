@@ -25,6 +25,10 @@ type TenantConfig struct {
 	CustomRules   []byte    `db:"custom_rules"  json:"custom_rules"`    // raw JSONB; no admin-API surface yet
 	DisabledRules []string  `db:"disabled_rules" json:"disabled_rules"` // additive; disables env-loaded rules per tenant
 
+	// Agents whose payloads skip detection. Excludes by PRODUCER -> reaches
+	// noise no rule can (websearch sends a fetched public page). Audited, not silent.
+	DisabledAgents []string `db:"disabled_agents" json:"disabled_agents"`
+
 	// --- PII sibling detector overrides (V827, PR #31514 follow-up) ------------
 	//
 	// All three "*Enabled" and "Mode" fields are tri-state: nil / empty means
@@ -165,6 +169,21 @@ func tenantIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 		return uuid.Nil, false
 	}
 	return id, true
+}
+
+// AgentExcluded: is this agent opted out of detection? Case-insensitive and
+// EXACT -> "websearch" must not disable "websearch_writer". nil/"" -> false.
+func (c *TenantConfig) AgentExcluded(agent string) bool {
+	agent = strings.TrimSpace(agent)
+	if c == nil || agent == "" {
+		return false
+	}
+	for _, a := range c.DisabledAgents {
+		if strings.EqualFold(strings.TrimSpace(a), agent) {
+			return true
+		}
+	}
+	return false
 }
 
 // TenantConfigLoader is the per-tenant lookup function the cache delegates

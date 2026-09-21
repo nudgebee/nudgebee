@@ -4,7 +4,7 @@ import { questions } from "./questionsData";
 import { NubiLocators } from "./nubiLocators";
 import { waitForGraphQLAndValidate } from "../utils/GraphQLNetworkWatcher";
 
-test("Login once and ask all questions", async ({ page }) => {
+test("Login once and ask all questions", { tag: ["@dev", "@test", "@smoke", "@functional"] }, async ({ page }) => {
   test.setTimeout(300000);
   const loginPage = new LoginPage(page);
   const locators = new NubiLocators(page);

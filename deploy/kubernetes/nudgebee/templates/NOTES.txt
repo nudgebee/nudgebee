@@ -22,6 +22,24 @@ To retrieve the password from the secret, run the following command:
 kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
 {{- end }}
 
+{{- if .Values.admin.email }}
+
+Sign in as {{ .Values.admin.email }} — the admin and its organisation were created
+during install, so there is nothing to set up on first login.
+{{- end }}
+
+{{- if .Values.agent.enabled }}
+
+The bundled agent connects this cluster as
+"{{ .Values.agent.clusterName | default "nb-control-plane-k8s" }}". If it does not appear:
+
+  kubectl logs -n {{ .Release.Namespace }} deploy/services-server | grep -iE 'first run|local agent'
+
+It is on by default — if this cluster is already monitored by a separately
+installed agent, set agent.enabled=false to avoid a duplicate account.
+Offline render (Argo CD, Flux) must set agent.accessKey/accessSecret.
+{{- end }}
+
 {{- /* The chart has no local/dev/prod environment marker, so this warns on
        every install/upgrade with dummy creds enabled — imprecise but with no
        false negatives. */}}

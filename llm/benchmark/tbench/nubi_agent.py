@@ -2,7 +2,7 @@
 NuBi terminal-bench agent.
 
 Bridges terminal-bench's BaseAgent interface to NuBi's HTTP API using the
-client-tool protocol: NuBi reasons and plans; each shell_execute call is
+client-tool protocol: NuBi reasons and plans; each tbench_shell_execute call is
 intercepted, executed in the real terminal-bench Docker container via TmuxSession,
 and the output is fed back to NuBi before it continues.
 
@@ -47,7 +47,7 @@ from terminal_bench.terminal.tmux_session import TmuxSession
 logger = logging.getLogger(__name__)
 
 _SHELL_TOOL_SCHEMA = {
-    "name": "shell_execute",
+    "name": "tbench_shell_execute",
     "description": (
         "Execute a non-interactive shell command in the terminal environment "
         "and return the combined stdout/stderr output. Chain multiple commands "

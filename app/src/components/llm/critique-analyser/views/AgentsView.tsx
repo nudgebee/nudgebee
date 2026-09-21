@@ -35,10 +35,11 @@ export function AgentsView({ summary, loading, error, onSelectAgent }: AgentsVie
   const rows = [...(summary?.by_agent ?? [])].sort((a, b) => b.refine_pct - a.refine_pct);
 
   const headers = [
-    { name: 'Agent', width: '34%' },
-    { name: 'Judged', width: '18%' },
-    { name: 'Refined', width: '18%' },
-    { name: 'Refine rate', width: '30%' },
+    { name: 'Agent', width: '28%' },
+    { name: 'Judged', width: '16%' },
+    { name: 'Accepted', width: '16%' },
+    { name: 'Refined', width: '16%' },
+    { name: 'Refine rate', width: '24%' },
   ];
   const tableData = rows.map((r) => [
     {
@@ -59,6 +60,7 @@ export function AgentsView({ summary, loading, error, onSelectAgent }: AgentsVie
       ),
     },
     { component: <Box sx={numCell}>{fmtCount(r.judged)}</Box> },
+    { component: <Box sx={numCell}>{fmtCount(r.accepted)}</Box> },
     { component: <Box sx={numCell}>{fmtCount(r.refined)}</Box> },
     {
       component: (

@@ -1157,6 +1157,10 @@ class AskAiCard {
   isCompleted = () => {
     return this.aiData?.status?.toLowerCase() === 'completed';
   };
+
+  isFailed = () => {
+    return this.aiData?.status?.toLowerCase() === 'failed';
+  };
 }
 
 export default AskAiCard;

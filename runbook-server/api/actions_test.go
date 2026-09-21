@@ -65,3 +65,53 @@ func TestParseAccountFilter(t *testing.T) {
 		})
 	}
 }
+
+// mergeEventIntoInputs is the write-side counterpart to listExecutionsForEvent's
+// read: it tags a manual trigger's inputs with the event it was run against so
+// the run shows up in that event's automation history the same way a
+// Nubi-triggered run already does.
+func TestMergeEventIntoInputs(t *testing.T) {
+	tests := []struct {
+		name     string
+		inputs   map[string]any
+		eventID  string
+		expected map[string]any
+	}{
+		{
+			name:     "no event id leaves nil inputs nil",
+			inputs:   nil,
+			eventID:  "",
+			expected: nil,
+		},
+		{
+			name:     "no event id leaves existing inputs untouched",
+			inputs:   map[string]any{"reason": "restart"},
+			eventID:  "",
+			expected: map[string]any{"reason": "restart"},
+		},
+		{
+			name:     "event id tags nil inputs",
+			inputs:   nil,
+			eventID:  "evt-1",
+			expected: map[string]any{"event": map[string]any{"id": "evt-1"}},
+		},
+		{
+			name:     "event id tags existing inputs alongside other fields",
+			inputs:   map[string]any{"reason": "restart"},
+			eventID:  "evt-1",
+			expected: map[string]any{"reason": "restart", "event": map[string]any{"id": "evt-1"}},
+		},
+		{
+			name:     "a caller-supplied event input wins over the default",
+			inputs:   map[string]any{"event": map[string]any{"id": "evt-caller-chosen"}},
+			eventID:  "evt-from-page",
+			expected: map[string]any{"event": map[string]any{"id": "evt-caller-chosen"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, mergeEventIntoInputs(tt.inputs, tt.eventID))
+		})
+	}
+}

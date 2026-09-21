@@ -7,7 +7,7 @@ function generateRandomAgentName(): string {
   return `Agent_${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
-test("CRUD Custom Agent", async ({ page }) => {
+test("CRUD Custom Agent", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(180000);
   const loginPage = new LoginPage(page);
   const locators = new NubiLocators(page);
@@ -16,30 +16,39 @@ test("CRUD Custom Agent", async ({ page }) => {
 
   await loginPage.doFullLogin();
   await locators.askNudgebeeBtn.click();
-  await locators.settingsBtn.click();
+  // SettingsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
+  // round trip, and a Settings click that lands while the nubi panel is still animating
+  // in opens nothing at all — leaving the panel on screen with no tabs to click. Retry
+  // the pair until the tabs are actually there.
+  await expect(async () => {
+    if (!(await locators.customAgentTab.isVisible().catch(() => false))) {
+      await locators.settingsBtn.click();
+    }
+    await locators.customAgentTab.waitFor({ state: "visible", timeout: 5000 });
+  }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
   console.log("Navigated to Settings");
 
   await locators.customAgentTab.click();
   await locators.createCustomAgentBtn.waitFor({ state: "visible", timeout: 30000 });
   await locators.createCustomAgentBtn.click();
-  await locators.ageentIdentityButton.waitFor({ state: "visible", timeout: 30000 });
-  await locators.ageentIdentityButton.click();
+  // The first field is the readiness signal: every card on this form is rendered
+  // and expanded from the start, so there is no step to open first — the left
+  // rail only scrolls, and each fill() scrolls its own field into view anyway.
+  await locators.agentNameInput.waitFor({ state: "visible", timeout: 30000 });
 
   await locators.agentNameInput.fill(agentName);
   await locators.agentDescriptionInput.fill("Test agent created by automation.");
 
-  await locators.agentSetAgentBehaviorAndGuidelines.click();
   await locators.agenRole.fill("You are a helpful assistant.");
   await locators.agentInstructionsInput.fill("Testing Only");
 
-  await locators.ageentToolsOrAgentselectionButton.click();
   await locators.selectAgentOrTool.click();
   await locators.listOfAgentsOrTools.waitFor({ state: "visible", timeout: 15000 });
   await locators.listOfAgentsOrTools.click({ timeout: 15000 });
-  await page.keyboard.press("Escape");
+  // The picker is a multiple Select — it stays open after a pick, and its backdrop
+  // would swallow the next click.
+  await locators.closeSelectPopover();
   await locators.agentToolUsage.fill("Used for automated testing.");
-
-  await locators.agentKnoowledgeAndExample.click();
 
   await waitForGraphQLAndValidate(
     page,
@@ -68,8 +77,7 @@ test("CRUD Custom Agent", async ({ page }) => {
   await locators.agentMoreActionsBtn.click();
   await locators.editAgentMenuItem.waitFor({ state: "visible", timeout: 10000 });
   await locators.editAgentMenuItem.click();
-  await locators.ageentIdentityButton.waitFor({ state: "visible", timeout: 30000 });
-  await locators.ageentIdentityButton.click();
+  await locators.agentDescriptionInput.waitFor({ state: "visible", timeout: 30000 });
   await locators.agentDescriptionInput.clear();
   await locators.agentDescriptionInput.fill("Updated description by automation.");
   console.log(`[Update] Filled updated description.`);

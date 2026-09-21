@@ -217,6 +217,23 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 	return m
 }
 
+// resolveLLMConfigForDispatch resolves the tenant's forwarded LLM config and
+// enforces mandatory forwarding: the workspace pod no longer carries an
+// LLM_PROVIDER_API_KEY fallback (#38009), so a nil or errored resolution must
+// block dispatch instead of silently proceeding — the pod would otherwise run
+// with no usable credentials at all. logPrefix matches each call site's
+// existing "code"/"code followup" log prefix convention.
+func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentName, conversationId, logPrefix string) (*core.ForwardedLLMConfig, error) {
+	llmCfg, err := core.ResolveLLMConfigForForwarding(ctx, accountId, agentName, conversationId)
+	if err != nil {
+		return nil, fmt.Errorf("%s: failed to resolve LLM config for forwarding: %w", logPrefix, err)
+	}
+	if llmCfg == nil {
+		return nil, fmt.Errorf("%s: no LLM config resolved for account %s; refusing to dispatch without forwarded credentials", logPrefix, accountId)
+	}
+	return llmCfg, nil
+}
+
 // instead of launching a new pod per request.
 func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
 	logger := ctx.GetLogger()
@@ -292,11 +309,14 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// the default K when an operator has tuned it. Failures degrade gracefully —
 	// analysis must never be blocked on skills.
 	skillsBlock := ""
-	{
+	if core.AutomaticKnowledgeAllowed(agentRequest) {
 		// Include the legacy name so knowledge bases mapped to "agent_code_2" in
 		// llm_kb_agent_mappings before the rename are still inherited (the lookup
 		// UNIONs both names and dedupes by kb id).
-		skillAgentNames := append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...)
+		// The wildcard sentinel carries KBs mapped to "All agents" (see
+		// toolcore.KBAgentWildcard); without it, code-analysis would be the one
+		// agent an all-agents skill never reached.
+		skillAgentNames := toolcore.WithKBAgentWildcard(append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...))
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query
@@ -398,15 +418,17 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// Forward the resolved, decrypted LLM config so the stateless code-analysis
 	// service runs on the tenant's own LLM integration — or, absent one, on the
 	// same default llm-server itself resolved — instead of whatever its startup
-	// env happens to name. Degrade gracefully: on any failure, or when no
-	// provider resolves at all, omit the block and let the pod use its
-	// fallback. The API key is plaintext — never log it.
-	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId); lerr != nil {
-		logger.Warn("code: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
-	} else if llmCfg != nil {
-		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
-		logger.Info("code: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
+	// env happens to name. Forwarding is mandatory (#38009): the workspace pod
+	// carries no LLM_* API-key fallback, so any resolution failure, or a
+	// resolution that finds no provider, aborts dispatch instead of silently
+	// running the pod without usable credentials. The API key is plaintext —
+	// never log it.
+	llmCfg, err := resolveLLMConfigForDispatch(ctx, agentRequest.AccountId, AgentCodeAnalyzer, agentRequest.ConversationId, "code")
+	if err != nil {
+		return codeAnalysisResult{}, err
 	}
+	analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+	logger.Info("code: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 
 	// Pre-flight: verify workspace pod is reachable before dispatching analysis
 	healthWm := workspace.NewWorkspaceManagerWithTimeout(10 * time.Second)
@@ -1249,11 +1271,19 @@ type CodeAgent2Request struct {
 	Followup bool   `json:"followup"`
 	PRURL    string `json:"pr_url"`
 	PRBranch string `json:"pr_branch"`
+	// AddressedComments is the set of PR comments a previous followup already
+	// answered, read from pr_followup.addressed_comments by api-server and passed
+	// straight through to code-analysis (#36865). Kept as raw JSON because this
+	// hop only forwards it — llm-server never inspects the entries. Absent for an
+	// older api-server, which simply means no fallback skip set.
+	AddressedComments json.RawMessage `json:"addressed_comments,omitempty"`
 }
 
 func (l CodeAgent2) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
+
+func (l CodeAgent2) UsesAutomaticKnowledge() bool { return true }
 
 func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequest) (core.NBAgentResponse, error) {
 	// Message-scoped retry guard: if a previous call in this message already failed
@@ -1664,6 +1694,12 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	}
 	responseStr := string(jsonResponse)
 	finalResponse := handleAnalysisResult(ctx, query.ConversationId, query.MessageId, responseStr)
+	// Logged synchronously (not inside the goroutine) so it survives even if the
+	// goroutine itself never gets to log anything — e.g. the pod is killed
+	// between this line and trackPRInResolution completing. A "dispatching" line
+	// with no matching "created"/"skipping"/"failed" line for the same
+	// conversation_id is the signature of that failure mode.
+	ctx.GetLogger().Info("code: dispatching PR resolution tracking", "conversation_id", query.ConversationId, "message_id", query.MessageId)
 	go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
 	return core.NBAgentResponse{
 		Response: []string{finalResponse},
@@ -1785,20 +1821,36 @@ func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest
 
 	var response map[string]any
 	if err := json.Unmarshal([]byte(responseStr), &response); err != nil {
+		ctx.GetLogger().Warn("code: failed to unmarshal code-analysis response, skipping PR resolution tracking",
+			"error", err, "conversation_id", query.ConversationId)
 		return
 	}
 
 	prInfoRaw, ok := response["automated_fix_pr_info"]
 	if !ok || prInfoRaw == nil {
+		// Expected on every explore/propose call (raise_pr=false) and on a
+		// successful no_op (the change was already present, so no PR was
+		// raised) — only warn when a PR was actually requested and due.
+		var req CodeAgent2Request
+		_ = common.UnmarshalJson([]byte(query.Query), &req)
+		execStatus, _ := response["execution_status"].(string)
+		if req.RaisePr && execStatus != codeAnalysisNoOpStatus {
+			ctx.GetLogger().Warn("code: no automated_fix_pr_info in code-analysis response, skipping PR resolution tracking",
+				"conversation_id", query.ConversationId, "execution_status", execStatus)
+		}
 		return
 	}
 	prMap, ok := prInfoRaw.(map[string]any)
 	if !ok {
+		ctx.GetLogger().Warn("code: automated_fix_pr_info is not an object, skipping PR resolution tracking",
+			"conversation_id", query.ConversationId)
 		return
 	}
 
 	prURL, _ := prMap["url"].(string)
 	if prURL == "" {
+		ctx.GetLogger().Warn("code: automated_fix_pr_info missing a url, skipping PR resolution tracking",
+			"conversation_id", query.ConversationId)
 		return
 	}
 
@@ -3028,6 +3080,16 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		"pr_branch": request.PRBranch,
 	}
 
+	// Forward the already-addressed comment set (#36865) so code-analysis can use
+	// it as a fallback skip source. Omitted when empty so the payload is
+	// unchanged for a PR with no followup history. Trimmed before comparing:
+	// the value is always compact JSON from encoding/json in practice, but the
+	// comparison itself costs nothing extra and shouldn't depend on that.
+	trimmedComments := strings.TrimSpace(string(request.AddressedComments))
+	if trimmedComments != "" && trimmedComments != "[]" && trimmedComments != "null" {
+		analyzeRequest["addressed_comments"] = request.AddressedComments
+	}
+
 	if gitToken != "" {
 		analyzeRequest["git_credentials"] = map[string]any{
 			"type":  "token",
@@ -3036,17 +3098,16 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	}
 
 	// Forward the resolved LLM config, exactly as the main analysis path does.
-	// Without this the workspace pod falls back to its global LLM_* secret env,
-	// which is not guaranteed to name a provider code-analysis supports — every
-	// followup then fails at client construction before doing any work. Degrade
-	// gracefully: on any failure, or when no provider resolves at all, omit the
-	// block. The API key is plaintext — never log it.
-	if llmCfg, lerr := core.ResolveLLMConfigForForwarding(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId); lerr != nil {
-		logger.Warn("code followup: failed to resolve LLM config for forwarding; using pod fallback", "error", lerr)
-	} else if llmCfg != nil {
-		analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
-		logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
+	// Forwarding is mandatory (#38009): the workspace pod carries no LLM_*
+	// API-key fallback, so any resolution failure, or a resolution that finds
+	// no provider, aborts dispatch instead of silently running the pod without
+	// usable credentials. The API key is plaintext — never log it.
+	llmCfg, err := resolveLLMConfigForDispatch(ctx, query.AccountId, AgentCodeAnalyzer, query.ConversationId, "code followup")
+	if err != nil {
+		return core.NBAgentResponse{}, err
 	}
+	analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+	logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 
 	// Pre-flight: verify workspace pod is reachable
 	healthWm := workspace.NewWorkspaceManagerWithTimeout(10 * time.Second)

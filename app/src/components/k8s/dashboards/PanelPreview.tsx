@@ -172,7 +172,7 @@ const PanelPreview: React.FC<Props> = ({ panel, accountOptions, variables, start
           minHeight: panelMinHeight(panel),
           opacity: sample ? 0.72 : 1,
           p: '4px',
-          borderRadius: '12px',
+          borderRadius: ds.radius.xl,
           border: `1px solid ${ds.purple[300]}`,
           background: ds.purple[100],
           boxShadow: '0 4px 18px rgba(0, 0, 0, 0.15)',

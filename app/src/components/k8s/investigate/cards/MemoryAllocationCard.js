@@ -300,7 +300,11 @@ class MemoryAllocationCard {
       // Ignoring CPU resource_type Because KubernetesRightSizingPopupForm require CPU info like 99%, 97%
       const memoryItems = this.podMemoryAllocationItem.filter((g) => g.resource_type === 'memory');
       const cpuItems = this.podMemoryAllocationItem.filter((g) => g.resource_type === 'cpu');
-      const memoryObject = memoryItems[0];
+      // A pod_metric blob tagged resource_type 'cpu' still carries the container's
+      // memory requests/limits in element.metric, so fall back to any entry that
+      // has memory request/limit set. Without this, a CPU-typed event hides the
+      // Memory card even when the pod has memory requests/limits configured.
+      const memoryObject = memoryItems[0] || this.podMemoryAllocationItem.find((g) => g.request != null || g.limits != null);
       const cpuObject = cpuItems[0];
       // When the pod has no requests/limits set, fall back to the highest observed
       // usage across pods of the same resource_type so the recommendation reflects
@@ -339,7 +343,10 @@ class MemoryAllocationCard {
           request: reqBase > 0 ? Number(reqBase).toFixed(4) : undefined,
           limit: undefined,
           oldRequest: cpuObject.cpu_request || 0,
-          oldLimit: undefined,
+          // The evidence carries the container's CPU limit; dropping it made the
+          // Current column claim the workload has none. (Recommended `limit`
+          // stays undefined on purpose — the form advises no CPU limit.)
+          oldLimit: cpuObject.cpu_limit,
           nbalgoBase: cpuPeak > 0 ? cpuPeak : undefined,
         };
       }

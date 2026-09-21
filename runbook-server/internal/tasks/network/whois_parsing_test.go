@@ -1,6 +1,7 @@
 package network
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -123,4 +124,162 @@ Some Data: 123
 			}
 		})
 	}
+}
+
+// Registry fixtures used by the classification and field-extraction tests.
+// Each is trimmed to the lines that matter for the assertion below it.
+const (
+	rawComRegistered = `
+   Domain Name: GOOGLE.COM
+   Registry Domain ID: 2138514_DOMAIN_COM-VRSN
+   Registrar WHOIS Server: whois.markmonitor.com
+   Registrar URL: http://www.markmonitor.com
+   Updated Date: 2019-09-09T15:39:04Z
+   Creation Date: 1997-09-15T04:00:00Z
+   Registry Expiry Date: 2028-09-14T04:00:00Z
+   Registrar: MarkMonitor Inc.
+   Registrar IANA ID: 292
+   Registrar Abuse Contact Email: abusecomplaints@markmonitor.com
+   Domain Status: clientDeleteProhibited https://icann.org/epp#clientDeleteProhibited
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Name Server: NS1.GOOGLE.COM
+   Name Server: NS2.GOOGLE.COM
+   Registrant Country: US
+`
+
+	rawUKRegistered = `
+    Domain name:
+        google.co.uk
+
+    Registrar:
+        MarkMonitor Inc. [Tag = MARKMONITOR]
+        URL: http://www.markmonitor.com
+
+    Relevant dates:
+        Registered on: 14-Feb-1999
+        Expiry date:  14-Feb-2024
+        Last updated:  10-Jan-2023
+
+    Name servers:
+        ns1.google.com
+        ns2.google.com
+`
+
+	rawComNotFound = `No match for "ASDKJHASD.COM".
+>>> Last update of whois database: 2026-08-24T09:25:14Z <<<
+
+NOTICE: The expiration date displayed in this record is the date the
+registrar's sponsorship of the domain name registration in the registry is
+currently set to expire.
+`
+
+	rawUKNotFound = `
+    No match for "asdkjhasd.co.uk".
+
+    This domain name has not been registered.
+`
+
+	rawIONotFound = `Domain not found.
+>>> Last update of WHOIS database: 2026-08-24T09:30:00Z <<<
+`
+
+	rawOrgNotFound = `
+NOT FOUND
+>>> Last update of WHOIS database: 2026-08-24T09:30:00Z <<<
+`
+
+	rawDEFree = `
+Domain: asdkjhasd.de
+Status: free
+`
+
+	rawRateLimited = `Your connection limit exceeded. Please slow down and try again later.
+`
+)
+
+func TestClassify(t *testing.T) {
+	tests := []struct {
+		name           string
+		raw            string
+		wantRegistered bool
+		wantStatus     string
+	}{
+		{"com registered", rawComRegistered, true, whoisStatusFound},
+		{"co.uk registered", rawUKRegistered, true, whoisStatusFound},
+		{"com not found", rawComNotFound, false, whoisStatusNotFound},
+		{"co.uk not found", rawUKNotFound, false, whoisStatusNotFound},
+		{"io not found", rawIONotFound, false, whoisStatusNotFound},
+		{"org not found", rawOrgNotFound, false, whoisStatusNotFound},
+		{"de free", rawDEFree, false, whoisStatusNotFound},
+		{"rate limited", rawRateLimited, false, whoisStatusRateLimited},
+		{"unparseable", "some completely unrelated text\n", false, whoisStatusParseError},
+		{"empty", "", false, whoisStatusParseError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registered, status := classify(tt.raw, parseWhois(tt.raw))
+			assert.Equal(t, tt.wantStatus, status)
+			assert.Equal(t, tt.wantRegistered, registered)
+		})
+	}
+}
+
+// Registries use \r\n on the wire; make sure that does not leak into values.
+func TestClassifyHandlesCRLF(t *testing.T) {
+	raw := strings.ReplaceAll(rawComRegistered, "\n", "\r\n")
+	rec := parseWhois(raw)
+	registered, status := classify(raw, rec)
+
+	assert.True(t, registered)
+	assert.Equal(t, whoisStatusFound, status)
+	assert.Equal(t, "MarkMonitor Inc.", rec.Registrar)
+}
+
+func TestParseWhois_EppFormat(t *testing.T) {
+	rec := parseWhois(rawComRegistered)
+
+	// The "Registrar:" label must not be satisfied by "Registrar URL:",
+	// "Registrar WHOIS Server:" or "Registrar IANA ID:", all of which appear
+	// earlier in the response.
+	assert.Equal(t, "MarkMonitor Inc.", rec.Registrar)
+	assert.Equal(t, "GOOGLE.COM", rec.DomainName)
+	assert.Equal(t, "1997-09-15T04:00:00Z", rec.Created)
+	assert.Equal(t, "2019-09-09T15:39:04Z", rec.Updated)
+	assert.Equal(t, []string{"ns1.google.com", "ns2.google.com"}, rec.Nameservers)
+	assert.Len(t, rec.DomainStatus, 2)
+	assert.Equal(t, "US", rec.RegistrantCountry)
+	assert.NotNil(t, rec.Expiry)
+}
+
+// Nominet puts values in an indented block under a bare label line.
+func TestParseWhois_NominetBlockFormat(t *testing.T) {
+	rec := parseWhois(rawUKRegistered)
+
+	assert.Equal(t, "google.co.uk", rec.DomainName)
+	assert.Equal(t, "MarkMonitor Inc. [Tag = MARKMONITOR]", rec.Registrar)
+	assert.Equal(t, "1999-02-14T00:00:00Z", rec.Created)
+	assert.Equal(t, "2023-01-10T00:00:00Z", rec.Updated)
+	assert.Equal(t, []string{"ns1.google.com", "ns2.google.com"}, rec.Nameservers)
+	assert.NotNil(t, rec.Expiry)
+}
+
+func TestParseWhois_NotFoundHasNoRecord(t *testing.T) {
+	for name, raw := range map[string]string{
+		"com": rawComNotFound,
+		"io":  rawIONotFound,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, parseWhois(raw).hasRecord())
+		})
+	}
+}
+
+// Block values are terminated by the first unindented line. Trailing whitespace
+// and CRLF carriage returns must not make such a line look indented.
+func TestCollectLabeled_BlockEndsOnUnindentedLine(t *testing.T) {
+	raw := "Name servers:\r\n    ns1.example.com\r\n    ns2.example.com\r\nnot-a-nameserver   \r\n"
+	rec := parseWhois(raw)
+
+	assert.Equal(t, []string{"ns1.example.com", "ns2.example.com"}, rec.Nameservers)
 }

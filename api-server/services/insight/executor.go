@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/query"
@@ -95,17 +96,93 @@ func eventTimeParams(rule InsightRule) string {
 	return fmt.Sprintf("&start_time=%d&end_time=%d", start.UnixMilli(), now.UnixMilli())
 }
 
-func computeRedirectURL(rule InsightRule, accountID string, cloudProvider string) string {
+// insightFormatCaptureRe matches {key} and {} placeholders in an insight_format
+// template. Ratio rules (uid 127, 129) embed a filter value in the insight title
+// rather than a filter row; extractFromFormat recovers it.
+var insightFormatCaptureRe = regexp.MustCompile(`\{(\w*)\}`)
+
+// insightFormatRegexCache memoises the regex derived from each insight_format
+// template. Templates come from the embedded insight_rules.json (a few dozen,
+// fixed at build time), so the cache is bounded and computeRedirectURL — called
+// once per insight on the list endpoint — compiles each template at most once.
+// A nil entry records "this format can never match" so it is not recompiled.
+var insightFormatRegexCache sync.Map // map[string]*regexp.Regexp
+
+func insightFormatRegex(format string) *regexp.Regexp {
+	if v, ok := insightFormatRegexCache.Load(format); ok {
+		re, _ := v.(*regexp.Regexp)
+		return re
+	}
+	re := compileInsightFormatRegex(format)
+	insightFormatRegexCache.Store(format, re)
+	return re
+}
+
+func compileInsightFormatRegex(format string) *regexp.Regexp {
+	locs := insightFormatCaptureRe.FindAllStringSubmatchIndex(format, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("^")
+	last := 0
+	for _, m := range locs {
+		b.WriteString(regexp.QuoteMeta(format[last:m[0]]))
+		if name := format[m[2]:m[3]]; name != "" {
+			b.WriteString("(?P<")
+			b.WriteString(name)
+			b.WriteString(">.+?)")
+		} else {
+			b.WriteString(".+?")
+		}
+		last = m[1]
+	}
+	b.WriteString(regexp.QuoteMeta(format[last:]))
+	b.WriteString("$")
+
+	re, err := regexp.Compile(b.String())
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
+// extractFromFormat pulls named-placeholder values out of an insight title using
+// its insight_format template — the Go port of the helper that previously lived
+// in app/src/pages/home/index.jsx. {key} becomes a named capture (?P<key>.+?);
+// {} becomes a non-capturing .+?. Returns nil when the title does not match.
+func extractFromFormat(format, title string) map[string]string {
+	if format == "" || title == "" {
+		return nil
+	}
+	re := insightFormatRegex(format)
+	if re == nil {
+		return nil
+	}
+	match := re.FindStringSubmatch(title)
+	if match == nil {
+		return nil
+	}
+	out := make(map[string]string, len(re.SubexpNames()))
+	for i, name := range re.SubexpNames() {
+		if name != "" {
+			out[name] = match[i]
+		}
+	}
+	return out
+}
+
+func computeRedirectURL(rule InsightRule, insightTitle string, accountID string, cloudProvider string) string {
 	cp := strings.ToLower(cloudProvider)
 	id := accountID
 
 	if cp == "k8s" {
-		return computeK8sRedirectURL(rule, id)
+		return computeK8sRedirectURL(rule, insightTitle, id)
 	}
 	return computeCloudRedirectURL(rule, id)
 }
 
-func computeK8sRedirectURL(rule InsightRule, id string) string {
+func computeK8sRedirectURL(rule InsightRule, insightTitle string, id string) string {
 	base := "/kubernetes/details/" + id
 
 	// TraceAggregation insights (API latency / error-rate) always land on the
@@ -122,7 +199,7 @@ func computeK8sRedirectURL(rule InsightRule, id string) string {
 	case InsightSourceRecommendation:
 		return computeK8sRecommendationRedirectURL(rule, base)
 	case InsightSourceEvent:
-		return computeK8sEventRedirectURL(rule, base)
+		return computeK8sEventRedirectURL(rule, insightTitle, base)
 	}
 	return base
 }
@@ -183,7 +260,10 @@ func computeK8sRecommendationRedirectURL(rule InsightRule, base string) string {
 	// Ratio-type rules without rule_name filters — match by unique_id
 	switch rule.UniqueID {
 	case "17":
-		return base + "#security/image-scan"
+		// The image-scan tab reads ?severity= (KubernetesSecurity syncs it from
+		// router.query.severity); status defaults to Open there but is set
+		// explicitly so the link is self-describing.
+		return base + "?severity=Critical,High&status=Open#security/image-scan"
 	case "19":
 		return base + "#security/cluster-upgrade"
 	}
@@ -191,7 +271,7 @@ func computeK8sRecommendationRedirectURL(rule InsightRule, base string) string {
 	return base
 }
 
-func computeK8sEventRedirectURL(rule InsightRule, base string) string {
+func computeK8sEventRedirectURL(rule InsightRule, insightTitle, base string) string {
 	sources := getFilterValues(rule, "source")
 	source := getFilterValue(rule, "source")
 	aggKey := getFilterValue(rule, "aggregation_key")
@@ -203,14 +283,27 @@ func computeK8sEventRedirectURL(rule InsightRule, base string) string {
 	case "slo":
 		return base + "?eventAggregationKey=SLOViolation&eventStatus=FIRING" + tp + "#events/all-events"
 	}
-	if aggKey == "report_crash_loop" {
-		return base + "?eventAggregationKey=report_crash_loop&eventStatus=FIRING" + tp + "#events/all-events"
+
+	// Any aggregation-key event routes to a key-scoped all-events view. This was
+	// previously a hard-coded allowlist of three keys; every EventAggregation rule
+	// carries exactly one key (uid 3-8, 18, 121-123), so the generic form covers
+	// them all.
+	if aggKey != "" {
+		return base + "?eventAggregationKey=" + url.QueryEscape(aggKey) + "&eventStatus=FIRING" + tp + "#events/all-events"
 	}
-	if aggKey == "pod_oom_killer_enricher" {
-		return base + "?eventAggregationKey=pod_oom_killer_enricher&eventStatus=FIRING" + tp + "#events/all-events"
-	}
-	if aggKey == "image_pull_backoff_reporter" {
-		return base + "?eventAggregationKey=image_pull_backoff_reporter&eventStatus=FIRING" + tp + "#events/all-events"
+
+	// Ratio rules (uid 127 "noisiest", uid 129 "most frequent issue") carry the
+	// filter value in the insight title, not a filter row — recover it from the
+	// insight_format template.
+	switch rule.UniqueID {
+	case "127":
+		if v := extractFromFormat(rule.InsightFormat, insightTitle)["subject_name"]; v != "" {
+			return base + "?subject_name=" + url.QueryEscape(v) + tp + "#events/all-events"
+		}
+	case "129":
+		if v := extractFromFormat(rule.InsightFormat, insightTitle)["aggregation_key"]; v != "" {
+			return base + "?eventAggregationKey=" + url.QueryEscape(v) + "&eventStatus=FIRING" + tp + "#events/all-events"
+		}
 	}
 
 	status := getFilterValue(rule, "status")
@@ -243,6 +336,11 @@ func computeCloudRedirectURL(rule InsightRule, id string) string {
 
 	cat := string(rule.InsightCategory)
 	uid := rule.UniqueID
+
+	if uid == "114" {
+		// missing-tags/labels: the home page scopes this to Low/Medium severity.
+		return base + ruleNameParam + "&severity=Low,Medium#optimize/configuration"
+	}
 
 	switch cat {
 	case "Security":
@@ -1136,6 +1234,10 @@ func processTraceAggregationRuleForAccount(ctx *security.RequestContext, rule In
 			slog.Error("Failed to process trace aggregation rule", "rule", rule.UniqueID, "recover", r, "accountId", accountId)
 		}
 	}()
+
+	if !query.TracesConfigured(accountId) {
+		return Insight{}, nil
+	}
 
 	// traces_groupings_v2 only has SQL definitions for the otel_clickhouse and bigquery providers;
 	// running it for any other trace provider produces invalid SQL (e.g. bare p95_latency identifier).

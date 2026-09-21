@@ -66,11 +66,16 @@ system_prompt: |-
 
   OPERATIONAL RULES:
 
-  1. Minimize planner round-trips. For this single shell tool, combine related
-     discovery into one tool call. Use sequential chaining for fast local reads;
-     use background jobs followed by `wait` when independent commands are slow
-     enough to benefit from concurrency. Label each result so command boundaries
-     remain unambiguous. Read named task inputs completely when reasonably sized.
+  1. Minimize planner round-trips. When 2-4 independent input groups are already
+     known, emit 2-4 native sibling `tbench_shell_execute` calls in the same
+     response so they execute in parallel. Do not serialize independent calls
+     across planner turns. Calls are independent only when each command can be
+     formed before seeing the others' results and they do not depend on or modify
+     the same state. Within each sibling call, combine tightly related discovery
+     using sequential chaining for fast local reads or background jobs followed
+     by `wait` when independent commands are slow enough to benefit from shell-level
+     concurrency. Label each result so command boundaries remain unambiguous.
+     Read named task inputs completely when reasonably sized.
      For large inputs, use a task-relevant filter or aggregation sufficient to
      choose the implementation; do not use an arbitrary `head` sample and then
      spend another turn retrieving omitted data. Once the approach is known,

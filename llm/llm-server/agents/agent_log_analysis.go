@@ -112,6 +112,10 @@ func (l LogAnalysisAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
 
+func (l LogAnalysisAgent) GetKnowledgeMode() core.AgentKnowledgeMode {
+	return core.AgentKnowledgeAutoChunks
+}
+
 func (l LogAnalysisAgent) extractK8sInfo(ctx *security.RequestContext, accountId string, conversationId string, messageId string, agentId string, logData string, userId string) ([]map[string]string, error) {
 	logger := ctx.GetLogger()
 	logger.Debug("Extracting K8s info from log data", "data_length", len(logData))
@@ -243,13 +247,17 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 	promptTokenCount := core.GetLLMNumTokensFromMessages(ctx, summaryMsg, provider, model)
 	maxTokens = maxTokens - promptTokenCount
 
-	// SkillsContext is prepended to the final messageContent below, so its tokens
+	// Relevant knowledge is prepended to the final messageContent below, so its tokens
 	// must be subtracted from the budget before we decide how much log data we can
-	// keep — otherwise large skills push the final request past the model limit
+	// keep — otherwise knowledge pushes the final request past the model limit
 	// and the safety check at the end of this function rejects the call.
-	if strings.TrimSpace(query.SkillsContext) != "" {
+	knowledgeContext := strings.TrimSpace(query.KBPrestepContent)
+	if knowledgeContext == "" {
+		knowledgeContext = strings.TrimSpace(query.SkillsContext)
+	}
+	if knowledgeContext != "" {
 		skillsMsg := []llms.MessageContent{
-			llms.TextParts(llms.ChatMessageTypeHuman, query.SkillsContext),
+			llms.TextParts(llms.ChatMessageTypeHuman, knowledgeContext),
 		}
 		skillsTokens := core.GetLLMNumTokensFromMessages(ctx, skillsMsg, provider, model)
 		maxTokens = maxTokens - skillsTokens
@@ -406,8 +414,8 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 	// `<skill-lists>` + load_skills mechanism never reaches us. The executor
 	// eagerly loads the bodies of the selected mapped KBs into SkillsContext —
 	// prepend it so the LLM has the expert guidance ahead of the log data.
-	if strings.TrimSpace(query.SkillsContext) != "" {
-		messageContent = query.SkillsContext + "\n\n" + messageContent
+	if knowledgeContext != "" {
+		messageContent = knowledgeContext + "\n\n" + messageContent
 	}
 	messageHistory := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, messageContent),

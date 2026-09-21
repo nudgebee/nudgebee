@@ -207,6 +207,21 @@ func TestBuildPrometheusWorkloadQueries_DeploymentResourceMetrics(t *testing.T) 
 			expected: `sum(kube_pod_container_resource_limits{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="memory"})`,
 		},
 		{
+			name:     "pod_count counts the pods carrying the filtered containers",
+			metric:   "pod_count",
+			expected: `count(count by (pod) (container_memory_working_set_bytes{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",}))`,
+		},
+		{
+			name:     "cpu_usage_max_pod is the busiest pod's rate",
+			metric:   "cpu_usage_max_pod",
+			expected: `max(sum by (pod) (rate(container_cpu_usage_seconds_total{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",}[5m])))`,
+		},
+		{
+			name:     "memory_usage_max_pod is the busiest pod's working set",
+			metric:   "memory_usage_max_pod",
+			expected: `max(sum by (pod) (container_memory_working_set_bytes{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",}))`,
+		},
+		{
 			// Preferred form excludes the pod-level rollup (container!=""); the `or`
 			// fallback drops that constraint for runtimes that only publish the rollup.
 			// `or` is not addition — the fallback is evaluated only when the left side

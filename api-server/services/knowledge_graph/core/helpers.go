@@ -724,6 +724,24 @@ func extractNodeLocation(properties map[string]interface{}) string {
 	return ""
 }
 
+// externalNamespaceSentinel is the placeholder the flow producers (eBPF, traces) stamp on
+// endpoints that live outside the cluster — it is not a real K8s namespace, so it must never
+// be surfaced as one.
+const externalNamespaceSentinel = "external"
+
+// extractNodeNamespace returns the K8s namespace of a namespaced resource, used by the UI as
+// the K8s counterpart of extractNodeLocation (K8s nodes have no region/zone, so their location
+// is blank). Returns "" for cluster-scoped resources (Cluster, Namespace, Node, PV), for
+// non-K8s nodes, and for the "external" sentinel the flow producers use for out-of-cluster
+// endpoints.
+func extractNodeNamespace(properties map[string]interface{}) string {
+	ns := getNodeProp(properties, "namespace")
+	if ns == externalNamespaceSentinel {
+		return ""
+	}
+	return ns
+}
+
 // knownLanguageLogoIDs are the language keys LangTypeIcon.jsx actually renders. Anything
 // outside this set is not a language — most commonly a non-language app.Type tag (e.g. "http",
 // "Service") that GetPrimaryLanguage falls back to returning verbatim when it can't classify it,
@@ -1034,6 +1052,7 @@ func ConvertKgNodeToKgNodeSlim(kgNode KgNode) KgNodeSlim {
 	role := ""
 	engine := ""
 	location := ""
+	namespace := ""
 	if kgNode.Properties != nil {
 		if nameVal, ok := kgNode.Properties["name"]; ok {
 			name = fmt.Sprintf("%v", nameVal)
@@ -1041,6 +1060,7 @@ func ConvertKgNodeToKgNodeSlim(kgNode KgNode) KgNodeSlim {
 		role = getNodeProp(kgNode.Properties, "role")
 		engine = getNodeProp(kgNode.Properties, "engine")
 		location = extractNodeLocation(kgNode.Properties)
+		namespace = extractNodeNamespace(kgNode.Properties)
 	}
 	return KgNodeSlim{
 		ID:           kgNode.ID,
@@ -1055,6 +1075,7 @@ func ConvertKgNodeToKgNodeSlim(kgNode KgNode) KgNodeSlim {
 		Role:         role,
 		Engine:       engine,
 		Location:     location,
+		Namespace:    namespace,
 	}
 }
 

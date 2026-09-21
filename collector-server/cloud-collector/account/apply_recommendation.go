@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
@@ -44,6 +45,22 @@ func ApplyRecommendation(ctx *security.RequestContext, accountId string, recomme
 	// Call the cloud provider's ApplyRecommendation method
 	err = cloudProvider.ApplyRecommendation(cloudCtx, account, recommendation)
 	if err != nil {
+		// An AsyncInitiatedError is a success signal, not a failure: the provider kicked
+		// off an asynchronous operation (e.g. EBS ModifyVolume) that completes in the
+		// background.
+		var asyncErr *providers.AsyncInitiatedError
+		if errors.As(err, &asyncErr) {
+			ctx.GetLogger().Info("Recommendation apply initiated asynchronously",
+				"ruleName", recommendation.RuleName,
+				"resourceId", recommendation.ResourceId,
+				"service", recommendation.ResourceServiceName)
+			return ApplyRecommendationResponse{
+				Success:         true,
+				Message:         asyncErr.Message,
+				ResourceCreated: false,
+			}, nil
+		}
+
 		ctx.GetLogger().Error("Failed to apply recommendation",
 			"error", err,
 			"ruleName", recommendation.RuleName,

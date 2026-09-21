@@ -531,6 +531,7 @@ const CloudOptimizeRecommendationsTable = (props: {
           <DsDropdownMenu
             align='end'
             size='sm'
+            disablePortal={false}
             items={menuItemsConfig.map((m: any) => ({
               id: `optimize-action-${item.id}-${m.id}`,
               label: m.label,

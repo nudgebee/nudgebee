@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, Chip } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Chip } from '@ui/Chip';
 import Tooltip from '@ui/Tooltip';
 import { Check, Warning } from '@mui/icons-material';
 import { Input } from '@ui/Input';
@@ -97,21 +98,11 @@ const DurationField: React.FC<DurationFieldProps> = ({ label, value, onChange, d
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 1 }}>
         {DURATION_PRESETS.slice(0, 4).map((preset) => (
           <Tooltip key={preset.label} title={preset.description || ''}>
-            <Chip
-              label={preset.value as string}
-              size='small'
-              onClick={() => handlePresetClick(preset.value as string)}
-              disabled={disabled}
-              sx={{
-                fontSize: 'var(--ds-text-caption)',
-                height: 22,
-                bgcolor: localValue === preset.value ? 'primary.light' : 'var(--ds-green-200)',
-                color: localValue === preset.value ? 'primary.contrastText' : 'var(--ds-brand-500)',
-                '&:hover': {
-                  bgcolor: localValue === preset.value ? 'primary.main' : 'var(--ds-gray-100)',
-                },
-              }}
-            />
+            <Box component='span' sx={{ display: 'inline-flex' }}>
+              <Chip size='sm' selected={localValue === preset.value} onClick={() => handlePresetClick(preset.value as string)} disabled={disabled}>
+                {preset.value as string}
+              </Chip>
+            </Box>
           </Tooltip>
         ))}
       </Box>

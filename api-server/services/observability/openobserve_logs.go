@@ -446,8 +446,8 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 
 	// Skip nulls and blanks: they render as empty rows in the value dropdown, and the
 	// dropdown is the only consumer of this call.
-	sql := fmt.Sprintf(`SELECT %s FROM "%s" WHERE %s IS NOT NULL GROUP BY %s ORDER BY %s LIMIT 100`,
-		col, cfg.LogStream, col, col, col)
+	sql := fmt.Sprintf(`SELECT %s FROM "%s" WHERE %s IS NOT NULL GROUP BY %s ORDER BY %s LIMIT %d`,
+		col, cfg.LogStream, col, col, col, labelValuesPageSize)
 
 	// The label-value dropdown fires before the user has committed a filter, and several
 	// callers omit the window entirely. Without a default the range is 0→0 and OpenObserve

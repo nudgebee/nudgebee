@@ -134,8 +134,13 @@ export function applyAccountFilter(resolved: AccountOption[], filterIds?: string
  * So a selection that no longer resolves is dropped rather than kept, and the
  * panel falls back to the same default it had before anyone picked anything.
  */
-export function effectiveFilterAccount(selected: string, scoped: AccountOption[]): string {
+export function effectiveFilterAccount(selected: string, scoped: AccountOption[], allAccounts = false): string {
   if (selected && scoped.some((a) => a.value === selected)) return selected;
+  // `allAccounts` panels have somewhere better to fall back to than the first
+  // account: all of them. Leaving the picker empty is what makes "no account
+  // selected" mean every account rather than a silent pick of one — and it is
+  // what a viewer clearing the picker gets back to.
+  if (allAccounts) return '';
   return scoped[0]?.value || '';
 }
 
@@ -155,21 +160,29 @@ export interface PanelQueryAccounts {
  * render (Datadog bills per call), and waiting for a choice left the panel
  * showing nothing at all, which reads as broken.
  *
- * `singleCall` is the exception, and it is the query engine: it takes an
- * account_id LIST and answers in one request, so the two reasons for the rule —
- * cost per call, and a chart with N series of the same line — do not apply.
- * Slicing there is not a safeguard but a silent wrong answer: a "spend by
- * account" table scoped to five accounts would show one account's spend under a
- * title that claims all five. Rollup widgets are the whole point of the summary
- * dashboards, so they must see every account they were scoped to.
+ * `allAccounts` is the exception, and two panel kinds take it.
+ *
+ * The query engine takes an account_id LIST and answers in ONE request, so the
+ * two reasons for the rule — cost per call, and a chart with N series of the
+ * same line — do not apply. Slicing there is not a safeguard but a silent wrong
+ * answer: a "spend by account" table scoped to five accounts would show one
+ * account's spend under a title that claims all five. Rollup widgets are the
+ * whole point of the summary dashboards, so they must see every account.
+ *
+ * A stat panel renders one NUMBER per account rather than one line per account,
+ * so "unreadable chart" does not apply either — four numbers in a card is the
+ * answer, and slicing showed one account's number captioned with that account's
+ * name while silently discarding the other three. It still costs one request
+ * per account, which is why this stays a per-type opt-in rather than the rule:
+ * a stat is a handful of instant queries, a timeseries is not.
  *
  * `filterIds` is a list even though the panel picker is single-select, so the
  * multi-account fan-out in usePanelData stays exercised by a one-account panel
  * and this rule does not have to change if the picker ever gains multi-select.
  */
-export function panelQueryAccounts(scoped: AccountOption[], filterIds?: string[], singleCall = false): PanelQueryAccounts {
+export function panelQueryAccounts(scoped: AccountOption[], filterIds?: string[], allAccounts = false): PanelQueryAccounts {
   if (!filterIds || filterIds.length === 0) {
-    if (singleCall) return { accounts: scoped, autoSelected: false };
+    if (allAccounts) return { accounts: scoped, autoSelected: false };
     // Authoring order, so every viewer of the dashboard auto-lands on the same
     // account rather than on whichever one the account list happened to sort
     // first.

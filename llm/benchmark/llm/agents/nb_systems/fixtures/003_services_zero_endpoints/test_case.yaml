@@ -1,0 +1,19 @@
+user_prompt: "which services currently have zero endpoints in namespace app-003?"
+
+expected_output:
+  - The response must identify "orphan-service" as the service with zero endpoints — its selector (app=orphan-backend) matches no running pods.
+  - The response should not incorrectly flag "healthy-service" as having zero endpoints, since it has a matching, ready backend pod.
+
+before_test: |
+  set -e
+  kubectl create namespace app-003 || true
+  kubectl label namespace app-003 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n app-003
+  kubectl wait --for=condition=ready pod -l app=healthy-backend -n app-003 --timeout=60s
+
+after_test: |
+  kubectl delete namespace app-003 || true
+
+tags:
+  - kubernetes
+  - orchestrator

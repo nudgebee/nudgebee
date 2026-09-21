@@ -264,7 +264,7 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
   return (
     <BCortexFlagContext.Provider value={flagContextValue}>
       <Modal
-        width='xl'
+        width='lg'
         title={'Settings'}
         open={open}
         handleClose={handleClose}
@@ -274,6 +274,11 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
           overflowY: 'auto',
           overflowX: 'hidden',
           padding: '0px',
+        }}
+        sx={{
+          // Fixed height so the dialog does not resize between tabs -- Soul is a
+          // few fields, Model Pricing is a long table.
+          '& .MuiPaper-root': { height: '90vh' },
         }}
       >
         <Box
@@ -293,12 +298,12 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
               onChange={(next) => setTypeSelected(next)}
               smallSize
               behavior='filter'
-              variant='secondary'
+              variant='primary'
               ariaLabel='Settings'
             />
           )}
         </Box>
-        <Box sx={{ padding: `0px ${ds.space[5]}` }}>
+        <Box sx={{ padding: `0px ${ds.space[5]} ${ds.space[5]}` }}>
           {typeSelected == 'agents' ? (
             <ListAgents
               accountId={accountId}

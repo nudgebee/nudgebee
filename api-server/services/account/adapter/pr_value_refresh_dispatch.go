@@ -92,7 +92,7 @@ func DispatchPRValueRefresh(
 	if resolution.CreatedAt != nil {
 		createdAt = *resolution.CreatedAt
 	}
-	followupID, claimed, err := claimPRFollowupForValueRefresh(dbms, meta.PRURL, tenantID, createdAt)
+	followupID, addressedComments, claimed, err := claimPRFollowupForValueRefresh(dbms, meta.PRURL, tenantID, createdAt)
 	if err != nil {
 		recordValueRefreshFailure(dbms, resolution.Id, "failed to claim the pull request for updating: "+err.Error())
 		onDone(ValueRefreshFailed, "failed to claim the pull request for updating: "+err.Error())
@@ -107,7 +107,7 @@ func DispatchPRValueRefresh(
 		return
 	}
 
-	chatRequest := buildPRFollowupChatRequest(meta, gitToken, prompt)
+	chatRequest := buildPRFollowupChatRequest(meta, gitToken, prompt, addressedComments)
 
 	reqCtx := security.NewRequestContext(ctx.GetContext(), ctx.GetSecurityContext(), ctx.GetLogger(), nil, nil)
 
@@ -269,10 +269,14 @@ func recordValueRefreshFailure(dbms *database.DatabaseManager, resolutionID, rea
 // here (no CTE needed) — Postgres serialises concurrent UPDATEs on the same
 // row, so a second claim always re-evaluates the WHERE against the first
 // claim's committed result.
-func claimPRFollowupForValueRefresh(dbms *database.DatabaseManager, prURL, tenantID string, createdAt time.Time) (followupID string, claimed bool, err error) {
-	followupID, err = findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
+//
+// Also returns addressed_comments (#36865): a value refresh runs the same
+// comment-gathering followup as the review loop, so it needs the same fallback
+// skip set.
+func claimPRFollowupForValueRefresh(dbms *database.DatabaseManager, prURL, tenantID string, createdAt time.Time) (followupID string, addressed json.RawMessage, claimed bool, err error) {
+	followupID, addressed, err = findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
 	if err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
 	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
 	defer cancel()
@@ -281,10 +285,10 @@ func claimPRFollowupForValueRefresh(dbms *database.DatabaseManager, prURL, tenan
 		 WHERE id = $1 AND pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable')`,
 		followupID)
 	if err != nil {
-		return followupID, false, err
+		return followupID, addressed, false, err
 	}
 	n, _ := res.RowsAffected()
-	return followupID, n > 0, nil
+	return followupID, addressed, n > 0, nil
 }
 
 // releasePRFollowupClaim hands the pr_followup mutex back to 'needs_followup'

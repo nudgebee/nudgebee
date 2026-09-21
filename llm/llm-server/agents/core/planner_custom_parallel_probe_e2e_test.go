@@ -17,8 +17,8 @@ import (
 
 // TestCustomPlanner_SameToolSiblingActionsProbe isolates custom-planner
 // decomposition from tool execution. It makes one paid planner generation and
-// stops before running any command. All three evidence inputs are known, read-only,
-// and independent; returning one action therefore identifies planner generation
+// stops before running any command. All three evidence inputs are known,
+// non-conflicting, and independent; returning one action therefore identifies planner generation
 // as the serialization boundary rather than discovery, the executor, or the shell
 // adapter.
 //
@@ -28,8 +28,8 @@ import (
 //	RUN_LIVE_PLANNER_PROBES=1 TEST_ACCOUNT=<id> TEST_USER=<id> TEST_TENANT=<id> \
 //	  go test -tags=e2e -run TestCustomPlanner_SameToolSiblingActionsProbe -v ./agents/core
 func TestCustomPlanner_SameToolSiblingActionsProbe(t *testing.T) {
-	const query = `Investigate the synthetic service slowdown. The environment is already known. Independently read and summarize /tmp/probe-metrics.json, /tmp/probe-logs.json, and /tmp/probe-traces.json. Use one bounded read-only command per evidence source, run independent work in parallel, and do not modify files.`
-	const instructions = `You are a general-purpose terminal investigation agent. Use only orca_shell_execute. The shell input is raw text. Run independent read-only evidence checks in parallel and keep each result bounded.`
+	const query = `Investigate the synthetic service slowdown. The environment is already known. Independently inspect and summarize /tmp/probe-metrics.json, /tmp/probe-logs.json, and /tmp/probe-traces.json. Use one bounded command per evidence source, run independent work in parallel, and do not modify files.`
+	const instructions = `You are a general-purpose terminal investigation agent. Use only orca_shell_execute. The shell input is raw text. Run independent, non-conflicting evidence checks in parallel and keep each result bounded.`
 
 	planner, ctx := newCustomParallelPlannerProbe(t, query, instructions)
 	assertCustomParallelProbe(t, planner, ctx, query, nil, true)
@@ -80,7 +80,7 @@ func testCustomPostDiscoveryDecompositionProbe(t *testing.T, react4 bool) {
 			ToolID:    "probe-discovery",
 			DisplayID: "E1",
 		},
-		Observation: `Environment: Linux; working directory: /app. The requested 30-minute interval is resolved. Read-only bounded telemetry snapshots are available at /tmp/probe-metrics.json, /tmp/probe-logs.json, and /tmp/probe-traces.json. Each file can be queried independently with standard non-interactive shell commands.`,
+		Observation: `Environment: Linux; working directory: /app. The requested 30-minute interval is resolved. Bounded telemetry snapshots are available at /tmp/probe-metrics.json, /tmp/probe-logs.json, and /tmp/probe-traces.json. Each file can be queried independently with standard non-interactive shell commands.`,
 		Status:      ToolStatusSuccess,
 	}
 
@@ -150,7 +150,7 @@ type customParallelProbeShellTool struct{}
 
 func (customParallelProbeShellTool) Name() string { return "orca_shell_execute" }
 func (customParallelProbeShellTool) Description() string {
-	return "Execute one raw non-interactive shell command in the benchmark environment. Use the command field. Independent read-only calls may run in parallel."
+	return "Execute one raw non-interactive shell command in the benchmark environment. Use the command field. Independent, non-conflicting calls may run in parallel."
 }
 func (customParallelProbeShellTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
 	return toolcore.NBToolResponse{}, nil

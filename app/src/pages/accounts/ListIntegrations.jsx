@@ -133,6 +133,7 @@ const ListIntegrations = ({ integrationName }) => {
     'dynatrace_webhook',
     'solarwinds_webhook',
     'elasticsearch_webhook',
+    'openobserve_webhook',
   ];
   const integrationWebhooks = [
     'pagerduty_webhook',
@@ -148,6 +149,7 @@ const ListIntegrations = ({ integrationName }) => {
     'solarwinds',
     'solarwinds_webhook',
     'elasticsearch_webhook',
+    'openobserve_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];
   const hideConnectionInfo =

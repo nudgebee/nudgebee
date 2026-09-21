@@ -26,7 +26,7 @@ import (
 func trimmedK8sCoreToolNames() []string {
 	names := []string{
 		tools.ToolExecuteKubectlCommand,
-		LogsAgentName,
+		getLogsAgentName(),
 		EventsAgentName,
 		MetricsAgentName,
 		TracesAgentName,
@@ -52,6 +52,9 @@ func trimmedK8sCoreToolNames() []string {
 		// spend questions default-route to this agent (the router reaches finops
 		// only via @mention), and nothing steers the planner to search for it.
 		FinOpsAgentName,
+		// Unmentioned self-awareness questions arrive at the environment
+		// orchestrator. Mount Nubi so its description can route delegation.
+		NudgebeeAgentName,
 		DelegateAgentToolName,
 		SearchToolsToolName,
 		// search_skills preload preserved so the model can query knowledge bases

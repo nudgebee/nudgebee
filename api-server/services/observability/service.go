@@ -31,6 +31,16 @@ type LogSource interface {
 	GetQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (string, error)
 	GetLabelMapping() map[string]string
 	GetSupportedOperators() []string
+	// ProviderRef names the integration this source reads from - the same
+	// (provider, source) pair getLogSource dispatches on.
+	//
+	// Needed because the label mapping is no longer derivable from the type alone: the
+	// integration-level tier lives on a specific integrations row, and one account can
+	// carry several log integrations at once. Every source is a stateless empty struct,
+	// so the pair is a constant per type; the dispatch is 1:1, which
+	// TestProviderRef_MatchesGetLogSource pins so these constants cannot drift from the
+	// switch that produces them.
+	ProviderRef() providerRef
 }
 
 type LogGroupSource interface {
@@ -1133,6 +1143,12 @@ func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fe
 // is a time-range problem handled separately.
 const valueValidationLookback = 7 * 24 * 60 * 60 // seconds
 
+// labelValuesPageSize is the shared page size used by log providers when
+// enumerating field values. Keeping the provider limits and the completeness
+// guard tied to one value prevents a truncated page from being treated as the
+// complete value set.
+const labelValuesPageSize = 1000
+
 // maxLabelValuesToScan caps how many values we pull per label before giving up on value
 // suggestion. High-cardinality labels (pod names, request ids) can have thousands of values;
 // scanning them all wastes latency and tokens, and an equality filter on such a label is
@@ -1143,7 +1159,7 @@ const valueValidationLookback = 7 * 24 * 60 * 60 // seconds
 // size; treating that truncated page as the complete value universe would report a REAL
 // value as unknown — the precise false positive this cap exists to prevent. The binding
 // cap today is Elasticsearch's esLabelValuesTermsSize (elasticsearch_saas.go).
-const maxLabelValuesToScan = 1000
+const maxLabelValuesToScan = labelValuesPageSize
 
 // unknownValueError builds the actionable message returned when a query filters a label to a
 // value the provider has never seen. It names the label and offending value plus the closest
@@ -1166,18 +1182,20 @@ func anyCandidateContainsAll(candidates, segments []string, fold bool) bool {
 // "%auth%" → "auth" — because closestValues would otherwise score the `%` characters
 // themselves. Ranking only: comparing `core` for equality is precisely the false
 // positive the segment-containment rule exists to avoid.
-func unknownPatternValueError(label, pattern, core string, candidates []string) error {
+// noun/providerNoun are parameterized the way unknownLabelError already is, so traces and logs
+// produce the same message in their own vocabulary ("no traces matched … this trace provider").
+func unknownPatternValueError(noun, providerNoun, label, pattern, core string, candidates []string) error {
 	if suggestions := closestValues(core, candidates); len(suggestions) > 0 {
-		return fmt.Errorf("no logs matched: pattern %q for label %q matched none of its known values; closest valid value(s): %v", pattern, label, suggestions)
+		return fmt.Errorf("no %s matched: pattern %q for label %q matched none of its known values; closest valid value(s): %v", noun, pattern, label, suggestions)
 	}
-	return fmt.Errorf("no logs matched: pattern %q for label %q matched no value this log provider has emitted; widen or remove this filter", pattern, label)
+	return fmt.Errorf("no %s matched: pattern %q for label %q matched no value this %s provider has emitted; widen or remove this filter", noun, pattern, label, providerNoun)
 }
 
-func unknownValueError(label, value string, candidates []string) error {
+func unknownValueError(noun, providerNoun, label, value string, candidates []string) error {
 	if suggestions := closestValues(value, candidates); len(suggestions) > 0 {
-		return fmt.Errorf("no logs matched: value %q for label %q not found; closest valid value(s): %v", value, label, suggestions)
+		return fmt.Errorf("no %s matched: value %q for label %q not found; closest valid value(s): %v", noun, value, label, suggestions)
 	}
-	return fmt.Errorf("no logs matched: value %q for label %q was not found for this log provider; verify the value is correct or remove this filter", value, label)
+	return fmt.Errorf("no %s matched: value %q for label %q was not found for this %s provider; verify the value is correct or remove this filter", noun, value, label, providerNoun)
 }
 
 // validateReferencedLabelValues checks, for a query that returned no logs, whether an equality
@@ -1242,12 +1260,12 @@ func validateReferencedLabelValues(ctx *security.RequestContext, source LogSourc
 		for _, want := range referencedValues[label] {
 			if len(want.Segments) > 0 {
 				if !anyCandidateContainsAll(candidates, want.Segments, want.Fold) {
-					return unknownPatternValueError(label, want.Raw, strings.Join(want.Segments, ""), candidates)
+					return unknownPatternValueError("logs", "log", label, want.Raw, strings.Join(want.Segments, ""), candidates)
 				}
 				continue
 			}
 			if _, ok := valueSet[want.Raw]; !ok {
-				return unknownValueError(label, want.Raw, candidates)
+				return unknownValueError("logs", "log", label, want.Raw, candidates)
 			}
 		}
 	}
@@ -1256,10 +1274,110 @@ func validateReferencedLabelValues(ctx *security.RequestContext, source LogSourc
 
 // validateReferencedTraceLabels is the trace counterpart of validateReferencedLabels.
 // It validates against the same authoritative label set FetchTraceLabels exposes — the
-// canonical trace fields unioned with the merged label mapping and any backend-discovered
-// keys — because raw QueryLabels omits the canonical columns (service_name, span_name, …)
-// and would false-positive on them. mergedMapping is the caller's merged trace label
-// mapping. Fails open when live label discovery errors.
+// resolvable canonical trace fields unioned with the merged label mapping and any
+// backend-discovered keys — because raw QueryLabels omits the canonical columns
+// (service_name, span_name, …) and would false-positive on them. mergedMapping is the
+// caller's merged trace label mapping. Fails open when live label discovery errors.
+// CompleteTraceLabelValuesSource marks a TraceSource whose GetLabelValues enumerates a label's
+// values COMPLETELY for the requested window, rather than sampling spans or truncating the page.
+//
+// Only such a source may be used to conclude that a value does NOT exist. A source that samples
+// (Splunk and Dynatrace read a 500-span page then cap at 50 values; Dynatrace additionally probes
+// only the last hour regardless of the request window; OpenObserve caps at 100; GCP samples a
+// ListTraces scan) can legitimately omit a value that is really there, and telling a user their
+// correct filter is wrong is a worse failure than the silent empty result this diagnosis exists to
+// replace. Same reasoning as maxLabelValuesToScan's invariant, applied per source instead of by a
+// single global number — the trace providers' page caps are far below that constant.
+//
+// Sources that return an error or an empty set (Chronosphere, Datadog, the Jaeger stubs) need no
+// marker: the validator already fails open on both.
+type CompleteTraceLabelValuesSource interface {
+	TraceSource
+	// TraceLabelValuesAreComplete is a marker; it is never called for its value.
+	TraceLabelValuesAreComplete()
+}
+
+// validateReferencedTraceLabelValues checks, for a trace query that returned no spans, whether a
+// filter targets a value the provider has never emitted for that field — the trace counterpart of
+// validateReferencedLabelValues. For each referenced field it fetches the real value set over a
+// widened window (see valueValidationLookback) and, if the filtered value is absent, returns an
+// actionable error naming the closest valid value(s). Best-effort throughout: a source that cannot
+// enumerate values completely, discovery errors, empty and truncated value sets all fail open, so a
+// legitimately-empty query is never blocked.
+func validateReferencedTraceLabelValues(ctx *security.RequestContext, source TraceSource, fetchTracesRequest TracesV3Request, referencedValues map[string][]whereFieldValue) error {
+	if len(referencedValues) == 0 {
+		return nil
+	}
+	// A sampling or truncating source cannot prove absence — see CompleteTraceLabelValuesSource.
+	if _, ok := source.(CompleteTraceLabelValuesSource); !ok {
+		return nil
+	}
+
+	lineContent := make(map[string]struct{}, len(lineContentFields))
+	for _, f := range lineContentFields {
+		lineContent[f] = struct{}{}
+	}
+
+	// Widen the window so we probe the field's full value universe, not just the request slice.
+	// StartTime/EndTime are millisecond epoch; valueValidationLookback is in seconds, so scale it.
+	// Floor at the epoch: a negative start is not a wider window but a broken one — ClickHouse's
+	// DateTime is unsigned, so a negative timestamp wraps into the far future and the value set
+	// comes back empty, which fails open and loses the diagnosis this function exists to produce.
+	startTime, endTime := fetchTracesRequest.StartTime, fetchTracesRequest.EndTime
+	if endTime > 0 {
+		if wideStart := endTime - valueValidationLookback*1000; wideStart < startTime {
+			if wideStart < 0 {
+				wideStart = 0
+			}
+			startTime = wideStart
+		}
+	}
+
+	labels := make([]string, 0, len(referencedValues))
+	for label := range referencedValues {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	for _, label := range labels {
+		if _, ok := lineContent[label]; ok {
+			continue
+		}
+		labelValues, err := source.GetLabelValues(ctx, TracesV3LabelValuesRequest{
+			AccountId:      fetchTracesRequest.AccountId,
+			ProviderType:   fetchTracesRequest.ProviderType,
+			ProviderSource: fetchTracesRequest.ProviderSource,
+			Label:          label,
+			StartTime:      startTime,
+			EndTime:        endTime,
+			// Same free-form overrides the trace query used (e.g. the ES index).
+			Request: fetchTracesRequest.Request,
+		})
+		// Unknown field, discovery failure, empty or truncated/high-cardinality value set → fail open.
+		if err != nil || len(labelValues.Values) == 0 || len(labelValues.Values) >= maxLabelValuesToScan {
+			continue
+		}
+		valueSet := make(map[string]struct{}, len(labelValues.Values))
+		candidates := make([]string, len(labelValues.Values))
+		for i, v := range labelValues.Values {
+			valueSet[v] = struct{}{}
+			candidates[i] = v
+		}
+		for _, want := range referencedValues[label] {
+			if len(want.Segments) > 0 {
+				if !anyCandidateContainsAll(candidates, want.Segments, want.Fold) {
+					return unknownPatternValueError("traces", "trace", label, want.Raw, strings.Join(want.Segments, ""), candidates)
+				}
+				continue
+			}
+			if _, ok := valueSet[want.Raw]; !ok {
+				return unknownValueError("traces", "trace", label, want.Raw, candidates)
+			}
+		}
+	}
+	return nil
+}
+
 func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSource, fetchTracesRequest TracesV3Request, referenced map[string]struct{}, mergedMapping map[string]string) error {
 	if len(referenced) == 0 {
 		return nil
@@ -1275,7 +1393,7 @@ func validateReferencedTraceLabels(ctx *security.RequestContext, source TraceSou
 		// Live discovery failed — can't confirm the backend label set; don't block.
 		return nil
 	}
-	authoritative := buildTraceLabels(mergedMapping, discovered)
+	authoritative := buildTraceLabels(mergedMapping, providerDeclaresTraceFields(source), discovered)
 	names := make([]string, len(authoritative))
 	for i, l := range authoritative {
 		names[i] = l.Label
@@ -1738,9 +1856,10 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			_, caps.SupportsAutoQuery = source.(PlaybookQueryGenerator)
-			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
-			// Skip the merge when accountId is empty: with no account the lookup
-			// can only return the static defaults, so there's nothing to merge.
+			// Full canonical to provider merge: provider default, then tenant, account,
+			// provider config and finally the integration's own mapping. Skip the merge
+			// when accountId is empty: with no account the lookup can only return the
+			// provider defaults, so there's nothing to merge.
 			if accountId != "" {
 				caps.LabelMappings = getMergedLabelMapping(ctx, accountId, source)
 			}
@@ -2010,6 +2129,13 @@ type canonicalTraceField struct {
 var canonicalTraceFields = []canonicalTraceField{
 	{"service_name", "string"},
 	{"workload_name", "string"},
+	// Source-side counterpart of destination_workload_namespace below. It was missing while its
+	// destination twin was listed, so it was advertised by no provider — meaning the canonical
+	// path could not filter traces by the namespace the span came FROM, and (once validation is
+	// on) a query using it was told the field does not exist. It is a real column on every
+	// backend that has one: the ClickHouse trace projection, Datadog (kube_namespace),
+	// Dynatrace and New Relic (k8s.namespace.name).
+	{"workload_namespace", "string"},
 	{"span_name", "string"},
 	{"trace_id", "string"},
 	{"duration_ns", "integer"},
@@ -2020,12 +2146,44 @@ var canonicalTraceFields = []canonicalTraceField{
 	{"destination_workload_namespace", "string"},
 }
 
+// TracePassthroughTraceSource is implemented by a source that consumes the canonical
+// trace field names unchanged, so its GetLabelMapping carries convenience aliases only
+// and says nothing about which canonical fields the backend resolves.
+//
+// The marker exists because "publishes a mapping" and "declares its resolvable field
+// set" are different claims that happened to coincide until they did not: ClickHouse
+// gained an alias mapping (`namespace` -> `workload_namespace`) to make those filters
+// rewrite correctly, which silently collapsed its advertised vocabulary from the ten
+// canonical fields to those three alias keys. A source that renames a few names must be
+// able to say so without also claiming it can resolve nothing else.
+type TracePassthroughTraceSource interface {
+	// TraceFieldsArePassthrough reports that the backend accepts the canonical field
+	// names directly, whatever aliases GetLabelMapping additionally defines.
+	TraceFieldsArePassthrough() bool
+}
+
+// providerDeclaresTraceFields reports whether the source declares which canonical fields
+// it resolves. A source that publishes no static mapping has declared nothing, so the
+// full canonical set stays advertised for it; so has one that marks itself passthrough,
+// whose mapping renames names rather than restricting them.
+//
+// Deliberately reads the STATIC mapping, never the merged one. getMergedTraceLabelMapping
+// folds in tenant/account trace_labels overrides, which are additive everywhere else;
+// testing the merged map would let a single override flip a passthrough provider into
+// "declared" mode and collapse its advertised list to that one key.
+func providerDeclaresTraceFields(source TraceSource) bool {
+	if p, ok := source.(TracePassthroughTraceSource); ok && p.TraceFieldsArePassthrough() {
+		return false
+	}
+	return len(source.GetLabelMapping()) > 0
+}
+
 // FetchTraceLabels returns the trace labels usable for the account's resolved trace
-// provider: the always-available canonical trace field set (typed) unioned with the
-// merged label mapping keys (static ∪ tenant ∪ account ∪ dynamic) and, when the source
-// supports it (TraceLabelKeysSource, e.g. otel_clickhouse), the label keys actually
-// present in the backend for the time window. Deduped, canonical-first. Live discovery
-// failures degrade gracefully to the derived set.
+// provider: the canonical trace fields this provider can actually resolve (typed)
+// unioned with the merged label mapping keys (static ∪ tenant ∪ account ∪ dynamic) and,
+// when the source supports it (TraceLabelKeysSource, e.g. otel_clickhouse), the label
+// keys actually present in the backend for the time window. Deduped, canonical-first.
+// Live discovery failures degrade gracefully to the derived set.
 func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelRequest) (TraceLabelsResponse, error) {
 	if request.AccountId == "" {
 		return TraceLabelsResponse{}, fmt.Errorf("account_id is required")
@@ -2053,16 +2211,44 @@ func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelR
 	}
 
 	merged := getMergedTraceLabelMapping(context, request.AccountId, source)
-	return TraceLabelsResponse{Labels: buildTraceLabels(merged, discovered)}, nil
+	return TraceLabelsResponse{Labels: buildTraceLabels(merged, providerDeclaresTraceFields(source), discovered)}, nil
 }
 
-// buildTraceLabels returns the canonical trace field set unioned with the keys of the
+// buildTraceLabels returns the trace field set the caller may filter on for this
+// provider: the canonical fields it can actually RESOLVE, unioned with the keys of the
 // merged label mapping and any backend-discovered labels, deduped and canonical-first.
 // Canonical fields carry their value type in attributes; mapping/discovered keys carry
 // an empty (non-null) attributes object. Pure helper (no I/O) so the union/dedup
 // behaviour is unit-testable.
-func buildTraceLabels(mergedMapping map[string]string, discovered []OutputTraceLabel) []OutputTraceLabel {
+//
+// providerDeclares says whether this provider publishes a static label mapping (see
+// providerDeclaresTraceFields). When it does, that mapping is taken as its statement of
+// what it can resolve and a canonical field is advertised only if the merged mapping
+// contains it or the backend reported it live. When it does not, the provider has said
+// nothing and the full canonical set is advertised as before.
+//
+// Advertising the full vocabulary unconditionally told the trace agent it could filter on
+// fields the backend has never heard of; those filters match nothing and return no error,
+// so "this provider cannot answer that" was reported as "there are no such traces".
+func buildTraceLabels(mergedMapping map[string]string, providerDeclares bool, discovered []OutputTraceLabel) []OutputTraceLabel {
 	seen := make(map[string]struct{})
+	// A provider that publishes no mapping has declared nothing, so every canonical field
+	// stays advertised for it; one that does publish a mapping is taken at its word. The
+	// lookup set is only built in the second case.
+	advertiseCanonical := func(string) bool { return true }
+	if providerDeclares {
+		resolvable := make(map[string]struct{}, len(mergedMapping)+len(discovered))
+		for key := range mergedMapping {
+			resolvable[key] = struct{}{}
+		}
+		for _, d := range discovered {
+			resolvable[d.Label] = struct{}{}
+		}
+		advertiseCanonical = func(name string) bool {
+			_, ok := resolvable[name]
+			return ok
+		}
+	}
 	labels := make([]OutputTraceLabel, 0, len(canonicalTraceFields)+len(mergedMapping)+len(discovered))
 	appendLabel := func(key, typ string) {
 		if key == "" {
@@ -2082,6 +2268,9 @@ func buildTraceLabels(mergedMapping map[string]string, discovered []OutputTraceL
 	}
 
 	for _, field := range canonicalTraceFields {
+		if !advertiseCanonical(field.name) {
+			continue
+		}
 		appendLabel(field.name, field.typ)
 	}
 	// Mapping + discovered keys have no known type — attributes stay {}.
@@ -2186,43 +2375,76 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	return source.CountTraces(context, fetchTracesRequest)
 }
 
-func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Request) (TracesResult, error) {
 	if fetchTracesRequest.AccountId == "" {
-		return nil, fmt.Errorf("account_id is required")
+		return TracesResult{}, fmt.Errorf("account_id is required")
 	}
 
 	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, fetchTracesRequest.AccountId, fetchTracesRequest.ProviderType, "traces", fetchTracesRequest.ProviderSource)
 	if err != nil {
-		return nil, err
+		return TracesResult{}, err
 	}
 
 	if traceProvider == "" {
-		return nil, fmt.Errorf("GetTraces trace provider (trace_provider) is required")
+		return TracesResult{}, fmt.Errorf("GetTraces trace provider (trace_provider) is required")
 	}
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
-		return nil, err
+		return TracesResult{}, err
 	}
 	filteringMap := source.GetLabelMapping()
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	var referencedLabels map[string]struct{}
+	var referencedValues map[string][]whereFieldValue
 	if fetchTracesRequest.ValidateRequest {
 		referencedLabels = map[string]struct{}{}
 		collectWhereFieldNames(fetchTracesRequest.QueryRequest.Where, referencedLabels)
+		referencedValues = map[string][]whereFieldValue{}
+		collectWhereFieldValues(fetchTracesRequest.QueryRequest.Where, referencedValues)
 	}
 
 	traces, err := source.QueryTraces(context, fetchTracesRequest)
+
+	// A trace query that matched nothing — or failed outright — is frequently caused by a
+	// mistyped field NAME (e.g. "namespace" where the provider has "workload_namespace") or a
+	// mistyped VALUE (e.g. workload_name="services-serve"). The caller, notably an LLM agent,
+	// cannot tell which. When the caller opts in via ValidateRequest, run the same ordered
+	// diagnosis logs use and, on a hit, return a 200 with empty Traces and the actionable
+	// message in Suggestion rather than an error: the diagnosis determined what to fix, it
+	// didn't fail. Every check fails open, so a legitimately-empty query falls through.
 	if fetchTracesRequest.ValidateRequest && (err != nil || len(traces) == 0) {
+		logger := context.GetLogger()
+		outcome := "none"
+		defer func() {
+			logger.Info("trace_query_empty_result_diagnosis",
+				"account_id", fetchTracesRequest.AccountId,
+				"provider", traceProvider,
+				"had_backend_error", err != nil,
+				"referenced_labels", len(referencedLabels),
+				"referenced_value_fields", len(referencedValues),
+				"outcome", outcome)
+		}()
+
 		mergedMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId, source)
 		if verr := validateReferencedTraceLabels(context, source, fetchTracesRequest, referencedLabels, mergedMap); verr != nil {
-			return nil, verr
+			outcome = "unknown_label_name"
+			return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error()}, nil
+		}
+		// Value suggestions only apply to a query that ran cleanly but matched nothing. On a
+		// backend error the value-set fetch would be unreliable and the real error is more
+		// useful, so gate this on an empty non-errored result.
+		if err == nil && len(traces) == 0 {
+			if verr := validateReferencedTraceLabelValues(context, source, fetchTracesRequest, referencedValues); verr != nil {
+				outcome = "unknown_label_value"
+				return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: verr.Error()}, nil
+			}
 		}
 	}
 	if err != nil {
-		return nil, err
+		return TracesResult{}, err
 	}
-	return traces, nil
+	return TracesResult{Traces: traces}, nil
 }
 
 // GetRootSpansByTrace resolves the trace source and returns one root span per trace for the

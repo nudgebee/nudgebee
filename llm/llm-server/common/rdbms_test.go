@@ -73,3 +73,25 @@ func TestMaskDBConnectionString(t *testing.T) {
 		})
 	}
 }
+
+func TestRegisterDatabaseManagerHookReplacesCachedManager(t *testing.T) {
+	const name DatabaseManagerType = "hook-replacement-test"
+	t.Cleanup(func() { RegisterDatabaseManagerHook(name, nil) })
+	first := &DatabaseManager{}
+	second := &DatabaseManager{}
+	RegisterDatabaseManagerHook(name, func() (*DatabaseManager, error) { return first, nil })
+	got, err := GetDatabaseManager(name)
+	if err != nil || got != first {
+		t.Fatalf("first lookup = %p, %v; want %p", got, err, first)
+	}
+	RegisterDatabaseManagerHook(name, func() (*DatabaseManager, error) { return second, nil })
+	got, err = GetDatabaseManager(name)
+	if err != nil || got != second {
+		t.Fatalf("replacement lookup = %p, %v; want %p", got, err, second)
+	}
+	RegisterDatabaseManagerHook(name, nil)
+	// An unknown manager name cannot fall back to a real database connection.
+	if _, err := GetDatabaseManager(name); err == nil {
+		t.Fatal("removed hook must not return a cached manager")
+	}
+}

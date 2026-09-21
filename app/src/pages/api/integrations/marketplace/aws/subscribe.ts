@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import AWS from 'aws-sdk';
+import { MarketplaceMeteringClient, ResolveCustomerCommand } from '@aws-sdk/client-marketplace-metering';
 import { v4 as uuidv4 } from 'uuid';
 import { getAccountExistsHtml, getErrorHtml } from '@lib/marketplaceCallbackHtml';
 
@@ -57,10 +57,15 @@ const getHtmlForGuest = (url: string, resolvedCustomerResponse: ResolveCustomerR
   `;
 };
 
-const marketplaceMetering = new AWS.MarketplaceMetering({
+const marketplaceMetering = new MarketplaceMeteringClient({
   region: 'us-east-1',
-  accessKeyId: process.env.AWS_SELLER_ACCESS_KEY,
-  secretAccessKey: process.env.AWS_SELLER_SECRET_KEY,
+  credentials:
+    process.env.AWS_SELLER_ACCESS_KEY && process.env.AWS_SELLER_SECRET_KEY
+      ? {
+          accessKeyId: process.env.AWS_SELLER_ACCESS_KEY,
+          secretAccessKey: process.env.AWS_SELLER_SECRET_KEY,
+        }
+      : undefined,
 });
 
 interface ResolveCustomerResponse {
@@ -90,11 +95,11 @@ function sendErrorResponse(res: NextApiResponse) {
 }
 
 async function resolveCustomer(token: string): Promise<ResolveCustomerResponse> {
-  const params = {
+  const command = new ResolveCustomerCommand({
     RegistrationToken: token,
-  };
+  });
   try {
-    const data = await marketplaceMetering.resolveCustomer(params).promise();
+    const data = await marketplaceMetering.send(command);
     return {
       CustomerIdentifier: data.CustomerIdentifier,
       CustomerAWSAccountId: data.CustomerAWSAccountId,

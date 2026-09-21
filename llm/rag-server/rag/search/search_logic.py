@@ -80,8 +80,8 @@ def _search_single_collection_by_vector(
             # without this the caller has to re-derive ownership by matching text
             # against Postgres, which fails silently and drops the audit row for
             # a document that still reached the prompt.
-            if isinstance(metadata, dict) and not metadata.get("collection"):
-                metadata = {**metadata, "collection": collection_name}
+            if isinstance(metadata, dict):
+                metadata = {**metadata, "collection": collection_name, "retrieval_id": str(point.id)}
             docs.append({"page_content": page_content, "metadata": metadata, "score": normalized_score})
         return docs
     except Exception as e:

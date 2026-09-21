@@ -267,7 +267,7 @@ const DevOpsTimelineMUI = ({ eventId }: { eventId: string }) => {
                       sx={{
                         height: ds.space.mul(0, 10),
                         fontSize: 'var(--ds-text-caption)',
-                        fontFamily: 'poppins',
+                        fontFamily: ds.font.display,
                         fontWeight: 'var(--ds-font-weight-semibold)',
                         color: styles.color === 'grey' ? 'text.primary' : `${styles.color}.dark`,
                         bgcolor: ds.background[100],

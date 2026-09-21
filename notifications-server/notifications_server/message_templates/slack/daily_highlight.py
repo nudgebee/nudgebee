@@ -50,6 +50,7 @@ class Insight(BaseModel):
     type: str
     unique_id: str
     applications: Optional[List[Dict[str, str]]] = None
+    redirect_url: Optional[str] = None
 
 
 class HighlightData(BaseModel):
@@ -106,10 +107,32 @@ def format_rule_name(rule_name: str) -> str:
     return rule_name.replace("_", " ").title()
 
 
+# pod_right_sizing rows are split into two category rows upstream
+# (ml-k8s-server vertical_rightsizing.classify_pod_right_sizing_category):
+# "RightSizing" = requests are set but mis-sized, "Configuration" = no
+# CPU/memory requests set at all. Both collapse to the same rule name in the
+# recap, so tag them to keep the two lines legibly distinct.
+_POD_RIGHT_SIZING_CATEGORY_TAGS = {
+    "RightSizing": "resize requests",
+    "Configuration": "set requests, best practice",
+}
+
+
+def format_recommendation_label(rec: "Recommendation") -> str:
+    """Rule name for display, with a plain-English tag when one rule splits
+    into multiple category rows (currently only pod_right_sizing)."""
+    label = format_rule_name(rec.rule_name)
+    if rec.rule_name == "pod_right_sizing":
+        tag = _POD_RIGHT_SIZING_CATEGORY_TAGS.get(rec.category)
+        if tag:
+            label = f"{label} ({tag})"
+    return label
+
+
 def calculate_trend(current: int, previous: int) -> str:
     """Calculate trend indicator for event counts"""
     if previous == 0:
-        return "(-)"
+        return "(none yesterday)"
 
     diff = previous - current
     if diff > 0:
@@ -119,7 +142,7 @@ def calculate_trend(current: int, previous: int) -> str:
         percentage = (-diff / previous) * 100
         return f"(Up by {-diff}, {percentage:.1f}%)"
     else:
-        return "(-)"
+        return "(no change)"
 
 
 def group_events_by_account(event_rows: List[EventCounts]) -> Dict[str, int]:
@@ -186,11 +209,11 @@ def add_recommendations_blocks(blocks: List[Dict[str, Any]], recommendations: Li
     for rec in sorted_recs:
         if rec.sum_estimated_savings > 0:
             text = (
-                f"• *{rec.count}* {format_rule_name(rec.rule_name)} recommendations – "
+                f"• *{rec.count}* {format_recommendation_label(rec)} recommendations – "
                 f"potential savings: *${rec.sum_estimated_savings:.2f}*/month"
             )
         else:
-            text = f"• *{rec.count}* {format_rule_name(rec.rule_name)} recommendations available"
+            text = f"• *{rec.count}* {format_recommendation_label(rec)} recommendations available"
         blocks.append(create_section_block(text))
 
 

@@ -77,3 +77,39 @@ func TestMergeSystemMessages_NoSystemMessages(t *testing.T) {
 func TestWrapMergeSystemMessages_NilPassthrough(t *testing.T) {
 	assert.Nil(t, wrapMergeSystemMessages(nil))
 }
+
+// TestMergeSystemMessages_SkipsEmptyText: an empty-text system message contributes nothing to the
+// join, so it doesn't leave stray blank lines in the merged prompt.
+func TestMergeSystemMessages_SkipsEmptyText(t *testing.T) {
+	inner := &messageRecordingModel{}
+	w := wrapMergeSystemMessages(inner)
+
+	_, err := w.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "base prompt"),
+		llms.TextParts(llms.ChatMessageTypeSystem, ""),
+		llms.TextParts(llms.ChatMessageTypeSystem, "agent prompt"),
+	})
+	require.NoError(t, err)
+
+	require.Len(t, inner.messages, 1)
+	require.Len(t, inner.messages[0].Parts, 1)
+	assert.Equal(t, "base prompt\n\nagent prompt", inner.messages[0].Parts[0].(llms.TextContent).Text)
+}
+
+// TestMergeSystemMessages_AllEmptyKeepsOnePart: when every merged system message is empty text
+// with no other parts, the merged message still carries one (empty) TextContent part rather than
+// zero — some providers reject a message with no content parts at all.
+func TestMergeSystemMessages_AllEmptyKeepsOnePart(t *testing.T) {
+	inner := &messageRecordingModel{}
+	w := wrapMergeSystemMessages(inner)
+
+	_, err := w.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, ""),
+		llms.TextParts(llms.ChatMessageTypeSystem, ""),
+	})
+	require.NoError(t, err)
+
+	require.Len(t, inner.messages, 1)
+	require.Len(t, inner.messages[0].Parts, 1)
+	assert.Equal(t, "", inner.messages[0].Parts[0].(llms.TextContent).Text)
+}

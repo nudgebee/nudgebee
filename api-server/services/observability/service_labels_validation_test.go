@@ -23,10 +23,19 @@ type fakeLabelSource struct {
 	valuesErr     error
 	lastValuesReq FetchLogLabelValuesRequest
 	lastLabelsReq FetchLogLabelRequest
+	// probeLogs / probeErr are what QueryLogs answers the labelValueExists probe with:
+	// probeLogs non-empty means the backend does hold the value, probeErr means the probe
+	// could not be run. Both must make the diagnosis fail open.
+	probeLogs   []OutputLog
+	probeErr    error
+	probeReqs   []FetchLogRequest
+	probeCalled int
 }
 
-func (f *fakeLabelSource) QueryLogs(*security.RequestContext, FetchLogRequest) ([]OutputLog, error) {
-	return nil, nil
+func (f *fakeLabelSource) QueryLogs(_ *security.RequestContext, req FetchLogRequest) ([]OutputLog, error) {
+	f.probeCalled++
+	f.probeReqs = append(f.probeReqs, req)
+	return f.probeLogs, f.probeErr
 }
 func (f *fakeLabelSource) QueryLabels(_ *security.RequestContext, req FetchLogLabelRequest) ([]OutputLogLabel, error) {
 	f.lastLabelsReq = req
@@ -173,6 +182,14 @@ func TestUnknownReferencedLabels(t *testing.T) {
 type fakeTraceSource struct {
 	labels []OutputTraceLabel
 	err    error
+	// mapping is the source's STATIC label mapping. Empty means the provider has
+	// declared nothing about which canonical fields it resolves, so the full canonical
+	// set stays valid for it (see providerDeclaresTraceFields).
+	mapping map[string]string
+	// values / valuesErr drive GetLabelValues for the value-validation tests.
+	values        map[string][]string
+	valuesErr     error
+	lastValuesReq TracesV3LabelValuesRequest
 }
 
 func (f *fakeTraceSource) QueryTraces(*security.RequestContext, TracesV3Request) ([]common.OpenTelemetryTrace, error) {
@@ -184,8 +201,9 @@ func (f *fakeTraceSource) GetQuery(*security.RequestContext, TracesV3Request) (s
 func (f *fakeTraceSource) CountTraces(*security.RequestContext, TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return common.OpenTelemetryTraceCount{}, nil
 }
-func (f *fakeTraceSource) GetLabelValues(*security.RequestContext, TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
-	return common.OpenTelemetryTraceLabelValues{}, nil
+func (f *fakeTraceSource) GetLabelValues(_ *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
+	f.lastValuesReq = req
+	return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: f.values[req.Label]}, f.valuesErr
 }
 func (f *fakeTraceSource) QueryLabels(*security.RequestContext, FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
 	return f.labels, f.err
@@ -205,7 +223,7 @@ func (f *fakeTraceSource) CountTracesByTrace(*security.RequestContext, TracesV3R
 func (f *fakeTraceSource) QueryTracesHeatmap(*security.RequestContext, TracesHeatMapRequest) ([]common.OpenTelemetryTraceHeatMap, error) {
 	return nil, nil
 }
-func (f *fakeTraceSource) GetLabelMapping() map[string]string { return nil }
+func (f *fakeTraceSource) GetLabelMapping() map[string]string { return f.mapping }
 func (f *fakeTraceSource) GetSupportedOperators() []string    { return nil }
 
 func traceLabelSet(names ...string) []OutputTraceLabel {
@@ -228,11 +246,33 @@ func TestValidateReferencedTraceLabels(t *testing.T) {
 		assert.Contains(t, err.Error(), "trace provider")
 	})
 
-	t.Run("canonical trace field passes without backend discovery", func(t *testing.T) {
-		// service_name is a canonical trace field, so it is valid even though the
-		// backend QueryLabels only returns custom attributes.
+	t.Run("canonical trace field passes for a provider that declares no mapping", func(t *testing.T) {
+		// An empty static mapping means the provider has declared nothing about what it
+		// resolves, so the whole canonical vocabulary stays valid — this is the
+		// passthrough case (ClickHouse, Jaeger, Application Insights).
 		src := &fakeTraceSource{labels: traceLabelSet("app.custom.attr")}
 		assert.NoError(t, validateReferencedTraceLabels(ctx, src, traceReq, refSet("service_name"), nil))
+	})
+
+	t.Run("canonical trace field the provider declares passes without backend discovery", func(t *testing.T) {
+		// service_name is a canonical trace field AND declared by this provider's label
+		// mapping, so it is valid even though the backend QueryLabels only returns
+		// custom attributes.
+		mapping := map[string]string{"service_name": "service_name"}
+		src := &fakeTraceSource{labels: traceLabelSet("app.custom.attr"), mapping: mapping}
+		assert.NoError(t, validateReferencedTraceLabels(ctx, src, traceReq, refSet("service_name"), mapping))
+	})
+
+	t.Run("canonical trace field a declaring provider cannot resolve is rejected", func(t *testing.T) {
+		// The counterpart of the advertising rule in buildTraceLabels. This provider DOES
+		// publish a mapping, and that mapping does not cover duration_ns — so the caller
+		// is told the name is unknown here instead of receiving the empty result that
+		// reads as "there are no slow traces".
+		mapping := map[string]string{"service_name": "service_name"}
+		src := &fakeTraceSource{labels: traceLabelSet("app.custom.attr"), mapping: mapping}
+		err := validateReferencedTraceLabels(ctx, src, traceReq, refSet("duration_ns"), mapping)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duration_ns")
 	})
 
 	t.Run("discovered attribute passes", func(t *testing.T) {

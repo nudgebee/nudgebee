@@ -2,6 +2,8 @@ package observability
 
 import (
 	"encoding/json"
+	"nudgebee/services/common"
+	"nudgebee/services/integrations/core"
 	"nudgebee/services/query"
 	"strconv"
 )
@@ -88,6 +90,9 @@ type FetchLogLabelRequest struct {
 	// queryable fields. See FetchLogLabelsOrIndexFields — it used to mean the
 	// opposite.
 	FetchIndex bool `json:"fetch_index"`
+	// IntegrationConfigValues asks for fields from an unsaved integration
+	// configuration. The API handler authorizes and scopes this override.
+	IntegrationConfigValues []core.IntegrationConfigValue `json:"integration_config_values,omitempty"`
 }
 
 type OutputLogLabel struct {
@@ -376,6 +381,34 @@ type ListProviderCapabilitiesRequest struct {
 	AccountId string `json:"account_id" mapstructure:"account_id" validate:"required"`
 }
 
+// GetLabelMappingRequest is the request for observability_get_label_mapping.
+type GetLabelMappingRequest struct {
+	AccountId string `json:"account_id" mapstructure:"account_id" validate:"required"`
+	// ProviderType is accepted (and today must be "logs" or empty) so the trace
+	// mirror becomes an additive change rather than a contract break.
+	ProviderType string `json:"provider_type" mapstructure:"provider_type"`
+	// Provider / ProviderSource pin the resolution to one integration. Empty means
+	// "the account's default log provider".
+	ProviderSource string `json:"provider_source" mapstructure:"provider_source"`
+	Provider       string `json:"provider" mapstructure:"provider"`
+	// DraftSet distinguishes an intentionally empty draft from no draft.
+	DraftMappings map[string]string `json:"draft_mappings" mapstructure:"draft_mappings"`
+	DraftSet      bool              `json:"draft_set" mapstructure:"draft_set"`
+}
+
+// LabelMappingResponse describes the canonical-to-provider mapping currently in effect.
+type LabelMappingResponse struct {
+	AccountId        string              `json:"account_id"`
+	Provider         string              `json:"provider"`
+	ProviderSource   string              `json:"provider_source"`
+	ProviderType     string              `json:"provider_type"`
+	IntegrationSaved bool                `json:"integration_saved"`
+	DraftApplied     bool                `json:"draft_applied"`
+	TierOrder        []LabelMappingTier  `json:"tier_order"`
+	Fields           []LabelMappingField `json:"fields"`
+	Effective        map[string]string   `json:"effective"`
+}
+
 // ProviderCapabilityEntry is one flat entry in the list_provider_capabilities response.
 type ProviderCapabilityEntry struct {
 	Provider     string               `json:"provider"`
@@ -428,6 +461,13 @@ type RawTraceResult struct {
 // (e.g. a non-clickhouse provider, or a structured query).
 type TracesQueryResult struct {
 	Result *RawTraceResult `json:"result,omitempty"`
+}
+
+// TracesResult is the internal result of a trace query. Suggestion explains an
+// empty result when ValidateRequest is enabled.
+type TracesResult struct {
+	Traces     []common.OpenTelemetryTrace `json:"traces"`
+	Suggestion string                      `json:"suggestion,omitempty"`
 }
 
 type TracesHeatMapRequest struct {

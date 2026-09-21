@@ -9,7 +9,7 @@ const KB_NAME = "auto_kb_e2e_test";
 test.describe("Knowledge Base", () => {
   test.describe.configure({ mode: "serial" });
 
-  test("Clicking Knowledge Base tab API validation", async ({ page }) => {
+  test("Clicking Knowledge Base tab API validation", { tag: ["@dev", "@test", "@smoke", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -33,7 +33,7 @@ test.describe("Knowledge Base", () => {
   });
 
 
-  test("Add Knowledge Base button is visible", async ({ page }) => {
+  test("Add Knowledge Base button is visible", { tag: ["@dev", "@test", "@sanity", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -46,7 +46,7 @@ test.describe("Knowledge Base", () => {
     console.log("Add Knowledge Base button is visible");
   });
 
-  test("Create Knowledge Base and shows success snackbar", async ({ page }) => {
+  test("Create Knowledge Base and shows success snackbar", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -82,7 +82,7 @@ test.describe("Knowledge Base", () => {
   });
 
 
-  test("Hovering info button on KB form shows tooltip", async ({ page }) => {
+  test("Hovering info button on KB form shows tooltip", { tag: ["@dev", "@test", "@sanity", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -100,7 +100,7 @@ test.describe("Knowledge Base", () => {
   });
 
 
-  test("Creating KB with invalid name shows validation error snackbar", async ({ page }) => {
+  test("Creating KB with invalid name shows validation error snackbar", { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -122,7 +122,7 @@ test.describe("Knowledge Base", () => {
   });
 
 
-  test("User tab shows created KB card after ListKnowledgeBases query", async ({ page }) => {
+  test("User tab shows created KB card after ListKnowledgeBases query", { tag: ["@dev", "@test", "@regression", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -148,7 +148,7 @@ test.describe("Knowledge Base", () => {
     console.log("User tab shows created KB after ListKnowledgeBases");
   });
 
-  test("Editing KB-> UpdateKnowledgeBase and shows success snackbar", async ({ page }) => {
+  test("Editing KB-> UpdateKnowledgeBase and shows success snackbar", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -178,7 +178,7 @@ test.describe("Knowledge Base", () => {
   });
 
 
-  test("Three-dot menu Load History option opens history panel", async ({ page }) => {
+  test("Three-dot menu Load History option opens history panel", { tag: ["@dev", "@test", "@sanity", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);
@@ -200,7 +200,7 @@ test.describe("Knowledge Base", () => {
     console.log("Three-dot menu Load History option opens history panel");
   });
 
-  test("Deleting KB -> shows success snackbar", async ({ page }) => {
+  test("Deleting KB -> shows success snackbar", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     const nubi = new NubiLocators(page);
     const kb = new KnowledgeBaseLocators(page);

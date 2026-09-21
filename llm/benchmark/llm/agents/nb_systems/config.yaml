@@ -1,0 +1,14 @@
+# NB Systems agent benchmark configuration.
+#
+# Mixed-routing suite: most fixtures omit `agent:` and go through the
+# orchestrator (agent: k8s_orchestrator below) exactly like a user typing a
+# plain question with no @-mention. A few fixtures set `agent:` to route
+# straight to a specific tool agent instead (see fixtures/*/test_case.yaml).
+#
+# All fixtures score on the final response text, not a specific tool's raw
+# payload — tool_names is empty, same rationale as llm/agents/finops/config.yaml
+# and llm/agents/nubi/config.yaml.
+agent: k8s_orchestrator
+tool_names: []
+prefix_query: true
+max_retries: 2

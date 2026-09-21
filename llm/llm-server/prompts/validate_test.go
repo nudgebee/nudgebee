@@ -98,6 +98,26 @@ func walkPromptFiles(t *testing.T, visit func(promptPath string, promptFile *Pro
 	require.NoError(t, err)
 }
 
+// modelAndVersionFromPath extracts the (model, version) pair processIncludes needs
+// from an embedded prompt path, which is either default/{version}/... or
+// models/{model}/{version}/....
+func modelAndVersionFromPath(promptPath string) (model string, version string, ok bool) {
+	parts := strings.SplitN(promptPath, "/", 4)
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	if parts[0] == "default" {
+		return "default", parts[1], true
+	}
+	if parts[0] == "models" {
+		if len(parts) < 3 {
+			return "", "", false
+		}
+		return parts[1], parts[2], true
+	}
+	return "", "", false
+}
+
 // TestPromptFiles_IdentityMatchesPath asserts the checked redundancy: `name` must
 // equal the filename stem and `category` the parent directory. Identity comes from
 // the path, so a file whose fields disagree with where it lives would be resolvable
@@ -134,12 +154,12 @@ func TestPromptFiles_TemplateVarsDeclared(t *testing.T) {
 	walkPromptFiles(t, func(promptPath string, promptFile *PromptFile) {
 		body := promptFile.Body
 		if len(promptFile.Includes) > 0 {
-			// Paths are {provider}/{version}/{category}/{name}.yaml; processIncludes
-			// needs the first two segments. SplitN caps the work and the guard turns a
-			// malformed path into a readable failure rather than an index panic.
-			parts := strings.SplitN(promptPath, "/", 3)
-			require.Len(t, parts, 3, "%s: expected {provider}/{version}/... path", promptPath)
-			resolved, err := loader.processIncludes(body, parts[0], parts[1], 0)
+			// Paths are default/{version}/{category}/{name}.yaml or
+			// models/{model}/{version}/{category}/{name}.yaml; processIncludes needs
+			// the bare model key ("default" or "{model}") and the version.
+			model, version, ok := modelAndVersionFromPath(promptPath)
+			require.True(t, ok, "%s: expected default/{version}/... or models/{model}/{version}/... path", promptPath)
+			resolved, err := loader.processIncludes(body, model, version, 0)
 			require.NoError(t, err, "%s: includes must resolve", promptPath)
 			body = resolved
 		}

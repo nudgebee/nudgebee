@@ -95,7 +95,7 @@ func (l RecommendationsAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		"Safety renders safety_band ('—' when NULL). ALWAYS include each row's recommendation id — append an Id column (or an id list after the table when the table is wide); callers need the id to act on a recommendation, so never drop it. " +
 		"Fit the first column to the rows: Namespace applies only to Kubernetes recommendations (service = 'kubernetes'). When the rows are cloud-resource recommendations (namespace NULL, service = a cloud service), replace Namespace with Service and render the short service name (AmazonRDS -> RDS, AmazonEC2 -> EC2); when the result set mixes both, show both columns with \"—\" where a value does not apply. " +
 		"Sort rows by estimated_saving descending (nulls last). For a null/zero estimated_saving show \"—\", never \"$0.00\". A negative estimated_saving means resolving it ADDS cost (e.g. growing nearly-full storage) — render it as added cost (e.g. \"+$12/mo cost\"), never as savings. " +
-		"After the table, add one line: the row count and total quantified savings (sum of positive estimated_saving only). Append [recommendation_execute] after the table heading."
+		"After the table, add one line: the row count and total quantified savings (sum of positive estimated_saving only). Append [recommendation_execute] to a column header or cell of the table (in-table placement survives callers that relay only the table)."
 	// Four structurally-distinct examples, one per query shape. They teach the
 	// patterns (explicit columns, status filter, aggregation, financial threshold,
 	// nulls-last savings ordering) the agent generalizes from — not an exhaustive

@@ -8,10 +8,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"nudgebee/code-analysis-agent/common"
 	"nudgebee/code-analysis-agent/config"
@@ -43,6 +45,20 @@ type PRFollowupAgent struct {
 	provider     gitprovider.GitProvider
 }
 
+// AddressedComment is one PR comment a followup run has already answered
+// (#36865). It travels both ways: in on the request as the durable record of
+// what earlier runs did, and out on the result as what this run just did.
+//
+// Source is part of the identity alongside CommentID because issue comments and
+// review submissions are separate GitHub id spaces and can collide — the same
+// reason answeredCommentKey already keys on both.
+type AddressedComment struct {
+	Source      string    `json:"source"`     // "inline" | "issue_comment" | "review_body"
+	CommentID   int64     `json:"comment_id"` // GitHub's numeric comment id
+	Action      string    `json:"action"`     // "fixed" | "acknowledged" | "wont_fix"
+	AddressedAt time.Time `json:"addressed_at"`
+}
+
 // PRFollowupRequest contains all info needed for a followup.
 type PRFollowupRequest struct {
 	RepoURL  string
@@ -50,6 +66,12 @@ type PRFollowupRequest struct {
 	PRNumber int
 	PRURL    string
 	Provider string // "github" or "gitlab"
+	// AddressedComments is what previous runs already answered on this PR, read
+	// from pr_followup.addressed_comments by api-server. A FALLBACK skip source
+	// only — GitHub's resolved-thread and reply-marker state is checked first and
+	// stays authoritative. Empty for a PR with no followup history, or when an
+	// older api-server does not send it.
+	AddressedComments []AddressedComment
 }
 
 // PRFollowupResult is the structured output from a followup execution.
@@ -61,7 +83,12 @@ type PRFollowupResult struct {
 	CommentPosted    bool     `json:"comment_posted"`
 	CIIssuesFixed    []string `json:"ci_issues_fixed"`
 	ReviewsAddressed []string `json:"reviews_addressed"`
-	Error            string   `json:"error,omitempty"`
+	// AddressedComments is the structured counterpart of ReviewsAddressed
+	// (which is display text), recorded so api-server can persist it on
+	// pr_followup (#36865). Appended only after a reply actually landed on
+	// GitHub, so it records what happened rather than what the agent claimed.
+	AddressedComments []AddressedComment `json:"addressed_comments,omitempty"`
+	Error             string             `json:"error,omitempty"`
 	// NoOp signals that the run found nothing actionable (no unaddressed
 	// comments, no CI failures) or the planner ran but produced no observable
 	// change (no commit, no metadata edit, no comment reply sent). The cron
@@ -76,6 +103,11 @@ type PRFollowupResult struct {
 	// surfaces it as followup_unresolved so the otherwise-invisible "couldn't
 	// apply" share of no_ops is measurable. Only meaningful when NoOp is true.
 	Unresolved bool `json:"unresolved,omitempty"`
+	// BaseSynced reports that this run merged the base branch into the PR branch
+	// and pushed it. Observability-only: the cron still classifies the run by
+	// execution_status like any other, this only tags the outcome metric so
+	// base syncs are separable from real fixes.
+	BaseSynced bool `json:"base_synced,omitempty"`
 }
 
 // reviewComment represents a single review comment that needs to be addressed.
@@ -146,16 +178,37 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// and base-relative diffs, but a single-branch followup clone usually lacks
 	// the base ref — without this the agent burns iterations on "unknown
 	// revision" errors. Best-effort; resolveBaseBranch falls back to nothing.
-	if base := a.resolveBaseBranch(repoInfo, prNumber); base != "" {
-		a.ensureBaseRefFetched(base)
+	baseBranch := a.resolveBaseBranch(repoInfo, prNumber)
+	if baseBranch != "" {
+		a.ensureBaseRefFetched(baseBranch)
 	}
+
+	// --- Step 0: Bring the branch up to date with base ---
+	// Runs before the gatherers so a clean merge can short-circuit the whole
+	// run below without paying for a planner pass, and so a conflicted merge is
+	// already staged as work by the time the "is anything actionable?" check
+	// happens. See syncWithBase for why this is a merge and not a rebase.
+	sync := a.syncWithBase(baseBranch, req.Branch)
 
 	// --- Step 1: Gather PR/MR context ---
 	a.logger.Log(common.EventStepStart, fmt.Sprintf("Gathering %s context", mrTerm), map[string]any{"repo": repoInfo.FullPath, "pr_number": req.PRNumber, "branch": req.Branch})
 
+	// What earlier runs already answered, per our own durable record (#36865).
+	// A fallback only: each gatherer still consults GitHub's reply markers and
+	// resolved-thread state first, and those remain authoritative — so a human
+	// who un-resolves a thread gets the comment re-raised, and this set only
+	// covers what GitHub could not tell us (markers past the per_page=100
+	// window, or a lookup that failed open).
+	dbAddressed := addressedCommentKeys(req.AddressedComments)
+	if len(dbAddressed) > 0 {
+		a.logger.Log(common.EventStepStart, "Loaded previously-addressed comments", map[string]any{
+			"count": len(dbAddressed),
+		})
+	}
+
 	prDetails := a.gatherPRDetails(ctx, repoInfo, prNumber)
-	inlineComments, inlineText := a.gatherInlineComments(ctx, repoInfo, prNumber)
-	issueComments, issueText, answeredComments := a.gatherIssueComments(ctx, repoInfo, prNumber)
+	inlineComments, inlineText := a.gatherInlineComments(ctx, repoInfo, prNumber, dbAddressed)
+	issueComments, issueText, answeredComments := a.gatherIssueComments(ctx, repoInfo, prNumber, dbAddressed)
 	reviewBodyComments, reviewBodyText := a.gatherReviewBodyComments(ctx, repoInfo, prNumber, answeredComments)
 	prDiff := a.gatherDiff(ctx, repoInfo, prNumber)
 	ciFailureLogs := a.gatherCIFailureLogs(ctx, repoInfo, prNumber, req.Branch)
@@ -180,7 +233,27 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		commentsText = combined.String()
 	}
 
-	if len(pendingComments) == 0 && ciFailureLogs == "" {
+	// Nothing for the planner to do. A conflicted base merge is the exception:
+	// it is actionable work even with no comments and no CI failures, and it is
+	// already open in the workspace, so it must fall through to the planner
+	// rather than short-circuit (which would strand a half-merged tree).
+	if len(pendingComments) == 0 && ciFailureLogs == "" && !sync.conflicted {
+		if sync.merged {
+			// The branch was behind and the merge landed cleanly. That is a real
+			// change to the PR, so this is a success rather than a no_op — but it
+			// needed no reasoning, so the planner never runs and the whole run
+			// costs zero LLM tokens. The push re-triggers CI; if CI then fails,
+			// the existing check_run webhook dispatches a fresh followup for it.
+			a.logger.Log(common.EventStepComplete, "Base sync was the only work — skipping the planner", map[string]any{
+				"behind_by": sync.behindBy, "commit": sync.commitHash,
+			})
+			return &PRFollowupResult{
+				Success:    true,
+				BaseSynced: true,
+				CommitHash: sync.commitHash,
+				Summary:    fmt.Sprintf("Merged origin/%s into the PR branch (was %d commits behind)", baseBranch, sync.behindBy),
+			}, nil
+		}
 		a.logger.Log(common.EventStepComplete, "No unaddressed comments or CI failures — nothing to do", nil)
 		return &PRFollowupResult{
 			Success: true,
@@ -197,7 +270,7 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	})
 
 	// --- Step 2: Build system prompt ---
-	systemPrompt := a.buildSystemPrompt(repoInfo.FullPath, prNumber, prDetails, prDiff, commentsText, ciFailureLogs, pendingComments)
+	systemPrompt := a.buildSystemPrompt(repoInfo.FullPath, prNumber, prDetails, prDiff, commentsText, ciFailureLogs, pendingComments, baseBranch, sync)
 
 	// --- Step 3: Create tools and ReAct planner ---
 	replaceTool := tools.NewReplaceToolWithWorkspace(a.workspaceDir)
@@ -326,7 +399,25 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// all work every time), so the code does them directly. This also removes
 	// the LLM's opportunity to reach for a destructive git command while
 	// trying to recover from its own stuck commit attempt.
-	if !committed {
+	// A base merge left open by syncWithBase is completed — or abandoned — here,
+	// and deliberately NOT through autoCommitOrDiscard below. That helper
+	// hard-resets any working tree touching more than autoCommitMaxFiles (15)
+	// files; a base merge routinely exceeds that with content git itself
+	// produced, so routing one through it would silently discard the merge and
+	// abort it, leaving the PR as stuck as before.
+	mergeAbandoned, mergeCommitted := false, false
+	if a.mergeInProgress() {
+		var mergeHead string
+		mergeCommitted, mergeHead = a.finalizeMerge(req.Branch)
+		if mergeCommitted {
+			committed = true
+			postHead = mergeHead
+			result.Success = true
+			sync.merged = true
+		} else {
+			mergeAbandoned = true
+		}
+	} else if !committed {
 		var autoCommitted bool
 		autoCommitted, postHead = a.autoCommitOrDiscard(preHead, req.Branch, result.Summary, mrTerm, prNumber)
 		if autoCommitted {
@@ -334,9 +425,16 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			result.Success = true
 		}
 	}
+	result.BaseSynced = sync.merged
 
 	if committed {
-		postHead = a.sanitizeCommitMessage(postHead, result.Summary, mrTerm, prNumber)
+		// Never sanitize a merge commit. sanitizeCommitMessage amends and
+		// force-pushes, and a base sync must never force-push (that is the whole
+		// reason this merges instead of rebasing). Git's own "Merge branch ..."
+		// message is also already a real sentence, so there is nothing to fix.
+		if !mergeCommitted {
+			postHead = a.sanitizeCommitMessage(postHead, result.Summary, mrTerm, prNumber)
+		}
 		result.CommitHash = postHead
 		a.logger.Log(common.EventStepComplete, "Agent committed", map[string]any{
 			"pre_head":  preHead,
@@ -451,6 +549,19 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			} else {
 				repliedCount++
 				result.ReviewsAddressed = append(result.ReviewsAddressed, fmt.Sprintf("#%d: %s", resp.CommentID, resp.Action))
+				// Record it durably (#36865). Deliberately inside the success
+				// branch: a reply that failed to post leaves the comment genuinely
+				// unanswered, and recording it would suppress the retry. Skipped
+				// for a comment we never gathered (empty source) — an entry with no
+				// source cannot be matched back to anything on a later run.
+				if source := commentSource[resp.CommentID]; source != "" {
+					result.AddressedComments = append(result.AddressedComments, AddressedComment{
+						Source:      source,
+						CommentID:   resp.CommentID,
+						Action:      resp.Action,
+						AddressedAt: time.Now().UTC(),
+					})
+				}
 			}
 		}
 		a.logger.Log(common.EventStepComplete, "Posted replies", map[string]any{
@@ -501,10 +612,12 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	if !agentChangedSomething && !result.CommentPosted {
 		result.NoOp = true
 		// Distinguish "couldn't apply" from "nothing to do": if there was
-		// actionable input (review comments or a CI failure) yet we produced no
-		// change, this no_op is really a non-convergence. Observability-only —
-		// the cron still treats it as a counter-neutral no_op.
-		result.Unresolved = len(pendingComments) > 0 || ciFailureLogs != ""
+		// actionable input (review comments, a CI failure, or a base merge the
+		// agent failed to resolve) yet we produced no change, this no_op is
+		// really a non-convergence. Observability-only — the cron still treats
+		// it as a counter-neutral no_op, so the PR stays eligible for a retry
+		// once the conflict is easier or a human resolves it.
+		result.Unresolved = len(pendingComments) > 0 || ciFailureLogs != "" || mergeAbandoned
 	}
 
 	return result, nil
@@ -770,9 +883,7 @@ func (a *PRFollowupAgent) ensureBaseRefFetched(base string) {
 	if base == "" {
 		return
 	}
-	// Reject anything that isn't a plain branch name so the value can't be
-	// coerced into a flag or extra refspec argument.
-	if strings.HasPrefix(base, "-") || strings.ContainsAny(base, " \t:?*[\\^~") || strings.Contains(base, "..") {
+	if !isPlainBranchName(base) {
 		a.logger.Log(common.EventStepFailure, "Skipping base-ref fetch: unsafe branch name", map[string]any{"base": base})
 		return
 	}
@@ -786,6 +897,335 @@ func (a *PRFollowupAgent) ensureBaseRefFetched(base string) {
 		}
 	}
 	a.logger.Log(common.EventStepComplete, "Fetched base ref for safety checks", map[string]any{"base": base})
+}
+
+// safeBranchNameRe allowlists the characters real git ref names use. An
+// allowlist is the right shape here (denying a fixed set of "bad" characters
+// always misses the next one); requiring alnum at both ends also matches
+// git's own ref-format rules (a ref may not start or end with '.', and can
+// never start with '-').
+var safeBranchNameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$`)
+
+// isPlainBranchName rejects anything that isn't a plain branch name, so a value
+// resolved from the provider can't be coerced into a flag (a leading "-") or an
+// extra refspec argument when it is passed to git. There is no shell involved —
+// runCommandInDir uses exec.Command with an argument slice — so this guards
+// git's own argument parsing, not shell metacharacters. ".." is rejected
+// explicitly even though the character class allows it standalone: git
+// forbids it anywhere in a ref name (it collides with range syntax), and the
+// allowlist alone can't express "no consecutive dots."
+func isPlainBranchName(name string) bool {
+	return safeBranchNameRe.MatchString(name) && !strings.Contains(name, "..")
+}
+
+// baseSyncResult reports what syncWithBase did to the PR branch.
+//
+// Exactly one of merged / conflicted / skipReason is meaningful on any given
+// run; behindBy is set whenever the count was readable, including when the
+// answer was zero.
+type baseSyncResult struct {
+	behindBy int
+	// merged means the base merged cleanly AND the merge commit reached the
+	// remote. A local-only merge is never reported as merged — the workspace is
+	// ephemeral, so an unpushed commit is indistinguishable from no commit
+	// (the #36634 lesson that headPushedToRemote exists for).
+	merged     bool
+	commitHash string
+	// conflicted means the merge is still IN PROGRESS in the workspace, with
+	// unmerged paths for the agent to resolve. The caller must reach
+	// finalizeMerge before returning, or the run leaves a half-merged tree.
+	conflicted    bool
+	conflictFiles []string
+	// skipReason names why no merge was attempted (or why one was rolled back).
+	// Empty on both the clean-merge and the conflicted path.
+	skipReason string
+}
+
+// hasMergeBase reports whether HEAD and ref share an ancestor the workspace can
+// actually see. On a shallow clone this is the question that matters: `git
+// merge` fails outright with "refusing to merge unrelated histories" when the
+// common ancestor sits outside the shallow window.
+func (a *PRFollowupAgent) hasMergeBase(ref string) bool {
+	_, err := a.runCommandInDir("git", "merge-base", "HEAD", ref)
+	return err == nil
+}
+
+// ensureMergeBase widens the shallow window until HEAD and origin/<base> share
+// a visible ancestor, and reports whether they do.
+//
+// This is not a defensive nicety — it is load-bearing. The followup workspace is
+// cloned `--depth 50 --branch <head>` (performFollowupAnalysis), and
+// ensureBaseRefFetched brings the base ref in at depth 50 as well. When a PR's
+// fork point is further back than that on either side, no merge base is visible
+// and every merge attempt fails. Deepening is skipped entirely on a complete
+// clone, where a missing merge base means the histories really are unrelated
+// and no amount of fetching will help.
+func (a *PRFollowupAgent) ensureMergeBase(base, branch string) bool {
+	ref := "origin/" + base
+	if a.hasMergeBase(ref) {
+		return true
+	}
+	if shallow, err := a.runCommandInDir("git", "rev-parse", "--is-shallow-repository"); err != nil ||
+		strings.TrimSpace(shallow) != "true" {
+		a.logger.Log(common.EventStepFailure, "No merge base with the base branch and the clone is complete — not a shallow-window problem", map[string]any{"base": base})
+		return false
+	}
+
+	baseRefspec := fmt.Sprintf("%s:refs/remotes/origin/%s", base, base)
+
+	// Round 1: widen both sides to a deeper window. Cheap relative to full
+	// history and sufficient for any PR forked within the last few hundred
+	// commits, which is effectively all of them.
+	_, _ = a.runCommandInDir("git", "fetch", "--no-tags", "--depth", "500", "origin", baseRefspec)
+	_, _ = a.runCommandInDir("git", "fetch", "--no-tags", "--depth", "500", "origin", branch)
+	if a.hasMergeBase(ref) {
+		a.logger.Log(common.EventStepComplete, "Deepened shallow clone to expose a merge base", map[string]any{"base": base, "depth": 500})
+		return true
+	}
+
+	// Round 2: full history. Only reached when the fork point is more than 500
+	// commits back, so the cost is paid on a genuinely long-lived PR.
+	if _, err := a.runCommandInDir("git", "fetch", "--no-tags", "--unshallow", "origin"); err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to unshallow clone while looking for a merge base", map[string]any{"base": base, "error": err.Error()})
+		return false
+	}
+	_, _ = a.runCommandInDir("git", "fetch", "--no-tags", "origin", baseRefspec)
+	if a.hasMergeBase(ref) {
+		a.logger.Log(common.EventStepComplete, "Unshallowed clone to expose a merge base", map[string]any{"base": base})
+		return true
+	}
+	a.logger.Log(common.EventStepFailure, "No merge base with the base branch even after unshallowing", map[string]any{"base": base})
+	return false
+}
+
+// syncWithBase brings the PR branch up to date with its base branch when it has
+// fallen behind, and reports what happened.
+//
+// Why this exists: being out-of-date was not an actionable signal anywhere in
+// the followup subsystem (#36864). extractGithubPRSignal ignores `push`, so a
+// base branch moving forward fires no webhook; and while the hourly cron does
+// still dispatch a followup for the PR, Execute short-circuited to a no_op
+// whenever there were no open comments and no CI failures. An auto-PR with
+// clean CI therefore drifted behind base until it conflicted, and nothing
+// touched it until the 3-day stale retirement.
+//
+// Merge, never rebase. A rebase would need --force-with-lease on every sync,
+// which this agent's own non-negotiable safety rule already forbids whenever a
+// non-bot author appears in origin/<base>..HEAD — i.e. on exactly the PRs a
+// human has pushed to. A merge commit needs no force push and is always safe.
+//
+// Deterministic and outside the LLM loop, for the same reason
+// autoCommitOrDiscard is: the git mechanics are simple and always work, while
+// an LLM asked to run them reaches for destructive recovery commands when its
+// first attempt sticks.
+func (a *PRFollowupAgent) syncWithBase(base, branch string) baseSyncResult {
+	if base == "" || branch == "" {
+		return baseSyncResult{skipReason: "unknown_ref"}
+	}
+	// Both refs reach git as arguments below (fetch refspecs, a push target).
+	// Guard them the same way ensureBaseRefFetched guards the base ref, so a
+	// branch name that looks like a flag can never be parsed as one.
+	if !isPlainBranchName(base) || !isPlainBranchName(branch) {
+		a.logger.Log(common.EventStepFailure, "Skipping base sync: unsafe branch name", map[string]any{"base": base, "branch": branch})
+		return baseSyncResult{skipReason: "unsafe_ref"}
+	}
+	ref := "origin/" + base
+
+	if !a.ensureMergeBase(base, branch) {
+		return baseSyncResult{skipReason: "no_merge_base"}
+	}
+
+	out, err := a.runCommandInDir("git", "rev-list", "--count", "HEAD.."+ref)
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to count commits behind base", map[string]any{"base": base, "error": err.Error()})
+		return baseSyncResult{skipReason: "behind_count_failed"}
+	}
+	behind, convErr := strconv.Atoi(strings.TrimSpace(out))
+	if convErr != nil {
+		return baseSyncResult{skipReason: "behind_count_unparseable"}
+	}
+	if behind == 0 {
+		return baseSyncResult{}
+	}
+
+	a.logger.Log(common.EventStepStart, "PR branch is behind its base — merging base in", map[string]any{
+		"base": base, "behind_by": behind,
+	})
+
+	if _, mergeErr := a.runCommandInDir("git", "merge", "--no-edit", ref); mergeErr != nil {
+		conflicts := a.unmergedPaths()
+		if len(conflicts) == 0 {
+			// Failed for a reason other than conflicts (a dirty tree, a hook, a
+			// bad ref). Leave nothing half-done — a merge state the agent was
+			// never told about would be finalized blindly by finalizeMerge.
+			_, _ = a.runCommandInDir("git", "merge", "--abort")
+			a.logger.Log(common.EventStepFailure, "Base merge failed with no conflicts to resolve — rolled back", map[string]any{
+				"base": base, "error": mergeErr.Error(),
+			})
+			return baseSyncResult{behindBy: behind, skipReason: "merge_failed"}
+		}
+		a.logger.Log(common.EventStepComplete, "Base merge conflicts — handing resolution to the agent", map[string]any{
+			"base": base, "conflict_files": conflicts,
+		})
+		return baseSyncResult{behindBy: behind, conflicted: true, conflictFiles: conflicts}
+	}
+
+	head, pushed := a.pushCurrentHead(branch)
+	if !pushed {
+		return baseSyncResult{behindBy: behind, skipReason: "push_failed"}
+	}
+	a.logger.Log(common.EventStepComplete, "Merged base into the PR branch", map[string]any{
+		"base": base, "behind_by": behind, "commit": head,
+	})
+	return baseSyncResult{behindBy: behind, merged: true, commitHash: head}
+}
+
+// unmergedPaths lists the files git left with conflict markers.
+func (a *PRFollowupAgent) unmergedPaths() []string {
+	out, err := a.runCommandInDir("git", "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// stageResolvedConflicts stages any unmerged file whose content no longer
+// carries a conflict marker. unmergedPaths reports from the git INDEX, not
+// file content — the agent typically resolves conflicts by editing the file
+// directly through the replace/write tools, and a resolution that never runs
+// `git add` afterward is real but still shows up as unresolved. This closes
+// that gap. Best-effort and conservative: a file is staged only when it is
+// unambiguously clean, so a genuinely half-resolved file (still carrying a
+// marker) is left alone and still aborts the merge in finalizeMerge below,
+// exactly as before.
+func (a *PRFollowupAgent) stageResolvedConflicts() {
+	for _, file := range a.unmergedPaths() {
+		content, err := os.ReadFile(filepath.Join(a.workspaceDir, file))
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(content, []byte("<<<<<<<")) ||
+			bytes.Contains(content, []byte("=======")) ||
+			bytes.Contains(content, []byte(">>>>>>>")) {
+			continue
+		}
+		if _, err := a.runCommandInDir("git", "add", file); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to auto-stage a resolved conflict file", err, map[string]any{"file": file})
+			continue
+		}
+		a.logger.Log(common.EventStepComplete, "Auto-staged a resolved conflict file", map[string]any{"file": file})
+	}
+}
+
+// mergeInProgress reports whether a merge started by syncWithBase is still open
+// in the workspace.
+func (a *PRFollowupAgent) mergeInProgress() bool {
+	_, err := a.runCommandInDir("git", "rev-parse", "-q", "--verify", "MERGE_HEAD")
+	return err == nil
+}
+
+// pushCurrentHead pushes HEAD to the PR branch and confirms it reached the
+// remote, returning the pushed SHA.
+//
+// A rejected push means someone else moved the PR branch under us. The recovery
+// is to discard our work and let the next cron tick or webhook redo it against
+// the new tip — never to force-push, which would silently drop whatever they
+// pushed. The reset also matters for correctness downstream: leaving an
+// unpushable commit in the workspace would make postHead != preHead and fool
+// the run into reporting a change that only ever existed locally.
+func (a *PRFollowupAgent) pushCurrentHead(branch string) (head string, ok bool) {
+	if _, err := a.runCommandInDir("git", "push", "origin", "HEAD:"+branch); err != nil {
+		a.logger.Log(common.EventStepFailure, "Push rejected — PR branch moved under us; discarding and deferring to the next run", map[string]any{
+			"branch": branch, "error": err.Error(),
+		})
+		if _, ferr := a.runCommandInDir("git", "fetch", "--no-tags", "origin", branch); ferr == nil {
+			if _, rerr := a.runCommandInDir("git", "reset", "--hard", "origin/"+branch); rerr != nil {
+				a.logger.Error(common.EventStepFailure, "Failed to reset workspace after a rejected push", rerr, map[string]any{"branch": branch})
+			}
+		}
+		return "", false
+	}
+	head, _ = a.runCommandInDir("git", "rev-parse", "HEAD")
+	head = strings.TrimSpace(head)
+	if head == "" || !a.headPushedToRemote(head, branch) {
+		return head, false
+	}
+	return head, true
+}
+
+// finalizeMerge completes or abandons the base merge that syncWithBase left open
+// for the agent to resolve, returning whether a merge commit reached the remote.
+//
+// This deliberately does NOT go through autoCommitOrDiscard. That helper counts
+// `git status --porcelain` lines and hard-resets any tree touching more than
+// autoCommitMaxFiles (15) — a guard against a runaway agent deleting hundreds of
+// unrelated files. A base merge routinely touches more than 15 files with
+// content git itself produced, so routing one through that path would silently
+// discard the merge AND abort it, leaving the PR exactly as stuck as before.
+//
+// If the agent did not resolve everything, the merge is aborted rather than
+// committed: a half-resolved tree still carrying conflict markers must never
+// reach the PR.
+func (a *PRFollowupAgent) finalizeMerge(branch string) (committed bool, head string) {
+	// git reports a path as unmerged from the INDEX, not the file content — the
+	// agent's conflict resolution normally goes through replace/write tools that
+	// edit the file directly, and if it never runs `git add` afterward the
+	// resolution is real but git still shows the path as unresolved. Stage any
+	// unmerged file that no longer carries a conflict marker before the real
+	// check below, so a resolution that's actually correct doesn't get thrown
+	// away because of a missed `git add`.
+	a.stageResolvedConflicts()
+
+	if unresolved := a.unmergedPaths(); len(unresolved) > 0 {
+		a.logger.Log(common.EventStepFailure, "Agent left merge conflicts unresolved — aborting the base merge", map[string]any{
+			"unresolved_files": unresolved,
+		})
+		if _, err := a.runCommandInDir("git", "merge", "--abort"); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to abort the base merge", err, nil)
+		}
+		return false, ""
+	}
+
+	// A failed `git add` means the index itself is unhealthy (a stale
+	// index.lock, a permissions problem). Committing on top of that would
+	// produce a merge commit missing whatever the agent fixed outside the
+	// conflicted files, so abort and let the next tick redo the merge from a
+	// clean workspace rather than push a quietly incomplete merge.
+	if _, err := a.runCommandInDir("git", "add", "-A"); err != nil {
+		a.logger.Error(common.EventStepFailure, "Merge finalize: git add failed — aborting the base merge", err, nil)
+		if _, aerr := a.runCommandInDir("git", "merge", "--abort"); aerr != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to abort the base merge", aerr, nil)
+		}
+		return false, ""
+	}
+	if _, err := a.runCommandInDir("git", "commit", "--no-edit"); err != nil {
+		a.logger.Error(common.EventStepFailure, "Merge finalize: git commit failed — aborting the base merge", err, nil)
+		if _, aerr := a.runCommandInDir("git", "merge", "--abort"); aerr != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to abort the base merge", aerr, nil)
+		}
+		return false, ""
+	}
+
+	head, pushed := a.pushCurrentHead(branch)
+	if !pushed {
+		return false, head
+	}
+	// Record the size. autoCommitMaxFiles deliberately does not apply to a merge
+	// (see the doc comment), so this log is the only signal if a merge ever does
+	// carry an implausible number of files.
+	changed, _ := a.runCommandInDir("git", "diff", "--name-only", "HEAD^", "HEAD")
+	a.logger.Log(common.EventStepComplete, "Resolved base merge conflicts and pushed", map[string]any{
+		"branch":        branch,
+		"commit":        head,
+		"changed_files": len(strings.Fields(changed)),
+	})
+	return true, head
 }
 
 // fetchPRMetaSnapshot returns a string fingerprint of the PR's title and body,
@@ -813,7 +1253,10 @@ func (a *PRFollowupAgent) gatherPRDetails(_ context.Context, repoInfo *gitprovid
 
 // gatherInlineComments fetches review comments and returns unaddressed ones.
 // Returns structured comments for reply tracking and formatted text for the LLM prompt.
-func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string) {
+// dbAddressed is the fallback skip set from pr_followup.addressed_comments
+// (#36865), applied alongside — never instead of — the reply-marker and
+// resolved-thread checks below, both of which stay authoritative.
+func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool) ([]reviewComment, string) {
 	var out string
 	var err error
 	if a.provider == gitprovider.GitProviderGitLab {
@@ -873,8 +1316,9 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 		if c.InReplyToID != nil {
 			continue
 		}
-		// Skip comments we've already replied to, or whose thread is resolved.
-		if repliedCommentIDs[c.ID] || resolvedThreadCommentIDs[c.ID] {
+		// Skip comments we've already replied to, whose thread is resolved, or
+		// that our own durable record says a previous run answered.
+		if inlineCommentAddressed(c.ID, repliedCommentIDs, resolvedThreadCommentIDs, dbAddressed) {
 			continue
 		}
 		// Do not filter by author (e.g. "[bot]" suffix): useful review bots like
@@ -1089,6 +1533,43 @@ func followupReplyMarker(source string, commentID int64) string {
 	return fmt.Sprintf("%s%s:%d -->", followupReplyMarkerPrefix, source, commentID)
 }
 
+// inlineCommentAddressed decides whether one inline review comment has already
+// been dealt with, from the three independent sources that can say so.
+//
+// The ORDER of sources is not the point — any one of them is sufficient — but
+// their RELATIONSHIP is: replied and resolved come from GitHub and are
+// authoritative, while dbAddressed is our own record and is purely additive.
+// It can only cause more skipping, never less, so a comment GitHub reports as
+// open and unanswered still comes back as pending. That is what stops a human
+// un-resolving a thread from being met with permanent silence (#36625).
+//
+// Split out from gatherInlineComments so this invariant is testable without
+// shelling out to gh.
+func inlineCommentAddressed(id int64, replied, resolved map[int64]bool, dbAddressed map[string]bool) bool {
+	return replied[id] || resolved[id] || dbAddressed[answeredCommentKey("inline", id)]
+}
+
+// addressedCommentKeys turns the durable record carried on the request into the
+// lookup the gatherers skip against, keyed exactly like the GitHub-derived
+// answered set so the two compose (#36865).
+//
+// Returns nil for an empty record — a nil map reads as all-false, so every
+// gatherer's skip check is a no-op when there is no history, and behaviour is
+// byte-for-byte what it was before this existed.
+func addressedCommentKeys(addressed []AddressedComment) map[string]bool {
+	if len(addressed) == 0 {
+		return nil
+	}
+	keys := make(map[string]bool, len(addressed))
+	for _, a := range addressed {
+		if a.Source == "" || a.CommentID == 0 {
+			continue
+		}
+		keys[answeredCommentKey(a.Source, a.CommentID)] = true
+	}
+	return keys
+}
+
 // answeredCommentKey is the map key identifying one already-answered comment.
 // Source is part of the key because issue comments and review submissions are
 // separate id spaces on GitHub and can collide.
@@ -1161,8 +1642,17 @@ func (a *PRFollowupAgent) automationCommentMarkers() []string {
 // The third return value is the set of comment keys this PR already has a reply
 // for, extracted from our own comments in the same listing. gatherReviewBodyComments
 // reuses it rather than re-listing, since its replies land here too.
-func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string, map[string]bool) {
-	answered := make(map[string]bool)
+// dbAddressed seeds the answered set from pr_followup.addressed_comments
+// (#36865) — the fallback for what the marker scan below cannot see, because
+// the markers have scrolled past this endpoint's per_page=100 window or the
+// lookup failed. It is a pure addition: GitHub-derived markers are still read
+// and still win where they exist, and the returned map (which
+// gatherReviewBodyComments consumes) carries both sources.
+func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool) ([]reviewComment, string, map[string]bool) {
+	answered := make(map[string]bool, len(dbAddressed))
+	for k := range dbAddressed {
+		answered[k] = true
+	}
 
 	if a.provider == gitprovider.GitProviderGitLab {
 		// GitLab MR notes are a single API; inline comments are already covered
@@ -1419,7 +1909,7 @@ func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitpr
 	return sb.String()
 }
 
-func (a *PRFollowupAgent) buildSystemPrompt(repo, prNumber, prDetails, diff, comments, ciLogs string, pendingComments []reviewComment) string {
+func (a *PRFollowupAgent) buildSystemPrompt(repo, prNumber, prDetails, diff, comments, ciLogs string, pendingComments []reviewComment, baseBranch string, sync baseSyncResult) string {
 	mrTerm := gitprovider.GetMergeRequestTerminology(a.provider)
 	mrFullTerm := gitprovider.GetMergeRequestFullTerminology(a.provider)
 	cliTool := gitprovider.GetCLIToolName(a.provider)
@@ -1449,6 +1939,23 @@ You have access to the repository workspace and can read, modify, and create fil
 
 	if ciLogs != "" {
 		fmt.Fprintf(&sb, "## CI/CD Failure Logs\n%s\n\n", truncateIfNeeded(ciLogs, 10000))
+	}
+
+	if sync.conflicted {
+		fmt.Fprintf(&sb, `## Merge conflicts with %[1]s — resolve these first
+
+This branch had fallen %[2]d commits behind `+"`%[1]s`"+`. `+"`git merge origin/%[1]s`"+` is **already in progress** in your workspace and left conflicts in these files:
+
+%[3]s
+Resolve every one of them:
+
+1. Open each file and reconcile the `+"`<<<<<<<` / `=======` / `>>>>>>>`"+` regions. Keep this PR's intent AND the changes that landed on `+"`%[1]s`"+` — don't resolve by blindly taking one side.
+2. `+"`git add <file>`"+` each resolved file.
+3. Leave it there. **Do not run `+"`git commit`"+`, `+"`git merge --continue`"+`, `+"`git merge --abort`"+`, or any push.** The framework completes the merge commit and pushes it once you finish.
+
+If you cannot resolve a file honestly, leave it conflicted and say so in submit_analysis — the framework will abort the merge rather than push a broken tree. Never delete a file to make a conflict go away.
+
+`, baseBranch, sync.behindBy, formatConflictFileList(sync.conflictFiles))
 	}
 
 	fmt.Fprintf(&sb, `## Your job
@@ -1529,6 +2036,16 @@ Replies should be concrete and short. Skip pleasantries.
 `)
 	}
 
+	return sb.String()
+}
+
+// formatConflictFileList renders conflicted paths as a markdown bullet list for
+// the system prompt.
+func formatConflictFileList(files []string) string {
+	var sb strings.Builder
+	for _, f := range files {
+		fmt.Fprintf(&sb, "- `%s`\n", f)
+	}
 	return sb.String()
 }
 

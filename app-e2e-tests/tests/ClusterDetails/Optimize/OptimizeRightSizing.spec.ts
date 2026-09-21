@@ -31,7 +31,7 @@ async function selectNamespaceAndRandomRow(page: Page, locators: OptimizeTabLoca
 }
 
 
-test("Graphql testing Cluster Details->Optimize-> Right Sizing", async ({ page }, testInfo) => {
+test("Graphql testing Cluster Details->Optimize-> Right Sizing", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);
@@ -48,7 +48,7 @@ test("Graphql testing Cluster Details->Optimize-> Right Sizing", async ({ page }
   );
 });
 
-test("Optimize-> Right Sizing Recommendation Dropdown", async ({ page }, testInfo) => {
+test("Optimize-> Right Sizing Recommendation Dropdown", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@quarantine"] }, async ({ page }, testInfo) => {
   test.setTimeout(180000);
 
   const loginPage = new LoginPage(page);
@@ -68,7 +68,7 @@ test("Optimize-> Right Sizing Recommendation Dropdown", async ({ page }, testInf
   );
 });
 
-test("Optimize-> Right Sizing Recommendation Dropdown -> Resolution", async ({ page }, testInfo) => {
+test("Optimize-> Right Sizing Recommendation Dropdown -> Resolution", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@quarantine"] }, async ({ page }, testInfo) => {
   test.setTimeout(180000);
 
   const loginPage = new LoginPage(page);
@@ -92,7 +92,7 @@ test("Optimize-> Right Sizing Recommendation Dropdown -> Resolution", async ({ p
   );
 });
 
-test("Download CSV from Right Sizing tab", async ({ page }) => {
+test("Download CSV from Right Sizing tab", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);
@@ -110,7 +110,7 @@ test("Download CSV from Right Sizing tab", async ({ page }) => {
   await expect(locators.DownloadCSVSuccessMaggage).toBeVisible();
 });
 
-test("Download Excel from Right Sizing tab", async ({ page }) => {
+test("Download Excel from Right Sizing tab", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

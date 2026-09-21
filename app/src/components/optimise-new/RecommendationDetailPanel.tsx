@@ -1,4 +1,5 @@
-import { Box, Typography, Divider } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Divider } from '@ui/Divider';
 import Tooltip from '@ui/Tooltip';
 import CloseIcon from '@mui/icons-material/Close';
 import LinkIcon from '@mui/icons-material/Link';

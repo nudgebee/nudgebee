@@ -104,7 +104,7 @@ const TriggerSelectorPopup: React.FC<TriggerSelectorPopupProps> = ({ open, onClo
               sx={{
                 fontSize: 'var(--ds-text-title)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
-                fontFamily: 'poppins',
+                fontFamily: 'var(--ds-font-display)',
                 color: colors.text.secondary,
                 letterSpacing: '-0.025em',
               }}
@@ -176,7 +176,7 @@ const TriggerSelectorPopup: React.FC<TriggerSelectorPopupProps> = ({ open, onClo
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: colors.text.secondary,
                     letterSpacing: '-0.015em',
-                    fontFamily: 'poppins',
+                    fontFamily: 'var(--ds-font-display)',
                   }}
                 >
                   {trigger.label}

@@ -179,6 +179,9 @@ export type UserManagementFilter = {
   // Display name + URL-hash fragment (also serves as the routing key).
   name: string;
   fragment: string;
+  // One-line explanation of what the section is for, rendered by the
+  // user-management page under the tab strip.
+  description?: string;
   // Asset reference for the filter icon (passed through to AnchorComponent).
   icon?: unknown;
   betaIcon?: boolean;

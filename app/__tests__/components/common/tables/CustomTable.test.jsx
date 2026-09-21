@@ -283,6 +283,26 @@ describe('CustomTable', () => {
       render(<CustomTable headers={headers} tableData={makeRows(1)} />);
       expect(() => fireEvent.click(screen.getByText('Count'))).not.toThrow();
     });
+
+    // #35789: a right-aligned sortable header used to render the sort caret
+    // after the label unconditionally, so the caret's trailing width pushed
+    // the label text left of the column's right edge — while the values
+    // below had no such trailing element, so they lined up flush right.
+    // Reversing the flex order for right-aligned headers keeps the label's
+    // own edge, not the caret's, flush with the values.
+    it('puts the sort caret before the label for a right-aligned sortable header', () => {
+      const headers = [{ name: 'Count', align: 'right', sortEnabled: true }];
+      render(<CustomTable headers={headers} tableData={makeRows(1)} />);
+      const headerButton = screen.getByText('Count').closest('[role="button"]');
+      expect(getComputedStyle(headerButton).flexDirection).toBe('row-reverse');
+    });
+
+    it('keeps the sort caret after the label for a left-aligned sortable header', () => {
+      const headers = [{ name: 'Count', sortEnabled: true }];
+      render(<CustomTable headers={headers} tableData={makeRows(1)} />);
+      const headerButton = screen.getByText('Count').closest('[role="button"]');
+      expect(getComputedStyle(headerButton).flexDirection).toBe('row');
+    });
   });
 
   // ─── row interaction ─────────────────────────────────────────────────────────
@@ -363,6 +383,28 @@ describe('CustomTable', () => {
       const expandable = { tabs: [{ label: 'Details', value: 0, componentFn: () => <div>Detail</div> }] };
       render(<CustomTable headers={HEADERS} tableData={makeRows(1)} expandable={expandable} />);
       expect(screen.getByLabelText('Expand row')).toBeInTheDocument();
+    });
+
+    it('renders no tab strip when a drawer has a single tab, but still renders its content', () => {
+      const expandable = { tabs: [{ label: 'Details', value: 0, componentFn: () => <div>Detail</div> }] };
+      render(<CustomTable headers={HEADERS} tableData={makeRows(1)} expandable={expandable} />);
+      fireEvent.click(screen.getByLabelText('Expand row'));
+      expect(screen.queryByTestId('custom-tabs')).not.toBeInTheDocument();
+      expect(screen.getByText('Detail')).toBeInTheDocument();
+    });
+
+    it('renders the tab strip when a drawer has more than one tab', () => {
+      const expandable = {
+        tabs: [
+          { label: 'Details', value: 0, componentFn: () => <div>Detail</div> },
+          { label: 'Events', value: 1, componentFn: () => <div>Events body</div> },
+        ],
+      };
+      render(<CustomTable headers={HEADERS} tableData={makeRows(1)} expandable={expandable} />);
+      fireEvent.click(screen.getByLabelText('Expand row'));
+      expect(screen.getByTestId('custom-tabs')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('tab-option-1'));
+      expect(screen.getByText('Events body')).toBeInTheDocument();
     });
   });
 

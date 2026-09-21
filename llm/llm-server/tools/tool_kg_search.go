@@ -41,7 +41,8 @@ func (t KGSearchNodesTool) Description() string {
 		`ContainerRegistry, ContainerImage, Artifact, DNSZone, DNSRecord, CDN, NetworkGateway, PrivateEndpoint, APIGateway, SecretVault, EncryptionKey, MonitoringService, LogAggregator, ServerlessFunction, ManagedCluster, BackupVault, BackupPolicy, PublicIP, SecurityService, EmailService, AIService, ServiceIdentity; ` +
 		`K8sService, Ingress, NetworkPolicy, ConfigMap, K8sSecret, PersistentVolumeClaim, PersistentVolume; ` +
 		`HelmChart, HelmRelease, Configuration, Repository. ` +
-		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure", "labels":"{\"app\":\"x\"}", "account_ids":[...], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query).`
+		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure", "labels":"{\"app\":\"x\"}", "account_ids":["aws-prod"], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query). ` +
+		"`account_ids`" + ` takes account NAMES or UUIDs, never the cloud provider's own account number.`
 }
 
 func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
@@ -71,7 +72,7 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 			},
 			"account_ids": {
 				Type:        core.ToolSchemaTypeArray,
-				Description: `Filter by cloud account IDs (e.g. AWS account numbers). Example: ["123456789012"].`,
+				Description: `Filter by cloud account UUID or friendly account name (case-insensitive). Examples: ["aws-prod"], ["883efbbc-bb2c-404b-9ed9-6b7ecbf6f509"]. NOT the cloud provider's own account number (e.g. a 12-digit AWS account id) — that is not accepted and is usually ambiguous, since one account number can map to several Nudgebee accounts.`,
 				Items:       map[string]any{"type": "string"},
 			},
 			"limit": {

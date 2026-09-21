@@ -15,6 +15,7 @@ import { Modal } from '@ui/Modal';
 import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemplatesModal';
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
+import EventAutomationRunsList from '@components/workflow/components/EventAutomationRunsList';
 import apiWorkflow from '@api1/workflow';
 import { SparklesIconBG } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
@@ -28,7 +29,10 @@ import {
   describeUndo,
   describeActionTitle,
   describeUndoTarget,
+  cardOffersAction,
 } from '@components/k8s/investigate/resolutionStatus';
+import EventRaisePrPanel from '@components/k8s/investigate/cards/EventRaisePrPanel';
+import { ANNOTATIONS } from '@lib/annotationKeys';
 import UndoConfirmDialog from '@components/k8s/investigate/UndoConfirmDialog';
 import RecurrenceSince from '@components/k8s/investigate/RecurrenceSince';
 import apiRecommendations from '@api1/recommendation';
@@ -274,6 +278,19 @@ const REMEDIATION_TYPE_LABELS = {
   Ticket: 'Ticket',
 };
 
+// A command run from the plan carries no card, and the generic "Command" says nothing about what was
+// executed against the cluster — the command is the record. Trimmed only where it would run away
+// with the row; the cap is generous because the operative part of a kubectl line is its tail
+// (`--limits=memory=512Mi`), and cutting at a tweet-length ellipsis loses exactly that.
+const COMMAND_SUMMARY_MAX = 140;
+const commandSummary = (command) => {
+  const text = String(command || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!text) return null;
+  return text.length > COMMAND_SUMMARY_MAX ? `${text.slice(0, COMMAND_SUMMARY_MAX - 1)}…` : text;
+};
+
 const remediationRunLabel = (run, options = []) => {
   const data = typeof run?.data === 'string' ? safeJSONParse(run.data) : run?.data;
   const cardId = data?.data?.card_id;
@@ -283,6 +300,10 @@ const remediationRunLabel = (run, options = []) => {
     // The card is not on this event any more (rules change, evidence ages out); fall back to a
     // readable form of its id rather than showing the raw "MemoryAllocationCard".
     return cardId.replace(/Card$/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
+  }
+  if (run?.type === 'CommandExecution') {
+    const summary = commandSummary(run?.type_reference_id);
+    if (summary) return summary;
   }
   return REMEDIATION_TYPE_LABELS[run?.type] || run?.type || 'Run';
 };
@@ -989,12 +1010,17 @@ const Investigate = () => {
     pollResolutions();
   }, [pollResolutions]);
 
+  // Bumped on every trigger so the in-card runs list refetches; that list polls
+  // itself only while a run is unfinished, so a fresh run needs this nudge.
+  const [automationRunsRefreshKey, setAutomationRunsRefreshKey] = useState(0);
+
   // Called by RunAutomationMenu after a successful trigger. Open a grace window
   // (the InProgress row may not exist yet) and start polling so the new run's
   // status surfaces live.
   const handleAutomationTriggered = useCallback(() => {
     resolutionsPollDeadlineRef.current = Date.now() + EVENT_RESOLUTIONS_POLL_GRACE_MS;
     startResolutionsPoll();
+    setAutomationRunsRefreshKey((n) => n + 1);
   }, [startResolutionsPoll]);
 
   // Loading the page on an event whose workflow is already InProgress (e.g.
@@ -1648,9 +1674,14 @@ const Investigate = () => {
       for (const resolution of eventResolutions) {
         const d = typeof resolution.data === 'string' ? safeJSONParse(resolution.data) : resolution.data;
         const input = d?.data;
-        if (!input || input.card_id) continue;
-        if (cardId === 'MemoryAllocationCard' && input.container_name) matches.push(resolution);
-        else if (cardId?.startsWith('LastDeploymentCard') && input.revert === true && !input.container_name) matches.push(resolution);
+        if (input?.card_id) continue;
+        // An auto-raised PR records the PR itself — {org, repo, pr_url, provider} — with no nested
+        // request under `data`. Requiring one dropped exactly those: the attempt showed up only at
+        // the bottom under History, while the action row still offered to raise a second PR for a
+        // fix that already had one. The "PR raised" banner already attributes them by provider; this
+        // matches it.
+        if (cardId === 'MemoryAllocationCard' && input?.container_name) matches.push(resolution);
+        else if (cardId?.startsWith('LastDeploymentCard') && input?.revert === true && !input?.container_name) matches.push(resolution);
         else if (cardId === 'AskAiCard' && (d?.provider === 'git' || d?.provider === 'github' || d?.provider === 'gitlab')) matches.push(resolution);
       }
     }
@@ -1752,12 +1783,12 @@ const Investigate = () => {
     }
   };
 
-  const shouldShowResolveButton = (option) => {
-    // AskAiCard's event code-fix "Raise PR" is rendered inline under the diff
-    // (EventRaisePrPanel), so it is intentionally excluded from the bottom
-    // "Take action to fix it" bar here.
-    return option?.id !== 'AskAiCard' && (option.resolveButton || option.ResolveComponent) && hasWriteAccess(router.query.accountId);
-  };
+  // AskAiCard's code fix used to be excluded here, back when this fed a "Take action to fix it" bar
+  // in the analysis footer and a second button beside its own diff would have competed with it. That
+  // bar is now a signpost to this tab, so excluding it only hid the most direct fix from the one
+  // place that claims to list them all — and undercounted the badge with it. It still renders under
+  // its diff too; both open the same modal.
+  const shouldShowResolveButton = (option) => cardOffersAction(option) && hasWriteAccess(router.query.accountId);
 
   // How many ways there are to act on this event right now. Drives the tab badge and the
   // signpost at the end of the analysis, so both agree without recomputing the filter.
@@ -1828,15 +1859,12 @@ const Investigate = () => {
   }, [eventResolutions]);
 
   const previousRuns = useMemo(() => {
-    // The newest attempt per card is already rendered on its action row with its state, actor and
-    // time. Repeating it verbatim under History made one attempt look like two.
-    const shownOnActionRow = new Set(
-      matchedOptions
-        .filter(shouldShowResolveButton)
-        .map((option) => getResolutionForCard(option.id)?.id)
-        .filter(Boolean)
-    );
-    const rows = (Array.isArray(eventResolutions) ? eventResolutions : []).filter((run) => !shownOnActionRow.has(run?.id));
+    // Every attempt, including the one an action row is currently showing the state of. Excluding
+    // those kept one attempt from reading as two, but it also meant the chronology was missing
+    // whatever had most recently happened — an event whose only action was a raised PR showed
+    // "History (1)" listing something else entirely, and no sign of the PR. The row answers "where
+    // does this action stand"; this list answers "what has been done to this event, and when".
+    const rows = Array.isArray(eventResolutions) ? eventResolutions : [];
     const grouped = [];
     for (const run of rows) {
       // Prefer the label of the card that offered the action. Without this the same fix reads as
@@ -2359,7 +2387,12 @@ const Investigate = () => {
                                 tooltip='Refresh investigation'
                                 tooltipPlacement='left'
                                 data-testid='refresh-investigation-btn'
-                                disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
+                                disabled={
+                                  !(
+                                    matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted() ||
+                                    matchedOptions.find((o) => o.id === 'AskAiCard')?.isFailed()
+                                  )
+                                }
                                 onClick={() => {
                                   const askAiCard = matchedOptions.find((o) => o.id === 'AskAiCard');
                                   askAiCard?.refreshInvestigation?.();
@@ -2576,6 +2609,64 @@ const Investigate = () => {
                         </TabPanel>
                         <TabPanel value={tabValue} index={3} className='custom-panel'>
                           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[6] }}>
+                            {/* What has already been done, before what can be done next. The only record of
+                                it was History, at the very bottom of the tab under the plan and the
+                                automations — so someone arriving at an event that had already been acted on
+                                read a list of things to try and no sign that any of them had run. */}
+                            {eventResolutions.length > 0 &&
+                              (() => {
+                                // Rows arrive ordered updated_at desc, so the first is the latest attempt.
+                                const latest = eventResolutions[0];
+                                const outcome = describeResolution(latest);
+                                const prLink =
+                                  latest?.type === 'PullRequest' &&
+                                  typeof latest?.type_reference_id === 'string' &&
+                                  /^https?:\/\//.test(latest.type_reference_id)
+                                    ? latest.type_reference_id
+                                    : null;
+                                const earlier = eventResolutions.length - 1;
+                                const captionSx = { fontSize: ds.text.caption, color: ds.gray[600] };
+                                return (
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      flexDirection: 'column',
+                                      gap: ds.space[1],
+                                      p: `${ds.space[3]} ${ds.space[4]}`,
+                                      borderRadius: ds.radius.sm,
+                                      backgroundColor: ds.gray[100],
+                                      border: `1px solid ${ds.gray[200]}`,
+                                    }}
+                                  >
+                                    {/* What ran, then who ran it and when — the two questions "Command · 1m ago"
+                                        left unanswered. A command's own text is the only honest name for it. */}
+                                    <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[2] }}>
+                                      <Text value='Already done' sx={captionSx} />
+                                      <Label tone={outcome.tone} text={outcome.label} size='sm' />
+                                      <Text
+                                        value={remediationRunLabel(latest, matchedOptions)}
+                                        sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, wordBreak: 'break-word' }}
+                                      />
+                                      {prLink && (
+                                        <Link href={prLink} openInNew style={{ fontSize: ds.text.small, whiteSpace: 'nowrap' }}>
+                                          View PR
+                                        </Link>
+                                      )}
+                                    </Box>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[2] }}>
+                                      <Text value={<Datetime value={latest.updated_at || latest.created_at} />} sx={captionSx} />
+                                      {outcome.actor && <Text value={`· ${outcome.actor}`} sx={captionSx} />}
+                                      {/* "Done" alone means dispatched; this says the cluster was read back. */}
+                                      {outcome.verified && <Text value='· change confirmed on the cluster' sx={captionSx} />}
+                                      {/* A pointer to the full chronology below, not a second copy of it. */}
+                                      {earlier > 0 && (
+                                        <Text value={`· +${earlier} earlier ${earlier === 1 ? 'attempt' : 'attempts'} below`} sx={captionSx} />
+                                      )}
+                                    </Box>
+                                  </Box>
+                                );
+                              })()}
+
                             {remediationActionCount === 0 && previousRuns.length === 0 && (
                               <Text value='No fixes are available for this event yet.' sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }} />
                             )}
@@ -2713,6 +2804,20 @@ const Investigate = () => {
                                                 ) : null;
                                               })()}
                                             </>
+                                          ) : resolvableOption.id === 'AskAiCard' ? (
+                                            /* The same panel the analysis renders under the diff, not this card's
+                                               older raise-PR modal: one confirmation step for the code fix, with
+                                               the guidance field, wherever it is started from. */
+                                            <EventRaisePrPanel
+                                              data={resolvableOption.buildResolveData()}
+                                              repoUrl={resolvableOption.aiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
+                                              filePath={
+                                                resolvableOption.aiData?.source_updates?.file_path ||
+                                                resolvableOption.aiData?.file_details?.files?.[0]?.file_path
+                                              }
+                                              gitDiff={resolvableOption.aiData?.source_updates?.gitDiff}
+                                              sx={{ mt: 0 }}
+                                            />
                                           ) : (
                                             <Button
                                               tone='primary'
@@ -2772,6 +2877,14 @@ const Investigate = () => {
                                       />
                                     </Box>
                                   </Box>
+                                  {/* The runs themselves, in the card body: the dropdown badge only said
+                                      how many there were, so reading them meant opening the menu. Each row
+                                      links straight to that execution. */}
+                                  <EventAutomationRunsList
+                                    accountId={row?.cloud_account_id || router.query.accountId}
+                                    eventId={row.id}
+                                    refreshKey={automationRunsRefreshKey}
+                                  />
                                 </Box>
                               </Box>
                             )}
@@ -2970,6 +3083,7 @@ const Investigate = () => {
                                 openNubiChat({
                                   accountId: row.cloud_account_id || router.query.accountId,
                                   sessionId: `event-${row.fingerprint}`,
+                                  eventId: row.id,
                                 });
                               }
                             }}

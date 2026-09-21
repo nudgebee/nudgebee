@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"nudgebee/llm/agents/core"
@@ -10,6 +11,8 @@ import (
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
+
+	"github.com/lib/pq"
 )
 
 // WebhookSubjectExtractorAgentName is the agent that maps an incoming monitoring
@@ -163,9 +166,25 @@ type historicalMappingRow struct {
 	Services string `db:"services"`
 }
 
+// maxHistoricalPatternLines caps how many learned "title -> service" lines reach
+// the system prompt. webhook_subject_mappings is unbounded: the api-server
+// backfill seeds up to 5000 incidents per source and LearnSubjectMapping adds a
+// row for every new raw alert title, forever. Rendering all of them put ~200k
+// tokens of context in front of a one-word classification (16.2M tokens over ~80
+// observed calls), which is what this cap exists to stop.
+const maxHistoricalPatternLines = 200
+
 // historicalPatterns merges the learned title→service mappings across all webhook
 // sources into a deterministic, deduplicated block for the system prompt. Each
 // service historically seen for a title gets its own line.
+//
+// Only the most recently written mappings are kept (see maxHistoricalPatternLines).
+// That is safe because this block is no longer what answers a repeat alert: a title
+// whose learned mappings agree on one service is short-circuited in api-server
+// (core.ResolveSubjectNameViaAgent) and never reaches the LLM at all. What is left
+// for the agent is fuzzy matching of titles it has NOT seen before — and for that,
+// recent examples are the representative ones, so evicting the oldest is the right
+// trade.
 func (a *WebhookSubjectExtractorAgent) historicalPatterns(ctx *security.RequestContext) string {
 	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
 	if err != nil {
@@ -178,37 +197,56 @@ func (a *WebhookSubjectExtractorAgent) historicalPatterns(ctx *security.RequestC
 		return ""
 	}
 
+	// One query across all sources so the cap selects the most recent mappings
+	// overall, rather than the most recent per source. updated_at only moves when a
+	// title learns a service it did not already have, so for the vast majority of
+	// rows — written once, never revised — it is the time the title was first seen.
+	// Ordering by it therefore keeps the newest titles, which is the intent.
+	var rows []historicalMappingRow
+	if err := dbms.Db.Select(&rows,
+		`SELECT title, services FROM webhook_subject_mappings
+		 WHERE tenant_id = $1 AND attr_key = ANY($2)
+		 ORDER BY updated_at DESC, title
+		 LIMIT $3`,
+		tenantId, pq.Array(webhookHistoricalAttrKeys), maxHistoricalPatternLines,
+	); err != nil {
+		ctx.GetLogger().Warn("webhook_subject_extractor: failed to query historical mappings", "error", err)
+		return ""
+	}
+	return renderHistoricalPatterns(rows)
+}
+
+// renderHistoricalPatterns turns mapping rows into the prompt block: one line per
+// (title, service), deduplicated case-insensitively on the title, capped at
+// maxHistoricalPatternLines. The lines are sorted before joining so the rendered
+// block is byte-stable for a given set of rows — a precondition for the
+// account-scoped prompt cache to hit, and the reason the DB's recency ordering is
+// not carried through to the output.
+func renderHistoricalPatterns(rows []historicalMappingRow) string {
 	seen := map[string]bool{}
-	var b strings.Builder
-	for _, key := range webhookHistoricalAttrKeys {
-		var rows []historicalMappingRow
-		// ORDER BY title keeps the rendered block byte-stable across calls —
-		// a precondition for the account-scoped prompt cache to actually hit.
-		if err := dbms.Db.Select(&rows,
-			`SELECT title, services FROM webhook_subject_mappings WHERE tenant_id = $1 AND attr_key = $2 ORDER BY title`,
-			tenantId, key,
-		); err != nil {
-			ctx.GetLogger().Warn("webhook_subject_extractor: failed to query historical mappings", "key", key, "error", err)
+	lines := make([]string, 0, maxHistoricalPatternLines)
+outer:
+	for _, row := range rows {
+		if row.Title == "" || row.Services == "" {
 			continue
 		}
-		for _, row := range rows {
-			if row.Title == "" || row.Services == "" {
+		titleKey := strings.ToLower(row.Title)
+		for _, svc := range strings.Split(row.Services, ",") {
+			svc = strings.TrimSpace(svc)
+			if svc == "" {
 				continue
 			}
-			titleKey := strings.ToLower(row.Title)
-			for _, svc := range strings.Split(row.Services, ",") {
-				svc = strings.TrimSpace(svc)
-				if svc == "" {
-					continue
-				}
-				dedupKey := titleKey + "\x00" + svc
-				if seen[dedupKey] {
-					continue
-				}
-				seen[dedupKey] = true
-				fmt.Fprintf(&b, "- %q -> %q\n", row.Title, svc)
+			dedupKey := titleKey + "\x00" + svc
+			if seen[dedupKey] {
+				continue
+			}
+			seen[dedupKey] = true
+			lines = append(lines, fmt.Sprintf("- %q -> %q\n", row.Title, svc))
+			if len(lines) >= maxHistoricalPatternLines {
+				break outer
 			}
 		}
 	}
-	return b.String()
+	sort.Strings(lines)
+	return strings.Join(lines, "")
 }

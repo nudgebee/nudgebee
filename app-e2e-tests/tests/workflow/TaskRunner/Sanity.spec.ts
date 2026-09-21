@@ -70,7 +70,7 @@ test("Task Runner sanity - login, deep link to #task-runner, verify tab renders 
   console.log("Deep link #task-runner landed on the Task Runner tab");
 });
 
-test("Task Runner sanity - search action by alias, search by category, expand category, no-match empty state, clear search and restore listing", { tag: ["@dev", "@test", "@oss", "@task-runner", "@automation", "@sanity", "@search"] }, async ({ page }) => {
+test("Task Runner sanity - search action by alias, search by category, expand category, no-match empty state, clear search and restore listing", { tag: ["@dev", "@test", "@oss", "@task-runner", "@automation", "@sanity", "@search", "@negative"] }, async ({ page }) => {
   test.setTimeout(120000);
 
   const locators = await openTaskRunner(page);

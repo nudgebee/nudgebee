@@ -204,6 +204,14 @@ describe('panelQueryAccounts', () => {
     expect(panelQueryAccounts([], [])).toEqual({ accounts: [], autoSelected: false });
   });
 
+  it('keeps every account for a stat, which shows one number per account', () => {
+    // A stat renders four numbers in a card, not four lines on a chart, so the
+    // "unreadable" half of the auto-select rule does not apply. Slicing showed
+    // one account's number under that account's name and dropped the rest.
+    const scoped = resolvePanelAccounts({ account_type: 'K8S' }, ACCOUNTS);
+    expect(panelQueryAccounts(scoped, [], true)).toEqual({ accounts: scoped, autoSelected: false });
+  });
+
   it('keeps every account for a datasource that takes them in one call', () => {
     // The query engine answers an account_id LIST in a single request, so the
     // two reasons for auto-selecting — cost per call, and N identical series —

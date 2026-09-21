@@ -36,36 +36,41 @@ type AccountDeleteResponse struct {
 }
 
 type AccountCreateRequest struct {
-	AccountAccess       string         `json:"account_access,omitempty" mapstructure:"account_access" omitempty:"true"`
-	SsmAccess           bool           `json:"ssm_access,omitempty" mapstructure:"ssm_access" omitempty:"true"`
-	AccountEmail        string         `json:"account_email,omitempty" mapstructure:"account_email" omitempty:"true"`
-	AccountEnv          string         `json:"account_env,omitempty" mapstructure:"account_env" omitempty:"true" validate:"omitempty,oneof=prod non_prod"`
-	AccountName         string         `json:"account_name" mapstructure:"account_name" validate:"required"`
-	AccountPurpose      string         `json:"account_purpose,omitempty" mapstructure:"account_purpose" omitempty:"true"`
-	AccountType         string         `json:"account_type,omitempty" mapstructure:"account_type" omitempty:"true"`
-	AccountUrl          string         `json:"account_url,omitempty" mapstructure:"account_url" omitempty:"true"`
-	AssumeRole          string         `json:"assume_role,omitempty" mapstructure:"assume_role" omitempty:"true"`
-	BillingSource       string         `json:"billing_source,omitempty" mapstructure:"billing_source" omitempty:"true"`
-	Budget              float32        `json:"budget,omitempty" mapstructure:"budget" omitempty:"true"`
-	CloudProvider       string         `json:"cloud_provider" mapstructure:"cloud_provider" validate:"required"`
-	CreatedAt           *time.Time     `json:"created_at,omitempty" mapstructure:"created_at" omitempty:"true"`
-	CreatedBy           string         `json:"created_by,omitempty" mapstructure:"created_by" omitempty:"true"`
-	UpdatedBy           string         `json:"updated_by,omitempty" mapstructure:"updated_by" omitempty:"true"`
-	Data                map[string]any `json:"data,omitempty" mapstructure:"data" omitempty:"true"`
-	Region              string         `json:"region,omitempty" mapstructure:"region" omitempty:"true"`
-	StartDate           *time.Time     `json:"start_date,omitempty" mapstructure:"start_date" omitempty:"true"`
-	AccessKey           string         `json:"access_key,omitempty" mapstructure:"access_key" omitempty:"true"`
-	AccessSecret        string         `json:"access_secret,omitempty" mapstructure:"access_secret" omitempty:"true"`
-	Username            string         `json:"username,omitempty" mapstructure:"username" omitempty:"true"`
-	Password            string         `json:"password,omitempty" mapstructure:"password" omitempty:"true"`
-	Port                string         `json:"port,omitempty" mapstructure:"port" omitempty:"true"`
-	AccountNumber       string         `json:"account_number,omitempty" mapstructure:"account_number" omitempty:"true"`
-	Tenant              string         `json:"tenant" mapstructure:"tenant"`
-	AgentAccessKey      string         `json:"agent_access_key,omitempty" mapstructure:"agent_access_key" omitempty:"true"`
-	AgentAccessSecret   string         `json:"agent_access_secret,omitempty" mapstructure:"agent_access_secret" omitempty:"true"`
-	AgentAccessSecretV2 string         `json:"access_secret_v2,omitempty" mapstructure:"access_secret_v2" omitempty:"true"`
-	ExternalId          string         `json:"external_id,omitempty" mapstructure:"external_id" omitempty:"true"`
-	ParentAccountId     string         `json:"parent_account_id,omitempty" mapstructure:"parent_account_id" omitempty:"true"`
+	AccountAccess  string         `json:"account_access,omitempty" mapstructure:"account_access" omitempty:"true"`
+	SsmAccess      bool           `json:"ssm_access,omitempty" mapstructure:"ssm_access" omitempty:"true"`
+	AccountEmail   string         `json:"account_email,omitempty" mapstructure:"account_email" omitempty:"true"`
+	AccountEnv     string         `json:"account_env,omitempty" mapstructure:"account_env" omitempty:"true" validate:"omitempty,oneof=prod non_prod"`
+	AccountName    string         `json:"account_name" mapstructure:"account_name" validate:"required"`
+	AccountPurpose string         `json:"account_purpose,omitempty" mapstructure:"account_purpose" omitempty:"true"`
+	AccountType    string         `json:"account_type,omitempty" mapstructure:"account_type" omitempty:"true"`
+	AccountUrl     string         `json:"account_url,omitempty" mapstructure:"account_url" omitempty:"true"`
+	AssumeRole     string         `json:"assume_role,omitempty" mapstructure:"assume_role" omitempty:"true"`
+	BillingSource  string         `json:"billing_source,omitempty" mapstructure:"billing_source" omitempty:"true"`
+	Budget         float32        `json:"budget,omitempty" mapstructure:"budget" omitempty:"true"`
+	CloudProvider  string         `json:"cloud_provider" mapstructure:"cloud_provider" validate:"required"`
+	CreatedAt      *time.Time     `json:"created_at,omitempty" mapstructure:"created_at" omitempty:"true"`
+	CreatedBy      string         `json:"created_by,omitempty" mapstructure:"created_by" omitempty:"true"`
+	UpdatedBy      string         `json:"updated_by,omitempty" mapstructure:"updated_by" omitempty:"true"`
+	Data           map[string]any `json:"data,omitempty" mapstructure:"data" omitempty:"true"`
+	Region         string         `json:"region,omitempty" mapstructure:"region" omitempty:"true"`
+	// Regions is an optional AWS region allowlist. When set, the collector
+	// crawls exactly these regions instead of discovering them via
+	// ec2:DescribeRegions — which a role scoped with an aws:RequestedRegion
+	// condition denies. Empty means discover, never "no regions".
+	Regions             []string   `json:"regions,omitempty" mapstructure:"regions" omitempty:"true"`
+	StartDate           *time.Time `json:"start_date,omitempty" mapstructure:"start_date" omitempty:"true"`
+	AccessKey           string     `json:"access_key,omitempty" mapstructure:"access_key" omitempty:"true"`
+	AccessSecret        string     `json:"access_secret,omitempty" mapstructure:"access_secret" omitempty:"true"`
+	Username            string     `json:"username,omitempty" mapstructure:"username" omitempty:"true"`
+	Password            string     `json:"password,omitempty" mapstructure:"password" omitempty:"true"`
+	Port                string     `json:"port,omitempty" mapstructure:"port" omitempty:"true"`
+	AccountNumber       string     `json:"account_number,omitempty" mapstructure:"account_number" omitempty:"true"`
+	Tenant              string     `json:"tenant" mapstructure:"tenant"`
+	AgentAccessKey      string     `json:"agent_access_key,omitempty" mapstructure:"agent_access_key" omitempty:"true"`
+	AgentAccessSecret   string     `json:"agent_access_secret,omitempty" mapstructure:"agent_access_secret" omitempty:"true"`
+	AgentAccessSecretV2 string     `json:"access_secret_v2,omitempty" mapstructure:"access_secret_v2" omitempty:"true"`
+	ExternalId          string     `json:"external_id,omitempty" mapstructure:"external_id" omitempty:"true"`
+	ParentAccountId     string     `json:"parent_account_id,omitempty" mapstructure:"parent_account_id" omitempty:"true"`
 }
 
 type RegenerateAgentKeysRequest struct {
@@ -293,6 +298,11 @@ type AccountUpdateRequest struct {
 	AccountName string         `json:"account_name,omitempty" mapstructure:"account_name"`
 	AccountEnv  string         `json:"account_env,omitempty" mapstructure:"account_env" validate:"omitempty,oneof=prod non_prod"`
 	Data        map[string]any `json:"data,omitempty" mapstructure:"data"`
+	// Regions edits the AWS region allowlist. See AccountCreateRequest.Regions.
+	// A pointer so the three cases stay distinguishable: nil leaves the list
+	// untouched, an empty slice clears it (back to auto-discovery), and a
+	// non-empty slice replaces it.
+	Regions *[]string `json:"regions,omitempty" mapstructure:"regions"`
 }
 
 // AccountUpdateResponse returns affected rows count

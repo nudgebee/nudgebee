@@ -81,3 +81,53 @@ func TestNeighbourTypesHaveNoDuplicates(t *testing.T) {
 		seen[nt] = true
 	}
 }
+
+// TestNeighbourTypesIncludeBackendPool is the regression for a pooled load
+// balancer whose service map contained the balancer and nothing else.
+//
+// This allowlist is not a result filter. It reaches discoverBFS as
+// IncludeNodeTypes, which applies it as a per-hop `n.node_type = ANY(...)`
+// predicate, so a type left out does not get dropped from the answer — the walk
+// stops there. A GCP load balancer reaches its instances only through
+// LoadBalancer -> BackendPool -> ComputeInstance, so leaving BackendPool out cut
+// every one of them off at the first hop while the graph itself held the full
+// chain. This was reproduced with active BackendPool nodes carrying ROUTES_TO
+// edges to their instances, none of them reachable from the balancer's evidence.
+// AWS target groups and Azure backend pools map to the same type, so
+// the same hole opens there as soon as either materializes the tier.
+func TestNeighbourTypesIncludeBackendPool(t *testing.T) {
+	if !neighbourTypeSet()[NodeTypeBackendPool] {
+		t.Error("NodeTypeBackendPool missing: the filter runs per hop, so omitting a pass-through tier severs the walk rather than tidying the result")
+	}
+}
+
+// TestServiceMapLevelsReachSecondHop guards the depth the two consumers of this
+// evidence are configured for: triage.MaxDependencyDistance is 4 and
+// triage.maxIncidentHops is 2, and both walk only what this action writes. At
+// one level every distance above 1 is unreachable and those limits are dead
+// config — an ALB alarm's evidence held two nodes while the graph held the
+// instance calling three more.
+func TestServiceMapLevelsReachSecondHop(t *testing.T) {
+	if serviceMapLevels < 2 {
+		t.Errorf("serviceMapLevels = %d: below 2 the incident-grouping hop limit cannot be reached", serviceMapLevels)
+	}
+	// GetMultipleNodeNeighbors clamps above 3; asking for more silently gets 3
+	// and hides the real setting from anyone reading this constant.
+	if serviceMapLevels > 3 {
+		t.Errorf("serviceMapLevels = %d: GetMultipleNodeNeighbors clamps to 3, so this is not the depth that runs", serviceMapLevels)
+	}
+}
+
+// TestServiceMapMaxNodesIsBounded keeps the second level affordable. This block
+// is persisted on every event, and a second hop around a hub — a database with a
+// hundred callers, a node running every pod — is where that goes wrong. The cap
+// has to be large enough that a real dependency chain fits and small enough that
+// a hub falls back to one level instead of writing an enormous block.
+func TestServiceMapMaxNodesIsBounded(t *testing.T) {
+	if serviceMapMaxNodes < 20 {
+		t.Errorf("serviceMapMaxNodes = %d: too small, an ordinary two-hop neighbourhood would fall back to one level", serviceMapMaxNodes)
+	}
+	if serviceMapMaxNodes > 200 {
+		t.Errorf("serviceMapMaxNodes = %d: too large to bound what gets written onto every event", serviceMapMaxNodes)
+	}
+}

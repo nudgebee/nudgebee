@@ -9,6 +9,9 @@ export interface ModelConfig {
   // or 'db:<integration-uuid>'. Supplied by ai_list_models as llm_config_source;
   // clients should echo the value back rather than composing it.
   llm_config_source?: string;
+  // Scopes the turn to an event, so an automation the model triggers gets
+  // tagged back to it and shows up in that event's automation history.
+  event_id?: string;
 }
 
 export interface ConversationAttachment {
@@ -116,10 +119,17 @@ export interface InvestigateRequest {
 
 export interface FollowupRequest {
   account_id: string;
-  query: string;
+  // Required when answering; omitted (or ignored) when resolving via `resolution` instead.
+  query?: string;
   conversation_id: string;
   agent_id: string;
   message_id: string;
+  // Resolves the pending follow-up without answering it. Only 'dismiss' is supported —
+  // soft-skips the question and ends the conversation with a structured marker. A hard
+  // terminate already exists as a separate action (see useLLMInvestigationControl's stop).
+  resolution?: 'dismiss';
+  // Optional user-supplied note recorded with a 'dismiss' resolution. Ignored otherwise.
+  reason?: string;
 }
 
 export type ConversationActiveFilter = 'All' | 'Mine' | 'Saved' | 'Waiting';

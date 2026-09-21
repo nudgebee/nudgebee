@@ -1,4 +1,4 @@
-import { Box, IconButton, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import HistoryIcon from '@mui/icons-material/History';
 import CloseIcon from '@mui/icons-material/Close';
@@ -12,6 +12,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import NubiWatchingIcon from '@shared/NubiWatchingIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import FilterDropdown from '@ui/FilterDropdown';
+import { Button } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
 import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
 import { useTenantBranding, useBrandingConfig } from '@hooks/useTenantBranding';
@@ -522,8 +523,11 @@ const NubiGlobalChat: React.FC = () => {
 
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
         <Tooltip title='New chat' placement='bottom'>
-          <IconButton
-            size='small'
+          <Button
+            tone='ghost'
+            size='sm'
+            composition='icon-only'
+            icon={<AddIcon />}
             onClick={() => {
               // Drop the preloaded conversation too, or the generator would be handed
               // the old session id / query again right after resetting.
@@ -532,38 +536,41 @@ const NubiGlobalChat: React.FC = () => {
             }}
             aria-label='New chat'
             data-testid='nubi-global-chat-new-chat'
-            sx={{ color: ds.brand[500] }}
-          >
-            <AddIcon fontSize='small' />
-          </IconButton>
+          />
         </Tooltip>
         <Tooltip title='Your Chats' placement='bottom'>
-          <IconButton
+          <Button
             ref={historyButtonRef}
-            size='small'
+            tone='ghost'
+            size='sm'
+            composition='icon-only'
+            icon={<HistoryIcon />}
             onClick={() => setHistorySignal((n) => (n ?? 0) + 1)}
             aria-label='Your Chats'
             data-testid='nubi-global-chat-history'
-            sx={{ color: ds.brand[500] }}
-          >
-            <HistoryIcon fontSize='small' />
-          </IconButton>
+          />
         </Tooltip>
         <Tooltip title={isExpanded ? 'Collapse' : 'Expand'} placement='bottom'>
-          <IconButton
-            size='small'
+          <Button
+            tone='ghost'
+            size='sm'
+            composition='icon-only'
+            icon={isExpanded ? <FullscreenExitIcon /> : <FullscreenIcon />}
             onClick={() => setIsExpanded(!isExpanded)}
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
             data-testid='nubi-global-chat-expand'
-            sx={{ color: ds.brand[500] }}
-          >
-            {isExpanded ? <FullscreenExitIcon fontSize='small' /> : <FullscreenIcon fontSize='small' />}
-          </IconButton>
+          />
         </Tooltip>
         <Tooltip title={`Close (${NUBI_GLOBAL_CHAT_SHORTCUT_LABEL})`} placement='bottom'>
-          <IconButton size='small' onClick={close} aria-label='Close' data-testid='nubi-global-chat-close' sx={{ color: ds.brand[500] }}>
-            <CloseIcon fontSize='small' />
-          </IconButton>
+          <Button
+            tone='ghost'
+            size='sm'
+            composition='icon-only'
+            icon={<CloseIcon />}
+            onClick={close}
+            aria-label='Close'
+            data-testid='nubi-global-chat-close'
+          />
         </Tooltip>
       </Box>
     </Box>
@@ -596,6 +603,7 @@ const NubiGlobalChat: React.FC = () => {
               sessionId={chatContext?.sessionId || ''}
               query={chatContext?.query || ''}
               categorySource={chatContext?.categorySource || ''}
+              eventId={chatContext?.eventId || ''}
               newChatSignal={newChatSignal as any}
               historySignal={historySignal as any}
               historyButtonRef={historyButtonRef as any}

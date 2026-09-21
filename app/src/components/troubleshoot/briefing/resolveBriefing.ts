@@ -1,4 +1,4 @@
-import { formatCount, formatDays, formatPercent, formatShare, weightedMedian } from './format';
+import { formatCount, formatPercent, formatShare } from './format';
 import { classifyDisagreement, MAPPING_DISCLOSURE, RANK_ORDER, SOURCE_SEVERITY_TO_RANK, type NubiRank, type SourceSeverity } from './severityRank';
 
 export const INCIDENT_P1_THRESHOLD = 3;
@@ -15,11 +15,6 @@ export interface RankRow {
 export interface DisagreementRow {
   priority?: string | null;
   computed_priority?: string | null;
-  event_count?: number | null;
-}
-
-export interface BucketRow {
-  created_at?: string | null;
   event_count?: number | null;
 }
 
@@ -44,12 +39,10 @@ export interface BriefingPayload {
   disagreement: DisagreementRow[];
   bySignalClass: SignalClassRow[];
   firingNow: number;
-  stuckFiring: BucketRow[];
   thresholdSuggestions: ThresholdSuggestionLike[];
   investigations: { total: number; completed: number } | null;
   windowStartMs: number;
   windowEndMs: number;
-  nowMs: number;
 }
 
 export type TileTone = 'default' | 'critical' | 'positive';
@@ -84,7 +77,7 @@ export interface BriefingCallout {
   action?: { text: string; drill?: Record<string, string>; href?: string };
 }
 
-export type FlaggedKind = 'COVERAGE GAP' | 'BACKLOG' | 'NOISE SOURCE' | 'TUNING AVAILABLE' | 'DATA INTEGRITY';
+export type FlaggedKind = 'COVERAGE GAP' | 'BACKLOG' | 'NOISE SOURCE' | 'TUNING AVAILABLE';
 
 export interface FlaggedFinding {
   key: string;
@@ -100,7 +93,7 @@ export type BriefingMode = 'INCIDENT' | 'NORMAL';
 
 export interface BriefingModel {
   mode: BriefingMode;
-  flags: { degraded: boolean; coverageGap: boolean; backlog: boolean };
+  flags: { coverageGap: boolean; backlog: boolean };
   header: {
     ingested: number;
     issues: number;
@@ -122,7 +115,10 @@ export interface BriefingModel {
 
 const ALL_EVENTS_DRILL = { status: 'ALL' };
 
-const rankDrill = (rank: NubiRank) => ({ ...ALL_EVENTS_DRILL, eventComputedPriority: rank });
+// Tiles whose value counts issues (DISTINCT account+fingerprint) drill into the
+// Events tab's "Unique" view so the list reconciles with the number clicked.
+// Tiles that count raw events (Events ingested, worst signal class) omit it.
+const rankDrill = (rank: NubiRank) => ({ ...ALL_EVENTS_DRILL, eventComputedPriority: rank, eventsView: 'unique' });
 
 const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
@@ -153,9 +149,11 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
     {
       key: 'issues',
       label: 'Issues you could see',
-      tooltip: 'Distinct issues after repeats were collapsed — what the list below shows.',
+      tooltip: 'Distinct issues after repeats were collapsed. Opens the Events tab in "Unique" view — one row per fingerprint.',
       value: formatCount(issues),
-      drill: ALL_EVENTS_DRILL,
+      // This count is DISTINCT fingerprint, so the drill opens the Events tab
+      // pre-switched to its fingerprint-deduped ("Unique") view.
+      drill: { ...ALL_EVENTS_DRILL, eventsView: 'unique' },
     },
   ];
 
@@ -222,7 +220,7 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
       label: 'Still firing now',
       tooltip: 'Issues whose underlying alert has not cleared.',
       value: formatCount(payload.firingNow),
-      drill: { ...ALL_EVENTS_DRILL, eventStatus: 'FIRING' },
+      drill: { ...ALL_EVENTS_DRILL, eventStatus: 'FIRING', eventsView: 'unique' },
     },
   ];
 
@@ -294,7 +292,7 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
       )} ${top.from} alerts ${top.to === 'P3' ? 'were put in the background' : `were ranked ${top.to}`}.`,
       value: formatCount(top.count),
       secondary: `${top.from} → ${top.to}`,
-      drill: { ...ALL_EVENTS_DRILL, eventPriority: top.from, eventComputedPriority: top.to },
+      drill: { ...ALL_EVENTS_DRILL, eventPriority: top.from, eventComputedPriority: top.to, eventsView: 'unique' },
     });
   }
 
@@ -323,22 +321,11 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
   const top3Pct = ingested > 0 ? (top3Share / ingested) * 100 : 0;
   const worstPct = worst && ingested > 0 ? (worst.count / ingested) * 100 : 0;
 
-  const stuckCount = payload.stuckFiring.reduce((total, row) => total + num(row.event_count), 0);
-  const stuckMedianDays = weightedMedian(
-    payload.stuckFiring
-      .filter((row) => row.created_at)
-      .map((row) => ({
-        value: Math.max(0, Math.floor((payload.nowMs - new Date(row.created_at as string).getTime()) / 86400000)),
-        weight: num(row.event_count),
-      }))
-  );
-
   const openSuggestions = payload.thresholdSuggestions.filter((suggestion) => suggestion.apply_status !== 'applied');
   const topSuggestion = openSuggestions[0];
 
   const coverageGap = unscored > 0;
   const backlog = unscored > BACKLOG_THRESHOLD;
-  const degraded = stuckCount > 0;
 
   const flagged: FlaggedFinding[] = [];
 
@@ -392,17 +379,6 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
     });
   }
 
-  if (degraded) {
-    flagged.push({
-      key: 'data-integrity',
-      kind: 'DATA INTEGRITY',
-      tone: 'danger',
-      title: `${formatCount(stuckCount)} events stuck firing`,
-      detail: `median age ${formatDays(stuckMedianDays)} — never closed`,
-      rank: 5,
-    });
-  }
-
   flagged.sort((a, b) => a.rank - b.rank);
 
   const concentrationNote =
@@ -438,7 +414,7 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
 
   return {
     mode,
-    flags: { degraded, coverageGap, backlog },
+    flags: { coverageGap, backlog },
     header: { ingested, issues, aboveP3: p0 + p1 + p2, p1, p2 },
     intake,
     ranking,

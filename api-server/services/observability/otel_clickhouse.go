@@ -78,8 +78,26 @@ var ClickhouseTraceTableDefinition = map[string]query.ColumnDefinition{
 			return "base64Decode(headers)", request, nil
 		},
 	},
+	// Stored as text, but it holds an HTTP status. NumericCompareDef lets ordered
+	// comparisons ("5xx and above") work without changing the column's type, so _eq,
+	// _like, traces_label_values and every UI filter keep comparing strings.
 	"http_status_code": {
+		Type:              query.ColumnDefinitionTypeString,
+		NumericCompareDef: "toInt32OrZero(http_status_code)",
+	},
+	// The API route / DB statement / RPC method a span represents. llm-server's traces_view
+	// defines this and the trace agent's prompt documents it as the column to use when the
+	// user asks which endpoint is involved -- but it was missing here, so a canonical
+	// `endpoint` filter failed with "Unknown expression or function identifier `endpoint`".
+	// Mirrors that view's projection, ending on span_name exactly as it does.
+	"endpoint": {
 		Type: query.ColumnDefinitionTypeString,
+		Def: "multiIf(spanattributes['http.route'] != '', spanattributes['http.route'], " +
+			"spanattributes['http.target'] != '', spanattributes['http.target'], " +
+			"spanattributes['http.path'] != '', spanattributes['http.path'], " +
+			"spanattributes['url.path'] != '', spanattributes['url.path'], " +
+			"spanattributes['db.statement'] != '', spanattributes['db.statement'], " +
+			"spanattributes['rpc.method'] != '', spanattributes['rpc.method'], span_name)",
 	},
 	"http_method": {
 		Type: query.ColumnDefinitionTypeString,
@@ -203,6 +221,15 @@ var ClickhouseTraceGroupingTableDefinition = map[string]query.ColumnDefinition{
 		Def:          "MAX(duration_ns)",
 		IsAggregated: true,
 	},
+	// avg_duration_ns backs the grouped response's duration_ns field. It is a distinct
+	// column from the raw "duration_ns" above (rather than flipping that one to
+	// IsAggregated) so existing WHERE-clause filters on the raw column keep working --
+	// an aggregated column cannot appear outside HAVING (see generateWhereClauseColumn).
+	"avg_duration_ns": {
+		Type:         query.ColumnDefinitionTypeFloat,
+		Def:          "AVG(duration_ns)",
+		IsAggregated: true,
+	},
 	"service_name": {
 		Type: query.ColumnDefinitionTypeString,
 	},
@@ -210,9 +237,32 @@ var ClickhouseTraceGroupingTableDefinition = map[string]query.ColumnDefinition{
 
 type OtelClickhouseTraceSource struct{}
 
+// GetLabelMapping maps canonical trace field names onto this source's real columns.
+// It is consumed twice: to advertise label_mappings in the provider capabilities, and to
+// rewrite incoming where clauses (convertWhereClauseWithMApping). An empty map meant a
+// canonical name reached ClickHouse verbatim -- `namespace` matched nothing and returned
+// zero rows with no error.
+//
+// Keys must be names that are NOT real columns in ClickhouseTraceTableDefinition; a key that shadows a real column
+// would silently rewrite queries the UI already sends. TestOtelClickhouseTraceLabelMapping
+// pins that invariant.
 func (s *OtelClickhouseTraceSource) GetLabelMapping() map[string]string {
-	return map[string]string{}
+	// No "service" alias: the trace column set already defines a real `service` column, and aliasing it
+	// would rewrite queries that work today. TestOtelClickhouseTraceLabelMapping enforces this.
+	return map[string]string{
+		"namespace":   "workload_namespace",
+		"workload":    "workload_name",
+		"destination": "destination_workload_name",
+	}
 }
+
+// TraceFieldsArePassthrough marks ClickHouse as consuming the canonical trace field
+// names directly — every one is a real column of ClickhouseTraceTableDefinition. The
+// mapping above renames three convenience aliases onto columns; it is not a statement
+// that those three are all this backend can filter on. Without this, advertising
+// collapses to the alias keys and the trace agent loses duration_ns, trace_id and the
+// rest. TestOtelClickhouse_CanonicalFieldsKeepTheirTypes pins the result.
+func (s *OtelClickhouseTraceSource) TraceFieldsArePassthrough() bool { return true }
 
 func (s *OtelClickhouseTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_like", "_ilike", "_nlike", "_gt", "_lt", "_gte", "_lte", "_is_null"}
@@ -382,6 +432,13 @@ func (s *OtelClickhouseTraceSource) QueryLabels(ctx *security.RequestContext, re
 	}
 	return labels, nil
 }
+
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// ClickHouse GROUP BYs the field over the requested window, so the value set is complete for any
+// field whose cardinality fits the query limit. A genuinely high-cardinality field (pod names, CI
+// runners) comes back at the limit and the shared >= maxLabelValuesToScan check fails open, which
+// is the intended behaviour — a truncated page cannot prove a value absent.
+func (s *OtelClickhouseTraceSource) TraceLabelValuesAreComplete() {}
 
 func (s *OtelClickhouseTraceSource) GetLabelValues(ctx *security.RequestContext, fetchTraceRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	hasAccess := s.CheckAccess(ctx, fetchTraceRequest.AccountId)
@@ -623,9 +680,7 @@ func MapGroupingRowToTraceGroupingValues(row map[string]interface{}) (TraceGroup
 	if v, ok := row["resource"].(string); ok {
 		trace.Resource = v
 	}
-	// if v, ok := row["http_status_code"].(string); ok {
-	// 	trace.DurationNS = v
-	// }
+	trace.DurationNS = clickhouseInt64(row["avg_duration_ns"])
 	if v, ok := row["http_status_code"].(string); ok {
 		trace.HTTPStatusCode = v
 	}
@@ -987,7 +1042,7 @@ func (s *OtelClickhouseTraceSource) GetBaseGroupingTraceQuery(ctx *security.Requ
 	hasMaterializedColumn := s.hasMaterializedColumn(ctx, accountId)
 	baseQuery := `(SELECT workload_zone, destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, cloud_availability_zone, workload_namespace,workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source FROM otel_traces) AS traces_grouping_v2`
 	if !hasMaterializedColumn {
-		baseQuery = `(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availablity_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, CASE WHEN ScopeName = 'nudgebee-node-agent' OR SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM otel_traces) AS traces_grouping_v2`
+		baseQuery = `(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availability_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, CASE WHEN ScopeName = 'nudgebee-node-agent' OR SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM otel_traces) AS traces_grouping_v2`
 	}
 
 	return baseQuery
@@ -1320,6 +1375,28 @@ func (s *OtelClickhouseTraceSource) QueryTracesRaw(ctx *security.RequestContext,
 	return s.executeClickhouseQueryRaw(ctx.GetContext(), sqlQuery, fetchTraceRequest.AccountId)
 }
 
+// redirectDurationNsSortToAvg rewrites an incoming "duration_ns" sort to "avg_duration_ns".
+// The API's sort key is "duration_ns" -- the same name every other trace source's grouped
+// sort accepts (e.g. ElasticSaasTraceSource's in-memory switch), so the frontend/API contract
+// keeps using it. On this source, "duration_ns" stays a non-aggregated column definition (so
+// WHERE filters on it still work), while the value actually selected and displayed for a group
+// is the avg_duration_ns aggregate. Left unredirected, ordering by "duration_ns" would resolve
+// to the raw, non-selected, non-grouped column and get silently wrapped in MAX() by
+// generateOrderByClause -- sorting by max duration while the column shows the average.
+func redirectDurationNsSortToAvg(orderBy []query.QueryOrderBy) []query.QueryOrderBy {
+	if len(orderBy) == 0 {
+		return orderBy
+	}
+	result := make([]query.QueryOrderBy, len(orderBy))
+	copy(result, orderBy)
+	for i, ob := range result {
+		if ob.Column == "duration_ns" {
+			result[i].Column = "avg_duration_ns"
+		}
+	}
+	return result
+}
+
 func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]TraceGroupingValues, error) {
 	hasAccess := s.CheckAccess(ctx, fetchTraceRequest.AccountId)
 	if !hasAccess {
@@ -1337,6 +1414,7 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestCont
 			{Name: "p99_latency"},
 			{Name: "p95_latency"},
 			{Name: "max_latency"},
+			{Name: "avg_duration_ns"},
 			{Name: "workload_name"},
 			{Name: "workload_namespace"},
 			{Name: "destination_workload_name"},
@@ -1354,6 +1432,7 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestCont
 			"span_name",
 			"http_status_code",
 		}
+		queryRequest.OrderBy = redirectDurationNsSortToAvg(queryRequest.OrderBy)
 		sqlQuery, err = query.GenerateSqlQuery(ctx, fetchTraceRequest.AccountId, queryRequest, tableDef)
 	} else {
 		sqlQuery = fetchTraceRequest.Query

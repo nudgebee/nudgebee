@@ -369,3 +369,45 @@ func TestGetUsageFilters_AccountsScopedToWindowNotSelection(t *testing.T) {
 	assert.Equal(t, "GCP", out.Accounts[1].CloudProvider)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestGetUsageFilters_IncludesSystemUser is a regression test for #37368: the
+// User filter dropdown used to exclude the synthetic system user outright
+// (AND t.user_id <> systemUserID), so a window containing only
+// system-generated investigations/events showed "No results found" instead of
+// a usable filter. It must now offer that usage as a "SYSTEM" option, labeled
+// the same way the per-user breakdown (TestUserBreakdown_IncludesSystemUser)
+// and the audit log already label the same sentinel.
+func TestGetUsageFilters_IncludesSystemUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	dao := &ConversationDao{
+		dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")},
+	}
+
+	mock.ExpectQuery("array_agg").
+		WillReturnRows(sqlmock.NewRows([]string{"sources", "models", "providers", "agents", "statuses"}).
+			AddRow("{Investigation}", "{}", "{}", "{}", "{success}"))
+	// Matching this regex is only possible against the new CASE-mapped query —
+	// the old "AND t.user_id <> '...'" exclusion produces different SQL, so
+	// this also guards against the exclusion silently coming back.
+	mock.ExpectQuery(`CASE WHEN t\.user_id = '00000000-0000-0000-0000-000000000000' THEN 'SYSTEM'`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow("00000000-0000-0000-0000-000000000000", "SYSTEM"))
+	mock.ExpectQuery("cloud_provider").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "cloud_provider"}))
+
+	now := time.Now()
+	out, err := dao.GetUsageFilters(UsageMetricsFilter{
+		AccountIDs: []string{"acc-1"},
+		StartDate:  now.Add(-24 * time.Hour),
+		EndDate:    now,
+	}, []string{"acc-1"}, []string{"acc-1"})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	require.Len(t, out.Users, 1, "system-only window must offer a SYSTEM option, not an empty dropdown")
+	assert.Equal(t, "SYSTEM", out.Users[0].Name)
+	assert.Equal(t, "00000000-0000-0000-0000-000000000000", out.Users[0].ID)
+}

@@ -293,6 +293,30 @@ func parseAccountFilter(args map[string]any) []string {
 	return nil
 }
 
+// mergeEventIntoInputs tags a trigger's inputs with the event it was run
+// against, using the same "event" input key the Nubi automation tool sets
+// (llm/llm-server/tools/tool_workflow_automation.go). executor.go's
+// initial-pass tagging reads inputs["event"]["id"] and upserts it as the
+// nb_event_id search attribute, which is what listExecutionsForEvent queries
+// — so this is the one place a trigger request needs to touch to show up in
+// an event's automation history.
+//
+// A caller-supplied "event" input always wins: an automation the model or
+// user explicitly points at a different event should not be silently
+// re-pointed at the triggering page's event.
+func mergeEventIntoInputs(inputs map[string]any, eventID string) map[string]any {
+	if eventID == "" {
+		return inputs
+	}
+	if inputs == nil {
+		inputs = map[string]any{}
+	}
+	if _, exists := inputs["event"]; !exists {
+		inputs["event"] = map[string]any{"id": eventID}
+	}
+	return inputs
+}
+
 func (s *Server) handleGetWorkflow(c *gin.Context, sc *security.RequestContext, args map[string]any) {
 	accountID, ok := args["account_id"].(string)
 	if !ok || accountID == "" {
@@ -431,6 +455,13 @@ func (s *Server) handleTriggerWorkflow(c *gin.Context, sc *security.RequestConte
 		inputs = i
 	}
 
+	// Tags the run with the event under investigation so it surfaces in that
+	// event's automation history — read here, ahead of the trigger call, so
+	// the tag is in place before the workflow's first search-attribute pass
+	// runs (see mergeEventIntoInputs).
+	eventID, hasEventID := args["event_id"].(string)
+	inputs = mergeEventIntoInputs(inputs, eventID)
+
 	// use_draft_definition routes the trigger to the draft-snapshot path
 	// (canvas "Run current" button) instead of the live version. Event-
 	// resolution callers below never set this flag.
@@ -454,7 +485,7 @@ func (s *Server) handleTriggerWorkflow(c *gin.Context, sc *security.RequestConte
 	}
 
 	// If triggered from an event context, create an event_resolution record to track this execution
-	if eventID, ok := args["event_id"].(string); ok && eventID != "" {
+	if hasEventID && eventID != "" {
 		s.createWorkflowEventResolution(sc, eventID, workflowID, we)
 	}
 

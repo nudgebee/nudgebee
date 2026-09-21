@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tmc/langchaingo/llms"
 )
 
 // TestLogAgentV3_BuildToolList mirrors TestLogAgent_BuildToolList: the
@@ -82,6 +83,13 @@ func TestLogAgentV3_Registered(t *testing.T) {
 	assert.Equal(t, LogsAgentV3Name, agent.GetName())
 }
 
+func TestLogAgentV3_RegisteredAsTool(t *testing.T) {
+	tool, ok := toolcore.GetNBTool("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", LogsAgentV3Name)
+	require.True(t, ok, "logs_v3 must be registered as a system tool so other agents can delegate to it")
+	require.NotNil(t, tool)
+	assert.Equal(t, LogsAgentV3Name, tool.Name())
+}
+
 func TestGetLogAgentV3(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	agent, err := getLogAgentV3(sc, os.Getenv("TEST_ACCOUNT"))
@@ -128,6 +136,7 @@ func TestLogAgentV3_SystemPrompt_ReusesResolvedPodsAndExplainsArtifactFormat(t *
 	assert.Contains(t, body, "Step 2a remains mandatory")
 	assert.Contains(t, body, "logs_format_hint")
 	assert.Contains(t, body, "never JSON-decode the whole file")
+	assert.Contains(t, body, "kubectl_disclosure")
 }
 
 // TestLogAgentV3_FastPathAppAnchor_RoutineOnly pins the one point where v3's
@@ -450,4 +459,22 @@ func TestBuildCanonicalLogQueryPromptV3(t *testing.T) {
 		assert.Contains(t, p, "VERBATIM")
 		assert.Contains(t, p, "_ilike")
 	})
+}
+
+// Delegated scope must reach the translator used by both the primary and
+// kubectl fallback paths, not just remain on the request for tool execution.
+func TestLogsV3DelegatedContextReachesTranslator(t *testing.T) {
+	scope := "Use namespace payments-preprod and host preprod-01; last 15m limit 25"
+	request := buildFetchLogsV3Request(toolcore.NbToolContext{QueryContext: scope}, toolcore.NBToolCallRequest{Command: "fetch checkout logs"})
+	messages := buildLogIntentMessages("translator", request)
+	var human strings.Builder
+	for _, part := range messages[len(messages)-1].Parts {
+		if content, ok := part.(llms.TextContent); ok {
+			human.WriteString(content.Text)
+		}
+	}
+	require.Contains(t, human.String(), scope)
+	require.Contains(t, human.String(), "fetch checkout logs")
+	require.Empty(t, request.KBPrestepContent)
+	require.Empty(t, request.SkillsContext)
 }

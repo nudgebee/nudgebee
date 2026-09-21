@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM public.ecr.aws/docker/library/python:3.10-slim
 
 # Set working directory
 WORKDIR /app

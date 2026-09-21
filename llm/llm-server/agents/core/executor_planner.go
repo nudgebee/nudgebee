@@ -1426,7 +1426,16 @@ func (e *plannerExecutor) doIterationParallel(
 				// Add to producerWg BEFORE Submit so cleanup() never sees a moment
 				// where a goroutine is in flight but not yet counted.
 				producerWg.Add(1)
-				err := ExecutePlannerWorkerPool.Submit(ctx, func() {
+				// ctx carries no deadline on the async resume path, so a
+				// saturated pool would otherwise block Submit forever (#36378).
+				// Bounds only the enqueue wait — workCtx below still governs
+				// the task's own cancellation once accepted.
+				submitTimeout := time.Duration(config.Config.PlannerWorkerPoolSubmitTimeoutSeconds) * time.Second
+				if submitTimeout <= 0 {
+					submitTimeout = 30 * time.Second // unset/overflowed config must not fail every submission instantly
+				}
+				submitCtx, cancelSubmit := context.WithTimeout(ctx, submitTimeout)
+				err := ExecutePlannerWorkerPool.Submit(submitCtx, func() {
 					defer producerWg.Done()
 					defer func() {
 						if releasePermit {
@@ -1599,6 +1608,7 @@ func (e *plannerExecutor) doIterationParallel(
 					mu.Unlock()
 					resultsChan <- n
 				})
+				cancelSubmit() // release once Submit returns; nothing left to bound
 				if err != nil {
 					// Submit failed: the worker goroutine never ran, so its deferred
 					// producerWg.Done() will never fire. Cancel the Add(1) here so
@@ -1693,7 +1703,9 @@ func (e *plannerExecutor) doIterationParallel(
 			// Call()'s consecutive-failed-iterations guard still bounds retries.
 			newStepsThisIteration = append(newStepsThisIteration, n.Result)
 
-			// CRITICAL: If the tool returned a terminal response, return early
+			// A terminal response is an explicit parent-finalization contract (the
+			// agent-as-tool wrappers suppress ordinary child completion). Preserve
+			// the short-circuit for specialized tools such as automation_builder.
 			if n.Result.IsTerminal {
 				e.ctx.GetLogger().Info("plannerexecutor: detected terminal response in parallel execution, returning early", "tool", n.Action.Tool)
 				mu.Lock()
@@ -2496,19 +2508,21 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// check if it's a client tool and return specific waiting status
 		if _, isClientTool := tool.(*toolcore.ClientToolWrapper); isClientTool || observation.Status == toolcore.NBToolResponseStatusWaitingForClient {
 			e.ctx.GetLogger().Info("plannerexecutor: client tool call recorded, waiting for client execution", "tool", action.Tool)
-			return NBAgentPlannerToolActionStep{
-					Action:      action,
-					Observation: "Waiting for client execution",
-					Status:      ToolStatusWaitingForClient,
-				}, &NBAgentPlannerFinishAction{
-					Status: ConversationStatusWaitingForClientTool,
-					Data:   fmt.Sprintf("Waiting for client to execute tool: %s", action.Tool),
-					AdditionalDetails: map[string]any{
-						"tool_name":  action.Tool,
-						"tool_input": action.ToolInput,
-						"tool_id":    action.ToolID,
-					},
-				}, nil
+			step := NBAgentPlannerToolActionStep{
+				Action:      action,
+				Observation: "Waiting for client execution",
+				Status:      ToolStatusWaitingForClient,
+			}
+			finish := &NBAgentPlannerFinishAction{
+				Status: ConversationStatusWaitingForClientTool,
+				Data:   fmt.Sprintf("Waiting for client to execute tool: %s", action.Tool),
+				AdditionalDetails: map[string]any{
+					"tool_name":  action.Tool,
+					"tool_input": action.ToolInput,
+					"tool_id":    action.ToolID,
+				},
+			}
+			return step, finish, nil
 		}
 
 		followUpRequest := observation.AdditionalDetails[nbToolCallAdditionalDatailsFollowupRequest].(FollowupRequest)
@@ -2527,18 +2541,20 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// responds, the result is saved under the ID the planner is actually waiting for.
 		followUpRequest.ToolId = action.ToolID
 
-		return NBAgentPlannerToolActionStep{
-				Action:           action,
-				Observation:      observation.Data,
-				Status:           ToolStatusWaiting,
-				Followup:         &followUpRequest,
-				SubAgentEvidence: observation.SubAgentEvidence,
-			}, &NBAgentPlannerFinishAction{
-				Data:              observation.Data,
-				Status:            ConversationStatusWaiting,
-				Followup:          followUpRequest,
-				AdditionalDetails: observation.AdditionalDetails,
-			}, nil
+		step := NBAgentPlannerToolActionStep{
+			Action:           action,
+			Observation:      observation.Data,
+			Status:           ToolStatusWaiting,
+			Followup:         &followUpRequest,
+			SubAgentEvidence: observation.SubAgentEvidence,
+		}
+		finish := &NBAgentPlannerFinishAction{
+			Data:              observation.Data,
+			Status:            ConversationStatusWaiting,
+			Followup:          followUpRequest,
+			AdditionalDetails: observation.AdditionalDetails,
+		}
+		return step, finish, nil
 	}
 
 	// Metrics: record outcome. Tools that report failure via
@@ -2724,21 +2740,23 @@ func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPla
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 		return nil, nil, err
 	}
-	return []NBAgentPlannerToolActionStep{
-			{
-				Action:      action,
-				Observation: followupRequest.Question,
-				Status:      ToolStatusWaiting,
-				Followup:    &followupRequest,
-			},
-		}, &NBAgentPlannerFinishAction{
-			Data:     followupRequest.Question,
-			Status:   ConversationStatusWaiting,
-			Followup: followupRequest,
-			AdditionalDetails: map[string]any{
-				"followupId": followupId,
-			},
-		}, nil
+	steps := []NBAgentPlannerToolActionStep{
+		{
+			Action:      action,
+			Observation: followupRequest.Question,
+			Status:      ToolStatusWaiting,
+			Followup:    &followupRequest,
+		},
+	}
+	finish := &NBAgentPlannerFinishAction{
+		Data:     followupRequest.Question,
+		Status:   ConversationStatusWaiting,
+		Followup: followupRequest,
+		AdditionalDetails: map[string]any{
+			"followupId": followupId,
+		},
+	}
+	return steps, finish, nil
 }
 
 // selectConfigUsingLLM uses LLM to intelligently select the most appropriate config
@@ -3149,21 +3167,23 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 			e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 			return nil, nil, err
 		}
-		return []NBAgentPlannerToolActionStep{
-				{
-					Action:      action,
-					Observation: followupRequest.Question,
-					Status:      ToolStatusWaiting,
-					Followup:    &followupRequest,
-				},
-			}, &NBAgentPlannerFinishAction{
-				Data:     followupRequest.Question,
-				Status:   ConversationStatusWaiting,
-				Followup: followupRequest,
-				AdditionalDetails: map[string]any{
-					"followupId": followupId,
-				},
-			}, nil
+		steps := []NBAgentPlannerToolActionStep{
+			{
+				Action:      action,
+				Observation: followupRequest.Question,
+				Status:      ToolStatusWaiting,
+				Followup:    &followupRequest,
+			},
+		}
+		finish := &NBAgentPlannerFinishAction{
+			Data:     followupRequest.Question,
+			Status:   ConversationStatusWaiting,
+			Followup: followupRequest,
+			AdditionalDetails: map[string]any{
+				"followupId": followupId,
+			},
+		}
+		return steps, finish, nil
 	}
 	return nil, nil, nil
 }
@@ -3894,31 +3914,13 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// clusters in long streams.
 	toolContext.OriginalQuery = agentRequest.OriginalQuery
 
-	// Skill propagation across delegation (flag-gated). Skills are agent-scoped, so a
-	// runbook mapped to an orchestrator never reaches the sub-agent that actually
-	// executes — the orchestrator delegates to logs/prometheus/etc. and they never
-	// inherit its KBs. When enabled, carry the delegating agent's skill scope (its own
-	// name, appended to any names it itself inherited) plus SelectedSkillIds. The
-	// sub-agent's fetchAgentKBs then surfaces those runbooks in its OWN <skill-lists>
-	// menu and its planner decides whether to load_skills (no eager injection).
-	//
-	// Blast-radius note: fetchAgentKBs narrows inherited KBs by SelectedSkillIds only
-	// when a selection exists. Conversation-scoped agents populate it (question-aware),
-	// so their sub-agents see only investigation-relevant runbooks. Account-scoped
-	// orchestrators (k8s/aws/…) skip per-question selection to stay cache-stable, so
-	// SelectedSkillIds is nil and the sub-agent inherits the parent's full active
-	// mapped set — but that is menu-level only (name + description; bodies load lazily
-	// via load_skills at the sub-agent's discretion), so the cost is a few extra menu
-	// lines, not injected content. Custom-planner delegators (agent_metrics.go etc.)
-	// thread InheritSkillsFromAgents explicitly and bypass this path — no double-prop.
-	// toolContext skill fields are only read for agent-type tools (ExecuteAgentToolCall).
-	if config.Config.LlmServerSkillDelegationPropagationEnabled {
-		toolContext.InheritSkillsFromAgents = delegationSkillScope(agentRequest.InheritSkillsFromAgents, parentAgentName)
-		toolContext.SelectedSkillIds = agentRequest.SelectedSkillIds
-	}
+	// Every delegated agent performs its own account-wide search using the original
+	// question plus its delegated task. Agent mappings therefore do not need to be
+	// propagated to control knowledge visibility.
 	toolContext.KBPrestepContent = agentRequest.KBPrestepContent
-	toolContext.KBPrestepExecuted = agentRequest.KBPrestepExecuted
 	toolContext.KBReferences = agentRequest.KBReferences
+	toolContext.KnowledgePolicy = string(agentRequest.KnowledgePolicy)
+	toolContext.KnowledgePolicyResolved = agentRequest.KnowledgePolicyResolved
 
 	// Check if this tool requires configuration
 	if _, ok := tool.(toolcore.NBToolConfig); ok {

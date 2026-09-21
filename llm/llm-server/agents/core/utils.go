@@ -162,7 +162,7 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 	// 2. Inject shell_execute (unless the agent opted out of default-tool injection)
 	if !skipInjection {
 		found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
-			return strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
+			return t != nil && strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
 		})
 		if !found && accountId != "" {
 			if t, ok := toolcore.GetNBTool(accountId, toolcore.ToolExecuteShellCommand); ok && t != nil {
@@ -177,7 +177,7 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		if !skipInjection && agentWatchCapable(agent) {
 			for _, watchToolName := range watchToolNames {
 				already := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
-					return strings.EqualFold(t.Name(), watchToolName)
+					return t != nil && strings.EqualFold(t.Name(), watchToolName)
 				})
 				if already {
 					continue
@@ -191,19 +191,26 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		}
 	} else {
 		toolList = lo.Filter(toolList, func(t toolcore.NBTool, _ int) bool {
-			return !isWatchToolName(t.Name())
+			return t != nil && !isWatchToolName(t.Name())
 		})
 	}
 
-	// 4. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt).
-	// Uses skipSkillsInjection so a DefaultSkillsInjectOverride can re-enable skills alone.
-	if !skipSkillsInjection && strings.Contains(agentPrompt, "<skill-lists>") {
+	// 4. Search and loading are one knowledge capability. Search can discover
+	// candidates after initial discovery timed out, so it needs the loader even
+	// without a menu. An explicitly configured search tool also opts curated
+	// agents into this dependency, without enabling shell/watch defaults.
+	hasSkillSearch := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
+		return t != nil && strings.EqualFold(t.Name(), "search_skills")
+	})
+	if hasSkillSearch || (!skipSkillsInjection && strings.Contains(agentPrompt, "<skill-lists>")) {
 		found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
-			return t.Name() == "load_skills"
+			return t != nil && t.Name() == "load_skills"
 		})
 		if !found && accountId != "" {
 			if t, ok := toolcore.GetNBTool(accountId, "load_skills"); ok && t != nil {
-				toolList = append(toolList, t)
+				// Explicit capability restrictions remain authoritative for the
+				// dependency too, including disabled_tools without an allow-list.
+				toolList = append(toolList, FilterTools([]toolcore.NBTool{t}, capabilities)...)
 			}
 		}
 	}
@@ -228,7 +235,7 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 // Used to set shell_tool_enabled per-agent instead of globally.
 func HasShellTool(toolList []toolcore.NBTool) bool {
 	for _, t := range toolList {
-		if t.Name() == toolcore.ToolExecuteShellCommand {
+		if t != nil && t.Name() == toolcore.ToolExecuteShellCommand {
 			return true
 		}
 	}
@@ -238,7 +245,7 @@ func HasShellTool(toolList []toolcore.NBTool) bool {
 // HasDelegateAgentTool returns true if the delegate_agent tool is present in the tool list.
 func HasDelegateAgentTool(toolList []toolcore.NBTool) bool {
 	for _, t := range toolList {
-		if strings.EqualFold(t.Name(), "delegate_agent") {
+		if t != nil && strings.EqualFold(t.Name(), "delegate_agent") {
 			return true
 		}
 	}
@@ -251,7 +258,7 @@ func HasDelegateAgentTool(toolList []toolcore.NBTool) bool {
 // asking for SDG evidence from an agent that can't invoke SDG.
 func HasServiceDependencyGraphTool(toolList []toolcore.NBTool) bool {
 	for _, t := range toolList {
-		if strings.EqualFold(t.Name(), "service_dependency_graph") {
+		if t != nil && strings.EqualFold(t.Name(), "service_dependency_graph") {
 			return true
 		}
 	}
@@ -278,6 +285,9 @@ func FilterTools(tools []toolcore.NBTool, capabilities toolcore.AgentCapabilitie
 	}
 
 	return lo.Filter(tools, func(t toolcore.NBTool, _ int) bool {
+		if t == nil {
+			return false
+		}
 		if matchesToolName(t, disabledTools) {
 			return false
 		}
@@ -292,7 +302,7 @@ func FilterTools(tools []toolcore.NBTool, capabilities toolcore.AgentCapabilitie
 // using case-insensitive comparison. The alias lookup and `Name()` call are hoisted outside the
 // loop so a tool with aliases is type-asserted once per FilterTools pass, not once per candidate name.
 func matchesToolName(t toolcore.NBTool, names []string) bool {
-	if len(names) == 0 {
+	if t == nil || len(names) == 0 {
 		return false
 	}
 	possibleNames := []string{t.Name()}
@@ -338,7 +348,12 @@ var (
 
 	// causalContextRe — markers that turn a definitional-looking question into a
 	// real investigation ("what is causing X to fail", "explain why it crashed").
-	causalContextRe = regexp.MustCompile(`(?i)(\bwhy\b|\bcaus|\bwrong\b|\bfailing\b|\bfails\b|\bbroken\b|\bcrash|\bslow|\bnot working\b)`)
+	causalContextRe = regexp.MustCompile(`(?i)(\bwhy\b|\bcaus|\bwrong\b|\bfailing\b|\bfails\b|\bbroken\b|\bcrash|\bslow|\bnot working\b|\b(issue|problem|trouble)s?\s+with\b)`)
+
+	// Target-shaped causal markers can conclusively promote a definitional
+	// question without making concept lookups such as "what is a crash"
+	// investigative.
+	definitionalTargetedCausalRe = regexp.MustCompile(`(?i)\b(issue|problem|trouble)s?\s+with\b`)
 
 	// retrievalPrefixRe — plain read-only/discovery verbs → Query.
 	retrievalPrefixRe = regexp.MustCompile(`(?i)^(get|list|show|display|fetch|count|how many|describe|whoami|version)\b`)
@@ -400,9 +415,16 @@ func IsInvestigationRequestTask(input string) bool {
 		}
 	}
 
-	// Definitional / how-to questions are Query-type unless they are causal.
-	if definitionalPrefixRe.MatchString(lowerInput) && !causalContextRe.MatchString(lowerInput) {
-		return false
+	// Definitional / how-to questions are Query-type unless they contain a
+	// target-shaped causal marker. Broader causal words fall through to the
+	// checks below so concept lookups remain queries.
+	if definitionalPrefixRe.MatchString(lowerInput) {
+		if !causalContextRe.MatchString(lowerInput) {
+			return false
+		}
+		if definitionalTargetedCausalRe.MatchString(lowerInput) {
+			return true
+		}
 	}
 
 	// Unambiguous troubleshooting intent or inherently-anomalous state.

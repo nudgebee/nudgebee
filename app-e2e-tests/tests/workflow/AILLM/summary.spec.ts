@@ -62,7 +62,7 @@ const WORKFLOW_JSON_TEMPLATE = {
   status: "ACTIVE",
 };
 
-test("Automation workflow LLM Summary", async ({ page }) => {
+test("Automation workflow LLM Summary", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(120000);
 
   const locators = new WorkflowLocators(page);

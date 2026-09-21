@@ -6,7 +6,8 @@ import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
 import { toast as snackbar } from '@ui/Toast';
-import { Box, Button, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Button } from '@ui/Button';
 import Link from 'next/link';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
@@ -308,12 +309,7 @@ const ListingRecommendationResolution = ({ accountId }) => {
                       </Label>
                       {showMessage && <Text value={rr.status_message} secondaryText showAutoEllipsis sx={{ fontSize: ds.text.small }} />}
                       {rr.status === 'Failed' && (
-                        <Button
-                          size='small'
-                          variant='text'
-                          onClick={() => handleRetry(rr.id)}
-                          sx={{ alignSelf: 'flex-start', p: 0, minWidth: 0, fontSize: ds.text.small, textTransform: 'none' }}
-                        >
+                        <Button tone='link' size='sm' onClick={() => handleRetry(rr.id)} style={{ alignSelf: 'flex-start' }}>
                           Retry
                         </Button>
                       )}

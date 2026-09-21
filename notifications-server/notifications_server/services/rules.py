@@ -34,8 +34,9 @@ def is_valid_string(s):
 # account-scoped rule could never match (#28130).
 #   daily_recap        — one nightly digest per tenant
 #   optimize           — FinOps recommendations ranked tenant-wide
-#   weekly_digest — the weekly event-analysis digest, one per tenant-week
-TENANT_WIDE_SOURCES = ("daily_recap", "optimize", "weekly_digest")
+#   weekly_digest      — the weekly event-analysis digest, one per tenant-week
+#   ai_cost            — the AI Cost Daily Report digest, one per tenant-day
+TENANT_WIDE_SOURCES = ("daily_recap", "optimize", "weekly_digest", "ai_cost")
 
 
 def validate_fields(fields, is_update=False):

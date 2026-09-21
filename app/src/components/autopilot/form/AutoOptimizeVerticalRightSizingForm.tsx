@@ -91,27 +91,40 @@ const VerticalAutopPilotForm = ({
     return (
       <Box>
         <Box sx={{ display: 'flex', width: 'calc(var(--ds-space-0) * 110)', justifyContent: 'space-between' }}>
-          {Object.keys(data).map((key, index) => (
-            <Box key={index} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-              <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                {capitalizeFirstLetter(key)}
-              </Typography>
-              <Typography
-                sx={{
-                  color: 'var(--ds-gray-400)',
-                  fontSize: 'var(--ds-text-body-lg)',
-                  fontWeight: 'var(--ds-font-weight-medium)',
-                  mb: 'var(--ds-space-4)',
-                }}
-              >
-                {data[key]}{' '}
-                <span style={{ color: 'var(--ds-brand-300)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                  {' '}
-                  {type === 'memory' ? 'MB' : 'CPU'}{' '}
-                </span>
-              </Typography>
-            </Box>
-          ))}
+          {Object.keys(data).map((key, index) => {
+            // An absent value renders as "Not set" rather than a bare unit: a
+            // lone "MB" reads as a rendering bug, not as "this workload has no
+            // memory request".
+            const value = data[key];
+            const isSet = value !== undefined && value !== null && value !== '';
+            return (
+              <Box key={index} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                <Typography sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
+                  {capitalizeFirstLetter(key)}
+                </Typography>
+                <Typography
+                  sx={{
+                    color: 'var(--ds-gray-400)',
+                    fontSize: 'var(--ds-text-body-lg)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    mb: 'var(--ds-space-4)',
+                  }}
+                >
+                  {isSet ? (
+                    <>
+                      {value}{' '}
+                      <span style={{ color: 'var(--ds-brand-300)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
+                        {' '}
+                        {type === 'memory' ? 'MB' : 'CPU'}{' '}
+                      </span>
+                    </>
+                  ) : (
+                    'Not set'
+                  )}
+                </Typography>
+              </Box>
+            );
+          })}
         </Box>
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
           {type !== 'memory' && additionalInfoCPUAndMem?.cpuInfo?.p99 ? (

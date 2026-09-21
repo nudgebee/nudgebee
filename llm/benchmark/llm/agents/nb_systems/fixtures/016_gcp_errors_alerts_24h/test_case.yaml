@@ -1,0 +1,8 @@
+user_prompt: "are there any GCP services throwing errors or alerts in the last 24 hours?"
+expected_output:
+  - The response must check actual GCP monitoring/alerting or error logs, not fabricate results.
+  - It must either name specific services with errors/alerts and what they are, or clearly state that none were found — either is acceptable as long as it reflects a real check.
+tags:
+  - gcp
+  - cloud
+  - orchestrator

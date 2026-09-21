@@ -124,12 +124,25 @@
       INSIGHTS
     </div>
     {% for insight in insights_list %}
+    {% set apps_count = insight.applications | default([], true) | length %}
+    {% set insight_text = (insight.title ~ ' detected for (' ~ apps_count ~ ') workloads') if (insight.type == 'Troubleshooting' and apps_count > 0) else insight.title %}
+    {% if insight.type in ('Troubleshooting', 'Performance') %}{% set insight_cta = 'Investigate' %}
+    {% elif insight.type == 'Security' %}{% set insight_cta = 'Secure now' %}
+    {% elif insight.type == 'Configuration' %}{% set insight_cta = 'Configure' %}
+    {% elif insight.type in ('Optimization', 'Cost') %}{% set insight_cta = 'Optimize' %}
+    {% elif insight.type == 'InfraUpgrade' %}{% set insight_cta = 'Upgrade' %}
+    {% else %}{% set insight_cta = 'View details' %}{% endif %}
     <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
       <span style="color:#F59E0B; margin-right:6px;">&#8226;</span>
-      {% if insight.type == 'Troubleshooting' %}
-        {{ insight.title }} detected for ({{ insight.applications | length }}) workloads
-      {% else %}
-        {{ insight.title }}
+      {{ insight_text }}
+      {% if insight.redirect_url %}
+      &nbsp;
+      {#- redirect_url is a relative path from computeRedirectURL today; the absolute-URL branch guards a future change to that contract -#}
+      {% set insight_href = insight.redirect_url if insight.redirect_url.startswith(('http://', 'https://')) else base_url ~ ('' if insight.redirect_url.startswith('/') else '/') ~ insight.redirect_url %}
+      <a href="{{ insight_href }}"
+        style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
+        {{ insight_cta }} &rarr;
+      </a>
       {% endif %}
     </p>
     {% endfor %}
@@ -144,6 +157,16 @@
     {% for recommendation in sorted_recommendations[:5] %}
       {% set savings = recommendation.sum_estimated_savings %}
       {% set rule = recommendation.rule_name %}
+      {#- pod_right_sizing splits into two category rows upstream (ml-k8s-server
+         classify_pod_right_sizing_category): "RightSizing" = requests set but
+         mis-sized, "Configuration" = no requests set. Tag both so the two
+         recap lines read as distinct findings. Mirrors
+         _POD_RIGHT_SIZING_CATEGORY_TAGS in slack/daily_highlight.py. -#}
+      {% set pod_right_sizing_tags = {'RightSizing': ' (resize requests)', 'Configuration': ' (set requests, best practice)'} %}
+      {% set rule_label = rule.replace('_', ' ') %}
+      {% if rule == 'pod_right_sizing' %}
+        {% set rule_label = rule_label ~ pod_right_sizing_tags.get(recommendation.category, '') %}
+      {% endif %}
       {% if rule == 'eks_cluster_upgrade' %}
         {% set link_hash = 'security/cluster-upgrade' %}
       {% elif rule == 'unused_pvc' %}
@@ -164,7 +187,7 @@
         <strong>{{ recommendation.count }}</strong>
         <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#{{ link_hash }}"
           style="color:#3B82F6; text-decoration:none; font-weight:500;">
-          {{ rule.replace('_', ' ') }}
+          {{ rule_label }}
         </a>
         {% if savings > 0 %}
           — save <strong style="color:#22C55E;">${{ savings | round(2) }}/mo</strong>
@@ -189,13 +212,13 @@
         <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/app-errors" style="color:#3B82F6; text-decoration:none;">Application Errors</a>: {{ current_app_events }}
         {% set diff_app_events = previous_app_events - current_app_events %}
         {% if previous_app_events == 0 %}
-          (-)
+          <span style="color:#6B7280;">(none yesterday)</span>
         {% elif diff_app_events > 0 %}
           (<span style="color:#22C55E;">&#9660; {{ ((diff_app_events / previous_app_events) * 100) | round(0) }}%</span>)
         {% elif diff_app_events < 0 %}
           (<span style="color:#EF4444;">&#9650; {{ ((-diff_app_events / previous_app_events) * 100) | round(0) }}%</span>)
         {% else %}
-          (-)
+          <span style="color:#6B7280;">(no change)</span>
         {% endif %}
       </p>
       {% endif %}
@@ -205,13 +228,13 @@
         <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/node-errors" style="color:#3B82F6; text-decoration:none;">Node Errors</a>: {{ current_node_events }}
         {% set diff_node_events = previous_node_events - current_node_events %}
         {% if previous_node_events == 0 %}
-          (-)
+          <span style="color:#6B7280;">(none yesterday)</span>
         {% elif diff_node_events > 0 %}
           (<span style="color:#22C55E;">&#9660; {{ ((diff_node_events / previous_node_events) * 100) | round(0) }}%</span>)
         {% elif diff_node_events < 0 %}
           (<span style="color:#EF4444;">&#9650; {{ ((-diff_node_events / previous_node_events) * 100) | round(0) }}%</span>)
         {% else %}
-          (-)
+          <span style="color:#6B7280;">(no change)</span>
         {% endif %}
       </p>
       {% endif %}
@@ -221,13 +244,13 @@
         <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/pod-errors" style="color:#3B82F6; text-decoration:none;">Pod Errors</a>: {{ current_pod_events }}
         {% set diff_pod_events = previous_pod_events - current_pod_events %}
         {% if previous_pod_events == 0 %}
-          (-)
+          <span style="color:#6B7280;">(none yesterday)</span>
         {% elif diff_pod_events > 0 %}
           (<span style="color:#22C55E;">&#9660; {{ ((diff_pod_events / previous_pod_events) * 100) | round(0) }}%</span>)
         {% elif diff_pod_events < 0 %}
           (<span style="color:#EF4444;">&#9650; {{ ((-diff_pod_events / previous_pod_events) * 100) | round(0) }}%</span>)
         {% else %}
-          (-)
+          <span style="color:#6B7280;">(no change)</span>
         {% endif %}
       </p>
       {% endif %}

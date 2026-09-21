@@ -7,9 +7,44 @@ import apiTickets from '@api1/tickets';
 import observability from '@api1/observability';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { toast as snackbar } from '@ui/Toast';
+import { isFetchableHttpUrl, isTemplateString } from 'src/utils/url';
+
+export class OptionsSourceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OptionsSourceError';
+  }
+}
 
 type OptionItem = { label: string; value: string; description?: string };
 type FetcherFn = (formValues: Record<string, any>) => Promise<OptionItem[]>;
+type GuardFn = (formValues: Record<string, any>) => boolean;
+
+/**
+ * Registry of guard functions keyed by options_source type.
+ * Checked in the render pass before marking loading or issuing requests.
+ */
+const OPTIONS_SOURCE_GUARDS: Record<string, GuardFn> = {
+  mcp_tools: (formValues) => {
+    const mode = formValues.connection_mode || 'integration';
+    if (mode === 'integration') {
+      return !!formValues.integration_id;
+    }
+    const url = formValues.url;
+    if (!url || isTemplateString(url) || !isFetchableHttpUrl(url)) {
+      return false;
+    }
+    if (formValues.auth_type === 'oauth2') {
+      const hasTokenUrl = !!formValues.oauth_token_url?.trim();
+      const hasClientId = !!formValues.oauth_client_id?.trim();
+      const hasClientSecret = !!formValues.oauth_client_secret?.trim();
+      if (!hasTokenUrl || !hasClientId || !hasClientSecret) {
+        return false;
+      }
+    }
+    return true;
+  },
+};
 
 /**
  * Registry of fetcher functions keyed by options_source type.
@@ -223,21 +258,24 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
 
     const resp: any = await apiWorkflow.listMCPTools(accountId, params);
 
-    // Surface failures to the user — a 401/500 from the upstream MCP server
-    // arrives here as either a populated `errors` array or null `data`.
-    // In Direct mode the failure is usually an unreachable URL or missing auth,
-    // so append a hint pointing at the Auth Type / OAuth fields (shown above
-    // Tool Name) instead of leaving an opaque "internal error" dead end.
     const directHint = mode === 'direct' ? ' Check the URL is reachable and any required Auth Type / OAuth fields above are filled.' : '';
     const errors = resp?.errors;
     if (Array.isArray(errors) && errors.length > 0) {
       const message = errors[0]?.message || errors[0]?.toString?.() || 'Failed to list MCP tools';
+      if (mode === 'direct') {
+        throw new OptionsSourceError(`Unable to fetch MCP tools from the provided URL. Please verify the URL and try again. (${message})`);
+      }
       snackbar.error(`Failed to list MCP tools: ${message}.${directHint}`);
       return [];
     }
 
     const tools = resp?.data?.workflow_list_mcp_tools?.tools;
     if (!Array.isArray(tools)) {
+      if (mode === 'direct') {
+        throw new OptionsSourceError(
+          'Unable to fetch MCP tools from the provided URL. Please verify the URL and try again. (empty response from server)'
+        );
+      }
       snackbar.error(`Failed to list MCP tools: empty response from server.${directHint}`);
       return [];
     }
@@ -311,9 +349,10 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
  */
 const TICKET_SOURCE_TYPES = new Set(['ticket_issue_types', 'ticket_field_options']);
 
-interface OptionsSourceResult {
+export interface OptionsSourceResult {
   options: OptionItem[];
   loading: boolean;
+  error?: string;
 }
 
 interface FieldToFetch {
@@ -366,19 +405,59 @@ const buildDepKey = (fieldsToFetch: FieldToFetch[], formValues: Record<string, a
     })
     .join('|');
 
+const isFreeTextDep = (schema: any, depFieldName: string): boolean => {
+  const prop = schema?.[depFieldName];
+  if (!prop) return true;
+  if (prop.enum || prop.options || prop.options_source) return false;
+  return true;
+};
+
 /**
  * Generic hook that scans a task definition's input_schema for fields with
  * options_source and fetches the corresponding data using the fetcher registry.
  *
  * Supports dependency_mapping — re-fetches when dependency values in formValues change.
+ * Free-text field dependencies are debounced by 500 ms; dropdown dependencies and initial
+ * loads execute immediately.
  */
 export const useOptionsSource = (currentTaskDefinition: any, formValues: Record<string, any>): Record<string, OptionsSourceResult> => {
   const [data, setData] = useState<Record<string, OptionsSourceResult>>({});
   const prevDepsRef = useRef<string>('');
+  const prevTaskDefRef = useRef<any>(null);
+  const isInitialTaskLoadRef = useRef<boolean>(true);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runIdRef = useRef<number>(0);
+  const formValuesRef = useRef<Record<string, any>>(formValues);
+  formValuesRef.current = formValues;
+
+  // Cleanup pending timer on unmount only
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
+    if (prevTaskDefRef.current !== currentTaskDefinition) {
+      prevTaskDefRef.current = currentTaskDefinition;
+      isInitialTaskLoadRef.current = true;
+    }
+
+    const isInitialLoad = isInitialTaskLoadRef.current;
+    if (isInitialTaskLoadRef.current) {
+      isInitialTaskLoadRef.current = false;
+    }
+
     const schema = currentTaskDefinition?.input_schema;
     if (!schema) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      runIdRef.current++;
       setData({});
       // Reset depKey so the next run with a valid schema re-fetches; otherwise
       // a transient empty render (e.g. taskDefinitions briefly unloaded on
@@ -392,10 +471,20 @@ export const useOptionsSource = (currentTaskDefinition: any, formValues: Record<
     const fieldsToFetch: FieldToFetch[] = [];
     for (const [fieldName, fieldDef] of Object.entries(schema)) {
       const resolved = resolveFieldToFetch(fieldName, fieldDef as any, schema, formValues, isTicketCreate);
-      if (resolved) fieldsToFetch.push(resolved);
+      if (resolved) {
+        const guard = OPTIONS_SOURCE_GUARDS[resolved.sourceType];
+        if (!guard || guard(formValues)) {
+          fieldsToFetch.push(resolved);
+        }
+      }
     }
 
     if (fieldsToFetch.length === 0) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      runIdRef.current++;
       setData({});
       // Same reason as above: a visible_when-gated field (e.g. ticket_tasks'
       // project_key) can briefly drop out of the visible set during reopen
@@ -408,33 +497,67 @@ export const useOptionsSource = (currentTaskDefinition: any, formValues: Record<
     const depKey = buildDepKey(fieldsToFetch, formValues);
 
     if (depKey === prevDepsRef.current) return;
+
     prevDepsRef.current = depKey;
 
-    // Mark all as loading
-    const loading: Record<string, OptionsSourceResult> = {};
-    for (const f of fieldsToFetch) {
-      loading[f.fieldName] = { options: data[f.fieldName]?.options ?? [], loading: true };
-    }
-    setData(loading);
-
-    // Fetch all in parallel
-    Promise.all(
-      fieldsToFetch.map(async (f) => {
-        try {
-          const options = await OPTIONS_SOURCE_FETCHERS[f.sourceType](formValues);
-          return { fieldName: f.fieldName, options, loading: false };
-        } catch (err) {
-          console.error(`Failed to fetch options for ${f.fieldName} (source: ${f.sourceType}):`, err);
-          return { fieldName: f.fieldName, options: [], loading: false };
-        }
-      })
-    ).then((results) => {
-      const newData: Record<string, OptionsSourceResult> = {};
-      for (const r of results) {
-        newData[r.fieldName] = { options: r.options, loading: r.loading };
-      }
-      setData(newData);
+    // Check if any dependency in fieldsToFetch is a free-text field
+    const hasFreeTextDep = fieldsToFetch.some((f) => {
+      if (!f.dependencyMapping) return false;
+      return Object.values(f.dependencyMapping).some((depField) => isFreeTextDep(schema, depField));
     });
+
+    const shouldDebounce = !isInitialLoad && hasFreeTextDep;
+
+    const executeFetch = (runId: number) => {
+      const currentValues = formValuesRef.current;
+      // Mark all as loading
+      setData((prev) => {
+        const loading: Record<string, OptionsSourceResult> = { ...prev };
+        for (const f of fieldsToFetch) {
+          loading[f.fieldName] = { options: prev[f.fieldName]?.options ?? [], loading: true, error: undefined };
+        }
+        return loading;
+      });
+
+      Promise.all(
+        fieldsToFetch.map(async (f) => {
+          try {
+            const options = await OPTIONS_SOURCE_FETCHERS[f.sourceType](currentValues);
+            return { fieldName: f.fieldName, options, loading: false };
+          } catch (err: any) {
+            if (err instanceof OptionsSourceError) {
+              snackbar.error(err.message);
+              return { fieldName: f.fieldName, options: [], loading: false, error: err.message };
+            }
+            console.error(`Failed to fetch options for ${f.fieldName} (source: ${f.sourceType}):`, err);
+            return { fieldName: f.fieldName, options: [], loading: false };
+          }
+        })
+      ).then((results) => {
+        if (runId !== runIdRef.current) return;
+        const newData: Record<string, OptionsSourceResult> = {};
+        for (const r of results) {
+          newData[r.fieldName] = { options: r.options, loading: r.loading, error: r.error };
+        }
+        setData(newData);
+      });
+    };
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    const runId = ++runIdRef.current;
+
+    if (shouldDebounce) {
+      debounceTimerRef.current = setTimeout(() => {
+        debounceTimerRef.current = null;
+        executeFetch(runId);
+      }, 500);
+    } else {
+      executeFetch(runId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTaskDefinition, formValues]);
 

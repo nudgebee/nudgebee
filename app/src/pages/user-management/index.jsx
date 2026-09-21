@@ -4,7 +4,7 @@ import AllUsers from '@components/user-management/AllUsers';
 import UserGroup from '@components/user-management/UserGroup';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import { AuditsTable } from '@components/audits';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import Notifications from '@components/notifications';
 import Integrations from '@components/accounts/integration';
 import OwnershipRules from '@components/user-management/OwnershipRules';
@@ -14,6 +14,7 @@ import { useRouter } from 'next/router';
 import { userManagementFilters } from '@lib/authHooks';
 import { hasAdminSurfaceAccess, missingPermissionMessage } from '@lib/auth';
 import Loader from '@shared/Loader';
+import { ds } from '@utils/colors';
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -22,16 +23,70 @@ import Loader from '@shared/Loader';
 // app/src/lib/permissionCatalog.ts). It drives the disabled-tab gating below:
 // a custom-role user without Read on that module sees the tab greyed-out (not
 // hidden) so the capability is discoverable and they can request access.
+// `description` is the one-line "what is this tab for" caption rendered under
+// the tab strip. Extension-registered filters carry their own (see
+// UserManagementFilter in @lib/authHooks).
 const baseFilters = [
-  { name: 'Users', fragment: 'users', icon: User1, Body: AllUsers, module: 'users' },
-  { name: 'Groups', fragment: 'groups', icon: UserGroupIcon, Body: UserGroup, module: 'usergroups' },
+  {
+    name: 'Users',
+    fragment: 'users',
+    icon: User1,
+    Body: AllUsers,
+    module: 'users',
+    description:
+      'Everyone who can sign in to this tenant — invite users, set their role and status, and review the groups and integration profiles each one belongs to.',
+  },
+  {
+    name: 'Groups',
+    fragment: 'groups',
+    icon: UserGroupIcon,
+    Body: UserGroup,
+    module: 'usergroups',
+    description:
+      'Bundle users into groups and assign roles at the group level — scoped to an account or namespace — instead of granting access user by user.',
+  },
   // Roles & Permissions (dynamic RBAC) is EE-only: registered via
   // registerUserManagementFilter from app/src/ee (stripped in OSS). It slots in
   // after the base filters. OSS ships without it and uses the built-in roles.
-  { name: 'Audits', fragment: 'audits', icon: AuditIcon, Body: AuditsTable, module: 'audits' },
-  { name: 'Notifications', fragment: 'notifications', icon: NotificationIcon1, Body: Notifications, module: 'notifications' },
-  { name: 'Integrations', fragment: 'integrations', icon: IntegrationsIcon, Body: Integrations, module: 'integrations' },
-  { name: 'Ownership', fragment: 'ownership', icon: UserGroupIcon, Body: OwnershipRules, module: 'ownership' },
+  {
+    name: 'Audits',
+    fragment: 'audits',
+    icon: AuditIcon,
+    Body: AuditsTable,
+    module: 'audits',
+    description:
+      'The searchable trail of configuration, access and automation changes in this tenant — who did what, when, and what the change altered.',
+  },
+  // id is pinned to the old tab name so the DOM id (#anchor-tab-Notifications) that
+  // app-e2e-tests locates the tab by stays stable across the label rename.
+  {
+    name: 'Notification Rules',
+    id: 'Notifications',
+    fragment: 'notification-rules',
+    icon: NotificationIcon1,
+    Body: Notifications,
+    module: 'notifications',
+    description:
+      'Rules that decide which troubleshooting, optimization, SLO and cloud events are delivered — for which clusters and applications, and to which channels.',
+  },
+  {
+    name: 'Integrations',
+    fragment: 'integrations',
+    icon: IntegrationsIcon,
+    Body: Integrations,
+    module: 'integrations',
+    description:
+      'Connect Nudgebee to your clouds, observability platforms, ticketing, repositories and messaging tools — and see what is already connected.',
+  },
+  {
+    name: 'Ownership',
+    fragment: 'ownership',
+    icon: UserGroupIcon,
+    Body: OwnershipRules,
+    module: 'ownership',
+    description:
+      'Rules that map a namespace, workload label or cloud resource to an owning user or group, so resources are attributed to a team automatically.',
+  },
 ];
 
 export default function UserManagement() {
@@ -133,7 +188,29 @@ export default function UserManagement() {
         {/* Guard against the brief mount tick where AnchorComponent reports its
             disabled default (0) before the hash-steer above lands — never render
             a section the user can't open. */}
-        <Box mt={2}>{SelectedBody && !selectedOption?.disabled && <SelectedBody session={session} />}</Box>
+        <Box mt={2}>
+          {SelectedBody && !selectedOption?.disabled && (
+            <>
+              {/* One-line "what is this tab for" caption. Rendered here rather
+                  than inside each section body so every tab — including the
+                  EE-registered ones — gets it from a single place. */}
+              {selectedOption?.description && (
+                <Typography
+                  id='user-management-tab-description'
+                  sx={{
+                    pb: ds.space[3],
+                    fontSize: ds.text.small,
+                    fontWeight: ds.weight.regular,
+                    color: ds.gray[600],
+                  }}
+                >
+                  {selectedOption.description}
+                </Typography>
+              )}
+              <SelectedBody session={session} />
+            </>
+          )}
+        </Box>
       </ErrorBoundary>
     </>
   );

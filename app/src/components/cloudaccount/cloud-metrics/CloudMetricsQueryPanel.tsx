@@ -60,9 +60,13 @@ export function useCloudMetricsQueryPanel({
     if (!accountId) {
       return;
     }
+    let cancelled = false;
     const fetchServices = async () => {
       try {
         const resp = await apiCloudAccount.getCloudResource({ account_id: accountId, status: 'Active' }, 1000);
+        if (cancelled) {
+          return;
+        }
         const allResources = resp?.data?.data?.cloud_resourses || [];
 
         const serviceSet = new Set<string>();
@@ -79,10 +83,15 @@ export function useCloudMetricsQueryPanel({
           setSelectedServiceName(serviceList[0].value);
         }
       } catch (err) {
-        console.error('Failed to fetch services for cloud metrics', err);
+        if (!cancelled) {
+          console.error('Failed to fetch services for cloud metrics', err);
+        }
       }
     };
     fetchServices();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   useEffect(() => {
@@ -95,6 +104,7 @@ export function useCloudMetricsQueryPanel({
     setAvailableMetrics([]);
     setSelectedMetrics([]);
 
+    let cancelled = false;
     const fetchRegions = async () => {
       try {
         const resp = await apiCloudAccount.getCloudResource({
@@ -102,6 +112,9 @@ export function useCloudMetricsQueryPanel({
           serviceName: selectedServiceName,
           status: 'Active',
         });
+        if (cancelled) {
+          return;
+        }
         const allResources = resp?.data?.data?.cloud_resourses || [];
         const uniqueRegions = [...new Set(allResources.map((r: any) => r.region).filter(Boolean))] as string[];
         uniqueRegions.sort((a, b) => a.localeCompare(b));
@@ -110,10 +123,15 @@ export function useCloudMetricsQueryPanel({
           setSelectedRegion(uniqueRegions[0]);
         }
       } catch (err) {
-        console.error('Failed to fetch regions for cloud metrics', err);
+        if (!cancelled) {
+          console.error('Failed to fetch regions for cloud metrics', err);
+        }
       }
     };
     fetchRegions();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedServiceName]);
 
   useEffect(() => {
@@ -122,6 +140,7 @@ export function useCloudMetricsQueryPanel({
     }
     setSelectedResource(null);
 
+    let cancelled = false;
     const fetchResources = async () => {
       setResourcesLoading(true);
       try {
@@ -133,15 +152,25 @@ export function useCloudMetricsQueryPanel({
           status: 'Active',
           ...(resourceType ? { type: resourceType } : {}),
         });
+        if (cancelled) {
+          return;
+        }
         const allResources = resp?.data?.data?.cloud_resourses || [];
         setResources(allResources);
       } catch (err) {
-        console.error('Failed to fetch resources for cloud metrics', err);
+        if (!cancelled) {
+          console.error('Failed to fetch resources for cloud metrics', err);
+        }
       } finally {
-        setResourcesLoading(false);
+        if (!cancelled) {
+          setResourcesLoading(false);
+        }
       }
     };
     fetchResources();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedRegion, selectedServiceName]);
 
   useEffect(() => {
@@ -151,6 +180,7 @@ export function useCloudMetricsQueryPanel({
       return;
     }
 
+    let cancelled = false;
     const fetchMetrics = async () => {
       setMetricsLoading(true);
       try {
@@ -159,6 +189,9 @@ export function useCloudMetricsQueryPanel({
           metricProviderSource: 'user',
           serviceName: selectedServiceName,
         });
+        if (cancelled) {
+          return;
+        }
         const metrics = resp?.data?.data?.metrics_list_names || [];
         const metricItems = metrics.map((m: any) => ({
           name: m.metric,
@@ -171,14 +204,21 @@ export function useCloudMetricsQueryPanel({
           setSelectedStatistic(metricItems[0].statistics[0]);
         }
       } catch (err) {
-        console.error('Failed to fetch metrics list', err);
-        setAvailableMetrics([]);
-        setSelectedMetrics([]);
+        if (!cancelled) {
+          console.error('Failed to fetch metrics list', err);
+          setAvailableMetrics([]);
+          setSelectedMetrics([]);
+        }
       } finally {
-        setMetricsLoading(false);
+        if (!cancelled) {
+          setMetricsLoading(false);
+        }
       }
     };
     fetchMetrics();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedServiceName]);
 
   const emitChange = useCallback(() => {

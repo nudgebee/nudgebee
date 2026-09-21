@@ -784,9 +784,28 @@ func elbCandidateIDs(resourceIds []string, dimensions []map[string]string) []str
 // getNamespaceForService returns the CloudWatch namespace for a given service name.
 // Returns empty string if service is not recognized.
 func getNamespaceForService(serviceName string) string {
-	serviceName = strings.ToLower(serviceName)
-	if config, ok := serviceCloudwatchNamespaceMap[serviceName]; ok {
+	if config, ok := serviceCloudwatchNamespaceMap[strings.ToLower(serviceName)]; ok {
 		return config.Name
+	}
+	// A namespace we don't have a service code for is still a namespace the
+	// account publishes to. Returning "" here skipped the dynamic lister and
+	// left the static one — which reads the same map — to return an empty list,
+	// so every custom namespace looked to us like a service with no metrics at
+	// all. Observed on an AWS account publishing PixelPulse/portals with
+	// properly InstanceId-dimensioned host metrics: list_metrics returned
+	// nothing for it while the CloudWatch API returned three metrics.
+	//
+	// Gated on the "/" because that is what separates a namespace from a
+	// service code: no key in serviceCloudwatchNamespaceMap contains one, and
+	// no AWS service code does either, so this cannot shadow a known service.
+	// A miss costs one ListMetrics call that comes back empty and falls through
+	// to the static path exactly as before.
+	//
+	// Returned verbatim rather than lowercased: CloudWatch namespaces are
+	// case-sensitive, so "PixelPulse/AppHealth" and "pixelpulse/apphealth" are
+	// different namespaces and only the first one exists.
+	if strings.Contains(serviceName, "/") {
+		return serviceName
 	}
 	return ""
 }

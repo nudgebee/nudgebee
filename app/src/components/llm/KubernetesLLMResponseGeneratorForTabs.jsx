@@ -36,6 +36,7 @@ import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
 import ListAgents from './ListAgents';
 import ListTools from './ListTools';
 import Tooltip from '@ui/Tooltip';
+import { isConversationActivelyExecuting } from './utils/conversationStatus';
 
 const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, sessionId = '' }) => {
   const router = useRouter();
@@ -583,7 +584,7 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
   }, [popup, query, selectedSessionId]);
 
   const handleGenerateInvestigation = async (text) => {
-    if (conversationStatus == 'IN_PROGRESS' || !text) {
+    if (isConversationActivelyExecuting(conversationStatus) || !text) {
       return;
     }
     setGenerateQuestionText(text);

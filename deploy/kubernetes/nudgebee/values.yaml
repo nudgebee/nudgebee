@@ -313,8 +313,58 @@ rabbitmq:
           annotations:
             summary: RabbitMQ unroutable messages
             description: 'A queue has unroutable messages'
+# ---------------------------------------------------------------------------
+# Install-time setup. The two parts are independent: an install can
+# pre-provision its admin without bundling an agent, or bundle an agent and let
+# the first login provision the admin.
+# ---------------------------------------------------------------------------
+
+admin:
+  # Address the first admin is created from at startup, so the deployment is
+  # complete when `helm install` returns rather than half-configured until
+  # somebody signs in. The tenant is named after it ("admin@acme.com" ->
+  # "admin's Org"), matching what first-login provisioning would have produced.
+  #
+  # Required on a fresh install that has no licence: with neither, nothing
+  # carries an admin address, and the install fails rather than completing into
+  # a deployment that still has to be provisioned by hand at first login.
+  # Upgrades are never checked — they already have an admin.
+  #
+  # A licence carries its own address and takes over, so a licensed install does
+  # not need this — and does not honour it, a conflicting value is ignored with
+  # a warning.
+  #
+  # Sign in with this address and the generated password:
+  #   kubectl get secret nudgebee -n <ns> \
+  #     -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
+  email: ''
+
+agent:
+  # Install the NudgeBee agent alongside the server and connect the cluster
+  # hosting it, so the first cluster needs no second install and no copied auth
+  # key. Additional clusters keep the normal two-step flow.
+  #
+  # On by default: a server that monitors nothing is not a usable install, and
+  # the cluster it runs on is the one cluster every deployment has.
+  #
+  # Set false when upgrading a deployment that already monitors this cluster
+  # through a separately installed agent — otherwise the same cluster registers
+  # a second time under a different name. Note also that enabling it adds a
+  # privileged eBPF DaemonSet across the nodes.
+  enabled: true
+  # Name this cluster appears under — the cluster hosting the NudgeBee control
+  # plane. More than 3 characters; "Demo" is reserved.
+  clusterName: 'nb-control-plane-k8s'
+  # GitOps only. Offline render (Argo CD, Flux) cannot read the existing
+  # credential back, so the chart refuses to guess on upgrade — set both from
+  # the live Secret. Leave empty for ordinary `helm install` / `helm upgrade`.
+  accessKey: ''
+  accessSecret: ''
+
 services-server:
   fullnameOverride: services-server
+  # Carries ADMIN_EMAIL and the bundled agent's credential when either is in use.
+  extraEnvFromSecret: 'nudgebee-bootstrap'
   env:
     NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c'
     TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.58.0'
@@ -497,3 +547,67 @@ cost-server:
 llm-gateway:
   enabled: false
   fullnameOverride: llm-gateway
+
+# Passthrough to the bundled agent subchart. Everything the upstream chart
+# accepts can be set here; only the credential wiring is fixed by us.
+nudgebee-agent:
+  # Do not assert that a Prometheus operator exists. The agent chart renders its
+  # ServiceMonitor / PodMonitor / PrometheusRule when this is true OR when the
+  # CRDs are actually registered; false leaves the capability check in charge, so
+  # a cluster with the operator still gets them and one without installs cleanly.
+  # The bundled install targets both.
+  enablePrometheusStack: false
+  runner:
+    # Must be off together with the collector below. The runner's
+    # CLICKHOUSE_PASSWORD env renders when EITHER the collector is enabled OR
+    # this is true, and it is a secretKeyRef into the ClickHouse subchart's
+    # Secret. Disabling only the collector leaves that reference pointing at a
+    # Secret that no longer exists, and the runner sits in
+    # CreateContainerConfigError forever. Found by installing, not by rendering.
+    clickhouse_enabled: false
+    nudgebee:
+      # Reads the credential from the Secret this chart generates, so the agent
+      # has it the moment its pod starts and nothing has to be ordered.
+      authSecretKeyFrom:
+        name: nudgebee-bootstrap
+        key: NUDGEBEE_AUTH_SECRET_KEY
+      # Short service names on purpose: the agent is deployed into this release's
+      # namespace, and Kubernetes DNS resolves same-namespace Services without a
+      # suffix. Qualifying them with a namespace would pin the agent to whatever
+      # namespace was hardcoded here, so an install into any other one would
+      # point at a DIFFERENT deployment's collector and relay. Override both
+      # when the agent reaches the server through ingress.
+      endpoint: 'http://k8s-collector/'
+    relay_address: 'ws://relay-server:8080/register'
+  globalConfig:
+    # Empty lets the agent autodiscover Prometheus in the cluster. We never
+    # install one; the agent runs without it and reports reduced capability.
+    prometheus_url: ''
+  # Tracing and profiling storage is off for the bundled agent. Two reasons,
+  # both about the first install: it brings a ClickHouse StatefulSet with a
+  # large PVC, which is a lot to impose on someone trying the product; and the
+  # Bitnami subchart refuses to render on `helm upgrade` unless the existing
+  # passwords are passed back in, which would break every upgrade of a bundled
+  # install. Inventory, events, logs and metrics are unaffected. Turn it on
+  # deliberately, and supply the ClickHouse credentials when upgrading.
+  opentelemetry-collector:
+    enabled: false
+  # The node agent is off for the same first-install reason, and the two belong
+  # together. It is a privileged eBPF DaemonSet on every node, which plenty of
+  # clusters will not admit under Pod Security Admission -- a poor thing to
+  # impose on someone whose first act is trying the product. And with the
+  # collector above disabled there is nowhere for the traces, logs and profiles
+  # it pushes to go, so what remains is scrape-only eBPF metrics that need both
+  # a Prometheus and a monitor CR to be consumed at all.
+  #
+  # What turning it on adds: network metrics and the service map (both of which
+  # also need Prometheus), plus traces and profiles once the collector is on.
+  nodeAgent:
+    enabled: false
+  clickhouse:
+    # Belt and braces: the subchart is conditioned on the collector above, but
+    # its monitoring CRs are values-gated and a cluster may have no Prometheus
+    # operator to accept them.
+    metrics:
+      serviceMonitor:
+        enabled: false

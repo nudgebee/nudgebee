@@ -8,7 +8,7 @@ import { toSeverityLevel } from '@utils/common';
 import recommendationApi from '@api1/recommendation';
 import { useLatestRequest } from '@components/vm/common';
 import RowActions from './RowActions';
-import { DEFAULT_STATUS, getResourceDisplayName } from './utils';
+import { DEFAULT_STATUS, getResourceDisplayName, lastSeenBucketToParams } from './utils';
 
 const PAGE_SIZE = 5;
 
@@ -37,6 +37,10 @@ interface ConfigRuleFindingsProps {
   accountId: string | string[];
   status: string[];
   severity?: string[];
+  /** Same server-side facets the rollup was loaded under — the drawer must
+      show the resources its row counted, not the unfiltered set. */
+  safety?: string[];
+  lastSeen?: string;
   accounts?: Record<string, { name: string; cloud_provider: string }>;
   /** Opens one finding's detail panel — the individual item, not the group. */
   onSelectRecommendation: (rec: any) => void;
@@ -50,7 +54,17 @@ interface ConfigRuleFindingsProps {
  * Paginated rather than capped: a single check routinely spans every Lambda in
  * an account, and a silent "first N" would read as the whole story.
  */
-const ConfigRuleFindings = ({ ruleName, accountId, status, severity, accounts, onSelectRecommendation, rowActions }: ConfigRuleFindingsProps) => {
+const ConfigRuleFindings = ({
+  ruleName,
+  accountId,
+  status,
+  severity,
+  safety,
+  lastSeen,
+  accounts,
+  onSelectRecommendation,
+  rowActions,
+}: ConfigRuleFindingsProps) => {
   const [rows, setRows] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -60,7 +74,9 @@ const ConfigRuleFindings = ({ ruleName, accountId, status, severity, accounts, o
   // Serialised rather than compared by reference: the reset must survive a
   // caller that builds these arrays inline, where an identity check would fire
   // every render and pin the reader to page one.
-  const scopeKey = `${ruleName}|${[accountId].flat().join(',')}|${status.join(',')}|${(severity || []).join(',')}`;
+  const scopeKey = `${ruleName}|${[accountId].flat().join(',')}|${status.join(',')}|${(severity || []).join(',')}|${(safety || []).join(',')}|${
+    lastSeen || ''
+  }`;
   useEffect(() => {
     // Narrowing the filters shrinks the result set, so a page offset from the
     // previous scope can land past the end and read as "no findings".
@@ -78,6 +94,15 @@ const ConfigRuleFindings = ({ ruleName, accountId, status, severity, accounts, o
         ruleName: [ruleName],
         status: status.length > 0 ? status : DEFAULT_STATUS,
         ...(severity?.length ? { severity } : {}),
+        ...(safety?.length ? { safetyBand: safety } : {}),
+        ...lastSeenBucketToParams(lastSeen || ''),
+        // Worst first — the caller's default orders by estimated_savings, which
+        // every configuration finding carries as $0, so the order it inherits
+        // is effectively arbitrary. severity_weight is the ranked column the
+        // other drawers (posture, image scan, VM) already order by; the string
+        // severity column sorts alphabetically and buries Critical.
+        orderBy: 'severity_weight',
+        orderAsc: false,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       });
@@ -93,7 +118,7 @@ const ConfigRuleFindings = ({ ruleName, accountId, status, severity, accounts, o
     } finally {
       if (isLatest()) setLoading(false);
     }
-  }, [ruleName, accountId, status, severity, page, beginRequest]);
+  }, [ruleName, accountId, status, severity, safety, lastSeen, page, beginRequest]);
 
   useEffect(() => {
     load();

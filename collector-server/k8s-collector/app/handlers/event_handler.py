@@ -65,6 +65,18 @@ _POD_AGGREGATION_KEYS = {
     "Kubernetes Warning Event",
 }
 
+# Node events whose condition FLAPS, so the agent's per-transition fingerprint
+# mints a new one on every flip. See _normalize_node_window_fingerprint.
+_NODE_WINDOWED_AGGREGATION_KEYS = {
+    "node_pressure",
+}
+
+# Must match nodePressureWindow in the agent
+# (k8s-agent runner/pkg/triggers/predicates.go). The agent buckets its own
+# fingerprint by this window; we re-derive the same shape here so clusters
+# running an agent that predates that fix get the same collapsing.
+_NODE_FINGERPRINT_WINDOW_SECONDS = 6 * 60 * 60
+
 # Cache for workload owner lookups (pod_name/job_name -> owner info)
 # TTL of 1 hour; workload owners rarely change
 _OWNER_CACHE_TTL_SECONDS = 60 * 60
@@ -343,6 +355,68 @@ def _normalize_owner_fingerprint(finding: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _as_naive_utc(value):
+    """Normalise a finding timestamp to naive UTC, or None when unusable.
+
+    Backported verbatim from main (it arrived there with an unrelated change,
+    #38086) because the node_pressure fingerprint below depends on it: a naive
+    datetime's .timestamp() resolves against the HOST timezone, which would
+    bucket the same event differently on two collector pods. Kept identical to
+    main's copy so the two branches converge rather than drift.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _normalize_node_window_fingerprint(finding: dict) -> str:
+    """Fingerprint a flapping node condition per (node, time window) instead of per flip.
+
+    DiskPressure is not an episode, it is a cycle: kubelet fills the disk, garbage-collects
+    images, and fills it again, flipping the condition True -> False -> True every few
+    minutes. The agent fingerprinted on the condition's lastTransitionTime, so every flip
+    produced a new fingerprint -- which also defeated its own 6h rate limit, because that
+    limiter is keyed on the fingerprint. Measured on production: one node produced 7
+    findings in 53 minutes, and node_pressure averaged 7.7 findings per node across 42
+    nodes in 30 days.
+
+    The agent now buckets by time itself, but customers upgrade on their own schedule, so
+    this re-derives the bucket on arrival and covers every version already deployed.
+
+    Bucketed on the finding's OWN starts_at, not on ingestion time: a snapshot that sat in
+    the queue must land in the window it was observed in, not the window it was processed
+    in, or a retry would fork a new chain.
+
+    Unlike the agent, this does NOT include the pressure condition -- the collector only
+    receives the type inside the raw evidence blob, and reaching into it would couple this
+    to the agent's payload shape. The effect is that DiskPressure and MemoryPressure on the
+    same node inside one window chain together. That reads correctly: the node is out of
+    resources, which is one problem, and each event keeps its own evidence either way.
+    """
+    # _as_naive_utc, not datetime.fromisoformat: it already handles the trailing
+    # "Z" the agent sends and returns None for anything unusable. tzinfo is then
+    # set explicitly before .timestamp(), because .timestamp() on a NAIVE
+    # datetime resolves it against the host's local timezone -- two collector
+    # pods in different zones would bucket the same event differently, and the
+    # boundary would sit at local 06:00 rather than 06:00 UTC.
+    starts_at = _as_naive_utc(finding.get("starts_at"))
+    if starts_at is None:
+        return finding["fingerprint"]
+
+    bucket = int(starts_at.replace(tzinfo=timezone.utc).timestamp()) // _NODE_FINGERPRINT_WINDOW_SECONDS
+    raw = f"{finding.get('aggregation_key', '')}:{finding.get('subject_name', '')}:{bucket}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def _enrich_and_normalize_fingerprint(finding: dict, tenant: str, cloud_account_id: str) -> None:
     """Enrich subject_owner from DB when missing, then normalize fingerprint to owner level.
 
@@ -352,6 +426,12 @@ def _enrich_and_normalize_fingerprint(finding: dict, tenant: str, cloud_account_
     aggregation_key = finding.get("aggregation_key", "")
     subject_type = finding.get("subject_type", "")
     subject_owner = finding.get("subject_owner") or ""
+
+    # Node events have no owner to enrich, so this runs before the owner path
+    # and its `if not subject_owner: return` below.
+    if subject_type == "node" and aggregation_key in _NODE_WINDOWED_AGGREGATION_KEYS:
+        finding["fingerprint"] = _normalize_node_window_fingerprint(finding)
+        return
 
     is_job_event = subject_type == "job" and aggregation_key in _JOB_WARNING_AGGREGATION_KEYS
     is_pod_event = subject_type == "pod" and aggregation_key in _POD_AGGREGATION_KEYS
@@ -1246,6 +1326,58 @@ def classify_pod_right_sizing_category(merged_content):
     return "Configuration" if saw_entry else "RightSizing"
 
 
+def _request_value(entry, side):
+    """The request number on one side ("allocated"/"recommended") of a content entry.
+
+    None means unusable — missing, unset, "?" (KRR's NaN placeholder), or NaN —
+    as opposed to a real number we can compare.
+    """
+    if not isinstance(entry, dict):
+        return None
+    side_dict = entry.get(side)
+    if not isinstance(side_dict, dict):
+        return None
+    value = side_dict.get("request")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or math.isnan(value):
+        return None
+    return float(value)
+
+
+def is_value_no_change_workload(merged_content):
+    """True iff every recommended request in the merged payload equals its allocated one.
+
+    The per-container threshold ignore in process_resource_recommendation only
+    fires when a container has BOTH a cpu and a memory request set, so a workload
+    with a single request whose recommendation clamps back onto it still gets a
+    row that advises changing a value to itself. This runs on the merged workload
+    payload and catches those. Keep in sync with the twin in ml-k8s-server
+    vertical_rightsizing/__init__.py.
+
+    Requests only: KRR's limit handling is derived, and the UI renders request
+    changes only — a limit-inclusive comparison would keep rows that display as
+    pure '='.
+
+    Fail-open: any entry whose either side is unusable (unset request, malformed
+    payload) keeps the workload — an unset allocated request is a real change
+    (set it), and a value we cannot read is not proof of "nothing to do".
+    """
+    if not isinstance(merged_content, dict):
+        return False
+    saw_entry = False
+    for entries in merged_content.values():
+        if not isinstance(entries, list):
+            return False
+        for entry in entries:
+            saw_entry = True
+            allocated = _request_value(entry, "allocated")
+            recommended = _request_value(entry, "recommended")
+            if allocated is None or recommended is None:
+                return False
+            if not math.isclose(allocated, recommended, rel_tol=1e-9):
+                return False
+    return saw_entry
+
+
 def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
     recommendations = {}
     settings = get_recommendation_settings(cloud_account_id, "pod_right_sizing")
@@ -1268,10 +1400,22 @@ def generate_krr_recommendation(cloud_account_id, report, resource_map, tenant):
             recommendations[resource_id[0]] = recommendation
         else:
             recommendations[resource_id[0]] = recommendation
-    # Classify on the MERGED payload — a per-container pass would let the last
-    # container win for mixed workloads.
-    for row in recommendations.values():
-        row["category"] = classify_pod_right_sizing_category(json.loads(row["recommendation"]))
+    # Classify and value-check on the MERGED payload — a per-container pass would
+    # let the last container win for mixed workloads. Dropped workloads are also
+    # retired in the DB for free: the caller archives every Open row for the
+    # account and only re-inserts what this dict still contains.
+    no_change_resource_ids = []
+    for resource_id, row in recommendations.items():
+        merged_content = json.loads(row["recommendation"])
+        row["category"] = classify_pod_right_sizing_category(merged_content)
+        if is_value_no_change_workload(merged_content):
+            no_change_resource_ids.append(resource_id)
+    for resource_id in no_change_resource_ids:
+        del recommendations[resource_id]
+    if no_change_resource_ids:
+        logging.info(
+            f"Dropped {len(no_change_resource_ids)} no-change rightsizing workloads " f"for account {cloud_account_id}"
+        )
     return recommendations
 
 

@@ -1,4 +1,5 @@
 import { buildDrawerTasks } from '../useLLMInvestigationControl';
+import { actionableTasks } from '@components/llm/utils/taskClassification';
 
 describe('buildDrawerTasks', () => {
   it('renders spawned agents instead of duplicate agent-wrapper tool rows', () => {
@@ -202,6 +203,32 @@ describe('buildDrawerTasks', () => {
 
     const tasks = buildDrawerTasks(agents, {});
     expect(tasks.find((task) => task.id === 'traces-provider')).toMatchObject({ parentId: 'root-agent' });
+  });
+
+  it('records the turn acknowledgment as a row, but not as a task', () => {
+    const agents = [{ id: 'root-agent', agent_name: 'k8s_orchestrator', status: 'success', llm_conversation_tool_calls: [] }];
+    const message = { id: 'msg-1', ack_message: "I understand you're looking for a manual review of the provided deployment configuration" };
+
+    const tasks = buildDrawerTasks(agents, message);
+    // ack stays in the turn record; only the orchestrator run counts as a task
+    expect(tasks).toHaveLength(2);
+    expect(tasks.find((task) => task.type === 'acknowledgment')).toBeDefined();
+    const counted = actionableTasks(tasks);
+    expect(counted).toHaveLength(1);
+    expect(counted[0]).toMatchObject({ id: 'root-agent', nodeKind: 'agent', tool: 'k8s_orchestrator' });
+  });
+
+  it('counts every agent and tool execution under an acknowledged turn', () => {
+    const agents = [
+      {
+        id: 'root-agent',
+        agent_name: 'k8s_orchestrator',
+        llm_conversation_tool_calls: [{ id: 'tool-1', tool_name: 'kubectl_execute' }],
+      },
+    ];
+    const message = { id: 'msg-2', ack_message: 'Working on it.' };
+
+    expect(actionableTasks(buildDrawerTasks(agents, message)).map((task) => task.id)).toEqual(['root-agent', 'tool-1']);
   });
 
   it('normalizes non-string agent and tool thoughts', () => {

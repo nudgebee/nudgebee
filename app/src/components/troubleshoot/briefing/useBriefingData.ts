@@ -8,8 +8,6 @@ import { resolveBriefing, type BriefingModel, type BriefingPayload } from './res
 
 const DAY_MS = 86400000;
 const BAND_DAYS = 30;
-const STUCK_AFTER_DAYS = 7;
-const STUCK_LOOKBACK_DAYS = 180;
 
 const rowsOf = (block: any): any[] => block?.rows ?? [];
 const firstRow = (block: any): any => rowsOf(block)[0] ?? {};
@@ -77,36 +75,33 @@ export const useBriefingData = (): BriefingState => {
     const startDate = new Date(startMs).toISOString();
     const endDate = new Date(endMs).toISOString();
     const bandStartDate = new Date(endMs - BAND_DAYS * DAY_MS).toISOString();
-    const stuckBeforeDate = new Date(endMs - STUCK_AFTER_DAYS * DAY_MS).toISOString();
-    const stuckAfterDate = new Date(endMs - STUCK_LOOKBACK_DAYS * DAY_MS).toISOString();
 
     const suggestions = apiTriage
       .listThresholdSuggestions({ cloud_account_ids: accountIds, limit: 5, offset: 0 })
       .then((response: any) => response?.suggestions ?? [])
       .catch(() => []);
 
-    const investigations = Promise.all([
-      apiAskNudgebee.llmConversationComparsion({
-        source: 'Investigation',
-        startDate,
-        endDate,
-        previousStartDate: startDate,
-        previousEndDate: startDate,
-        extractEventIdsFromTitle: true,
-      }),
-      apiAskNudgebee.getConversationTimeAggregates({ startDate, endDate, sources: ['Investigation'], eventScoped: true }),
-    ])
-      .then(([comparison, aggregates]: any[]) => ({
-        total: comparison?.data?.data?.current?.aggregate?.count ?? 0,
+    // One request, not three: the time-aggregates endpoint already returns both
+    // counts this tile needs (total_count / completed_count) over the same
+    // window and filters, so the conversation-comparison round-trips it used to
+    // pair with were redundant — and one of them asked for a zero-width
+    // previous window whose count was discarded.
+    //
+    // total_count carries one filter the old comparison RPC did not: the
+    // conversation must have a human 'generation' message. Both code paths that
+    // open an investigation write that message even when auto-triggered, so the
+    // two agreed exactly on dev (293/293 over this window, 953/953 over 30d).
+    // It also makes total and completed share one population, so the "running"
+    // figure below can no longer be computed across mismatched denominators.
+    const investigations = apiAskNudgebee
+      .getConversationTimeAggregates({ startDate, endDate, sources: ['Investigation'], eventScoped: true })
+      .then((aggregates: any) => ({
+        total: aggregates?.total_count ?? 0,
         completed: aggregates?.completed_count ?? 0,
       }))
       .catch(() => null);
 
-    Promise.all([
-      apiKubernetes1.briefingAggregates({ startDate, endDate, bandStartDate, stuckBeforeDate, stuckAfterDate, accountId: accountIds }),
-      suggestions,
-      investigations,
-    ])
+    Promise.all([apiKubernetes1.briefingAggregates({ startDate, endDate, bandStartDate, accountId: accountIds }), suggestions, investigations])
       .then(([aggregatesResponse, thresholdSuggestions, investigationCounts]: any[]) => {
         if (cancelled) return;
         const data = aggregatesResponse?.data?.data ?? {};
@@ -119,12 +114,10 @@ export const useBriefingData = (): BriefingState => {
           disagreement: rowsOf(data.disagreement),
           bySignalClass: rowsOf(data.by_signal_class),
           firingNow: firstRow(data.firing_now)?.event_count ?? 0,
-          stuckFiring: rowsOf(data.stuck_firing),
           thresholdSuggestions,
           investigations: investigationCounts,
           windowStartMs: startMs,
           windowEndMs: endMs,
-          nowMs: Date.now(),
         };
 
         setState({ loading: false, error: false, model: resolveBriefing(payload) });

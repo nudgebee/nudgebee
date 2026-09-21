@@ -54,17 +54,18 @@ Register a background watch that polls a read-only source on a fixed interval an
 CRITICAL:
   - source_config.tool_name MUST be a primitive *_execute tool (shell_execute, kubectl_execute, github_execute, gitlab_execute, aws_execute, gcloud_execute, postgres_query_execute, events_execute). NEVER a sub-agent (kubectl, github, gitlab, postgres, events) — those load conversation history and fail in background polls.
   - source_config.tool_input MUST be a JSON object, not a bare string. Wrong: "tool_input": "gh run view 12345". Right: "tool_input": { "command": "gh run view 12345" }.
-  - If the command uses an integration (gh, glab, aws, gcloud, az, psql, ...), use the MATCHING *_execute tool (github_execute for gh, gitlab_execute for glab, aws_execute for aws, ...) AND carry the same tool_config_name the action used — a bare shell_execute can't resolve which integration's credentials to inject when the tenant has more than one, so the poll fails auth.
+  - If the command uses an integration (gh, glab, aws, gcloud, az, psql, ...), use the MATCHING *_execute tool (github_execute for gh, gitlab_execute for glab, aws_execute for aws, ...) — a bare shell_execute can't resolve which integration's credentials to inject, so the poll fails auth.
+  - tool_config_name is OPTIONAL. Omit it unless the integration was named explicitly in this conversation; the poll resolves the account's integration on its own. Do NOT guess a name from the tool or command (e.g. "github" for github_execute) — a name that matches no configured integration is ignored.
   - The polled command must be idempotent and read-only.
 
 Required fields: source_kind ("tool" | "sql"), source_config, predicate_kind ("regex" | "substring" | "llm_judge"), predicate_expr, poll_interval_sec, max_duration_sec. Optional: predicate_negate (true for "wait until X disappears").
 
 source_config shapes:
-  tool: {"tool_name": "<*_execute>", "tool_input": {<args>}, "tool_config_name": "<integration; required when the command uses one>"}
+  tool: {"tool_name": "<*_execute>", "tool_input": {<args>}, "tool_config_name": "<optional; only when the integration was named explicitly>"}
   sql:  {"datasource": "metastore", "query": "SELECT ...", "params": [...]}
 
 Worked example (watch a GitHub workflow run until completion):
-{"source_kind":"tool","source_config":{"tool_name":"github_execute","tool_input":{"command":"gh run view 12345 --repo owner/repo --json status --jq .status"},"tool_config_name":"<integration>"},"predicate_kind":"regex","predicate_expr":"completed","poll_interval_sec":60,"max_duration_sec":1800}
+{"source_kind":"tool","source_config":{"tool_name":"github_execute","tool_input":{"command":"gh run view 12345 --repo owner/repo --json status --jq .status"}},"predicate_kind":"regex","predicate_expr":"completed","poll_interval_sec":60,"max_duration_sec":1800}
 
 Returns: {"watch_id":"...","status":"PENDING","poll_interval_sec":N,"max_duration_sec":N,"next_poll_at":"...","message":"..."}
 `)

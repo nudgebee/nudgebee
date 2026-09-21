@@ -130,6 +130,11 @@ class BenchmarkTestResult(Base):
 
     # Performance
     duration_seconds = Column(Float, default=0.0)
+    # Time the agent sat parked on followups waiting for a human answer, already
+    # excluded from duration_seconds. Nullable with no default on purpose: a real
+    # 0.0 means "asked nobody", while NULL means "recorded before this column
+    # existed" — a DEFAULT would make every historical row claim it never waited.
+    followup_wait_seconds = Column(Float, nullable=True)
     setup_duration = Column(Float, default=0.0)  # before_test time
     llm_duration = Column(Float, default=0.0)  # LLM call + eval time
     teardown_duration = Column(Float, default=0.0)  # after_test time

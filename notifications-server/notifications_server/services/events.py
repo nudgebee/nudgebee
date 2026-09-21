@@ -216,7 +216,7 @@ class Events:
     def _slack_bot_token(self, team_id):
         try:
             with Session(self.session.get_bind()) as session:
-                installation = load_installation_by_team(session, team_id, "slack")
+                installation = load_installation_by_team(session, team_id, "slack", app_id=self.common_service.app_id)
             return installation.token if installation else None
         except Exception as e:
             LOG.warning("Failed to resolve Slack bot token for team %s: %s", team_id, e)
@@ -814,7 +814,9 @@ class Events:
                 channel_id, team_id, thread_ts, "Hmm, couldn't connect to the account. Try again in a bit?"
             )
 
-    def update_followup_for_event(self, action_data, channel_id, team_id, slack_user_id, thread_ts):
+    def update_followup_for_event(
+        self, action_data, channel_id, team_id, slack_user_id, thread_ts, clicked_msg_ts=None
+    ):
         try:
             action_id = action_data.get("action_id", "")
             if "selected_option" in action_data:
@@ -822,6 +824,16 @@ class Events:
             else:
                 response_option = action_id.split("--")[1]
             cached_entry = self.cache.get_event_entry(thread_ts)
+            pending_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
+            # A missing entry still falls through so _submit_followup can tell the
+            # user the session expired. Otherwise ignore the click unless it came
+            # from the message the cache currently considers the live follow-up:
+            # no pending follow-up (already answered / retired), or a leftover
+            # button on an earlier, superseded clarification whose in-place edit
+            # didn't land — either way it must not answer the current turn.
+            if cached_entry and (not pending_msg_ts or (clicked_msg_ts and clicked_msg_ts != pending_msg_ts)):
+                LOG.info("followup click with no matching pending follow-up for %s; ignoring", thread_ts)
+                return
             self._submit_followup(cached_entry, channel_id, team_id, thread_ts, slack_user_id, response_option)
         except Exception as e:
             LOG.error("Failed to update followup: %s", e)
@@ -832,6 +844,7 @@ class Events:
             self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
             return
 
+        is_event_followup = bool(cached_entry.get("event_analysis_followup"))
         payload = self.build_llm_payload(cached_entry, thread_ts, query_override=response_option)
         payload.update(
             {
@@ -839,6 +852,14 @@ class Events:
                 "message_id": cached_entry.get("message_id"),
             }
         )
+        if is_event_followup:
+            # Resume the analysis's own `event-<fingerprint>` conversation, not
+            # this thread's chat session. No reply_ref / chat panel: the
+            # event-analysis poller still watching /v1/analyze/event is the sole
+            # output path, and a reply_ref would make the resume's completion
+            # webhook post the write-up a second time.
+            payload["session_id"] = cached_entry.get("followup_session_id") or payload["session_id"]
+            payload.pop("reply_ref", None)
         headers = {"x-tenant-id": cached_entry["tenant_id"], "x-user-id": cached_entry["user_id"]}
 
         followup_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
@@ -864,17 +885,28 @@ class Events:
                 channel_id, team_id, thread_ts, replacement_message, f"<@{slack_user_id}>"
             )
 
-        # Once the follow-up is consumed, clear all four pending-followup keys so
-        # the next @mention in this thread is treated as a fresh turn rather than
-        # being re-routed to the same agent_id/message_id.
+        # Once the follow-up is consumed, clear the pending-followup keys so the
+        # next @mention in this thread is treated as a fresh turn rather than
+        # being re-routed to the same agent_id/message_id. event_followup_src_msg_id
+        # is left in place — it's the "already surfaced" marker and the followup
+        # row can stay WAITING for a tick after the answer, so clearing it would
+        # let the poller re-post the same question.
         self.cache.remove_event_keys(
             thread_ts,
-            ["followup_msg_ts", "followup_question", "agent_id", "message_id"],
+            [
+                "followup_msg_ts",
+                "followup_question",
+                "agent_id",
+                "message_id",
+                "followup_session_id",
+                "event_analysis_followup",
+            ],
         )
 
         self._attach_images(payload, thread_ts)
 
-        slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
+        if not is_event_followup:
+            slack_progress.start_progress_poller(self.common_service, cached_entry, thread_ts, payload["session_id"])
         # Errors are replied to here rather than re-raised: the @mention caller
         # (execute_event) only logs exceptions, which would leave the thread
         # silent after the panel vanished.
@@ -1185,7 +1217,7 @@ class Events:
             self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
 
     @staticmethod
-    def call_event_analysis_api(event_id, account_id, user_id, tenant_id):
+    def call_event_analysis_api(event_id, account_id, user_id, tenant_id, timeout=1200):
         try:
             # Call LLM server's event analysis endpoint directly
             url = settings.services.llm_server + "/v1/analyze/event"
@@ -1206,8 +1238,7 @@ class Events:
             )
 
             LOG.info(f"Calling LLM server event analysis API: {url}")
-            # 20 minutes is intentional.
-            result = requests.post(url, headers=headers, json=payload, timeout=1200)
+            result = requests.post(url, headers=headers, json=payload, timeout=timeout)
             result.raise_for_status()
 
             response_data = result.json()
@@ -1216,53 +1247,6 @@ class Events:
         except Exception as e:
             LOG.error(f"Failed to call LLM server event analysis: {e}")
             raise
-
-    def send_investigation_result_to_slack(self, result, channel_id, team_id, thread_ts, slack_user_id):
-        try:
-            analysis = result.get("analysis", "No analysis available")
-            summary = result.get("summary", "")
-            status = result.get("status", "UNKNOWN")
-
-            if status == "COMPLETED":
-                # Use summary if available, otherwise fall back to analysis
-                content = summary if summary else analysis
-                if content and content != "No analysis available":
-                    # llm-server returns GFM markdown (### headers, - bullets); Slack's
-                    # mrkdwn renders those literally, so convert before sending.
-                    content = Transformer.markdown_to_slack_markdown(content)
-                    message = f"Hey! Just wrapped up digging into this event for you 🔍\n\n{content}"
-                else:
-                    message = (
-                        "Hey! Just finished looking into this event - didn't find much to report, but we've covered all"
-                        " the bases."
-                    )
-            elif status == "IN_PROGRESS":
-                message = "Still working on this one... hang tight!"
-            elif status == "CREATED":
-                message = "Just kicked off the investigation - I'll get back to you with what I find!"
-            else:
-                message = "Hmm, looks like something went sideways with the investigation. Mind if we try that again?"
-
-            # Add user mention
-            message = f"<@{slack_user_id}> {message}"
-
-            self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, message)
-
-        except Exception as e:
-            LOG.error("Failed to send investigation result to Slack %s", e)
-
-            mention = f"<@{slack_user_id}>" if slack_user_id else "Hey"
-            user_message = (
-                f"{mention}! The investigation finished, but I couldn’t display the results. "
-                "Please try again in a moment."
-            )
-
-            self.common_service.slack_reply_in_thread(
-                channel_id=channel_id,
-                team_id=team_id,
-                thread_ts=thread_ts,
-                message=user_message,
-            )
 
     def _reply_error(self, channel_id, team_id, thread_ts, message):
         if not message:
@@ -1372,9 +1356,44 @@ class Events:
             lambda b: self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, b, False),
         )
 
+    def _mark_finding_card_status(self, payload, channel_id: str, team_id: str, thread_ts: str, outcome: str):
+        """Best-effort: flips the "Ask Nubi to Analyse!" finding card's status
+        line once this webhook sees the analysis actually finish (``outcome``
+        "completed"/"failed", mirroring
+        actions_common._finalize_card_after_analysis's outcome mapping).
+
+        Only meaningful for the event-analysis flow (conversation_id prefixed
+        EVENT_CONVERSATION_SESSION_PREFIX): only there does
+        llm_callbacks._handle_event_conversation resolve thread_ts from
+        get_channel_and_ts_from_sent_notifications, making it the finding
+        card's own message ts. A plain @mention reusing this prefix carries
+        its own reply_ref instead, overriding thread_ts before this handler
+        sees it -- so it safely falls through _has_finding_attachment below
+        rather than touching the wrong message."""
+        if not (payload.conversation_id or "").startswith(EVENT_CONVERSATION_SESSION_PREFIX):
+            return
+        from notifications_server.services import actions_common  # deferred: actions_common imports Events
+
+        status_line = actions_common._analyzed_status_line() if outcome == "completed" else None
+        try:
+            live = self.common_service.get_message_attachments(channel_id, team_id, thread_ts, thread_ts)
+            if live and actions_common._has_finding_attachment(live):
+                self.common_service.update_slack_message_attachments(
+                    channel_id, team_id, thread_ts, actions_common._with_status_line(live, status_line)
+                )
+        except Exception as e:
+            LOG.debug("Failed to update finding card status after analysis: %s", e)
+
     def handle_final_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
             slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+
+            # llm-server's per-stage webhooks (no reply_ref) duplicate what the
+            # actions_common poller already posts -- only a real @mention reply
+            # (has reply_ref) should reach here.
+            if (payload.conversation_id or "").startswith(EVENT_CONVERSATION_SESSION_PREFIX) and not payload.reply_ref:
+                return
+
             response_text = payload.response
             view_url = self._diagram_view_url(cached_entry)
 
@@ -1404,6 +1423,8 @@ class Events:
             for blocks in messages:
                 self._send_message_with_fallback(channel_id, team_id, thread_ts, blocks)
 
+            self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="completed")
+
             if cached_entry:
                 event_cache.update_event_entry(thread_ts, status="COMPLETED")
                 LOG.debug("Conversation marked as COMPLETED.")
@@ -1421,6 +1442,7 @@ class Events:
                     " Try again."
                 ),
             )
+            self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="failed")
 
     @staticmethod
     def _diagram_view_url(cached_entry: Optional[dict]) -> Optional[str]:
@@ -1499,6 +1521,16 @@ class Events:
 
             if cached_entry:
                 event_cache.update_event_entry(thread_ts, agent_id=agent_id, message_id=message_id)
+                # An "Ask Nubi to Analyse!" run resumes a distinct
+                # `event-<fingerprint>` conversation, not this thread's chat
+                # session — record which one so _submit_followup answers the
+                # right conversation and takes the event-analysis code path.
+                if (payload.conversation_id or "").startswith("event-"):
+                    event_cache.update_event_entry(
+                        thread_ts,
+                        followup_session_id=payload.session_id or payload.conversation_id,
+                        event_analysis_followup=True,
+                    )
                 if cached_entry.get("slack_user_id"):
                     blocks += Transformer.to_slack(ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>"))
 
@@ -1544,6 +1576,7 @@ class Events:
             message = f"<@{slack_user_id}> {message}"
 
         self.reply(channel_id, team_id, thread_ts, message)
+        self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="failed")
 
         if cached_entry:
             event_cache.update_event_entry(thread_ts, status="FAILED")

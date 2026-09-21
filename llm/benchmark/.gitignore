@@ -38,3 +38,4 @@ swebench/REPORT-*.pdf
 # macOS metadata
 .DS_Store
 **/.DS_Store
+.orca-bench-upstream/

@@ -169,7 +169,7 @@
               <span style="color:#EF4444; margin-right:6px;">&#8226;</span>
               {{ row.subject_name }} (<span style="color:#EF4444; font-weight:500;">{{ row.event_count }} times</span>)
               &nbsp;
-              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key|replace(' ', '') }}&amp;eventSubjectName={{ row.subject_name|urlencode }}&amp;utm=email#events/all-events"
+              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key|replace(' ', '') }}&amp;eventSubjectName={{ row.subject_name|urlencode }}&amp;utm=email#events/all-events"
                 target="_blank" rel="noopener noreferrer"
                 style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
                 Investigate &rarr;
@@ -182,7 +182,7 @@
             {% endfor %}
 
             <p style="margin:4px 0 12px;">
-              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key }}&amp;utm=email"
+              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key|replace(' ', '') }}&amp;utm=email#events/all-events"
                 target="_blank" rel="noopener noreferrer"
                 style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#3B82F6; text-decoration:none;">
                 show all &rarr;
@@ -213,7 +213,7 @@
             {% if o_count > 0 %}
             <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; margin:0 0 4px; padding-left:16px;">
               <span style="color:#6B7280; margin-right:6px;">&#8226;</span>
-              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}&amp;eventAggregationKey={{ o_key|replace(' ', '') }}&amp;utm=email"
+              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;eventAggregationKey={{ o_key|replace(' ', '') }}&amp;utm=email#events/all-events"
                 target="_blank" rel="noopener noreferrer"
                 style="color:#0D1B2A; text-decoration:none;">
                 {% set display_name = NORMALIZED_CRITICAL_KEYS.get(o_key|replace(" ", "")|lower, o_key) %}{{ display_name }}
@@ -225,7 +225,7 @@
 
           {% if sorted_others|length > 0 %}
           <p style="margin:8px 0 0;">
-            <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}#events/all-events&amp;utm=email"
+            <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/all-events"
               target="_blank" rel="noopener noreferrer"
               style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#3B82F6; text-decoration:none;">
               show all &rarr;

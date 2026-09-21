@@ -116,6 +116,10 @@ func (s *NewRelicTraceSource) CountTraces(ctx *security.RequestContext, req Trac
 }
 
 // GetLabelValues returns unique values for a label
+// TraceLabelValuesAreComplete marks this source as safe for trace value validation.
+// NRQL uniques() over the requested window returns the full distinct set.
+func (s *NewRelicTraceSource) TraceLabelValuesAreComplete() {}
+
 func (s *NewRelicTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	apiKey, nrAccountId, region, err := integrations.GetNewRelicConfigs(ctx, req.AccountId)
 	if err != nil {

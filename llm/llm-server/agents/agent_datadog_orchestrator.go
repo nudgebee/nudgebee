@@ -220,6 +220,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		WorkflowAgentName,               // For Workflows
 		GithubAgentName,                 // For Github
 		WebSearchAgentName,              // For Web Search
+		NudgebeeAgentName,               // Nudgebee product docs and authorized configuration state
 		RecommendationsAgentName,        // For Recommendations
 		EventsAgentName,
 		PostgresAgentName, // For PostgreSQL

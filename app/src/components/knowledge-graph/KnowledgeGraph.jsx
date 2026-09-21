@@ -290,6 +290,7 @@ const AdaptiveServiceNode = memo(
   ({ data, isConnectable }) => {
     const isZoomedOut = useStore(zoomSelector);
     const borderColor = data.type === 'Workload' ? 'var(--ds-blue-500)' : 'var(--ds-green-400)';
+    const contextLine = [data.accountName, data.namespace].filter(Boolean).join(' · ');
 
     return (
       <div className={`service-node-wrapper ${isZoomedOut ? 'lod-dot' : 'lod-full'}`}>
@@ -308,7 +309,11 @@ const AdaptiveServiceNode = memo(
           <div className='node-content'>
             <div className='node-title'>{data.name}</div>
             <span className='node-sub'>{[data.subtitle, ROLE_BADGE_LABELS[data.role], data.location].filter(Boolean).join(' · ')}</span>
-            <span className='node-sub'>{data.accountName}</span>
+            {contextLine && (
+              <span className='node-sub' title={contextLine}>
+                {contextLine}
+              </span>
+            )}
           </div>
           <button
             className='info-btn'
@@ -344,6 +349,7 @@ const AdaptiveServiceNode = memo(
     prev.data.name === next.data.name &&
     prev.data.subtitle === next.data.subtitle &&
     prev.data.accountName === next.data.accountName &&
+    prev.data.namespace === next.data.namespace &&
     prev.data.location === next.data.location
 );
 AdaptiveServiceNode.displayName = 'AdaptiveServiceNode';
@@ -353,6 +359,7 @@ AdaptiveServiceNode.propTypes = {
     name: PropTypes.string,
     subtitle: PropTypes.string,
     accountName: PropTypes.string,
+    namespace: PropTypes.string,
     type: PropTypes.string,
     subType: PropTypes.string,
     role: PropTypes.string,
@@ -659,6 +666,7 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
           subType: n.logo_id,
           role: n.role, // datastore facet: 'database' | 'cache' | 'messagequeue' (in-cluster datastores)
           location: n.location, // region/zone/AZ for cloud resources; disambiguates same-named nodes (e.g. "default" subnets)
+          namespace: n.namespace,
           id: n.id,
           properties: { node_id: n.id },
           accountId: n.account_id,
@@ -2159,7 +2167,7 @@ const ServiceMapContent = () => {
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
-                fontFamily: 'Poppins',
+                fontFamily: ds.font.display,
                 color: 'var(--ds-gray-500)',
                 writingMode: 'vertical-rl',
                 transform: 'rotate(180deg)',
@@ -2193,7 +2201,7 @@ const ServiceMapContent = () => {
               }}
             >
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-1)' }}>
-                <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-title)', fontFamily: 'Poppins', color: ds.gray[700] }}>
+                <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-title)', fontFamily: ds.font.display, color: ds.gray[700] }}>
                   Filters
                 </Typography>
                 <Tooltip title='Hide filters'>
@@ -2213,19 +2221,19 @@ const ServiceMapContent = () => {
                 <Datetime
                   value={kgFilterOptions.lastSyncTime}
                   prefix='Last synced: '
-                  sxPrefix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', fontFamily: 'Poppins', mr: 'var(--ds-space-1)' }}
+                  sxPrefix={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', fontFamily: ds.font.display, mr: 'var(--ds-space-1)' }}
                   sxPrefixSecondary={false}
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: 'var(--ds-gray-500)',
-                    fontFamily: 'Poppins',
+                    fontFamily: ds.font.display,
                   }}
                   sxSuffix={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-semibold)',
                     color: 'var(--ds-gray-500)',
-                    fontFamily: 'Poppins',
+                    fontFamily: ds.font.display,
                   }}
                   sxSecondary={false}
                   sxSuffixSecondary={false}
@@ -2589,7 +2597,7 @@ const ServiceMapContent = () => {
                       sx={{
                         fontSize: 'var(--ds-text-heading)',
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        fontFamily: 'Poppins',
+                        fontFamily: ds.font.display,
                         color: ds.gray[700],
                       }}
                     >
@@ -2673,7 +2681,7 @@ const ServiceMapContent = () => {
                       sx={{
                         fontSize: 'var(--ds-text-heading)',
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        fontFamily: 'Poppins',
+                        fontFamily: ds.font.display,
                         color: ds.gray[700],
                       }}
                     >
@@ -2744,7 +2752,7 @@ const ServiceMapContent = () => {
                       sx={{
                         fontSize: 'var(--ds-text-heading)',
                         fontWeight: 'var(--ds-font-weight-semibold)',
-                        fontFamily: 'Poppins',
+                        fontFamily: ds.font.display,
                         color: ds.gray[700],
                       }}
                     >

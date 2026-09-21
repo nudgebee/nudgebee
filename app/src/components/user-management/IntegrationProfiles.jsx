@@ -371,7 +371,10 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
                           {detailRow('How mapped', a.mapped_via === 'manual' ? 'Manual' : 'Auto · matched by email')}
                           {a.mapped_via === 'manual' && detailRow('Mapped by', a.mapped_by_name || '—')}
                           {a.last_synced_at &&
-                            detailRow('Last synced', <Datetime value={a.last_synced_at} sx={{ fontSize: '11px' }} sxSuffix={{ fontSize: '11px' }} />)}
+                            detailRow(
+                              'Last synced',
+                              <Datetime value={a.last_synced_at} sx={{ fontSize: ds.text.caption }} sxSuffix={{ fontSize: ds.text.caption }} />
+                            )}
                           {detailRow('External ID', a.external_user_id)}
                           {a.integration_name && detailRow('Integration', a.integration_name)}
                           {a.email && detailRow('Email', a.email)}

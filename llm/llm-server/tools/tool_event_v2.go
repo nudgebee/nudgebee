@@ -377,6 +377,48 @@ func capInsightSlice(insights []events.InvestigateDataInsight) []events.Investig
 	return insights
 }
 
+// capTracesInsight bounds Traces.Data's size by capping the inner trace-span
+// array to maxEvidenceInsightEntries, instead of collapsing the whole map to a
+// truncated string the way the generic capInsight does. agent_events.go's
+// reduceEventData reads Traces.Data as map[string]any{"data": []any{...}} —
+// stringifying it here would silently corrupt that shape (a Go type-assertion
+// panic downstream, since capInsight's %v dump isn't valid JSON either). Falls
+// back to capInsight for any other shape (e.g. Data already arrived as a
+// string).
+func capTracesInsight(insight events.InvestigateDataInsight) events.InvestigateDataInsight {
+	tracesMap, ok := insight.Data.(map[string]any)
+	if !ok {
+		return capInsight(insight)
+	}
+	spans, ok := tracesMap["data"].([]any)
+	if !ok || len(spans) <= maxEvidenceInsightEntries {
+		return insight
+	}
+	capped := make(map[string]any, len(tracesMap))
+	for k, v := range tracesMap {
+		capped[k] = v
+	}
+	capped["data"] = spans[:maxEvidenceInsightEntries]
+	insight.Data = capped
+	return insight
+}
+
+// capAlertLabelsInsight bounds AlertLabels.Data's size by capping the label
+// array's length, instead of collapsing it to a truncated string. reduceEventData
+// iterates AlertLabels.Data as a []any directly — stringifying it here would
+// corrupt that shape the same way capTracesInsight's comment describes. Falls
+// back to capInsight for any other shape.
+func capAlertLabelsInsight(insight events.InvestigateDataInsight) events.InvestigateDataInsight {
+	labels, ok := insight.Data.([]any)
+	if !ok {
+		return capInsight(insight)
+	}
+	if len(labels) > maxEvidenceInsightEntries {
+		insight.Data = labels[:maxEvidenceInsightEntries]
+	}
+	return insight
+}
+
 func capInvestigateDataEvidence(id *events.InvestigateData) {
 	id.PodMetrics = capInsightSlice(id.PodMetrics)
 	id.NodeMetrics = capInsightSlice(id.NodeMetrics)
@@ -393,13 +435,13 @@ func capInvestigateDataEvidence(id *events.InvestigateData) {
 	id.PodData = capInsight(id.PodData)
 	id.NodeData = capInsight(id.NodeData)
 	id.Deployment = capInsight(id.Deployment)
-	id.AlertLabels = capInsight(id.AlertLabels)
+	id.AlertLabels = capAlertLabelsInsight(id.AlertLabels)
 	id.JobInformation = capInsight(id.JobInformation)
 	id.JobEvents = capInsight(id.JobEvents)
 	id.JobPodEvents = capInsight(id.JobPodEvents)
 	id.RelatedEvents = capInsight(id.RelatedEvents)
 	id.ContainerMetrics = capInsight(id.ContainerMetrics)
-	id.Traces = capInsight(id.Traces)
+	id.Traces = capTracesInsight(id.Traces)
 	id.AlertData = capInsight(id.AlertData)
 	id.ServiceMap = capInsight(id.ServiceMap)
 

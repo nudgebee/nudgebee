@@ -12,6 +12,7 @@ body:
       description: Where was this seen? Pick the highest environment it reproduces in.
       options:
         - Production
+        - OSS
         - QA / Test
         - Dev
         - Local only

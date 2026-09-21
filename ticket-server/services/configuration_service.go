@@ -213,10 +213,11 @@ func quickValidateGithub(ctx context.Context, configuration models.TicketConfigu
 }
 
 func quickValidateJira(configuration models.TicketConfigurations) error {
-	if configuration.URL == "" || configuration.Username == "" || configuration.Password == "" {
+	isPAT := clients.IsJiraDataCenterPAT(configuration.AuthType)
+	if configuration.URL == "" || configuration.Password == "" || (configuration.Username == "" && !isPAT) {
 		return fmt.Errorf("jira url, username and api token are all required")
 	}
-	client, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	client, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		return fmt.Errorf("jira client creation failed: %w", err)
 	}
@@ -249,7 +250,11 @@ func quickValidateJira(configuration models.TicketConfigurations) error {
 	// When the email is hidden we can't enforce this, but the /myself success
 	// already proves the token owner authenticated; the username is only used
 	// to scope ticket attribution in our DB rows after that.
-	if me.EmailAddress != "" && !strings.EqualFold(me.EmailAddress, configuration.Username) {
+	// A Data Center PAT carries its own identity, so there is no username to
+	// compare; Data Center also identifies users by login name, not email.
+	if !isPAT && me.EmailAddress != "" &&
+		!strings.EqualFold(me.EmailAddress, configuration.Username) &&
+		!strings.EqualFold(me.Name, configuration.Username) {
 		return fmt.Errorf("jira authenticated user '%s' does not match configured username '%s'", me.EmailAddress, configuration.Username)
 	}
 	return nil
@@ -487,7 +492,7 @@ func updateMetadataConfigValues(integrationID string, metadata []map[string]inte
 }
 
 func validateJiraConfigurationAndReturnMetadata(_ context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
-	client, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	client, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Warn("Jira client creation failed", "error", err)
 		return nil, err

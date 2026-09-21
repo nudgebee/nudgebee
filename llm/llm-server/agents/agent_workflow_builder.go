@@ -130,15 +130,11 @@ func isRawWorkflowJSON(content string) bool {
 }
 
 // workflowSnapshot returns a deterministic marshal of the working workflow for
-// change detection ("" when uninitialized). It coerces types first — the same
-// idempotent normalization validate/dry_run/finalize apply to the shared state —
-// so a read-only turn whose tools merely coerced the loaded definition compares
-// equal to the pre-loop snapshot instead of registering as a change.
+// change detection ("" when uninitialized).
 func (a *WorkflowBuilderAgent) workflowSnapshot() string {
 	if a.state.WorkingWorkflow == nil {
 		return ""
 	}
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
 	b, err := json.Marshal(a.state.WorkingWorkflow)
 	if err != nil {
 		return ""
@@ -283,9 +279,12 @@ func init() {
 const WorkflowBuilderAgentName = "automation_builder"
 
 type WorkflowBuilderAgent struct {
-	accountId       string
-	state           WorkflowBuilderState
-	cachedTaskTypes string // Cached task type registry JSON for schema-driven validation
+	accountId string
+	state     WorkflowBuilderState
+	// cachedTaskTypes is the runbook task-type registry JSON, fetched at most once per turn by
+	// fetchTaskRegistry and reused by every phase (intent → plan → build) plus schema-driven
+	// validation. Transient per-request; the agent is built fresh per turn.
+	cachedTaskTypes string
 
 	// Transient per-request context (set at the top of Execute, not persisted in state): the
 	// cluster/cloud-account the user is currently viewing, so prompts can default to it instead
@@ -333,6 +332,13 @@ func (a *WorkflowBuilderAgent) UnmarshalState(data []byte) error {
 
 func (a *WorkflowBuilderAgent) GetName() string {
 	return WorkflowBuilderAgentName
+}
+
+// The builder's finalized artifact is the caller's final result. Unlike an
+// ordinary investigative sub-agent response, it must bubble through ancestor
+// planners unchanged after all waiting siblings have settled.
+func (a *WorkflowBuilderAgent) PropagateTerminalResponseToParent() bool {
+	return true
 }
 
 func (a *WorkflowBuilderAgent) GetNameAliases() []string {
@@ -1399,7 +1405,7 @@ CLOUD ACCOUNT IDs (account_id parameter):
 // debugging a failure and changing/extending the automation; the agent decides which from the user's
 // request. It generalizes the former fix prompt (evidence-first debugging) and folds in the build
 // rules needed when adding/modifying tasks.
-func getEditSystemPrompt(errorContext, targetExecutionId, schema string) string {
+func getEditSystemPrompt(errorContext, targetExecutionId, lastExecutionError, schema string) string {
 	var targetSection string
 	if targetExecutionId != "" {
 		targetSection = fmt.Sprintf(`
@@ -1414,6 +1420,13 @@ If the user is debugging a failure, call get_execution(execution_id="%s") direct
 ERROR CONTEXT (provided by user / UI):
 %s
 `, errorContext)
+	} else if targetExecutionId == "" && strings.TrimSpace(lastExecutionError) != "" {
+		// Only as a fallback: an explicit error context or a target run is more specific than the
+		// workflow's last recorded failure, which may predate the change the user is asking about.
+		errorSection = fmt.Sprintf(`
+LAST RECORDED FAILURE (already on the automation record — no call needed to retrieve it):
+%s
+`, lastExecutionError)
 	}
 
 	return fmt.Sprintf(`You are a Nudgebee automation editor. You modify an EXISTING automation that is already loaded. The user's request may be either (A) DEBUG a failure or (B) CHANGE/EXTEND the automation. Decide which from the request, then act.
@@ -1422,13 +1435,13 @@ AUTOMATION SCHEMA REFERENCE:
 %s
 
 FIRST, DECIDE THE INTENT:
-- DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT or TARGET EXECUTION ID above.
+- DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT, LAST RECORDED FAILURE or TARGET EXECUTION ID above.
 - CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
 - VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run and report the overall result and any failing task's id + error in your <final_answer>. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
 - If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
 
 IF DEBUGGING (gather evidence FIRST, then fix):
-1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise list_executions(status="FAILED", limit=10) and pick the most recent failed run, then get_execution on it.
+1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise, if a LAST RECORDED FAILURE is shown above and it already tells you what broke, act on it and skip straight to step 3 — call list_executions/get_execution only when you need the failing task's id, rendered_params or output. If neither is available, list_executions(status="FAILED", limit=10), pick the most recent failed run, then get_execution on it.
 2. Read the real error: workflow-level "error", per-task "error"/"status", and the failing task's "rendered_params" + "output". Quote it.
 3. list_tasks, then get_task on the failing task and its upstream dependencies.
 4. Apply the MINIMAL change that addresses the observed error via modify_task (or add_task/delete_task if required). Do not change unrelated tasks.
@@ -2267,6 +2280,30 @@ func workflowSessionId(wf map[string]interface{}) string {
 	return ""
 }
 
+// maxLastExecutionError caps the workflow-level error string lifted from the automation record
+// before it goes into the edit prompt. It is deliberately far more generous than the 200-rune cap
+// tools.projectWorkflowListResponse applies: that one trims one field across a whole listing,
+// whereas this is a single message that has to stay diagnosable on its own.
+const maxLastExecutionError = 2000
+
+// workflowLastExecutionError reads last_execution_status_message from a workflow object, tolerating
+// it being stored either at the top level or nested under "definition". The runbook server already
+// records the most recent failure there (workflows.last_execution_status_message, V604), so the edit
+// loop gets the error for free from the definition it has already fetched — no list_executions +
+// get_execution round-trip needed just to learn what went wrong. It is empty on a successful or
+// never-run automation, and reconciliation can blank it, so callers must keep the RPC fallback.
+func workflowLastExecutionError(wf map[string]interface{}) string {
+	if msg, ok := wf["last_execution_status_message"].(string); ok && strings.TrimSpace(msg) != "" {
+		return truncateForPrompt(msg, maxLastExecutionError)
+	}
+	if def, ok := wf["definition"].(map[string]interface{}); ok {
+		if msg, ok := def["last_execution_status_message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return truncateForPrompt(msg, maxLastExecutionError)
+		}
+	}
+	return ""
+}
+
 // extractWorkflowId tries to extract the workflow ID from the server response.
 func extractWorkflowId(resp []byte, fallback string) string {
 	var result map[string]interface{}
@@ -2501,17 +2538,31 @@ func (a *WorkflowBuilderAgent) ownAccountName(ctx *security.RequestContext) stri
 	return ""
 }
 
-// fetchTaskTypeNames fetches registered task type names from the runbook server.
-func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) string {
+// fetchTaskRegistry returns the runbook task-type registry JSON, fetching it at most once per
+// turn. Intent extraction, planning, re-planning and the build loop all need the same registry;
+// each used to issue its own GET /tasks. Only a successful fetch is memoized, so a transient
+// runbook error does not poison the later phases (#31500).
+func (a *WorkflowBuilderAgent) fetchTaskRegistry(ctx *security.RequestContext) string {
+	if a.cachedTaskTypes != "" {
+		return a.cachedTaskTypes
+	}
 	tasksResp, err := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId,
 		ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
 	if err != nil {
 		ctx.GetLogger().Warn("workflow_builder: failed to fetch task types from runbook server", "error", err)
 		return ""
 	}
-	if len(tasksResp) == 0 {
+	a.cachedTaskTypes = string(tasksResp)
+	return a.cachedTaskTypes
+}
+
+// fetchTaskTypeNames returns the registered task type names as a prompt fragment.
+func (a *WorkflowBuilderAgent) fetchTaskTypeNames(ctx *security.RequestContext) string {
+	registry := a.fetchTaskRegistry(ctx)
+	if registry == "" {
 		return ""
 	}
+	tasksResp := []byte(registry)
 	// Peek at first non-whitespace byte to determine response shape without double-unmarshaling.
 	var wrapped struct {
 		Tasks []struct {
@@ -2732,11 +2783,8 @@ AVAILABLE CONFIGS ON THIS ACCOUNT (use {{ Configs.<key> }} to reference these in
 // generatePlan creates a human-readable workflow plan for user approval.
 // clarificationContext contains user's answers to clarifying questions (empty if none were asked).
 func (a *WorkflowBuilderAgent) generatePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (string, error) {
-	tasksResp, err := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
-	var taskTypesInfo string
-	if err == nil {
-		taskTypesInfo = string(tasksResp)
-	} else {
+	taskTypesInfo := a.fetchTaskRegistry(ctx)
+	if taskTypesInfo == "" {
 		taskTypesInfo = "Task types not available"
 	}
 
@@ -2873,11 +2921,8 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 
 // regeneratePlan creates an updated plan incorporating user feedback.
 func (a *WorkflowBuilderAgent) regeneratePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, previousPlan string, feedback string) (string, error) {
-	tasksResp, err := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
-	var taskTypesInfo string
-	if err == nil {
-		taskTypesInfo = string(tasksResp)
-	} else {
+	taskTypesInfo := a.fetchTaskRegistry(ctx)
+	if taskTypesInfo == "" {
 		taskTypesInfo = "Task types not available"
 	}
 
@@ -2935,35 +2980,6 @@ RULES:
 	}
 
 	return safePlanContent(completion)
-}
-
-// coerceWorkflowTypes walks the workflow JSON map and converts float64 values
-// that are whole numbers to int. Go's json.Unmarshal into map[string]interface{}
-// always produces float64 for JSON numbers, but the validation API expects
-// integer types for fields like concurrency, max_retries, etc.
-func coerceWorkflowTypes(data map[string]interface{}) {
-	for key, val := range data {
-		switch v := val.(type) {
-		case float64:
-			// Convert whole-number floats to int (e.g., 5.0 → 5)
-			if v == float64(int(v)) {
-				data[key] = int(v)
-			}
-		case map[string]interface{}:
-			coerceWorkflowTypes(v)
-		case []interface{}:
-			for i, item := range v {
-				switch itemVal := item.(type) {
-				case float64:
-					if itemVal == float64(int(itemVal)) {
-						v[i] = int(itemVal)
-					}
-				case map[string]interface{}:
-					coerceWorkflowTypes(itemVal)
-				}
-			}
-		}
-	}
 }
 
 // ==================== AGENTIC TOOL-BASED BUILD/FIX ====================
@@ -3633,7 +3649,11 @@ Top-level event.<field> (these are the ONLY top-level fields — do NOT invent o
 - computed_priority     P0|P1|P2|P3 — the REAL triage tier (may be ABSENT for un-scored events)
 - computed_score        integer 0-100 — P0>=80, P1 60-79, P2 40-59, P3<40 (may be ABSENT)
 - subject_type, subject_name, subject_namespace, subject_node, subject_owner, subject_owner_kind, service_key  string
-- cluster               string — a cluster NAME (e.g. "prod-cluster"), NEVER an account/cluster UUID
+  On CLOUD accounts (AWS/GCP/Azure) these columns are overloaded: subject_namespace holds the cloud SERVICE name
+  (AmazonEC2, AWS_RDS) not a k8s namespace, subject_node holds the REGION (us-east-1) not a node, subject_type holds
+  the cloud resource type, and subject_name holds the resource id. Filter accordingly — a k8s-shaped guess never matches.
+- cluster               string — a cluster NAME (e.g. "prod-cluster"), or the cloud ACCOUNT NAME on cloud accounts; NEVER an account/cluster UUID
+- cloud_account_id      string — the account UUID; prefer this over event.cluster when scoping a filter to one account
 - fingerprint, cloud_resource_id, principal, aggregation_key  string
 - labels                map — free-form alert labels; keys are source-specific (see LIVE LABELS below). Reference as event.labels.<key>. Do NOT guess keys.
 
@@ -4040,9 +4060,6 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 		return "Error: automation not initialized."
 	}
 
-	// Apply type coercion before validation
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
-
 	// Resolve cloud-account display names → UUIDs BEFORE the server sees the definition.
 	// This same swap runs again at save time, but the save is too late to help the loop: the
 	// runbook server validates account_id as a Postgres uuid, so a display name reaches
@@ -4128,7 +4145,6 @@ func (a *WorkflowBuilderAgent) toolDryRun(ctx *security.RequestContext) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
 
 	// WorkingWorkflow is the full workflow object ({name, definition, ...}); the
 	// dry-run endpoint expects {definition: <inner>}. Fall back to sending the whole
@@ -4201,9 +4217,6 @@ func (a *WorkflowBuilderAgent) toolFinalize() string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
-
-	// Apply type coercion before finalizing
-	coerceWorkflowTypes(a.state.WorkingWorkflow)
 
 	result, err := json.MarshalIndent(a.state.WorkingWorkflow, "", "  ")
 	if err != nil {
@@ -4398,6 +4411,52 @@ func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext
 	}
 }
 
+// observationHistoryWindow is how many of the most recent tool observations stay verbatim in the
+// tool-loop history. The loop re-sends its whole message slice on every iteration, so a task
+// schema or workflow dump left verbatim in an early observation is paid for again on each of the
+// remaining iterations — input cost quadratic in loop length (#31500). Older observations are
+// shrunk to a head snippet: the model needs to remember that it ran the tool and roughly what came
+// back, not the full payload.
+const observationHistoryWindow = 3
+
+// trimmedObservationHeadBytes is how much of an older observation survives trimming. Sized so the
+// informative head of the biggest observations survives — the leading fields of a task schema, the
+// status and first failing task of an execution blob, a whole validate report — while still cutting
+// a typical schema by well over 80%. What the model concluded from the full payload is not lost
+// either way: its own reasoning rides in the assistant turns, which are never trimmed.
+const trimmedObservationHeadBytes = 1000
+
+// loopObservation records where a tool observation landed in the tool-loop message history and
+// what it contained, so trimStaleObservations can rewrite that message in place later.
+type loopObservation struct {
+	msgIdx  int
+	tool    string
+	body    string
+	trimmed bool
+}
+
+// trimStaleObservations shrinks every observation that has fallen out of the recent window to a
+// head snippet, rewriting its message in place. Trimming is one-way and idempotent — an already
+// trimmed observation is skipped — so the whole loop costs one pass per observation. Any
+// anti-thrash nudge appended to a trimmed observation goes with it; the nudge was a signal for the
+// iteration it was delivered on, and the live ones are all inside the window.
+func trimStaleObservations(messages []llms.MessageContent, observations []loopObservation) {
+	for i := 0; i < len(observations)-observationHistoryWindow; i++ {
+		o := &observations[i]
+		if o.trimmed {
+			continue
+		}
+		o.trimmed = true
+		if len(o.body) <= trimmedObservationHeadBytes {
+			continue
+		}
+		head := core.TruncateHead(o.body, trimmedObservationHeadBytes)
+		messages[o.msgIdx] = llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf(
+			"<observation>%s\n[earlier %s result truncated to save context — %d of %d characters shown]</observation>",
+			head, o.tool, len(head), len(o.body)))
+	}
+}
+
 // runToolLoop runs an agentic tool-calling loop where the LLM reasons step-by-step
 // and calls workflow manipulation tools. This follows the same XML format as the ReAct planner.
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
@@ -4407,10 +4466,9 @@ func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request
 	// Fresh correction budget per loop, so an edit turn is not penalised by a build turn.
 	a.triggerShapeRejections = 0
 
-	// Fetch task types once for all get_task_schema calls and schema-driven validation
-	tasksResp, _ := tools.DoRunbookRequest("GET", "tasks", nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
-	cachedTaskTypes := string(tasksResp)
-	a.cachedTaskTypes = cachedTaskTypes
+	// Task types back every get_task_schema call and the schema-driven validation hints. Shared
+	// with the intent/planning phases through the per-turn memo.
+	cachedTaskTypes := a.fetchTaskRegistry(ctx)
 
 	toolDescriptions := getWorkflowToolDescriptions()
 
@@ -4453,6 +4511,9 @@ RULES:
 	// the model decisively toward acting (mutate → validate → finalize) or finishing.
 	toolCallSeen := map[string]int{}
 	readOnlyToolStreak := 0
+
+	// Observation history, oldest first — see trimStaleObservations.
+	var observations []loopObservation
 
 	const maxIterations = 20
 	for i := 0; i < maxIterations; i++ {
@@ -4573,6 +4634,8 @@ RULES:
 			llms.TextParts(llms.ChatMessageTypeAI, trimmedContent),
 			llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("<observation>%s</observation>%s", observation, nudge)),
 		)
+		observations = append(observations, loopObservation{msgIdx: len(messages) - 1, tool: toolName, body: observation})
+		trimStaleObservations(messages, observations)
 	}
 
 	// If we exhausted iterations, try to finalize whatever we have
@@ -4679,7 +4742,12 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 	}
 
 	schema := getWorkflowSchema()
-	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, schema)
+	// Fast path for the common "fix it" turn that arrives with no error context and no target run:
+	// the workflow record already carries the last failure message, so hand it to the prompt instead
+	// of making the model spend list_executions + get_execution to rediscover it. Deliberately NOT
+	// written back to a.state.ExecutionError — that field means "the user is debugging a specific
+	// failure" and gates the ambiguity check in handleEditEntry.
+	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, workflowLastExecutionError(a.state.WorkingWorkflow), schema)
 	// Use OriginalQuery (the change request), not request.Query — on a clarification resume the latter
 	// is the user's option answer, not the original instruction.
 	userMessage := fmt.Sprintf("Apply the user's request to the existing automation: %s", a.state.OriginalQuery)

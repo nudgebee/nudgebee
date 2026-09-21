@@ -2902,6 +2902,7 @@ async function loadReport() {
           <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tokens</span><span class="text-gray-700">${(r.total_tokens||0).toLocaleString()} (in: ${(r.input_tokens||0).toLocaleString()}, out: ${(r.output_tokens||0).toLocaleString()}, cached: ${(r.cache_read_tokens||0).toLocaleString()})</span></div>
           <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tool Calls</span><span class="text-gray-700">${r.tool_calls_total||0} total, ${r.tool_calls_successful||0} successful</span></div>
           <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Duration</span><span class="text-gray-700">${(r.duration_seconds||0).toFixed(1)}s</span></div>
+          ${r.followup_wait_seconds ? `<div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Followup Wait</span><span class="text-gray-700">${(r.followup_wait_seconds).toFixed(1)}s</span><span class="text-[10px] text-gray-400 block">waiting for a human, not counted in Duration</span></div>` : ''}
         </div>
         ${error ? `<div class="mb-3"><span class="text-[10px] font-semibold text-red-400 uppercase block mb-0.5">Error</span><span class="text-red-600 text-[11px]">${error}</span></div>` : ''}
         ${r.score_reason ? (()=>{

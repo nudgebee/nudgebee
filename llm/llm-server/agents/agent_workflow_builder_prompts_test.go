@@ -29,7 +29,7 @@ func goldenPromptCases() map[string]string {
 	return map[string]string{
 		"workflow_schema":           schema,
 		"build_prompt":              getBuildSystemPrompt("INTENT_PLACEHOLDER", "PLAN_PLACEHOLDER", schema),
-		"edit_prompt":               getEditSystemPrompt("ERROR_PLACEHOLDER", "EXEC_ID_PLACEHOLDER", schema),
+		"edit_prompt":               getEditSystemPrompt("ERROR_PLACEHOLDER", "EXEC_ID_PLACEHOLDER", "LAST_FAILURE_PLACEHOLDER", schema),
 		"planning_context":          getWorkflowPlanningContext(),
 		"clarification_prompt":      getClarificationSystemPrompt("ENV_PLACEHOLDER", "CONFIGS_PLACEHOLDER", "INTENT_PLACEHOLDER"),
 		"edit_clarification_prompt": getEditClarificationSystemPrompt("ENV_PLACEHOLDER", "CONFIGS_PLACEHOLDER", "DEFINITION_PLACEHOLDER"),
@@ -67,7 +67,7 @@ func TestWorkflowBuilderPromptGolden(t *testing.T) {
 func TestWorkflowBuilderPromptEngineRules(t *testing.T) {
 	schema := getWorkflowSchema()
 	build := getBuildSystemPrompt("i", "p", schema)
-	edit := getEditSystemPrompt("e", "x", schema)
+	edit := getEditSystemPrompt("e", "x", "l", schema)
 	planning := getWorkflowPlanningContext()
 
 	// (a) transitive depends_on — both authoring prompts must say a direct edge

@@ -76,7 +76,7 @@ func (a AgentEventsV2) GetSupportedTools(ctx *security.RequestContext) []toolcor
 		tools.GetEventByIdTool{}, tools.ListEventsTool{}, tools.AggregateEventsTool{},
 		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
 		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
-		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
+		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{}, tools.IncidentAssemblyTool{},
 	}
 }
 
@@ -168,7 +168,7 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"    - nb_status is set by the HIGHEST-PRIORITY matching triage rule, INDEPENDENT of the score. A P0 event can still be SUPPRESSED if a suppression rule matched.",
 		"    - computed_score is fully explained by the `score_factors` column (returned by get_event_by_id): base_severity × env_multiplier × 4 = raw_score, then duplicate_penalty, correlation_adjustment, finding_type_adjustment and evidence_bonus are applied.",
 		"    - fingerprint groups recurring occurrences. Use aggregate_events with count_distinct_fingerprint=true to separate unique patterns from raw occurrence counts.",
-		"    To EXPLAIN one event's triage decision: get_event_by_id(event_id), then get_triage_explanation(event_id) for the dedup chain and firing history.",
+		"    To EXPLAIN one event's triage decision: get_event_by_id(event_id), then get_triage_explanation(event_id) for the dedup chain and firing history. For what else is involved in the same incident (cause/impact/chronic candidates), call get_incident_assembly(event_id).",
 		"    For an ALERT-NOISE / HYGIENE report: aggregate_events(group_by='aggregation_key') and aggregate_events(group_by='aggregation_key', count_distinct_fingerprint=true) to compare firings vs distinct patterns, then get_triage_rules to surface coverage gaps.",
 		"    For THRESHOLD tuning: call list_threshold_suggestions; highlight high estimated_reduction + tune_threshold/disable rows, flag low-confidence MAD=0 rows as weak.",
 		"    To PROPOSE a new triage rule: call dryrun_triage_rule with the candidate criteria to get the projected volume reduction, present the number, then direct the user to create the rule in the UI.",
@@ -242,6 +242,11 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"Lists events a specific triage rule matched.",
 			"Input: rule_id (from get_triage_rules), optional limit.",
 		},
+		tools.ToolIncidentAssembly: {
+			"Shows what else is going on around ONE alert: repeat firings and cross-source copies (same_incident), cause candidates (config changes/upstream alerts shortly before it), impact candidates (downstream alerts after it), and chronic background noise for that subject. Grouped by timing + topology only — candidates, not confirmed relationships; never present a chronic entry as the cause.",
+			"Input: event_id (required).",
+			"Strategy: call EARLY in a root-cause/investigation question, before concluding a cause — cheaper and more reliable than reconstructing timing correlations by hand via extra list_events/events_execute calls.",
+		},
 	}
 
 	// Trimmed: only columns the structured tools don't already expose as
@@ -282,6 +287,17 @@ func (a AgentEventsV2) GetSystemPrompt(ctx *security.RequestContext, query core.
 				{Tool: tools.ToolTriageExplanation, Input: `{"event_id": "your-event-id"}`},
 			},
 			Explanation: "Single-event detail + triage question — the dominant real query shape for this agent. get_event_by_id returns full evidence and score_factors; get_triage_explanation adds the dedup chain and firing history.",
+		},
+		{
+			Question: "What happened to the payment-api pod in namespace app-101 around 2025-08-02 13:45 UTC — investigate the root cause.",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolListEvents,
+					Input: `{"subject_name": "payment-api", "subject_namespace": ["app-101"], "start_time": "2025-08-02T13:00:00Z", "end_time": "2025-08-02T14:30:00Z"}`,
+				},
+				{Tool: tools.ToolIncidentAssembly, Input: `{"event_id": "<id from list_events>"}`},
+			},
+			Explanation: "Root-cause/investigation question — find the matching event(s) first, then call get_incident_assembly on it for cause/impact/chronic candidates instead of reconstructing timing correlations by hand with more list_events/events_execute calls.",
 		},
 		{
 			Question: "Show recent OOM or pod restart events in the nudgebee, redis, and rabbit namespaces.",

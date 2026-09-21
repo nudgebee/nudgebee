@@ -82,6 +82,15 @@ type ConversationApiRequest struct {
 	// index the generated query is resolved against. Ignored for backends with
 	// no index concept (Loki, …) and by every other handler.
 	Index string `json:"index,omitempty"`
+	// Resolution optionally resolves a pending follow-up without answering
+	// it. Only "dismiss" is supported (soft-skip the question, then end the
+	// conversation with a structured marker — see handleFollowupCancel for
+	// why a hard terminate isn't duplicated here). Empty means answer
+	// normally. Gated by FollowupCancelEnabled.
+	Resolution string `json:"resolution,omitempty"`
+	// Reason is an optional user-supplied note recorded with a "dismiss"
+	// Resolution. Ignored otherwise.
+	Reason string `json:"reason,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -190,6 +199,32 @@ func handleRequestExecution(
 	}
 }
 
+// rejectIfConversationLocked rejects IN_PROGRESS, and rejects KILLED unless
+// allowFollowupCompletion — shouldSkipResumeForTerminalConversation always lets a
+// pending followup's cancel/resume through regardless of conversation status, so
+// this must too. KILLED today comes only from the stranded-conversation sweep
+// (MarkInProgressConversationAsKilled), sticky by design in shouldSkipSaveBack: an
+// unexempted retry would run a full turn for real and then have it silently
+// discarded. See #37486.
+func rejectIfConversationLocked(c *gin.Context, endpoint string, conversation core.Conversation, allowFollowupCompletion bool) bool {
+	var message string
+	switch {
+	case conversation.Status == core.ConversationStatusInProgress:
+		message = "This conversation is in progress."
+	case conversation.Status == core.ConversationStatusKilled && !allowFollowupCompletion:
+		message = "This conversation was terminated and cannot be resumed. Please start a new conversation."
+	default:
+		return false
+	}
+	slog.Warn("chains: rejecting request for locked conversation",
+		"endpoint", endpoint, "conversation_id", conversation.ID.String(),
+		"account_id", conversation.AccountID.String(), "status", conversation.Status)
+	c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		common.Error{Message: message},
+	}))
+	return true
+}
+
 func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	groupV2 := r.Group("/v1/completions")
 
@@ -235,7 +270,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		if request.Query == "" {
+		if request.Query == "" && request.Resolution == "" {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: query is required",
@@ -314,12 +349,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if conversation.Status == core.ConversationStatusInProgress {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: conversation is in progress",
-					},
-				}))
+			// A follow-up cancel (request.Resolution) or resume-by-agentId is an
+			// in-flight commitment shouldSkipResumeForTerminalConversation always
+			// lets through — must not be blocked here just because the parent
+			// conversation was swept to KILLED in the meantime.
+			isFollowupCompletion := request.Resolution != "" || request.AgentId != ""
+			if rejectIfConversationLocked(c, "/v1/completions/chat", conversation, isFollowupCompletion) {
 				return
 			}
 
@@ -422,6 +457,18 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc, "Read", "Write", "Execute") {
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+
+		// Resolve a pending follow-up without answering it (dismiss/terminate).
+		// Handled before budget checks — cancelling doesn't consume LLM budget.
+		if request.Resolution != "" {
+			body, status, err := handleFollowupCancel(agentContext, request)
+			if err != nil {
+				c.JSON(status, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				return
+			}
+			c.JSON(status, buildApiResponse(body, nil))
 			return
 		}
 
@@ -772,12 +819,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if conversation.Status == core.ConversationStatusInProgress {
-				c.JSON(400, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: conversation is in progress",
-					},
-				}))
+			// See the matching comment in /v1/completions/chat: agentId-resume of a
+			// pending followup must stay allowed on a KILLED conversation.
+			isFollowupCompletion := request.AgentId != ""
+			if rejectIfConversationLocked(c, "/v1/completions/chat/auto", conversation, isFollowupCompletion) {
 				return
 			}
 
@@ -1532,12 +1577,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				return
 			}
 
-			if conversation.Status == core.ConversationStatusInProgress {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
-					common.Error{
-						Message: "api: conversation is in progress",
-					},
-				}))
+			// No followup-completion exemption here: this endpoint's agentId feeds
+			// ConversationSessionRequestWithAgentId, not a followup-resume lookup.
+			if rejectIfConversationLocked(c, "/v1/completions/workflow-generate", conversation, false) {
 				return
 			}
 

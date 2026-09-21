@@ -22,7 +22,16 @@ interface KnowledgeBaseOutput {
   document_count?: number;
   last_loaded_at?: string;
   error_message?: string;
+  note_category?: string;
+  context_tags?: string[];
 }
+
+/**
+ * Sentinel agent_id for a knowledge base mapped to every agent. Mirrors
+ * toolcore.KBAgentWildcard in llm-server: it is stored as an ordinary row in
+ * llm_kb_agent_mappings, and every agent resolves it alongside its own name.
+ */
+export const KB_AGENT_WILDCARD = '*';
 
 interface CreateKnowledgeBasePayload {
   name: string;
@@ -30,6 +39,8 @@ interface CreateKnowledgeBasePayload {
   content: string;
   format?: string;
   fileName?: string;
+  noteCategory?: string;
+  contextTags?: string[];
 }
 
 interface UpdateKnowledgeBasePayload {
@@ -38,6 +49,8 @@ interface UpdateKnowledgeBasePayload {
   content?: string;
   format?: string;
   fileName?: string;
+  noteCategory?: string;
+  contextTags?: string[];
 }
 
 // Helper function to extract error message from nested GraphQL error response
@@ -91,6 +104,8 @@ const apiKnowledgeBase = {
             document_count
             last_loaded_at
             error_message
+            note_category
+            context_tags
           }
           errors {
             message
@@ -128,6 +143,8 @@ const apiKnowledgeBase = {
           document_count: kb.document_count,
           last_loaded_at: kb.last_loaded_at,
           error_message: kb.error_message,
+          note_category: kb.note_category,
+          context_tags: kb.context_tags,
         }));
         return { data: transformedData, errors: result.errors || [] };
       }
@@ -167,6 +184,8 @@ const apiKnowledgeBase = {
             created_at
             updated_at
             error_message
+            note_category
+            context_tags
           }
           errors {
             message
@@ -200,6 +219,8 @@ const apiKnowledgeBase = {
             created_by: kb.created_by ? { display_name: kb.created_by } : null,
             updated_by: kb.updated_by ? { display_name: kb.updated_by } : null,
             error_message: kb.error_message,
+            note_category: kb.note_category,
+            context_tags: kb.context_tags,
           };
           return { data: transformedData, errors: result.errors || [] };
         }
@@ -258,6 +279,8 @@ const apiKnowledgeBase = {
             data: payload.content,
             format: payload.format || 'text',
             file_name: payload.fileName || `${payload.name}.txt`,
+            note_category: payload.noteCategory || '',
+            context_tags: payload.contextTags || [],
           },
         },
       });
@@ -328,6 +351,8 @@ const apiKnowledgeBase = {
             data: payload.content,
             format: payload.format || 'text',
             file_name: payload.fileName,
+            note_category: payload.noteCategory,
+            context_tags: payload.contextTags,
           },
         },
       });
@@ -440,6 +465,52 @@ const apiKnowledgeBase = {
     } catch (error) {
       console.error('Error fetching agent knowledge bases:', error);
       return { data: [], errors: [{ message: 'An error occurred while fetching agent knowledge bases' }] };
+    }
+  },
+
+  /**
+   * Get the agent ids a knowledge base is mapped to. Returns [KB_AGENT_WILDCARD]
+   * when the KB is mapped to all agents.
+   */
+  getKBAgents: async (accountId: string, kbId: string) => {
+    if (accountId === 'demo') {
+      return { data: [], errors: [] };
+    }
+    const LIST_KB_AGENTS = `
+      query ListKBAgents($request: ListKBAgentsRequest!) {
+        ai_list_kb_agents(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await queryGraphQL(LIST_KB_AGENTS, 'ListKBAgents', {
+        request: {
+          account_id: accountId,
+          kb_id: kbId,
+        },
+      });
+
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        const errorMessage = extractErrorMessage(response, 'Failed to fetch knowledge base agents');
+        return { data: [], errors: [{ message: errorMessage }] };
+      }
+
+      if (response?.data?.data?.ai_list_kb_agents) {
+        const result = response.data.data.ai_list_kb_agents;
+        if (result.errors && result.errors.length > 0) {
+          return { data: [], errors: result.errors };
+        }
+        return { data: result.data || [], errors: [] };
+      }
+      return { data: [], errors: [{ message: 'Failed to fetch knowledge base agents' }] };
+    } catch (error) {
+      console.error('Error fetching knowledge base agents:', error);
+      return { data: [], errors: [{ message: 'An error occurred while fetching knowledge base agents' }] };
     }
   },
 

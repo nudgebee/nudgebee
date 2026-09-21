@@ -32,6 +32,7 @@ import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal'
 import CreateWorkflowFromCodeModal from './components/CreateWorkflowFromCodeModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
 import { getAutomationToggleAction } from './automationMenu';
+import { buildWorkflowExportJson, buildWorkflowShareUrl, sanitizeWorkflowDefinitionForExport } from './workflowExport';
 import {
   manualTriggerIcon,
   SettingsIcon,
@@ -40,8 +41,10 @@ import {
   EventIconPurple,
   addIconWhite,
   EditIcon,
+  CopyIcon,
   CopyIconBlue,
   DeleteIconRed,
+  ShareIconBlue,
 } from '@assets';
 import { applyFiltersOnRouter } from '@lib/router';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -112,6 +115,19 @@ const readAccountFilterFromQuery = (query: Record<string, any>): string[] => {
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
+// Multi-line tooltip content for the Created/Updated-by byline: name and
+// email, one per line — so two people sharing a display name are still
+// distinguishable on hover.
+const renderUserTooltip = (user?: { display_name?: string; username?: string } | null) => {
+  if (!user?.display_name) return null;
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+      <Text value={user.display_name} sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }} />
+      {!!user.username && <Text value={user.username} sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }} />}
+    </Box>
+  );
+};
+
 // Filters the user picked here, remembered across visits. The sidebar links
 // back to a bare /automation, so without this every return trip resets the
 // view. Same mechanism the troubleshoot Events table uses.
@@ -140,8 +156,9 @@ interface WorkflowActionsCellProps {
 const WorkflowActionsCell: React.FC<WorkflowActionsCellProps> = ({ workflow, accountId, onStop, onEdit, getMenuItems, onMenuClick }) => {
   const liveStatuses = useContext(LiveExecutionStatusContext);
   if (!accountId) return <></>;
-  // Read-only users get a single "View" affordance that opens the workflow
-  // in execution-view mode. No Cancel / 3-dots, since they cannot mutate.
+  // Read-only users get a "View" affordance that opens the workflow in
+  // execution-view mode, plus a 3-dots menu carrying only the read-only
+  // share/export items (getMenuItems gates the mutating ones on write access).
   if (!hasWriteAccess(accountId)) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'flex-end', mr: 'var(--ds-space-2)', gap: 'var(--ds-space-1)' }}>
@@ -154,6 +171,13 @@ const WorkflowActionsCell: React.FC<WorkflowActionsCellProps> = ({ workflow, acc
         >
           View
         </DsButton>
+        <ThreeDotsMenu
+          id={`workflow-menu-${workflow.id}`}
+          sx={{ ...action.primary }}
+          menuItems={getMenuItems(workflow)}
+          data={workflow}
+          onMenuClick={onMenuClick}
+        />
       </Box>
     );
   }
@@ -459,7 +483,25 @@ const WorkflowListing: React.FC = () => {
         id: 'duplicate',
         icon: CopyIconBlue,
       });
+    }
 
+    // Share / export are read-only operations, so they sit outside the
+    // write-access gate — a read-only user's kebab carries only these two.
+    if (workflow?.account_id) {
+      MENU_ITEMS.push({
+        label: 'Copy Link',
+        id: 'copy-link',
+        icon: ShareIconBlue,
+      });
+
+      MENU_ITEMS.push({
+        label: 'Copy JSON',
+        id: 'copy-json',
+        icon: CopyIcon,
+      });
+    }
+
+    if (workflow?.account_id && hasWriteAccess(workflow.account_id)) {
       // State-aware toggle (see getAutomationToggleAction): Active -> Pause,
       // Paused -> Activate, anything else (e.g. INACTIVE) -> neither. Status is
       // the only input — deliberately not gated on trigger type, see
@@ -526,6 +568,55 @@ const WorkflowListing: React.FC = () => {
       setTriggerModalOpen(true);
     } else if (menuItem.id === 'duplicate') {
       handleDuplicateWorkflow(workflow);
+    } else if (menuItem.id === 'copy-link') {
+      handleCopyWorkflowLink(workflow);
+    } else if (menuItem.id === 'copy-json') {
+      handleCopyWorkflowJson(workflow);
+    }
+  };
+
+  const handleCopyWorkflowLink = (workflow: any) => {
+    if (!workflow?.account_id) {
+      snackbar.error('Account ID is required');
+      return;
+    }
+    const url = buildWorkflowShareUrl(window.location.origin, workflow.id, workflow.account_id);
+    navigator.clipboard
+      .writeText(url)
+      .then(() => snackbar.success('Automation link copied to clipboard'))
+      .catch((error) => {
+        console.error('Error copying workflow link:', error);
+        snackbar.error('Failed to copy link to clipboard');
+      });
+  };
+
+  const handleCopyWorkflowJson = async (workflow: any) => {
+    const workflowAccountId = workflow?.account_id;
+    if (!workflowAccountId) {
+      snackbar.error('Account ID is required');
+      return;
+    }
+
+    try {
+      // Fetch full workflow definition (listing query does not include tasks)
+      const fullWorkflowResponse: any = await apiWorkflow.getWorkflowById(workflowAccountId, workflow.id);
+      const fullWorkflowErrorMessage = parseHttpResponseBodyMessage(fullWorkflowResponse);
+      if (fullWorkflowErrorMessage) {
+        snackbar.error(fullWorkflowErrorMessage);
+        return;
+      }
+
+      const fullWorkflow = fullWorkflowResponse.data?.workflow_get;
+      if (!fullWorkflow?.definition) {
+        snackbar.error('Failed to fetch automation definition');
+        return;
+      }
+
+      await navigator.clipboard.writeText(buildWorkflowExportJson(fullWorkflow));
+      snackbar.success('Automation JSON copied to clipboard');
+    } catch (error) {
+      console.error('Error copying workflow JSON:', error);
+      snackbar.error(`Failed to copy JSON for "${workflow.name}"`);
     }
   };
 
@@ -767,39 +858,11 @@ const WorkflowListing: React.FC = () => {
         return;
       }
 
-      // Build create request with cloned definition
-      const clonedDefinition = JSON.parse(JSON.stringify(fullWorkflow.definition));
-
-      // Strip fields not accepted by WorkflowDefinitionTaskRequest (e.g. 'outputs')
-      const cleanTasks = (tasks: any[]) => {
-        if (!Array.isArray(tasks)) return;
-        for (const task of tasks) {
-          delete task.outputs;
-          // Recursively clean nested tasks (e.g. core.foreach)
-          if (Array.isArray(task.params?.tasks)) {
-            cleanTasks(task.params.tasks);
-          }
-        }
-      };
-      if (clonedDefinition.tasks) {
-        cleanTasks(clonedDefinition.tasks);
-      }
-
-      // Webhook triggers carry a system-managed secret and an internal.name
-      // bound to the source workflow's ID (the `wf-<id>-` shadow prefix on
-      // legacy rows). Strip both so the backend re-derives a fresh secret
-      // and re-binds the integration under the new workflow's ID, matching
-      // the contract enforced by enforceWebhookSecrets / normalizeWebhookTriggers.
-      if (Array.isArray(clonedDefinition.triggers)) {
-        for (const trigger of clonedDefinition.triggers) {
-          if (trigger?.type === 'webhook') {
-            if (trigger.params) {
-              delete trigger.params.secret;
-            }
-            delete trigger.internal;
-          }
-        }
-      }
+      // Build create request with a cloned definition, stripped of task
+      // `outputs` (not accepted by WorkflowDefinitionTaskRequest) and of the
+      // webhook secret / internal binding, so the backend re-derives a fresh
+      // secret and re-binds the integration under the new workflow's ID.
+      const clonedDefinition = sanitizeWorkflowDefinitionForExport(fullWorkflow.definition);
 
       const createRequest: WorkflowCreateRequest = {
         account_id: workflowAccountId,
@@ -1364,7 +1427,7 @@ const WorkflowListing: React.FC = () => {
                           sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}
                         />
                         {workflow.created_by_user?.display_name && (
-                          <Tooltip title={workflow.created_by_user.display_name} arrow placement='top'>
+                          <Tooltip title={renderUserTooltip(workflow.created_by_user)} arrow placement='top'>
                             <span>
                               <Text
                                 value={`· ${workflow.created_by_user.display_name.split(' ')[0]}`}
@@ -1384,7 +1447,7 @@ const WorkflowListing: React.FC = () => {
                           sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)' }}
                         />
                         {workflow.updated_by_user?.display_name && (
-                          <Tooltip title={workflow.updated_by_user.display_name} arrow placement='top'>
+                          <Tooltip title={renderUserTooltip(workflow.updated_by_user)} arrow placement='top'>
                             <span>
                               <Text
                                 value={`· ${workflow.updated_by_user.display_name.split(' ')[0]}`}
@@ -1556,10 +1619,10 @@ const WorkflowListing: React.FC = () => {
       try {
         const response = await apiUser.listUsers({ status: 'active' });
         const users = response?.data || [];
-        const userNames = users
-          .map((user: any) => user.display_name)
-          .filter(Boolean)
-          .sort();
+        // Two users can share a display_name — the backend filter already matches
+        // every user with that name, so dedup here rather than listing the same
+        // name twice (which made picking either one highlight both as selected).
+        const userNames = Array.from(new Set<string>(users.map((user: any) => user?.display_name).filter(Boolean))).sort();
         setCreatedByOptions(['All', ...userNames]);
       } catch (error) {
         console.error('Error fetching active users:', error);

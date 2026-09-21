@@ -8,7 +8,7 @@
 # kubectl is here because grade.sh submits one Job per instance and collect.py
 # reads pod logs. Paired with k8s/rbac.yaml, the pipeline no longer borrows a
 # developer's kubeconfig.
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 ARG KUBECTL_VERSION=v1.31.0
 

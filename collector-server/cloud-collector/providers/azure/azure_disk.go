@@ -86,8 +86,76 @@ func (s *diskService) GetResources(ctx providers.CloudProviderContext, account p
 	return allResources, nil
 }
 
+// premiumV2Decision reports whether Premium SSD v2 (PremiumV2_LRS) should be treated as
+// available in a region, given what that region's disk-SKU listing returned. It fails
+// OPEN (true) whenever the answer isn't trustworthy — a listing error, or zero disk SKUs
+// seen (which signals a query/region-format problem rather than a genuine absence) — so a
+// transient failure never suppresses the recommendation. It returns false only when the
+// region positively listed disk SKUs without PremiumV2_LRS among them.
+func premiumV2Decision(listErr, sawDiskSKU, foundPremiumV2 bool) bool {
+	if listErr || !sawDiskSKU {
+		return true
+	}
+	return foundPremiumV2
+}
+
+// premiumV2RegionChecker returns a memoized predicate reporting whether Premium SSD v2 is
+// offered in a region. It lazily lists Resource SKUs per region once (the same client
+// pattern as azure_vm.go) and caches the verdict. The suppress/allow decision lives in
+// premiumV2Decision; this wrapper is the I/O around it.
+func premiumV2RegionChecker(ctx providers.CloudProviderContext, account providers.Account) func(region string) bool {
+	cache := make(map[string]bool)
+	cred, session, credErr := getAzureCredsForAccount(ctx, account)
+
+	return func(region string) bool {
+		if region == "" {
+			return true
+		}
+		if cached, ok := cache[region]; ok {
+			return cached
+		}
+
+		available := true // fail open unless we positively learn PremiumV2_LRS is absent
+		if credErr != nil {
+			ctx.GetLogger().Warn("azure: skipping Premium SSD v2 region check (no credentials)", "error", credErr, "region", region)
+		} else {
+			subscriptionID := strings.TrimSpace(strings.Split(session.SubscriptionID, ",")[0])
+			skuClient, err := armcompute.NewResourceSKUsClient(subscriptionID, cred, getAzureAuditOpts(ctx))
+			if err != nil {
+				ctx.GetLogger().Warn("azure: failed to create SKUs client for Premium SSD v2 region check", "error", err, "region", region)
+			} else {
+				filter := fmt.Sprintf("location eq '%s'", region)
+				pager := skuClient.NewListPager(&armcompute.ResourceSKUsClientListOptions{Filter: &filter})
+				var listErr, sawDiskSKU, foundV2 bool
+				for pager.More() && !foundV2 {
+					page, err := pager.NextPage(ctx.GetContext())
+					if err != nil {
+						ctx.GetLogger().Warn("azure: failed to list SKUs for Premium SSD v2 region check", "error", err, "region", region)
+						listErr = true
+						break
+					}
+					for _, sku := range page.Value {
+						if sku.ResourceType == nil || *sku.ResourceType != "disks" {
+							continue
+						}
+						sawDiskSKU = true
+						if sku.Name != nil && *sku.Name == "PremiumV2_LRS" {
+							foundV2 = true
+							break
+						}
+					}
+				}
+				available = premiumV2Decision(listErr, sawDiskSKU, foundV2)
+			}
+		}
+		cache[region] = available
+		return available
+	}
+}
+
 func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	var allRecommendations []providers.Recommendation
+	premiumV2Available := premiumV2RegionChecker(ctx, account)
 	for _, resource := range existingResources {
 		resourceRecommendations := make(map[string]providers.Recommendation)
 
@@ -369,8 +437,10 @@ func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, acc
 						}
 					}
 
-					// Check for Premium SSD → Premium SSD v2 upgrade (newer generation)
-					if skuName == "Premium_LRS" && diskSizeGB >= 32 {
+					// Check for Premium SSD → Premium SSD v2 upgrade (newer generation).
+					// Only where the region actually offers PremiumV2_LRS, otherwise the
+					// recommendation is un-appliable.
+					if skuName == "Premium_LRS" && diskSizeGB >= 32 && premiumV2Available(resource.Region) {
 						resourceRecommendations["azure_disk_premium_ssd_v2_upgrade"] = providers.Recommendation{
 							CategoryName: providers.RecommendationCategoryInfraUpgrade,
 							RuleName:     "azure_disk_premium_ssd_v2_upgrade",

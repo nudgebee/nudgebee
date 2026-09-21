@@ -1,0 +1,19 @@
+user_prompt: "get me logs for the llm-server pod in namespace app-017 for the last hour"
+
+expected_output:
+  - The response must include log lines from the llm-server pod, such as the startup message ("LLM Server v3.2.1 starting") and the model load message ("Loaded model 'gpt-oss-120b' successfully").
+  - The response should surface the warning about request req-1042 exceeding its token budget (4096 > 4000).
+
+before_test: |
+  kubectl create namespace app-017 || true
+  kubectl label namespace app-017 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n app-017
+  kubectl wait --for=condition=ready pod -l app=llm-server -n app-017 --timeout=60s
+
+after_test: |
+  kubectl delete namespace app-017 --ignore-not-found
+
+tags:
+  - logs
+  - kubernetes
+  - orchestrator

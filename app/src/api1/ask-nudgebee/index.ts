@@ -495,11 +495,19 @@ const api = {
         `;
     const query: any = {};
     query.account_id = data.account_id;
-    query.query = data.query;
+    // query is non-null on the GraphQL side (String!) — a resolution-only call (no answer
+    // text) must still send an empty string, never omit the key or send undefined.
+    query.query = data.query || '';
     query.conversation_id = data.conversation_id;
     query.agent_id = data.agent_id;
     query.message_id = data.message_id;
     query.async = true;
+    if (data.resolution) {
+      query.resolution = data.resolution;
+    }
+    if (data.reason) {
+      query.reason = data.reason;
+    }
 
     const response = await queryGraphQL(AI_FOLLOWUP_RESPONSE.replace('__REQUEST__', gqlStringify(query)), 'AiFollowupResponse', {});
     return response;
@@ -1878,6 +1886,7 @@ const api = {
         data {
           is_default
           format
+          default_format
         }
         errors
       }

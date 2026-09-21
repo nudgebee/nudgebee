@@ -1,10 +1,39 @@
 package core
 
 import (
+	toolcore "nudgebee/llm/tools/core"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
 )
+
+type parentTerminalAgent struct{ NBAgent }
+
+func (parentTerminalAgent) PropagateTerminalResponseToParent() bool { return true }
+
+func TestResolveAgentParentTerminal_RequiresExplicitOptIn(t *testing.T) {
+	ordinary := &struct{ NBAgent }{}
+	optedIn := parentTerminalAgent{}
+
+	tests := []struct {
+		name          string
+		agent         NBAgent
+		childTerminal bool
+		want          bool
+	}{
+		{name: "ordinary completed child stays evidence", agent: ordinary, childTerminal: true, want: false},
+		{name: "opted-in terminal child bubbles", agent: optedIn, childTerminal: true, want: true},
+		{name: "opt-in cannot promote non-terminal child", agent: optedIn, childTerminal: false, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveAgentParentTerminal(tc.agent, tc.childTerminal); got != tc.want {
+				t.Fatalf("ResolveAgentParentTerminal() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 // TestRegisterNBAgentFactoryWithAliases verifies that a factory registered under
 // a primary name plus legacy aliases is resolvable under every name — the
@@ -30,6 +59,31 @@ func TestRegisterNBAgentFactoryWithAliases(t *testing.T) {
 	// Case-insensitivity: lookup lowercases the key, so a mixed-case alias resolves.
 	if _, err := getSystemAgent("TEST_LEGACY_DEBUG", "acct-1"); err != nil {
 		t.Errorf("expected case-insensitive alias resolution, got error: %v", err)
+	}
+}
+
+func TestRegisterNBAgentFactoryAndToolWithAliases(t *testing.T) {
+	sentinel := &struct{ NBAgent }{}
+	factory := func(accountId string) (NBAgent, error) { return sentinel, nil }
+	RegisterNBAgentFactoryAndToolWithAliases(
+		"test_tool_primary", factory, "description", "input", "output", "test_tool_alias",
+	)
+
+	alias, err := getSystemAgent("test_tool_alias", "account-1")
+	if err != nil || alias != sentinel {
+		t.Fatalf("alias did not resolve to canonical factory: agent=%v error=%v", alias, err)
+	}
+	if !IsSystemAgentAlias("test_tool_alias") {
+		t.Fatal("alias was not recorded")
+	}
+
+	tool, ok := toolcore.GetNBTool("account-1", "test_tool_primary")
+	if !ok || tool.Name() != "test_tool_primary" {
+		t.Fatalf("canonical tool was not registered: tool=%v found=%v", tool, ok)
+	}
+	_, aliasToolExists := toolcore.GetNBTool("account-1", "test_tool_alias")
+	if aliasToolExists {
+		t.Fatal("alias must not create a duplicate tool")
 	}
 }
 

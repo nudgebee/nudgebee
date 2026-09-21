@@ -22,24 +22,6 @@ func TestChronicStats_Chronic(t *testing.T) {
 	assert.True(t, ChronicStats{WeeklyCount: 400}.Chronic())
 }
 
-func TestChronicStats_IsBursting(t *testing.T) {
-	// Low-rate chronic pair (10/week ≈ 0.06/hour): the factor bar rounds to
-	// nothing, so the min-count floor governs — 1 or 2 firings in the hour must
-	// NOT escape, 3 must.
-	low := ChronicStats{WeeklyCount: 10}
-	assert.False(t, low.IsBursting(1))
-	assert.False(t, low.IsBursting(2))
-	assert.True(t, low.IsBursting(3))
-
-	// High-rate chronic pair (7×24=168h → 336/week = 2/hour baseline): the
-	// factor bar (3×2=6) exceeds the floor, so 3 firings is business as usual
-	// and only ≥6 escapes.
-	high := ChronicStats{WeeklyCount: 336}
-	assert.False(t, high.IsBursting(3))
-	assert.False(t, high.IsBursting(5))
-	assert.True(t, high.IsBursting(6))
-}
-
 func TestChronicSubjectIdentity(t *testing.T) {
 	ev := makeEvent("1", time.Now(),
 		withNamespace("Demo"),

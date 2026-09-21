@@ -65,6 +65,53 @@ class Config:
     )  # thread pool size for parallel collection search
     reranking_enabled = os.environ.get("RAG_RERANKING_ENABLED", "false").lower() == "true"  # LLM reranking default
 
+    # Cross-encoder reranker. Runs in-process, so it needs no per-account LLM
+    # credential — the LLM reranker it replaces failed 100% of calls on a stale
+    # key and silently returned documents unranked.
+    #
+    # Benchmarked on 39 real queries from conversation history (29 needing live
+    # data, 10 answerable from the KB):
+    #
+    #   model                  errors/39   latency (8 docs, 2 threads)
+    #   bge-reranker-v2-m3     0           1480ms  @ max_length 256
+    #   bge-reranker-base      1            362ms
+    #   ms-marco-MiniLM-L-6    1            309ms
+    #
+    # v2-m3 was the only model that separated the two sets cleanly (irrelevant
+    # topped out at 0.775, relevant scored 0.900+); MiniLM's scores overlap.
+    # The defaults below are MiniLM, chosen for latency and footprint — v2-m3
+    # cost ~1.1GB resident and reranked 16 documents in 6-61s in prod. The
+    # accuracy cost of that swap at threshold 0.50 / max_length 128 has not been
+    # measured against the table above.
+    reranker_model = os.environ.get("RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    # Minimum 0-1 relevance for a document to survive. A property of the model,
+    # not of the corpus — retune when the model changes.
+    reranker_threshold = float(os.environ.get("RAG_RERANKER_THRESHOLD", 0.50))
+    reranker_max_length = int(os.environ.get("RAG_RERANKER_MAX_LENGTH", 128))  # tokens per (query, doc) pair
+    reranker_max_doc_chars = int(os.environ.get("RAG_RERANKER_MAX_DOC_CHARS", 500))  # doc chars scored
+    # int8 quantization: measured slower and larger on ARM (qnnpack), so it is
+    # off until measured to help on the target platform (x86/fbgemm).
+    reranker_quantize = os.environ.get("RAG_RERANKER_QUANTIZE", "false").lower() == "true"
+    # Weights dtype: float32 or bfloat16. bfloat16 halves resident weights and
+    # engages the AMX-BF16 path on the deployment nodes, which fp32 never
+    # touches. Opt-in until its speed is measured there. float16 is deliberately
+    # not offered: it runs on these nodes, but bf16 is what AMX accelerates and
+    # carries the wider exponent range, so fp16 would add a choice with no use.
+    reranker_dtype = os.environ.get("RAG_RERANKER_DTYPE", "float32").strip().lower()
+    # Concurrent forward passes. ``get_matching_doc`` is a sync ``def``, so
+    # FastAPI runs it on a 40-worker threadpool sized for I/O-bound work — which
+    # this is not. Forty concurrent passes over a 2-core limit bought no
+    # throughput (the work is CPU-bound) while each held its own activations:
+    # the pod OOMKilled at 4Gi and p50 rerank latency reached 21.7s. Queueing is
+    # cheaper than thrashing, so admit one pass at a time by default.
+    # Clamped: a negative value makes threading.Semaphore raise at import and the
+    # server never starts, and 0 blocks every rerank forever.
+    reranker_max_concurrency = max(1, int(os.environ.get("RAG_RERANKER_MAX_CONCURRENCY", 1)))
+    # Pairs per forward pass. Caps peak activation memory independently of how
+    # many documents retrieval hands over. Clamped for the same reason: 0 raises
+    # inside the batching loop and a negative value scores nothing at all.
+    reranker_batch_size = max(1, int(os.environ.get("RAG_RERANKER_BATCH_SIZE", 4)))
+
     # Nudgebee Docs
     nudgebee_docs_url = os.environ.get("NUDGEBEE_DOCS_URL", "https://docs.nudgebee.com")
     nudgebee_docs_fetch_batch_size = int(os.environ.get("NUDGEBEE_DOCS_FETCH_BATCH_SIZE", 10))

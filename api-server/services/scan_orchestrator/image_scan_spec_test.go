@@ -28,10 +28,11 @@ func TestBuildImageScanSpec_FsScanShape(t *testing.T) {
 	if spec.Image != "registry.private.example.com/nudgebee-app:v1" {
 		t.Errorf("Image = %q; want the target image as the main container", spec.Image)
 	}
-	// Never, not IfNotPresent — a missing node-local copy must fail fast rather
-	// than fall back to an uncredentialed registry pull that wedges the Job.
-	if spec.ImagePullPolicy != "Never" {
-		t.Errorf("ImagePullPolicy = %q; want Never", spec.ImagePullPolicy)
+	// IfNotPresent, not Never — the node-local copy is often gone by scan time,
+	// and the fallback pull is credentialed via ImagePullSecretsFrom above, so
+	// Never would make those images permanently unscannable.
+	if spec.ImagePullPolicy != "IfNotPresent" {
+		t.Errorf("ImagePullPolicy = %q; want IfNotPresent", spec.ImagePullPolicy)
 	}
 	if spec.NodeName != "gke-node-abc" {
 		t.Errorf("NodeName = %q; want the image's node (pin to reuse node-local image)", spec.NodeName)

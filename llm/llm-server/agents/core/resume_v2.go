@@ -114,6 +114,16 @@ func HandleFollowupAndResumeV2(ctx *security.RequestContext, req NBAgentRequest)
 	lock := acquireConversationLock(req.ConversationId)
 	defer releaseConversationLock(req.ConversationId, lock)
 
+	return resumeFollowupLocked(ctx, req)
+}
+
+// resumeFollowupLocked is the body of HandleFollowupAndResumeV2, minus lock
+// acquisition — callers must already hold acquireConversationLock(req.ConversationId).
+// Extracted so TrySkipAndContinueFollowup (followup_skip_continue.go) can run
+// its own sibling check and this same resume logic under a single lock
+// acquisition, instead of two separate lock windows that would either race
+// or (if naively re-locked) deadlock against sync.Mutex's non-reentrancy.
+func resumeFollowupLocked(ctx *security.RequestContext, req NBAgentRequest) (NBAgentResponse, error) {
 	logger := ctx.GetLogger()
 	logger.Info("resume_v2: handling followup",
 		"conversation_id", req.ConversationId,
@@ -131,6 +141,13 @@ func HandleFollowupAndResumeV2(ctx *security.RequestContext, req NBAgentRequest)
 		return NBAgentResponse{}, fmt.Errorf("resume_v2: agent %s not found", req.AgentId)
 	}
 	agent := agents[0]
+	// Cross-account guard — see agentBelongsToAccount's doc comment
+	// (followup.go). Same "not found" error as the zero-results case above,
+	// deliberately, and checked before the ancestor-walk below so a
+	// cross-account agentId can't even reach that logic.
+	if !agentBelongsToAccount(agent, req.AccountId) {
+		return NBAgentResponse{}, fmt.Errorf("resume_v2: agent %s not found", req.AgentId)
+	}
 
 	// If the loaded agent's implementation isn't registered — the case for
 	// sub-agents constructed on-the-fly by tool wrappers (delegate_agent's
@@ -470,20 +487,29 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		return childResp, nil
 	}
 
-	// All siblings done. If the completed child's answer IS the final answer
-	// (IsTerminal — e.g. automation_builder returning the built workflow JSON after
-	// "Approve and Build"), finalize from it and do NOT resume the parent. Resuming
-	// would re-run the ancestor planner, which for a nested builder
+	// All siblings done. If the completed child explicitly declares that its
+	// terminal answer is also the parent's final answer (e.g. automation_builder
+	// returning workflow JSON after "Approve and Build"), finalize from it and do
+	// NOT resume the parent. Resuming would re-run the ancestor planner, which for
+	// a nested builder
 	// (k8s_debug → automation → automation_builder) re-delegates a FRESH build,
 	// regenerating the plan and re-prompting for approval in a loop (#31997).
 	//
-	// This mirrors the non-resume executor, which already finalizes on a nested
-	// sub-agent's IsTerminal everywhere — the ReAct loop and parallel exec paths in
-	// executor_planner.go, and waiting-tool resume. The V2 bubble-up
-	// was the one path that forgot the terminal short-circuit; this restores parity.
+	// This mirrors the non-resume agent-tool wrapper, which converts the child's
+	// IsTerminal flag into an explicit parent-terminal flag only for opted-in agents.
 	// Placed AFTER the waitingCount>0 guard above so a still-waiting parallel sibling
 	// is never stranded — we only short-circuit once no sibling needs user input.
+	childMayFinalizeParent := false
 	if childResp.IsTerminal {
+		childAgentName := childAgent.AgentName
+		if childAgentName == "" {
+			childAgentName = childResp.AgentName
+		}
+		if runtimeAgent, found := GetNBAgent(ctx, childAgentName, req.AccountId, AgentStatusEnabled); found {
+			childMayFinalizeParent = ResolveAgentParentTerminal(runtimeAgent, true)
+		}
+	}
+	if childMayFinalizeParent {
 		logger.Info("resume_v2: child returned terminal response; finalizing without ancestor re-run",
 			"child_agent_id", childAgent.ID.String(),
 			"agent_name", childAgent.AgentName,
@@ -495,8 +521,27 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		return childResp, nil
 	}
 
-	// All siblings done. Resume parent.
-	_, parentState := dao.GetConversationAgentParentAgentIdAndPreviousState(parentAgentID)
+	// All siblings done. Resolve the executable parent before reading state.
+	// Dynamic wrappers such as delegate_agent have their own persisted row but
+	// no registered implementation; their state is not the state the ancestor
+	// orchestrator must resume with.
+	originalParentID := parentAgentID
+	parentAgentImpl, executableParent, grandparentID, parentState, walkedLevels, resolveErr := resolveBubbleUpParent(
+		ctx, dao, parentAgentID, req.AccountId, childAgent.ID,
+	)
+	if resolveErr != nil {
+		return childResp, resolveErr
+	}
+	parentAgentID = executableParent.ID.String()
+	parentName := executableParent.AgentName
+	if walkedLevels > 0 {
+		logger.Info("resume_v2: skipping unregistered dynamic parent agent",
+			"original_parent_agent_id", originalParentID,
+			"resolved_parent_agent_id", parentAgentID,
+			"resolved_parent_name", parentName,
+			"walked_levels", walkedLevels)
+	}
+
 	if parentState == "" {
 		// The parent already completed out-of-band and its state was cleared, so
 		// it cannot be re-run — but its final answer is on the agent row. Surface
@@ -520,20 +565,6 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		persistFinalMessage(ctx, req.MessageId, finalResp)
 		_ = dao.UpdateConversationStatus(req.ConversationId, ConversationStatusCompleted)
 		return finalResp, nil
-	}
-
-	parentName, nameErr := dao.GetAgentNameFromAgentId(parentAgentID)
-	if nameErr != nil || parentName == "" {
-		return childResp, fmt.Errorf("resume_v2: parent agent name lookup failed: %w", nameErr)
-	}
-	parentAgentImpl, ok := GetNBAgent(ctx, parentName, req.AccountId, AgentStatusEnabled)
-	if !ok {
-		return childResp, fmt.Errorf("resume_v2: parent agent impl not registered: %s", parentName)
-	}
-
-	grandparentID, _ := dao.GetConversationAgentParentAgentIdAndPreviousState(parentAgentID)
-	if grandparentID == "" || grandparentID == uuid.Nil.String() {
-		grandparentID = parentAgentID
 	}
 
 	// For parent resume: the parent's followup message is already COMPLETED
@@ -633,6 +664,36 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		logger.Warn("resume_v2: failed to persist post-parent status", "error", err)
 	}
 	return parentResp, nil
+}
+
+// resolveBubbleUpParent resolves past dynamic wrapper rows, then loads the
+// ancestry and saved state from the executable agent row. Keeping these steps
+// together prevents callers from accidentally pairing an ancestor
+// implementation with a delegate_agent state blob.
+func resolveBubbleUpParent(
+	ctx *security.RequestContext,
+	dao IConversationDao,
+	parentAgentID, accountID string,
+	originID uuid.UUID,
+) (NBAgent, *ConversationAgent, string, string, int, error) {
+	parentUUID, err := uuid.Parse(parentAgentID)
+	if err != nil {
+		return nil, nil, "", "", 0, fmt.Errorf("resume_v2: invalid parent agent id %s: %w", parentAgentID, err)
+	}
+
+	agent, executableParent, walkedLevels, err := resolveRegisteredAncestor(ctx, parentUUID, accountID, originID)
+	if err != nil {
+		return nil, nil, "", "", 0, fmt.Errorf("resume_v2: failed to resolve executable parent agent: %w", err)
+	}
+	if agent == nil || executableParent == nil {
+		return nil, nil, "", "", 0, fmt.Errorf("resume_v2: no registered parent agent found from %s", parentAgentID)
+	}
+
+	grandparentID, state := dao.GetConversationAgentParentAgentIdAndPreviousState(executableParent.ID.String())
+	if grandparentID == "" || grandparentID == uuid.Nil.String() {
+		grandparentID = executableParent.ID.String()
+	}
+	return agent, executableParent, grandparentID, state, walkedLevels, nil
 }
 
 // persistFinalMessage writes the agent response content + status to the

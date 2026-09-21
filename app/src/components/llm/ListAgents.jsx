@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import apiKnowledgeBase from '@api1/knowledge-base';
+import apiKnowledgeBase, { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import SearchInput from '@ui/SearchInput';
@@ -137,6 +137,11 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   const [isSavingKb, setIsSavingKb] = React.useState(false);
   const [kbSearchTerm, setKbSearchTerm] = React.useState('');
   const [alreadyMappedKbIds, setAlreadyMappedKbIds] = React.useState([]);
+  // KBs mapped to every agent via the wildcard row. They reach this agent too,
+  // so they are shown ticked but locked: "all agents" is a KB-level setting and
+  // unticking it here would strip the KB from every other agent.
+  const [allAgentsKbIds, setAllAgentsKbIds] = React.useState([]);
+  const [wildcardKbCount, setWildcardKbCount] = React.useState(0);
 
   const [triggerSubmit, setTriggerSubmit] = React.useState(false);
 
@@ -148,12 +153,15 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         return;
       }
 
-      const counts = (response.data || []).reduce((acc, item) => {
+      const rows = response.data || [];
+      const counts = rows.reduce((acc, item) => {
+        if (item.agent_id === KB_AGENT_WILDCARD) return acc;
         acc[item.agent_id] = item.kb_count || 0;
         return acc;
       }, {});
 
       setKbCountsMap(counts);
+      setWildcardKbCount(rows.find((item) => item.agent_id === KB_AGENT_WILDCARD)?.kb_count || 0);
     } catch (error) {
       console.error('Failed to fetch KB counts:', error);
     }
@@ -180,7 +188,13 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
 
   const fetchAlreadyMappedKbs = async (agent) => {
     try {
-      const response = await apiKnowledgeBase.getAgentKnowledgeBases(accountId, agent.name);
+      // The wildcard list is fetched alongside the agent's own mappings: those KBs
+      // reach this agent as well, and rendering them unticked would read as "not
+      // mapped" right after someone chose "All agents" in the KB form.
+      const [response, wildcardResponse] = await Promise.all([
+        apiKnowledgeBase.getAgentKnowledgeBases(accountId, agent.name),
+        apiKnowledgeBase.getAgentKnowledgeBases(accountId, KB_AGENT_WILDCARD),
+      ]);
       if (!response?.errors?.length) {
         const mappedIds = (response.data || []).map((kb) => kb.id);
         setAlreadyMappedKbIds(mappedIds);
@@ -188,6 +202,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       } else {
         snackbar.error('Failed to fetch mapped knowledge bases for agent');
       }
+      setAllAgentsKbIds(wildcardResponse?.errors?.length ? [] : (wildcardResponse.data || []).map((kb) => kb.id));
     } catch (error) {
       console.error('Error fetching already mapped KBs:', error);
       snackbar.error('Failed to fetch mapped knowledge bases for agent');
@@ -199,6 +214,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
     setSelectedKbIds([]);
     setKbSearchTerm('');
     setAlreadyMappedKbIds([]);
+    setAllAgentsKbIds([]);
     setIsKbSelectionModalOpen(true);
     fetchAvailableKbs();
     fetchAlreadyMappedKbs(agent);
@@ -211,9 +227,14 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
     setKbSearchTerm('');
     setAvailableKbs([]);
     setAlreadyMappedKbIds([]);
+    setAllAgentsKbIds([]);
   };
 
   const handleToggleKbSelection = (kbId) => {
+    // All-agents KBs are locked here — they are managed from the KB form.
+    if (allAgentsKbIds.includes(kbId)) {
+      return;
+    }
     setSelectedKbIds((prev) => {
       if (prev.includes(kbId)) {
         return prev.filter((id) => id !== kbId);
@@ -503,7 +524,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       const agents = listAgentResponse.map((agent) => {
         const icon = getIcon(agent?.name?.toLowerCase());
         const currentAgentName = agent.name;
-        const kbCount = kbCountsMap[currentAgentName] || 0;
+        const kbCount = (kbCountsMap[currentAgentName] || 0) + wildcardKbCount;
         const hasExtensions = extensionsMap[currentAgentName]?.length > 0;
         return [
           {
@@ -643,7 +664,18 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                 },
                 {
                   component: hasWriteAccess(accountId) ? (
-                    <ThreeDotsMenu menuItems={getMenuItems(agent)} onMenuClick={handleMenuAction} data={agent} sx={{ padding: ds.space[1] }} />
+                    // Portal the menu to <body> so it escapes the nested
+                    // overflow:auto + sticky-column stack this table lives in
+                    // (scrollable TableContainer inside the fixed-height Settings
+                    // modal). Rendered inline, Safari mis-lays-out the popover
+                    // surface into a tall empty panel; a body portal avoids that.
+                    <ThreeDotsMenu
+                      menuItems={getMenuItems(agent)}
+                      onMenuClick={handleMenuAction}
+                      data={agent}
+                      disablePortal={false}
+                      sx={{ padding: ds.space[1] }}
+                    />
                   ) : (
                     <></>
                   ),
@@ -728,7 +760,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                     ]}
                     tableData={getFilteredKbs().map((kb) => {
                       const isAlreadyMapped = alreadyMappedKbIds.includes(kb.id);
-                      const isSelected = selectedKbIds.includes(kb.id);
+                      const isMappedToAllAgents = allAgentsKbIds.includes(kb.id);
+                      const isSelected = isMappedToAllAgents || selectedKbIds.includes(kb.id);
                       return [
                         {
                           component: (
@@ -736,6 +769,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                               <Checkbox
                                 size='sm'
                                 checked={isSelected}
+                                disabled={isMappedToAllAgents}
                                 onChange={() => handleToggleKbSelection(kb.id)}
                                 aria-label={`Select ${kb.name || 'knowledge base'}`}
                               />
@@ -746,7 +780,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                           component: (
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
                               <Text value={kb.name} sx={{ fontWeight: ds.weight.medium }} />
-                              {isAlreadyMapped && <Label text='Mapped' tone='success' />}
+                              {isMappedToAllAgents && <Label text='All agents' tone='info' />}
+                              {isAlreadyMapped && !isMappedToAllAgents && <Label text='Mapped' tone='success' />}
                             </Box>
                           ),
                         },
@@ -764,7 +799,10 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                           ),
                         },
                         {
-                          component: <Label text={kb.status || 'active'} />,
+                          // A disabled KB can still be mapped — the mapping is just
+                          // dormant until it is switched back on. Say so here, or the
+                          // row reads as "active" and the agent silently ignores it.
+                          component: kb.enabled === false ? <Label text='disabled' tone='warning' /> : <Label text={kb.status || 'active'} />,
                         },
                         {
                           component: <Text value={kb.created_by?.display_name || '-'} />,

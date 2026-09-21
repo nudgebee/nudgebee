@@ -24,6 +24,7 @@ var swaggerStubs = []func(){
 	swaggerWebhookDynatrace,
 	swaggerWebhookSolarwinds,
 	swaggerWebhookElasticsearch,
+	swaggerWebhookOpenObserve,
 	swaggerWebhookWorkflow,
 	swaggerWebhookAzureEventGrid,
 	swaggerCron,
@@ -215,6 +216,18 @@ func swaggerWebhookSolarwinds() {}
 // @Failure      400 {object} ActionError
 // @Router       /api/webhooks/elasticsearch [post]
 func swaggerWebhookElasticsearch() {}
+
+// swaggerWebhookOpenObserve godoc
+// @Summary      OpenObserve webhook
+// @Description  Receives an OpenObserve alert notification. The body is whatever the alert's template renders; the handler resolves alert name, stream, severity, timestamps and Kubernetes subject from it.
+// @Tags         webhooks
+// @Accept       json
+// @Produce      json
+// @Param        payload body WebhookPayload true "OpenObserve alert notification payload (template-rendered)"
+// @Success      200 {object} SuccessMessage
+// @Failure      400 {object} ActionError
+// @Router       /api/webhooks/openobserve [post]
+func swaggerWebhookOpenObserve() {}
 
 // swaggerWebhookWorkflow godoc
 // @Summary      Inbound workflow trigger webhook

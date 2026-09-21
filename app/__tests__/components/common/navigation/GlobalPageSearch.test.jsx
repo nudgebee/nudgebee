@@ -379,14 +379,13 @@ describe('GlobalPageSearch', () => {
   describe('Ask AI hand-off', () => {
     const getPinnedAskAiButton = (container) => container.querySelector('#global-search-ask-ai-top');
 
-    it('shows a persistent Ask AI entry pinned above the results', () => {
+    it('shows a persistent Ask AI button beside the search input', () => {
       const { container } = render(<GlobalPageSearch />);
       openSearch();
-      expect(screen.getByText('Ask nubi anything')).toBeInTheDocument();
       expect(getPinnedAskAiButton(container)).toBeInTheDocument();
     });
 
-    it('hides the pinned Ask AI entry while scoping by @account', () => {
+    it('keeps the Ask AI button visible while scoping by @account', () => {
       mockDataContextValue = {
         selectedCluster: null,
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
@@ -395,23 +394,20 @@ describe('GlobalPageSearch', () => {
       const { container } = render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: '@' } });
-      expect(getPinnedAskAiButton(container)).not.toBeInTheDocument();
-    });
-
-    it('shows contextual "Ask nubi about" copy on the pinned row, with no redundant message in the empty results body, when the typed query matches no page', () => {
-      const { container } = render(<GlobalPageSearch />);
-      openSearch();
-      fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
-      expect(screen.getByText('Ask nubi about “zzzznotarealpage”')).toBeInTheDocument();
-      // The pinned row above already explains the empty result — a plain
-      // "No results found" underneath it would just repeat the same thing.
-      expect(screen.queryByText('No results found')).not.toBeInTheDocument();
-      // Stays visible (not just its copy) even with zero results — it's the
-      // sole Ask AI entry point now that the empty state has none of its own.
       expect(getPinnedAskAiButton(container)).toBeInTheDocument();
     });
 
-    it('falls back to a plain "No results found" message when @-mentioning matches no account (pinned row is hidden there)', () => {
+    it('shows no redundant "No results found" message when the typed query matches no page — the Ask AI button beside the input is the entry point', () => {
+      const { container } = render(<GlobalPageSearch />);
+      openSearch();
+      fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
+      expect(screen.queryByText('No results found')).not.toBeInTheDocument();
+      // Stays visible even with zero results — it's the sole Ask AI entry
+      // point now that the empty state has none of its own.
+      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+    });
+
+    it('falls back to a plain "No results found" message when @-mentioning matches no account', () => {
       mockDataContextValue = {
         selectedCluster: null,
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
@@ -423,7 +419,7 @@ describe('GlobalPageSearch', () => {
       expect(screen.getByText('No results found')).toBeInTheDocument();
     });
 
-    it('submits the query, then navigates to the seeded conversation, when the pinned Ask AI button is clicked', async () => {
+    it('submits the query, then navigates to the seeded conversation, when the Ask AI button is clicked', async () => {
       mockAiGenerateInvestigate.mockResolvedValue({ data: { data: { ai_execute_investigation: { data: { query: 'zzzznotarealpage' } } } } });
       mockDataContextValue = {
         selectedCluster: { value: 'aws-1', cloud_provider: 'AWS' },

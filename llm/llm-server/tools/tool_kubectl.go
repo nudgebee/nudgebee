@@ -54,12 +54,13 @@ func init() {
 // prompt owns investigation methodology.
 func (m KubectlExecuteTool) ToolPrompt() []string {
 	return []string{
+		"**Routing boundary:** These rules apply after the active agent has selected `kubectl_execute`; they do not override an agent policy that routes Kubernetes reads and local computation through the workspace shell.",
 		"**Evidence-based:** Always specify a namespace via `-n <namespace>` (or `--all-namespaces` for cluster-wide reads). Never assume a namespace — if missing on an execute request, resolve via `resource_search_execute` or one concise clarification before running.",
 		"**Read-only investigations first:** Prefer `get`, `describe`, `logs` over mutating commands unless the request is explicitly an action. Reserve `--force` / `--grace-period=0` for the user's explicit ask.",
 		"**RBAC safety:** If a command returns Forbidden / 403, report the missing permission as a finding. NEVER modify RBAC or ServiceAccount bindings to grant yourself access.",
 		"**Output-scale gotchas:** AVOID `-o json` / `-o yaml` on `-A` / `--all-namespaces` without filters — output can saturate context and time out. Prefer default output, `-o wide`, or `-o custom-columns=...` for broad checks. For counting, use `--no-headers` (with `| wc -l`) so the header row isn't counted.",
 		"**Field selectors > client-side filtering:** `--field-selector=status.phase=Running`, `--selector=app=xxx` at the API is faster than piping to grep.",
-		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large and you already know what you're looking for. For a specific, already-identified resource's first read — especially one that looks healthy at the Kubernetes level — read it unfiltered (`--all-containers=true --prefix=true` plus `--tail`/`--since`); a keyword filter can only surface what you already expect, and a quietly-failing component often logs its real cause at a severity the filter excludes. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods.",
+		"**Log discipline:** For `kubectl logs`, pipe through `grep`, `tail`, or `head` when volume is large and you already know what you're looking for. For a specific, already-identified resource's first read — especially one that looks healthy at the Kubernetes level — read it unfiltered (`--all-containers=true --prefix=true` plus `--tail`/`--since`); a keyword filter can only surface what you already expect, and a quietly-failing component often logs its real cause at a severity the filter excludes. If a container's logs appear empty, consider `--previous` (last crash) or `-c <container>` for multi-container pods. If `kubectl get pods` shows more than one pod for the same workload (a rollout in progress — one `Terminating`, one freshly `Running`), a near-empty log from the new pod does not mean 'no errors' — check the older/terminating pod's logs too, since it may hold the actual incident history that hasn't had time to reproduce yet on the replacement.",
 		"**Quoting:** Always quote complex arguments with special characters — `-o custom-columns=...`, `-o jsonpath=...`, `-l`, `--field-selector`, patterns with `[`, `(`, `?`, `@`, `*`. Example: `kubectl get pods -A -o 'custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace'`.",
 	}
 }
@@ -507,7 +508,6 @@ func (m KubectlExecuteTool) Description() string {
 
 		**Usage:**
 
-		* **Prioritize this tool:** Whenever you require information about the user's cluster to make decisions or provide accurate responses, use this tool.
 		* **Routing:** Availability does not make this tool the default for every Kubernetes command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns Kubernetes reads to the workspace shell, do not use this tool for those reads; keep this direct path for mutations and commands with uncertain effects so approval and resume behavior is preserved.
 		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported when the active agent routes the operation here; this support does not override its tool-routing policy. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) and secret-mounted exec/cp are blocked.
 		* **Output:** The tool will return the output of the executed command.
@@ -1155,6 +1155,25 @@ func (m KubectlExecuteTool) InferToolRequestTypePrompt(ctx *security.RequestCont
 // fall through to InferToolRequestTypePrompt so the safety posture remains
 // fail-closed.
 func InferKubectlVerbType(command string) core.ToolRequestType {
+	// A read-only kubectl command followed only by stdout transforms remains a
+	// read. Keep this allowlist narrow so executors, redirections, and commands
+	// with file operands still fall through to the approval classifier.
+	stages := splitKubectlPipeline(command)
+	if len(stages) > 1 {
+		if InferKubectlVerbType(stages[0]) != core.ToolRequestTypeRead {
+			return ""
+		}
+		for _, stage := range stages[1:] {
+			if hasUnquotedShellSyntax(stage) {
+				return ""
+			}
+			parts, err := shlex.Split(strings.TrimSpace(stage))
+			if err != nil || !isKnownReadOnlyKubectlPipelineFilter(parts) {
+				return ""
+			}
+		}
+		return core.ToolRequestTypeRead
+	}
 	if hasUnquotedShellSyntax(command) {
 		return ""
 	}
@@ -1227,6 +1246,67 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	}
 
 	return ""
+}
+
+// splitKubectlPipeline splits only on unquoted pipes. Quoted pipes remain part
+// of JSONPath, jq, grep, or awk arguments and are not execution boundaries.
+func splitKubectlPipeline(command string) []string {
+	var stages []string
+	start := 0
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if char == '|' && !singleQuoted && !doubleQuoted {
+			stages = append(stages, command[start:i])
+			start = i + 1
+		}
+	}
+	return append(stages, command[start:])
+}
+
+// isKnownReadOnlyKubectlPipelineFilter permits stdout-only transforms used by
+// the kubectl tool. Options that name output or input files stay ambiguous.
+func isKnownReadOnlyKubectlPipelineFilter(parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	command := filepath.Base(parts[0])
+	switch command {
+	case "cat", "cut", "egrep", "fgrep", "grep", "head", "jq", "od", "rgrep", "tail", "tr", "wc":
+		return true
+	case "sort":
+		for _, part := range parts[1:] {
+			if part == "-o" || strings.HasPrefix(part, "-o") || part == "--output" || strings.HasPrefix(part, "--output=") {
+				return false
+			}
+		}
+		return true
+	case "uniq":
+		for _, part := range parts[1:] {
+			if !strings.HasPrefix(part, "-") {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // hasUnquotedShellSyntax reports command shapes whose overall intent cannot be

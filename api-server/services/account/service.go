@@ -690,6 +690,16 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 	// This ensures consistent matching against database enum values
 	if strings.EqualFold(query.CloudProvider, "aws") {
 		query.CloudProvider = "AWS"
+
+		// Fold the optional region allowlist into the data blob the collector
+		// reads, and pin the SDK bootstrap region to it. Validated here rather
+		// than downstream: a malformed region yields an empty crawl that looks
+		// healthy, so the person who typed it must see the error.
+		data, region, regionErr := applyAWSRegions(query.Data, query.Regions, query.Region)
+		if regionErr != nil {
+			return AccountCreateResponse{}, regionErr
+		}
+		query.Data, query.Region = data, region
 	} else if strings.EqualFold(query.CloudProvider, "azure") {
 		query.CloudProvider = "Azure"
 	} else if strings.EqualFold(query.CloudProvider, "gcp") {
@@ -1047,6 +1057,9 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 	// Remove agent-only fields that are not cloud_accounts columns
 	delete(accountFields, "agent_access_key")
 	delete(accountFields, "agent_access_secret")
+	// regions is request-only: it was folded into the data blob above, and
+	// cloud_accounts has no such column.
+	delete(accountFields, "regions")
 
 	newAccountId, err := insertRowFromMap(dbms, "cloud_accounts", accountFields)
 	if err != nil {
@@ -2520,6 +2533,12 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 		return AccountAttrUpsertResponse{}, fmt.Errorf("unauthorized: missing tenant")
 	}
 
+	for _, attr := range request.Objects {
+		if err := validateKnowledgePolicyAttribute(context.GetSecurityContext(), attr); err != nil {
+			return AccountAttrUpsertResponse{}, err
+		}
+	}
+
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return AccountAttrUpsertResponse{}, fmt.Errorf("failed to get database: %w", err)
@@ -2602,8 +2621,8 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		return AccountUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
-	if request.Status == "" && request.AccountName == "" && request.AccountEnv == "" && len(request.Data) == 0 {
-		return AccountUpdateResponse{}, fmt.Errorf("at least one of status, account_name, account_env, or data must be provided")
+	if request.Status == "" && request.AccountName == "" && request.AccountEnv == "" && len(request.Data) == 0 && request.Regions == nil {
+		return AccountUpdateResponse{}, fmt.Errorf("at least one of status, account_name, account_env, data, or regions must be provided")
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -2633,13 +2652,48 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		args = append(args, request.AccountEnv)
 		argIdx++
 	}
-	if len(request.Data) > 0 {
-		dataJSON, jsonErr := json.Marshal(request.Data)
+	// data and regions both write the data column, so they resolve to a single
+	// assignment — emitting one SET clause each makes Postgres reject the whole
+	// statement with "multiple assignments to same column".
+	dataToWrite := request.Data
+	regionToWrite := ""
+	// Whether to emit the clause at all, tracked separately from the map being
+	// non-empty: clearing the last key leaves an empty map that must still be
+	// written, or the deletion is silently dropped.
+	writeData := len(request.Data) > 0
+	if request.Regions != nil {
+		// Merge rather than replace: the data blob also carries the CUR billing
+		// config, and writing a regions-only object here would wipe it.
+		merged, region, regionErr := mergeAccountRegions(dbms, request.Id, tenantId, *request.Regions, request.Data)
+		if regionErr != nil {
+			return AccountUpdateResponse{}, regionErr
+		}
+		dataToWrite = merged
+		regionToWrite = region
+		writeData = true
+	} else if writeData {
+		// A data write replaces the whole column, so an unrelated edit — the CUR
+		// billing config, say — would drop the region allowlist and silently
+		// return the account to region auto-discovery, breaking collection for a
+		// region-scoped role. Carry the stored allowlist across such a write.
+		carried, carryErr := carryForwardRegions(dbms, request.Id, tenantId, request.Data)
+		if carryErr != nil {
+			return AccountUpdateResponse{}, carryErr
+		}
+		dataToWrite = carried
+	}
+	if writeData {
+		dataJSON, jsonErr := json.Marshal(dataToWrite)
 		if jsonErr != nil {
 			return AccountUpdateResponse{}, fmt.Errorf("failed to marshal data: %w", jsonErr)
 		}
 		setClauses = append(setClauses, fmt.Sprintf("data = $%d", argIdx))
 		args = append(args, string(dataJSON))
+		argIdx++
+	}
+	if regionToWrite != "" {
+		setClauses = append(setClauses, fmt.Sprintf("region = $%d", argIdx))
+		args = append(args, regionToWrite)
 		argIdx++
 	}
 

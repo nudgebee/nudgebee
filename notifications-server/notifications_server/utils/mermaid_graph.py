@@ -46,14 +46,23 @@ cluster, matching Mermaid. Getting this wrong silently (e.g. treating the
 subgraph's id as a new, empty, disconnected node) is exactly the
 "misrepresents the real diagram" failure mode this module exists to avoid.
 
-`classDef`/`class`/`style`/`click` directives are recognized and skipped
-rather than rejecting the whole diagram - they only affect presentation
-(colors/tooltips/links), never topology or text, so dropping them is a
-materially smaller risk than dropping a subgraph or a label.
+`classDef`/`class`/`style`/`click`/`linkStyle` directives are recognized
+and skipped rather than rejecting the whole diagram - they only affect
+presentation (colors/tooltips/links), never topology or text, so dropping
+them is a materially smaller risk than dropping a subgraph or a label. The
+inline `id:::className` class-shorthand form (`app["app-dev"]:::running`,
+which real generated diagrams use on nearly every node) is consumed and
+discarded the same way, as part of the node token itself. A leading YAML
+frontmatter block (`---` / `title: ...` / `---`, which real Mermaid and
+llm-server's own validator both accept ahead of the diagram type) is
+dropped wholesale, never interpreted.
 
 Anything outside all of that (a label containing a literal bracket
-character while unquoted, diagram types this parser doesn't target at all)
-fails closed rather than being approximated.
+character while unquoted, the slash/backslash-bracketed parallelogram and
+trapezoid node shapes this parser doesn't model, diagram types it doesn't
+target at all) fails closed rather than being approximated. Every
+fail-closed path logs why (see _reject) so prod data can show which
+unsupported cases actually occur.
 """
 
 import logging
@@ -111,8 +120,10 @@ _DIRECTION_RE = re.compile(r"^direction\s+(TD|TB|BT|RL|LR)\s*$", re.IGNORECASE)
 # (see module docstring), and real diagrams do use these - llm-server's own
 # test fixture for a "valid complex scenario"
 # (tools/tool_mermaid_validation_test.go's TestComplexScenario) includes
-# classDef/class lines.
-_SKIPPED_DIRECTIVE_RE = re.compile(r"^(?:classDef|class|style|click)\s+\S.*$")
+# classDef/class lines. `linkStyle` is the edge-styling counterpart to
+# `classDef` (`linkStyle 0 stroke:#f00,stroke-width:2px`) - same pure-styling
+# risk profile, and the same diagrams that carry classDef/`:::` carry it.
+_SKIPPED_DIRECTIVE_RE = re.compile(r"^(?:classDef|class|style|click|linkStyle)\s+\S.*$")
 
 # Opening bracket -> required closing bracket, for the node shapes the
 # VisualizationAgent's prompt documents, plus the asymmetric/"flag" shape
@@ -186,13 +197,22 @@ def _node_token_pattern(suffix: str) -> str:
     run, so a hyphen that's actually the start of an unspaced arrow
     (`A-->B`, `A---B`) is never swallowed into the id - `A` stops the id
     there since the next `-` isn't followed by a word character, leaving
-    `-->`/`---` intact for _EDGE_ARROW to match."""
+    `-->`/`---` intact for _EDGE_ARROW to match.
+
+    A trailing `:::className` is real Mermaid's inline class-shorthand
+    (`A["Label"]:::running`, also valid on either side of an edge) -
+    consumed here and discarded, same as the standalone
+    `classDef`/`class`/`style`/`click` directives (see
+    _SKIPPED_DIRECTIVE_RE): presentation only, never topology or text.
+    Baked into the node token itself rather than stripped line-by-line so
+    it's handled wherever a node appears - node declarations and both ends
+    of every edge form - without each handler needing to know about it."""
     branches = []
     for opener, closer in _OPEN_TO_CLOSE.items():
         key = _SHAPE_KEYS[opener] + suffix
         unquoted = _unquoted_label_class(opener, closer)
         branches.append(re.escape(opener) + f'(?:"(?P<q_{key}>[^"]*)"|(?P<u_{key}>{unquoted}))' + re.escape(closer))
-    return rf"(?P<id_{suffix}>\w+(?:-\w+)*)(?:" + "|".join(branches) + r")?"
+    return rf"(?P<id_{suffix}>\w+(?:-\w+)*)(?:" + "|".join(branches) + r")?(?::::[\w-]+)?"
 
 
 def _extract_node(match: re.Match, suffix: str) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
@@ -330,6 +350,16 @@ def _register_node(node_id, opener, quoted_label, unquoted_label, labels, shapes
     closed rather than guessing."""
     if node_id in subgraph_ids:
         return opener is None
+    # `[/ ... /]` `[\ ... \]` `[/ ... \]` `[\ ... /]` are real Mermaid's
+    # parallelogram/trapezoid shapes - not in _OPEN_TO_CLOSE, so an unquoted
+    # one matches the plain rect `[` branch instead, with the leading/trailing
+    # slash swallowed into the label text. That's a silent partial parse (wrong
+    # shape, corrupted label) - exactly what this module exists to avoid - so
+    # fail closed on it rather than render a misleading rect.
+    if opener == "[" and quoted_label is None and unquoted_label:
+        stripped = unquoted_label.strip()
+        if stripped and stripped[0] in "/\\" and stripped[-1] in "/\\":
+            return False
     if opener is not None:
         label = quoted_label if quoted_label is not None else unquoted_label
         labels[node_id] = label.replace("<br/>", "\n").replace("<br>", "\n")
@@ -539,6 +569,39 @@ def _subgraph_id_from_match(sub_start: "re.Match") -> Optional[str]:
     return unquoted_title if _SINGLE_WORD_RE.match(unquoted_title) else None
 
 
+def _reject(reason: str, line: Optional[str] = None) -> None:
+    """Record why a diagram fell back to the raw code block. Logged at INFO
+    (not a warning - the fallback is the designed safe path, nothing is
+    broken) so prod data can show which unsupported-syntax cases actually
+    occur, and whether this strict subset is worth expanding, instead of the
+    fallback being invisible."""
+    if line is not None:
+        LOG.info("mermaid_graph: falling back to code block (%s): %r", reason, line[:200])
+    else:
+        LOG.info("mermaid_graph: falling back to code block (%s)", reason)
+
+
+def _strip_yaml_frontmatter(lines: List[str]) -> Optional[List[str]]:
+    """Drop a leading YAML frontmatter block (`---` / ... / `---`) that real
+    Mermaid - and llm-server's own validator (tools/tool_mermaid_validation.go)
+    - allow ahead of the diagram type, carrying a title/config. Never
+    interpreted, same as the styling directives. Returns the remaining lines,
+    or None (already logged) if the block is malformed - an opening fence with
+    no close, or nothing after it."""
+    if not lines or lines[0] != "---":
+        return lines
+    try:
+        close = lines.index("---", 1)
+    except ValueError:
+        _reject("unterminated frontmatter")
+        return None
+    remaining = lines[close + 1 :]
+    if not remaining:
+        _reject("frontmatter only, no diagram")
+        return None
+    return remaining
+
+
 def _parse_flowchart(
     code: str,
 ) -> Optional[Tuple[str, _Subgraph, Dict[str, str], Dict[str, str], List[_Edge]]]:
@@ -550,10 +613,16 @@ def _parse_flowchart(
     lines = [_strip_comment(line).strip().rstrip(";").strip() for line in code.splitlines()]
     lines = [line for line in lines if line]
     if not lines:
+        _reject("empty")
+        return None
+
+    lines = _strip_yaml_frontmatter(lines)
+    if lines is None:
         return None
 
     header = _HEADER_RE.match(lines[0])
     if not header:
+        _reject("unrecognized header", lines[0])
         return None
     rankdir = _DIRECTIONS[header.group(1).upper()]
 
@@ -593,7 +662,8 @@ def _parse_flowchart(
 
         if _SUBGRAPH_END_RE.match(line):
             if len(stack) == 1:
-                return None  # unmatched `end`
+                _reject("unmatched end")
+                return None
             stack.pop()
             continue
 
@@ -606,11 +676,14 @@ def _parse_flowchart(
             continue
 
         if not _dispatch_line(line, labels, shapes, placed, stack[-1], edges, subgraph_ids):
-            return None  # unrecognized, or matched but invalid - fail closed
+            _reject("unrecognized line", line)  # unrecognized, or matched but invalid - fail closed
+            return None
 
     if len(stack) != 1:
-        return None  # unclosed subgraph
+        _reject("unclosed subgraph")
+        return None
     if not placed or len(placed) > _MAX_NODES:
+        _reject("no nodes" if not placed else f"too many nodes ({len(placed)} > {_MAX_NODES})")
         return None
 
     return rankdir, root, labels, shapes, edges

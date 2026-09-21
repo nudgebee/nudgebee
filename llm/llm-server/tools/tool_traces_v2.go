@@ -110,7 +110,7 @@ func (m NBTraceToolV2) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		queryResponse.Traces = queryResponse.Traces[:maxTracesInResponse]
 	}
 
-	response, err := common.MarshalJson(queryResponse.Traces)
+	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to serialize canonical (v2) traces to json", "error", err.Error())
 		return core.NBToolResponse{}, fmt.Errorf("traces_v2: failed to serialize traces: %w", err)

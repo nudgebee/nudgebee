@@ -15,6 +15,11 @@ export class IntegrationLocators extends CommonLocators {
   readonly serversTab!: Locator;
   readonly reposTab!: Locator;
 
+  // Loki default-log-provider toggle (Observability tab -> Loki card -> its
+  // account-form page). Card id follows AccountCard's derivation in
+  // integration.jsx: cloud_provider.split('_').map(capitalize).join('-') + '-section-card'.
+  readonly lokiSectionCard!: Locator;
+
   readonly azureBtn!: Locator;
   readonly azureHeader!: Locator;
   readonly addAzureAccountBtn!: Locator;
@@ -246,6 +251,7 @@ export class IntegrationLocators extends CommonLocators {
     this.kubernetestcloudTab = page.locator("#cloud");
     this.databaseTab = page.locator("#database");
     this.observabilityTab = page.getByRole("tab", { name: "Observability" });
+    this.lokiSectionCard = page.locator("#Loki-section-card");
     this.inmemoryTab = page.locator("#in-memory");
     this.genericErrorToast = page.locator(
       '[role="alert"].MuiAlert-filledError, [role="alert"].MuiAlert-standardError, .toast-error',

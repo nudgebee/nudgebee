@@ -20,15 +20,7 @@ import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { colors, ds } from 'src/utils/colors';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
-
-// Helper to detect git provider from repo URL
-const detectGitProvider = (repoUrl) => {
-  if (!repoUrl) return null;
-  const url = repoUrl.toLowerCase();
-  if (url.includes('github.com')) return 'github';
-  if (url.includes('gitlab')) return 'gitlab';
-  return null;
-};
+import { detectGitProvider } from '@components/optimise-new/gitProvider';
 
 // Detects whether a workload is declaratively managed (GitOps / Helm / Argo CD /
 // Flux) so a manual "Update" — which patches the live pods directly — can warn
@@ -629,7 +621,12 @@ const KubernetesRightSizingPopupForm = ({
   // analysis. Until that analysis is COMPLETED and actually stored a diff, the
   // backend rejects the request — so block submission instead of letting the
   // user fire a doomed call.
-  const eventAnalysisStatus = data?.aiData?.status?.toLowerCase();
+  // The overall investigation can remain IN_PROGRESS while a later stage runs,
+  // even after the log-analysis stage has produced the diff this action uses.
+  // Gate on that specific stage; use the overall status only for legacy
+  // responses that do not yet include task_statuses.
+  const logAnalysisStatus = data?.aiData?.task_statuses?.log_analysis;
+  const eventAnalysisStatus = typeof logAnalysisStatus === 'string' ? logAnalysisStatus.toLowerCase() : data?.aiData?.status?.toLowerCase();
   const eventAnalysisCompleted = eventAnalysisStatus === 'completed';
   const eventAnalysisFailed = eventAnalysisStatus === 'failed';
   const eventAnalysisHasDiff = Boolean(data?.aiData?.source_updates?.gitDiff);

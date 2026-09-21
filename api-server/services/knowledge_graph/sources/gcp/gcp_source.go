@@ -726,7 +726,7 @@ func (s *GCPSource) convertResourcesToGraph(reqCtx *security.RequestContext, res
 	lookup := sources.NewNodeLookup(nodes)
 
 	// Step 3: Fetch CLI data to enrich resources missing metadata
-	cliData := s.fetchAllGCPCLIData(reqCtx, req)
+	cliData := s.fetchAllGCPCLIData(reqCtx, req, resources)
 
 	// Step 4: Ensure VPC, Subnet, Node Pool, and Load Balancer nodes exist from CLI data
 	nodes = s.ensureGCPVPCNodes(nodes, lookup, cliData, req)

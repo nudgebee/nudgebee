@@ -1,14 +1,41 @@
 package core
 
 import (
+	"regexp"
 	"sync"
 	"testing"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestTerminateConversationIncludesClientToolWaitingMessages(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	ctx := security.NewRequestContextForSuperAdmin()
+
+	mock.ExpectBegin()
+	messageQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4 WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING') RETURNING id`
+	mock.ExpectQuery(regexp.QuoteMeta(messageQuery)).
+		WithArgs("conversation-1", string(ConversationStatusTerminated), "account-1", "Conversation terminated by user").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("UPDATE llm_conversations SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE llm_conversation_agent SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE llm_conversation_tool_calls SET status").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, dao.TerminateConversation(ctx, "account-1", "conversation-1"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 // TestShouldSkipSaveBack locks the per-message guard introduced for #30137.
 // The original guard was conversation-scoped (`conv.Status != KILLED && conv.Status != TERMINATED`)

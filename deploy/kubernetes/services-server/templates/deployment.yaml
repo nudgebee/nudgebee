@@ -51,6 +51,14 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "nudgebee.secretName" . | quote }}
+            {{- with .Values.extraEnvFromSecret }}
+            # Install-time bootstrap values (admin address, bundled-agent
+            # credential). Optional: absent on installs that use neither, and
+            # the pod must start regardless.
+            - secretRef:
+                name: {{ . | quote }}
+                optional: true
+            {{- end }}
           env:
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}

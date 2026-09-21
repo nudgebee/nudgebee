@@ -400,8 +400,8 @@ func (h *HiveSaasSource) QueryLabelValues(ctx *security.RequestContext, req Fetc
 		return nil, fmt.Errorf("hive.QueryLabelValues: %w", err)
 	}
 	colQ := hiveQuoteIdent(col)
-	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT 100",
-		colQ, hiveQualifiedTable(cfg.Database, cfg.Table), colQ)
+	sqlQuery := fmt.Sprintf("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL LIMIT %d",
+		colQ, hiveQualifiedTable(cfg.Database, cfg.Table), colQ, labelValuesPageSize)
 	r, err := runHiveQuery(cfg, sqlQuery)
 	if err != nil {
 		return nil, fmt.Errorf("hive.QueryLabelValues: %w", err)

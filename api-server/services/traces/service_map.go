@@ -737,7 +737,7 @@ func executeFocusedQuery(requestContext *security.RequestContext, params TraceQu
 	if err != nil {
 		return []common.OpenTelemetryTrace{}, fmt.Errorf("focused query failed: %w", err)
 	}
-	return response, nil
+	return response.Traces, nil
 }
 
 // buildFocusedWhereClause builds the WHERE clause for focused queries

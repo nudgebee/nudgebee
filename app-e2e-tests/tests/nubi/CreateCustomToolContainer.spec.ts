@@ -13,7 +13,7 @@ const CONTAINER_IMAGE = "alpine:latest";
 const CONTAINER_COMMAND = "/bin/sh";
 const CONTAINER_ARGS = '-c "echo hello-world"';
 
-test("CRUD Custom Tool for Container", async ({ page }) => {
+test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const loginPage = new LoginPage(page);

@@ -189,6 +189,8 @@ type appConfig struct {
 
 	NBRetentionDaysRecommendationsArchive int `mapstructure:"nb_retention_days_recommendations_archive"`
 
+	NBRetentionDaysAiCostReportDispatchLog int `mapstructure:"nb_retention_days_ai_cost_report_dispatch_log"`
+
 	// NBRetentionDaysEventAnalysis ages out event_log_analysis by the recency of
 	// the newest run for an event identity, not per row — see the
 	// event_log_analysis cleanup job in services/nb. Defaults to the critical
@@ -253,6 +255,12 @@ type appConfig struct {
 	// lazily re-minted on serve (the stale verdict keeps serving until replaced; pinned classes are
 	// never re-minted). Default off — enable per-tenant once a mint budget is in place.
 	FeatureLLMTriageRemintEnabled bool `mapstructure:"feature_llm_triage_remint_enabled"`
+
+	// When true, the knowledge graph reads cloud topology (ENIs, Route 53 zones and
+	// records, load-balancer target groups, GCP LB components) from the
+	// cloud_resourses table, falling back to the cloud CLI only when the table
+	// cannot answer. Default on; turn it off to force CLI-always as a kill switch.
+	FeatureKGCloudTopologyFromDB bool `mapstructure:"feature_kg_cloud_topology_from_db"`
 
 	// Webhook execution mode - true for async (default), false for sync (useful for tests)
 	WebhookAsyncExecution bool `mapstructure:"webhook_async_execution"`
@@ -360,7 +368,7 @@ func init() {
 	viper.SetDefault("admin_email", "")
 	viper.SetDefault("local_agent_access_key", "")
 	viper.SetDefault("local_agent_access_secret", "")
-	viper.SetDefault("local_agent_cluster_name", "in-cluster")
+	viper.SetDefault("local_agent_cluster_name", "nb-control-plane-k8s")
 
 	// viper requires default values or bind.. else Unmarshal skips fields with no default values
 	viper.SetDefault("action_api_server_token", "")
@@ -446,6 +454,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_cloud_account_usage_report", 90)
 	viper.SetDefault("nb_retention_days_k8s_resources", 30)
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
+	viper.SetDefault("nb_retention_days_ai_cost_report_dispatch_log", 7)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
@@ -471,6 +480,7 @@ func init() {
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
+	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
 
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")

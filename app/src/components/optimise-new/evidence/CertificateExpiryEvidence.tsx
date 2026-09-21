@@ -1,4 +1,5 @@
-import { Box, Typography, LinearProgress } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { ProgressBar } from '@ui/ProgressBar';
 import { ds } from 'src/utils/colors';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
@@ -99,18 +100,16 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
               {daysUntilExpiry} / {countdownMax} days
             </Typography>
           </Box>
-          <LinearProgress
-            variant='determinate'
+          {/*
+            A days-remaining countdown runs the opposite way to a utilisation gauge — a *fuller*
+            bar is better — so `thresholds` can't derive the tone here. Take it from the same
+            urgency flags that colour the rest of the panel.
+          */}
+          <ProgressBar
             value={(countdownValue / countdownMax) * 100}
-            sx={{
-              height: ds.space[2],
-              borderRadius: ds.radius.sm,
-              backgroundColor: ds.gray[200],
-              '& .MuiLinearProgress-bar': {
-                borderRadius: ds.radius.sm,
-                backgroundColor: urgencyColor,
-              },
-            }}
+            size='md'
+            tone={isCritical ? 'critical' : isWarning ? 'warning' : 'success'}
+            showValue={false}
           />
         </Box>
       )}

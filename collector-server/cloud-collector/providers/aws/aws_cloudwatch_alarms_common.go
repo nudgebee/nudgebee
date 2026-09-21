@@ -8,6 +8,7 @@ import (
 	"nudgebee/collector/cloud/providers"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -592,6 +593,7 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 
 	// 1. Determine namespace info from shared map
 	namespace, knownNamespace := cloudwatchNamespaceServiceMap[info.MetricNamespace]
+	resolvedFromDimensions := knownNamespace
 	if !knownNamespace {
 		// An unrecognised namespace does not mean an unrecognisable resource.
 		// A custom metric published against InstanceId is still about that EC2
@@ -605,6 +607,7 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 		// Application health is rarely a native AWS metric, so this is the
 		// common case for anyone alarming on their own telemetry.
 		if inferred, ok := namespaceFromDimensions(info.Dimensions); ok {
+			resolvedFromDimensions = true
 			namespace = CloudwatchNamespace{
 				Name:                  info.MetricNamespace,
 				ResourceDimensionName: inferred.ResourceDimensionName,
@@ -648,6 +651,23 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 				instanceType = "ServiceName"
 			}
 			// else: just use the cluster name (already set by resolveResourceFromDimensions)
+		}
+	}
+
+	// 2b. Last resort for a custom namespace whose alarm names a logical service
+	// rather than a resource ("Service=nginx"). The same metric is often ALSO
+	// published with a resource dimension attached, and when it is, that sibling
+	// series says which resource this alarm is about. Done here rather than at
+	// evidence time on purpose: subject, subject_type and cloud_resource_id are
+	// all decided in this function, and the fingerprint and dedup chain are built
+	// from them — an event filed under the wrong subject cannot be repaired later.
+	if !resolvedFromDimensions && awsCfg != nil {
+		if found, ok := resolveResourceFromSiblingMetrics(ctx, *awsCfg, info); ok {
+			namespace.ResourceDimensionName = found.dimensionName
+			namespace.ServiceName = found.serviceName
+			namespace.ResourceType = found.resourceType
+			instance = found.value
+			instanceType = found.dimensionName
 		}
 	}
 
@@ -705,6 +725,232 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	}
 
 	return result
+}
+
+// siblingResource is the resource a sibling metric series names for an alarm
+// whose own dimensions name none.
+type siblingResource struct {
+	dimensionName string
+	value         string
+	serviceName   string
+	resourceType  string
+}
+
+const (
+	siblingLookupTimeout    = 5 * time.Second
+	siblingResourceCacheTTL = 10 * time.Minute
+	// siblingCacheSweepAt is the size past which a write sweeps expired entries.
+	// One entry per (account, region, namespace, metric, dimension set) that
+	// could not be resolved from its own dimensions — a handful per account in
+	// practice, so this is reached only by an estate far larger than any we run.
+	siblingCacheSweepAt = 1024
+)
+
+type siblingCacheEntry struct {
+	resource  *siblingResource // nil = looked up, nothing found
+	expiresAt time.Time
+}
+
+// siblingCacheKey identifies one lookup. The cache is a package-level global
+// shared by every account and region this collector polls, so account and region
+// are part of the key: a custom namespace is a name the customer chose, and two
+// tenants both publishing "Service=nginx" under the same namespace is an
+// ordinary collision, not a far-fetched one. Keyed on a struct rather than a
+// joined string so the only free-form field (dimensions) cannot run into the
+// others through a separator that happens to appear in a dimension value.
+type siblingCacheKey struct {
+	accountNumber string
+	region        string
+	namespace     string
+	metricName    string
+	dimensions    string
+}
+
+var (
+	siblingResourceCache   = map[siblingCacheKey]siblingCacheEntry{}
+	siblingResourceCacheMu sync.RWMutex
+)
+
+func newSiblingCacheKey(info CloudWatchAlarmInfo) siblingCacheKey {
+	parts := make([]string, 0, len(info.Dimensions))
+	for _, d := range info.Dimensions {
+		parts = append(parts, d.Name+"="+d.Value)
+	}
+	sort.Strings(parts)
+	return siblingCacheKey{
+		accountNumber: info.AccountNumber,
+		region:        info.Region,
+		namespace:     info.MetricNamespace,
+		metricName:    info.MetricName,
+		dimensions:    strings.Join(parts, ","),
+	}
+}
+
+func getCachedSiblingResource(key siblingCacheKey) (*siblingResource, bool) {
+	siblingResourceCacheMu.RLock()
+	entry, ok := siblingResourceCache[key]
+	siblingResourceCacheMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		// Drop it on the way past. Re-check under the write lock: another
+		// goroutine may have refreshed this key between the two locks, and
+		// deleting a fresh entry would only cost an extra AWS call, not
+		// correctness.
+		siblingResourceCacheMu.Lock()
+		if cur, still := siblingResourceCache[key]; still && time.Now().After(cur.expiresAt) {
+			delete(siblingResourceCache, key)
+		}
+		siblingResourceCacheMu.Unlock()
+		return nil, false
+	}
+	return entry.resource, true
+}
+
+func setCachedSiblingResource(key siblingCacheKey, r *siblingResource) {
+	siblingResourceCacheMu.Lock()
+	defer siblingResourceCacheMu.Unlock()
+	// Expiry alone does not bound this map: an alarm that stops firing is never
+	// read again, so its entry would sit here for the life of the process. Read
+	// eviction handles the keys that come back; this handles the ones that do
+	// not. Only walks the map when it has grown past the sweep threshold, so the
+	// ordinary case stays a single insert.
+	if len(siblingResourceCache) >= siblingCacheSweepAt {
+		now := time.Now()
+		for k, e := range siblingResourceCache {
+			if now.After(e.expiresAt) {
+				delete(siblingResourceCache, k)
+			}
+		}
+	}
+	siblingResourceCache[key] = siblingCacheEntry{resource: r, expiresAt: time.Now().Add(siblingResourceCacheTTL)}
+}
+
+// resolveResourceFromSiblingMetrics answers "which resource is this alarm about?"
+// for a custom-namespace alarm whose own dimensions name a logical service
+// ("Service=nginx") rather than a resource.
+//
+// Publishers commonly emit the same metric twice: once dimensioned the way the
+// alarm is, and once with a resource dimension attached. When that second series
+// exists, it — not a name guess — says which resource the alarm belongs to.
+//
+// Negative results are cached as well as positive ones: the common case is that
+// no sibling exists, and without that every firing of every unresolvable alarm
+// would pay another ListMetrics call.
+func resolveResourceFromSiblingMetrics(ctx context.Context, cfg aws.Config, info CloudWatchAlarmInfo) (siblingResource, bool) {
+	if info.MetricNamespace == "" || info.MetricName == "" || len(info.Dimensions) == 0 {
+		return siblingResource{}, false
+	}
+
+	key := newSiblingCacheKey(info)
+	if cached, hit := getCachedSiblingResource(key); hit {
+		if cached == nil {
+			return siblingResource{}, false
+		}
+		return *cached, true
+	}
+
+	filters := make([]types.DimensionFilter, 0, len(info.Dimensions))
+	for _, d := range info.Dimensions {
+		// @-prefixed dimensions are injected by CloudWatch Logs and are not real
+		// metric dimensions; filtering on them matches nothing.
+		if d.Name == "" || strings.HasPrefix(d.Name, "@") {
+			continue
+		}
+		filters = append(filters, types.DimensionFilter{Name: aws.String(d.Name), Value: aws.String(d.Value)})
+	}
+	if len(filters) == 0 {
+		setCachedSiblingResource(key, nil)
+		return siblingResource{}, false
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, siblingLookupTimeout)
+	defer cancel()
+
+	out, err := cloudwatch.NewFromConfig(cfg).ListMetrics(lookupCtx, &cloudwatch.ListMetricsInput{
+		Namespace:  aws.String(info.MetricNamespace),
+		MetricName: aws.String(info.MetricName),
+		Dimensions: filters,
+	})
+	if err != nil {
+		// Not cached: a throttle or timeout is not evidence that no sibling
+		// exists, and caching it would make one bad minute stick for ten.
+		return siblingResource{}, false
+	}
+
+	resolved, ok := pickSiblingResource(out.Metrics, info.Dimensions)
+	if !ok {
+		setCachedSiblingResource(key, nil)
+		return siblingResource{}, false
+	}
+	setCachedSiblingResource(key, &resolved)
+	return resolved, true
+}
+
+// pickSiblingResource is the decision, kept pure so the rule is testable without
+// an AWS client.
+//
+// A candidate series must carry every dimension the alarm carries, with the same
+// values — a series that merely shares the metric name describes something else.
+// Beyond those it must add exactly one dimension that resourceDimensionIndex
+// recognises as naming a resource.
+//
+// Ambiguity refuses rather than guesses. Two different instances behind one
+// service name is the normal shape of a load-balanced tier, and picking either
+// would attribute the alarm to a machine that may be perfectly healthy — the
+// same reason resourceDimensionIndex drops a dimension its namespaces disagree
+// about.
+func pickSiblingResource(metrics []types.Metric, alarmDims []AlarmDimension) (siblingResource, bool) {
+	want := map[string]string{}
+	for _, d := range alarmDims {
+		if d.Name != "" && !strings.HasPrefix(d.Name, "@") {
+			want[d.Name] = d.Value
+		}
+	}
+
+	found := map[string]siblingResource{}
+	for _, m := range metrics {
+		have := map[string]string{}
+		for _, d := range m.Dimensions {
+			if d.Name != nil && d.Value != nil {
+				have[*d.Name] = *d.Value
+			}
+		}
+		matchesAlarm := true
+		for name, value := range want {
+			if have[name] != value {
+				matchesAlarm = false
+				break
+			}
+		}
+		if !matchesAlarm {
+			continue
+		}
+		for name, value := range have {
+			if _, isAlarmDim := want[name]; isAlarmDim || value == "" {
+				continue
+			}
+			ns, known := resourceDimensionIndex[name]
+			if !known {
+				continue
+			}
+			found[name+"\x00"+value] = siblingResource{
+				dimensionName: name,
+				value:         value,
+				serviceName:   ns.ServiceName,
+				resourceType:  ns.ResourceType,
+			}
+		}
+	}
+
+	if len(found) != 1 {
+		return siblingResource{}, false
+	}
+	for _, r := range found {
+		return r, true
+	}
+	return siblingResource{}, false
 }
 
 // resourceDimensionIndex maps a resource-identifying dimension name

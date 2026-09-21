@@ -1,11 +1,13 @@
 package agents
 
 import (
+	"bytes"
 	"testing"
 
 	"nudgebee/llm/agents/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestForwardedLLMConfigToMap(t *testing.T) {
@@ -79,4 +81,20 @@ func TestForwardedLLMConfigToMap_BedrockCredentials(t *testing.T) {
 		assert.False(t, hasAccess, "lone access key must be omitted")
 		assert.False(t, hasSecret)
 	})
+}
+
+// The workspace pod no longer carries an LLM_PROVIDER_API_KEY fallback
+// (#38009), so resolveLLMConfigForDispatch must fail closed: a resolution
+// that comes back empty must block dispatch rather than let a caller proceed
+// with no usable LLM credentials. ResolveLLMConfigForForwarding contractually
+// short-circuits to (nil, nil) before touching the DB when accountId is
+// empty, so this exercises the guard without needing any DB setup.
+func TestResolveLLMConfigForDispatch_NoAccountScope_ReturnsError(t *testing.T) {
+	ctx := newCapturingContext(&bytes.Buffer{})
+
+	llmCfg, err := resolveLLMConfigForDispatch(ctx, "" /* accountId */, AgentCodeAnalyzer, "conv-1", "code")
+
+	require.Error(t, err)
+	assert.Nil(t, llmCfg)
+	assert.Contains(t, err.Error(), "code:")
 }

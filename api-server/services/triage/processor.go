@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,12 +61,21 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 		// Continue processing - don't fail entire triage on correlation error
 	}
 
-	// Step 3b: Same-subject incident grouping (epic #34655 slice 1). Only chain
-	// leaders participate — re-fires stay collapsed inside their dedup chain, so
-	// a group member stands for its whole chain. Additive: a failure here must
-	// never fail triage.
+	// Step 3b: Same-subject incident grouping (epic #34655). Runs on EVERY firing,
+	// not only the first. Grouping used to be gated on occurrence == 1, which meant
+	// it ran once per alert and never again; where alerts fire continuously the
+	// chain never breaks, so for most live alerts the check had already run days
+	// earlier and could never run again. Measured on an anonymized production tenant over 24
+	// hours: 19 machines had several alert types firing, 16 grouped nothing, and 10
+	// of those were blocked purely because every alert was a re-fire.
+	//
+	// The link is still written once per alert, not once per firing — attach
+	// resolves the chain's first event and hangs the link off that, which also
+	// makes a repeat attach a no-op. An alert whose chain cannot be resolved is
+	// skipped there rather than guessed at. Additive: a failure here must never
+	// fail triage.
 	isIncidentChild := false
-	if occurrence == 1 && incidentGroupingEnabled() {
+	if incidentGroupingEnabled() {
 		attached, err := attachSameSubjectIncident(ctx, db, event)
 		if err != nil {
 			slog.ErrorContext(ctx, "Failed same-subject incident attach", "error", err, "event_id", event.Id)
@@ -496,15 +506,21 @@ func detectAndRecordCorrelations(ctx context.Context, db sqlx.ExtContext, event 
 			}
 		}
 
-		existing, err := existingCorrelatedFingerprints(ctx, db, *event.Fingerprint, candidateFps, *event.CloudAccountId)
+		// Both failure paths below return the scores computed in the pass above
+		// rather than zeroing them. ProcessEvent logs the error and carries on,
+		// feeding corrType/corrScore straight into ComputeScore — so returning
+		// ("", 0) here silently downgraded the event's triage score on top of
+		// losing the rows. The scoring pass is already complete at this point and
+		// depends on nothing these two queries do.
+		existing, err := existingCorrelatedFingerprints(ctx, db, *event.Fingerprint, candidateFps, *event.CloudAccountId, startWindow)
 		if err != nil {
-			return "", 0, fmt.Errorf("failed to batch-check existing correlations: %w", err)
+			return highestType, highestScore, fmt.Errorf("failed to batch-check existing correlations: %w", err)
 		}
 
 		toInsert := filterNewCorrelations(correlated, existing)
 		if len(toInsert) > 0 {
 			if err := batchInsertCorrelations(ctx, db, event, toInsert); err != nil {
-				return "", 0, fmt.Errorf("failed to batch-insert correlations: %w", err)
+				return highestType, highestScore, fmt.Errorf("failed to batch-insert correlations: %w", err)
 			}
 			correlationCount = len(toInsert)
 		}
@@ -528,10 +544,27 @@ type correlatedCandidate struct {
 
 // existingCorrelatedFingerprints returns the subset of candidateFingerprints
 // that already have a correlation with the triaged event's fingerprint in this
-// account. This replaces the per-candidate COUNT(*) existence check with a
-// single ANY() lookup, preserving the original per-pair dedup semantic
-// (correlations are kept at fingerprint-pair granularity, not event-pair).
-func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, triagedFingerprint string, candidateFingerprints []string, cloudAccountID string) (map[string]bool, error) {
+// account, written no earlier than since. This replaces the per-candidate
+// COUNT(*) existence check with a single ANY() lookup.
+//
+// since is what keeps the dedup honest. The check used to have no time bound at
+// all, so a fingerprint pair correlated once was suppressed for the life of the
+// account: the pair's rows point at the event IDs from that first occurrence,
+// and every later firing of the same two alerts scored, matched an ancient row,
+// and inserted nothing — leaving the new events with no correlations while the
+// table showed the relationship had been "found". Measured on an AWS account:
+// three alarms correlated on two prior days produced zero rows on the third,
+// because all three pairs were already known.
+//
+// Passing the caller's correlation-window start scopes the dedup to the
+// occurrence being triaged, which is the granularity that was always intended —
+// it still collapses the repeat firings of a continuously-alerting pair (they
+// fall inside each other's window) while letting a genuinely new occurrence
+// record its own rows. True duplicates cannot slip through regardless: both
+// insert paths are ON CONFLICT DO NOTHING against the (event_id,
+// related_event_id, cloud_account_id) unique constraint, so this check is an
+// optimization, not the thing preventing duplicate rows.
+func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, triagedFingerprint string, candidateFingerprints []string, cloudAccountID string, since time.Time) (map[string]bool, error) {
 	out := make(map[string]bool)
 	if len(candidateFingerprints) == 0 {
 		return out, nil
@@ -547,10 +580,11 @@ func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, tri
 		WHERE e1.fingerprint = $1
 		  AND e2.fingerprint = ANY($2)
 		  AND ec.cloud_account_id = $3
+		  AND ec.created_at >= $4
 	`
 
 	var fps []string
-	if err := sqlx.SelectContext(ctx, db, &fps, query, triagedFingerprint, pq.Array(candidateFingerprints), cloudAccountID); err != nil {
+	if err := sqlx.SelectContext(ctx, db, &fps, query, triagedFingerprint, pq.Array(candidateFingerprints), cloudAccountID, since); err != nil {
 		return nil, err
 	}
 	for _, fp := range fps {
@@ -577,6 +611,18 @@ func filterNewCorrelations(correlated []correlatedCandidate, existing map[string
 // used to number placeholders in the batched multi-row INSERT.
 const correlationInsertCols = 9
 
+// correlationRow is one event_correlations row staged for the batched INSERT.
+// Staging the rows (rather than appending arguments as they are generated) is
+// what lets buildCorrelationInsert order them by unique key before emitting the
+// statement — see the deadlock note there.
+type correlationRow struct {
+	eventID    string
+	relatedID  string
+	timeOffset int
+	depDist    int
+	result     *CorrelationResult
+}
+
 // buildCorrelationInsert builds the multi-row INSERT statement and its argument
 // list for all candidates. Each candidate contributes two rows (both
 // directions), mirroring exactly what the old per-candidate insertCorrelation
@@ -585,15 +631,55 @@ const correlationInsertCols = 9
 // placeholder numbering and per-direction argument binding are unit-testable —
 // that is where a batched-insert bug would hide. Returns ("", nil) for no
 // candidates.
+//
+// Rows are emitted in ascending unique-key order, which is what keeps
+// concurrent triage runs from deadlocking (40P01). Postgres locks the rows of a
+// multi-row INSERT in statement order, and the unique index behind ON CONFLICT
+// is event_correlations_pair_account_type_key — UNIQUE (related_event_id,
+// event_id, cloud_account_id, correlation_type). Triaging event A against
+// candidate B writes the keys {(A,B,T), (B,A,T)} while a concurrent triage of B
+// against A writes the same two keys in the opposite order, so each run held
+// the key the other was waiting on and Postgres killed one of them. Only
+// symmetric correlation types can collide — the directional ones
+// (upstream_dependency / downstream_impact) flip when the roles swap, giving
+// the two runs different keys — but symmetric types are ~75% of all
+// correlations written, and this cost roughly two batches a day in prod.
+// Sorting on the key gives every writer the same acquisition order, so no cycle
+// can form regardless of how many runs overlap. cloud_account_id is left out of
+// the comparison because every row in one batch carries the triaged event's
+// account, so it cannot break a tie.
 func buildCorrelationInsert(triaged *models.Event, candidates []correlatedCandidate) (string, []interface{}) {
 	if len(candidates) == 0 {
 		return "", nil
 	}
 
-	valueClauses := make([]string, 0, len(candidates)*2)
-	args := make([]interface{}, 0, len(candidates)*2*correlationInsertCols)
+	rows := make([]correlationRow, 0, len(candidates)*2)
+	for i := range candidates {
+		c := &candidates[i]
+		rows = append(rows,
+			// Direction 1: triaged -> candidate.
+			correlationRow{triaged.Id, c.event.Id, c.result.TimeOffsetMinutes, c.result.DependencyDistance, &c.result},
+			// Direction 2: candidate -> triaged (negated offset), for efficient reverse queries.
+			correlationRow{c.event.Id, triaged.Id, -c.result.TimeOffsetMinutes, c.result.DependencyDistance, &c.result},
+		)
+	}
 
-	appendRow := func(eventID, relatedID string, timeOffset, depDist int, res *CorrelationResult) {
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := &rows[i], &rows[j]
+		if a.relatedID != b.relatedID {
+			return a.relatedID < b.relatedID
+		}
+		if a.eventID != b.eventID {
+			return a.eventID < b.eventID
+		}
+		return a.result.CorrelationType < b.result.CorrelationType
+	})
+
+	valueClauses := make([]string, 0, len(rows))
+	args := make([]interface{}, 0, len(rows)*correlationInsertCols)
+
+	for i := range rows {
+		r := &rows[i]
 		base := len(args)
 		ph := make([]string, correlationInsertCols)
 		for j := 0; j < correlationInsertCols; j++ {
@@ -601,18 +687,10 @@ func buildCorrelationInsert(triaged *models.Event, candidates []correlatedCandid
 		}
 		valueClauses = append(valueClauses, "("+strings.Join(ph, ", ")+")")
 		args = append(args,
-			eventID, relatedID, *triaged.CloudAccountId, triaged.Tenant,
-			res.CorrelationType, res.CorrelationScore, res.CorrelationReason,
-			timeOffset, depDist,
+			r.eventID, r.relatedID, *triaged.CloudAccountId, triaged.Tenant,
+			r.result.CorrelationType, r.result.CorrelationScore, r.result.CorrelationReason,
+			r.timeOffset, r.depDist,
 		)
-	}
-
-	for i := range candidates {
-		c := &candidates[i]
-		// Direction 1: triaged -> candidate.
-		appendRow(triaged.Id, c.event.Id, c.result.TimeOffsetMinutes, c.result.DependencyDistance, &c.result)
-		// Direction 2: candidate -> triaged (negated offset), for efficient reverse queries.
-		appendRow(c.event.Id, triaged.Id, -c.result.TimeOffsetMinutes, c.result.DependencyDistance, &c.result)
 	}
 
 	query := `

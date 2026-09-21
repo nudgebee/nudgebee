@@ -380,6 +380,29 @@ func getProvider(accountId, providerType, requestedProvider string) (services_se
 	return provider, nil
 }
 
+// tracePayloadForResponse picks what a trace tool hands back to the agent. Normally that is the
+// bare span array. When the query matched nothing AND services-server diagnosed why (the
+// ValidateRequest empty-result check named a mistyped field or value), hand back the full object
+// so the suggestion travels with the empty list — otherwise the agent sees "[]" and can only
+// guess, which is what drives it to re-issue near-identical queries. Mirrors tool_logs_v2.go.
+func tracePayloadForResponse(resp core.ObservabilityTraceResponse) any {
+	if len(resp.Traces) == 0 {
+		if resp.Suggestion != "" {
+			return resp
+		}
+		// Explicit empty array: a nil slice marshals to `null`, and "null" reads to the agent
+		// as a broken tool rather than a window with no spans in it.
+		return []core.ObservabilityTrace{}
+	}
+	return resp.Traces
+}
+
+// traceValidateRequestEnabled reads the trace-validation flag from package scope.
+// executeFetchTrace takes a parameter named `config`, which shadows the config package inside it.
+func traceValidateRequestEnabled() bool {
+	return config.Config.LlmServerTraceValidateRequestEnabled
+}
+
 func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProviderSource string, query string, queryBuilder core.TraceQueryBuilder, config map[string]any) (core.ObservabilityTraceResponse, error) {
 	limit := 1000
 	if val, ok := config["limit"]; ok {
@@ -456,6 +479,11 @@ func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProvid
 		// being zeroed by the fixed span-schema mapping. Other providers and the structured
 		// query-builder path keep the typed span array.
 		IncludeRawResult: traceProvider == "otel_clickhouse" && query != "",
+		// On an empty or failed result, name the mistyped field or value so the agent can
+		// self-correct instead of re-issuing the same query. Only meaningful on the
+		// where-clause path — the raw-SQL and Datadog facet paths carry no canonical where
+		// clause, so services-server finds nothing to validate and the flag is a no-op there.
+		ValidateRequest: traceValidateRequestEnabled(),
 	}
 	traces, err := services_server.QueryTraces(*ctx.Ctx, traceRequest)
 	if err != nil {

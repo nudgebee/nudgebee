@@ -1,20 +1,40 @@
 package clients
 
 import (
-	jira "github.com/andygrunwald/go-jira"
+	"net/http"
 	"strings"
 	"time"
+
+	jira "github.com/andygrunwald/go-jira"
 )
 
 // jiraHTTPTimeout is the timeout for the Jira HTTP client.
 const jiraHTTPTimeout = 15 * time.Second
 
-func CreateJiraClient(username, password, url string) (*jira.Client, error) {
-	tp := jira.BasicAuthTransport{
-		Username: username,
-		Password: password,
+// JiraAuthDataCenterPAT is the auth_type for Jira Data Center personal access
+// tokens, which must be sent as a bearer token — Data Center rejects them over
+// Basic with 401. Every other auth_type (including "token" and unset, which is
+// what existing integrations store) uses Basic. Mirrors the api-server Jira
+// integration schema (api-server/services/integrations/jira.go).
+const JiraAuthDataCenterPAT = "datacenter_pat"
+
+// IsJiraDataCenterPAT reports whether the stored auth_type is a Data Center PAT.
+func IsJiraDataCenterPAT(authType string) bool {
+	return strings.TrimSpace(authType) == JiraAuthDataCenterPAT
+}
+
+func CreateJiraClient(authType, username, password, url string) (*jira.Client, error) {
+	var ct *http.Client
+	if IsJiraDataCenterPAT(authType) {
+		tp := jira.BearerAuthTransport{Token: password}
+		ct = tp.Client()
+	} else {
+		tp := jira.BasicAuthTransport{
+			Username: username,
+			Password: password,
+		}
+		ct = tp.Client()
 	}
-	ct := tp.Client()
 	ct.Timeout = jiraHTTPTimeout
 	client, err := jira.NewClient(ct, "https://"+strings.TrimPrefix(url, "https://"))
 	if err != nil {
@@ -22,4 +42,21 @@ func CreateJiraClient(username, password, url string) (*jira.Client, error) {
 	}
 
 	return client, nil
+}
+
+// IsJiraCloud reports whether the instance is Jira Cloud rather than
+// Server/Data Center. The two differ in user identity (accountId vs name),
+// in which user-search parameters they accept, and in which endpoints exist.
+func IsJiraCloud(client *jira.Client) (bool, error) {
+	req, err := client.NewRequest("GET", "rest/api/2/serverInfo", nil)
+	if err != nil {
+		return false, err
+	}
+	var info struct {
+		DeploymentType string `json:"deploymentType"`
+	}
+	if _, err := client.Do(req, &info); err != nil {
+		return false, err
+	}
+	return strings.EqualFold(info.DeploymentType, "Cloud"), nil
 }

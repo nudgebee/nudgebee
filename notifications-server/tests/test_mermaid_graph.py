@@ -512,6 +512,52 @@ class TestParseFlowchart:
         code = 'graph TD\n    A["a"] --> B["b"]\n    click A "https://example.com"\n'
         assert _parse_flowchart(code) is not None
 
+    def test_linkstyle_directive_is_skipped(self):
+        # Edge-styling counterpart to classDef - presentation only.
+        code = 'graph TD\n    A["a"] --> B["b"]\n    linkStyle 0 stroke:#f00,stroke-width:2px;\n'
+        parsed = _parse_flowchart(code)
+        assert parsed is not None
+        assert [(e.source, e.target) for e in parsed[4]] == [("A", "B")]
+
+    def test_yaml_frontmatter_block_is_dropped(self):
+        # Real Mermaid + llm-server's own validator accept a `---` YAML block
+        # ahead of the diagram type; drop it wholesale, never interpreted.
+        code = '---\ntitle: My Diagram\nconfig:\n  theme: dark\n---\ngraph TD\n    A["a"] --> B["b"]\n'
+        parsed = _parse_flowchart(code)
+        assert parsed is not None
+        assert [(e.source, e.target) for e in parsed[4]] == [("A", "B")]
+
+    def test_unterminated_frontmatter_fails_closed(self):
+        code = '---\ntitle: X\ngraph TD\n    A["a"] --> B["b"]\n'
+        assert _parse_flowchart(code) is None
+
+    def test_parallelogram_and_trapezoid_shapes_fail_closed(self):
+        # `[/ ... /]` `[\ ... \]` etc. are shapes this parser doesn't model;
+        # they must NOT silently parse as a rect with the slashes stuck in
+        # the label (a partial parse this module exists to avoid).
+        assert _parse_flowchart('graph TD\n    A[/Process/] --> B["b"]\n') is None
+        assert _parse_flowchart('graph TD\n    A[\\Note\\] --> B["b"]\n') is None
+        assert _parse_flowchart('graph TD\n    A[/Trap\\] --> B["b"]\n') is None
+
+    def test_inline_class_shorthand_on_node_decl_is_ignored(self):
+        # `id:::className` - real Mermaid's inline class-shorthand, on nearly
+        # every node of real generated diagrams. Consumed as part of the node
+        # token and dropped (presentation only), not a parse failure.
+        code = (
+            'graph TD\n    subgraph S["Services"]\n'
+            '        app["app-dev (2 replicas)"]:::running\n'
+            '        db["db (1 replica)"]:::pending\n    end\n'
+        )
+        parsed = _parse_flowchart(code)
+        assert parsed is not None
+        assert parsed[2] == {"app": "app-dev (2 replicas)", "db": "db (1 replica)"}
+        assert parsed[1].children[0].node_ids == ["app", "db"]
+
+    def test_inline_class_shorthand_on_edge_endpoints_is_ignored(self):
+        parsed = _parse_flowchart('graph TD\n    A["a"]:::hot --> B["b"]:::cold\n')
+        assert parsed is not None
+        assert [(e.source, e.target) for e in parsed[4]] == [("A", "B")]
+
     def test_trailing_inline_comment_is_stripped(self):
         parsed = _parse_flowchart('graph TD\n    A["a"] --> B["b"] %% note\n')
         assert parsed is not None

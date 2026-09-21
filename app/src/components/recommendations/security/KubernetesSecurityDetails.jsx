@@ -37,6 +37,7 @@ import apiTickets from '@api1/tickets';
 import k8sApi from '@api1/kubernetes';
 import { PrOpenIcon } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
+import { detectGitProvider } from '@components/optimise-new/gitProvider';
 
 const KubernetesSecurityDetails = (props) => {
   // Rows carry their own account_id; in cross-account mode (the /optimise
@@ -78,15 +79,6 @@ const KubernetesSecurityDetails = (props) => {
   // accordion; a single finding now opens the side panel instead.
   const [panelFinding, setPanelFinding] = useState(null);
 
-  // Helper to detect git provider from repo URL
-  const detectGitProvider = (repoUrl) => {
-    if (!repoUrl) return null;
-    const url = repoUrl.toLowerCase();
-    if (url.includes('github.com')) return 'github';
-    if (url.includes('gitlab')) return 'gitlab';
-    return null;
-  };
-
   // Filter integrations based on the repo URL in annotations
   const filteredGitIntegrations = useMemo(() => {
     const repoUrl = selectedWorkloadAnnotations[ANNOTATIONS.CI_GIT_REPO] || selectedWorkloadAnnotations[ANNOTATIONS.WORKLOAD_GIT_REPO];
@@ -102,19 +94,42 @@ const KubernetesSecurityDetails = (props) => {
     }
   }, [filteredGitIntegrations, selectedGitIntegration]);
 
+  // A column that repeats the row you opened is not information. Expanded from
+  // an app, every App cell holds that app; expanded from an image, every Image
+  // cell holds that image. Dropping the redundant one hands its width to Title,
+  // which is the only column here whose text has to be read rather than
+  // recognised. Standalone (the Details tab, where no scope is set) keeps both.
+  const scopedToWorkload = Boolean(props?.query?.workload_name);
+  const scopedToImage = Boolean(props?.query?.image);
+
+  // Width budget, measured against the real rendered content rather than
+  // guessed. Every share below except Image and Package Id is wide enough for
+  // its column's longest value plus cell padding, so nothing wraps and no
+  // header breaks across two lines; Image and Package Id are the two columns
+  // whose values are recognised at a glance rather than read, so they take the
+  // truncation (with a tooltip) and Title gets the surplus.
+  //
+  // The old split starved it: Title sat at 20% and cut mid-sentence while
+  // Package Id at 5% cut "zlib1g@..." after six characters, CWEs at 5% broke
+  // every "CWE-416,CWE-611" onto two lines, and Updated At at 5% was narrower
+  // than its own header. Widths are proportional shares of whichever columns
+  // actually render, so they need to be consistent with each other, not sum
+  // to 100 in every branch.
   const BEST_PRACTICES_HEADER = [
-    ...(props?.accountsById ? [{ name: 'Cluster', width: '10%' }] : []),
-    { name: 'CVE', width: '15%' },
-    { name: 'Image', width: props?.accountsById ? '15%' : '20%' },
-    { name: 'App', width: props?.accountsById ? '15%' : '20%' },
-    { name: 'Title', width: '20%' },
-    { name: 'Severity', width: '5%' },
-    { name: 'Package Id', width: '5%' },
-    { name: 'CWEs', width: '5%' },
+    ...(props?.accountsById ? [{ name: 'Cluster', width: '8%' }] : []),
+    // CVE carries an open-in-new glyph beside the id, so it needs more than the
+    // text alone measures.
+    { name: 'CVE', width: '11%' },
+    ...(scopedToImage ? [] : [{ name: 'Image', width: '10%' }]),
+    ...(scopedToWorkload ? [] : [{ name: 'App', width: '10%' }]),
+    { name: 'Title', width: '45%' },
+    { name: 'Severity', width: '6%' },
+    { name: 'Package Id', width: '10%' },
+    { name: 'CWEs', width: '10%' },
   ];
 
   if (!props?.llmTableData?.length) {
-    BEST_PRACTICES_HEADER.push({ name: 'Updated At', width: '5%' }, { name: '', width: '5%' });
+    BEST_PRACTICES_HEADER.push({ name: 'Updated At', width: '8%' }, { name: '', width: '3%' });
   }
 
   const changePage = (page, limit) => {
@@ -187,7 +202,7 @@ const KubernetesSecurityDetails = (props) => {
         const annotations = workloads[0].meta?.config?.annotations || {};
         // For security recommendations, we need workloads.nudgebee.com (source code repo) or ci.nudgebee.com or argocd
         const filteredKeys = Object.keys(annotations).filter(
-          (key) => key.startsWith(WORKLOADS_PREFIX) || key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io')
+          (key) => key.startsWith(WORKLOADS_PREFIX) || key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io/')
         );
         if (filteredKeys.length > 0) {
           const filtered = {};
@@ -365,14 +380,20 @@ const KubernetesSecurityDetails = (props) => {
       drilldownQuery: { ...item, finding: item },
       data: item.recommendation?.VulnerabilityID,
     });
-    data.push({
-      component: <Text value={item?.image?.split('/').pop()} showAutoEllipsis />,
-      data: item?.image?.split('/')[1],
-    });
-    data.push({
-      component: <Text value={`${item.namespace} / ${item.workload_name}`} showAutoEllipsis />,
-      data: item?.image?.split('/')[1],
-    });
+    // Kept in step with BEST_PRACTICES_HEADER above — a cell pushed here
+    // without its header silently shifts every column after it.
+    if (!scopedToImage) {
+      data.push({
+        component: <Text value={item?.image?.split('/').pop()} showAutoEllipsis />,
+        data: item?.image?.split('/')[1],
+      });
+    }
+    if (!scopedToWorkload) {
+      data.push({
+        component: <Text value={`${item.namespace} / ${item.workload_name}`} showAutoEllipsis />,
+        data: item?.image?.split('/')[1],
+      });
+    }
     data.push({
       component: <Text value={item?.recommendation?.Title} showAutoEllipsis />,
       data: item?.recommendation?.Title,

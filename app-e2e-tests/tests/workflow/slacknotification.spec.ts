@@ -43,7 +43,7 @@ const WORKFLOW_JSON_TEMPLATE = {
   status: "ACTIVE",
 };
 
-test("Automation workflow Slack Notification", async ({ page }) => {
+test("Automation workflow Slack Notification", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   test.setTimeout(120000);
 
   const locators = new WorkflowLocators(page);

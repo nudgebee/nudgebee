@@ -5,7 +5,7 @@ import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
 test.describe.configure({ mode: "default", timeout: 180000 });
 
-test("Add multiple users from list", async ({ page }) => {
+test("Add multiple users from list", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
   const locators = await setup(page);
 
   for (const user of users) {
@@ -40,7 +40,7 @@ test("Add multiple users from list", async ({ page }) => {
   }
 });
 
-test("Activate, edit role, verify, then reset an inactive user", async ({ page }, testInfo) => {
+test("Activate, edit role, verify, then reset an inactive user", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   const locators = await setup(page);
 
   const user = users[0];
@@ -113,7 +113,7 @@ test("Activate, edit role, verify, then reset an inactive user", async ({ page }
   await locators.editUserModal.waitFor({ state: "hidden", timeout: 10000 });
 });
 
-test("Suspend an inactive user and verify it appears in Suspended list", async ({ page }, testInfo) => {
+test("Suspend an inactive user and verify it appears in Suspended list", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   const locators = await setup(page);
 
   const user = users[1];
@@ -163,7 +163,7 @@ test("Suspend an inactive user and verify it appears in Suspended list", async (
   await locators.editUserModal.waitFor({ state: "hidden", timeout: 10000 });
 });
 
-test("Edit user first and last name persists", async ({ page }, testInfo) => {
+test("Edit user first and last name persists", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   const locators = await setup(page);
 
   const user = users[2]; // dedicated user (test.user3) — not shared with the role-edit test
@@ -211,7 +211,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Add user — name rejects special characters",
-    { tag: ["@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -232,7 +232,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Add user — name is required",
-    { tag: ["@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -253,7 +253,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Add user — name must start with a letter",
-    { tag: ["@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -272,7 +272,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Add user — email must be a valid format",
-    { tag: ["@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -294,7 +294,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Add user — email rejects malformed formats",
-    { tag: ["@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -322,7 +322,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Edit user — name field enforces validation",
-    { tag: ["@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@validation", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
       const user = users[1]; // test.user2
@@ -356,7 +356,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Add user — duplicate email is rejected",
-    { tag: ["@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
       const existing = users[0]; // test.user1 — already exists
@@ -381,7 +381,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Search — finds a user by name",
-    { tag: ["@smoke", "@search"] },
+    { tag: ["@dev", "@test", "@oss", "@smoke", "@search"] },
     async ({ page }) => {
       const locators = await setup(page);
       const user = users[0];
@@ -397,7 +397,7 @@ test.describe("Users — validation & edge cases", () => {
 
   test(
     "Search — no match shows empty state, clear restores list",
-    { tag: ["@regression", "@search"] },
+    { tag: ["@dev", "@test", "@oss", "@regression", "@search", "@negative"] },
     async ({ page }) => {
       const locators = await setup(page);
 

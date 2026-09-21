@@ -62,7 +62,22 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			return
 		}
 
-		c.JSON(200, resp)
+		// Callers that asked for validation get the envelope, so an empty result can carry the
+		// diagnosis of WHY it is empty. Everyone else — notably the traces UI on traces_list —
+		// keeps the bare []OpenTelemetryTrace array, the same way the IncludeRawResult path above
+		// varies its shape by request flag rather than changing it for every caller.
+		if request.ValidateRequest {
+			c.JSON(200, resp)
+			return
+		}
+
+		// Never hand the UI a bare null: a provider that returns a nil slice would serialize
+		// as `null` rather than `[]`, and the traces screen maps over the response.
+		if resp.Traces == nil {
+			c.JSON(200, []common.OpenTelemetryTrace{})
+			return
+		}
+		c.JSON(200, resp.Traces)
 		return
 	case "traces_counts":
 		var request observability.TracesV3Request

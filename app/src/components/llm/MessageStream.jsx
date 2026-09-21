@@ -13,6 +13,7 @@ import WatchesTab from './WatchesTab';
 import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
+import { actionableTasks } from './utils/taskClassification';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
 
@@ -237,7 +238,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
       // usage widget. Trigger it on drawer open so reasoning rows have data; it's
       // guarded to fetch once.
       itemProps?.handleTokenUsageHover?.();
-      setDrawer({ open: true, kind: 'tasks', title: `Tasks · ${tasks.length}`, data: { tasks } });
+      // Title counts executions; the list keeps every row (the ack is context worth reading).
+      setDrawer({ open: true, kind: 'tasks', title: `Tasks · ${actionableTasks(tasks).length}`, data: { tasks } });
       if (expandedTaskKey != null) {
         const target = tasks.find((t) => {
           const candidates = [t.id, t.tool_id, t.originalIndex];
@@ -381,6 +383,8 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
         // The drawer shows the full per-call tree (every agent + tool call); the inline stream and
         // its curated `tasks` are unchanged. Fall back to `tasks` for responses predating drawerTasks.
         const drawerTasks = response?.drawerTasks ?? tasks;
+        // Only the number drops conversational rows; the drawer still lists them.
+        const taskCount = actionableTasks(drawerTasks).length;
         const extra = response ? additionalData[response.id] : null;
         const allReferences = extra?.references || [];
         // Channel-context provenance gets its own chip + drawer; everything
@@ -400,12 +404,12 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
 
         const responseMeta = response
           ? {
-              taskCount: drawerTasks.length,
+              taskCount,
               contextCount: references.length,
               memoryCount: memories.length,
               channelCount: channelRefs.length,
               watchCount: watchesForThisGroup,
-              onOpenTasks: drawerTasks.length > 0 ? () => openTasksDrawer({ tasks: drawerTasks }) : undefined,
+              onOpenTasks: taskCount > 0 ? () => openTasksDrawer({ tasks: drawerTasks }) : undefined,
               onOpenContexts: references.length > 0 ? () => openContextsDrawer(references) : undefined,
               onOpenMemories: memories.length > 0 ? () => openMemoriesDrawer(memories) : undefined,
               onOpenChannels: channelRefs.length > 0 ? () => openChannelsDrawer(channelRefs) : undefined,

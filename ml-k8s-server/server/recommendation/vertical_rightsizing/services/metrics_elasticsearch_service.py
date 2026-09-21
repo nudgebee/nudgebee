@@ -4,11 +4,11 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-import requests
 
+from server.recommendation.elasticsearch_client import ElasticsearchTransport
 from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData, PodData
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
@@ -34,9 +34,6 @@ NANOCORES_PER_CORE = 1e9
 # One workload's pods. Above this a workload is not a rightsizing candidate anyway,
 # and a silently truncated terms aggregation would drop pods from the percentile.
 MAX_PODS = 1000
-
-DEFAULT_INDEX = "metrics-*"
-REQUEST_TIMEOUT_SECONDS = 60
 
 
 class ElasticsearchMetricsService(MetricsService):
@@ -67,58 +64,36 @@ class ElasticsearchMetricsService(MetricsService):
         tls_skip_verify: bool = False,
     ) -> None:
         super().__init__(config, account_id, executor)
-        if not url:
-            raise ValueError("Elasticsearch rightsizing requires a url")
-        self._url = url.rstrip("/")
-        self._index = metrics_index or DEFAULT_INDEX
-        self._verify = not tls_skip_verify
-        self._auth: Optional[Tuple[str, str]] = None
-        self._headers: Dict[str, str] = {"Content-Type": "application/json"}
-
-        auth_type = (auth_type or "basic").lower()
-        if auth_type == "cognito":
-            # SigV4 signing lives on the Go side only. Refusing here is the point:
-            # an unsigned request comes back 403, which the caller would read as
-            # "this cluster has no metrics".
-            raise ValueError("Elasticsearch rightsizing does not support cognito authentication")
-        if auth_type == "api_key":
-            self._headers["Authorization"] = f"ApiKey {api_key}"
-        elif auth_type == "bearer_token":
-            self._headers["Authorization"] = f"Bearer {bearer_token}"
-        else:
-            self._auth = (username or "", password or "")
+        # Transport (and its auth, including the cognito refusal) is shared with volume
+        # rightsizing so the two cannot drift apart.
+        self._transport = ElasticsearchTransport(
+            url=url,
+            auth_type=auth_type,
+            username=username,
+            password=password,
+            api_key=api_key,
+            bearer_token=bearer_token,
+            metrics_index=metrics_index,
+            tls_skip_verify=tls_skip_verify,
+        )
 
     # --- transport -----------------------------------------------------------
 
     def _search(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        resp = requests.post(
-            f"{self._url}/{self._index}/_search",
-            json=body,
-            headers=self._headers,
-            auth=self._auth,
-            verify=self._verify,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        resp.raise_for_status()
-        payload: Dict[str, Any] = resp.json()
-        return payload
+        return self._transport.search(body)
 
     async def _async_search(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        # Routed through _search rather than straight to the transport: _search is the
+        # seam the tests substitute, and bypassing it would silently make every one of
+        # them hit the network instead of their canned responses.
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, lambda: self._search(body))
 
     def check_connection(self):
-        try:
-            resp = requests.get(
-                f"{self._url}/_cluster/health",
-                headers=self._headers,
-                auth=self._auth,
-                verify=self._verify,
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except Exception as e:
-            raise ConnectionError(f"Elasticsearch connection failed: {e}") from e
+        # Delegated, not re-implemented: this used to read self._url/_headers/_auth/
+        # _verify, which moved to the transport. Keeping a copy of those on the service
+        # would let the two drift; delegating cannot.
+        self._transport.check_connection()
 
     # --- query building ------------------------------------------------------
 

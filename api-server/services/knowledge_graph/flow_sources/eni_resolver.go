@@ -8,6 +8,7 @@ import (
 	"net"
 	"nudgebee/services/cloud"
 	"nudgebee/services/common"
+	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
 	"sort"
 	"strings"
@@ -68,6 +69,47 @@ type ENIInfo struct {
 	Status           string                 `json:"status"`
 }
 
+const (
+	// natGatewayInterfaceType is what AWS reports for a NAT gateway's interface.
+	natGatewayInterfaceType = "nat_gateway"
+	// natGatewayDescriptionPrefix precedes the gateway id in the ENI description,
+	// e.g. "Interface for NAT Gateway nat-010ea04de1c2538cf".
+	natGatewayDescriptionPrefix = "Interface for NAT Gateway "
+	// elbDescriptionPrefix precedes the balancer identifier, e.g.
+	// "ELB app/my-alb/8f314ac75b1d43a8" for v2 and "ELB my-classic-lb" for classic.
+	elbDescriptionPrefix = "ELB "
+)
+
+// trimNATGatewayID returns the gateway id from a NAT gateway ENI description,
+// or "" when the description is not that exact AWS-generated form.
+func trimNATGatewayID(description string) string {
+	if !strings.HasPrefix(description, natGatewayDescriptionPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(description, natGatewayDescriptionPrefix))
+}
+
+// elbFromENIDescription pulls the load balancer out of an ELB ENI description.
+// Returns the identifier flow data and CloudWatch both use ("app/my-alb/1a2b3c"
+// for v2, the plain name for classic) and the display name the graph node
+// carries, which for v2 is the middle segment rather than the whole dimension.
+// Returns empty strings when the description is not an ELB one.
+func elbFromENIDescription(description string) (id, name string) {
+	if !strings.HasPrefix(description, elbDescriptionPrefix) {
+		return "", ""
+	}
+	id = strings.TrimSpace(strings.TrimPrefix(description, elbDescriptionPrefix))
+	if id == "" {
+		return "", ""
+	}
+	// Classic load balancers carry the bare name, so the v2 extraction returns
+	// nothing and the identifier is already the name.
+	if n := core.ELBV2LoadBalancerName(id); n != "" {
+		return id, n
+	}
+	return id, id
+}
+
 // ENIResourceMapping represents the mapping from ENI to AWS resource
 type ENIResourceMapping struct {
 	ENI            *ENIInfo               `json:"eni"`
@@ -95,13 +137,25 @@ type RDSEndpointInfo struct {
 type ENIResolver struct {
 	requestContext *security.RequestContext
 	awsAccountID   string
+	// topology answers IP lookups from cloud_resourses. Nil is valid and means
+	// every lookup misses, i.e. the original CLI-only behaviour.
+	topology *CloudTopologyStore
 }
 
-// NewENIResolver creates a new ENI resolver
+// NewENIResolver creates a new ENI resolver that resolves entirely via the cloud CLI.
 func NewENIResolver(requestContext *security.RequestContext, awsAccountID string) *ENIResolver {
+	return NewENIResolverWithTopology(requestContext, awsAccountID, nil)
+}
+
+// NewENIResolverWithTopology creates an ENI resolver that answers IP lookups from
+// the shared topology store first. Callers that resolve many IPs must build the
+// store once and pass it here — a resolver is constructed per IP per account, so
+// a store built inside the constructor would be a query per lookup.
+func NewENIResolverWithTopology(requestContext *security.RequestContext, awsAccountID string, topology *CloudTopologyStore) *ENIResolver {
 	return &ENIResolver{
 		requestContext: requestContext,
 		awsAccountID:   awsAccountID,
+		topology:       topology,
 	}
 }
 
@@ -173,72 +227,14 @@ func (r *ENIResolver) findENIByIP(ctx context.Context, ipAddress string) ([]*ENI
 		}
 	}
 
-	slog.Debug("ENI lookup cache miss, querying AWS",
-		"ip", ipAddress,
-		"account", r.awsAccountID)
-
-	// Build AWS CLI command to describe network interfaces
-	cmd := fmt.Sprintf(
-		`aws ec2 describe-network-interfaces --filters "Name=addresses.private-ip-address,Values=%s" --output json`,
-		ipAddress,
-	)
-
-	resp, err := cloud.ExecuteCli(r.requestContext, cloud.CloudExecuteCliCommandRequest{
-		AccountID: r.awsAccountID,
-		Command:   cmd,
-	})
+	interfaces, err := r.fetchNetworkInterfacesByIP(ipAddress)
 	if err != nil {
-		return nil, fmt.Errorf("AWS CLI command failed: %w", err)
-	}
-
-	// Parse response
-	var result struct {
-		NetworkInterfaces []struct {
-			NetworkInterfaceId string `json:"NetworkInterfaceId"`
-			SubnetId           string `json:"SubnetId"`
-			VpcId              string `json:"VpcId"`
-			AvailabilityZone   string `json:"AvailabilityZone"`
-			Description        string `json:"Description"`
-			InterfaceType      string `json:"InterfaceType"`
-			PrivateIpAddress   string `json:"PrivateIpAddress"`
-			PrivateIpAddresses []struct {
-				Primary          bool   `json:"Primary"`
-				PrivateIpAddress string `json:"PrivateIpAddress"`
-			} `json:"PrivateIpAddresses"`
-			Association *struct {
-				PublicIp string `json:"PublicIp"`
-			} `json:"Association"`
-			Groups []struct {
-				GroupId   string `json:"GroupId"`
-				GroupName string `json:"GroupName"`
-			} `json:"Groups"`
-			Attachment *struct {
-				AttachmentId string `json:"AttachmentId"`
-				InstanceId   string `json:"InstanceId"`
-				DeviceIndex  int    `json:"DeviceIndex"`
-				Status       string `json:"Status"`
-			} `json:"Attachment"`
-			RequesterId      string `json:"RequesterId"`
-			RequesterManaged bool   `json:"RequesterManaged"`
-			Status           string `json:"Status"`
-			TagSet           []struct {
-				Key   string `json:"Key"`
-				Value string `json:"Value"`
-			} `json:"TagSet"`
-		} `json:"NetworkInterfaces"`
-	}
-
-	if data, ok := resp["data"].(string); ok {
-		if err := json.Unmarshal([]byte(data), &result); err != nil {
-			return nil, fmt.Errorf("failed to parse response: %w", err)
-		}
-	} else {
-		return nil, fmt.Errorf("invalid response format")
+		return nil, err
 	}
 
 	// Convert to ENIInfo
-	enis := make([]*ENIInfo, 0, len(result.NetworkInterfaces))
-	for _, ni := range result.NetworkInterfaces {
+	enis := make([]*ENIInfo, 0, len(interfaces))
+	for _, ni := range interfaces {
 		eni := &ENIInfo{
 			ENIId:            ni.NetworkInterfaceId,
 			SubnetID:         ni.SubnetId,
@@ -307,6 +303,102 @@ func (r *ENIResolver) findENIByIP(ctx context.Context, ipAddress string) ([]*ENI
 	return enis, nil
 }
 
+// awsNetworkInterface is one element of `aws ec2 describe-network-interfaces`'s
+// NetworkInterfaces array. The cloud collector stores that element verbatim as
+// `cloud_resourses.meta` for type `network-interface`, so the same type decodes
+// both the live CLI response and the stored row.
+type awsNetworkInterface struct {
+	NetworkInterfaceId string `json:"NetworkInterfaceId"`
+	SubnetId           string `json:"SubnetId"`
+	VpcId              string `json:"VpcId"`
+	AvailabilityZone   string `json:"AvailabilityZone"`
+	Description        string `json:"Description"`
+	InterfaceType      string `json:"InterfaceType"`
+	PrivateIpAddress   string `json:"PrivateIpAddress"`
+	PrivateIpAddresses []struct {
+		Primary          bool   `json:"Primary"`
+		PrivateIpAddress string `json:"PrivateIpAddress"`
+	} `json:"PrivateIpAddresses"`
+	Association *struct {
+		PublicIp string `json:"PublicIp"`
+	} `json:"Association"`
+	Groups []struct {
+		GroupId   string `json:"GroupId"`
+		GroupName string `json:"GroupName"`
+	} `json:"Groups"`
+	Attachment *struct {
+		AttachmentId string `json:"AttachmentId"`
+		InstanceId   string `json:"InstanceId"`
+		DeviceIndex  int    `json:"DeviceIndex"`
+		Status       string `json:"Status"`
+	} `json:"Attachment"`
+	RequesterId      string `json:"RequesterId"`
+	RequesterManaged bool   `json:"RequesterManaged"`
+	Status           string `json:"Status"`
+	TagSet           []struct {
+		Key   string `json:"Key"`
+		Value string `json:"Value"`
+	} `json:"TagSet"`
+}
+
+// fetchNetworkInterfacesByIP returns the interfaces carrying a private IP, from
+// the topology store when it can answer and from the cloud CLI otherwise.
+//
+// This is the hottest CLI path in the graph build: callers loop every discovered
+// IP against every AWS account, so one describe-network-interfaces process was
+// started per (IP, account) pair. The store answers the same question from rows
+// discovery already collected.
+func (r *ENIResolver) fetchNetworkInterfacesByIP(ipAddress string) ([]awsNetworkInterface, error) {
+	if metas, hit := r.topology.ENIMetaByPrivateIP(ipAddress); hit {
+		interfaces := make([]awsNetworkInterface, 0, len(metas))
+		for _, meta := range metas {
+			var ni awsNetworkInterface
+			if err := json.Unmarshal(meta, &ni); err != nil {
+				continue
+			}
+			interfaces = append(interfaces, ni)
+		}
+		if len(interfaces) > 0 {
+			slog.Debug("ENI lookup served from cloud_resourses",
+				"ip", ipAddress,
+				"account", r.awsAccountID,
+				"eni_count", len(interfaces))
+			return interfaces, nil
+		}
+	}
+
+	slog.Debug("ENI lookup falling back to AWS CLI",
+		"ip", ipAddress,
+		"account", r.awsAccountID)
+
+	cmd := fmt.Sprintf(
+		`aws ec2 describe-network-interfaces --filters "Name=addresses.private-ip-address,Values=%s" --output json`,
+		ipAddress,
+	)
+
+	resp, err := cloud.ExecuteCli(r.requestContext, cloud.CloudExecuteCliCommandRequest{
+		AccountID: r.awsAccountID,
+		Command:   cmd,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("AWS CLI command failed: %w", err)
+	}
+
+	var result struct {
+		NetworkInterfaces []awsNetworkInterface `json:"NetworkInterfaces"`
+	}
+
+	data, ok := resp["data"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format")
+	}
+	if err := json.Unmarshal([]byte(data), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return result.NetworkInterfaces, nil
+}
+
 // mapENIToResources maps an ENI to AWS resources using multiple strategies
 func (r *ENIResolver) mapENIToResources(ctx context.Context, eni *ENIInfo, originalIP string) []*ENIResourceMapping {
 	mappings := make([]*ENIResourceMapping, 0)
@@ -371,6 +463,53 @@ func (r *ENIResolver) mapENIToResources(ctx context.Context, eni *ENIInfo, origi
 			Confidence:   0.70,
 		}
 		mappings = append(mappings, mapping)
+	}
+
+	// Strategy 7: load balancer. An ELB's ENIs are the addresses the balancer
+	// answers on, so a flow to one of them is a flow to the balancer.
+	//
+	// Without this the balancer's own addresses never resolved, and because flow
+	// logs see the backend talking back through them, every workload behind a
+	// load balancer appeared to depend on a pair of bare private IPs. Measured on
+	// one account: an ALB's two ENI addresses sat in the graph as unresolved
+	// ExternalService nodes and turned up in its own dependency list.
+	//
+	// Keyed on RequesterId first, the way the RDS and ElastiCache strategies are:
+	// AWS sets "amazon-elb" itself, while the description is editable. The
+	// description is still read for the name, and is the only signal on older
+	// interfaces that carry no requester.
+	if eni.RequesterId == "amazon-elb" || strings.HasPrefix(eni.Description, "ELB ") {
+		if id, name := elbFromENIDescription(eni.Description); id != "" {
+			mappings = append(mappings, &ENIResourceMapping{
+				ENI:          eni,
+				MatchType:    "description",
+				ResourceType: "loadbalancer",
+				ResourceID:   id,
+				ResourceName: name,
+				MatchedIPs:   []string{originalIP},
+				// Same confidence as the RequesterId-backed RDS path: AWS owns
+				// both the requester tag and the description format here.
+				Confidence: 0.90,
+			})
+		}
+	}
+
+	// Strategy 8: NAT gateway. Every private-subnet instance egresses through it,
+	// so its address appears in the flow logs of most of the estate. Left
+	// unresolved it becomes a bare IP that half the workloads seem to depend on —
+	// the single noisiest unmapped address on a VPC.
+	if eni.InterfaceType == natGatewayInterfaceType || strings.HasPrefix(eni.Description, natGatewayDescriptionPrefix) {
+		if id := trimNATGatewayID(eni.Description); id != "" {
+			mappings = append(mappings, &ENIResourceMapping{
+				ENI:          eni,
+				MatchType:    "description",
+				ResourceType: "natgateway",
+				ResourceID:   id,
+				ResourceName: id,
+				MatchedIPs:   []string{originalIP},
+				Confidence:   0.90,
+			})
+		}
 	}
 
 	return mappings

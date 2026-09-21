@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 
 # Runtime base for the final stage. MUST be declared before the first FROM:
 # an ARG declared after a FROM is scoped to that stage and is invisible to

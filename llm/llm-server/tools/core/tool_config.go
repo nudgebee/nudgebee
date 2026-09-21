@@ -19,6 +19,40 @@ const CacheNamespaceLlmToolConfig = "llm_tool_config"
 
 func init() {
 	common.CacheCreateNamespace(CacheNamespaceLlmToolConfig, common.CacheNamespaceWithExpiration(30*time.Minute))
+	// Join the same registry the other tool caches use, so an account-scoped
+	// invalidation from anywhere clears these shared entries too rather than
+	// depending on one call site remembering to.
+	RegisterToolCacheInvalidator(InvalidateToolConfigCache)
+}
+
+// ToolConfigAccountTag tags every llm_tool_config entry with the account it was
+// derived from, so InvalidateToolConfigCache can drop that account's entries
+// without enumerating key shapes. The namespace holds four key families
+// (account_config_summary, list_tool_configs per tool, list_all_tool_configs,
+// k8s_account_state per limit) and the per-tool and per-limit ones cannot be
+// enumerated at invalidation time.
+func ToolConfigAccountTag(accountId string) string {
+	return "tool_config_account:" + accountId
+}
+
+// InvalidateToolConfigCache drops the shared llm_tool_config entries derived
+// from this account's integrations and tool configs.
+//
+// Registered as a tool cache invalidator, so it runs from InvalidateAllCaches
+// alongside every other account-scoped invalidation.
+//
+// This is what makes the process-local invalidation in invalidateCachesForAccount
+// stick: GetAccountConfigSummary re-seeds its in-memory cache FROM this shared
+// cache on the next call, so clearing only the local map handed the stale
+// summary straight back and the account kept resolving tools against integrations
+// it no longer had (or missing ones it just gained) until the TTL expired.
+func InvalidateToolConfigCache(accountId string) {
+	if accountId == "" {
+		return
+	}
+	if err := common.CacheDeleteWithTag(CacheNamespaceLlmToolConfig, ToolConfigAccountTag(accountId)); err != nil {
+		slog.Error("tools: failed to invalidate tool config cache", "error", err, "account_id", accountId)
+	}
 }
 
 type AccountConfigSummary struct {
@@ -105,7 +139,7 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 			accountConfigSummaryCacheInstance.set(accountId, summary)
 			return summary, nil
 		}
-		slog.Warn("tools: failed to unmarshal cached account summary", "error", "unmarshal error")
+		ctx.GetLogger().Warn("tools: failed to unmarshal cached account summary", "error", "unmarshal error")
 	}
 
 	if ctx == nil {
@@ -119,7 +153,7 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 	// Verify that the account belongs to the tenant
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if !security.IsAccountInTenant(accountId, tenantId) {
-		slog.Error("tools: account does not belong to tenant", "account_id", accountId, "tenant_id", tenantId)
+		ctx.GetLogger().Error("tools: account does not belong to tenant", "account_id", accountId, "tenant_id", tenantId)
 		return summary, errors.New("auth: unauthorized account access")
 	}
 
@@ -139,12 +173,12 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 		JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
 		WHERE ia.cloud_account_id = $1 AND i.status = 'enabled'`, accountId)
 		if err != nil {
-			slog.Error("tools: failed to query integrations", "error", err, "account_id", accountId)
+			ctx.GetLogger().Error("tools: failed to query integrations", "error", err, "account_id", accountId)
 			return err
 		}
 		defer func() {
 			if err := integrationRows.Close(); err != nil {
-				slog.Error("tools: failed to close integration rows", "error", err)
+				ctx.GetLogger().Error("tools: failed to close integration rows", "error", err)
 			}
 		}()
 		for integrationRows.Next() {
@@ -173,12 +207,12 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 		FROM integrations i
 		WHERE i.tenant_id = $1 AND i.status = 'enabled'`, tenantId)
 		if err != nil {
-			slog.Error("tools: failed to query tenant integrations", "error", err, "tenant_id", tenantId)
+			ctx.GetLogger().Error("tools: failed to query tenant integrations", "error", err, "tenant_id", tenantId)
 			return err
 		}
 		defer func() {
 			if err := tenantIntegrationRows.Close(); err != nil {
-				slog.Error("tools: failed to close tenant integration rows", "error", err)
+				ctx.GetLogger().Error("tools: failed to close tenant integration rows", "error", err)
 			}
 		}()
 		for tenantIntegrationRows.Next() {
@@ -198,12 +232,12 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 	g.Go(func() error {
 		cloudProviderRows, err := dbms.Query("SELECT lower(cloud_provider) FROM cloud_accounts WHERE id = $1 AND status = 'active'", accountId)
 		if err != nil {
-			slog.Error("tools: failed to query cloud account", "error", err, "account_id", accountId)
+			ctx.GetLogger().Error("tools: failed to query cloud account", "error", err, "account_id", accountId)
 			return err
 		}
 		defer func() {
 			if err := cloudProviderRows.Close(); err != nil {
-				slog.Error("tools: failed to close cloud provider rows", "error", err)
+				ctx.GetLogger().Error("tools: failed to close cloud provider rows", "error", err)
 			}
 		}()
 		for cloudProviderRows.Next() {
@@ -235,7 +269,9 @@ func GetAccountConfigSummary(ctx *security.RequestContext, accountId string) (Ac
 
 	accountConfigSummaryCacheInstance.set(accountId, summary)
 	if cachedBytes, err := common.MarshalJson(summary); err == nil {
-		_ = common.CacheSet(CacheNamespaceLlmToolConfig, cacheKey, cachedBytes, common.CacheSetWithExpiration(time.Duration(config.Config.CacheToolConfigExpirationMin)*time.Minute))
+		_ = common.CacheSet(CacheNamespaceLlmToolConfig, cacheKey, cachedBytes,
+			common.CacheSetWithExpiration(time.Duration(config.Config.CacheToolConfigExpirationMin)*time.Minute),
+			common.CacheSetWithTags(ToolConfigAccountTag(accountId)))
 	}
 
 	return summary, nil
@@ -861,7 +897,9 @@ func ListToolConfigs(context *security.RequestContext, accountId string, tool NB
 
 	// Cache the result
 	if cachedBytes, err := common.MarshalJson(configs); err == nil {
-		_ = common.CacheSet(CacheNamespaceLlmToolConfig, cacheKey, cachedBytes, common.CacheSetWithExpiration(time.Duration(config.Config.CacheToolConfigExpirationMin)*time.Minute))
+		_ = common.CacheSet(CacheNamespaceLlmToolConfig, cacheKey, cachedBytes,
+			common.CacheSetWithExpiration(time.Duration(config.Config.CacheToolConfigExpirationMin)*time.Minute),
+			common.CacheSetWithTags(ToolConfigAccountTag(accountId)))
 	}
 
 	return configs, nil
@@ -1066,7 +1104,9 @@ func ListAllToolConfigs(context *security.RequestContext, accountId string) ([]T
 
 	// Cache the result
 	if cachedBytes, err := common.MarshalJson(configs); err == nil {
-		_ = common.CacheSet(CacheNamespaceLlmToolConfig, cacheKey, cachedBytes, common.CacheSetWithExpiration(time.Duration(config.Config.CacheToolConfigExpirationMin)*time.Minute))
+		_ = common.CacheSet(CacheNamespaceLlmToolConfig, cacheKey, cachedBytes,
+			common.CacheSetWithExpiration(time.Duration(config.Config.CacheToolConfigExpirationMin)*time.Minute),
+			common.CacheSetWithTags(ToolConfigAccountTag(accountId)))
 	}
 
 	return configs, nil

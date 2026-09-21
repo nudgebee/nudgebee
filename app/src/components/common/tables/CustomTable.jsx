@@ -34,11 +34,20 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import Tooltip from '@ui/Tooltip';
 import apiUser from '@api1/user';
 
-const SortIcon = ({ active, direction }) => {
+const SortIcon = ({ active, direction, alignRight }) => {
   const activeColor = ds.gray[700];
   const inactiveColor = ds.gray[300];
   return (
-    <Box component='span' sx={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', ml: 'var(--ds-space-1)', lineHeight: 0 }}>
+    <Box
+      component='span'
+      sx={{
+        display: 'inline-flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        lineHeight: 0,
+        ...(alignRight ? { mr: 'var(--ds-space-1)' } : { ml: 'var(--ds-space-1)' }),
+      }}
+    >
       <svg width='8' height='6' viewBox='0 0 10 6' style={{ marginBottom: 0 }}>
         <path
           d='M1 5L5 1L9 5'
@@ -66,6 +75,7 @@ const SortIcon = ({ active, direction }) => {
 SortIcon.propTypes = {
   active: PropTypes.bool,
   direction: PropTypes.string,
+  alignRight: PropTypes.bool,
 };
 
 const DEFAULT_EXPANDABLE = {};
@@ -251,9 +261,21 @@ const getDrillDownQuery = (row) => {
 };
 
 export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = false, tabPadding }) => {
+  // Most expandable configs declare only `text`, no `value`. MUI then falls
+  // back to the child index for each Tab's value, but the Tabs highlight guard
+  // (`opt.value === value`) doesn't — so switching works while the selected
+  // tab never gets its blue pill. Defaulting `value` to the array index keeps
+  // both sides on the same identity; explicit values (semantic slugs like
+  // 'evidence') pass through untouched.
+  // Guard: KubernetesTable seeds `expandable.tabs` with the caller's per-row
+  // tabs *function* and only resolves it to an array on first expand — so on
+  // collapsed rows tabOptions can be a function (or anything). The old code
+  // tolerated that because its .map lived after the hasBeenOpened early
+  // return; this map runs on every render, so it must not assume an array.
+  const normalizedTabs = Array.isArray(tabOptions) ? tabOptions.map((o, i) => ({ ...o, value: o.value ?? i })) : [];
   // Use ?? so a valid but falsy tab value (e.g. 0) isn't clobbered by the
   // fallback. Falls back to 0 only when the first tab has no value at all.
-  const [tab, setTab] = useState(tabOptions[0]?.value ?? 0);
+  const [tab, setTab] = useState(normalizedTabs[0]?.value ?? 0);
   // Sticky "has been opened" flag, flipped on synchronously during render so
   // the very first render with isExpanded=true already includes the inner
   // content — MUI Collapse then measures the correct expanded height up front
@@ -275,21 +297,28 @@ export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = f
       sx={{
         // Redesigned Table: the expanded panel shares its background with the
         // expanded row above (gray-300, no top rule) and continues the brand
-        // left rail so the pair reads as a single selected section.
+        // left rail so the pair reads as a single selected section. The left
+        // corner stays square — the rail is a straight line from the row's top
+        // edge to the panel's bottom edge, not a curve; only the outer right
+        // corner keeps the section's rounding.
         p: 'var(--ds-space-2) var(--ds-space-6)',
         backgroundColor: ds.background[200],
         boxShadow: `inset 3px 0 0 0 ${ds.brand[500]}`,
-        borderBottomLeftRadius: ds.radius.lg,
         borderBottomRightRadius: ds.radius.lg,
         '@media (max-width: 1350px)': {
           p: 'var(--ds-space-3)',
         },
       }}
     >
-      <Box mb={ds.space[3]}>
-        <Tabs padding={tabPadding} options={tabOptions} value={tab} onChange={handleChangeTab} />
-      </Box>
-      {tabOptions.map((option, tabIndex) => {
+      {/* A strip exists to switch tabs; with one tab there is nothing to
+          switch, so it renders only when a choice exists. Most expandable
+          tables pass a single tab, where the strip was ~50px of dead chrome. */}
+      {normalizedTabs.length > 1 && (
+        <Box mb={ds.space[3]}>
+          <Tabs padding={tabPadding} options={normalizedTabs} value={tab} onChange={handleChangeTab} />
+        </Box>
+      )}
+      {normalizedTabs.map((option, tabIndex) => {
         // Prefer the tab option's own `value` (semantic slug like 'evidence')
         // for both the React key and the TabPanel identity — falling back to
         // the array index if the caller didn't provide one. Using `option.key
@@ -371,14 +400,15 @@ const ExpandableTableRowBase = ({
             transition: 'background-color 220ms ease, box-shadow 220ms ease, border-radius 220ms ease',
             // Redesigned Table: an expanded row tints to gray-300 (matching the
             // panel below) and drops its divider so the row + panel read as one
-            // selected unit, accented by a brand-navy left rail.
+            // selected unit, accented by a brand-navy left rail. The rail's
+            // corner is square — rounding it bent the 3px line where it meets
+            // the row's top edge; only the outer right corner keeps rounding.
             ...(isExpandable && collapsedObj[itemNo]
               ? {
                   backgroundColor: ds.background[200],
                   borderBottom: '0 !important',
                   '&:first-of-type': {
                     boxShadow: `inset 3px 0 0 0 ${ds.brand[500]}`,
-                    borderTopLeftRadius: ds.radius.lg,
                   },
                   '&:last-of-type': {
                     borderTopRightRadius: ds.radius.lg,
@@ -1218,14 +1248,28 @@ const CustomTable = ({
                             handleRequestSort(head, idx);
                           }
                         }}
-                        sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          // Right-aligned columns: keep the sort caret visually left of the
+                          // label (DOM order unchanged) so the label's own right edge — not
+                          // the caret's — sits flush with the column's right edge, matching
+                          // the values below it (#35789).
+                          flexDirection: alignment === 'right' ? 'row-reverse' : 'row',
+                        }}
                       >
-                        {head.component ? head.component : capitalize(typeof head === 'string' ? head : head.name)}{' '}
-                        <span style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}>
-                          {head.secondryText}
-                        </span>
-                        {infoNode}
-                        <SortIcon active={sort?.name === (head?.name || head)} direction={sort?.order} />
+                        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+                          {head.component ? head.component : capitalize(typeof head === 'string' ? head : head.name)}{' '}
+                          <span
+                            style={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)' }}
+                          >
+                            {head.secondryText}
+                          </span>
+                          {infoNode}
+                        </Box>
+                        <SortIcon active={sort?.name === (head?.name || head)} direction={sort?.order} alignRight={alignment === 'right'} />
                       </Box>
                     ) : (
                       <>

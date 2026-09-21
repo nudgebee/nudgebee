@@ -1,9 +1,8 @@
-# syntax=docker/dockerfile:1.7
 # NB AI Gateway image. Multi-stage: static Go binary → minimal alpine runtime.
 # Depends on the published github.com/maximhq/bifrost/core module — a normal
 # `go build`, no fork or replace.
 
-FROM golang:1.26 AS build
+FROM public.ecr.aws/docker/library/golang:1.26 AS build
 WORKDIR /app
 
 COPY ./ ./
@@ -16,7 +15,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o /app/llm-gateway ./cmd/gateway
 
 # --- runtime ---
-FROM alpine:3.20
+FROM public.ecr.aws/docker/library/alpine:3.20
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 gateway
 WORKDIR /app
 COPY --from=build /app/llm-gateway /app/llm-gateway

@@ -237,56 +237,112 @@ func TestFetchTraceLabels_EmptyAccountID(t *testing.T) {
 // FetchTraceLabels relies on: canonical fields (canonical-first, each once, carrying
 // their type in attributes) unioned with merged-mapping keys, with a merged key that
 // duplicates a canonical field not doubling up.
-func TestBuildTraceLabels_UnionsCanonicalAndMerged(t *testing.T) {
+func TestBuildTraceLabels_UnionsResolvableCanonicalAndMerged(t *testing.T) {
 	merged := map[string]string{
 		"custom_attr":  "backend_attr", // brand-new key
-		"service_name": "svc",          // duplicates a canonical field — must not double up
+		"service_name": "svc",          // canonical field this provider CAN resolve
 	}
 
-	labels := buildTraceLabels(merged, nil)
+	labels := buildTraceLabels(merged, true, nil)
 
 	byLabel := make(map[string]OutputTraceLabel)
 	for _, l := range labels {
 		byLabel[l.Label] = l
 	}
 
-	// All canonical fields present, exactly once, with their declared type in attributes.
+	// The one canonical field the mapping declares is present, once, with its type.
+	svc, ok := byLabel["service_name"]
+	require.True(t, ok, "a canonical field present in the mapping should be advertised")
+	assert.NotNil(t, svc.Attributes, "attributes must default to an empty object, never nil")
+	assert.Equal(t, "string", svc.Attributes["type"], "canonical type must win over the mapping entry")
+
+	// Every canonical field the mapping does NOT declare is withheld: advertising it
+	// would invite a filter the provider cannot resolve.
 	for _, f := range canonicalTraceFields {
-		l, ok := byLabel[f.name]
-		assert.True(t, ok, "canonical field %q should be present", f.name)
-		assert.NotNil(t, l.Attributes, "attributes must default to an empty object, never nil")
-		assert.Equal(t, f.typ, l.Attributes["type"], "canonical field %q should carry its type", f.name)
+		if f.name == "service_name" {
+			continue
+		}
+		assert.NotContains(t, byLabel, f.name, "unresolvable canonical field %q must not be advertised", f.name)
 	}
+
 	// Merged-only key present with empty (typeless) attributes.
 	assert.NotNil(t, byLabel["custom_attr"].Attributes, "override key attributes must be {}, not nil")
 	assert.Empty(t, byLabel["custom_attr"].Attributes, "override key should have no type attribute")
-	// No duplicate for the colliding name, canonical type retained.
-	assert.Equal(t, "string", byLabel["service_name"].Attributes["type"], "canonical type must win over override")
-	assert.Len(t, labels, len(canonicalTraceFields)+1)
+	assert.Len(t, labels, 2)
 
-	// Canonical fields come first, in declared order.
+	// Resolvable canonical fields still lead, in declared order.
+	assert.Equal(t, "service_name", labels[0].Label, "canonical fields should lead")
+}
+
+// TestBuildTraceLabels_UndeclaredProviderKeepsFullVocabulary covers the passthrough case:
+// a provider that publishes no static mapping has declared nothing about what it
+// resolves, so the full canonical set stays advertised for it exactly as before. This is
+// what keeps ClickHouse, Jaeger and Application Insights whole.
+func TestBuildTraceLabels_UndeclaredProviderKeepsFullVocabulary(t *testing.T) {
+	labels := buildTraceLabels(map[string]string{}, false, nil)
+	assert.Len(t, labels, len(canonicalTraceFields))
 	for i, f := range canonicalTraceFields {
-		assert.Equal(t, f.name, labels[i].Label, "canonical fields should lead in order")
+		assert.Equal(t, f.name, labels[i].Label, "canonical fields lead, in declared order")
+		assert.Equal(t, f.typ, labels[i].Attributes["type"], "canonical field %q keeps its type", f.name)
 	}
 }
 
-func TestBuildTraceLabels_EmptyMerged(t *testing.T) {
-	labels := buildTraceLabels(map[string]string{}, nil)
-	assert.Len(t, labels, len(canonicalTraceFields))
+// TestBuildTraceLabels_UndeclaredProviderIgnoresTenantOverrides is the regression for the
+// trap in this design. The declaration test reads the STATIC mapping, but buildTraceLabels
+// receives the MERGED one — static ∪ tenant ∪ account ∪ dynamic. A tenant adding one
+// trace_labels override to a passthrough account must not flip it into "declared" mode and
+// collapse its canonical list to that single key; overrides are additive here as everywhere.
+func TestBuildTraceLabels_UndeclaredProviderIgnoresTenantOverrides(t *testing.T) {
+	// Static mapping is empty (providerDeclares=false), but a tenant override made the
+	// merged map non-empty.
+	merged := map[string]string{"tenant_custom_attr": "backend_attr"}
+
+	labels := buildTraceLabels(merged, false, nil)
+
+	byLabel := make(map[string]OutputTraceLabel)
+	for _, l := range labels {
+		byLabel[l.Label] = l
+	}
+	for _, f := range canonicalTraceFields {
+		assert.Contains(t, byLabel, f.name,
+			"a tenant override must not withhold canonical field %q from an undeclared provider", f.name)
+	}
+	assert.Contains(t, byLabel, "tenant_custom_attr", "the override key is still advertised")
+	assert.Len(t, labels, len(canonicalTraceFields)+1)
+}
+
+// TestBuildTraceLabels_CanonicalOrderingPreserved verifies that when several canonical
+// fields resolve, they still lead the list in canonicalTraceFields order.
+func TestBuildTraceLabels_CanonicalOrderingPreserved(t *testing.T) {
+	merged := map[string]string{
+		"span_name":    "span_name",
+		"service_name": "service_name",
+		"duration_ns":  "duration_ns",
+		"custom_attr":  "backend_attr",
+	}
+
+	labels := buildTraceLabels(merged, true, nil)
+	require.Len(t, labels, 4)
+
+	// canonicalTraceFields order is service_name, …, span_name, …, duration_ns.
+	assert.Equal(t, []string{"service_name", "span_name", "duration_ns", "custom_attr"},
+		[]string{labels[0].Label, labels[1].Label, labels[2].Label, labels[3].Label})
+	assert.Equal(t, "integer", labels[2].Attributes["type"], "duration_ns keeps its declared type")
 }
 
 // TestBuildTraceLabels_IncludesDiscoveredKeys verifies backend-discovered keys are
-// unioned in with empty attributes, deduped against canonical fields and mapping keys.
+// unioned in with empty attributes, deduped against canonical fields and mapping keys —
+// and that live discovery alone is enough to make a canonical field resolvable.
 func TestBuildTraceLabels_IncludesDiscoveredKeys(t *testing.T) {
 	merged := map[string]string{"custom_attr": "backend_attr"}
 	discovered := []OutputTraceLabel{
 		{Label: "http.method", Attributes: map[string]any{}},  // brand-new discovered key
-		{Label: "service_name", Attributes: map[string]any{}}, // collides with canonical — keep canonical type
+		{Label: "service_name", Attributes: map[string]any{}}, // canonical, unmapped but discovered live
 		{Label: "custom_attr", Attributes: map[string]any{}},  // collides with mapping key — no double up
 		{Label: "http.method", Attributes: map[string]any{}},  // duplicate discovered key — no double up
 	}
 
-	labels := buildTraceLabels(merged, discovered)
+	labels := buildTraceLabels(merged, true, discovered)
 
 	byLabel := make(map[string]OutputTraceLabel)
 	for _, l := range labels {
@@ -296,9 +352,12 @@ func TestBuildTraceLabels_IncludesDiscoveredKeys(t *testing.T) {
 	httpMethod, ok := byLabel["http.method"]
 	assert.True(t, ok, "discovered key should be present")
 	assert.Empty(t, httpMethod.Attributes, "discovered key should have no type")
-	assert.Equal(t, "string", byLabel["service_name"].Attributes["type"], "canonical type retained over discovered collision")
-	// canonical set + custom_attr + http.method, each once.
-	assert.Len(t, labels, len(canonicalTraceFields)+2)
+	assert.Equal(t, "string", byLabel["service_name"].Attributes["type"],
+		"a canonical field discovered live is advertised, and keeps its canonical type")
+	assert.NotContains(t, byLabel, "duration_ns", "canonical field neither mapped nor discovered stays out")
+	// service_name + custom_attr + http.method, each once.
+	assert.Len(t, labels, 3)
+	assert.Equal(t, "service_name", labels[0].Label, "canonical still leads")
 }
 
 // ---------------------------------------------------------------------------

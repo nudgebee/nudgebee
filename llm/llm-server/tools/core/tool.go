@@ -83,7 +83,7 @@ func init() {
 	common.CacheSubscribe(CacheChannelToolInvalidation, func(accountId string) {
 		slog.Info("received global tool invalidation", "account_id", accountId)
 		// Internal invalidation only (don't broadcast again)
-		invalidateLocalCaches(accountId)
+		invalidateCachesForAccount(accountId)
 	})
 }
 
@@ -220,12 +220,21 @@ func (c *toolCache) delete(accountId string) {
 	delete(c.data, accountId)
 }
 
-func invalidateLocalCaches(accountId string) {
+// invalidateCachesForAccount drops every cache derived from this account's tools
+// and integrations. Both the originating replica (via updateToolCache) and every
+// peer replica (via the CacheChannelToolInvalidation subscriber) run it, so it
+// must stay idempotent.
+func invalidateCachesForAccount(accountId string) {
 	toolCacheInstance.delete(accountId)
 	enabledToolsCacheInstance.delete(accountId)
 	toolDtoCacheInstance.delete(accountId)
 	customToolDtoCacheInstance.delete(accountId)
 	accountConfigSummaryCacheInstance.delete(accountId)
+	// InvalidateAllCaches runs the registered invalidators, which include the one
+	// clearing the SHARED llm_tool_config entries. Those must go too: dropping
+	// only the in-memory maps above achieved nothing for the account config
+	// summary, because GetAccountConfigSummary re-seeds its map from the shared
+	// cache on the very next call and handed the stale summary straight back.
 	InvalidateAllCaches(accountId)
 }
 
@@ -233,7 +242,7 @@ func updateToolCache(accountId string) {
 	// Load fresh data from DB and update cache
 	tools := loadCustomNbToolsFromDB(accountId)
 	toolCacheInstance.set(accountId, tools)
-	invalidateLocalCaches(accountId)
+	invalidateCachesForAccount(accountId)
 	// Broadcast to other replicas
 	if err := common.CachePublish(CacheChannelToolInvalidation, accountId); err != nil {
 		slog.Error("tools: failed to broadcast tool invalidation", "error", err, "account_id", accountId)

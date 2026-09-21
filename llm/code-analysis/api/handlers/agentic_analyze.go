@@ -472,6 +472,14 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 	// original "correlate this K8s workload's logs" use case — generic requests
 	// (chat fixes, repo maintenance) have no workload and are equally valid.
 
+	// Request-received line: records mode/raise_pr and the originating
+	// conversation so an event investigation's explore call (debug agent
+	// localising a change) is distinguishable from its Step-3 fix call. The
+	// prompt and logs are deliberately not logged — they carry raw application
+	// log excerpts (tokens, connection strings, PII).
+	log.Printf("INFO: /analyze request received - mode=%s raise_pr=%v event_id=%s conversation_id=%s message_id=%s agent_id=%s logs_len=%d",
+		req.Mode, req.RaisePR, req.EventId, req.ConversationId, req.MessageId, req.AgentID, len(req.Logs))
+
 	analysisID := newAnalysisID()
 
 	common.InitAnalysis(analysisID)

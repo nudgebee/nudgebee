@@ -340,9 +340,12 @@ export async function selectProjectKey(
   projectKey: string
 ): Promise<void> {
   if (!(await locators.projectKeyDropdown.isVisible().catch(() => false))) {
+    // The mode toggle is ds/ToggleGroup (role="group" wrapper) on migrated fields and
+    // still MuiToggleButtonGroup elsewhere - probe for both shapes.
+    // Exact text: the broader base selector would otherwise catch "Select issue type".
     const selectTab = locators.dialog
-      .locator(".MuiToggleButtonGroup-grouped")
-      .filter({ hasText: "Select" })
+      .locator(".MuiToggleButtonGroup-grouped, [role='group'] button")
+      .filter({ hasText: /^Select$/ })
       .last();
     if (await selectTab.isVisible().catch(() => false)) {
       await selectTab.scrollIntoViewIfNeeded();

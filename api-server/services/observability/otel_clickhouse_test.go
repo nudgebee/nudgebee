@@ -328,6 +328,77 @@ func TestMapRowToOpenTelemetryHeatmapTrace_DurationParsesQuotedUInt64(t *testing
 	assert.Equal(t, int64(1234567), trace.DurationNs)
 }
 
+// TestMapGroupingRowToTraceGroupingValues_DurationNS is the regression guard for
+// traces_grouping_v3 always reporting duration_ns as 0: QueryGroupedTraces never
+// selected duration_ns (or any aggregate of it), and the mapper had a dead,
+// mistyped stub (assigning a string into the int64 DurationNS field) instead of
+// reading it. The fix selects avg_duration_ns (AVG(duration_ns)) and maps that.
+func TestMapGroupingRowToTraceGroupingValues_DurationNS(t *testing.T) {
+	t.Run("decodes quoted UInt64 avg_duration_ns", func(t *testing.T) {
+		row := map[string]interface{}{"avg_duration_ns": "1234567"} // ClickHouse JSON-quoted UInt64
+		trace, err := MapGroupingRowToTraceGroupingValues(row)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1234567), trace.DurationNS)
+	})
+
+	t.Run("decodes float64 avg_duration_ns", func(t *testing.T) {
+		row := map[string]interface{}{"avg_duration_ns": float64(430459500)}
+		trace, err := MapGroupingRowToTraceGroupingValues(row)
+		require.NoError(t, err)
+		assert.Equal(t, int64(430459500), trace.DurationNS)
+	})
+
+	t.Run("missing avg_duration_ns defaults to 0, not an error", func(t *testing.T) {
+		trace, err := MapGroupingRowToTraceGroupingValues(map[string]interface{}{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), trace.DurationNS)
+	})
+}
+
+// TestRedirectDurationNsSortToAvg is the regression guard for sorting the grouped-traces
+// "Avg Duration" column silently sorting by max instead: the frontend/API sort key stays
+// "duration_ns" (matching every other trace source), but on ClickHouse that column is the raw,
+// non-aggregated one -- ordering by it directly would get wrapped in MAX() by
+// generateOrderByClause. redirectDurationNsSortToAvg retargets it to the avg_duration_ns
+// aggregate that is actually selected and displayed.
+func TestRedirectDurationNsSortToAvg(t *testing.T) {
+	t.Run("redirects duration_ns to avg_duration_ns", func(t *testing.T) {
+		orderBy := []query.QueryOrderBy{{Column: "duration_ns", Order: query.Desc}}
+		got := redirectDurationNsSortToAvg(orderBy)
+		require.Len(t, got, 1)
+		assert.Equal(t, "avg_duration_ns", got[0].Column)
+		assert.Equal(t, query.Desc, got[0].Order)
+		assert.Equal(t, "duration_ns", orderBy[0].Column, "input slice must not be mutated")
+	})
+
+	t.Run("leaves other sort columns untouched", func(t *testing.T) {
+		orderBy := []query.QueryOrderBy{{Column: "error_count", Order: query.Asc}}
+		got := redirectDurationNsSortToAvg(orderBy)
+		assert.Equal(t, "error_count", got[0].Column)
+	})
+
+	t.Run("no-op on empty order-by", func(t *testing.T) {
+		assert.Empty(t, redirectDurationNsSortToAvg(nil))
+	})
+}
+
+// TestOtelClickhouseTraceSource_QueryGroupedTraces_SelectsAvgDurationNs pins that the
+// grouped-traces SQL actually asks ClickHouse for avg_duration_ns -- the underlying cause
+// of the "always 0ns" bug was that duration_ns (in any form) was absent from the SELECT
+// list entirely, so no mapping fix on its own would have helped.
+func TestOtelClickhouseTraceSource_QueryGroupedTraces_SelectsAvgDurationNs(t *testing.T) {
+	def, ok := ClickhouseTraceGroupingTableDefinition["avg_duration_ns"]
+	require.True(t, ok, "avg_duration_ns must be defined on the grouping table")
+	assert.True(t, def.IsAggregated)
+	assert.Equal(t, "AVG(duration_ns)", def.Def)
+
+	// The raw duration_ns column must stay non-aggregated so existing WHERE-clause
+	// filters on it (pre-aggregation) keep working.
+	rawDef, ok := ClickhouseTraceGroupingTableDefinition["duration_ns"]
+	require.True(t, ok)
+	assert.False(t, rawDef.IsAggregated)
+}
+
 // TestQueryTracesRaw_Live exercises the raw-table capability against a live relay +
 // ClickHouse. It runs an aggregation (GROUP BY service with count + p95 latency) and
 // asserts QueryTracesRaw returns the real computed columns/values, while the typed

@@ -499,6 +499,34 @@ class Cache:
             LOG.exception(f"Error deduping event {event_id}: {e}")
             return True
 
+    def claim_event_analysis_poller(self, event_id, ttl_seconds):
+        """First claim for event_id wins (True); a second, still-live claim
+        gets False -- guards against two overlapping clicks on the same event
+        each spawning their own poller. Fails open (True) when Redis is
+        unavailable, so an outage degrades to "no dedup" rather than
+        silently dropping the poller."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return True
+        try:
+            return bool(self.redis_client.set(f"event_analysis_poll:{event_id}", "1", nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error claiming event analysis poller for {event_id}: {e}")
+            return True
+
+    def release_event_analysis_poller(self, event_id):
+        """Releases a claim taken by claim_event_analysis_poller -- without
+        this, a claim only ever clears on its own after the full TTL, so any
+        retry for the same event stays blocked for that long even though no
+        poller is actually running any more."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        try:
+            self.redis_client.delete(f"event_analysis_poll:{event_id}")
+        except redis.RedisError as e:
+            LOG.exception(f"Error releasing event analysis poller for {event_id}: {e}")
+
     def rebuild_watched_channels(self, platform, team_id, channel_ids):
         """Reseed one workspace's mirror from the DB truth (e.g. after a flush)."""
         self._ensure_connection()

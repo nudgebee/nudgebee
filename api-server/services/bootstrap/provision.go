@@ -51,7 +51,14 @@ const (
 // this deployment is entitled and an admin address is configured. Safe to call
 // on every boot: it converges rather than duplicating.
 func Provision(ctx context.Context, logger *slog.Logger) error {
-	email := adminEmail()
+	// Default a nil logger at the entry point, matching the convention used across
+	// knowledge_graph/core and security.NewRequestContext*. Guarding here rather than
+	// at each call site keeps the internal helpers free of repeated nil checks.
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	email := adminEmail(logger)
 	if email == "" {
 		logger.Debug("first run: no admin address configured, leaving provisioning to first login")
 		return nil
@@ -130,13 +137,31 @@ func Provision(ctx context.Context, logger *slog.Logger) error {
 	return nil
 }
 
-// adminEmail prefers the explicitly configured address, then the licence's.
-// Enterprise therefore needs no configuration at all.
-func adminEmail() string {
-	if email := strings.TrimSpace(config.Config.AdminEmail); email != "" {
-		return email
+// adminEmail resolves the address to provision.
+//
+// A licence that names an address wins over admin.email, and that precedence is
+// load-bearing rather than a preference. licensedBootstrapCheck enforces the
+// licence's address as an allowlist: on a licensed deployment no other address
+// may bootstrap. But a pre-provisioned user never reaches that check --
+// getOrCreateBootstrapAdminUser short-circuits for users that already exist --
+// so honouring a conflicting admin.email here would mint an admin the licence
+// does not authorise and hand it a working login. Same shape as the tier bypass
+// the entitlement gate closes, one layer down.
+//
+// Community licences carry no address, so admin.email is authoritative there,
+// which is the case it exists for.
+func adminEmail(logger *slog.Logger) string {
+	configured := strings.TrimSpace(config.Config.AdminEmail)
+	licenced := strings.TrimSpace(license.Get().Email())
+
+	if licenced == "" {
+		return configured
 	}
-	return strings.TrimSpace(license.Get().Email())
+	if configured != "" && !strings.EqualFold(configured, licenced) {
+		logger.Warn("first run: admin.email does not match the licence and is being ignored; the licence's address is authoritative",
+			"configured", configured, "licence", licenced)
+	}
+	return licenced
 }
 
 // firstTenantID mirrors license.SingleTenantBootstrap's resolution, which is

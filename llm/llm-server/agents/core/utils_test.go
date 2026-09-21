@@ -79,6 +79,13 @@ func TestIsInvestigationRequestTask(t *testing.T) {
 		// --- definitional-but-causal stays an investigation ---
 		{"what is causing checkout-svc to crash", true},
 		{"explain why the pod crashed", true},
+		{"what is the issue with job java-api-checker in namespace app-12", true},
+		{"what is the problem with checkout-svc", true},
+		{"what are the issues with the payments deployment", true},
+		{"what is a security issue", false},
+		{"what are common problems in kubernetes", false},
+		{"what is a crash", false},
+		{"what is a slow query", false},
 
 		// --- causal phrasing survives a retrieval-looking prefix ---
 		{"show me why the pods restarted", true},

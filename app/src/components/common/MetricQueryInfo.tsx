@@ -11,6 +11,9 @@ export const K8S_METRIC_QUERY_LABELS: Record<string, string> = {
   memory_usage: 'Usage',
   memory_request: 'Requested',
   memory_limit: 'Limit',
+  pod_count: 'Running pods',
+  cpu_usage_max_pod: 'Busiest pod',
+  memory_usage_max_pod: 'Busiest pod',
 };
 
 /**

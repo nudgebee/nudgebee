@@ -1,15 +1,3 @@
-export const weightedMedian = (buckets: { value: number; weight: number }[]): number => {
-  const total = buckets.reduce((sum, b) => sum + b.weight, 0);
-  if (total === 0) return 0;
-  const sorted = [...buckets].sort((a, b) => a.value - b.value);
-  let seen = 0;
-  for (const bucket of sorted) {
-    seen += bucket.weight;
-    if (seen * 2 >= total) return bucket.value;
-  }
-  return sorted[sorted.length - 1].value;
-};
-
 export const formatCount = (value: number): string => (value ?? 0).toLocaleString();
 
 export const formatShare = (value: number, total: number): string => {
@@ -30,8 +18,6 @@ export const formatDuration = (milliseconds: number): string => {
   if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   return `${minutes}m`;
 };
-
-export const formatDays = (days: number): string => `${days} ${days === 1 ? 'day' : 'days'}`;
 
 export const formatWindowLength = (startMs: number, endMs: number): string => {
   const elapsed = Math.max(0, endMs - startMs);

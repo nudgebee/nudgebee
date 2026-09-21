@@ -23,7 +23,7 @@ type PromptInput struct {
 }
 
 // PromptFile is the on-disk YAML schema shared by every prompt, fragment and
-// provider override. Identity comes from the file path, not from the fields:
+// model override. Identity comes from the file path, not from the fields:
 // Name must equal the filename stem and Category the parent directory. Both are
 // carried in the file only so a mismatch is caught by the validator — the same
 // checked-redundancy role atlas.sum plays for migrations.

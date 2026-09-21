@@ -41,7 +41,7 @@ const WORKFLOW_JSON_TEMPLATE = {
   status: "ACTIVE",
 };
 
-test.skip("Automation workflow G-chat Notification", async ({ page }) => {
+test.skip("Automation workflow G-chat Notification", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud", "@quarantine"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const locators = new WorkflowLocators(page);

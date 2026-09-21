@@ -112,6 +112,12 @@ def create_app():
 
 def signal_handler_exit(sig, frame):
     logging.info("handler called with signal %s", sig)
+    # Only reached when app.py is the entrypoint (local runs). Under gunicorn the
+    # handler below is never installed and rabbitmq_client's interpreter-shutdown
+    # hook does this instead.
+    from rabbitmq.rabbitmq_client import stop_all_consumers
+
+    stop_all_consumers()
     sys.exit(0)
 
 

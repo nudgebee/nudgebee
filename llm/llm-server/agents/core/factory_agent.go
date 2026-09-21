@@ -12,6 +12,17 @@ import (
 
 var nbSystemAgents = map[string]func(accountId string) (NBAgent, error){}
 
+// nbSystemAgentAliases records lowercased alias names registered via
+// RegisterNBAgentFactoryWithAliases. Aliases remain resolvable through
+// nbSystemAgents, while callers such as ListAgents can omit duplicate picker
+// entries.
+var nbSystemAgentAliases = map[string]bool{}
+
+// IsSystemAgentAlias reports whether agent was registered as an alias.
+func IsSystemAgentAlias(agent string) bool {
+	return nbSystemAgentAliases[strings.ToLower(agent)]
+}
+
 func RegisterNBAgentFactory(agent string, agentFactory func(accountId string) (NBAgent, error)) {
 	slog.Info("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
@@ -29,6 +40,7 @@ func RegisterNBAgentFactoryWithAliases(agent string, agentFactory func(accountId
 	RegisterNBAgentFactory(agent, agentFactory)
 	for _, alias := range aliases {
 		RegisterNBAgentFactory(alias, agentFactory)
+		nbSystemAgentAliases[strings.ToLower(alias)] = true
 	}
 }
 
@@ -46,6 +58,17 @@ func RegisterNBAgentFactoryAndTool(agent string, agentFactory func(accountId str
 	toolcore.RegisterNBToolFactory(agent, func(accountId string) (toolcore.NBTool, error) {
 		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: useResponseAlways, toolType: toolcore.NBToolTypeAgent, accountId: accountId}, nil
 	})
+}
+
+// RegisterNBAgentFactoryAndToolWithAliases registers one canonical agent-tool
+// plus direct-address aliases. Aliases resolve for @mentions and stored history,
+// but only the canonical name is exposed as a tool to parent orchestrators.
+func RegisterNBAgentFactoryAndToolWithAliases(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, aliases ...string) {
+	RegisterNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput)
+	for _, alias := range aliases {
+		RegisterNBAgentFactory(alias, agentFactory)
+		nbSystemAgentAliases[strings.ToLower(alias)] = true
+	}
 }
 
 func RegisterNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
@@ -148,7 +171,23 @@ func ResolveAgentByConversationAgentId(ctx *security.RequestContext, agentUUID u
 		return candidate, &dto, 0, nil
 	}
 
-	currentID := dto.ParentAgentID
+	candidate, _, walked, err := resolveRegisteredAncestor(ctx, dto.ParentAgentID, accountId, agentUUID)
+	if err != nil {
+		return nil, &dto, 0, err
+	}
+	if candidate != nil {
+		return candidate, &dto, walked + 1, nil
+	}
+	return nil, &dto, 0, nil
+}
+
+// resolveRegisteredAncestor walks from startID (inclusive) until it finds a
+// persisted agent row whose implementation can be instantiated. Dynamic tool
+// wrappers such as delegate_agent deliberately have no registered factory, so
+// resume paths must skip them and continue to their executable orchestrator.
+// walkedLevels is zero when startID itself is registered.
+func resolveRegisteredAncestor(ctx *security.RequestContext, startID uuid.UUID, accountID string, originID uuid.UUID) (agent NBAgent, agentDTO *ConversationAgent, walkedLevels int, err error) {
+	currentID := startID
 	for i := 0; i < maxAncestorWalkForAgentResolution && currentID != uuid.Nil; i++ {
 		// DAO errors in the walk are propagated (not swallowed) so a transient
 		// DB failure surfaces as 500 at the API layer instead of getting
@@ -156,18 +195,18 @@ func ResolveAgentByConversationAgentId(ctx *security.RequestContext, agentUUID u
 		// a clean chain-break — leave the loop and let the caller decide.
 		parents, pErr := GetConversationDao().ListConversationAgents("", currentID.String())
 		if pErr != nil {
-			return nil, &dto, 0, fmt.Errorf("ResolveAgentByConversationAgentId: list parent agents for %s (starting from %s): %w", currentID, agentUUID, pErr)
+			return nil, nil, 0, fmt.Errorf("resolveRegisteredAncestor: list parent agents for %s (starting from %s): %w", currentID, originID, pErr)
 		}
 		if len(parents) == 0 {
 			break
 		}
 		parent := parents[0]
-		if candidate, ok := GetNBAgent(ctx, parent.AgentName, accountId, AgentStatusEnabled); ok {
-			return candidate, &dto, i + 1, nil
+		if candidate, ok := GetNBAgent(ctx, parent.AgentName, accountID, AgentStatusEnabled); ok {
+			return candidate, &parent, i, nil
 		}
 		currentID = parent.ParentAgentID
 	}
-	return nil, &dto, 0, nil
+	return nil, nil, 0, nil
 }
 
 const nbToolCallAdditionalDatailsAgentId = "agent_id"
@@ -280,6 +319,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	}
 
 	resp, err := ExecuteAgentToolCall(nbRequestContext, agent, input)
+	parentTerminal := ResolveAgentParentTerminal(agent, resp.IsTerminal)
 	additionalDetails := map[string]any{
 		nbToolCallAdditionalDatailsAgentId:   resp.AgentId,
 		nbToolCallAdditionalDatailsMessageId: resp.MessageId,
@@ -303,7 +343,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:              resp.Response[0],
 			Status:            toolcore.NBToolResponseStatusWaiting,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
@@ -317,7 +357,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:              responseData,
 			Status:            toolcore.NBToolResponseStatusError,
 			Type:              toolcore.NBToolResponseTypeText,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
 		}, toolcore.ErrUnableToFetchData
@@ -337,7 +377,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 					Data:              content,
 					Type:              toolcore.NBToolResponseTypeJson,
 					Status:            toolcore.NBToolResponseStatusSuccess,
-					IsTerminal:        resp.IsTerminal,
+					IsTerminal:        parentTerminal,
 					AdditionalDetails: additionalDetails,
 					References:        resp.References,
 					SubAgentEvidence:  subAgentEvidence,
@@ -348,7 +388,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:              resp.Response[0],
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			AdditionalDetails: additionalDetails,
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
@@ -361,7 +401,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Type:              toolcore.NBToolResponseTypeJson,
 			AdditionalDetails: additionalDetails,
 			Status:            toolcore.NBToolResponseStatusError,
-			IsTerminal:        resp.IsTerminal,
+			IsTerminal:        parentTerminal,
 			References:        resp.References,
 			SubAgentEvidence:  subAgentEvidence,
 		}, nil
@@ -435,11 +475,12 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 		// computed once at top-level entry. Sub-agents must trust the parent's
 		// selection — re-running it against a mechanical sub-agent command (e.g.
 		// "fetch CPU for pod foo") would destroy relevance.
-		OriginalQuery:     nbRequestContext.OriginalQuery,
-		SelectedSkillIds:  nbRequestContext.SelectedSkillIds,
-		SessionId:         nbRequestContext.SessionId,
-		KBPrestepContent:  nbRequestContext.KBPrestepContent,
-		KBPrestepExecuted: nbRequestContext.KBPrestepExecuted,
+		OriginalQuery:           nbRequestContext.OriginalQuery,
+		SelectedSkillIds:        nbRequestContext.SelectedSkillIds,
+		SessionId:               nbRequestContext.SessionId,
+		KBPrestepContent:        nbRequestContext.KBPrestepContent,
+		KnowledgePolicy:         KnowledgePolicy(nbRequestContext.KnowledgePolicy),
+		KnowledgePolicyResolved: nbRequestContext.KnowledgePolicyResolved,
 		KBReferences: func() []AgentReference {
 			refs, _ := nbRequestContext.KBReferences.([]AgentReference)
 			return refs

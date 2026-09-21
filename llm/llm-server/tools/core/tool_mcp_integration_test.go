@@ -71,6 +71,7 @@ func TestUnwrapSSEIfPresent(t *testing.T) {
 }
 
 func TestInvalidateAccountIntegrationCache_RemovesCachedTools(t *testing.T) {
+	registerUnavailableMetastore(t)
 	const accountId = "acct-mcp-invalidate-test"
 
 	cached := []NBTool{
@@ -93,6 +94,7 @@ func TestInvalidateAccountIntegrationCache_RemovesCachedTools(t *testing.T) {
 }
 
 func TestInvalidateAccountIntegrationCache_UnknownAccountIsNoOp(t *testing.T) {
+	registerUnavailableMetastore(t)
 	const accountId = "acct-mcp-unknown"
 
 	_, ok := mcpIntegrationToolCacheInstance.get(accountId)
@@ -107,6 +109,7 @@ func TestInvalidateAccountIntegrationCache_UnknownAccountIsNoOp(t *testing.T) {
 }
 
 func TestInvalidateAccountIntegrationCache_OnlyAffectsTargetAccount(t *testing.T) {
+	registerUnavailableMetastore(t)
 	const targetAccount = "acct-target"
 	const otherAccount = "acct-other"
 

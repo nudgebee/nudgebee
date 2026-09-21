@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"nudgebee/llm/events"
 )
 
 func TestCountEventsInResponse(t *testing.T) {
@@ -216,5 +218,76 @@ func TestSummarizeTraceSpan(t *testing.T) {
 		})
 		assert.NotNil(t, got)
 		assert.Equal(t, true, got["is_error"], "numeric grpc/http codes must be detected")
+	})
+}
+
+// Regression: tool_event_v2.go's capInvestigateDataEvidence can shrink an
+// oversized evidence payload down to a plain truncated string. Traces.Data
+// and AlertLabels.Data are normally map[string]any / []any respectively —
+// reduceEventData must not panic when a cap has collapsed either into a
+// string, and must still extract the real data when the shape is intact.
+func TestReduceEventData_CappedEvidenceDoesNotPanic(t *testing.T) {
+	t.Run("traces as an intact map extracts trace summaries", func(t *testing.T) {
+		event := events.Event{
+			Title: "test event",
+			Evidences: events.InvestigateData{
+				Traces: events.InvestigateDataInsight{
+					Data: map[string]any{
+						"data": []any{
+							map[string]any{"span_id": "s1", "status_code": "STATUS_CODE_ERROR"},
+						},
+					},
+				},
+			},
+		}
+		result := reduceEventData(event)
+		traces, ok := result["traces"].([]map[string]any)
+		assert.True(t, ok)
+		assert.Len(t, traces, 1)
+	})
+
+	t.Run("traces capped to a string is skipped, not panicked on", func(t *testing.T) {
+		event := events.Event{
+			Title: "test event",
+			Evidences: events.InvestigateData{
+				Traces: events.InvestigateDataInsight{Data: "... (truncated)"},
+			},
+		}
+		assert.NotPanics(t, func() {
+			result := reduceEventData(event)
+			_, hasTraces := result["traces"]
+			assert.False(t, hasTraces)
+		})
+	})
+
+	t.Run("alert labels as an intact slice extracts labels", func(t *testing.T) {
+		event := events.Event{
+			Title: "test event",
+			Evidences: events.InvestigateData{
+				AlertLabels: events.InvestigateDataInsight{
+					Data: []any{
+						map[string]any{"label": "severity", "value": "critical"},
+					},
+				},
+			},
+		}
+		result := reduceEventData(event)
+		labels, ok := result["labels"].(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, "critical", labels["severity"])
+	})
+
+	t.Run("alert labels capped to a string is skipped, not panicked on", func(t *testing.T) {
+		event := events.Event{
+			Title: "test event",
+			Evidences: events.InvestigateData{
+				AlertLabels: events.InvestigateDataInsight{Data: "label=value;label=value;... (truncated)"},
+			},
+		}
+		assert.NotPanics(t, func() {
+			result := reduceEventData(event)
+			_, hasLabels := result["labels"]
+			assert.False(t, hasLabels)
+		})
 	})
 }

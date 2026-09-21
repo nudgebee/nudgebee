@@ -1,0 +1,12 @@
+user_prompt: "which node is the most loaded right now — CPU and memory both"
+
+expected_output:
+  - The response must identify which node currently has the highest CPU utilization and which node has the highest memory utilization (they may be the same node or different ones).
+  - The agent must invoke the metrics agent to compute this rather than guessing — a generated query without execution is not sufficient.
+  - Acceptable CPU forms include topk(1, 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) or equivalent instance/node CPU-utilization queries.
+  - Acceptable memory forms include topk(1, (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes) or equivalent node memory-utilization queries.
+
+tags:
+  - metrics
+  - kubernetes
+  - orchestrator

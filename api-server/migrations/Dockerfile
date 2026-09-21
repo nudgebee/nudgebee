@@ -10,7 +10,7 @@
 # Alpine base: its OS packages are continuously patched, unlike ubuntu:24.04
 # whose noble snapshot accrues fixable-but-unpatched CVEs. This image only
 # needs psql + the atlas binary + bash + curl, all clean on Alpine.
-FROM alpine:3.22
+FROM public.ecr.aws/docker/library/alpine:3.22
 
 ARG TARGETARCH
 

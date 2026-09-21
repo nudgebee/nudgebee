@@ -1,12 +1,15 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Grid, Typography, Box, Divider, ButtonBase } from '@mui/material';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import apiAccount from '@api1/account';
 import { Modal } from '@ui/Modal';
 import { Stepper } from '@ui/Stepper';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
-import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import { Card } from '@ui/Card';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV, ACCOUNT_ENV_TOOLTIP } from '@shared/forms/AccountEnvToggle';
+import LabelWithInfo from '@components/ownership/LabelWithInfo';
 import Tabs from '@shared/navigation/Tabs';
 import { Banner } from '@ui/Banner';
 import { isK8sAccountNameValid } from 'src/utils/common';
@@ -19,6 +22,17 @@ import { CopyIconBlue, PlayCircleIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { useTour } from '@components/common/tour';
+
+// The chart enables these three by default; a minimum install has to turn them
+// off explicitly. Isolated here so the whole set is one edit when the chart's
+// defaults change (see docs/k8s-onboarding.md §1.4).
+const MINIMAL_INSTALL_SHELL_FLAGS = ' -g true -x true -t true';
+const MINIMAL_INSTALL_HELM_VALUES = [
+  'enablePrometheusStack=false',
+  'opencost.enabled=false',
+  'opentelemetry-collector.enabled=false',
+  'clickhouse.enabled=false',
+];
 
 const componentCardSx = (isDisabled) => ({
   display: 'flex',
@@ -61,6 +75,70 @@ const TerminalDots = () => (
   </Box>
 );
 
+// Inline rationale under a field — the "Why" device from the approved mocks
+// (docs/mockups/k8s-account-onboarding-v2.html). Built from Typography/Box and
+// DS tokens only; not a new ds/* primitive since it's a single-file pattern.
+const WhyNote = ({ children }) => (
+  <Typography
+    component='div'
+    sx={{
+      mt: 'var(--ds-space-2)',
+      pl: 'var(--ds-space-3)',
+      borderLeft: `2px solid ${ds.blue[200]}`,
+      fontSize: 'var(--ds-text-caption)',
+      lineHeight: 1.55,
+      color: ds.gray[500],
+      '& b': { fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] },
+    }}
+  >
+    <Box
+      component='span'
+      sx={{
+        fontFamily: 'monospace',
+        fontSize: '9px',
+        fontWeight: 'var(--ds-font-weight-medium)',
+        letterSpacing: '0.11em',
+        textTransform: 'uppercase',
+        color: ds.blue[600],
+        mr: 'var(--ds-space-2)',
+      }}
+    >
+      Why
+    </Box>
+    {children}
+  </Typography>
+);
+
+// Uppercase caption group header for the prerequisites card (Software / Network).
+const PrereqGroupHeader = ({ children }) => (
+  <Typography
+    sx={{
+      fontWeight: 'var(--ds-font-weight-semibold)',
+      fontSize: 'var(--ds-text-caption)',
+      letterSpacing: '0.06em',
+      textTransform: 'uppercase',
+      color: ds.brand[600],
+      mb: 'var(--ds-space-2)',
+    }}
+  >
+    {children}
+  </Typography>
+);
+
+// One prerequisite line: a small accent dot + a coloured label so the list
+// reads as more than flat black-on-grey text.
+const PrereqItem = ({ label, children }) => (
+  <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', mb: 'var(--ds-space-2)', '&:last-child': { mb: 0 } }}>
+    <Box sx={{ width: 5, height: 5, borderRadius: 'var(--ds-radius-pill)', backgroundColor: ds.brand[300], mt: '7px', flexShrink: 0 }} />
+    <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.5, color: ds.gray[600] }}>
+      <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: ds.brand[600] }}>
+        {label}:{' '}
+      </Box>
+      {children}
+    </Typography>
+  </Box>
+);
+
 const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   const [k8sNameValue, setK8sNameValue] = useState('');
   const [validationError, setValidationError] = useState({});
@@ -69,23 +147,23 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   const [currentStep, setCurrentStep] = useState(1);
 
   const [authKey, setAuthKey] = useState('');
-  const [disableOpenCost, setDisableOpenCost] = useState(false);
-  const [disableNodeAgent, setDisableNodeAgent] = useState(false);
-  const [disablePodMonitor, setDisablePodMonitor] = useState(false);
-  const [disableOtelCollector, setDisableOtelCollector] = useState(false);
-  const [disablePrometheusStack, setDisablePrometheusStack] = useState(false);
-  const [externalPrometheusUrl, setExternalPrometheusUrl] = useState('');
+  // Both read from the nodes themselves — no hosted tool can substitute for
+  // either, and changing them later means re-running the install.
+  const [nodeAgentEnabled, setNodeAgentEnabled] = useState(true);
+  const [podMonitorEnabled, setPodMonitorEnabled] = useState(true);
   const [imageRegistry, setImageRegistry] = useState(DEFAULT_IMAGE_REGISTRY);
-  const [activeInstallTab, setActiveInstallTab] = useState('shell');
-  // Advanced options are expanded by default so the existing-Prometheus /
-  // registry / air-gapped fields are visible without an extra click.
-  const [advancedOpen, setAdvancedOpen] = useState(true);
+  // Collapsed by default — most installs never touch it.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Helm leads: its values are explicit/reviewable and it's the only tab where
+  // every option on this screen is honoured (the shell installer has no Pod
+  // Monitor flag). See docs/k8s-onboarding.md §1.6.
+  const [activeInstallTab, setActiveInstallTab] = useState('helm');
   // True when the install step is shown as a guided-tour preview (no real account
   // created). Drives the "preview" banner; reset with the rest of the form.
   const [isPreview, setIsPreview] = useState(false);
 
   const updateAllClusters = useUpdateAllClusterOption();
-  const { relayUrl, k8sCollectorUrl, signingPublicKey } = useBrandingConfig();
+  const { relayUrl, k8sCollectorUrl, signingPublicKey, title: baseTitle } = useBrandingConfig();
 
   // The "connect-cluster" guided tour drives this modal to demonstrate the flow.
   // When it's the active tour we preview the install step with a sample key
@@ -112,15 +190,11 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     setValidationError({});
     setCurrentStep(1);
     setAuthKey('');
-    setDisableOpenCost(false);
-    setDisableNodeAgent(false);
-    setDisablePodMonitor(false);
-    setDisableOtelCollector(false);
-    setDisablePrometheusStack(false);
-    setExternalPrometheusUrl('');
+    setNodeAgentEnabled(true);
+    setPodMonitorEnabled(true);
     setImageRegistry(DEFAULT_IMAGE_REGISTRY);
-    setActiveInstallTab('shell');
-    setAdvancedOpen(true);
+    setAdvancedOpen(false);
+    setActiveInstallTab('helm');
     setIsPreview(false);
   };
 
@@ -189,19 +263,12 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     handleClose();
   };
 
-  const handleDisableNodeAgent = (checked) => {
-    setDisableNodeAgent(checked);
-    if (checked) {
-      setDisablePodMonitor(true);
-    }
-  };
-
-  const handleDisablePrometheusStack = (checked) => {
-    setDisablePrometheusStack(checked);
-    if (checked) {
-      setDisableOpenCost(true);
-      setDisablePodMonitor(true);
-      setExternalPrometheusUrl('');
+  // Pod Monitor rides on the Node Agent DaemonSet, so turning Node Agent off
+  // turns Pod Monitor off too.
+  const handleNodeAgentToggle = (checked) => {
+    setNodeAgentEnabled(checked);
+    if (!checked) {
+      setPodMonitorEnabled(false);
     }
   };
 
@@ -218,38 +285,18 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     if (imageRegistry && imageRegistry !== DEFAULT_IMAGE_REGISTRY) {
       cmd += ` -i "${imageRegistry}"`;
     }
-    if (disableNodeAgent) {
+    if (!nodeAgentEnabled) {
       cmd += ' -d true';
     }
-    if (disableOpenCost) {
-      cmd += ' -x true';
-    }
-    if (disableOtelCollector) {
-      cmd += ' -t true';
-    }
-    if (disablePrometheusStack) {
-      cmd += ' -g true';
-    }
-    if (externalPrometheusUrl) {
-      cmd += ` -p "${externalPrometheusUrl}"`;
-    }
+    // Bare-minimum install: the chart enables the Prometheus stack, OpenCost
+    // and the OTel collector by default, so turn all three off explicitly.
+    cmd += MINIMAL_INSTALL_SHELL_FLAGS;
     if (signingPublicKey) {
       cmd += ` -S "${signingPublicKey}"`;
     }
 
     return cmd;
-  }, [
-    authKey,
-    relayUrl,
-    k8sCollectorUrl,
-    imageRegistry,
-    disableNodeAgent,
-    disableOpenCost,
-    disableOtelCollector,
-    disablePrometheusStack,
-    externalPrometheusUrl,
-    signingPublicKey,
-  ]);
+  }, [authKey, relayUrl, k8sCollectorUrl, imageRegistry, nodeAgentEnabled, signingPublicKey]);
 
   const helmCommand = useMemo(() => {
     const staticCommands = `helm repo add nudgebee-agent https://nudgebee.github.io/k8s-agent/
@@ -268,25 +315,16 @@ helm repo update`;
     if (imageRegistry && imageRegistry !== DEFAULT_IMAGE_REGISTRY) {
       upgradeCommand += ` \\\n  --set runner.image_registry="${imageRegistry}"`;
     }
-    if (disablePrometheusStack) {
-      upgradeCommand += ' \\\n  --set enablePrometheusStack=false';
-    }
-    if (disableOpenCost) {
-      upgradeCommand += ' \\\n  --set opencost.enabled=false';
-    }
-    if (disableNodeAgent) {
+    // Bare-minimum install: the chart enables the Prometheus stack, OpenCost
+    // and the OTel collector by default, so turn all three off explicitly.
+    MINIMAL_INSTALL_HELM_VALUES.forEach((value) => {
+      upgradeCommand += ` \\\n  --set ${value}`;
+    });
+    if (!nodeAgentEnabled) {
       upgradeCommand += ' \\\n  --set nodeAgent.enabled=false';
     }
-    if (disablePodMonitor) {
+    if (!podMonitorEnabled) {
       upgradeCommand += ' \\\n  --set nodeAgent.podmonitor.enabled=false';
-    }
-    if (disableOtelCollector) {
-      upgradeCommand += ' \\\n  --set opentelemetry-collector.enabled=false';
-      upgradeCommand += ' \\\n  --set clickhouse.enabled=false';
-    }
-    if (externalPrometheusUrl) {
-      upgradeCommand += ` \\\n  --set globalConfig.prometheus_url="${externalPrometheusUrl}"`;
-      upgradeCommand += ` \\\n  --set opencost.opencost.prometheus.external.url="${externalPrometheusUrl}"`;
     }
     if (signingPublicKey) {
       // --set-string: the key may contain '=' (base64 padding) or spaces (ssh form).
@@ -294,19 +332,7 @@ helm repo update`;
     }
 
     return `${staticCommands}\n\n${upgradeCommand}`;
-  }, [
-    authKey,
-    relayUrl,
-    k8sCollectorUrl,
-    imageRegistry,
-    disablePrometheusStack,
-    disableOpenCost,
-    disableNodeAgent,
-    disablePodMonitor,
-    disableOtelCollector,
-    externalPrometheusUrl,
-    signingPublicKey,
-  ]);
+  }, [authKey, relayUrl, k8sCollectorUrl, imageRegistry, nodeAgentEnabled, podMonitorEnabled, signingPublicKey]);
 
   const copyShellToClipboard = () => {
     try {
@@ -345,7 +371,7 @@ helm repo update`;
       }}
       title='Add Kubernetes Account'
       rightComponentOnTitle={
-        <Box sx={{ mr: 1 }}>
+        <Box sx={{ mr: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
           <Button
             id='learn-how-to-install-btn'
             tone='link'
@@ -358,139 +384,194 @@ helm repo update`;
           >
             Learn How to Install
           </Button>
+          <Divider orientation='vertical' flexItem sx={{ borderColor: ds.gray[300], my: 0.5 }} />
+          <Button
+            id='required-permissions-btn'
+            tone='link'
+            size='sm'
+            icon={<LockOutlinedIcon sx={{ fontSize: 16 }} />}
+            iconPlacement='start'
+            onClick={() => {
+              window.open(
+                'https://github.com/nudgebee/k8s-agent/blob/main/charts/nudgebee-agent/templates/runner-service-account.yaml',
+                '_blank',
+                'noopener,noreferrer'
+              );
+            }}
+          >
+            Required Permissions
+          </Button>
         </Box>
       }
       loader={isSubmitting}
+      actionButtons={
+        currentStep === 1 ? (
+          <>
+            <Button id='cancel-btn' tone='secondary' size='md' onClick={handleClose} disabled={isSubmitting}>
+              Cancel
+            </Button>
+            <Button
+              id='create-k8s-acc'
+              tone='primary'
+              size='md'
+              loading={isSubmitting}
+              // In the tour preview the account name is irrelevant, so keep Next
+              // enabled; otherwise require a valid name as usual.
+              disabled={isSubmitting || (!isTourDemo && (!k8sNameValue || !!validationError.k8sAccountName))}
+              onClick={handleNext}
+            >
+              Next
+            </Button>
+          </>
+        ) : (
+          <Button id='finish-btn' tone='primary' size='md' onClick={handleFinish}>
+            Finish
+          </Button>
+        )
+      }
+      // DialogContent's own default overflow-y:auto (MUI) would otherwise become the
+      // nearest scroll container for the sticky stepper below, and it never actually
+      // scrolls — only Modal's outer wrapper Box does. Neutralizing it here lets the
+      // stepper stick relative to the Box that really scrolls.
+      contentStyles={{ overflowY: 'visible' }}
     >
+      {/* Bleeds past DialogContent's own padding (--ds-space-6 horizontal,
+          --ds-space-5 top) so the sticky bar spans the full modal width, then
+          re-adds padding matching the body content's actual inset below
+          (DialogContent's --ds-space-6 plus the body Box's own --ds-space-5)
+          so the Stepper lines up with the Card edges instead of sitting
+          closer to the modal's edge than everything under it. */}
+      <Box
+        sx={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
+          mx: 'calc(-1 * var(--ds-space-6))',
+          mt: 'calc(-1 * var(--ds-space-5))',
+          px: 'calc(var(--ds-space-6) + var(--ds-space-5))',
+          pt: 'var(--ds-space-4)',
+          pb: 'var(--ds-space-3)',
+          backgroundColor: 'var(--ds-background-100)',
+          borderBottom: `1px solid ${ds.gray[200]}`,
+        }}
+      >
+        <Stepper
+          steps={[
+            { id: 'account-name', label: 'Set Name & Prerequisites' },
+            { id: 'finish-setup', label: 'Finish Setup' },
+          ]}
+          current={currentStep - 1}
+          orientation='horizontal'
+        />
+      </Box>
       <Box sx={{ px: 'var(--ds-space-5)', pb: 3 }}>
-        <Box sx={{ mb: 2, mt: 'var(--ds-space-4)' }}>
-          <Stepper
-            steps={[
-              { id: 'account-name', label: 'Set Account Name & Prerequisites' },
-              { id: 'finish-setup', label: 'Finish Setup' },
-            ]}
-            current={currentStep - 1}
-            orientation='horizontal'
-          />
-        </Box>
         {currentStep === 1 && (
           <>
-            <Grid container mb={2}>
-              <Grid item xs={12}>
-                <Box>
-                  <Typography
-                    sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.brand[600], mb: 0.5 }}
-                  >
-                    Choose your account name
+            <Card
+              variant='outlined'
+              elevation='flat'
+              size='md'
+              sx={{ mt: 3 }}
+              header={
+                <>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.brand[600] }}>
+                    Account Details
                   </Typography>
-                  <Typography variant='body2' sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)' }}>
-                    This name will be used to identify your Kubernetes account in nudgebee. It should be unique and descriptive.
+                  <Typography variant='body2' sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-small)', mt: 0.5 }}>
+                    {`This name will be used to identify your Kubernetes account in ${baseTitle}. It should be unique and descriptive.`}
                   </Typography>
-                </Box>
-              </Grid>
-              <Grid item xs={12} md={6}>
-                <Box sx={{ mt: 2 }}>
+                </>
+              }
+            >
+              <Grid container columnSpacing={4}>
+                <Grid item xs={12} md={6}>
                   <Input
                     value={k8sNameValue}
                     size='sm'
                     id='k8sName'
                     required
-                    label='Account Name'
+                    label={
+                      <LabelWithInfo
+                        text='Account Name'
+                        info={
+                          <>
+                            The label this cluster carries in every picker, alert and report in the product.{' '}
+                            <b>Pick something you will recognise in a list</b> — 4–50 characters, letters, digits, space, hyphen and underscore, not
+                            starting or ending with a separator. It must be unique across your tenant; a clash comes back as &ldquo;Account name
+                            already exists.&rdquo;
+                          </>
+                        }
+                      />
+                    }
                     onChange={handleK8sAccountNameChange}
                     error={validationError.k8sAccountName}
                     disabled={isSubmitting}
                   />
-                </Box>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <Box
+                      component='label'
+                      sx={{
+                        fontFamily: 'var(--ds-font-display)',
+                        fontSize: 'var(--ds-text-small)',
+                        color: 'var(--ds-gray-700)',
+                        fontWeight: 'var(--ds-font-weight-medium)',
+                      }}
+                    >
+                      <LabelWithInfo text='Account Type' info={ACCOUNT_ENV_TOOLTIP} />
+                    </Box>
+                    {/* label='' suppresses AccountEnvToggle's own built-in label + info
+                        icon (a larger fontSize='small' icon) so it doesn't duplicate the
+                        LabelWithInfo row above, which matches Account Name's label style
+                        and the app's more common 14px tooltip-icon size. */}
+                    <AccountEnvToggle value={accountEnvValue} onChange={setAccountEnvValue} disabled={isSubmitting} label='' />
+                  </Box>
+                </Grid>
               </Grid>
-            </Grid>
-
-            <Grid item xs={12}>
-              <Box mt={2}>
-                <AccountEnvToggle value={accountEnvValue} onChange={setAccountEnvValue} disabled={isSubmitting} />
-              </Box>
-            </Grid>
+            </Card>
 
             <Divider
               sx={{
-                my: 1,
+                my: 3,
                 borderStyle: 'dotted',
                 borderColor: 'var(--ds-brand-200)',
                 borderBottomWidth: '2px',
               }}
             />
 
-            <Grid item xs={12} mt={2}>
-              <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-body)', mb: 1, color: ds.brand[600] }}>
-                Check these prerequisites before starting the installation.
-              </Typography>
-              <Box
-                id='k8s-prerequisites'
-                sx={{
-                  p: 1.5,
-                  backgroundColor: 'var(--ds-background-200)',
-                  borderRadius: 'var(--ds-radius-lg)',
-                  border: `1px solid ${ds.gray[200]}`,
-                }}
-              >
-                <Typography sx={{ fontWeight: 'bold', fontSize: 'var(--ds-text-body)', mb: 1 }}>Software</Typography>
-                <Box sx={{ pl: 2 }}>
-                  <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.4, mb: 0.5 }}>
-                    <span style={{ fontWeight: 'bold' }}>Helm:</span> The Nudgebee Agent is deployed using Helm. Ensure that Helm is installed and
-                    configured on your system.
-                  </Typography>
-                  <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.4, mb: 0.5 }}>
-                    <span style={{ fontWeight: 'bold' }}>Kubernetes:</span> The minimum supported Kubernetes version is 1.27. The agent has been
-                    tested on this version and newer versions.
-                  </Typography>
-                  <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.4, mb: 0.5 }}>
-                    <span style={{ fontWeight: 'bold' }}>Linux Kernel:</span> Kubernetes cluster nodes must run at least Linux Kernel version 4.2 or
-                    later to ensure eBPF compatibility for the Node Agent.
-                  </Typography>
-                </Box>
-                <Typography sx={{ fontWeight: 'bold', fontSize: 'var(--ds-text-body)', mt: 2, mb: 1 }}>Network</Typography>
-                <Box sx={{ pl: 2 }}>
-                  <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.4, mb: 0.5 }}>
-                    <span style={{ fontWeight: 'bold' }}>Docker Registry Access:</span> The installer must be able to access {DEFAULT_IMAGE_REGISTRY}{' '}
-                    and https://nudgebee.github.io/k8s-agent/ to pull necessary Docker images.
-                  </Typography>
-                  <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.4, mb: 0.5 }}>
-                    <span style={{ fontWeight: 'bold' }}>Collector/Relay Server Connectivity:</span> Agents must be able to connect to Collector/Relay
-                    Servers over both Websocket and HTTP. These protocols must be allowed.
-                  </Typography>
-                  <Typography component='div' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.4, mb: 0.5 }}>
-                    <span style={{ fontWeight: 'bold' }}>Cloud Provider Pricing Endpoints:</span> If using OpenCost, the agent must be able to collect
-                    pricing data from cloud providers such as AWS and Azure. The relevant pricing endpoints must be accessible.
-                  </Typography>
-                </Box>
-              </Box>
-            </Grid>
-
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: 'var(--ds-space-3)',
-                mt: 3,
-                mb: 2,
-                '& button': { minWidth: ds.space.mul(1, 35) },
-              }}
+            <Card
+              id='k8s-prerequisites'
+              variant='tinted'
+              tone='neutral'
+              size='md'
+              sx={{ mt: 2 }}
+              header={
+                <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-body)', color: ds.brand[600] }}>
+                  Check these prerequisites before starting the installation.
+                </Typography>
+              }
             >
-              <Button id='cancel-btn' tone='secondary' size='md' onClick={handleClose} disabled={isSubmitting}>
-                Cancel
-              </Button>
-              <Button
-                id='create-k8s-acc'
-                tone='primary'
-                size='md'
-                loading={isSubmitting}
-                // In the tour preview the account name is irrelevant, so keep Next
-                // enabled; otherwise require a valid name as usual.
-                disabled={isSubmitting || (!isTourDemo && (!k8sNameValue || !!validationError.k8sAccountName))}
-                onClick={handleNext}
-              >
-                Next
-              </Button>
-            </Box>
+              <PrereqGroupHeader>Software</PrereqGroupHeader>
+              <PrereqItem label='Helm'>{`The ${baseTitle} Agent is deployed using Helm. Ensure that Helm is installed and configured on your system.`}</PrereqItem>
+              <PrereqItem label='Kubernetes'>
+                The minimum supported Kubernetes version is 1.27. The agent has been tested on this version and newer versions.
+              </PrereqItem>
+              <PrereqItem label='Linux Kernel'>
+                Kubernetes cluster nodes must run at least Linux Kernel version 4.2 or later to ensure eBPF compatibility for the Node Agent.
+              </PrereqItem>
+
+              <Divider sx={{ my: 'var(--ds-space-3)', borderColor: ds.gray[200] }} />
+
+              <PrereqGroupHeader>Network</PrereqGroupHeader>
+              <PrereqItem label='Docker Registry Access'>
+                The installer must be able to access {DEFAULT_IMAGE_REGISTRY} and https://nudgebee.github.io/k8s-agent/ to pull necessary Docker
+                images.
+              </PrereqItem>
+              <PrereqItem label='Collector/Relay Server Connectivity'>
+                Agents must be able to connect to Collector/Relay Servers over both Websocket and HTTP. These protocols must be allowed.
+              </PrereqItem>
+            </Card>
           </>
         )}
 
@@ -503,11 +584,11 @@ helm repo update`;
                 message='This is a demo of the install step — no cluster was created. The key shown below is a sample. Close this window when you’re done exploring.'
               />
             )}
-            <Box mt={2} mb={3}>
+            <Box mt={3}>
               <Grid item xs={12}>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 0.5 }}>
                   <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.brand[600] }}>
-                    Included Components
+                    Data Collection
                   </Typography>
                   <a
                     href={docsUrl('/docs/installation/agent/#components')}
@@ -516,98 +597,47 @@ helm repo update`;
                     style={{
                       textDecoration: 'none',
                       fontSize: 'var(--ds-text-small)',
-                      fontWeight: 'var(--ds-font-weight-medium)',
+                      color: 'var(--ds-blue-500)',
                       marginLeft: 'auto',
                     }}
                   >
                     View component details ›
                   </a>
                 </Box>
-                <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 1.5 }}>
-                  All components are included by default. Check the box to{' '}
-                  <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: ds.red[500] }}>
-                    DISABLE
-                  </Box>{' '}
-                  any you don't need — the install command updates automatically.
+                <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], mb: 1.5 }}>
+                  On by default. They read from the nodes directly, so changing either later means re-running the install.
                 </Typography>
               </Grid>
 
               <Box id='included-components' sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 'var(--ds-space-2)' }}>
-                <Box sx={componentCardSx(disablePrometheusStack)}>
-                  <Checkbox
-                    size='sm'
-                    checked={disablePrometheusStack}
-                    onChange={handleDisablePrometheusStack}
-                    label='Prometheus Stack'
-                    description='Metrics collection — also controls OpenCost and Pod Monitor'
-                  />
-                </Box>
-
-                <Box sx={componentCardSx(disableOpenCost)}>
-                  <Box>
-                    <Checkbox
-                      size='sm'
-                      checked={disableOpenCost}
-                      onChange={setDisableOpenCost}
-                      label='OpenCost'
-                      description='Cost monitoring & cloud pricing'
-                    />
-                    {!disableOpenCost && disablePrometheusStack && (
-                      <Typography
-                        data-testid='opencost-prometheus-warning'
-                        sx={{
-                          mt: 'var(--ds-space-1)',
-                          pl: 'var(--ds-space-4)',
-                          fontSize: 'var(--ds-text-caption)',
-                          lineHeight: 1.35,
-                          color: externalPrometheusUrl ? ds.gray[400] : ds.red[500],
-                          fontWeight: externalPrometheusUrl ? 400 : 600,
-                        }}
-                      >
-                        {externalPrometheusUrl
-                          ? 'Using external Prometheus URL from Advanced.'
-                          : 'Requires Prometheus URL — set in Advanced or OpenCost will fail.'}
-                      </Typography>
-                    )}
-                  </Box>
-                </Box>
-
-                <Box sx={componentCardSx(disableNodeAgent)}>
+                <Box sx={componentCardSx(!nodeAgentEnabled)}>
                   <Box sx={{ width: '100%' }}>
                     <Checkbox
-                      size='sm'
-                      checked={disableNodeAgent}
-                      onChange={handleDisableNodeAgent}
+                      size='md'
+                      checked={nodeAgentEnabled}
+                      onChange={handleNodeAgentToggle}
                       label='Node Agent'
                       description='eBPF network & process monitoring'
                     />
-                    <Box
-                      sx={{
-                        mt: 'var(--ds-space-2)',
-                        pt: 'var(--ds-space-2)',
-                        borderTop: `1px dashed ${ds.gray[200]}`,
-                      }}
-                    >
-                      <Checkbox
-                        size='sm'
-                        checked={disablePodMonitor}
-                        onChange={setDisablePodMonitor}
-                        disabled={disableNodeAgent || disablePrometheusStack}
-                        label='Pod Monitor'
-                        description='Scrape pod-level metrics'
-                      />
-                    </Box>
+                    <WhyNote>
+                      Is it needed? Skip it only when your nodes run a Linux kernel older than 4.2, where eBPF will not load, or when policy forbids
+                      privileged DaemonSets. Nothing on the setup card replaces it: no hosted tool can see this data.
+                    </WhyNote>
                   </Box>
                 </Box>
 
-                <Box sx={componentCardSx(disableOtelCollector)}>
-                  <Checkbox
-                    size='sm'
-                    checked={disableOtelCollector}
-                    onChange={setDisableOtelCollector}
-                    label='OpenTelemetry Collector'
-                    description='Traces & logs · also controls ClickHouse'
-                  />
+                <Box sx={componentCardSx(!podMonitorEnabled)}>
+                  <Box sx={{ width: '100%' }}>
+                    <Checkbox
+                      size='md'
+                      checked={podMonitorEnabled}
+                      onChange={setPodMonitorEnabled}
+                      disabled={!nodeAgentEnabled}
+                      label='Pod Monitor'
+                      description='Scrape pod-level metrics'
+                    />
+                    <WhyNote>Is it needed? Not if your apps publish no custom metrics, or if a PodMonitor you already manage scrapes them.</WhyNote>
+                  </Box>
                 </Box>
               </Box>
 
@@ -651,7 +681,7 @@ helm repo update`;
                     Advanced
                   </Typography>
                   <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], ml: 'var(--ds-space-1)' }}>
-                    Use existing Prometheus · private registry · air-gapped environments
+                    Private registry · air-gapped environments
                   </Typography>
                 </ButtonBase>
                 {advancedOpen && (
@@ -664,52 +694,27 @@ helm repo update`;
                       backgroundColor: 'var(--ds-background-200)',
                     }}
                   >
-                    <Grid container spacing={2}>
-                      <Grid item xs={12} sm={6}>
-                        <Input
-                          id='external-prometheus-url'
-                          value={externalPrometheusUrl}
-                          size='sm'
-                          label='Prometheus URL'
-                          onChange={setExternalPrometheusUrl}
-                          placeholder='http://prometheus.namespace.svc:9090'
-                          help={
-                            disablePrometheusStack && !disableOpenCost && !externalPrometheusUrl
-                              ? undefined
-                              : 'Set if you have an existing Prometheus. Required for Helm + OpenCost.'
-                          }
-                          error={
-                            disablePrometheusStack && !disableOpenCost && !externalPrometheusUrl
-                              ? 'Required — no built-in stack, OpenCost needs Prometheus'
-                              : undefined
-                          }
-                          required={disablePrometheusStack && !disableOpenCost}
-                        />
-                      </Grid>
-                      <Grid item xs={12} sm={6}>
-                        <Input
-                          id='image-registry'
-                          value={imageRegistry}
-                          size='sm'
-                          label='Image Registry'
-                          onChange={setImageRegistry}
-                          placeholder={`${DEFAULT_IMAGE_REGISTRY} (default)`}
-                          help='Override for air-gapped or on-prem environments'
-                        />
-                      </Grid>
-                    </Grid>
+                    <Input
+                      id='image-registry'
+                      value={imageRegistry}
+                      size='sm'
+                      label='Image Registry'
+                      onChange={setImageRegistry}
+                      placeholder={`${DEFAULT_IMAGE_REGISTRY} (default)`}
+                    />
+                    <WhyNote>Change it only for air-gapped or on-prem clusters that mirror our images into a private registry.</WhyNote>
                   </Box>
                 )}
               </Box>
 
-              <Divider sx={{ my: 'var(--ds-space-5)', borderColor: ds.gray[300] }} />
+              <Divider sx={{ my: 'var(--ds-space-6)', borderColor: ds.gray[300] }} />
 
-              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 0.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
                 <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.brand[600] }}>
                   Install the Agent
                 </Typography>
               </Box>
-              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 'var(--ds-space-2)' }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], mb: 'var(--ds-space-2)' }}>
                 Run the command on any machine with{' '}
                 <code
                   style={{
@@ -733,13 +738,13 @@ helm repo update`;
                   backgroundColor: ds.background[100],
                 }}
               >
-                <Box sx={{ px: 'var(--ds-space-1)', borderBottom: `1px solid ${ds.gray[300]}` }}>
+                <Box sx={{ p: 'var(--ds-space-3)', borderBottom: `1px solid ${ds.gray[300]}` }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
                     <Tabs
                       options={{
                         tabOptions: [
-                          { value: 'shell', text: 'Shell Script' },
                           { value: 'helm', text: 'Helm' },
+                          { value: 'shell', text: 'Shell Script' },
                         ],
                       }}
                       value={activeInstallTab}
@@ -748,7 +753,7 @@ helm repo update`;
                       variant='secondary'
                       ariaLabel='Install method'
                     />
-                    {activeInstallTab === 'shell' && (
+                    {activeInstallTab === 'helm' && (
                       <Box
                         component='span'
                         sx={{
@@ -776,6 +781,15 @@ helm repo update`;
                       <strong style={{ fontWeight: 'var(--ds-font-weight-medium)' }}>Auto-discovers</strong> existing Prometheus and Loki; installs
                       any missing dependencies. Safe to re-run.
                     </Typography>
+                    {!podMonitorEnabled && (
+                      <Box sx={{ mb: 1.5 }}>
+                        <Banner
+                          tone='warning'
+                          surface='section'
+                          message='Known gap: the shell installer has no Pod Monitor flag, so it installs anyway. Switch to Helm to turn it off.'
+                        />
+                      </Box>
+                    )}
                     <Box
                       sx={{
                         borderRadius: 'var(--ds-radius-lg)',
@@ -839,19 +853,9 @@ helm repo update`;
                 {activeInstallTab === 'helm' && (
                   <Box id='panel-helm' role='tabpanel' sx={{ p: 'var(--ds-space-3) var(--ds-space-4) var(--ds-space-4)' }}>
                     <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], mb: 'var(--ds-space-2)', lineHeight: 1.5 }}>
-                      Manual Helm installation. <strong style={{ fontWeight: 'var(--ds-font-weight-medium)' }}>Requires Prometheus URL</strong> if
-                      OpenCost is enabled (set it in Advanced above).
+                      Its values are explicit and reviewable, so the install can be committed to a GitOps repo and re-applied identically — and it's
+                      the only tab where every option above is honoured.
                     </Typography>
-
-                    {disablePrometheusStack && !disableOpenCost && !externalPrometheusUrl && (
-                      <Box sx={{ mb: 1.5 }}>
-                        <Banner
-                          tone='warning'
-                          surface='section'
-                          message='OpenCost requires a Prometheus URL. Set it in Advanced above, or disable OpenCost.'
-                        />
-                      </Box>
-                    )}
 
                     <Box
                       sx={{
@@ -895,43 +899,6 @@ helm repo update`;
                   </Box>
                 )}
               </Box>
-            </Box>
-
-            <Typography mt={2} sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}>
-              Learn more about{' '}
-              <a
-                style={{ textDecoration: 'none', fontWeight: 'var(--ds-font-weight-medium)' }}
-                href={docsUrl('/docs/installation/agent/installation/')}
-                target='_blank'
-                rel='noopener noreferrer'
-              >
-                how to install
-              </a>{' '}
-              &{' '}
-              <a
-                target='_blank'
-                style={{ textDecoration: 'none', fontWeight: 'var(--ds-font-weight-medium)' }}
-                href='https://github.com/nudgebee/k8s-agent/blob/main/charts/nudgebee-agent/templates/runner-service-account.yaml'
-                rel='noreferrer'
-              >
-                required permissions
-              </a>
-            </Typography>
-
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                mt: 3,
-                mb: 2,
-                pt: 'var(--ds-space-3)',
-                borderTop: `1px solid ${ds.gray[300]}`,
-                '& button': { minWidth: ds.space.mul(1, 35) },
-              }}
-            >
-              <Button id='finish-btn' tone='primary' size='md' onClick={handleFinish}>
-                Finish
-              </Button>
             </Box>
           </>
         )}

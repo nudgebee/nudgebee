@@ -430,10 +430,11 @@ type KgNodeSlim struct {
 	AccountID    string   `json:"account_id"` // maps to cloud_account_id
 	TenantID     string   `json:"tenant_id"`
 	UniqueKey    string   `json:"unique_key"`
-	LogoID       string   `json:"logo_id,omitempty"`  // Icon identifier resolved by the backend for UI rendering
-	Role         string   `json:"role,omitempty"`     // Datastore facet: "database"/"cache"/"messagequeue" for in-cluster datastores
-	Engine       string   `json:"engine,omitempty"`   // Canonical engine for datastore nodes (e.g. "postgres", "redis")
-	Location     string   `json:"location,omitempty"` // Region/zone/AZ for cloud resources — disambiguates identically-named nodes (e.g. many "default" subnets) in the UI
+	LogoID       string   `json:"logo_id,omitempty"`   // Icon identifier resolved by the backend for UI rendering
+	Role         string   `json:"role,omitempty"`      // Datastore facet: "database"/"cache"/"messagequeue" for in-cluster datastores
+	Engine       string   `json:"engine,omitempty"`    // Canonical engine for datastore nodes (e.g. "postgres", "redis")
+	Location     string   `json:"location,omitempty"`  // Region/zone/AZ for cloud resources — disambiguates identically-named nodes (e.g. many "default" subnets) in the UI
+	Namespace    string   `json:"namespace,omitempty"` // K8s namespace for namespaced resources — the k8s analogue of Location, which K8s nodes leave blank
 }
 
 // KgEdgeSlim is a lightweight edge for graph traversal API responses

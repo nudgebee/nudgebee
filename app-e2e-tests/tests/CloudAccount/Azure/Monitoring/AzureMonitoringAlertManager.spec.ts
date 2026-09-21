@@ -3,7 +3,7 @@ import { LoginPage } from "../../../../pages/LoginPage";
 import { AzureLocators } from "../AzureLocators";
 import { waitForGraphQLAndValidate } from "../../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cloud Account -> Azure -> Monitoring -> Alert Manager", async ({
+test("API testing Cloud Account -> Azure -> Monitoring -> Alert Manager", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);

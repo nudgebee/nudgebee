@@ -89,20 +89,28 @@ type nbCustomAgent struct {
 	tools     []toolcore.NBTool
 }
 
-// Compile-time check: nbCustomAgent must opt out of default-tool injection so the
-// user-configured tool list (a.agent.Tools) is honored verbatim. Without this, the
-// planner silently injects shell_execute / load_skills on top of the user's selection.
+// Compile-time checks: database-backed agents keep their user-curated operational
+// tool list while allowing the framework-owned knowledge loader when discovery
+// has attached a candidate menu.
 var _ DefaultToolsOptOut = (*nbCustomAgent)(nil)
+var _ DefaultSkillsInjectOverride = (*nbCustomAgent)(nil)
 var _ NBAgentAccountContextProvider = (*nbCustomAgent)(nil)
 var _ NBAgentMemoryProvider = (*nbCustomAgent)(nil)
 var _ NBAgentThinkingLevelProvider = (*nbCustomAgent)(nil)
 var _ NBAgentReActPlannerCritiqueSupport = (*nbCustomAgent)(nil)
 
 // OptOutDefaultTools implements DefaultToolsOptOut. Custom agents are user-curated:
-// the operator picks the tool list explicitly via the UI/API. The planner must not
-// silently extend that scope with shell_execute or load_skills, regardless of global
-// config flags. If the operator wants shell, they add `shell_execute` to the tool list.
+// the operator picks the operational tool list explicitly via the UI/API. If the
+// operator wants shell or watch tools, they must add those tools themselves.
 func (a *nbCustomAgent) OptOutDefaultTools() bool {
+	return true
+}
+
+// InjectDefaultSkills keeps discovered knowledge usable by declarative ReAct and
+// orchestrating agents. FilterAndInjectDefaultTools still requires a non-empty
+// <skill-lists> marker, so this does not add load_skills when discovery found no
+// relevant account knowledge. The carve-out grants no shell or watch capability.
+func (a *nbCustomAgent) InjectDefaultSkills() bool {
 	return true
 }
 

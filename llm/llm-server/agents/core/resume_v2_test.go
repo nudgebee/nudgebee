@@ -114,6 +114,111 @@ type bubbleFakeDao struct {
 	convStatus         ConversationStatus
 }
 
+type ancestorFakeDao struct {
+	IConversationDao
+	agents       map[string]ConversationAgent
+	parentStates map[string]struct {
+		parentID string
+		state    string
+	}
+}
+
+type resumeTestAgent struct {
+	name string
+}
+
+func (a *resumeTestAgent) GetName() string { return a.name }
+func (a *resumeTestAgent) GetNameAliases() []string {
+	return nil
+}
+func (a *resumeTestAgent) GetDescription() string { return "resume test agent" }
+func (a *resumeTestAgent) GetSupportedTools(_ *security.RequestContext) []toolcore.NBTool {
+	return nil
+}
+func (a *resumeTestAgent) GetSystemPrompt(_ *security.RequestContext, _ NBAgentRequest) NBAgentPrompt {
+	return NBAgentPrompt{}
+}
+func (a *resumeTestAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeOrchestrating }
+
+func (f *ancestorFakeDao) ListConversationAgents(_, agentID string) ([]ConversationAgent, error) {
+	agent, ok := f.agents[agentID]
+	if !ok {
+		return nil, nil
+	}
+	return []ConversationAgent{agent}, nil
+}
+
+func (f *ancestorFakeDao) GetConversationAgentParentAgentIdAndPreviousState(agentID string) (string, string) {
+	value := f.parentStates[agentID]
+	return value.parentID, value.state
+}
+
+func TestResolveRegisteredAncestorSkipsDynamicDelegateAgent(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	const registeredName = "test_resume_registered_ancestor"
+	RegisterNBAgentFactory(registeredName, func(string) (NBAgent, error) {
+		return &resumeTestAgent{name: registeredName}, nil
+	})
+
+	rootID := uuid.New()
+	delegateID := uuid.New()
+	SetConversationDao(&ancestorFakeDao{agents: map[string]ConversationAgent{
+		delegateID.String(): {ID: delegateID, AgentName: "delegate_agent", ParentAgentID: rootID},
+		rootID.String():     {ID: rootID, AgentName: registeredName, ParentAgentID: uuid.Nil},
+	}})
+
+	agent, dto, walked, err := resolveRegisteredAncestor(
+		security.NewRequestContextForSuperAdmin(), delegateID, uuid.NewString(), uuid.New(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	require.NotNil(t, dto)
+	assert.Equal(t, registeredName, agent.GetName())
+	assert.Equal(t, rootID, dto.ID)
+	assert.Equal(t, 1, walked)
+}
+
+func TestResolveBubbleUpParentLoadsExecutableAncestorState(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	const registeredName = "test_bubble_up_registered_ancestor"
+	RegisterNBAgentFactory(registeredName, func(string) (NBAgent, error) {
+		return &resumeTestAgent{name: registeredName}, nil
+	})
+
+	rootID := uuid.New()
+	delegateID := uuid.New()
+	dao := &ancestorFakeDao{
+		agents: map[string]ConversationAgent{
+			delegateID.String(): {ID: delegateID, AgentName: "delegate_agent", ParentAgentID: rootID},
+			rootID.String():     {ID: rootID, AgentName: registeredName, ParentAgentID: uuid.Nil, Query: "original task"},
+		},
+		parentStates: map[string]struct {
+			parentID string
+			state    string
+		}{
+			delegateID.String(): {parentID: rootID.String(), state: "wrong delegate state"},
+			rootID.String():     {parentID: uuid.Nil.String(), state: "saved orchestrator state"},
+		},
+	}
+	SetConversationDao(dao)
+
+	agent, dto, parentID, state, walked, err := resolveBubbleUpParent(
+		security.NewRequestContextForSuperAdmin(), dao, delegateID.String(), uuid.NewString(), uuid.New(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, agent)
+	require.NotNil(t, dto)
+	assert.Equal(t, registeredName, agent.GetName())
+	assert.Equal(t, rootID, dto.ID)
+	assert.Equal(t, rootID.String(), parentID, "top-level executable ancestor resumes as its own parent")
+	assert.Equal(t, "saved orchestrator state", state)
+	assert.Equal(t, 1, walked)
+}
+
 func (f *bubbleFakeDao) CountWaitingSubAgents(parentAgentId, messageId string) (int, error) {
 	return f.waitingCount, nil
 }
@@ -153,6 +258,10 @@ func (f *bubbleFakeDao) UpdateConversationStatus(conversationId string, status C
 func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 	original := GetConversationDao()
 	defer SetConversationDao(original)
+	const parentAgentName = "test_stateless_bubble_parent"
+	RegisterNBAgentFactory(parentAgentName, func(string) (NBAgent, error) {
+		return &resumeTestAgent{name: parentAgentName}, nil
+	})
 
 	ctx := security.NewRequestContextForSuperAdmin()
 	parentID := uuid.New()
@@ -177,7 +286,7 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 		fake := &bubbleFakeDao{
 			parentState:  "", // stateless → enters the fix branch
 			waitingCount: 0,  // all siblings done
-			parentAgent:  ConversationAgent{ID: parentID, AgentName: "k8s_debug", Response: &parentAnswer},
+			parentAgent:  ConversationAgent{ID: parentID, AgentName: parentAgentName, Response: &parentAnswer},
 		}
 		SetConversationDao(fake)
 
@@ -197,7 +306,7 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 		fake := &bubbleFakeDao{
 			parentState:  "",
 			waitingCount: 0,
-			parentAgent:  ConversationAgent{ID: parentID, AgentName: "k8s_debug", Response: nil},
+			parentAgent:  ConversationAgent{ID: parentID, AgentName: parentAgentName, Response: nil},
 		}
 		SetConversationDao(fake)
 
@@ -213,8 +322,8 @@ func TestBubbleUpIfSiblingsDone_StatelessParentFinalizesMessage(t *testing.T) {
 }
 
 // TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits covers the #31997 fix:
-// when a resumed sub-agent completes with IsTerminal (its answer IS the final
-// answer — e.g. automation_builder returning the built workflow JSON after
+// when an opted-in resumed sub-agent completes with IsTerminal (its answer IS the
+// final answer — e.g. automation_builder returning the built workflow JSON after
 // "Approve and Build"), the bubble-up must finalize from the child and NOT resume
 // the parent. Resuming the parent re-runs an ancestor planner which, for a nested
 // builder (k8s_debug → automation → automation_builder), re-delegates a fresh
@@ -235,13 +344,17 @@ func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
 	convID := uuid.New()
 
 	const builtJSON = `{"name":"k8s-pod-inventory","definition":{"triggers":[{"type":"manual"}]}}`
+	const terminalAgentName = "test_parent_terminal_agent"
+	RegisterNBAgentFactory(terminalAgentName, func(string) (NBAgent, error) {
+		return parentTerminalAgent{}, nil
+	})
 	terminalChild := NBAgentResponse{
 		Response:   []string{builtJSON},
 		Status:     ConversationStatusCompleted,
 		IsTerminal: true,
-		AgentName:  "automation_builder",
+		AgentName:  terminalAgentName,
 	}
-	childAgent := ConversationAgent{ID: childID, ParentAgentID: parentID, MessageID: msgID}
+	childAgent := ConversationAgent{ID: childID, ParentAgentID: parentID, MessageID: msgID, AgentName: terminalAgentName}
 	req := NBAgentRequest{
 		ConversationId: convID.String(),
 		MessageId:      msgID.String(),
@@ -262,7 +375,7 @@ func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
 
 		assert.Equal(t, []string{builtJSON}, resp.Response, "terminal child's response is the final answer")
 		assert.Equal(t, ConversationStatusCompleted, resp.Status)
-		assert.Equal(t, "automation_builder", resp.AgentName, "non-Response fields preserved from childResp")
+		assert.Equal(t, terminalAgentName, resp.AgentName, "non-Response fields preserved from childResp")
 		assert.Equal(t, msgID.String(), fake.persistedMsgID)
 		assert.Equal(t, builtJSON, fake.persistedContent, "generation message persisted with the built workflow")
 		assert.Equal(t, ConversationStatusCompleted, fake.persistedMsgStatus)
@@ -287,4 +400,37 @@ func TestBubbleUpIfSiblingsDone_TerminalChildShortCircuits(t *testing.T) {
 		assert.Equal(t, []string{builtJSON}, resp.Response)
 		assert.Empty(t, fake.persistedMsgID, "no final message persisted while a sibling is still waiting")
 	})
+}
+
+// TestResumeFollowupLocked_CrossAccountAgentRejected is a security
+// regression test for the V2 resume path — the same class of guard proven
+// for HandleFollowupDismiss/HandleFollowupResponse in
+// followup_cancel_test.go. Checked before the unregistered-agent-impl
+// ancestor walk, so a cross-account agentId can't reach that logic (which
+// would panic on this fake's embedded nil DAO if it were reached).
+func TestResumeFollowupLocked_CrossAccountAgentRejected(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+
+	agentAccountID := uuid.New()
+	SetConversationDao(&crossAccountFakeDao{
+		agent: ConversationAgent{
+			ID:        uuid.New(),
+			AccountID: agentAccountID,
+			Status:    AgentExecutionStatusWaiting,
+		},
+	})
+
+	ctx := security.NewRequestContextForSuperAdmin()
+	agentID := uuid.New().String()
+	resp, err := resumeFollowupLocked(ctx, NBAgentRequest{
+		AgentId:        agentID,
+		AccountId:      uuid.New().String(), // deliberately different from agentAccountID
+		Query:          "some answer",
+		ConversationId: uuid.New().String(),
+	})
+	assert.Equal(t, NBAgentResponse{}, resp)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "not found")
+	}
 }

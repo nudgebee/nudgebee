@@ -216,7 +216,7 @@ func NewPromptAgent(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	if request.ConversationContext == "" {
 		request.ConversationContext = "No additional context provided."
 	}
-	tools := nbAgent.GetSupportedTools(ctx)
+	tools := FilterTools(nbAgent.GetSupportedTools(ctx), request.Capabilities)
 	return &PromptPlanner{
 		ctx:     ctx,
 		prompt:  createPrompt(ctx, systemMessage, tools, request.AccountId, nbAgent.GetName(), request.ConversationContext, extraMessages),

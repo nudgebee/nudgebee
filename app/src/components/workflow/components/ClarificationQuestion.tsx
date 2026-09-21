@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Box, Typography, Paper } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
+import { Card } from '@ui/Card';
 import { FormField } from '@shared/forms/FormComponents';
 
 interface ClarificationOption {
@@ -53,27 +54,18 @@ export default function ClarificationQuestion({
 
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         {mainOptions.map((opt, index) => (
-          <Paper
+          <Card
             key={opt.label}
-            elevation={0}
-            onClick={() => handleOptionClick(opt.label)}
+            variant='outlined'
+            size='sm'
+            elevation='flat'
+            interactive={!disabled}
+            onClick={disabled ? undefined : () => handleOptionClick(opt.label)}
             sx={{
-              p: 1.5,
               display: 'flex',
               alignItems: 'center',
               gap: 1.5,
-              cursor: disabled ? 'default' : 'pointer',
-              border: '1px solid',
-              borderColor: 'divider',
-              borderRadius: 'var(--ds-radius-sm)',
               opacity: disabled ? 0.6 : 1,
-              transition: 'all 0.15s',
-              '&:hover': disabled
-                ? {}
-                : {
-                    borderColor: 'primary.main',
-                    bgcolor: 'action.hover',
-                  },
             }}
           >
             <Box
@@ -103,29 +95,24 @@ export default function ClarificationQuestion({
               )}
             </Box>
             <Typography sx={{ color: 'text.secondary', fontSize: 'var(--ds-text-title)' }}>›</Typography>
-          </Paper>
+          </Card>
         ))}
 
         {allowCustom && !showCustomInput && (
-          <Paper
-            elevation={0}
-            onClick={() => !disabled && setShowCustomInput(true)}
+          <Card
+            variant='outlined'
+            size='sm'
+            elevation='flat'
+            interactive={!disabled}
+            onClick={disabled ? undefined : () => setShowCustomInput(true)}
             sx={{
-              p: 1.5,
               display: 'flex',
               alignItems: 'center',
               gap: 1.5,
-              cursor: disabled ? 'default' : 'pointer',
-              border: '1px dashed',
-              borderColor: 'divider',
-              borderRadius: 'var(--ds-radius-sm)',
               opacity: disabled ? 0.6 : 1,
-              '&:hover': disabled
-                ? {}
-                : {
-                    borderColor: 'primary.main',
-                    bgcolor: 'action.hover',
-                  },
+              // Card has no dashed variant — the dashed edge distinguishes the
+              // "write your own" row from the concrete options above it.
+              borderStyle: 'dashed',
             }}
           >
             <Box
@@ -147,7 +134,7 @@ export default function ClarificationQuestion({
             <Typography variant='body2' sx={{ color: 'text.secondary' }}>
               Something else
             </Typography>
-          </Paper>
+          </Card>
         )}
 
         {showCustomInput && (

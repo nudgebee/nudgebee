@@ -91,11 +91,23 @@ func (c *Route53RecordCache) SetRecords(awsAccountID, hostedZoneID string, recor
 
 // FetchRecordSets fetches all resource record sets for a hosted zone
 // This should be called once per zone and the result cached
+//
+// topology may be nil; when it can answer, no cloud CLI process is started at all
+// (`hostedzone.meta.RecordSets` is the stored list-resource-record-sets payload).
 func FetchRecordSets(
 	requestContext *security.RequestContext,
 	awsAccountID string,
 	hostedZoneID string,
+	topology *CloudTopologyStore,
 ) ([]Route53RecordSet, error) {
+	if records, hit := topology.RecordSetsForZone(awsAccountID, hostedZoneID); hit {
+		slog.Debug("Route 53 record sets served from cloud_resourses",
+			"aws_account", awsAccountID,
+			"hosted_zone_id", hostedZoneID,
+			"record_count", len(records))
+		return records, nil
+	}
+
 	recordCommand := fmt.Sprintf("aws route53 list-resource-record-sets --hosted-zone-id %s --output json", hostedZoneID)
 	recordResp, err := cloud.ExecuteCli(requestContext, cloud.CloudExecuteCliCommandRequest{
 		AccountID: awsAccountID,
@@ -127,10 +139,21 @@ func FetchRecordSets(
 
 // FetchHostedZones fetches all hosted zones for an AWS account
 // This should be called once per account and the result cached
+//
+// topology may be nil; when it can answer, the zones come from the stored
+// `hostedzone` rows and no cloud CLI process is started.
 func FetchHostedZones(
 	requestContext *security.RequestContext,
 	awsAccountID string,
+	topology *CloudTopologyStore,
 ) ([]Route53HostedZone, error) {
+	if zones, hit := topology.HostedZones(awsAccountID); hit {
+		slog.Debug("Route 53 hosted zones served from cloud_resourses",
+			"aws_account", awsAccountID,
+			"zone_count", len(zones))
+		return zones, nil
+	}
+
 	zonesCommand := "aws route53 list-hosted-zones-by-name --output json"
 	zonesResp, err := cloud.ExecuteCli(requestContext, cloud.CloudExecuteCliCommandRequest{
 		AccountID: awsAccountID,
@@ -200,18 +223,19 @@ func ResolveRoute53DNS(
 	requestContext *security.RequestContext,
 	hostname string,
 	awsAccountID string,
+	topology *CloudTopologyStore,
 ) (string, error) {
 	if hostname == "" {
 		return "", nil
 	}
 
 	// Fetch zones (this is inefficient for batch operations - use ResolveRoute53DNSWithZones instead)
-	zones, err := FetchHostedZones(requestContext, awsAccountID)
+	zones, err := FetchHostedZones(requestContext, awsAccountID, topology)
 	if err != nil {
 		return "", err
 	}
 
-	return ResolveRoute53DNSWithZones(requestContext, hostname, awsAccountID, zones)
+	return ResolveRoute53DNSWithZones(requestContext, hostname, awsAccountID, zones, topology)
 }
 
 // ResolveRoute53DNSWithZones resolves a hostname via Route 53 using pre-fetched hosted zones
@@ -223,9 +247,10 @@ func ResolveRoute53DNSWithZones(
 	hostname string,
 	awsAccountID string,
 	zones []Route53HostedZone,
+	topology *CloudTopologyStore,
 ) (string, error) {
 	// Delegate to cached version with nil cache (will fetch records each time)
-	return ResolveRoute53DNSWithCache(requestContext, hostname, awsAccountID, zones, nil)
+	return ResolveRoute53DNSWithCache(requestContext, hostname, awsAccountID, zones, nil, topology)
 }
 
 // ResolveRoute53DNSWithCache resolves a hostname via Route 53 using pre-fetched zones and cached records
@@ -237,6 +262,7 @@ func ResolveRoute53DNSWithCache(
 	awsAccountID string,
 	zones []Route53HostedZone,
 	recordCache *Route53RecordCache,
+	topology *CloudTopologyStore,
 ) (string, error) {
 	if hostname == "" {
 		return "", nil
@@ -261,7 +287,7 @@ func ResolveRoute53DNSWithCache(
 	// If not cached, fetch from AWS
 	if records == nil {
 		var err error
-		records, err = FetchRecordSets(requestContext, awsAccountID, matchingZone.ID)
+		records, err = FetchRecordSets(requestContext, awsAccountID, matchingZone.ID, topology)
 		if err != nil {
 			return "", err
 		}

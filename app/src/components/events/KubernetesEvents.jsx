@@ -9,6 +9,7 @@ import { FiArrowRight } from 'react-icons/fi';
 import ListingLayout from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
 import { Switch as DsSwitch } from '@ui/Switch';
+import ToggleGroup from '@ui/ToggleGroup';
 import SeverityIcon from '@ui/SeverityIcon';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -218,6 +219,104 @@ const ensureSelectedInOptions = (options = [], selectedValue) => {
 };
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+// Troubleshoot Events tab view modes. 'all' = every event row; 'grouped' folds
+// same-subject incident children under their leader (#34655); 'unique' collapses
+// to one row per fingerprint (same table, fed from a fingerprint-level grouping
+// query so its count matches the briefing's "Issues you could see").
+const VIEW_MODE_OPTIONS = [
+  {
+    value: 'all',
+    label: 'All',
+    tooltip: 'One row per event. The same alert firing repeatedly shows a row each time.',
+  },
+  {
+    value: 'grouped',
+    label: 'Grouped',
+    tooltip:
+      'Related alerts on one subject at the same time folded under a single leading event (e.g. OOMKilled + CrashLoopBackOff on the same pod → one row).',
+  },
+  {
+    value: 'unique',
+    label: 'Unique',
+    tooltip: 'One row per distinct issue — repeat firings collapsed by fingerprint. Matches the “Issues you could see” count above.',
+  },
+];
+
+// 'unique' view: group by fingerprint only (tenant_id/account_id never split a
+// fingerprint), so COUNT(DISTINCT ...) equals the briefing's DISTINCT-fingerprint
+// count. Do NOT add source/aggregation_key to the key — they vary within a
+// fingerprint and would inflate the count; read aggregation_key from
+// distinct_aggregation_key instead. The grouping engine only returns columns
+// that are in the group key or an aggregate (latest_/distinct_/count_/max_).
+const UNIQUE_GROUP_BY = ['tenant_id', 'account_id', 'fingerprint'];
+const UNIQUE_COLS = [
+  'tenant_id',
+  'account_id',
+  'fingerprint',
+  'distinct_aggregation_key',
+  'latest_event_id',
+  'latest_title',
+  'latest_computed_priority',
+  'latest_computed_score',
+  'latest_score_factors',
+  'latest_score_confidence',
+  'latest_nb_status',
+  'latest_snoozed_until',
+  'distinct_status',
+  'distinct_priority',
+  'distinct_subject_name',
+  'distinct_subject_namespace',
+  'count_subject_name',
+  'max_created_at',
+  'fingerprint_first_seen_at',
+  'is_new_issue',
+];
+const UNIQUE_SORT_MAP = { computed_score: 'latest_computed_score', created_at: 'max_created_at', starts_at: 'max_created_at' };
+const SEVERITY_RANK = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'DEBUG', 'INFO'];
+
+const asJsonArray = (value) => {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  const parsed = safeJSONParse(value);
+  return Array.isArray(parsed) ? parsed : [];
+};
+const firstOfJson = (value) => asJsonArray(value)[0];
+const highestSeverity = (value) => {
+  const arr = asJsonArray(value);
+  return SEVERITY_RANK.find((s) => arr.includes(s)) ?? arr[0];
+};
+
+// One fingerprint-grouped row -> the flat event shape buildRowData expects.
+// Fields that vary within a fingerprint show the latest occurrence, or a
+// "N workloads" summary when the fingerprint spans several subjects.
+const mapUniqueRowToEvent = (g) => {
+  const multiSubject = (g.count_subject_name || 0) > 1;
+  const statusArr = asJsonArray(g.distinct_status);
+  return {
+    id: g.latest_event_id,
+    account_id: g.account_id,
+    fingerprint: g.fingerprint,
+    title: g.latest_title,
+    aggregation_key: firstOfJson(g.distinct_aggregation_key),
+    priority: highestSeverity(g.distinct_priority),
+    computed_priority: g.latest_computed_priority,
+    computed_score: g.latest_computed_score,
+    score_factors: g.latest_score_factors,
+    score_confidence: g.latest_score_confidence,
+    nb_status: g.latest_nb_status,
+    snoozed_until: g.latest_snoozed_until,
+    status: statusArr.includes('FIRING') ? 'FIRING' : statusArr.includes('CLOSED') ? 'CLOSED' : statusArr[0],
+    created_at: g.max_created_at,
+    starts_at: g.max_created_at,
+    subject_name: multiSubject ? `${g.count_subject_name} workloads` : firstOfJson(g.distinct_subject_name),
+    subject_namespace: multiSubject ? undefined : firstOfJson(g.distinct_subject_namespace),
+    is_new_issue: g.is_new_issue,
+    fingerprint_first_seen_at: g.fingerprint_first_seen_at,
+    incident_member_count: 0,
+  };
+};
 const NB_STATUS_FILTER = [
   { value: 'OPEN', label: 'Open' },
   { value: 'ACTION_REQUIRED', label: 'Action Required' },
@@ -475,9 +574,12 @@ const KubernetesEventsTable = ({
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
   const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
   const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
-  // Same-subject incident grouping (#34655): children fold under their leader
-  // by default; the toggle shows every event row again.
-  const [showGroupedChildren, setShowGroupedChildren] = useState(false);
+  // Events view mode: 'all' | 'grouped' | 'unique'. Default 'all'. Seeded from
+  // ?eventsView so the briefing "Issues you could see" tile can deep-link
+  // straight to 'unique' without leaving the Events tab. 'grouped' folds
+  // same-subject incident children (#34655); 'unique' keeps this same table but
+  // feeds it one row per fingerprint (see the fetch branch in listEvents).
+  const [viewMode, setViewMode] = useState(() => (['grouped', 'unique'].includes(router.query.eventsView) ? router.query.eventsView : 'all'));
 
   // UI Toggles & Popups
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
@@ -960,6 +1062,7 @@ const KubernetesEventsTable = ({
     if (!selectedAccountId.length && !isTroubleshootPage) {
       return;
     }
+    const uniqueView = viewMode === 'unique' && isTroubleshootPage;
     const requestId = ++eventsRequestIdRef.current;
     setData([]);
     setTotalCount(0);
@@ -1078,7 +1181,7 @@ const KubernetesEventsTable = ({
         sort_by: 'starts_at',
         sort_order: 'asc',
       };
-    } else if (!embedded && !showGroupedChildren) {
+    } else if (!embedded && viewMode === 'grouped') {
       query.hide_incident_children = true;
     }
     setLoading(true);
@@ -1374,10 +1477,43 @@ const KubernetesEventsTable = ({
 
     buildRowDataRef.current = buildRowData;
 
-    // Fire data query (onlyData skips count) and count query in parallel
-    const dataQuery = { ...query, onlyData: true };
-    const dataPromise = k8sApi.getK8sEvents(rowsPerPage, currentPage * rowsPerPage, dataQuery);
-    const countPromise = k8sApi.getK8sEventsCount(query);
+    // Fire data query (onlyData skips count) and count query in parallel. In
+    // 'unique' view both come from one fingerprint-level grouping request: rows
+    // grouped by fingerprint, count = COUNT(DISTINCT fingerprint).
+    let dataPromise;
+    let countPromise;
+    if (uniqueView) {
+      const uniqueQuery = {
+        account_id: query.account_id,
+        start_date: query.startDate,
+        end_date: query.endDate,
+        aggregation_key: query.aggregation_key,
+        aggregation_key_nin: query.aggregation_key_nin,
+        subject_namespace: query.subject_namespace,
+        subject_name: query.subject_name,
+        subject_type: query.subject_type,
+        status: query.status,
+        priority: query.priority,
+        // getK8sEventGroupings maps nb_priority -> computed_priority (the Nubi rank),
+        // so briefing rank tiles (Ranked P1/P2/...) filter correctly in this view.
+        nb_priority: query.computed_priority,
+        source: query.source,
+        nb_status: query.nb_status,
+        is_new_issue: query.is_new_issue,
+      };
+      const groupingsPromise = k8sApi.getK8sEventGroupings(rowsPerPage, currentPage * rowsPerPage, uniqueQuery, UNIQUE_GROUP_BY, UNIQUE_COLS, {
+        name: UNIQUE_SORT_MAP[selectedSortBy] || 'max_created_at',
+        order: 'desc',
+      });
+      dataPromise = groupingsPromise.then((res) => ({
+        data: { events: (res?.data?.event_groupings || []).map(mapUniqueRowToEvent) },
+      }));
+      countPromise = groupingsPromise.then((res) => ({ count: res?.data?.event_groupings_aggregate?.aggregate?.count ?? 0 }));
+    } else {
+      const dataQuery = { ...query, onlyData: true };
+      dataPromise = k8sApi.getK8sEvents(rowsPerPage, currentPage * rowsPerPage, dataQuery);
+      countPromise = k8sApi.getK8sEventsCount(query);
+    }
 
     // Data + tickets chain: once data arrives, fetch ticket summaries, then render
     const dataAndTicketsPromise = dataPromise.then((res) => {
@@ -1440,7 +1576,7 @@ const KubernetesEventsTable = ({
     selectedNbStatus,
     selectedSortBy,
     selectedIssueType,
-    showGroupedChildren,
+    viewMode,
     incidentLeaderId,
     appliedSearchByLabel,
     appliedSearchByMessage,
@@ -1627,13 +1763,24 @@ const KubernetesEventsTable = ({
                   onChange={({ selection }) => handleDateRangeChange(selection)}
                 />
               )}
-              {enableFilters && (
+              {enableFilters && isTroubleshootPage && (
+                <ToggleGroup
+                  id='events-view-mode'
+                  selection='single'
+                  size='sm'
+                  ariaLabel='Events view'
+                  value={viewMode}
+                  onChange={setViewMode}
+                  options={VIEW_MODE_OPTIONS}
+                />
+              )}
+              {enableFilters && !isTroubleshootPage && (
                 <DsSwitch
                   id='showGroupedChildren'
-                  label='Show Grouped'
+                  label='Grouped'
                   size='sm'
-                  checked={showGroupedChildren}
-                  onChange={(_e, checked) => setShowGroupedChildren(checked)}
+                  checked={viewMode === 'grouped'}
+                  onChange={(_e, checked) => setViewMode(checked ? 'grouped' : 'all')}
                 />
               )}
               <DsSwitch id='showTrend' label='Show Trend' size='sm' checked={showTrendChart} onChange={(_e, checked) => setShowTrendChart(checked)} />

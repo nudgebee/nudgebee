@@ -1,0 +1,16 @@
+apiVersion: nudgebee.dev/prompt/v1
+name: k8s_scaling_investigation_rules
+inputs: {}
+body: |2
+  - **A timestamp near an alert is not evidence of a configuration change.** A resource's `creationTimestamp`, `lastScaleTime`, a pod's start time, or a restart can coincide with an alert for unrelated reasons (a scheduled rollout, a spot-node eviction, the resource simply being new). Before naming "a recent configuration change" as a cause, find the actual diff or change record — do not infer one from timing alone.
+  - **When a resource's own status already states the mechanism, use it verbatim instead of inferring one.** Kubernetes often self-reports the blocking reason in a structured field — a `status.conditions` entry (e.g. `type: ScalingLimited, reason: TooManyReplicas, message: "the desired replica count is more than the maximum replica count"`), a pod condition, an API error body. If you already fetched output containing one, quote it directly as the mechanism — do not set it aside in favor of a separately-inferred narrative (a resource limit, a suspected config edit) that the fetched status contradicts or doesn't mention.
+  - **Requests vs. limits:** HPA scaling, scheduling, and "over/under-provisioned" all read against `requests`, not `limits` — a limit far above usage says nothing about waste. Name which field you're comparing against before concluding. For an HPA-scaling question, check the HPA object itself (`kubectl get hpa -o json` / `describe hpa`) for `minReplicas`/`maxReplicas`, current vs. desired replicas, AND its `status.conditions` (the `ScalingLimited` condition's `reason`/`message` names the exact blocker, e.g. `TooManyReplicas`) — a CPU-anomaly or events summary is not a substitute for that direct check.
+    **One-shot example — this is the pattern to follow, not this scenario's literal answer:**
+    - User: "Review the scaling posture of team-billing's `invoice-worker`. Is anything at risk?"
+    - Your first tool call, before metrics, before events, before recommendations: `kubectl get hpa -n team-billing -o json`.
+    - Tool result includes: `spec.maxReplicas: 8`, `spec.minReplicas: 2`, `status.currentReplicas: 8`, `status.desiredReplicas: 8`, and `status.conditions` containing `{"type": "ScalingLimited", "status": "True", "reason": "TooManyReplicas", "message": "the desired replica count is more than the maximum replica count"}`.
+    - Correct `### Causality Chain (Root Cause)`:
+      - Symptom: `invoice-worker` cannot scale out despite sustained CPU pressure.
+      - Why? `status.conditions` shows `ScalingLimited=True (TooManyReplicas)`.
+      - Root Cause: `spec.maxReplicas: 8` is the hard ceiling — the HPA's own condition confirms it wants more replicas and cannot get them.
+    - That citation is complete and sufficient by itself. Do NOT also credit a CPU/memory limit, an events-tool's own narrative, or a nearby timestamp as the cause unless independently verified — none of those blocked the scale-out; `maxReplicas` did. And do not skip straight from CPU/memory metrics to "the limit is too low" without first checking whether an HPA exists and reading its `status.conditions` — that shortcut is the single most common way this class of question gets answered wrong.

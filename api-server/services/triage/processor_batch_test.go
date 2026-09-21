@@ -53,14 +53,63 @@ func TestBuildCorrelationInsert_MatchesPerCandidateSemantics(t *testing.T) {
 	// Extract the 9 args for row r (0-indexed).
 	row := func(r int) []interface{} { return args[r*correlationInsertCols : (r+1)*correlationInsertCols] }
 
-	// Row 0 — direction 1 for c1: triaged -> candidate, forward offset.
+	// Rows come out in ascending unique-key order — (related_event_id, event_id,
+	// correlation_type) — not in per-candidate order, so that concurrent triage
+	// runs acquire shared keys in the same order and cannot deadlock. Here that
+	// sorts the two related_event_id=T rows last: C1 < C2 < T.
+	// Direction 1 for c1: triaged -> candidate, forward offset.
 	assertRow(t, row(0), "T", "C1", "acct-1", "tenant-1", "downstream_impact", 0.70, "r1", 5, 1)
-	// Row 1 — direction 2 for c1: candidate -> triaged, NEGATED offset.
-	assertRow(t, row(1), "C1", "T", "acct-1", "tenant-1", "downstream_impact", 0.70, "r1", -5, 1)
-	// Row 2 — direction 1 for c2.
-	assertRow(t, row(2), "T", "C2", "acct-1", "tenant-1", "same_service", 0.90, "r2", -3, 2)
-	// Row 3 — direction 2 for c2: negated offset -(-3) = 3.
+	// Direction 1 for c2.
+	assertRow(t, row(1), "T", "C2", "acct-1", "tenant-1", "same_service", 0.90, "r2", -3, 2)
+	// Direction 2 for c1: candidate -> triaged, NEGATED offset.
+	assertRow(t, row(2), "C1", "T", "acct-1", "tenant-1", "downstream_impact", 0.70, "r1", -5, 1)
+	// Direction 2 for c2: negated offset -(-3) = 3.
 	assertRow(t, row(3), "C2", "T", "acct-1", "tenant-1", "same_service", 0.90, "r2", 3, 2)
+}
+
+// TestBuildCorrelationInsert_MirroredRunsAgreeOnKeyOrder is the regression test
+// for the 40P01 deadlock. Triaging A against candidate B and triaging B against
+// candidate A write the same two unique keys — (A,B,T) and (B,A,T) — and used to
+// write them in opposite order, so each statement held the key the other was
+// waiting on. Asserts both runs emit the shared keys in the same relative order,
+// which is the property that makes a lock cycle impossible.
+func TestBuildCorrelationInsert_MirroredRunsAgreeOnKeyOrder(t *testing.T) {
+	// A symmetric type: both runs classify the pair identically, so both write
+	// the same unique keys. Directional types (upstream_dependency /
+	// downstream_impact) flip on role swap and never collide.
+	const symmetric = "same_resource"
+
+	keysFor := func(triagedID, candidateID string) []string {
+		triaged := makeEvent(triagedID, time.Now())
+		triaged.CloudAccountId = strPtr("acct-1")
+		triaged.Tenant = strPtr("tenant-1")
+
+		candidate := makeEvent(candidateID, time.Now())
+		candidate.Fingerprint = strPtr("fp-" + candidateID)
+
+		_, args := buildCorrelationInsert(triaged, []correlatedCandidate{
+			{event: candidate, result: CorrelationResult{
+				CorrelationType: symmetric, CorrelationScore: 0.80,
+				CorrelationReason: "same cloud resource", TimeOffsetMinutes: 2, DependencyDistance: -1,
+			}},
+		})
+
+		// Unique key is (related_event_id, event_id, cloud_account_id,
+		// correlation_type); account and type are constant within a batch.
+		keys := make([]string, 0, len(args)/correlationInsertCols)
+		for r := 0; r < len(args)/correlationInsertCols; r++ {
+			base := r * correlationInsertCols
+			keys = append(keys, args[base+1].(string)+"|"+args[base].(string))
+		}
+		return keys
+	}
+
+	// "A" < "B" lexically, so both runs must emit (B,A) before (A,B) — that is,
+	// related=A first.
+	assert.Equal(t, []string{"A|B", "B|A"}, keysFor("A", "B"),
+		"triaging A against B")
+	assert.Equal(t, []string{"A|B", "B|A"}, keysFor("B", "A"),
+		"triaging B against A must agree with the run above, or the two deadlock")
 }
 
 func TestBuildCorrelationInsert_Empty(t *testing.T) {

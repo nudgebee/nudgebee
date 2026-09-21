@@ -254,8 +254,8 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []st
 	// Join with users table to get user details for created_by and updated_by
 	mainQuery := `
 		SELECT w.id::text, w.account_id::text, w.name, w.description, w.ai_invocable, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
-			cu.id::text as created_by_user_id, cu.display_name as created_by_display_name,
-			uu.id::text as updated_by_user_id, uu.display_name as updated_by_display_name,
+			cu.id::text as created_by_user_id, cu.display_name as created_by_display_name, cu.username as created_by_username,
+			uu.id::text as updated_by_user_id, uu.display_name as updated_by_display_name, uu.username as updated_by_username,
 			w.live_version_id::text, lv.version_number, lv.name, lv.status,
 			w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
@@ -311,8 +311,8 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []st
 		var createdAt, updatedAt time.Time
 		var createdFromSessionID sql.NullString
 		// User detail fields from JOIN
-		var createdByUserID, createdByDisplayName sql.NullString
-		var updatedByUserID, updatedByDisplayName sql.NullString
+		var createdByUserID, createdByDisplayName, createdByUsername sql.NullString
+		var updatedByUserID, updatedByDisplayName, updatedByUsername sql.NullString
 		var liveVersionID sql.NullString
 		var liveVersionNumber sql.NullInt64
 		var liveVersionName sql.NullString
@@ -322,7 +322,7 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []st
 		var draftVersionName sql.NullString
 
 		if err := rows.Scan(&wfID, &wfAccountID, &wfName, &wfDescription, &aiInvocable, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
-			&createdByUserID, &createdByDisplayName, &updatedByUserID, &updatedByDisplayName,
+			&createdByUserID, &createdByDisplayName, &createdByUsername, &updatedByUserID, &updatedByDisplayName, &updatedByUsername,
 			&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 			&draftVersionID, &draftVersionNumber, &draftVersionName); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan workflow: %w", err)
@@ -372,12 +372,14 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []st
 			wf.CreatedByUser = &model.WorkflowUser{
 				ID:          createdByUserID.String,
 				DisplayName: createdByDisplayName.String,
+				Username:    createdByUsername.String,
 			}
 		}
 		if updatedByUserID.Valid {
 			wf.UpdatedByUser = &model.WorkflowUser{
 				ID:          updatedByUserID.String,
 				DisplayName: updatedByDisplayName.String,
+				Username:    updatedByUsername.String,
 			}
 		}
 		applyVersionRefs(&wf,

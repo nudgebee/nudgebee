@@ -140,7 +140,7 @@ func (m TicketMaster) Call(nbRequestContext core.NbToolContext, input core.NBToo
 			break
 		}
 
-		issues, err := searchIssuesV3(client, request.Query)
+		issues, err := searchIssues(client, request.Query)
 		if err != nil {
 			errResp = fmt.Errorf("ticketMaster: search failed: %v", err)
 			break
@@ -416,9 +416,19 @@ func getJiraIntegrationConfig(accountId string) (map[string]string, error) {
 		return nil, fmt.Errorf("jira config: error scanning row: %w", err)
 	}
 
-	// Validate required fields
-	if url == nil || username == nil || password == nil {
+	mode := ""
+	if authType != nil {
+		mode = *authType
+	}
+
+	// Validate required fields. A Data Center personal access token carries its
+	// own identity, so it has no username.
+	if url == nil || password == nil || (username == nil && !jiraIsDataCenterPAT(mode)) {
 		return nil, fmt.Errorf("jira config: missing required configuration values")
+	}
+	user := ""
+	if username != nil {
+		user = *username
 	}
 
 	decryptedPassword, err := common.Decrypt(*password)
@@ -428,13 +438,28 @@ func getJiraIntegrationConfig(accountId string) (map[string]string, error) {
 	}
 
 	return map[string]string{
-		"url":      sanitizeURL(*url),
-		"username": *username,
-		"token":    decryptedPassword,
+		"url":       sanitizeURL(*url),
+		"username":  user,
+		"token":     decryptedPassword,
+		"auth_type": mode,
 	}, nil
 }
 
+// jiraAuthDataCenterPAT is the auth_type for Jira Data Center personal access
+// tokens, which must be sent as a bearer token — Data Center rejects them over
+// Basic with 401. Every other auth_type ("token", or unset on older
+// integrations) uses Basic. Mirrors api-server/services/integrations/jira.go.
+const jiraAuthDataCenterPAT = "datacenter_pat"
+
+func jiraIsDataCenterPAT(authType string) bool {
+	return strings.TrimSpace(authType) == jiraAuthDataCenterPAT
+}
+
 func newJiraClient(config map[string]string) (*jira.Client, error) {
+	if jiraIsDataCenterPAT(config["auth_type"]) {
+		tp := jira.BearerAuthTransport{Token: config["token"]}
+		return jira.NewClient(tp.Client(), config["url"])
+	}
 	tp := jira.BasicAuthTransport{
 		Username: config["username"],
 		Password: config["token"],
@@ -473,9 +498,42 @@ func nullableField(field any) string {
 	}
 }
 
-func searchIssuesV3(client *jira.Client, jql string) ([]jira.Issue, error) {
-	apiEndpoint := "rest/api/3/search/jql"
+// Jira Cloud removed rest/api/2/search and serves JQL search only at
+// rest/api/3/search/jql; Data Center has no v3 API and answers it with a
+// redirect to the login page, so the deployment decides the endpoint.
+const (
+	jiraSearchCloud      = "rest/api/3/search/jql"
+	jiraSearchDataCenter = "rest/api/2/search"
+)
 
+func searchIssues(client *jira.Client, jql string) ([]jira.Issue, error) {
+	cloud, err := jiraIsCloud(client)
+	if err != nil {
+		return nil, fmt.Errorf("detecting deployment type: %w", err)
+	}
+	if cloud {
+		return searchIssuesAt(client, jiraSearchCloud, jql)
+	}
+	return searchIssuesAt(client, jiraSearchDataCenter, jql)
+}
+
+// jiraIsCloud reports whether the instance is Jira Cloud rather than
+// Server/Data Center.
+func jiraIsCloud(client *jira.Client) (bool, error) {
+	req, err := client.NewRequest("GET", "rest/api/2/serverInfo", nil)
+	if err != nil {
+		return false, err
+	}
+	var info struct {
+		DeploymentType string `json:"deploymentType"`
+	}
+	if _, err := client.Do(req, &info); err != nil {
+		return false, err
+	}
+	return strings.EqualFold(info.DeploymentType, "Cloud"), nil
+}
+
+func searchIssuesAt(client *jira.Client, apiEndpoint, jql string) ([]jira.Issue, error) {
 	reqBody := map[string]any{
 		"jql":    jql,
 		"fields": []string{"*all", "-description", "-comment", "-worklog"},

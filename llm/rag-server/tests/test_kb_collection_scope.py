@@ -79,11 +79,15 @@ def test_unrelated_collections_are_never_dropped(live_names):
     assert kept == ["nudgebee_docs", f"{ACCOUNT}_prometheus"]
 
 
-def test_unresolvable_scope_keeps_everything(monkeypatch):
+def test_unresolvable_scope_excludes_kbs_but_preserves_product_docs(monkeypatch):
     monkeypatch.setattr(rag, "get_live_kb_collection_names", lambda account_id, tenant_id: None)
-    collections = [_integration_collection(DEAD_INTEGRATION), _manual_collection(ARCHIVED_KB)]
+    collections = [
+        _integration_collection(DEAD_INTEGRATION),
+        _manual_collection(ARCHIVED_KB),
+        _collection("nudgebee_docs", account="global"),
+    ]
     kept = rag._drop_dead_kb_collections(collections, ACCOUNT, TENANT)
-    assert kept == [f"{DEAD_INTEGRATION}_knowledge_base", f"kb_{ARCHIVED_KB}"]
+    assert kept == ["nudgebee_docs"]
 
 
 def test_no_kb_backed_collections_skips_the_lookup(monkeypatch):
@@ -107,12 +111,12 @@ def test_module_filter_runs_before_the_live_kb_gate(live_names):
     assert names == [f"{LIVE_INTEGRATION}_knowledge_base"]
 
 
-def test_explicit_collection_name_bypasses_the_gate(live_names):
+def test_explicit_collection_name_cannot_bypass_the_gate(live_names):
     collections = [_integration_collection(DEAD_INTEGRATION)]
     names = rag._filter_collections_for_module_and_account(
         collections, "knowledge_base", ACCOUNT, f"{DEAD_INTEGRATION}_knowledge_base", tenant_id=TENANT
     )
-    assert names == [f"{DEAD_INTEGRATION}_knowledge_base"]
+    assert names == []
 
 
 @pytest.mark.parametrize("account_id, tenant_id", [("global", None), ("", None), (None, None), ("not-a-uuid", "")])

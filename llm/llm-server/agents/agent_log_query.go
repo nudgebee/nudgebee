@@ -94,6 +94,10 @@ func (l *LogQueryAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
 
+func (l *LogQueryAgent) GetKnowledgeMode() core.AgentKnowledgeMode {
+	return core.AgentKnowledgeAutoChunks
+}
+
 // logQueryResult is the ai_generate_log_query response envelope. It is a typed
 // struct, not a map[string]string — json.Marshal preserves field declaration
 // order for a struct regardless of key name, whereas the old LokiAgent response

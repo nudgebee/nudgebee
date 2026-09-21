@@ -50,6 +50,25 @@ export const formatMemShort = (bytes: number | null | undefined): string => {
   return `${Math.round(mi)} Mi`;
 };
 
+export interface ReplicaWindow {
+  avg: number;
+  min: number;
+  max: number;
+  windowHours: number | null;
+}
+
+// Both producers stamp the same summary on every resource entry's add_info;
+// read it off whichever entry the primary container has.
+export const replicaWindowOf = (entries: any[]): ReplicaWindow | null => {
+  for (const entry of entries) {
+    const r = entry?.add_info?.replicas;
+    if (r && typeof r.avg === 'number' && typeof r.min === 'number' && typeof r.max === 'number') {
+      return { avg: r.avg, min: r.min, max: r.max, windowHours: typeof r.window_hours === 'number' ? r.window_hours : null };
+    }
+  }
+  return null;
+};
+
 export type RightSizingDirection = 'reduce' | 'increase' | 'set' | 'mixed' | 'none';
 
 export interface RightSizingSummary {

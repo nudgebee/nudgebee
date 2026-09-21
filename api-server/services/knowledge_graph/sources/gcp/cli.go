@@ -8,8 +8,13 @@ import (
 	"nudgebee/services/security"
 )
 
-// fetchAllGCPCLIData fetches all GCP metadata via gcloud CLI in bulk
-func (s *GCPSource) fetchAllGCPCLIData(reqCtx *security.RequestContext, req *core.SourceBuildRequest) (data *gcpCLIData) {
+// fetchAllGCPCLIData assembles the GCP metadata the graph builds edges from.
+//
+// resources are the cloud_resourses rows BuildGraph has already loaded for this
+// account. Where discovery has collected a type, it is mapped from those rows and
+// no gcloud process is started; where it has not, the original CLI fetch runs.
+// See topology_from_db.go for which types qualify and why url-map does not.
+func (s *GCPSource) fetchAllGCPCLIData(reqCtx *security.RequestContext, req *core.SourceBuildRequest, resources []sources.CloudResourceRow) (data *gcpCLIData) {
 	data = &gcpCLIData{
 		computeInstances: make(map[string]*GCPComputeInstance),
 		sqlInstances:     make(map[string]*GCPCloudSQLInstance),
@@ -41,6 +46,13 @@ func (s *GCPSource) fetchAllGCPCLIData(reqCtx *security.RequestContext, req *cor
 	}
 
 	accountID := req.CloudAccountID
+	rowIndex := newGCPRowIndex(resources)
+
+	// Counts the types served from the table versus those that fell back to the
+	// CLI. Without this a broken mapper is invisible: the fallback keeps the
+	// graph correct while the CPU saving silently never arrives.
+	fromTable := make([]string, 0, 5)
+	fromCLI := make([]string, 0, 5)
 
 	// Fetch VPC networks
 	networks, err := s.fetchVPCNetworksFromGCP(reqCtx, accountID)
@@ -112,46 +124,79 @@ func (s *GCPSource) fetchAllGCPCLIData(reqCtx *security.RequestContext, req *cor
 
 	// Fetch Load Balancer components
 	// Forwarding rules (load balancer frontends)
-	forwardingRules, err := s.fetchForwardingRulesFromGCP(reqCtx, accountID)
-	if err != nil {
+	if rows := rowIndex.rows(rowTypeForwardingRule); len(rows) > 0 {
+		forwardingRules := forwardingRulesFromRows(rows)
+		for i := range forwardingRules {
+			data.forwardingRules[forwardingRules[i].Name] = &forwardingRules[i]
+		}
+		fromTable = append(fromTable, rowTypeForwardingRule)
+		s.logger.Info("read GCP forwarding rules from cloud_resourses", "count", len(forwardingRules))
+	} else if forwardingRules, err := s.fetchForwardingRulesFromGCP(reqCtx, accountID); err != nil {
 		s.logger.Warn("failed to fetch GCP forwarding rules via CLI", "error", err)
+		fromCLI = append(fromCLI, rowTypeForwardingRule)
 	} else {
 		for i := range forwardingRules {
 			data.forwardingRules[forwardingRules[i].Name] = &forwardingRules[i]
 		}
+		fromCLI = append(fromCLI, rowTypeForwardingRule)
 		s.logger.Info("fetched GCP forwarding rules via CLI", "count", len(forwardingRules))
 	}
 
 	// Backend services
-	backendServices, err := s.fetchBackendServicesFromGCP(reqCtx, accountID)
-	if err != nil {
+	if rows := rowIndex.rows(rowTypeBackendService); len(rows) > 0 {
+		backendServices := backendServicesFromRows(rows)
+		for i := range backendServices {
+			data.backendServices[backendServices[i].Name] = &backendServices[i]
+		}
+		fromTable = append(fromTable, rowTypeBackendService)
+		s.logger.Info("read GCP backend services from cloud_resourses", "count", len(backendServices))
+	} else if backendServices, err := s.fetchBackendServicesFromGCP(reqCtx, accountID); err != nil {
 		s.logger.Warn("failed to fetch GCP backend services via CLI", "error", err)
+		fromCLI = append(fromCLI, rowTypeBackendService)
 	} else {
 		for i := range backendServices {
 			data.backendServices[backendServices[i].Name] = &backendServices[i]
 		}
+		fromCLI = append(fromCLI, rowTypeBackendService)
 		s.logger.Info("fetched GCP backend services via CLI", "count", len(backendServices))
 	}
 
 	// Serverless NEGs (resolve LB backend → Cloud Run / App Engine service)
-	serverlessNEGs, err := s.fetchServerlessNEGsFromGCP(reqCtx, accountID)
-	if err != nil {
+	if rows := rowIndex.rows(rowTypeNetworkEndpointGroup); len(rows) > 0 {
+		serverlessNEGs := serverlessNEGsFromRows(rows)
+		for i := range serverlessNEGs {
+			data.serverlessNEGs[serverlessNEGs[i].Name] = &serverlessNEGs[i]
+		}
+		fromTable = append(fromTable, rowTypeNetworkEndpointGroup)
+		s.logger.Info("read GCP serverless NEGs from cloud_resourses",
+			"neg_rows", len(rows), "serverless", len(serverlessNEGs))
+	} else if serverlessNEGs, err := s.fetchServerlessNEGsFromGCP(reqCtx, accountID); err != nil {
 		s.logger.Warn("failed to fetch GCP serverless NEGs via CLI", "error", err)
+		fromCLI = append(fromCLI, rowTypeNetworkEndpointGroup)
 	} else {
 		for i := range serverlessNEGs {
 			data.serverlessNEGs[serverlessNEGs[i].Name] = &serverlessNEGs[i]
 		}
+		fromCLI = append(fromCLI, rowTypeNetworkEndpointGroup)
 		s.logger.Info("fetched GCP serverless NEGs via CLI", "count", len(serverlessNEGs))
 	}
 
 	// Health checks
-	healthChecks, err := s.fetchHealthChecksFromGCP(reqCtx, accountID)
-	if err != nil {
+	if rows := rowIndex.rows(rowTypeHealthCheck); len(rows) > 0 {
+		healthChecks := healthChecksFromRows(rows)
+		for i := range healthChecks {
+			data.healthChecks[healthChecks[i].Name] = &healthChecks[i]
+		}
+		fromTable = append(fromTable, rowTypeHealthCheck)
+		s.logger.Info("read GCP health checks from cloud_resourses", "count", len(healthChecks))
+	} else if healthChecks, err := s.fetchHealthChecksFromGCP(reqCtx, accountID); err != nil {
 		s.logger.Warn("failed to fetch GCP health checks via CLI", "error", err)
+		fromCLI = append(fromCLI, rowTypeHealthCheck)
 	} else {
 		for i := range healthChecks {
 			data.healthChecks[healthChecks[i].Name] = &healthChecks[i]
 		}
+		fromCLI = append(fromCLI, rowTypeHealthCheck)
 		s.logger.Info("fetched GCP health checks via CLI", "count", len(healthChecks))
 	}
 
@@ -167,13 +212,24 @@ func (s *GCPSource) fetchAllGCPCLIData(reqCtx *security.RequestContext, req *cor
 	}
 
 	// Target proxies (HTTP and HTTPS)
-	targetProxies, err := s.fetchTargetProxiesFromGCP(reqCtx, accountID)
-	if err != nil {
+	httpProxyRows := rowIndex.rows(rowTypeTargetHTTPProxy)
+	httpsProxyRows := rowIndex.rows(rowTypeTargetHTTPSProxy)
+	if len(httpProxyRows) > 0 || len(httpsProxyRows) > 0 {
+		targetProxies := targetProxiesFromRows(httpProxyRows, "HTTP")
+		targetProxies = append(targetProxies, targetProxiesFromRows(httpsProxyRows, "HTTPS")...)
+		for i := range targetProxies {
+			data.targetProxies[targetProxies[i].Name] = &targetProxies[i]
+		}
+		fromTable = append(fromTable, "target-proxy")
+		s.logger.Info("read GCP target proxies from cloud_resourses", "count", len(targetProxies))
+	} else if targetProxies, err := s.fetchTargetProxiesFromGCP(reqCtx, accountID); err != nil {
 		s.logger.Warn("failed to fetch GCP target proxies via CLI", "error", err)
+		fromCLI = append(fromCLI, "target-proxy")
 	} else {
 		for i := range targetProxies {
 			data.targetProxies[targetProxies[i].Name] = &targetProxies[i]
 		}
+		fromCLI = append(fromCLI, "target-proxy")
 		s.logger.Info("fetched GCP target proxies via CLI", "count", len(targetProxies))
 	}
 
@@ -198,6 +254,11 @@ func (s *GCPSource) fetchAllGCPCLIData(reqCtx *security.RequestContext, req *cor
 		}
 		s.logger.Info("fetched GCP Cloud CDN backends via CLI", "count", len(cdnBackends))
 	}
+
+	s.logger.Info("GCP topology sources resolved",
+		"cloud_account_id", accountID,
+		"from_table", fromTable,
+		"from_cli", fromCLI)
 
 	return data
 }

@@ -178,7 +178,7 @@ const defaultStyles = {
       margin: '0 var(--ds-space-1)',
       fontSize: 'var(--ds-text-caption)',
       color: ds.gray[700],
-      fontFamily: '"Roboto Mono", monospace',
+      fontFamily: ds.font.mono,
       border: `1px solid ${ds.gray[200]}`,
     },
     '& strong, & b': {
@@ -230,7 +230,7 @@ const defaultStyles = {
         margin: '0 var(--ds-space-1)',
         fontSize: 'var(--ds-text-caption)',
         color: ds.gray[700],
-        fontFamily: '"Roboto Mono", monospace',
+        fontFamily: ds.font.mono,
         border: `1px solid ${ds.gray[200]}`,
       },
     },
@@ -264,7 +264,7 @@ const defaultStyles = {
     '& code': {
       color: 'inherit !important',
       fontSize: 'var(--ds-text-body)',
-      fontFamily: '"Roboto Mono", monospace',
+      fontFamily: ds.font.mono,
       lineHeight: 1.6,
       backgroundColor: 'transparent !important',
       padding: 0,
@@ -365,7 +365,7 @@ const defaultStyles = {
     borderRadius: 'var(--ds-radius-sm)',
     padding: 'var(--ds-space-1) var(--ds-space-1)',
     fontSize: 'var(--ds-text-caption)',
-    fontFamily: '"Roboto Mono", monospace',
+    fontFamily: ds.font.mono,
   },
   '& details': {
     marginBottom: 'var(--ds-space-3)',

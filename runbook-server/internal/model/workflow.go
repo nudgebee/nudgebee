@@ -71,6 +71,7 @@ type FailurePolicy struct {
 type WorkflowUser struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
+	Username    string `json:"username"`
 }
 
 type Workflow struct {

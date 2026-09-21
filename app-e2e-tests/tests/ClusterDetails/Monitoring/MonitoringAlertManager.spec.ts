@@ -22,7 +22,7 @@ const ALERT_TIME     = process.env.ALERT_MANAGER_TIME       || "1";
 test.describe.configure({ timeout: 120000 });
 
 // ─── TC-01: Page Load & API Validation ────────────────────────────────────────
-test("Cluster Details->Monitoring-> APi testing -> Alert Manager", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> APi testing -> Alert Manager", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   const locators = new MonitoringTabLocator(page);
   await new LoginPage(page).doFullLogin();
 
@@ -37,7 +37,7 @@ test("Cluster Details->Monitoring-> APi testing -> Alert Manager", async ({ page
 });
 
 // ─── TC-02: Create New Alert ───────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Create New Alert", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Create New Alert", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   await setup(page);
 
   await page.getByRole("button", { name: "Create New Alert" }).click();
@@ -95,7 +95,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Create New Alert", async ({
 });
 
 // ─── TC-03: Search by Name ─────────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Search by Alert Name", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Search by Alert Name", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
   await waitForGraphQLAndValidate(
     page,
@@ -106,7 +106,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Search by Alert Name", asyn
 });
 
 // ─── TC-04: Search - No Results ────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Search No Results", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Search No Results", { tag: ["@dev", "@test", "@oss", "@regression", "@negative", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
   await waitForGraphQLAndValidate(
     page,
@@ -117,21 +117,21 @@ test("Cluster Details->Monitoring-> Alert Manager -> Search No Results", async (
 });
 
 // ─── TC-05: Filter by Severity ─────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Filter by Severity", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Filter by Severity", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
   await applyFilterAndSearch(page, "k8s-alert-filter-severity", "Severity", ALERT_SEVERITY, ALERT_NAME, testInfo);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
 });
 
 // ─── TC-06: Filter by Source ───────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Filter by Source", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Filter by Source", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
   await applyFilterAndSearch(page, "k8s-alert-filter-source", "Source", ALERT_SOURCE, ALERT_NAME, testInfo);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
 });
 
 // ─── TC-07: Filter by Status = Enabled ────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Enabled", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Enabled", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
   await searchAlert(page, ALERT_NAME);
   const alertRow = page.locator("tr", { hasText: ALERT_NAME });
@@ -145,7 +145,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Enabled", 
 });
 
 // ─── TC-08: Configured Actions Column ─────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Configured Actions Column", async ({ page }) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Configured Actions Column", { tag: ["@dev", "@test", "@oss", "@sanity", "@functional"] }, async ({ page }) => {
   await setup(page);
   await searchAlert(page, ALERT_NAME);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
@@ -159,7 +159,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Configured Actions Column",
 });
 
 // ─── TC-09: Edit Alert ─────────────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Edit Alert", async ({ page }) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Edit Alert", { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] }, async ({ page }) => {
   await setup(page);
   await searchAlert(page, ALERT_NAME);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
@@ -188,7 +188,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Edit Alert", async ({ page 
 });
 
 // ─── TC-10: Combined Filter Source + Severity ─────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Combined Filter Source and Severity", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Combined Filter Source and Severity", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
 
   await clickFilterDropdown(page, "k8s-alert-filter-source", "Source");
@@ -206,7 +206,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Combined Filter Source and 
 });
 
 // ─── TC-11: Disable Alert ─────────────────────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Disable Alert", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Disable Alert", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   await setup(page);
   await searchAlert(page, ALERT_NAME);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
@@ -214,7 +214,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Disable Alert", async ({ pa
 });
 
 // ─── TC-12: Filter by Status = Disabled ───────────────────────────────────────
-test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Disabled", async ({ page }, testInfo) => {
+test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Disabled", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
   await applyFilterAndSearch(page, "k8s-alert-filter-status", "Status", "Disabled", ALERT_NAME, testInfo);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();

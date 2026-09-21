@@ -152,7 +152,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Users', path: '/user-management#users' },
   { group: 'Admin', label: 'Groups', path: '/user-management#groups' },
   { group: 'Admin', label: 'Audits', path: '/user-management#audits' },
-  { group: 'Admin', label: 'Notifications', path: '/user-management#notifications' },
+  { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
   { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
   // Registered dynamically via registerUserManagementFilter in
@@ -214,6 +214,86 @@ export const automationSearchFragments: AutomationSearchFragment[] = [
   { label: 'Automations', slug: 'automation/automations', fragment: 'automations' },
   { label: 'Task Runner', slug: 'automation/task-runner', fragment: 'task-runner' },
   { label: 'Executions', slug: 'automation/executions', fragment: 'executions' },
+];
+
+// Every cloud_provider enum value from accounts/integration.jsx's
+// SECTIONS_CONFIG, minus its DISABLED_PROVIDERS (grayed-out there — search
+// shouldn't offer a bypass route to them). Hand-synced: add a new provider
+// here when it's added there.
+export const integrationProviders: string[] = [
+  // cloud
+  'K8S',
+  'AWS',
+  'AZURE',
+  'GCP',
+  'SELFHOSTED',
+  'CLOUDFOUNDRY',
+  // messaging
+  'SLACK',
+  'MSTEAMS',
+  'GOOGLE_CHAT',
+  'DISCORD',
+  'PAGERDUTY',
+  'ZENDUTY',
+  // ticket
+  'JIRA',
+  'SERVICENOW',
+  'FRESHDESK',
+  'GITHUB',
+  'GITLAB',
+  // webhooks
+  'PAGERDUTY_WEBHOOK',
+  'ZENDUTY_WEBHOOK',
+  'PROMETHEUS_ALERTMANAGER_WEBHOOK',
+  'DATADOG_WEBHOOK',
+  'AZURE_MONITOR_WEBHOOK',
+  'SERVICENOW_WEBHOOK',
+  'NEWRELIC_WEBHOOK',
+  'GRAFANA_WEBHOOK',
+  'GCP_MONITORING_WEBHOOK',
+  'DYNATRACE_WEBHOOK',
+  'SOLARWINDS_WEBHOOK',
+  'ELASTICSEARCH_WEBHOOK',
+  'OPENOBSERVE_WEBHOOK',
+  'WORKFLOW_WEBHOOK',
+  // database
+  'POSTGRES',
+  'MYSQL',
+  'CLICKHOUSE',
+  'MSSQL',
+  'ORACLE',
+  // observability
+  'DATADOG',
+  'DYNATRACE',
+  'LOGGLY',
+  'LOKI',
+  'SIGNOZ',
+  'OBSERVE',
+  'AZURE_APP_INSIGHTS',
+  'PROMETHEUS',
+  'CHRONOSPHERE',
+  'OTEL',
+  'JAEGER',
+  'NEWRELIC',
+  'SOLARWINDS',
+  'ES',
+  'PINOT',
+  'HIVE',
+  // queue
+  'RABBITMQ',
+  // ci_cd
+  'ARGOCD',
+  // in-memory
+  'REDIS',
+  // docs
+  'CONFLUENCE',
+  // llm
+  'LLM',
+  'LLM_GATEWAY',
+  'MCP',
+  // server
+  'SSH',
+  'VM_AGENT',
 ];
 
 // Kubernetes Details (/kubernetes/details/[KubernetesDetails]) tabs, kept

@@ -123,11 +123,14 @@ const TenantSettings = ({ open, title, onClose }) => {
   const canEdit = canEditTenantSettings();
 
   useEffect(() => {
+    let cancelled = false;
     const fetchTenantAttributes = async () => {
       try {
         setLoading(true);
-        const tenantAttributes = await getTenantAttributes();
-        const features = await getFeatures();
+        const [tenantAttributes, features] = await Promise.all([getTenantAttributes(), getFeatures()]);
+        if (cancelled) {
+          return;
+        }
         if (features.length > 0) {
           setFeatureOptions(features);
         }
@@ -182,6 +185,9 @@ const TenantSettings = ({ open, title, onClose }) => {
         }
 
         const tenantFeatureFlags = await fetchFeatureFlagsForTenant();
+        if (cancelled) {
+          return;
+        }
         if (tenantFeatureFlags?.length > 0) {
           const enabled = tenantFeatureFlags.filter((g) => g.status === 'enabled').map((g) => g.feature_id);
 
@@ -189,22 +195,31 @@ const TenantSettings = ({ open, title, onClose }) => {
           setInitialFeatures(enabled); // <-- save original state
         }
       } catch (error) {
-        snackbar.error(`Failed to fetch Tenant settings - ${parseHttpResponseBodyMessage(error)}`);
+        if (!cancelled) {
+          snackbar.error(`Failed to fetch Tenant settings - ${parseHttpResponseBodyMessage(error)}`);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
 
     const fetchTenant = async () => {
       try {
         apiUserManagement.listUserTenants(session?.user?.email).then((res) => {
+          if (cancelled) {
+            return;
+          }
           const tenants = res.data ?? [];
           if (tenants.length > 0) {
             setTenantName(tenants.filter((t) => t.name == session?.tenant?.name)?.[0]?.name || '');
           }
         });
       } catch {
-        setTenantName('');
+        if (!cancelled) {
+          setTenantName('');
+        }
       }
     };
 
@@ -212,6 +227,9 @@ const TenantSettings = ({ open, title, onClose }) => {
       fetchTenantAttributes();
       fetchTenant();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   const handleSaveSettings = async () => {

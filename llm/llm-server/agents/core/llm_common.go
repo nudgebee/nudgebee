@@ -263,6 +263,17 @@ func taskTypeFromContext(ctx *security.RequestContext) string {
 // model_tier on legacy/uninstrumented call paths, task_type additionally on every
 // sub-agent call (only top-level turns are classified). nil → NULL, which keeps
 // "legacy row" distinguishable from a real tier.
+// configSourceForRecord returns the slot to stamp on a usage row, nil when the
+// call carried none (background jobs, legacy paths) so the column stays NULL
+// rather than empty-string.
+func configSourceForRecord(md *LLMCallMetadata) *string {
+	if md == nil || md.ConfigSource == "" {
+		return nil
+	}
+	src := md.ConfigSource
+	return &src
+}
+
 func tierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, taskType *string) {
 	if ctx == nil {
 		return nil, nil
@@ -360,6 +371,10 @@ type LLMCallMetadata struct {
 	// (false means TTFTMs / ITL are not meaningful).
 	TTFTMs       *int64
 	WasStreaming bool
+	// ConfigSource is the configured LLM slot the call resolved through
+	// ({layer}:{scope}[:{name}]). provider+model cannot identify it: two configs
+	// can share both, so usage views could not say which integration served a call.
+	ConfigSource string
 	// ServedModel/ServedProvider are the model and provider that actually produced
 	// the response, which is NOT the caller's resolved model once a fallback ran.
 	// Without these the usage row records the primary, so a response served by a
@@ -860,6 +875,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			traceResponse,
 			callMetadata.TTFTMs,
 			callMetadata.WasStreaming,
+			configSourceForRecord(callMetadata),
 		)
 	}
 
@@ -2039,6 +2055,19 @@ func sanitizeUTF8Input(s string) string {
 	return strings.ToValidUTF8(s, "")
 }
 
+// configSourceOf reports the slot a resolution came from, preferring the pinned
+// id when the request pinned one — that is the slot actually dialed, whereas
+// Source names the layer the walk stopped at.
+func configSourceOf(res *LLMConfigResolution) string {
+	if res == nil {
+		return ""
+	}
+	if res.PinnedConfigSource != "" {
+		return res.PinnedConfigSource
+	}
+	return res.Source
+}
+
 // buildCallMetadata creates metadata from retry context for token tracking
 func buildCallMetadata(rc *retryContext, success bool) *LLMCallMetadata {
 	metadata := &LLMCallMetadata{
@@ -2053,6 +2082,7 @@ func buildCallMetadata(rc *retryContext, success bool) *LLMCallMetadata {
 		WasStreaming:      rc.lastWasStreaming,
 		ServedModel:       rc.currentModel,
 		ServedProvider:    rc.currentProvider,
+		ConfigSource:      configSourceOf(rc.resolution),
 	}
 
 	if !success && rc.lastErr != nil {
@@ -3467,9 +3497,13 @@ func recordTokenUsageFailure(
 	}
 
 	requestStatus := requestStatusForError(rawErr)
+	if requestStatus == "timeout" {
+		requestStatus = "failure"
+	}
 
 	cacheTTL := config.Config.LlmCacheTTLMinutes
 	record := &TokenUsageRecord{
+		LLMConfigSource:   configSourceForRecord(callMetadata),
 		ConversationID:    conversationId,
 		MessageID:         messageId,
 		AgentID:           agentUUID,
@@ -3553,6 +3587,7 @@ func trackTokenUsage(
 	responseContent *string,
 	ttftMs *int64,
 	wasStreaming bool,
+	configSource *string,
 ) {
 	if tokenInfo == nil {
 		return
@@ -3650,6 +3685,7 @@ func trackTokenUsage(
 	// per-call cost (storage moved to llm_cache_lifecycle). Column will be
 	// dropped in a follow-up migration; new rows leave it NULL.
 	record := &TokenUsageRecord{
+		LLMConfigSource:     configSource,
 		ConversationID:      conversationId,
 		MessageID:           messageId,
 		AgentID:             agentUUID,
@@ -3731,6 +3767,18 @@ func cleanupMarkdownInResponse(completion *llms.ContentResponse) {
 }
 
 func getLLMIntegrationConfig(ctx *security.RequestContext, accountId string, overrides ...map[string]string) (map[string]string, error) {
+	// Opt-in escape hatch: when LLM_CONFIG_IGNORE_DB is set, drop the DB-global,
+	// DB-tier and DB-agent layers so the ENV layers decide provider/model.
+	// Intended for local runs against a DB whose tenant config points at models
+	// the operator cannot use. Placed before the overrides check on purpose: a
+	// caller-supplied dbConfig is DB-sourced too. Layers are named rather than
+	// numbered here because this file's inline comments count up (L4-L6) while
+	// the llm_config.go docstring counts down (2-4) for the same three layers.
+	// This does not cover the two DB reads that bypass this function --
+	// GetConversationOverride and integrationConfigForPin; see that docstring.
+	if config.Config.GetBool("LLM_CONFIG_IGNORE_DB", false) {
+		return nil, nil
+	}
 	if len(overrides) > 0 && overrides[0] != nil {
 		return overrides[0], nil
 	}

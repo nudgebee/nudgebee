@@ -80,7 +80,7 @@ const InfraUpgradeEvidence = ({ recommendation, ruleName: _ruleName, estimatedSa
                   key={typeof item === 'string' ? item : item.name || `del-${idx}`}
                   sx={{ py: ds.space[1], borderBottom: idx < rec.deleted_items.length - 1 ? `1px solid ${ds.red[100]}` : 'none' }}
                 >
-                  <Typography sx={{ fontSize: ds.text.small, color: ds.red[700], fontFamily: 'Roboto Mono, monospace' }}>
+                  <Typography sx={{ fontSize: ds.text.small, color: ds.red[700], fontFamily: ds.font.mono }}>
                     {typeof item === 'string' ? item : `${item.kind || ''}/${item.name || item}`}
                   </Typography>
                 </Box>

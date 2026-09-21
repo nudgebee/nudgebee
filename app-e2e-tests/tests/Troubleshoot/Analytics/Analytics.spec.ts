@@ -55,7 +55,7 @@ test.beforeEach(() => {
 
 test(
   "Analytics sanity - open Troubleshoot on the analytics fragment, verify the Overview scoreboard renders its four tiles and the tab stays selected",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     const locators = await openAnalytics(page);
     await requireDataLoaded(locators);
@@ -79,7 +79,7 @@ test(
 
 test(
   "Analytics sanity - open Analytics with no range in the URL, verify the tab pins a seven-day window into start_time and end_time",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     // No range passed on purpose: the default is the behaviour under test, so supplying one
     // would cause the state this asserts instead of observing it.
@@ -109,7 +109,7 @@ test(
 
 test(
   "Analytics - open Analytics, verify the improvement row reports distinct problems, urgent problems and a recurrence rate against the previous window",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openAnalytics(page, windowQuery(DEFAULT_WINDOW_DAYS));
     await requireDataLoaded(locators);
@@ -142,7 +142,7 @@ test(
 
 test(
   "Analytics - open Analytics, click the distinct-problems tile, verify the page drills into the flat All Events list scoped to that population",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional"] },
   async ({ page }) => {
     const locators = await openAnalytics(page, windowQuery(DEFAULT_WINDOW_DAYS));
     await requireDataLoaded(locators);
@@ -166,7 +166,7 @@ test(
 
 test(
   "Analytics - drill from the urgent-problems tile into All Events, go back, verify Analytics is restored with its own window",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openAnalytics(page, windowQuery(DEFAULT_WINDOW_DAYS));
     await requireDataLoaded(locators);
@@ -191,7 +191,7 @@ test(
 
 test(
   "Analytics - open Analytics on a 24-hour window, verify the volume panel refuses to draw a trend and offers the seven-day switch instead",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     // One day cannot fill the four day-buckets the chart requires, so this state is a
     // property of the window rather than of what the tenant happens to hold.
@@ -218,7 +218,7 @@ test(
 
 test(
   "Analytics - open Analytics on a 24-hour window, click the seven-day switch, verify the widened window replaces the notice and survives a reload",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openAnalytics(page, windowQuery(1));
     await requireDataLoaded(locators);
@@ -262,7 +262,7 @@ test(
 
 test(
   "Analytics - open Analytics, scope the Viewing filter to a single account, verify accountIds enters the URL and the aggregates refetch for that account",
-  { tag: ["@dev", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search"] },
   async ({ page }) => {
     // The account is resolved from the environment's configured cluster rather than named here:
     // the same suite runs against dev and test, whose tenants hold different accounts.
@@ -305,7 +305,7 @@ test(
 
 test(
   "Analytics - open Troubleshoot on an unknown hash fragment, verify the page rejects it and canonicalises to the All Events triage inbox",
-  { tag: ["@dev", "@regression", "@validation"] },
+  { tag: ["@dev", "@test", "@regression", "@negative"] },
   async ({ page }) => {
     const locators = await openAnalytics(page);
     await expectSelectedTab(locators.analyticsTab);
@@ -326,7 +326,7 @@ test(
 
 test(
   "Analytics - open Analytics, verify the recurring-issues panel either ranks issues by how often they fired or states that nothing fired twice",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const locators = await openAnalytics(page, windowQuery(DEFAULT_WINDOW_DAYS));
     await requireDataLoaded(locators);
@@ -388,7 +388,7 @@ test(
 
 test(
   "Analytics - open Analytics twice on the same window, verify the tab is read-only and reports the same scoreboard both times",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     const range = windowQuery(DEFAULT_WINDOW_DAYS);
     const locators = await openAnalytics(page, range);

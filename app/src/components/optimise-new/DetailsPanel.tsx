@@ -1,4 +1,5 @@
-import { Box, Typography, Divider, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
+import { Box, Typography, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
+import { Divider } from '@ui/Divider';
 import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
@@ -574,7 +575,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           interpretation "why", so only render the remainder here (if any). */}
       {details?.recommendations?.length > 1 && (
         <>
-          <Divider />
+          <Divider sx={{ my: 0 }} />
           <Box>
             <SectionHeading>Recommendations</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
@@ -674,7 +675,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* Compliance */}
       {details?.compliances?.length > 0 && (
         <>
-          <Divider />
+          <Divider sx={{ my: 0 }} />
           <Box>
             <SectionHeading>Compliance</SectionHeading>
             <Box sx={{ display: 'flex', gap: ds.space[2], flexWrap: 'wrap' }}>
@@ -691,7 +692,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* References */}
       {details?.references?.length > 0 && (
         <>
-          <Divider />
+          <Divider sx={{ my: 0 }} />
           <Box>
             <SectionHeading>References</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
@@ -721,7 +722,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* Linked Items */}
       {(rec.ticket || hasRenderablePRState(rec.resolution)) && (
         <>
-          <Divider />
+          <Divider sx={{ my: 0 }} />
           <Box>
             <SectionHeading>Linked Items</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>

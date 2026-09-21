@@ -5,9 +5,9 @@ import { draftFromQuery, findTable, renderEntityQuery, type EntityColumnFormat, 
 import { runTracePanel } from './traceQuery';
 import { panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
 import { AWS_METRICS_PROVIDER, ES_PROVIDER, isAwsAccount } from './panelProviders';
-import { alignSeries, toRawSeries, type RawSeries } from './panelSeries';
+import { accountPrefixed, alignSeries, toRawSeries, type RawSeries } from './panelSeries';
 import { acquirePanelSlot } from './panelQueue';
-import { capSeries, cappedSeriesWarning, MAX_CHART_SERIES, MAX_TABLE_SERIES, PANEL_TIMEOUT_MS, panelStep } from './panelBounds';
+import { accountCappedWarning, capSeriesByAccount, MAX_CHART_SERIES, MAX_TABLE_SERIES, PANEL_TIMEOUT_MS, panelStep } from './panelBounds';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { renderTemplate, type VariableValues } from './templating';
 
@@ -15,6 +15,10 @@ export interface PanelSeries {
   label: string;
   /** `null` where the series reported nothing — a gap, not a zero. */
   values: (number | null)[];
+  /** The account this series came from, on a panel that queried several. See RawSeries. */
+  accountLabel?: string;
+  /** True for the series that adds the accounts up — see consolidatedSeries. */
+  consolidated?: boolean;
 }
 
 /**
@@ -59,6 +63,12 @@ export interface PanelData {
    * series. Present only for those panels.
    */
   table?: PanelTable;
+  /**
+   * Accounts that were queried and could not answer. A stat adds up what it got,
+   * so the number is only checkable if the panel can also say who is missing
+   * from it — `warning` says so in prose, this says so in parts.
+   */
+  failedAccounts?: string[];
 }
 
 interface Options {
@@ -102,8 +112,9 @@ export function usePanelData({
 
   const scoped = resolvePanelAccounts(panel, accounts);
   // `nudgebee` panels reach the query engine, which takes every account in one
-  // call — so they query all of them rather than the first. See panelQueryAccounts.
-  const { accounts: resolved } = panelQueryAccounts(scoped, accountFilter, panel.datasource === 'nudgebee');
+  // call; `metrics` panels fan out and combine what comes back. Both answer for
+  // every account they were scoped to rather than the first. See panelQueryAccounts.
+  const { accounts: resolved } = panelQueryAccounts(scoped, accountFilter, panel.datasource === 'nudgebee' || panel.datasource === 'metrics');
   // Distinguishes "the filter hid everything" from "this panel has no accounts",
   // which need different messages.
   const filteredOut = scoped.length > 0 && resolved.length === 0;
@@ -518,7 +529,7 @@ export function usePanelData({
           }
           const results = (outcome.value as any)?.data?.data?.metrics_list?.results || [];
           for (const s of toRawSeries(results, legendByKey)) {
-            raw.push(prefixWithAccount ? { ...s, label: `${account.label} · ${s.label}` } : s);
+            raw.push(prefixWithAccount ? { ...s, label: accountPrefixed(account.label, s.label), accountLabel: account.label } : s);
           }
         });
 
@@ -531,14 +542,26 @@ export function usePanelData({
         // of every series and the legend a chip of each, and a per-pod query
         // over a day of ephemeral pods answered with 4,798 of them. The viewer
         // is told what was left out rather than shown a chart missing lines.
-        const { kept, dropped } = capSeries(raw, panel.type === 'table' ? MAX_TABLE_SERIES : MAX_CHART_SERIES);
+        // Per account, not overall: one loud cluster would otherwise take every
+        // slot and the quiet ones would vanish with nothing saying they were asked.
+        const { kept, perAccount } = capSeriesByAccount(raw, panel.type === 'table' ? MAX_TABLE_SERIES : MAX_CHART_SERIES);
         const notes: string[] = [];
-        if (failed.length > 0) notes.push(`No data from ${failed.join(', ')} — showing the rest.`);
-        if (dropped > 0) notes.push(cappedSeriesWarning(kept.length, raw.length));
+        // "No answer", not "no data": these accounts were asked and did not reply,
+        // which is a different fact from replying with nothing — and the one that
+        // matters when the panel adds the replies up.
+        // A stat or gauge carries this on the card — "2 of 3 accounts", with the
+        // account named on hover — so the banner would say it twice.
+        if (failed.length > 0 && panel.type !== 'stat' && panel.type !== 'gauge') {
+          notes.push(`No answer from ${failed.join(', ')} — showing the rest.`);
+        }
+        const capped = accountCappedWarning(perAccount);
+        if (capped) notes.push(capped);
         if (notes.length > 0) setWarning(notes.join(' '));
         // Aligned across ALL accounts at once, so a series that only one account
         // reports still sits at the right point on the shared axis.
-        setData(alignSeries(kept));
+        // The step the accounts were asked for is also what reconciles their
+        // answers — see snapToStep, which no-ops on a single-account panel.
+        setData({ ...alignSeries(kept, step), failedAccounts: failed });
       })
       .finally(settle);
 

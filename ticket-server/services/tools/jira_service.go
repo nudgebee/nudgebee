@@ -49,7 +49,7 @@ func (s *JiraService) GetComments(ctx *gin.Context, config models.TicketConfigur
 }
 
 func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Jira client: %w", err)
 	}
@@ -118,7 +118,7 @@ func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, 
 }
 
 func CreateJiraIssue(configuration models.TicketConfigurations, ticket models.Ticket) (models.Ticket, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Unable to get Jira client:", "error", slog.AnyValue(err))
 		return ticket, err
@@ -256,26 +256,71 @@ func buildJiraIssueFields(ticket models.Ticket, additionalFields map[string]inte
 	return fields, nil
 }
 
-// resolveJiraAssignee maps an assignee input (accountID or email) to the
-// jira.User shape issue-create accepts. Returns nil for an empty input.
+// resolveJiraAssignee maps an assignee input to the user reference the issue
+// APIs accept. Cloud identifies users by accountId and searches with `query`;
+// Server/Data Center identifies them by name and searches with `username`.
+// Returns nil for an empty input.
 func resolveJiraAssignee(jiraClient *jira.Client, assignee string) *jira.User {
 	if assignee == "" {
 		return nil
 	}
 	if len(strings.Split(assignee, ":")) == 2 {
-		return &jira.User{
-			AccountID: assignee,
+		return &jira.User{AccountID: assignee}
+	}
+	cloud, err := clients.IsJiraCloud(jiraClient)
+	if err != nil {
+		slog.Warn("Jira: could not determine deployment type for assignee lookup", "error", slog.AnyValue(err))
+		return &jira.User{EmailAddress: assignee}
+	}
+	if cloud {
+		if u := lookupJiraUser(jiraClient, "query", assignee); u != nil && u.AccountID != "" {
+			return &jira.User{AccountID: u.AccountID}
+		}
+		return &jira.User{EmailAddress: assignee}
+	}
+	if u := lookupJiraUser(jiraClient, "username", assignee); u != nil && u.Name != "" {
+		return &jira.User{Name: u.Name}
+	}
+	return &jira.User{Name: assignee}
+}
+
+// jiraUserRef reduces a resolved user to the single identifier the update
+// API needs, so the wire body carries no empty struct fields.
+func jiraUserRef(u *jira.User) map[string]string {
+	switch {
+	case u == nil:
+		return nil
+	case u.AccountID != "":
+		return map[string]string{"accountId": u.AccountID}
+	case u.Name != "":
+		return map[string]string{"name": u.Name}
+	default:
+		return map[string]string{"emailAddress": u.EmailAddress}
+	}
+}
+
+// lookupJiraUser searches users by the given query parameter and returns the
+// result whose email or name equals the input, else the first result.
+func lookupJiraUser(jiraClient *jira.Client, param, value string) *jira.User {
+	endpoint := fmt.Sprintf("rest/api/2/user/search?%s=%s", param, url.QueryEscape(value))
+	req, err := jiraClient.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	var users []jira.User
+	if _, err := jiraClient.Do(req, &users); err != nil {
+		slog.Warn("Jira: user search failed", "error", slog.AnyValue(err))
+		return nil
+	}
+	for i := range users {
+		if strings.EqualFold(users[i].EmailAddress, value) || strings.EqualFold(users[i].Name, value) {
+			return &users[i]
 		}
 	}
-	accountID := lookupAccountIDByEmail(jiraClient, assignee)
-	if accountID != "" && len(strings.Split(accountID, ":")) == 2 {
-		return &jira.User{
-			AccountID: accountID,
-		}
+	if len(users) > 0 {
+		return &users[0]
 	}
-	return &jira.User{
-		EmailAddress: assignee,
-	}
+	return nil
 }
 
 // jiraCreateError surfaces Jira's per-field validation detail, which the
@@ -296,27 +341,6 @@ func jiraCreateError(err error) error {
 		return err
 	}
 	return fmt.Errorf("jira rejected the create request: %s", strings.Join(parts, "; "))
-}
-
-func lookupAccountIDByEmail(jiraClient *jira.Client, email string) string {
-	apiEndpoint := fmt.Sprintf("/rest/api/3/user/search?query=%s", url.QueryEscape(email))
-
-	req, err := jiraClient.NewRequest("GET", apiEndpoint, nil)
-	if err != nil {
-		return ""
-	}
-
-	var users []jira.User
-	_, err = jiraClient.Do(req, &users)
-	if err != nil {
-		return ""
-	}
-
-	if len(users) == 0 {
-		return ""
-	}
-
-	return users[0].AccountID
 }
 
 func validateParentIssue(client *jira.Client, parentKey string) error {
@@ -347,7 +371,7 @@ func FetchFullIssueDetails(jiraClient *jira.Client, issueKey string) (*jira.Issu
 }
 
 func AddTicketComment(configuration models.TicketConfigurations, ticketId, title, description string) error {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Failed to create Jira client", "error", err, "configurationID", configuration.ID)
 		return fmt.Errorf("failed to create Jira client: %w", err)
@@ -369,7 +393,7 @@ func AddTicketComment(configuration models.TicketConfigurations, ticketId, title
 
 // FetchJiraIssueCreateMeta Function to fetch create meta of a Jira issue
 func FetchJiraIssueCreateMeta(configuration models.TicketConfigurations, projectKey string) (any, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Unable to get jira client for configuration: "+configuration.ID, "error", slog.AnyValue(err))
 		return nil, err
@@ -377,8 +401,12 @@ func FetchJiraIssueCreateMeta(configuration models.TicketConfigurations, project
 
 	createMetaInfo, _, err := jiraClient.Issue.GetCreateMeta(projectKey)
 	if err != nil {
-		slog.Error("Unable to get jira create meta for project key: "+projectKey, "error", slog.AnyValue(err))
-		return nil, err
+		slog.Warn("Jira: createmeta expand endpoint unavailable, using per-issue-type endpoints", "project", projectKey, "error", slog.AnyValue(err))
+		createMetaInfo, err = fetchJiraCreateMetaByIssueType(jiraClient, projectKey)
+		if err != nil {
+			slog.Error("Unable to get jira create meta for project key: "+projectKey, "error", slog.AnyValue(err))
+			return nil, err
+		}
 	}
 
 	// Live reference data so Severity and Assignee don't depend on per-issue-type
@@ -389,6 +417,69 @@ func FetchJiraIssueCreateMeta(configuration models.TicketConfigurations, project
 	users := fetchJiraAssignableUsers(jiraClient, projectKey)
 
 	return sanitizeJiraMeta(createMetaInfo, priorities, users), nil
+}
+
+// jiraPage is the paged envelope the per-issue-type createmeta endpoints return.
+type jiraPage[T any] struct {
+	Values []T  `json:"values"`
+	IsLast bool `json:"isLast"`
+}
+
+// fetchJiraCreateMetaByIssueType assembles create-meta from the
+// createmeta/{project}/issuetypes and createmeta/{project}/issuetypes/{id}
+// endpoints, which replaced the single expand endpoint (Data Center 9 removed
+// it). Those return fields as a list carrying fieldId; they are re-keyed into
+// the map shape the expand endpoint returned so one sanitizer serves both.
+func fetchJiraCreateMetaByIssueType(jiraClient *jira.Client, projectKey string) (*jira.CreateMetaInfo, error) {
+	base := "rest/api/2/issue/createmeta/" + url.PathEscape(projectKey) + "/issuetypes"
+	var issueTypes []*jira.MetaIssueType
+	if err := fetchJiraPages(jiraClient, base, &issueTypes); err != nil {
+		return nil, fmt.Errorf("listing issue types: %w", err)
+	}
+	for _, issueType := range issueTypes {
+		var fields []map[string]interface{}
+		if err := fetchJiraPages(jiraClient, base+"/"+url.PathEscape(issueType.Id), &fields); err != nil {
+			return nil, fmt.Errorf("listing fields for issue type %s: %w", issueType.Name, err)
+		}
+		issueType.Fields = tcontainer.MarshalMap{}
+		for _, field := range fields {
+			id, _ := field["fieldId"].(string)
+			if id == "" {
+				continue
+			}
+			if _, ok := field["key"]; !ok {
+				field["key"] = id
+			}
+			issueType.Fields[id] = field
+		}
+	}
+	return &jira.CreateMetaInfo{Projects: []*jira.MetaProject{{Key: projectKey, IssueTypes: issueTypes}}}, nil
+}
+
+// fetchJiraPages follows startAt/isLast paging and appends every value to out.
+// It fails rather than returns a partial list if paging never terminates.
+func fetchJiraPages[T any](jiraClient *jira.Client, endpoint string, out *[]T) error {
+	const (
+		pageSize = 200
+		maxPages = 50
+	)
+	startAt := 0
+	for range maxPages {
+		req, err := jiraClient.NewRequest("GET", fmt.Sprintf("%s?startAt=%d&maxResults=%d", endpoint, startAt, pageSize), nil)
+		if err != nil {
+			return err
+		}
+		var page jiraPage[T]
+		if _, err := jiraClient.Do(req, &page); err != nil {
+			return err
+		}
+		*out = append(*out, page.Values...)
+		if page.IsLast || len(page.Values) == 0 {
+			return nil
+		}
+		startAt += len(page.Values)
+	}
+	return fmt.Errorf("%s: paging did not finish within %d pages", endpoint, maxPages)
 }
 
 // fetchJiraPriorities returns the instance-level priority scheme (one cheap call),
@@ -486,7 +577,10 @@ func sanitizeJiraMeta(meta *jira.CreateMetaInfo, priorities []jira.Priority, use
 				// `priority` that Jira marks optional but still ships options for —
 				// without it the Severity dropdown renders empty.
 				if (required || contains(mustFields, fieldName) || hasAllowedValues) && !contains(ignoreFields, fieldName) {
-					fieldKey := fmt.Sprintf("%v", fieldMap["key"])
+					fieldKey, _ := fieldMap["key"].(string)
+					if fieldKey == "" {
+						fieldKey = fieldName
+					}
 					type_, supported := normalizeJiraFieldType(fieldKey, fieldMap["schema"])
 					if !supported {
 						// Drop rather than emit a type no renderer understands.
@@ -597,7 +691,7 @@ func contains(slice []string, str string) bool {
 }
 
 func QueryIssueFieldDetails(ctx *gin.Context, configuration models.TicketConfigurations, request models.FieldValuesRequest) (any, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Unable to get Jira client for configuration: "+configuration.ID, "error", slog.AnyValue(err))
 		return nil, err
@@ -719,7 +813,7 @@ func getEmailForUser(ctx *gin.Context, client *jira.Client, displayName string) 
 }
 
 func GetTicketComments(config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
-	jc, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jc, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -780,7 +874,7 @@ func fetchCommentsFromJira(ticketID string, jc *jira.Client) ([]models.Comments,
 }
 
 func AddCustomTicketComment(configuration models.TicketConfigurations, ticketId, comment string) ([]models.Comments, error) {
-	jiraClient, err := clients.CreateJiraClient(configuration.Username, configuration.Password, configuration.URL)
+	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
 		slog.Error("Failed to create Jira client", "error", err, "configurationID", configuration.ID)
 		return []models.Comments{}, fmt.Errorf("failed to create Jira client: %w", err)
@@ -822,7 +916,7 @@ func validateJQLDate(field, value string) (string, error) {
 
 // List retrieves tickets from Jira using JQL search.
 func (s *JiraService) List(ctx *gin.Context, config models.TicketConfigurations, params models.ListParams) (*models.ListResult, error) {
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Jira client: %w", err)
 	}
@@ -926,46 +1020,17 @@ func (s *JiraService) List(ctx *gin.Context, config models.TicketConfigurations,
 	}, nil
 }
 
-// buildADFDocument converts plain text into an Atlassian Document Format
-// document suitable for the Jira Cloud v3 description field. ADF text nodes
-// cannot contain newline characters, so each line becomes its own paragraph
-// node. CRLF and lone CR are normalized to LF; blank lines become empty
-// paragraphs to preserve spacing.
-func buildADFDocument(text string) map[string]any {
-	normalized := strings.ReplaceAll(text, "\r\n", "\n")
-	normalized = strings.ReplaceAll(normalized, "\r", "\n")
-
-	lines := strings.Split(normalized, "\n")
-	content := make([]map[string]any, 0, len(lines))
-	for _, line := range lines {
-		paragraph := map[string]any{"type": "paragraph"}
-		if line != "" {
-			paragraph["content"] = []map[string]any{
-				{"type": "text", "text": line},
-			}
-		} else {
-			paragraph["content"] = []map[string]any{}
-		}
-		content = append(content, paragraph)
-	}
-
-	return map[string]any{
-		"type":    "doc",
-		"version": 1,
-		"content": content,
-	}
-}
-
 // Update updates fields on a Jira issue. Status changes go through the
-// transitions endpoint; all other fields go through PUT /rest/api/3/issue/{id}.
-// When both are set, fields are applied first so transition validators that
-// inspect field values see the new values.
+// transitions endpoint; all other fields go through PUT /rest/api/2/issue/{id},
+// which Cloud and Data Center both serve and which takes the description as
+// plain text, the same as create. When both are set, fields are applied first
+// so transition validators that inspect field values see the new values.
 func (s *JiraService) Update(ctx *gin.Context, config models.TicketConfigurations, ticketID string, updateFields models.UpdateFields) error {
 	if err := utils.ValidateJiraTicketID(ticketID); err != nil {
 		return fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create Jira client: %w", err)
 	}
@@ -980,23 +1045,11 @@ func (s *JiraService) Update(ctx *gin.Context, config models.TicketConfiguration
 		if len(assignees) > 1 {
 			return fmt.Errorf("only a single assignee is supported for Jira; %d were provided", len(assignees))
 		}
-		assignee := assignees[0]
-		// Check if it's an account ID or email
-		if len(strings.Split(assignee, ":")) == 2 {
-			update["assignee"] = map[string]string{"accountId": assignee}
-		} else {
-			// Try to look up by email
-			accountID := lookupAccountIDByEmail(jiraClient, assignee)
-			if accountID != "" {
-				update["assignee"] = map[string]string{"accountId": accountID}
-			} else {
-				update["assignee"] = map[string]string{"emailAddress": assignee}
-			}
-		}
+		update["assignee"] = jiraUserRef(resolveJiraAssignee(jiraClient, assignees[0]))
 	}
 
 	if updateFields.Description != "" {
-		update["description"] = buildADFDocument(updateFields.Description)
+		update["description"] = updateFields.Description
 	}
 
 	if len(updateFields.Labels) > 0 {
@@ -1006,7 +1059,7 @@ func (s *JiraService) Update(ctx *gin.Context, config models.TicketConfiguration
 	if len(update) > 0 {
 		issueUpdate := map[string]interface{}{"fields": update}
 
-		req, err := jiraClient.NewRequest("PUT", "/rest/api/3/issue/"+ticketID, issueUpdate)
+		req, err := jiraClient.NewRequest("PUT", "/rest/api/2/issue/"+ticketID, issueUpdate)
 		if err != nil {
 			return fmt.Errorf("failed to create update request: %w", err)
 		}
@@ -1033,7 +1086,7 @@ func (s *JiraService) Transition(ctx *gin.Context, config models.TicketConfigura
 		return fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
-	jiraClient, err := clients.CreateJiraClient(config.Username, config.Password, config.URL)
+	jiraClient, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create Jira client: %w", err)
 	}

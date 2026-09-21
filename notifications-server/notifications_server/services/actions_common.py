@@ -2,9 +2,12 @@ import copy
 import json
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from types import SimpleNamespace
 from typing import Optional
 
 import requests
@@ -30,11 +33,11 @@ from notifications_server.services.actions import (
 )
 from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.services.common import CommonService
-from notifications_server.services.events import Events
+from notifications_server.services.events import Events, event_cache
 from notifications_server.services.messaging_installations import load_installation, load_installation_by_team
 from notifications_server.services.bot_messages import get_bot_joined_message
 from notifications_server.utils.action_requests import ActionRequestBody, verify_action_request
-from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET
+from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET, Transformer
 
 USER_NOT_FOUND_MESSAGE = "Hmm, I couldn't identify your account. Mind checking your setup?"
 UNABLE_TO_PROCESS_REQUEST = "Oops! I ran into a snag with that. Could you try again?"
@@ -46,6 +49,8 @@ SUPPRESS_NOT_ALLOWED_MESSAGE = (
 # the internal X-ACTION-TOKEN path bypasses the gateway, so the role gate lives here.
 SUPPRESS_ALLOWED_ROLES = {"tenant_admin", "account_admin"}
 SUPPRESS_DURATION_LABELS = {1: "1h", 4: "4h", 24: "24h", 168: "7d"}
+# Edits/deletes and our own replies must never be treated as a new DM question.
+_DM_IGNORED_SUBTYPES = {"message_changed", "message_deleted", "message_replied"}
 LOG = logging.getLogger(__name__)
 
 
@@ -134,7 +139,12 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             return
         elif action_id.startswith("select_followup_option"):
             self.event_service.update_followup_for_event(
-                action_data, channel_id, team_id, slack_user_id, data["message"]["thread_ts"]
+                action_data,
+                channel_id,
+                team_id,
+                slack_user_id,
+                data["message"]["thread_ts"],
+                data["message"].get("ts"),
             )
             return
 
@@ -318,7 +328,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             self.handle_suppress_finding(channel_id, team_id, user_email, action, data)
         elif action_id == "select_followup_option_dropdown":
             self.event_service.update_followup_for_event(
-                action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"]
+                action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"], data["message"].get("ts")
             )
         elif action_id == "select_account_dropdown":
             selected_option = action.get("selected_option", {})
@@ -657,6 +667,449 @@ def _finalize_card_after_analysis(service, context, outcome):
         )
 
 
+_CLARIFICATION_WAITING_STATUSES = {"WAITING", "WAITING_FOR_CLIENT", "WAITING_FOR_CLIENT_TOOL"}
+
+
+def _fetch_event_conversation(context, user_id, session_id):
+    """Flat ai_get_conversation_v3 delta for an `event-<fingerprint>` session, or
+    None. Same RPC the Thinking-Steps poller uses."""
+    resp = requests.post(
+        settings.services.api_server + "/rpc/ai",
+        json={
+            "action": {"name": "ai_get_conversation_v3"},
+            "input": {"request": {"account_id": context.account_id, "session_id": session_id}},
+            "session_variables": {"tenant_id": context.tenant_id, "user_id": user_id},
+        },
+        headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _surface_event_clarification(service, context, user_id, fingerprint):
+    """The event-analysis conversation asks its clarifications as `followup`
+    message rows on the `event-<fingerprint>` session — llm-server's webhook for
+    them can't be routed back to this thread. Poll that conversation each tick:
+    post a newly-WAITING followup through the normal handle_followup_response,
+    and retire the Slack message once the one we posted stops being WAITING
+    (answered on the web — a Slack-button answer clears these keys itself)."""
+    if not fingerprint:
+        return
+    try:
+        cache = service.event_service.cache
+        entry = cache.get_event_entry(context.thread_ts)
+        if not entry:
+            return
+        conv = _fetch_event_conversation(context, user_id, "event-" + fingerprint)
+        if not isinstance(conv, dict):
+            return
+        messages = conv.get("messages") or []
+        surfaced_id = entry.get("event_followup_src_msg_id")
+
+        pending = None
+        for m in sorted(messages, key=lambda r: r.get("updated_at") or "", reverse=True):
+            if (m.get("message_type") or "").lower() == "followup" and (
+                m.get("status") or ""
+            ).upper() in _CLARIFICATION_WAITING_STATUSES:
+                pending = m
+                break
+
+        if pending and pending.get("id") != surfaced_id:
+            cfg = {}
+            if pending.get("message_config"):
+                try:
+                    cfg = json.loads(pending["message_config"])
+                except (TypeError, ValueError):
+                    cfg = {}
+            agent_id = pending.get("parent_agent_id") or ""
+            message_id = next(
+                (a.get("message_id") for a in conv.get("agents") or [] if a.get("id") == agent_id),
+                "",
+            )
+            session_id = "event-" + fingerprint
+            payload = SimpleNamespace(
+                response=json.dumps(
+                    {
+                        "question": cfg.get("question") or pending.get("message") or "Follow-up question",
+                        "followupOptions": cfg.get("followupOptions") or [],
+                        "agent_id": agent_id,
+                        "message_id": message_id,
+                    }
+                ),
+                conversation_id=session_id,
+                session_id=session_id,
+            )
+            service.event_service.handle_followup_response(
+                payload, entry, context.channel_id, context.thread_ts, context.team_id
+            )
+            cache.update_event_entry(context.thread_ts, event_followup_src_msg_id=pending.get("id"))
+            LOG.info("event analysis: surfaced pending clarification for event %s", context.event_id)
+            return
+
+        # We have a clarification posted in Slack (keys still set, so it wasn't a
+        # Slack-button answer) and the message we posted is no longer WAITING —
+        # it was answered on the web. Retire the stale buttons.
+        if surfaced_id and entry.get("event_analysis_followup") and entry.get("followup_msg_ts"):
+            answered = any(
+                m.get("id") == surfaced_id and (m.get("status") or "").upper() not in _CLARIFICATION_WAITING_STATUSES
+                for m in messages
+            )
+            if answered:
+                _retire_event_followup_message(service, context, note="_Answered in the web app._")
+                LOG.info("event analysis: clarification answered elsewhere for event %s", context.event_id)
+    except Exception as e:
+        LOG.warning("event analysis: failed to sync clarification for %s: %s", context.event_id, e)
+
+
+def _retire_event_followup_message(service, context, note="_This investigation has finished._"):
+    """Strip a stale clarification's buttons, replace with `note`, and clear the
+    follow-up keys. Called when the poller stops with an unanswered followup, or
+    when one was answered on the web. Best-effort."""
+    try:
+        cache = service.event_service.cache
+        entry = cache.get_event_entry(context.thread_ts) or {}
+        followup_msg_ts = entry.get("followup_msg_ts")
+        if not (entry.get("event_analysis_followup") and followup_msg_ts):
+            return
+        question = entry.get("followup_question") or "Follow-up question"
+        blocks = service.event_service.build_blocks(f"{question}\n\n{note}")
+        service.common_service.update_slack_message_with_blocks(
+            context.channel_id, context.team_id, followup_msg_ts, blocks
+        )
+        # event_followup_src_msg_id is deliberately NOT cleared — it's the
+        # "already surfaced this followup" marker, and the message row can
+        # linger WAITING for a tick after the answer lands; clearing it would
+        # re-surface the same question.
+        cache.remove_event_keys(
+            context.thread_ts,
+            [
+                "followup_msg_ts",
+                "followup_question",
+                "agent_id",
+                "message_id",
+                "followup_session_id",
+                "event_analysis_followup",
+            ],
+        )
+    except Exception as e:
+        LOG.debug("event analysis: failed to retire followup message for %s: %s", context.event_id, e)
+
+
+# Keyed by the EventAnalysisResponse/TaskStatuses field names
+# (events.AnalysisType* on the Go side). "detailed_response" is handled
+# separately below since it also ends the poll and flips the card.
+_EVENT_ANALYSIS_PROGRESS_SECTIONS = (
+    ("summary", "Here's a quick summary while I keep digging :mag:"),
+    ("investigation", "Here's what I'm finding on the likely root cause:"),
+)
+# Advances the panel only -- no content to post for this one.
+_EVENT_ANALYSIS_SILENT_SECTIONS = ("log_analysis",)
+_EVENT_ANALYSIS_MAX_POLL_FAILURES = 3
+
+_active_event_analysis_pollers = 0
+_event_analysis_pollers_lock = threading.Lock()
+
+# Streaming "Thinking"-style panel (same chat.startStream/appendStream/
+# stopStream mechanism as slack_progress.py). Opened with a single
+# placeholder task (mirrors slack_progress.py's _INITIAL_TASK_ID): a bare
+# plan_update with no task renders as plain "Thinking..." text, not the
+# collapsible panel.
+_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID = "starting"
+_EVENT_ANALYSIS_PLACEHOLDER_TITLE = "Finding the event"
+_EVENT_ANALYSIS_TASK_ORDER = ("summary", "investigation", "log_analysis", "detailed_response")
+_EVENT_ANALYSIS_TASK_TITLES = {
+    _EVENT_ANALYSIS_PLACEHOLDER_TASK_ID: _EVENT_ANALYSIS_PLACEHOLDER_TITLE,
+    "summary": "Summarizing the event",
+    "investigation": "Finding the root cause",
+    "log_analysis": "Digging through the logs",
+    "detailed_response": "Writing up the full analysis",
+}
+
+
+def _open_event_analysis_stream(service, token, context):
+    """Best-effort: the panel is a visual layer, never a dependency -- a
+    failure here means no panel, not a broken poller or missed card flip."""
+    if not token:
+        return None
+    try:
+        response = service.common_service.slack_app.client.start_stream(
+            token=token,
+            channel_id=context.channel_id,
+            thread_ts=context.thread_ts,
+            recipient_team_id=context.team_id,
+            recipient_user_id=context.slack_user_id,
+            task_display_mode="plan",
+            chunks=[
+                {"type": "plan_update", "title": "Investigating"},
+                {
+                    "type": "task_update",
+                    "id": _EVENT_ANALYSIS_PLACEHOLDER_TASK_ID,
+                    "title": _EVENT_ANALYSIS_PLACEHOLDER_TITLE,
+                    "status": "in_progress",
+                },
+            ],
+        )
+        return response["ts"]
+    except Exception as e:
+        LOG.debug("event analysis poller: failed to open progress panel for event %s: %s", context.event_id, e)
+        return None
+
+
+def _reveal_event_analysis_tasks(service, token, context, stream_ts):
+    """Replaces the placeholder with the real 3-stage task list, once we know
+    llm-server is still working. A same-tick COMPLETED click never calls
+    this -- the placeholder alone gets closed instead."""
+    if not stream_ts:
+        return
+    chunks = [
+        {
+            "type": "task_update",
+            "id": _EVENT_ANALYSIS_PLACEHOLDER_TASK_ID,
+            "title": _EVENT_ANALYSIS_PLACEHOLDER_TITLE,
+            "status": "complete",
+        }
+    ]
+    for i, task_id in enumerate(_EVENT_ANALYSIS_TASK_ORDER):
+        chunks.append(
+            {
+                "type": "task_update",
+                "id": task_id,
+                "title": _EVENT_ANALYSIS_TASK_TITLES[task_id],
+                "status": "in_progress" if i == 0 else "pending",
+            }
+        )
+    try:
+        service.common_service.slack_app.client.append_stream(
+            token=token, channel_id=context.channel_id, ts=stream_ts, chunks=chunks
+        )
+    except Exception as e:
+        LOG.debug("event analysis poller: failed to reveal tasks for event %s: %s", context.event_id, e)
+
+
+def _advance_event_analysis_panel(service, token, context, stream_ts, task_id):
+    if not stream_ts:
+        return
+    chunks = [
+        {"type": "task_update", "id": task_id, "title": _EVENT_ANALYSIS_TASK_TITLES[task_id], "status": "complete"}
+    ]
+    idx = _EVENT_ANALYSIS_TASK_ORDER.index(task_id)
+    if idx + 1 < len(_EVENT_ANALYSIS_TASK_ORDER):
+        nxt = _EVENT_ANALYSIS_TASK_ORDER[idx + 1]
+        chunks.append(
+            {"type": "task_update", "id": nxt, "title": _EVENT_ANALYSIS_TASK_TITLES[nxt], "status": "in_progress"}
+        )
+    try:
+        service.common_service.slack_app.client.append_stream(
+            token=token, channel_id=context.channel_id, ts=stream_ts, chunks=chunks
+        )
+    except Exception as e:
+        LOG.debug("event analysis poller: failed to update progress panel for event %s: %s", context.event_id, e)
+
+
+def _close_event_analysis_stream(service, token, context, stream_ts, outcome, task_ids=_EVENT_ANALYSIS_TASK_ORDER):
+    """Unconditionally re-sends every given task's final status (task_update
+    is an upsert by id, so re-marking an already-complete one is harmless) --
+    otherwise the panel could hang on "in_progress"/"pending". Callers
+    closing out before the real 3-stage list was ever revealed pass just
+    `[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]` instead of the default."""
+    if not stream_ts:
+        return
+    final_status = "complete" if outcome == "completed" else "error"
+    chunks = [
+        {"type": "task_update", "id": task_id, "title": _EVENT_ANALYSIS_TASK_TITLES[task_id], "status": final_status}
+        for task_id in task_ids
+    ]
+    try:
+        service.common_service.slack_app.client.stop_stream(
+            token=token, channel_id=context.channel_id, ts=stream_ts, chunks=chunks
+        )
+    except Exception as e:
+        LOG.debug("event analysis poller: failed to close progress panel for event %s: %s", context.event_id, e)
+
+
+def _post_investigation_content(service, context, content, preamble, mention=False):
+    """Returns True iff settled (nothing to post, or posted ok); False only on
+    a Slack failure, so callers can retry instead of marking it sent."""
+    content = (content or "").strip()
+    if not content:
+        return True
+    text = f"{preamble}\n\n{Transformer.markdown_to_slack_markdown(content)}"
+    if mention:
+        text = f"{text}\n\n<@{context.slack_user_id}>"
+    try:
+        service.common_service.slack_reply_in_thread(context.channel_id, context.team_id, context.thread_ts, text)
+    except Exception as e:
+        LOG.debug("Failed to post investigation content: %s", e)
+        return False
+    return True
+
+
+def _start_event_analysis_poller(engine, slack_app, teams_app, context, user_id, cache, service, token, stream_ts):
+    """Two overlapping clicks on different occurrence cards of the same
+    recurring finding must not both post summary/investigation/
+    detailed_response, hence the claim check. Returns True iff a poller was
+    actually started and now owns the streaming panel from here on -- on a
+    False return, the caller must close the panel itself, since nothing else
+    will. Mirrors slack_progress.start_progress_poller's concurrency cap."""
+    global _active_event_analysis_pollers
+    # A claim only ever clears itself after the full event_analysis_max_minutes
+    # TTL, so every early-return past this point that leaves no poller
+    # actually running must release it explicitly -- otherwise a cap hit or a
+    # startup error blocks any retry on this event for that whole window.
+    claimed = False
+    try:
+        if not cache.claim_event_analysis_poller(context.event_id, settings.slack.event_analysis_max_minutes * 60):
+            LOG.info("event analysis poller: already running for event %s, skipping", context.event_id)
+            return False
+        claimed = True
+        with _event_analysis_pollers_lock:
+            if _active_event_analysis_pollers >= settings.slack.event_analysis_max_pollers:
+                LOG.warning("event analysis poller: cap reached, no progressive updates for %s", context.event_id)
+                cache.release_event_analysis_poller(context.event_id)
+                return False
+            _active_event_analysis_pollers += 1
+        try:
+            _reveal_event_analysis_tasks(service, token, context, stream_ts)
+            threading.Thread(
+                target=_run_event_analysis_poller,
+                args=(engine, slack_app, teams_app, context, user_id, token, stream_ts),
+                daemon=True,
+                name=f"event-analysis-poll-{context.event_id}",
+            ).start()
+            LOG.info("event analysis poller: started for event %s", context.event_id)
+            return True
+        except Exception:
+            with _event_analysis_pollers_lock:
+                _active_event_analysis_pollers -= 1
+            raise
+    except Exception as e:
+        LOG.warning("event analysis poller: failed to start for event %s: %s", context.event_id, e)
+        if claimed:
+            cache.release_event_analysis_poller(context.event_id)
+        return False
+
+
+def _run_event_analysis_poller(engine, slack_app, teams_app, context, user_id, token, stream_ts):
+    global _active_event_analysis_pollers
+    try:
+        _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, stream_ts)
+    except Exception as e:
+        LOG.warning("event analysis poller: died for event %s: %s", context.event_id, e)
+    finally:
+        with _event_analysis_pollers_lock:
+            _active_event_analysis_pollers -= 1
+
+
+def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, stream_ts):
+    """regenerate is always False here, so /v1/analyze/event is idempotent --
+    this only ever reports current DB state, never dispatches new work.
+    `token`/`stream_ts` come from the panel the click handler already opened
+    and revealed -- this poller doesn't open its own.
+
+    Gives up silently (no alarming message) on a polling deadline or repeated
+    fetch failures -- those are limits of how long *we* watched, not a
+    reported failure from llm-server."""
+    try:
+        service = SlackActionsBaseService(engine, slack_app, teams_app)
+        service.common_service.app_id = context.app_id
+        sent = set()
+        failures = 0
+        deadline = time.monotonic() + settings.slack.event_analysis_max_minutes * 60
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    result = Events.call_event_analysis_api(
+                        event_id=context.event_id,
+                        account_id=context.account_id,
+                        user_id=user_id,
+                        tenant_id=context.tenant_id,
+                        timeout=settings.slack.event_analysis_poll_timeout_seconds,
+                    )
+                except Exception as e:
+                    LOG.debug("event analysis poll failed: %s", e)
+                    result = None
+
+                if not isinstance(result, dict):
+                    failures += 1
+                    if failures >= _EVENT_ANALYSIS_MAX_POLL_FAILURES:
+                        LOG.warning(
+                            "event analysis poller: giving up after %d consecutive failures for event %s",
+                            failures,
+                            context.event_id,
+                        )
+                        _close_event_analysis_stream(service, token, context, stream_ts, outcome="failed")
+                        # We stopped watching -- llm-server didn't report a failure.
+                        _finalize_card_after_analysis(service, context, outcome="in_progress")
+                        return
+                    time.sleep(settings.slack.event_analysis_poll_seconds)
+                    continue
+                failures = 0
+
+                # Surface any pending clarification on the underlying
+                # `event-<fingerprint>` conversation (mid-run, or one raised by
+                # resuming a prior clarification's answer).
+                _surface_event_clarification(service, context, user_id, result.get("event_fingerprint"))
+
+                task_statuses = result.get("task_statuses") or {}
+                for field, preamble in _EVENT_ANALYSIS_PROGRESS_SECTIONS:
+                    if field not in sent and task_statuses.get(field) == "COMPLETED":
+                        if _post_investigation_content(service, context, result.get(field), preamble):
+                            sent.add(field)
+                            LOG.info("event analysis poller: posted %s for event %s", field, context.event_id)
+                            _advance_event_analysis_panel(service, token, context, stream_ts, field)
+
+                for field in _EVENT_ANALYSIS_SILENT_SECTIONS:
+                    if field not in sent and task_statuses.get(field) == "COMPLETED":
+                        sent.add(field)
+                        _advance_event_analysis_panel(service, token, context, stream_ts, field)
+
+                if task_statuses.get("detailed_response") == "COMPLETED":
+                    content = result.get("detailed_response") or result.get("summary")
+                    if _post_investigation_content(
+                        service, context, content, "Here's the full write-up:", mention=True
+                    ):
+                        _close_event_analysis_stream(service, token, context, stream_ts, outcome="completed")
+                        _finalize_card_after_analysis(service, context, outcome="completed")
+                        LOG.info("event analysis poller: finished for event %s, card marked Analyzed", context.event_id)
+                        return
+                    # else retry next tick -- nothing was actually posted.
+
+                if (result.get("status") or "").upper() == "FAILED":
+                    _close_event_analysis_stream(service, token, context, stream_ts, outcome="failed")
+                    _finalize_card_after_analysis(service, context, outcome="failed")
+                    service.common_service.slack_reply_in_thread(
+                        context.channel_id,
+                        context.team_id,
+                        context.thread_ts,
+                        (
+                            f"<@{context.slack_user_id}> Hmm, something went wrong while analyzing this. "
+                            "Mind trying again?"
+                        ),
+                    )
+                    LOG.warning("event analysis poller: llm-server reported FAILED for event %s", context.event_id)
+                    return
+
+                time.sleep(settings.slack.event_analysis_poll_seconds)
+
+            LOG.warning("event analysis poller: timed out for event %s", context.event_id)
+            _close_event_analysis_stream(service, token, context, stream_ts, outcome="failed")
+            _finalize_card_after_analysis(service, context, outcome="in_progress")  # same reasoning as above
+        except Exception:
+            # Belt-and-suspenders: any bug in the loop above that isn't already
+            # one of its own handled paths must still not leave the (already
+            # revealed, real 3-task) panel visibly stuck on "in_progress".
+            _close_event_analysis_stream(service, token, context, stream_ts, outcome="failed")
+            raise
+        finally:
+            _retire_event_followup_message(service, context)
+            service.close()
+    finally:
+        # Via the module-level singleton, not service.event_service.cache, so
+        # this still runs even if constructing `service` itself failed.
+        event_cache.release_event_analysis_poller(context.event_id)
+
+
 def _run_event_analysis_background(engine, slack_app, teams_app, context: EventAnalysisContext):
     """Runs after the interactive-action response has already been sent to
     Slack, so it builds its own DB session/services rather than reusing the
@@ -671,6 +1124,14 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
     rejects a chat.update from any app but the one that posted the message."""
     service = SlackActionsBaseService(engine, slack_app, teams_app)
     service.common_service.app_id = context.app_id
+    bot = service.common_service.get_slack_installation(context.team_id)
+    token = bot.token if bot else None
+    # Opened before the synchronous llm-server kickoff call below, which
+    # alone can take the better part of a minute -- opening it only once the
+    # background poller started (the old placement) left the click showing
+    # plain "Thinking..." text for that whole window instead of the panel.
+    stream_ts = _open_event_analysis_stream(service, token, context)
+    poller_started = False
     try:
         # The "Analyzing..." stamp is already on the card by the time this
         # runs, so any failure from here on (user_id lookup, cache write, the
@@ -716,16 +1177,66 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
             # against a malformed (non-dict) `data` payload before any .get().
             if not isinstance(result, dict):
                 result = {}
-            service.event_service.send_investigation_result_to_slack(
-                result, context.channel_id, context.team_id, context.thread_ts, context.slack_user_id
-            )
-            status = result.get("status")
-            outcome = (
-                "completed"
-                if status == "COMPLETED"
-                else ("in_progress" if status in ("IN_PROGRESS", "CREATED") else "failed")
-            )
-            _finalize_card_after_analysis(service, context, outcome)
+
+            # If a sub-agent asked a clarification during the (blocking) call
+            # above, it's sitting as a WAITING followup on the event-<fp>
+            # conversation — surface it now (the poller re-checks every tick).
+            _surface_event_clarification(service, context, user_id, result.get("event_fingerprint"))
+
+            status = (result.get("status") or "").upper()
+            if status == "COMPLETED":
+                # A repeat click after an earlier one already finished --
+                # summary/investigation were already posted then, so only the
+                # write-up goes out now. The panel never got past the
+                # placeholder, so that's all that needs closing.
+                content = result.get("detailed_response") or result.get("summary")
+                _post_investigation_content(service, context, content, "Here's the full write-up:", mention=True)
+                _close_event_analysis_stream(
+                    service, token, context, stream_ts, "completed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]
+                )
+                _finalize_card_after_analysis(service, context, outcome="completed")
+            elif status in ("IN_PROGRESS", "CREATED"):
+                # No separate ack message here -- the panel (already open by
+                # this point) already shows "Investigating" with a spinner,
+                # so a text message repeating that would just be redundant.
+                poller_started = _start_event_analysis_poller(
+                    engine,
+                    slack_app,
+                    teams_app,
+                    context,
+                    user_id,
+                    service.event_service.cache,
+                    service,
+                    token,
+                    stream_ts,
+                )
+                if not poller_started:
+                    # Nothing will ever drive this panel further -- close the
+                    # placeholder now instead of leaving it stuck in_progress.
+                    _close_event_analysis_stream(
+                        service,
+                        token,
+                        context,
+                        stream_ts,
+                        "completed",
+                        task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID],
+                    )
+                    _finalize_card_after_analysis(service, context, outcome="in_progress")
+                # else: the poller owns finalization now -- stamping here too would race it.
+            else:
+                service.common_service.slack_reply_in_thread(
+                    context.channel_id,
+                    context.team_id,
+                    context.thread_ts,
+                    (
+                        f"<@{context.slack_user_id}> Hmm, looks like something went sideways with the "
+                        "investigation. Mind if we try that again?"
+                    ),
+                )
+                _close_event_analysis_stream(
+                    service, token, context, stream_ts, "failed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]
+                )
+                _finalize_card_after_analysis(service, context, outcome="failed")
         except Exception as e:
             LOG.exception("Event analysis background task failed: %s", e)
             # Best-effort: this recovery runs with no safety net above it (the
@@ -735,6 +1246,14 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
             # exact stuck-on-"Analyzing..."-forever failure this whole
             # function exists to prevent.
             try:
+                # Only close the panel here if the poller never took it over --
+                # once started, the poller's own thread owns the (revealed,
+                # real 3-task) panel from here on, independent of whatever
+                # else failed in this function afterward.
+                if not poller_started:
+                    _close_event_analysis_stream(
+                        service, token, context, stream_ts, "failed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]
+                    )
                 _finalize_card_after_analysis(service, context, outcome="failed")
                 service.common_service.slack_reply_in_thread(
                     context.channel_id,
@@ -768,7 +1287,10 @@ class SlackEventsService(SlackActionsBaseService):
             self._handle_member_joined_channel(event, team_id, channel_id)
 
         elif event_type == "message":
-            self._handle_channel_message(event, team_id, event_id)
+            if event.get("channel_type") == "im":
+                self._handle_direct_message(event, team_id, event_id, event_context, channel_id)
+            else:
+                self._handle_channel_message(event, team_id, event_id)
 
         else:
             LOG.warning(f"[SlackEventsService] Unsupported event type: {event_type}")
@@ -782,6 +1304,48 @@ class SlackEventsService(SlackActionsBaseService):
         """
         with ChannelIngestService(engine=self.engine) as ingest:
             ingest.handle_message_event(event, team_id, event_id)
+
+    def _handle_direct_message(self, event, team_id, event_id, event_context, channel_id):
+        """DMs need no @mention to trigger Nubi — every plain message is a question.
+        Unlike _handle_channel_message, Slack delivers the bot's own posts here too
+        (there's no "watched channel" gate to filter them out), so bot echoes and
+        edit/delete subtypes must be dropped explicitly to avoid a reply loop.
+        """
+        if event.get("bot_id") or event.get("subtype") in _DM_IGNORED_SUBTYPES:
+            return
+
+        slack_user_id = event.get("user")
+        if not slack_user_id:
+            return
+
+        thread_ts = event.get("thread_ts", event.get("ts"))
+        # Plain `message` events (unlike app_mention) carry no `event_ts` field —
+        # fall back to `ts`, same as thread_ts above, so a brand-new DM correctly
+        # evaluates as not-yet-threaded (thread_ts == event_ts) instead of always
+        # being misread as a reply within an existing thread.
+        event_ts = event.get("event_ts", event.get("ts"))
+
+        LOG.debug(f"DM received from user={slack_user_id}, thread={thread_ts}")
+
+        error_message, user_email = self.get_user_email(slack_user_id, team_id)
+        if error_message or not user_email:
+            message = error_message or "Unable to get user info"
+            self.common_service.post_slack_ephemeral_response(channel_id, team_id, slack_user_id, message)
+            LOG.warning(f"Failed to resolve user email for user={slack_user_id}: {message}")
+            return
+
+        LOG.debug(f"Starting new conversation for user={slack_user_id}, thread={thread_ts}")
+        self.event_service.execute_event(
+            team_id=team_id,
+            event_id=event_id,
+            event_context=event_context,
+            user_email=user_email,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            event_ts=event_ts,
+            event=event,
+            slack_user_id=slack_user_id,
+        )
 
     def _handle_app_mention(self, event, team_id, event_id, event_context, channel_id):
         slack_user_id = event.get("user")

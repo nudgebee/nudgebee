@@ -11,6 +11,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import { convertToReadableFormat } from 'src/utils/common';
 import { ds } from '@utils/colors';
 import Text from '@shared/format/Text';
+import { actionableTasks } from './utils/taskClassification';
 
 /**
  * LLMConversationWithTabs
@@ -42,6 +43,8 @@ const LLMConversationWithTabs = ({
   const finalResponse = hasMessages ? messages.find((m) => m?.type === 'response') : null;
   const userPrompt = hasMessages ? messages.find((m) => m?.type === 'question') : null;
   const tasks = hasMessages ? messages.filter((m) => m?.type !== 'response' && m?.type !== 'question') : [];
+  // Label counts executions only; the list below still shows every row.
+  const taskCount = actionableTasks(tasks).length;
 
   const [fetchedMessageId, setFetchedMessageId] = useState(null);
   const lastSeenResponseId = React.useRef(null);
@@ -152,7 +155,7 @@ const LLMConversationWithTabs = ({
         }}
       >
         <Tab value='response' label={<Typography>Response</Typography>} disabled={!finalResponse} />
-        <Tab value='tasks' label={<Typography>Tasks ({tasks?.length || 0})</Typography>} />
+        <Tab value='tasks' label={<Typography>Tasks ({taskCount})</Typography>} />
         <Tab value='prompt' label={<Typography>User Prompt</Typography>} disabled={!userPrompt} />
         {references.length > 0 && <Tab value='contexts' label={<Typography>Additional Contexts ({references.length})</Typography>} />}
         {memories.length > 0 && <Tab value='memories' label={<Typography>New Memories ({memories.length})</Typography>} />}

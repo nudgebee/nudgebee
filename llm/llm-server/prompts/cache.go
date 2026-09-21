@@ -37,7 +37,7 @@ func cacheKey(req PromptRequest) string {
 	return fmt.Sprintf("%s:%s:%s:%s",
 		req.Name,
 		req.Category,
-		req.Provider,
+		req.Model,
 		req.AccountID,
 	)
 }

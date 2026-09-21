@@ -304,3 +304,147 @@ func TestFormatKGGetNodeResponse(t *testing.T) {
 		assert.Contains(t, out, "- Cluster: k8s-dev")
 	})
 }
+
+// resolveAccountIdentifiers is what stands between the LLM's `account_ids` and
+// a uuid-typed backend column, and it had no coverage at all until this test.
+// The accepted set is exactly "canonical UUID or friendly name" — the tool
+// schema previously advertised AWS account numbers instead, which is what sent
+// agents down the rejected path in the first place.
+func TestResolveAccountIdentifiers(t *testing.T) {
+	const (
+		devAwsID   = "883efbbc-bb2c-404b-9ed9-6b7ecbf6f509"
+		devAwsName = "dev-aws"
+		prodID     = "a6752212-f3e2-4908-b00b-b0ddfd424352"
+		prodName   = "aws-prod"
+	)
+	accountMap := map[string]string{devAwsID: devAwsName, prodID: prodName}
+
+	t.Run("empty input is returned unchanged without touching the map", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers(nil, accountMap)
+		assert.NoError(t, err)
+		assert.Empty(t, out)
+	})
+
+	t.Run("a canonical UUID passes straight through", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{devAwsID}, accountMap)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{devAwsID}, out)
+	})
+
+	t.Run("an exact friendly name resolves to its UUID", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{devAwsName}, accountMap)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{devAwsID}, out,
+			"names must reach the backend as UUIDs — the column is uuid-typed, so a raw name errors with 'pq: invalid input syntax'")
+	})
+
+	t.Run("name matching is case-insensitive", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{"DEV-AWS"}, accountMap)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{devAwsID}, out,
+			"users and models type aws-demo/AWS-Demo/Aws-demo interchangeably")
+	})
+
+	t.Run("surrounding whitespace is trimmed before lookup", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{"  dev-aws  "}, accountMap)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{devAwsID}, out)
+	})
+
+	t.Run("a mixed list of UUIDs and names resolves both", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{devAwsID, prodName}, accountMap)
+		assert.NoError(t, err)
+		assert.ElementsMatch(t, []string{devAwsID, prodID}, out)
+	})
+
+	t.Run("empty and whitespace-only entries are dropped, not rejected", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{"", "   ", devAwsName}, accountMap)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{devAwsID}, out)
+	})
+
+	t.Run("map entries with a blank name are skipped rather than matching an empty input", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{devAwsName},
+			map[string]string{devAwsID: devAwsName, "blank-id": ""})
+		assert.NoError(t, err)
+		assert.Equal(t, []string{devAwsID}, out)
+	})
+
+	t.Run("an unknown name is rejected and nothing partial is returned", func(t *testing.T) {
+		out, err := resolveAccountIdentifiers([]string{devAwsName, "no-such-account"}, accountMap)
+		assert.Error(t, err)
+		assert.Nil(t, out, "a partial resolve would silently widen the query beyond what was asked for")
+		assert.Contains(t, err.Error(), "no-such-account")
+	})
+
+	// The regression this fix exists for: an agent handed a CloudWatch alarm ARN
+	// (arn:aws:cloudwatch:us-east-1:123456789012:alarm:...) scrapes the account
+	// id out of it and passes it here. It must fail with a reason, not a shrug.
+	t.Run("an AWS account number is rejected with an explanation, not a name list", func(t *testing.T) {
+		_, err := resolveAccountIdentifiers([]string{"123456789012"}, accountMap)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "cloud provider account number",
+				"the model needs to know WHY a plausible-looking id failed, or it will retry the same shape")
+			assert.Contains(t, err.Error(), "canonical UUID")
+		}
+	})
+
+	t.Run("a near-miss name suggests the closest real account", func(t *testing.T) {
+		_, err := resolveAccountIdentifiers([]string{"aws-prd"}, accountMap)
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "did you mean",
+				"a one-character typo should self-correct in-flight rather than costing another tool call")
+			assert.Contains(t, err.Error(), prodName)
+		}
+	})
+}
+
+// The error text is fed straight back into the model's context, so its SIZE is
+// a correctness property, not cosmetics. On the audited 340-account tenant the
+// pre-fix message was 5,541 chars (~1,385 tokens) of mostly junk names. This
+// pins the cap so that regression cannot creep back in.
+func TestResolveAccountIdentifiers_ErrorStaysSmallOnLargeTenants(t *testing.T) {
+	accountMap := map[string]string{}
+	for i := 0; i < 340; i++ {
+		accountMap[fmt.Sprintf("id-%03d", i)] = fmt.Sprintf("account-%03d", i)
+	}
+
+	_, err := resolveAccountIdentifiers([]string{"123456789012"}, accountMap)
+	if !assert.Error(t, err) {
+		return
+	}
+	msg := err.Error()
+
+	assert.Less(t, len(msg), 1000, "error was 5541 chars before the cap; keep it an actionable hint, not a context dump")
+	assert.Equal(t, maxListedAccountNames, strings.Count(msg, "account-"),
+		"exactly maxListedAccountNames names should be echoed, however many the tenant has")
+	assert.Contains(t, msg, "of 340", "the model should still learn the true size of the tenant")
+}
+
+// Regression guard for the "did you mean" cap. The suggestion budget is shared
+// across every unresolved identifier, so it must be spent on the globally
+// closest names — not on whichever identifier happens to come first in the
+// list. Before this was fixed, the exact match below was dropped entirely.
+func TestSimilarAccountNames_BudgetIsSpentOnClosestMatchesGlobally(t *testing.T) {
+	allNames := []string{"aws-prod-1", "aws-prod-2", "aws-prod-3", "gcp-dev-1"}
+
+	t.Run("an exact match for a later identifier is not starved by an earlier one's near-misses", func(t *testing.T) {
+		got := similarAccountNames([]string{"aws-prod", "gcp-dev-1"}, allNames)
+		assert.Contains(t, got, "gcp-dev-1",
+			"gcp-dev-1 is distance 0; suggesting three aws-prod-* variants instead tells the model its correct name does not exist")
+	})
+
+	t.Run("suggestions stay within the cap", func(t *testing.T) {
+		got := similarAccountNames([]string{"aws-prod", "gcp-dev-1"}, allNames)
+		assert.LessOrEqual(t, len(got), maxAccountNameSuggestions)
+	})
+
+	t.Run("a name far from everything yields no suggestions rather than noise", func(t *testing.T) {
+		assert.Empty(t, similarAccountNames([]string{"zzzzzzzzzzzzzz"}, allNames),
+			"a suggestion past the distance cutoff is noise, and noise costs the model a wasted retry")
+	})
+
+	t.Run("no accounts means no suggestions", func(t *testing.T) {
+		assert.Empty(t, similarAccountNames([]string{"anything"}, nil))
+	})
+}

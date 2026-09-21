@@ -47,6 +47,14 @@ export async function resolveAccountId(page: Page): Promise<string> {
 
   const cluster = requireCluster();
 
+  // This helper navigates and then asserts on where it landed, so it has to establish the
+  // session itself rather than assume a caller did. A caller that resolves the account id
+  // before opening its own page (Analytics does) otherwise lands on
+  // /signin?error=SessionRequired and fails as "never gained an ?accountId=", which names the
+  // wrong cause. doFullLogin is memoized per Page, so this is a no-op for callers that
+  // already logged in.
+  await new LoginPage(page).doFullLogin();
+
   await page.goto("/agentHealth");
   await expect(page, ADOPTION_HINT).toHaveURL(/[?&]accountId=[^&#]+/, { timeout: 60000 });
 

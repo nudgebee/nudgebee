@@ -352,7 +352,7 @@ const CustomDropdown = ({
               pointerEvents: 'none',
               borderRadius: ds.radius.sm,
               fontSize: 'var(--ds-text-caption)',
-              fontFamily: 'Poppins',
+              fontFamily: ds.font.display,
               letterSpacing: '-0.1px',
               color: 'var(--ds-gray-600)',
               padding: 'var(--ds-space-1) var(--ds-space-2)',

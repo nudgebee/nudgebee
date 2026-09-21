@@ -29,7 +29,7 @@ func TestPrivilegedFeatureFlags(t *testing.T) {
 			t.Errorf("%q must require a tenant admin", id)
 		}
 	}
-	for _, id := range []string{FEATURE_ANOMALY_DETECTION, FEATURE_VERTICAL_RIGHTSIZING, ""} {
+	for _, id := range []string{FEATURE_ANOMALY_DETECTION, ""} {
 		if isPrivilegedFeatureFlag(id) {
 			t.Errorf("%q is a product flag and must stay toggleable by a tenants:Write grant", id)
 		}

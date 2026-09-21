@@ -42,7 +42,23 @@ const quoteBox = {
   padding: 'var(--ds-space-3)',
 } as const;
 
+const HEURISTIC_BANNER_DISMISSED_KEY = 'critique-analyser:themes-heuristic-banner-dismissed';
+
+function readBannerDismissed(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem(HEURISTIC_BANNER_DISMISSED_KEY) === '1';
+}
+
 export function ThemesView({ summary, loading, error, onSelectTheme }: ThemesViewProps) {
+  const [bannerDismissed, setBannerDismissed] = React.useState<boolean>(readBannerDismissed);
+
+  const dismissBanner = React.useCallback(() => {
+    setBannerDismissed(true);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HEURISTIC_BANNER_DISMISSED_KEY, '1');
+    }
+  }, []);
+
   if (error) return <Banner tone='critical' title='Could not load critique data' message={error} />;
 
   if (loading) {
@@ -88,11 +104,15 @@ export function ThemesView({ summary, loading, error, onSelectTheme }: ThemesVie
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
-      <Banner
-        tone='warning'
-        title='Heuristic, not ground truth'
-        message='Themes are keyword matches over critique feedback text, validated by hand against a handful of agents. A row can match several themes or none, and agents outside that validation set may be under- or mis-classified. Read the examples below before prioritizing prompt fixes off these counts alone.'
-      />
+      {!bannerDismissed && (
+        <Banner
+          tone='warning'
+          title='Heuristic, not ground truth'
+          message='Themes are keyword matches over critique feedback text, validated by hand against a handful of agents. A row can match several themes or none, and agents outside that validation set may be under- or mis-classified. Read the examples below before prioritizing prompt fixes off these counts alone.'
+          dismissible
+          onDismiss={dismissBanner}
+        />
+      )}
       {items.length === 0 ? (
         <Box sx={{ p: 'var(--ds-space-4)', color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-body)' }}>
           No refine rows matched any theme for the current filters.

@@ -252,6 +252,21 @@ def run_async_discovery_handler(content) -> None:
         logging.error("Empty tenant or cloud_account_id in discovery data")
         return
 
+    # "data" may legitimately be [] (see above) but never None. A null payload
+    # used to reach len(data["data"]) in _process_discovery and raise TypeError,
+    # which the consumer answered by rejecting the message to the DLQ. Reject it
+    # here instead, where the account can be named. Coercing None to [] is NOT an
+    # option: on a last batch that would diff against an empty active set and
+    # mark every resource for the account deleted.
+    if data["data"] is None:
+        logging.error(
+            "Null 'data' in discovery payload for %s/%s type %s -- discarding",
+            data["cloud_account_id"],
+            data["tenant"],
+            data["type"],
+        )
+        return
+
     # Serialize processing per cloud_account_id to prevent PostgreSQL deadlocks
     # on concurrent INSERT ... ON CONFLICT into cloud_resourses for the same account.
     # Uses Redis distributed lock (works across pods); falls back to threading.Lock.
@@ -761,7 +776,7 @@ def handle_active_resources_deletion(  # noqa: C901
                   legacy/atomic path (diff against all rows for the type).
     """
     try:
-        logging.warning(
+        logging.info(
             f"PROCESSING RESOURCE DELETIONS for {cloud_account_id}/{tenant}/{resource_type}, "
             f"total_count: {total_resources_count}, batch_id: {batch_id}"
         )
@@ -1148,6 +1163,14 @@ def close_events_for_recovered_workloads(cloud_account_id: str, workloads: List[
     `status.phase = Running` between restarts, which is what made the legacy
     status-diff path (run_status_update) close crashloop events on a live crashloop.
 
+    Readiness is narrower than phase but NOT immune to the same defect, and the
+    comment above should not be read as claiming otherwise: a crashlooping pod is
+    genuinely Ready for the seconds its container runs, and a change-driven snapshot
+    lands on that flip often. Measured on dev, 17 of the 43 events this closed had
+    the same alert fire again within two hours. The signal that actually fixes it is
+    ready AND no pod restart since the previous snapshot (k8s_pods.restart_count is
+    already collected); see the flag's comment in config/__init__.py.
+
     Scoped to `kubernetes_api_server`, the source whose findings are derived from
     workload health and which has no resolve delivery of its own. Every other source
     (prometheus, datadog, pagerduty, cloud alarms) sends its own resolve and owns its
@@ -1239,10 +1262,31 @@ def process_deleted_resources(cloud_account_id, deleted_resources, tenant):
 
         # Close events with history tracking
         # Note: Don't store deleted_resources list in metadata to avoid TOAST bloat
+        #
+        # Matched on cloud_resource_id FIRST, service_key second. `service_key`
+        # alone closed nothing for agent-sourced events: discovery writes
+        # `<ns>/<Kind>/<name>` while the agent's own findings write `<ns>/<name>`
+        # (event_handler.py `_resolve_prometheus_subject` / the finding path), so
+        # the two never matched and a deleted workload kept its alerts open
+        # forever -- 2,288 of them on production, against 1,509 resources that no
+        # longer exist. Same format mismatch #36551 fixed for
+        # handle_active_resources_deletion; this path was left on the old key.
+        #
+        # `resource_ids` are the keys of deleted_resources, which are the
+        # cloud_resourses PKs (`_id` = uuid5(service_key + account), written as
+        # both `id` and `external_resource_id` in process_service_discovery), so
+        # the id needs no lookup -- it is the same value the two UPDATEs below
+        # already use.
+        #
+        # service_key is KEPT as an OR arm, not replaced: on Robusta clusters the
+        # two formats do agree and that arm is the only thing closing those events
+        # (`service_deleted` closes 384 events in 21 days on production). Unlike
+        # the `!= ALL(...)` predicate that caused #36550, `= ANY(...)` matches only
+        # the resources this deletion actually named, so it cannot over-close.
         close_events_with_history(
             cloud_account_id=cloud_account_id,
-            where_conditions="service_key = ANY(%s)",
-            params=[service_keys],
+            where_conditions="(cloud_resource_id = ANY(%s::uuid[]) OR service_key = ANY(%s))",
+            params=[resource_ids, service_keys],
             closing_reason="resource_deleted",
             metadata={
                 "method": "process_deleted_resources",

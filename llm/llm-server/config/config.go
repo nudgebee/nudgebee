@@ -215,6 +215,7 @@ type appConfig struct {
 	// as more predictable, and it measurably moves thinking (791 -> 505 at "low";
 	// minimal -> 0 on flash-lite). Flip to false to restore the legacy budget.
 	LlmThinkingLevelNativeEnabled bool `mapstructure:"llm_thinking_level_native_enabled"`
+	LlmAnthropicThinkingEnabled   bool `mapstructure:"llm_anthropic_thinking_enabled"`
 	LlmProviderThinkingBudget     int  `mapstructure:"llm_provider_thinking_budget"` // -1 (default): use per-model default; 0: disable thinking; >0: explicit token budget — global override, wins over the per-tier budgets below
 	// Per-tier thinking-token ceilings (ModelTier), applied when LlmProviderThinkingBudget is unset (-1). 0 leaves a tier uncapped.
 	LlmThinkingBudgetReasoning int `mapstructure:"llm_thinking_budget_reasoning"`
@@ -238,6 +239,12 @@ type appConfig struct {
 	// message naming the mistyped label instead of a silent empty result. Default
 	// true; false restores the plain behavior.
 	LlmServerLogValidateRequestEnabled bool `mapstructure:"llm_server_log_validate_request_enabled"`
+
+	// LlmServerTraceValidateRequestEnabled opts the canonical (where-clause) trace fetch into
+	// services-server's field/value validation: an empty or failed query returns a message naming
+	// the mistyped field or value instead of a silent empty result. Default true; false restores
+	// the plain behavior. Mirrors LlmServerLogValidateRequestEnabled.
+	LlmServerTraceValidateRequestEnabled bool `mapstructure:"llm_server_trace_validate_request_enabled"`
 
 	// Outbound egressfilter master switch. When false, the LLM factory does NOT
 	// install the egressfilter decorator at all — GetLLMModel returns the raw
@@ -381,39 +388,13 @@ type appConfig struct {
 	// fragment attached to custom-planner agent LLM calls (log/trace/kubectl
 	// intent generators, resource search). Distinct from
 	// llm_server_max_gc_bytes, which limits the stored GC size at upload.
-	LlmServerAgentAccountPromptMaxBytes int  `mapstructure:"llm_server_agent_account_prompt_max_bytes"`
-	LlmServerMaxSkillContentLength      int  `mapstructure:"llm_server_max_skill_content_length"`
-	LlmServerIntegrationKBEnabled       bool `mapstructure:"llm_server_integration_kb_enabled"`
-	// LlmServerKBPrestepEnabled gates the KB pre-step: when on, the executor
-	// retrieves relevant KB content before planning and places it (plus the
-	// skill-lists menu) in the human message instead of the cacheable system
-	// prefix. Off keeps the legacy in-prompt <skill-lists> + lazy load_skills flow.
-	LlmServerKBPrestepEnabled bool `mapstructure:"llm_server_kb_prestep_enabled"`
+	LlmServerAgentAccountPromptMaxBytes int `mapstructure:"llm_server_agent_account_prompt_max_bytes"`
+	LlmServerMaxSkillContentLength      int `mapstructure:"llm_server_max_skill_content_length"`
 	// LlmServerKBPrestepTimeoutSeconds bounds the pre-step's RAG call. The
-	// default is sized for the reranked search (embed + query + one LLM rerank
-	// call); the pre-step fails open on timeout, so setting this too low turns
-	// reranking into silent knowledge loss. Values <= 0 fall back to the default.
+	// automatic discovery budget is deliberately short; completed results survive
+	// timeout and ReAct agents retain search/load tools. Custom planners have no
+	// dynamic fallback. Values <= 0 fall back to the default.
 	LlmServerKBPrestepTimeoutSeconds int `mapstructure:"llm_server_kb_prestep_timeout_seconds"`
-	// LlmServerSkillDelegationPropagationEnabled, when on, propagates a delegating
-	// agent's skill scope (its own name + the question-aware SelectedSkillIds) to the
-	// sub-agents it delegates to. Skills are agent-scoped, so a runbook mapped to an
-	// orchestrator otherwise never reaches the sub-agent that executes; with this on,
-	// the sub-agent's own <skill-lists> menu surfaces the parent's selected runbooks
-	// and its planner chooses whether to load_skills (no eager injection). Off keeps
-	// today's behavior (only custom-planner agents thread skills explicitly).
-	LlmServerSkillDelegationPropagationEnabled bool `mapstructure:"llm_server_skill_delegation_propagation_enabled"`
-	// LlmServerDelegateAccountKBsEnabled, when on, lets the dynamic delegate sub-agent
-	// discover skills from the ENTIRE account-mapped KB pool instead of nothing. Parent
-	// orchestrators today opt out of default injection (shell/watch/skills) because the
-	// parent curated the toolset — but that silently kills load_skills too, so a delegate
-	// investigating a helm task never sees the helm runbooks the operator mapped. When
-	// enabled, the delegate's synthesized system prompt gains a `<skill-lists>` menu
-	// rendered from all active account KBs, and the load_skills tool is re-injected via
-	// the DefaultSkillsInjectOverride carve-out. Shell/watch remain suppressed.
-	//
-	// Off by default — flip per-tenant to canary before wider rollout. Cost: one KB list
-	// DB call per delegate invocation, plus ~50 chars of prompt per active KB.
-	LlmServerDelegateAccountKBsEnabled bool `mapstructure:"llm_server_delegate_account_kbs_enabled"`
 	// LlmServerToolSchemaValidationTools is a comma-separated allowlist of tool
 	// names for which the framework treats the InputSchema as authoritative.
 	// A tool on this list has BOTH of the following applied by the framework:
@@ -547,6 +528,9 @@ type appConfig struct {
 	AsyncPlanExecutionWorkerCount int  `mapstructure:"llm_server_async_plan_execution_worker_count"`
 	AsyncRefWorkerCount           int  `mapstructure:"llm_server_async_ref_worker_count"`
 	PlannerParallelExecEnabled    bool `mapstructure:"llm_server_planner_parallel_exec_enabled"`
+	// PlannerWorkerPoolSubmitTimeoutSeconds bounds how long a parallel action
+	// waits to be accepted onto ExecutePlannerWorkerPool's queue (#36378).
+	PlannerWorkerPoolSubmitTimeoutSeconds int `mapstructure:"llm_server_planner_worker_pool_submit_timeout_seconds"`
 
 	// DropExtraAgentMentions controls what happens to a repeated leading mention
 	// run ("@a @b q") in the query handed to the agent. false (default) keeps the
@@ -596,6 +580,9 @@ type appConfig struct {
 	// this past that ceiling buys nothing, since the caller would already have
 	// given up and the result would never reach the LLM.
 	LlmServerWorkspaceCommandTimeout string `mapstructure:"llm_server_workspace_command_timeout"`
+
+	// LlmServerKnowledgeWorkspaceEnabled enables exact document materialization and selective reads.
+	LlmServerKnowledgeWorkspaceEnabled bool `mapstructure:"llm_server_knowledge_workspace_enabled"`
 
 	// LlmServerFsEvidenceRecallEnabled gates the FS evidence-recall layer: when a
 	// large observation is compressed in the scratchpad, replace the dead-end
@@ -783,16 +770,17 @@ type appConfig struct {
 	// PR deletes the tool + all injection sites entirely.
 	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
 	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
-	// LlmServerReact3QueryModelDownshiftEnabled downshifts the MODEL TIER for a
-	// TOP-LEVEL plain-retrieval turn ("list pods") on a Reasoning-tier orchestrator
-	// from Reasoning (pro) to Summary (a cheaper/faster model): a query doesn't need
+	// LlmServerOrchestratorQueryModelDownshiftEnabled applies in the shared executor before
+	// ReAct3/ReAct4 engine selection. It downshifts the MODEL TIER for a TOP-LEVEL
+	// plain-retrieval turn ("list pods") on a Reasoning-tier orchestrator from
+	// Reasoning (pro) to Summary (a cheaper/faster model): a query doesn't need
 	// deep causal reasoning, only tool orchestration + formatting. It keys off the
 	// SAME signal as the lean-prompt variant (promptVariantForRequest → non-investigation
 	// top-level), so tier, prompt variant, and cache slot stay consistent — and the
 	// LLM cache already keys on model, so it is cache-correct. Investigations and
 	// sub-agents are unaffected. Off (default) = no-op, tier byte-identical to today.
 	// Ship dark; enable after cheap-vs-pro validation on query answers.
-	LlmServerReact3QueryModelDownshiftEnabled bool `mapstructure:"llm_server_react3_query_model_downshift_enabled"`
+	LlmServerOrchestratorQueryModelDownshiftEnabled bool `mapstructure:"llm_server_orchestrator_query_model_downshift_enabled"`
 	// LlmServerOrchestratorThinkingLevel is the thinking level applied to ReAct3
 	// and ReAct4 direction-setting calls (first plan call of a turn and
 	// post-critique refinement passes). Elevate-only: thinking level is
@@ -919,6 +907,17 @@ type appConfig struct {
 	// looks up the agent's correct message_id from DB instead of trusting
 	// the request's message_id. Falls back to legacy path when disabled.
 	FollowupResumeV2Enabled bool `mapstructure:"llm_server_followup_resume_v2_enabled"`
+	// LogsV3Enabled redirects "logs" (implicit routing + lean-orchestrator
+	// default) to logs_v3 — same redirect pattern as TicketV2Enabled. See
+	// docs/logs-v3-agent-investigation.md. Default false until validated further.
+	LogsV3Enabled bool `mapstructure:"llm_server_logs_v3_enabled"`
+
+	// FollowupCancelEnabled gates the "dismiss" resolution on a pending AI
+	// follow-up (#27582) — lets a user skip a WAITING conversation instead
+	// of being forced to answer or abandon it. A hard terminate already
+	// exists separately as ai_cancel_investigation. Default off for
+	// incremental rollout.
+	FollowupCancelEnabled bool `mapstructure:"llm_server_followup_cancel_enabled"`
 
 	// AgentIntegrationPrecheckEnabled gates a fail-fast check that runs only
 	// when a user invokes an agent via @<name>. If every tool the agent
@@ -1218,11 +1217,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
-	viper.SetDefault("llm_server_integration_kb_enabled", true)
-	viper.SetDefault("llm_server_kb_prestep_enabled", false)
-	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 12)
-	viper.SetDefault("llm_server_skill_delegation_propagation_enabled", false)
-	viper.SetDefault("llm_server_delegate_account_kbs_enabled", false)
+	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 3)
 	// Bootstrap: only `think` gets schema-authoritative treatment (renderer +
 	// validator). Other tools stay text-description-only until their schema
 	// is reconciled with their Call() acceptance shape. See
@@ -1252,6 +1247,8 @@ func init() {
 	viper.SetDefault("llm_provider_session_token", "")
 	viper.SetDefault("llm_provider_embedding_model", "text-embedding-ada-002")
 	viper.SetDefault("llm_provider_max_retries", 5)
+	viper.SetDefault("llm_thinking_level_native_enabled", true)
+	viper.SetDefault("llm_anthropic_thinking_enabled", false)
 	viper.SetDefault("llm_provider_thinking_level", "")  // empty = not configured (use per-model default); "minimal"/"low"/"medium"/"high" = explicit level
 	viper.SetDefault("llm_provider_thinking_budget", -1) // -1: model default, 0: disable, >0: token budget (global override, wins over the per-tier budgets below)
 	viper.SetDefault("llm_thinking_budget_reasoning", 16000)
@@ -1323,6 +1320,7 @@ func init() {
 	viper.SetDefault("server_heartbeat_frequency_second", 15)
 	viper.SetDefault("server_heartbeat_timeout_second", 30)
 	viper.SetDefault("llm_server_async_plan_execution_worker_count", 10)
+	viper.SetDefault("llm_server_planner_worker_pool_submit_timeout_seconds", 30)
 	viper.SetDefault("llm_server_async_ref_worker_count", 10)
 	viper.SetDefault("llm_server_async_api_worker_count", 100)
 	viper.SetDefault("llm_server_async_api_queue_size", 1000)
@@ -1386,11 +1384,13 @@ func init() {
 	// comments above — this default is computed, not hand-picked, so it can't
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
+	viper.SetDefault("llm_server_knowledge_workspace_enabled", true)
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
 	viper.SetDefault("llm_server_event_evidence_overflow_threshold", 2000)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
 	viper.SetDefault("llm_server_logs_v3_canonical_fast_path_enabled", true)
 	viper.SetDefault("llm_server_log_validate_request_enabled", true)
+	viper.SetDefault("llm_server_trace_validate_request_enabled", true)
 	viper.SetDefault("llm_server_drop_extra_agent_mentions", false)
 	viper.SetDefault("llm_server_trace_agent_v2_enabled", false)
 	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are
@@ -1452,7 +1452,7 @@ func init() {
 	viper.SetDefault("llm_server_sdg_grounding_contract_enabled", false)
 	// ReAct4 is the default planner; an explicit false override remains the rollback path.
 	viper.SetDefault("llm_server_react4_enabled", true)
-	viper.SetDefault("llm_server_react3_query_model_downshift_enabled", false)
+	viper.SetDefault("llm_server_orchestrator_query_model_downshift_enabled", false)
 	viper.SetDefault("llm_server_orchestrator_thinking_level", "")
 	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
@@ -1507,8 +1507,10 @@ func init() {
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
 	viper.SetDefault("llm_server_events_v2_enabled", false)
+	viper.SetDefault("llm_server_logs_v3_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
+	viper.SetDefault("llm_server_followup_cancel_enabled", false)
 
 	viper.SetDefault("llm_server_agent_integration_precheck_enabled", true)
 

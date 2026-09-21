@@ -6,11 +6,13 @@ import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 jest.mock('@utils/colors');
 
 jest.mock('@ui/Modal', () => ({
-  Modal: ({ open, title, children }) =>
+  Modal: ({ open, title, children, actionButtons, rightComponentOnTitle }) =>
     open ? (
       <div data-testid='modal'>
         <h2>{title}</h2>
+        {rightComponentOnTitle}
         {children}
+        {actionButtons}
       </div>
     ) : null,
 }));
@@ -114,6 +116,13 @@ jest.mock('@api1/account', () => ({
 
 jest.mock('src/utils/common', () => ({
   isK8sAccountNameValid: jest.fn((value) => value.length >= 4 && value.length <= 50),
+}));
+
+// The modal reads the tour context to decide whether step 2 is a guided-tour
+// preview. Without a provider useTour throws and every case in this file fails,
+// so stub it as "no tour running" — the branch real usage always takes.
+jest.mock('@components/common/tour', () => ({
+  useTour: () => ({ isActive: false, activeTourId: null }),
 }));
 
 describe('K8sAccountModal', () => {

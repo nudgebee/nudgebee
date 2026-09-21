@@ -701,11 +701,12 @@ func (e *ElasticSaasSource) queryIndexTargets(ctx *security.RequestContext, fetc
 	return ListAllESIndexTargets(cfg)
 }
 
-// esLabelValuesTermsSize caps the terms aggregation a label-value listing runs. It is
-// the binding constraint on service.go's maxLabelValuesToScan: a field with more values
-// than this returns a TRUNCATED page, and a caller that mistakes a truncated page for the
-// complete value set would report a real value as unknown. Keep the two in step.
-const esLabelValuesTermsSize = 1000
+// esLabelValuesTermsSize caps the terms aggregation a label-value listing runs. A field
+// with more values than this returns a TRUNCATED page, and a caller that mistakes a
+// truncated page for the complete value set would report a real value as unknown — so it
+// is pinned to the shared labelValuesPageSize every provider's listing pages at, which
+// service.go's maxLabelValuesToScan is derived from.
+const esLabelValuesTermsSize = labelValuesPageSize
 
 // resolveESLabelValuesIndex picks the index a value listing aggregates over: the caller's
 // index, else the account default (cfg.LogIndex — the same fallback QueryLogs uses).

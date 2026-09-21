@@ -1,8 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Box, TextField, Popper, Paper, List, ListItem, ListItemText, Typography, ClickAwayListener } from '@mui/material';
+import { Box, TextField, Popper, Paper, List, ListItem, ListItemText, Typography, ClickAwayListener, InputAdornment } from '@mui/material';
 import { Button } from '@ui/Button';
 import DataObjectIcon from '@mui/icons-material/DataObject';
-import { colors } from 'src/utils/colors';
+import CheckIcon from '@mui/icons-material/Check';
+import CloseIcon from '@mui/icons-material/Close';
 
 interface PreviousTask {
   id: string;
@@ -36,6 +37,7 @@ interface TemplateTextFieldProps {
   error?: string;
   required?: boolean;
   fullWidth?: boolean;
+  validationStatus?: 'valid' | 'invalid';
 }
 
 const CATEGORY_LABELS: Record<TemplateSuggestionCategory, string> = {
@@ -71,6 +73,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
   error,
   required = false,
   fullWidth = true,
+  validationStatus,
 }) => {
   // Local state to prevent focus loss during parent re-renders
   const [localValue, setLocalValue] = useState(value);
@@ -392,25 +395,25 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
         fontSize: 'var(--ds-text-body-lg)',
         ...(hasError && {
           '&.Mui-error fieldset': {
-            borderColor: colors.border?.error || '#d32f2f',
+            borderColor: 'var(--ds-red-500)',
             borderWidth: '1px',
           },
         }),
         '& fieldset': {
-          borderColor: colors.border?.vertical || '#e0e0e0',
+          borderColor: 'var(--ds-gray-200)',
         },
         '&:hover fieldset': {
-          borderColor: colors.border?.primaryLightest || '#1976d2',
+          borderColor: 'var(--ds-blue-400)',
         },
         '&.Mui-focused fieldset': {
-          borderColor: colors.border?.primary || '#1976d2',
+          borderColor: 'var(--ds-blue-500)',
           borderWidth: '2px',
         },
       },
       '& .MuiInputBase-input': {
         padding: 'var(--ds-space-2) var(--ds-space-3)',
         '&::placeholder': {
-          color: colors.text?.tertiarymedium || '#9e9e9e',
+          color: 'var(--ds-brand-200)',
           fontWeight: 'var(--ds-font-weight-regular)',
           fontSize: 'var(--ds-text-small)',
           opacity: 1,
@@ -428,12 +431,35 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
   const labelStyle = {
     fontSize: 'var(--ds-text-body)',
     fontWeight: 'var(--ds-font-weight-medium)',
-    color: colors.text?.secondary || '#424242',
+    color: 'var(--ds-brand-500)',
     mb: 0.5,
   };
 
+  const inputProps = useMemo(() => {
+    if (multiline || disabled || !validationStatus) return undefined;
+    if (validationStatus === 'valid') {
+      return {
+        endAdornment: (
+          <InputAdornment position='end'>
+            <CheckIcon sx={{ color: 'var(--ds-green-500)', fontSize: 18 }} data-testid='url-valid-icon' />
+          </InputAdornment>
+        ),
+      };
+    }
+    if (validationStatus === 'invalid') {
+      return {
+        endAdornment: (
+          <InputAdornment position='end'>
+            <CloseIcon sx={{ color: 'var(--ds-red-500)', fontSize: 18 }} data-testid='url-invalid-icon' />
+          </InputAdornment>
+        ),
+      };
+    }
+    return undefined;
+  }, [multiline, disabled, validationStatus]);
+
   const errorTextStyle = {
-    color: colors.border?.error || '#d32f2f',
+    color: 'var(--ds-red-500)',
     fontSize: 'var(--ds-text-small)',
     fontWeight: 'var(--ds-font-weight-medium)',
     mt: 1,
@@ -443,7 +469,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
     <Box sx={{ ...fieldContainer, position: 'relative', width: fullWidth ? '100%' : 'auto' }}>
       {label && (
         <Typography sx={labelStyle}>
-          {label} {required && <span style={{ color: colors.border.error }}>*</span>}
+          {label} {required && <span style={{ color: 'var(--ds-red-500)' }}>*</span>}
         </Typography>
       )}
 
@@ -462,6 +488,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
           required={required}
           fullWidth={fullWidth}
           variant='outlined'
+          InputProps={inputProps}
           sx={getFieldStyle()}
         />
         {allSuggestions.length > 0 && !disabled && (
@@ -472,7 +499,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
               size='sm'
               tooltip='Insert variable'
               aria-label='Insert variable'
-              icon={<DataObjectIcon sx={{ fontSize: 16 }} />}
+              icon={<DataObjectIcon sx={{ fontSize: 'var(--ds-text-title)' }} />}
               onClick={handlePickerOpen}
               id='template-variable-picker-button'
             />
@@ -492,7 +519,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
               maxHeight: 360,
               overflow: 'auto',
               border: '1px solid var(--ds-gray-300)',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              boxShadow: '0 var(--ds-space-1) var(--ds-space-3) var(--ds-gray-alpha-300)',
             }}
           >
             <List dense disablePadding>
@@ -515,7 +542,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
                         fontWeight: 'var(--ds-font-weight-semibold)',
                         textTransform: 'uppercase',
                         letterSpacing: '0.5px',
-                        color: colors.text?.secondary || '#616161',
+                        color: 'var(--ds-brand-500)',
                       }}
                     >
                       {group.label}
@@ -539,9 +566,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
                           </Typography>
                         }
                         secondary={
-                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondaryDark }}>
-                            {suggestion.description}
-                          </Typography>
+                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)' }}>{suggestion.description}</Typography>
                         }
                       />
                     </ListItem>

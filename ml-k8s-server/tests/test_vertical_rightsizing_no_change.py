@@ -5,18 +5,28 @@ requests, so it carries no action and must not be written. The predicate runs
 per workload, never per container — one right-sized container says nothing
 about its siblings.
 
+The priority test alone is not enough: a scan can flag a workload as
+over-provisioned (WARNING) and then clamp its recommendation back to the
+allocated floor, landing on the same numbers it started from. Those rows advise
+changing a value to itself, so a second, value-based predicate compares every
+recommended request against its allocated request on the merged payload.
+
 Suppressed workloads must also leave the archive keep-set, or the rows already
 stored for them stay Open forever. That is why the keep-set (what stays Open)
 is passed separately from the scanned set (what the scan covered).
 """
+
+import json
 
 import pytest
 
 from server.recommendation.vertical_rightsizing import (
     GOOD_PRIORITY,
     SEVERITY_WEIGHT,
+    finalize_workload_rows,
     get_severity,
     is_no_change_workload,
+    is_value_no_change_workload,
     worst_priority,
 )
 
@@ -96,3 +106,88 @@ def test_worst_priority_tolerates_values_off_the_scale():
     unexpected priority cannot crash the aggregation."""
     assert get_severity(worst_priority([9, GOOD])) == "Critical"
     assert get_severity(worst_priority([-3, GOOD])) == "Low"
+
+
+MIB = 1024 * 1024
+
+
+def _entry(resource, allocated, recommended, allocated_limit=None, recommended_limit=None):
+    return {
+        "resource": resource,
+        "allocated": {"request": allocated, "limit": allocated_limit},
+        "recommended": {"request": recommended, "limit": recommended_limit},
+    }
+
+
+# The production shape this predicate exists for: requests already at the
+# 10m/100Mi floors, recommendation clamped back onto them.
+CLAMPED_TO_FLOOR = {"app": [_entry("cpu", 0.01, 0.01), _entry("memory", 100 * MIB, 100 * MIB)]}
+
+VALUE_CASES = [
+    ("clamped_to_allocated_floor", CLAMPED_TO_FLOOR, True),
+    ("cpu_differs", {"app": [_entry("cpu", 0.02, 0.01), _entry("memory", 100 * MIB, 100 * MIB)]}, False),
+    ("memory_differs", {"app": [_entry("cpu", 0.01, 0.01), _entry("memory", 64 * MIB, 100 * MIB)]}, False),
+    # Requests only: the strategy leaves the CPU limit unset and derives the
+    # memory limit, and the UI renders request changes only — differing limits
+    # must not keep a row that displays as '='.
+    (
+        "differing_limits_do_not_block",
+        {
+            "app": [
+                _entry("cpu", 0.01, 0.01, allocated_limit=0.1),
+                _entry("memory", 100 * MIB, 100 * MIB, recommended_limit=150 * MIB),
+            ]
+        },
+        True,
+    ),
+    # An unset allocated request is a real change (set it) — the Configuration rows.
+    ("unset_allocated_is_a_change", {"app": [_entry("cpu", None, 0.01)]}, False),
+    ("zero_allocated_is_a_change", {"app": [_entry("cpu", 0, 0.01)]}, False),
+    # Fail-open: a value we cannot read is not proof of nothing-to-do.
+    (
+        "unreadable_recommended_keeps_the_row",
+        {"app": [_entry("cpu", 0.01, "?"), _entry("memory", 100 * MIB, 100 * MIB)]},
+        False,
+    ),
+    ("missing_recommended_keeps_the_row", {"app": [{"resource": "cpu", "allocated": {"request": 0.01}}]}, False),
+    ("malformed_entries_keep_the_row", {"app": "not-a-list"}, False),
+    ("empty_payload_is_not_no_change", {}, False),
+    ("non_dict_payload_is_not_no_change", None, False),
+    # Per workload: one clamped container says nothing about its siblings.
+    (
+        "sibling_with_a_change_keeps_the_workload",
+        {"a": [_entry("cpu", 0.01, 0.01)], "b": [_entry("cpu", 0.5, 0.25)]},
+        False,
+    ),
+    (
+        "every_sibling_clamped_is_no_change",
+        {"a": [_entry("cpu", 0.01, 0.01)], "b": [_entry("memory", 100 * MIB, 100 * MIB)]},
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize("name,payload,expected", VALUE_CASES, ids=[c[0] for c in VALUE_CASES])
+def test_is_value_no_change_workload(name, payload, expected):
+    assert is_value_no_change_workload(payload) is expected
+
+
+def test_value_equality_survives_a_json_round_trip():
+    """The predicate runs on json.loads(row) output, exactly as finalize does."""
+    assert is_value_no_change_workload(json.loads(json.dumps(CLAMPED_TO_FLOOR))) is True
+
+
+def test_finalize_drops_clamped_workloads_regardless_of_priority():
+    """A WARNING-priority workload whose numbers equal what is allocated must be
+    dropped, so it also leaves the keep-set the caller builds from this dict."""
+    rows = {
+        "clamped": {"estimated_savings": 0.0, "recommendation": json.dumps(CLAMPED_TO_FLOOR)},
+        "real": {
+            "estimated_savings": 12.0,
+            "recommendation": json.dumps({"app": [_entry("cpu", 0.02, 0.01)]}),
+        },
+    }
+    dropped = finalize_workload_rows(rows, {"clamped": [WARNING], "real": [WARNING]})
+    assert dropped == 1
+    assert "clamped" not in rows
+    assert rows["real"]["severity"] == "High"

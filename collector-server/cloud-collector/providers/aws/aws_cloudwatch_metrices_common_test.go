@@ -136,6 +136,14 @@ func TestGetNamespaceForService(t *testing.T) {
 		{"AmazonES", "AWS/ES"},
 		{"NonExistentService", ""},
 		{"", ""},
+		// Custom namespaces reach the dynamic lister verbatim. Case is
+		// preserved because CloudWatch namespaces are case-sensitive — the
+		// lowercased form names a namespace that does not exist.
+		{"PixelPulse/AppHealth", "PixelPulse/AppHealth"},
+		{"PixelPulse/portals", "PixelPulse/portals"},
+		// A known service still wins over the passthrough, and still resolves
+		// to its mapped namespace rather than echoing the input.
+		{"AmazonEC2", "AWS/EC2"},
 	}
 
 	for _, tt := range tests {

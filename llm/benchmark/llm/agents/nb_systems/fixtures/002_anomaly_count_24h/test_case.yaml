@@ -1,0 +1,14 @@
+user_prompt: "give me the numbers, how many anomaly detects in last 24 hrs"
+expected_output:
+  - |
+    The agent should call anomaly_execute with a query against the 'anomaly'
+    table filtered by evaluated_at >= '[[Time:-24h]]' (or an equivalent
+    24-hour window), counting anomalies across all anomaly_type values (CPU,
+    Memory, Latency, Network, CloudSpendAccount, CloudSpendService, etc.),
+    not just cost anomalies. The answer must state a specific total count
+    for the last 24 hours, citing [anomaly_execute]. If a breakdown by type
+    is available that's a bonus but the headline number is required. If the
+    count is zero, the agent should say so explicitly rather than guessing.
+tags:
+  - anomaly
+  - orchestrator

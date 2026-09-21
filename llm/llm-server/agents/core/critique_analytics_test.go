@@ -45,3 +45,34 @@ func TestGetCritiqueList_ConversationLink(t *testing.T) {
 	assert.Equal(t, "msg-1", row.MessageID)
 	assert.Equal(t, "sess-abc", row.SessionID)
 }
+
+// TestGetCritiqueSummary_ByAgentAcceptedCount is a regression test for #35817:
+// the Agents table's by-agent breakdown now also carries the accepted count
+// (previously only judged/refined, forcing the UI to derive it).
+func TestGetCritiqueSummary_ByAgentAcceptedCount(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	now := time.Now()
+
+	mock.ExpectQuery("judged").WillReturnRows(sqlmock.NewRows([]string{"judged", "refined"}).AddRow(10, 4))
+	mock.ExpectQuery("GROUP BY agent_name").WillReturnRows(
+		sqlmock.NewRows([]string{"agent_name", "judged", "refined", "accepted"}).
+			AddRow("k8s_orchestrator", 10, 4, 6))
+	mock.ExpectQuery("root_cause_not_verified").WillReturnRows(
+		sqlmock.NewRows([]string{
+			"root_cause_not_verified", "incomplete", "manual_action", "evidence",
+			"verify", "guessing", "hallucination", "symptom_not_cause", "schema_validation",
+		}).AddRow(0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+	filter := CritiqueFilter{StartDate: now.Add(-24 * time.Hour), EndDate: now}
+	summary, err := dao.GetCritiqueSummary(filter)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	require.Len(t, summary.ByAgent, 1)
+	assert.Equal(t, int64(6), summary.ByAgent[0].Accepted)
+	assert.Equal(t, int64(10), summary.ByAgent[0].Judged)
+	assert.Equal(t, int64(4), summary.ByAgent[0].Refined)
+}

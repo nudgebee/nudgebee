@@ -17,7 +17,7 @@ from notifications_server.message_templates.slack.daily_highlight import (
     calculate_total_savings,
     calculate_trend,
     categorize_insights,
-    format_rule_name,
+    format_recommendation_label,
     group_events_by_account,
     group_insights_by_account,
     group_recommendations_by_account,
@@ -48,11 +48,11 @@ def _format_recommendations(recs: List[Recommendation]) -> List[str]:
     for rec in sorted(recs, key=lambda x: x.sum_estimated_savings, reverse=True)[:5]:
         if rec.sum_estimated_savings > 0:
             lines.append(
-                f"• **{rec.count}** {format_rule_name(rec.rule_name)} – "
+                f"• **{rec.count}** {format_recommendation_label(rec)} – "
                 f"potential savings: **${rec.sum_estimated_savings:.2f}**/month"
             )
         else:
-            lines.append(f"• **{rec.count}** {format_rule_name(rec.rule_name)} available")
+            lines.append(f"• **{rec.count}** {format_recommendation_label(rec)} available")
     return lines
 
 

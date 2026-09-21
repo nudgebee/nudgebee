@@ -241,3 +241,54 @@ func TestFallbackDescriptionFromContent(t *testing.T) {
 		})
 	}
 }
+
+func TestWithKBAgentWildcard(t *testing.T) {
+	t.Run("appends the sentinel", func(t *testing.T) {
+		assert.Equal(t, []string{"k8s_orchestrator", KBAgentWildcard}, WithKBAgentWildcard([]string{"k8s_orchestrator"}))
+	})
+
+	t.Run("accepts an empty list", func(t *testing.T) {
+		assert.Equal(t, []string{KBAgentWildcard}, WithKBAgentWildcard(nil))
+	})
+
+	t.Run("never writes into the caller's backing array", func(t *testing.T) {
+		// The executor builds ownSkillNames with spare capacity and later
+		// re-slices it into skillAgentNames. An in-place append here would
+		// overwrite the neighbouring element and drop an inherited agent name,
+		// silently hiding the KBs mapped to it.
+		backing := make([]string, 1, 2)
+		backing[0] = "k8s_orchestrator"
+		full := append(backing, "inherited_parent") //nolint:gocritic // deliberately shares the array
+
+		got := WithKBAgentWildcard(backing)
+
+		assert.Equal(t, []string{"k8s_orchestrator", KBAgentWildcard}, got)
+		assert.Equal(t, "inherited_parent", full[1], "caller's slice must be untouched")
+	})
+}
+
+func TestUsableForAgents(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		on     bool
+		want   bool
+	}{
+		{"active and enabled is usable", string(KBStatusActive), true, true},
+		{"active but switched off", string(KBStatusActive), false, false},
+		{"enabled but still indexing", string(KBStatusProcessing), true, false},
+		{"enabled but failed to index", string(KBStatusError), true, false},
+		{"enabled but archived", string(KBStatusArchived), true, false},
+		{"archived and switched off", string(KBStatusArchived), false, false},
+		// The zero value must not read as usable: a SELECT that forgets
+		// kb.enabled leaves Enabled false, and failing closed there surfaces as
+		// "my KB stopped working" rather than as a silently ignored switch.
+		{"zero value", "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kb := Knowledgebase{Status: tc.status, Enabled: tc.on}
+			assert.Equal(t, tc.want, kb.UsableForAgents())
+		})
+	}
+}

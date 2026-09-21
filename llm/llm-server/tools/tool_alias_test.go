@@ -84,10 +84,19 @@ var (
 // silent quality drops in delegated cloud/k8s investigations.
 func TestAwsCliTool_ToolPromptSafetyRules(t *testing.T) {
 	joined := joinLines(AwsCliTool{}.ToolPrompt())
+	assert.Contains(t, joined, "do not override an agent policy", "aws ToolPrompt must defer read routing to the active agent")
 	assert.Contains(t, joined, "IAM", "aws ToolPrompt must warn against self-IAM-modify")
 	assert.Contains(t, joined, "--filters", "aws ToolPrompt must call out the plural --filters gotcha")
 	assert.Contains(t, joined, "Cost Explorer", "aws ToolPrompt must cover credit/refund exclusion")
 	assert.Contains(t, joined, "Evidence-based", "aws ToolPrompt must include evidence-based invariant")
+}
+
+func TestAwsCliTool_DescriptionDefersReadRoutingToAgent(t *testing.T) {
+	description := AwsCliTool{}.Description()
+	assert.Contains(t, description, "Follow the active agent's system prompt")
+	assert.Contains(t, description, "assigns AWS reads to the workspace shell")
+	assert.Contains(t, description, "approval and resume behavior is preserved")
+	assert.NotContains(t, description, "Prioritize this tool")
 }
 func TestGcpCliTool_ToolPromptSafetyRules(t *testing.T) {
 	joined := joinLines(GcpCliTool{}.ToolPrompt())
@@ -105,10 +114,19 @@ func TestAzureCliTool_ToolPromptSafetyRules(t *testing.T) {
 }
 func TestKubectlExecuteTool_ToolPromptSafetyRules(t *testing.T) {
 	joined := joinLines(KubectlExecuteTool{}.ToolPrompt())
+	assert.Contains(t, joined, "do not override an agent policy", "kubectl ToolPrompt must defer read routing to the active agent")
 	assert.Contains(t, joined, "namespace", "kubectl ToolPrompt must enforce namespace discipline")
 	assert.Contains(t, joined, "RBAC", "kubectl ToolPrompt must warn against self-RBAC-modify")
 	assert.Contains(t, joined, "--all-namespaces", "kubectl ToolPrompt must cover the -o json/-o yaml + all-namespaces context-saturation gotcha")
 	assert.Contains(t, joined, "--previous", "kubectl ToolPrompt must retain the empty-logs recovery hint")
+}
+
+func TestKubectlExecuteTool_DescriptionDefersReadRoutingToAgent(t *testing.T) {
+	description := KubectlExecuteTool{}.Description()
+	assert.Contains(t, description, "Follow the active agent's system prompt")
+	assert.Contains(t, description, "assigns Kubernetes reads to the workspace shell")
+	assert.Contains(t, description, "approval and resume behavior is preserved")
+	assert.NotContains(t, description, "Prioritize this tool")
 }
 
 // joinLines is defined in tool_prompt_test.go (added for helm/redis/rabbit).

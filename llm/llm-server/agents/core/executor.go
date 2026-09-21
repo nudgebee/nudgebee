@@ -80,16 +80,11 @@ func sanitizeErrorForUser(err error) string {
 	}
 	errStr := err.Error()
 
-	// "no LLM configuration found" (see selectAccountLLMIntegration,
-	// llm_common.go) means the account has enabled LLM integrations but none
-	// flagged as the default — a real, actionable account misconfiguration,
-	// not an internal fault. Left unhandled, this fell through to the raw
-	// `errStr` return below and leaked an internal account UUID and agent
-	// name to the end user with no indication of what to actually do.
+	// This is an actionable account misconfiguration, but the raw error also
+	// contains internal account and agent identifiers.
 	if strings.Contains(strings.ToLower(errStr), "no llm configuration found") {
 		return "This account has no default AI provider configured, so requests can't be processed. Ask an account admin to open Integrations → LLM Providers and mark one as the default."
 	}
-
 	// Check for common DB connection/timeout errors
 	// This list can be expanded based on observed errors
 	sensitivePatterns := []string{
@@ -135,7 +130,7 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(agent, request)),
+		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(ctx, agent, request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -152,14 +147,49 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 // variant — so tier + prompt variant + (model-keyed) cache slot stay consistent.
 // Investigations and sub-agents (isTopLevelPlainRetrievalTurn == false, or a non-
 // Reasoning base) keep their tier, so this only ever shifts the top-level query case.
-func resolveModelTier(agent NBAgent, request NBAgentRequest) ModelTier {
+// A turn that carries ANY explicit model configuration (hasExplicitModelConfig) is
+// never downshifted: the flag optimizes the default resolution path only, and a
+// user-chosen provider/model, per-tier pick, or config pin must resolve exactly as
+// chosen — same principle as tierPinFor (llm_config.go).
+// This shared executor policy runs before engine selection, so ReAct3 and ReAct4
+// resolve their models (and ReAct4 native-tool capability) using the same tier.
+func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) ModelTier {
 	base := agentModelCategory(agent)
-	if config.Config.LlmServerReact3QueryModelDownshiftEnabled &&
+	if config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled &&
 		base == ModelTierReasoning &&
-		isTopLevelPlainRetrievalTurn(request) {
+		isTopLevelPlainRetrievalTurn(request) &&
+		!hasExplicitModelConfig(ctx) {
 		return ModelTierSummary
 	}
 	return base
+}
+
+// hasExplicitModelConfig reports whether the request or conversation carries a
+// user-chosen model configuration: a blanket provider+model override, per-tier
+// picks, or a config-source pin. All four keys are stamped on the request context
+// by conversation.go before the executor runs — including the conversation-sticky
+// pin, which falls back to the stored conversation row there.
+func hasExplicitModelConfig(ctx *security.RequestContext) bool {
+	if ctx == nil {
+		return false
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return false
+	}
+	if p, _ := goCtx.Value(ContextKeyLlmProviderOverride).(string); p != "" {
+		return true
+	}
+	if m, _ := goCtx.Value(ContextKeyLlmModelOverride).(string); m != "" {
+		return true
+	}
+	if v, ok := goCtx.Value(ContextKeyLlmTierModelOverrides).(ConversationTierOverrides); ok && v.HasAny() {
+		return true
+	}
+	if s, _ := goCtx.Value(ContextKeyLlmConfigSourceOverride).(string); s != "" {
+		return true
+	}
+	return false
 }
 
 // promptVariantForRequest returns the prompt/cache variant for a turn. Only a
@@ -481,19 +511,19 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		request.PreviousState = previousState
 	}
 
-	// Attach the provider that will actually serve this agent's LLM calls, so
-	// prompt resolution (provider-specific files, provider-scoped DB config,
-	// provider-targeted experiments) matches it. Without this, prompt loads fall
-	// back to the deployment-wide LLM_PROVIDER env var, which per-account model
+	// Attach the model that will actually serve this agent's LLM calls, so
+	// prompt resolution (model-specific files, model-scoped DB config,
+	// model-targeted experiments) matches it. Without this, prompt loads fall
+	// back to the deployment-wide LLM_MODEL env var, which per-account model
 	// configuration, pinned sources, and conversation overrides can all disagree
 	// with. Resolution failure keeps the env fallback — same behavior as before.
 	// Rebind ctx locally instead of ctx.SetContext: sub-agents in a parallel
 	// action batch share the caller's RequestContext pointer, so an in-place
-	// mutation would race and leak one agent's provider into its siblings.
+	// mutation would race and leak one agent's model into its siblings.
 	if ctx != nil {
-		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Provider != "" {
+		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Model != "" {
 			ctx = security.NewRequestContext(
-				nbprompts.WithRequestProvider(ctx.GetContext(), res.Provider),
+				nbprompts.WithRequestModel(ctx.GetContext(), res.Model),
 				ctx.GetSecurityContext(),
 				ctx.GetLogger(),
 				ctx.GetTracer(),
@@ -565,86 +595,48 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if base := orchestratorSkillScopeName(agentName); base != "" {
 		ownSkillNames = append(ownSkillNames, base)
 	}
-	skillAgentNames := make([]string, 0, len(ownSkillNames)+len(request.InheritSkillsFromAgents))
-	skillAgentNames = append(skillAgentNames, ownSkillNames...)
-	skillAgentNames = append(skillAgentNames, request.InheritSkillsFromAgents...)
-
-	// Top-level invocation detection: OriginalQuery is empty until the executor
-	// stamps it here. Sub-agents reached via ExecuteAgentToolCall already carry
-	// the parent's OriginalQuery and SelectedSkillIds verbatim and must NOT re-run
-	// selection — running it against a mechanical sub-agent command (e.g.
-	// "fetch CPU for pod foo") would destroy the relevance signal.
-	isTopLevelInvocation := request.OriginalQuery == ""
-	if isTopLevelInvocation {
-		request.OriginalQuery = request.Query
-
-		// Question-aware skill narrowing produces a different `<skill-lists>` block
-		// for every distinct user question. That block is injected into the system
-		// prompt prefix, so for agents that opt into Account/Global LLM cache scope
-		// it would invalidate the cache on every new question — exactly the
-		// account-cache-thrash we're trying to avoid.
-		//
-		// Skip selection for cacheable scopes: `injectKBContext` will then keep
-		// all active mapped KBs (selectedIds == nil), giving an account-stable
-		// skill-lists block. Conversation-scope agents keep the BM25 narrowing
-		// because their cache is already per-conversation.
-		cacheScope := CacheScopeConversation
-		if cacheProvider, ok := agent.(NBAgentCacheScopeProvider); ok {
-			cacheScope = cacheProvider.GetCacheScope()
-		}
-
-		topK := config.Config.LlmServerSkillSelectionTopK
-		if cacheScope != CacheScopeConversation {
-			ctx.GetLogger().Debug("agentexecutor: skipping question-aware skill selection for cacheable scope",
-				"agent", agent.GetName(), "scope", cacheScope)
-		} else if topK > 0 {
-			candidates, cErr := toolcore.ListActiveAgentSkillCandidates(ctx, request.AccountId, skillAgentNames)
-			if cErr != nil {
-				ctx.GetLogger().Warn("agentexecutor: skill selection candidate fetch failed; falling back to show-all", "error", cErr, "agent", agent.GetName())
-			} else if len(candidates) > 0 {
-				selected := toolcore.SelectRelevantSkills(request.OriginalQuery, candidates, topK)
-				if selected != nil {
-					request.SelectedSkillIds = selected
-					ctx.GetLogger().Info("agentexecutor: skill selection narrowed mapped skills", "agent", agent.GetName(), "candidate_count", len(candidates), "selected_count", len(selected), "top_k", topK)
-				}
-			}
+	// KBs the user mapped to "All agents" are carried by a wildcard mapping row, so
+	// every agent resolves them by looking the sentinel up alongside its own names.
+	// Appended last so ownSkillNames[0] stays the canonical name for logging.
+	ownSkillNames = toolcore.WithKBAgentWildcard(ownSkillNames)
+	knowledgeMode := AgentKnowledgeDisabled
+	switch agent.GetPlannerType() {
+	case AgentPlannerTypeReAct, AgentPlannerTypeOrchestrating:
+		knowledgeMode = AgentKnowledgeIndexOnly
+	case AgentPlannerTypeCustom:
+		if provider, ok := agent.(NBAgentKnowledgeModeProvider); ok {
+			knowledgeMode = provider.GetKnowledgeMode()
 		}
 	}
 
+	// Preserve the user's original question across delegation. Knowledge discovery
+	// combines it with each agent's delegated task, so every agent gets a fresh,
+	// task-specific account-wide search without losing the user's intent.
+	isTopLevelInvocation := request.OriginalQuery == ""
+	if isTopLevelInvocation {
+		request.OriginalQuery = request.Query
+	}
+
 	kbChan := make(chan kbAssemblyResult, 1)
-	go func(prompt NBAgentPrompt, selected []string) {
-		userQuery := request.OriginalQuery
-		if userQuery == "" {
-			userQuery = request.Query
-		}
-		if config.Config.LlmServerKBPrestepEnabled {
-			// Pre-step path: KB content goes to the human message, not the
-			// cacheable system prefix. The `<skill-lists>` menu is built for any
-			// agent with KB mappings (so load_skills still works); the eager RAG
-			// retrieval runs uniformly across all agent invocations.
-			kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected)
-			// No zero-KB short-circuit: the retrieval below is account-wide RAG
-			// and needs no agent mapping — an agent with no mapped KBs must
-			// still surface account knowledge (e.g. a synced Confluence runbook
-			// for the alert under investigation, #34779). Only the menu is
-			// mapping-dependent; BuildSkillListsMenu returns "" for empty kbs.
-			// Per-KB retrieval: references reflect only the KBs whose content
-			// actually matched, not every mapped KB. If pre-step content was
-			// already populated or retrieval was already executed for this turn
-			// (e.g. propagated by the caller), reuse it to avoid redundant RAG calls.
-			block := strings.TrimSpace(request.KBPrestepContent)
-			kbRefs := request.KBReferences
-			if !request.KBPrestepExecuted && block == "" {
-				block, kbRefs = retrieveRelevantKB(ctx, request, kbs)
-				block = strings.TrimSpace(block)
-			}
-			menu := BuildSkillListsMenu(kbs, block != "")
-			kbChan <- kbAssemblyResult{prompt: prompt, menu: menu, prestepBlock: block, kbRefs: kbRefs}
+	go func(prompt NBAgentPrompt) {
+		discover := knowledgeMode != AgentKnowledgeDisabled && shouldDiscoverKnowledge(policy, request)
+		ctx.GetLogger().Info("knowledge: discovery decision", "policy", policy, "discover", discover, "agent", agent.GetName())
+		if !discover {
+			kbChan <- kbAssemblyResult{prompt: prompt}
 			return
 		}
-		// Legacy path: skill-lists injected into the cacheable system prompt.
-		kbChan <- kbAssemblyResult{prompt: injectKBContext(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, selected, prompt, userQuery)}
-	}(basePrompt, request.SelectedSkillIds)
+		// Mapped KBs are attribution fallbacks for legacy documents. Discovery
+		// itself is account-wide and relevance-ranked, never mapping-gated.
+		mappingStarted := time.Now()
+		kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, nil)
+		ctx.GetLogger().Info("knowledge: mappings resolved", "duration", time.Since(mappingStarted).String(), "count", len(kbs))
+		discovery := retrieveRelevantKB(ctx, request, kbs)
+		if knowledgeMode == AgentKnowledgeAutoChunks {
+			kbChan <- kbAssemblyResult{prompt: prompt, prestepBlock: strings.TrimSpace(discovery.content), kbRefs: discovery.references}
+			return
+		}
+		kbChan <- kbAssemblyResult{prompt: prompt, menu: discovery.menu}
+	}(basePrompt)
 
 	// When the Memory Module is enabled for this tenant, it is the sole memory
 	// source for the prompt. The legacy similarity-based notebook is skipped
@@ -699,13 +691,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if len(kbResult.prompt.Instructions) > 0 {
 		basePrompt = kbResult.prompt
 	}
-	// Pre-step path: carry the skill-lists menu and retrieved KB content on the
-	// request so the planner renders them into the human message (out of the
-	// cacheable system prefix). Empty on the legacy path.
+	// Carry the candidate menu or retrieved content on the request so the planner
+	// renders it into the human message, outside the cacheable system prefix.
 	request.SkillListsMenu = kbResult.menu
 	request.KBPrestepContent = kbResult.prestepBlock
 	request.KBReferences = kbResult.kbRefs
-	request.KBPrestepExecuted = true
 
 	// Persist pre-step KB references so the UI's "Skills used" surface shows
 	// which KBs the pre-step retrieval pulled in — the same way it shows lazy
@@ -714,69 +704,6 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if agentId != uuid.Nil && len(kbResult.kbRefs) > 0 {
 		if err := GetConversationDao().SaveAgentReferences(request.AccountId, request.ConversationId, request.MessageId, agentId.String(), kbResult.kbRefs); err != nil {
 			ctx.GetLogger().Warn("agentexecutor: failed to save KB pre-step references", "error", err)
-		}
-	}
-
-	// Custom-planner agents (loganalysis, metrics, traces, logs, logs_default,
-	// resource_search, websearch) implement their own Execute() and bypass the
-	// systemMessage path below, so the lazy `<skill-lists>` + load_skills mechanism
-	// injected into basePrompt above never reaches their LLM. Eagerly load the full
-	// bodies of the selected mapped KBs into request.SkillsContext so their
-	// Execute() can prepend it to its prompt.
-	//
-	// "Selected" honours request.SelectedSkillIds when LlmServerSkillSelectionTopK
-	// is enabled — otherwise every active KB mapped to (own ∪ inherited names) is
-	// loaded. Per-KB references for whatever was actually loaded are appended to
-	// the final agent response below so the UI can show "Skills used" entries the
-	// same way it lists tool references.
-	var skillReferences []toolcore.NBToolResponseReference
-	if agent.GetPlannerType() == AgentPlannerTypeCustom {
-		// Eager-load inherited skills only when a selection exists to narrow them.
-		// Without a selection (e.g. an account-scoped orchestrator propagating its
-		// skills down — SelectedSkillIds is nil there to keep its prompt cache stable)
-		// LoadActiveAgentSkillContents would force EVERY inherited runbook body into
-		// this mechanical sub-agent (a metrics/logs agent loading unrelated runbooks).
-		// Own skills are always loaded; inherited ones stay lazily available to ReAct
-		// sub-agents via their <skill-lists> menu rather than being force-fed here.
-		eagerSkillNames := ownSkillNames
-		if len(request.SelectedSkillIds) > 0 {
-			eagerSkillNames = skillAgentNames
-		}
-		skillsContext, refs, sErr := toolcore.LoadActiveAgentSkillContents(ctx, request.AccountId, eagerSkillNames, request.SelectedSkillIds)
-		if sErr != nil {
-			ctx.GetLogger().Warn("agentexecutor: failed to load active agent skill contents", "error", sErr, "agent", agent.GetName())
-		} else if skillsContext != "" {
-			ctx.GetLogger().Info("agentexecutor: injecting eager skills content for custom-planner agent", "agent", agent.GetName(), "size", len(skillsContext), "skill_count", len(refs), "inherited_from", request.InheritSkillsFromAgents, "selection_active", request.SelectedSkillIds != nil)
-			request.SkillsContext = skillsContext
-			skillReferences = refs
-
-			// Persist skill references to llm_conversation_references so
-			// the UI can render them in the "Additional Contexts" tab.
-			// This mirrors the lazy path in planner_callback_handler.go
-			// which saves them on load_skills tool completion.
-			// Every agent in the chain attempts to save — the DAO's
-			// WHERE NOT EXISTS deduplicates on (conversation, message,
-			// reference_id, reference_type), so inherited skills that
-			// were already saved by a parent are silently skipped while
-			// skills mapped directly to a sub-agent are still persisted.
-			if agentId != uuid.Nil && len(refs) > 0 {
-				kbRefs := make([]AgentReference, 0, len(refs))
-				for _, ref := range refs {
-					if ref.Type == "skill" && ref.Url != "" {
-						kbRefs = append(kbRefs, AgentReference{
-							Type:        AgentReferenceTypeKB,
-							ReferenceID: ref.Url,
-							Metadata: map[string]any{
-								"name":        ref.Text,
-								"description": ref.Description,
-							},
-						})
-					}
-				}
-				if err := GetConversationDao().SaveAgentReferences(request.AccountId, request.ConversationId, request.MessageId, agentId.String(), kbRefs); err != nil {
-					ctx.GetLogger().Warn("agentexecutor: failed to save eager skill KB references", "error", err)
-				}
-			}
 		}
 	}
 
@@ -955,7 +882,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Merge skill references into the response before the DB save so that the
 	// agent record's JSON "references" column includes them alongside tool refs.
-	mergedReferences := dedupeSkillReferences(append(response.References, skillReferences...))
+	mergedReferences := dedupeSkillReferences(response.References)
 
 	referencesJson := ""
 	if mergedReferences != nil {
@@ -1648,146 +1575,4 @@ func limitStringLength(s string, maxLength int) string {
 	const ellipsis = "..."
 	// Leave space for the ellipsis
 	return s[:maxLength-len(ellipsis)] + ellipsis
-}
-
-// injectKBContext checks if agent has KB mappings and injects a `<skill-lists>` block
-// into the system prompt. ownNames are the agent's own name and back-compat aliases;
-// inheritedNames are ancestor names a delegated sub-agent inherits so it can also see
-// KBs the user mapped to its custom-planner parent.
-//
-// selectedIds is the question-aware selection produced once at top-level entry. When
-// non-nil it filters KBs inherited from ancestor agents to only those IDs; KBs mapped
-// directly to one of the agent's own names are ALWAYS retained — they are scoped to
-// that agent's specific job and shouldn't be hidden by an upstream filter.
-func injectKBContext(ctx *security.RequestContext, accountId string, ownNames []string, inheritedNames []string, selectedIds []string, prompt NBAgentPrompt, userQuery string) NBAgentPrompt {
-	if accountId == "" || len(ownNames) == 0 {
-		return prompt
-	}
-
-	kbs := fetchAgentKBs(ctx, accountId, ownNames, inheritedNames, selectedIds)
-	// Use the primary (first) name for downstream logging.
-	agentName := ownNames[0]
-
-	if len(kbs) == 0 {
-		// No KB mappings for this agent
-		ctx.GetLogger().Debug("agentexecutor: no KB mappings found for agent", "agent", agentName)
-		return prompt
-	}
-
-	// Check if any active integration KBs exist — if so, fetch RAG previews
-	// (only when the feature flag is enabled).
-	hasIntegrationKBs := false
-	if config.Config.LlmServerIntegrationKBEnabled {
-		for _, kb := range kbs {
-			if kb.Status == "active" && kb.KBType == "integration" {
-				hasIntegrationKBs = true
-				break
-			}
-		}
-	}
-
-	// Fetch RAG previews for integration KBs in the background while we
-	// build the manual skill list.
-	type ragPreview struct {
-		title   string
-		preview string
-		source  string
-	}
-	ragCh := make(chan []ragPreview, 1)
-	if hasIntegrationKBs && strings.TrimSpace(userQuery) != "" {
-		go func() {
-			ragStart := time.Now()
-			ragDocs := toolcore.QueryRAG("", accountId, userQuery, "knowledge_base",
-				3, "", "", "", false)
-			ctx.GetLogger().Info("agentexecutor: RAG preview fetch complete",
-				"agent", agentName, "duration_ms", time.Since(ragStart).Milliseconds(),
-				"result_count", len(ragDocs))
-			var previews []ragPreview
-			for _, doc := range ragDocs {
-				content := doc.Document
-				// Extract first 2-3 lines as preview.
-				lines := strings.SplitN(content, "\n", 4)
-				preview := strings.Join(lines[:min(len(lines), 3)], " ")
-				preview = strings.TrimSpace(preview)
-				if len(preview) > 300 {
-					preview = preview[:300] + "..."
-				}
-				if preview == "" {
-					continue
-				}
-				// Extract title from metadata or first line.
-				title := ""
-				if t, ok := doc.Metadata["title"].(string); ok && t != "" {
-					title = t
-				} else if len(lines) > 0 {
-					title = strings.TrimSpace(lines[0])
-					if len(title) > 100 {
-						title = title[:100]
-					}
-				}
-				source := ""
-				if s, ok := doc.Metadata["source"].(string); ok {
-					source = s
-				}
-				previews = append(previews, ragPreview{title: title, preview: preview, source: source})
-			}
-			ragCh <- previews
-		}()
-	} else {
-		ragCh <- nil
-	}
-
-	// Build skill-lists context with planner-type-aware guidance
-	var skillList []string
-	guidance := "The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis."
-	skillList = append(skillList,
-		"<skill-lists>",
-		guidance,
-	)
-
-	activeCount := 0
-	for _, kb := range kbs {
-		if kb.Status != "active" {
-			continue
-		}
-		activeCount++
-		escapedName := escapeTemplateSyntax(kb.Name)
-		escapedDesc := escapeTemplateSyntax(kb.Description)
-		if strings.TrimSpace(escapedDesc) != "" {
-			skillList = append(skillList, fmt.Sprintf("name: %s - description: %s", escapedName, escapedDesc))
-		} else {
-			skillList = append(skillList, fmt.Sprintf("name: %s", escapedName))
-		}
-	}
-
-	// Wait for RAG previews and append integration skill entries.
-	var ragPreviews []ragPreview
-	select {
-	case ragPreviews = <-ragCh:
-	case <-time.After(5 * time.Second):
-		ctx.GetLogger().Warn("agentexecutor: RAG preview fetch timed out", "agent", agentName)
-	}
-	for _, rp := range ragPreviews {
-		activeCount++
-		entry := fmt.Sprintf("name: %s - source: %s - preview: %s",
-			escapeTemplateSyntax(rp.title),
-			escapeTemplateSyntax(rp.source),
-			escapeTemplateSyntax(rp.preview))
-		skillList = append(skillList, entry)
-	}
-
-	skillList = append(skillList, "</skill-lists>")
-
-	// Inject KB list into the system prompt if we have any active KBs
-	if activeCount > 0 {
-		ctx.GetLogger().Info("agentexecutor: injecting skill-lists into system prompt",
-			"agent", agentName, "manual_count", activeCount-len(ragPreviews),
-			"rag_preview_count", len(ragPreviews))
-		// Prepend skill list to existing instructions
-		prompt.Instructions = append(skillList, prompt.Instructions...)
-	} else {
-		ctx.GetLogger().Debug("agentexecutor: found KBs but none are active", "agent", agentName)
-	}
-
-	return prompt
 }

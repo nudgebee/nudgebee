@@ -1,35 +1,34 @@
 # Prompt Versioning System
 
-This directory contains all LLM prompts for the system, organized by provider and version.
+This directory contains all LLM prompts for the system, organized by model and version.
 
 ## Directory Structure
 
 ```
 prompts/
-├── default/                  # Provider-agnostic prompts (active content lives here)
+├── default/                  # Model-agnostic prompts (active content lives here)
 │   └── v1/
 │       ├── agents/           # Agent system prompts
-│       │   └── k8s_debug.txt
-│       ├── planners/         # Reserved for planner prompts
-│       ├── tools/            # Reserved for tool prompts
-│       └── utilities/        # Reserved for utility prompts
+│       ├── planners/         # Planner prompts
+│       ├── tools/            # Tool prompts
+│       ├── utilities/        # Utility prompts
+│       └── _fragments/       # Include-only partials shared across prompts
 │
-├── bedrock/                  # Reserved: AWS Bedrock (Llama) optimizations
-├── azure/                    # Reserved: Azure OpenAI (GPT-4) optimizations
-├── openai/                   # Reserved: Direct OpenAI optimizations
-├── googleai/                 # Reserved: Google Gemini optimizations
-├── anthropic/                # Reserved: Direct Anthropic optimizations
+├── models/                    # Per-model and per-family overrides, one subdirectory per key
+│   ├── .gitkeep                # keeps //go:embed all:models valid with no overrides yet
+│   └── <model-or-family>/v1/agents/...   # e.g. models/qwen/v1/agents/k8s_lean.yaml
 │
 ├── loader.go                 # Embedded FS loader with version + experiment resolution
-├── registry.go               # Prompt name constants and promptMapping
+├── registry.go               # Prompt name constants and promptCategories
 ├── types.go                  # DB types (experiments, config, metrics)
 ├── db.go                     # Database queries for config and experiments
 ├── cache.go                  # In-memory cache layer
 └── metrics.go                # OpenTelemetry metrics
 ```
 
-> Provider directories (bedrock/, azure/, etc.) currently contain only `.gitkeep` files.
-> Add prompt files there when provider-specific overrides are needed.
+> Add a `models/<model>/v1/...` file only when that exact model needs different
+> instructions than `default/`. New model directories need no Go/embed change —
+> `//go:embed all:default all:models` already covers the whole subtree.
 
 ---
 
@@ -37,11 +36,11 @@ prompts/
 
 | File | Responsibility |
 |------|---------------|
-| `registry.go` | Prompt name constants (`PromptAgent*`) and `promptMapping` that maps each constant to its filename + category. Entry point for callers: `GetPrompt()`, `RenderPrompt()`, `GetProviderFromConfig()`. |
-| `loader.go` | Core loading engine. Embeds the `default/` directory tree via `//go:embed`. Owns the `PromptLoader` struct which chains: cache check → experiment lookup → DB config lookup → hardcoded default → `loadPromptFile()`. Also owns `InitializeGlobalLoader()`, `GetLoader()`, and cache management helpers (`ClearCache`, `ClearCacheForPrompt`, `ClearCacheForAccount`). |
+| `registry.go` | Prompt name constants (`Prompt*`) and `promptCategories` that maps each constant to its category directory. Entry point for callers: `GetPrompt()`, `RenderPrompt()`, `GetModelFromConfig()`. |
+| `loader.go` | Core loading engine. Embeds the `default/` and `models/` directory trees via `//go:embed`. Owns the `PromptLoader` struct which chains: cache check → experiment lookup → DB config lookup → hardcoded default → `loadPromptFile()`. Also owns `InitializeGlobalLoader()`, `GetLoader()`, and cache management helpers (`ClearCache`, `ClearCacheForPrompt`, `ClearCacheForAccount`). |
 | `types.go` | All shared types: `PromptCategory`, `ConfigSource`, `PromptRequest/Response/Metadata`, `ResolvedConfig`, DB structs (`DBConfig`, `DBExperiment`, `DBAuditLog`, `DBMetrics`), and admin API request/response structs. |
-| `db.go` | All PostgreSQL queries. `PromptDB` wraps `common.DatabaseManager` and provides: `GetConfig` (version override lookup with account+provider priority), `GetActiveExperiments` (A/B test targeting), `CreateExperiment` (with overlap detection), `UpsertConfig`, `DisableExperiment`, `UpdateExperimentAccounts`, `CreateAuditLog`, `GetAuditLogs`, `RecordMetrics`, `GetExperimentMetrics`, `IsAvailable` (ping + table existence check). Gracefully degrades — DB errors fall through to embedded defaults. |
-| `cache.go` | Thread-safe in-memory TTL cache (`PromptCache`). Cache key is `name:category:provider:accountID`. Supports targeted invalidation by prompt name, by account, or full clear. Background goroutine cleans up expired entries every 5 minutes. Default TTL is 1 hour. |
+| `db.go` | All PostgreSQL queries. `PromptDB` wraps `common.DatabaseManager` and provides: `GetConfig` (version override lookup with account+model priority, exact model tried before its canonicalized form), `GetActiveExperiments` (A/B test targeting), `CreateExperiment` (with overlap detection), `UpsertConfig`, `DisableExperiment`, `UpdateExperimentAccounts`, `CreateAuditLog`, `GetAuditLogs`, `RecordMetrics`, `GetExperimentMetrics`, `IsAvailable` (ping + table existence check). Gracefully degrades — DB errors fall through to embedded defaults. |
+| `cache.go` | Thread-safe in-memory TTL cache (`PromptCache`). Cache key is `name:category:model:accountID`. Supports targeted invalidation by prompt name, by account, or full clear. Background goroutine cleans up expired entries every 5 minutes. Default TTL is 1 hour. |
 | `metrics.go` | OpenTelemetry metrics. Registers six counters/histograms under the `nb_llm_*` namespace: total loads, load latency, cache hit/miss, config source distribution, experiment participation, and error count. Recording happens asynchronously (goroutine) so it never blocks prompt loading. |
 | `loader_test.go` | Tests for `PromptLoader`: embedded file resolution, fallback path ordering, cache behaviour, and graceful DB-absent operation. |
 | `registry_test.go` | Tests for `GetPrompt` and `RenderPrompt`: mapping lookup, template rendering, missing module handling. |
@@ -55,19 +54,38 @@ prompts/
 When loading a prompt the system tries four paths in order:
 
 1. **Active Experiment** — account-targeted A/B test version (DB)
-2. **Database Configuration** — account/provider-specific override (DB)
+2. **Database Configuration** — account/model-specific override (DB)
 3. **Hardcoded Default** — falls back to `v1`
 
 ### File Path Resolution
 
-For each resolution step the loader tries paths in order:
+For each resolution step the loader tries paths in order, where `{model}` is the
+resolved model exactly as configured (e.g. `qwen3-235b-vertex`), `{canonicalModel}`
+is its canonicalized form (only tried when it differs from `{model}`), and
+`{family}` is its shared model-line override, if any (only tried when it differs
+from both — see `modelFamily` in `loader.go`; e.g. any model containing `qwen`
+resolves its family tier to `models/qwen/`):
 
 ```
-{provider}/{version}/{category}/{name}.txt
-default/{version}/{category}/{name}.txt
-{provider}/v1/{category}/{name}.txt
-default/v1/{category}/{name}.txt      ← always the final fallback
+models/{model}/{version}/{category}/{name}.yaml
+models/{canonicalModel}/{version}/{category}/{name}.yaml
+models/{family}/{version}/{category}/{name}.yaml
+default/{version}/{category}/{name}.yaml
+models/{model}/v1/{category}/{name}.yaml
+models/{canonicalModel}/v1/{category}/{name}.yaml
+models/{family}/v1/{category}/{name}.yaml
+default/v1/{category}/{name}.yaml      ← always the final fallback
 ```
+
+If `model` resolves to `"default"` (no model-specific config anywhere), the
+`models/` tier is skipped entirely and resolution goes straight to `default/`.
+
+Family matching is deliberately coarse — it exists for guardrails that apply to
+a whole model line regardless of the exact deployment string (self-hosted vLLM,
+a specific gateway integration, a vendor's hosted endpoint all resolve the same
+way). Add an exact or canonical override alongside a family one when a specific
+deployment needs to diverge from what the rest of its family gets — exact and
+canonical are tried first and always win.
 
 ### Fallback to Legacy prompts_repo
 
@@ -249,7 +267,7 @@ curl -X POST http://localhost:9999/api/admin/prompts/config/version \
   -d '{
     "prompt_name": "k8s_debug",
     "category": "agents",
-    "provider": "default",
+    "model": "default",
     "new_version": "v2",
     "reason": "v2 validated and promoted"
   }'
@@ -257,22 +275,41 @@ curl -X POST http://localhost:9999/api/admin/prompts/config/version \
 
 ---
 
-## Provider-Specific Overrides
+## Model-Specific and Family Overrides
 
-Create a provider-specific file when a model needs different instruction formatting
-(e.g., Llama instruction tags for Bedrock, GPT-4 JSON mode for Azure):
+Create a **model-specific** file when one exact deployment string needs different
+instructions or formatting than every other model sharing the same base prompt
+(vendor-specific formatting quirks, a fix scoped to one gateway integration):
 
 ```bash
-mkdir -p prompts/bedrock/v1/agents
-cp prompts/default/v1/agents/k8s_debug.txt \
-   prompts/bedrock/v1/agents/k8s_debug.txt
-
-# Add Llama-specific formatting (e.g., [INST] / [/INST] tags)
-vim prompts/bedrock/v1/agents/k8s_debug.txt
+mkdir -p prompts/models/<exact-model-string>/v1/agents
+cp prompts/default/v1/agents/k8s_lean.yaml \
+   prompts/models/<exact-model-string>/v1/agents/k8s_lean.yaml
 ```
 
-The loader automatically picks up the provider-specific file when the runtime
-provider resolves to `bedrock`.
+Create a **family** file instead when a whole model line needs the same tuning
+regardless of which exact deployment string it's configured under (e.g. every
+Qwen deployment — self-hosted vLLM, an AI-gateway integration, a vendor-hosted
+endpoint — needs the same extra guardrails a large frontier model doesn't):
+
+```bash
+mkdir -p prompts/models/qwen/v1/agents
+cp prompts/default/v1/agents/k8s_lean.yaml \
+   prompts/models/qwen/v1/agents/k8s_lean.yaml
+
+# Edit with the family-specific instructions
+vim prompts/models/qwen/v1/agents/k8s_lean.yaml
+```
+
+The loader automatically picks up the family file for any request whose resolved
+model *contains* the family key (case-insensitive) — `qwen3-235b-vertex`,
+`Qwen/Qwen3.6-35B-A3B-FP8`, and `qwen/qwen3-vl-235b-a22b-instruct` all resolve to
+`models/qwen/`. The known families live in `modelFamilyPatterns` in `loader.go`
+— add an entry there for a new family key. No code change is needed for a new
+*exact* or *canonical* override, only for a new *family*.
+
+Resolution always tries exact, then canonical, then family, in that order — a
+model-specific file next to a family one always wins for that one deployment.
 
 ---
 
@@ -292,7 +329,7 @@ curl -X POST http://localhost:9999/api/admin/prompts/config/version \
   -d '{
     "prompt_name": "k8s_debug",
     "category": "agents",
-    "provider": "default",
+    "model": "default",
     "new_version": "v1",
     "reason": "emergency rollback"
   }'
@@ -304,12 +341,15 @@ curl -X POST http://localhost:9999/api/admin/prompts/config/version \
 
 | Table | Purpose |
 |-------|---------|
-| `llm_prompt_configuration` | Per-prompt/account/provider version overrides |
+| `llm_prompt_configuration` | Per-prompt/account/model version overrides |
 | `llm_prompt_experiments` | A/B test experiment definitions |
 | `llm_prompt_config_audit` | Audit log of all configuration changes |
 | `llm_prompt_usage_metrics` | Per-load latency and cache metrics |
 
-All tables are created by migration `V658_create_prompt_versioning_tables` (golang-migrate, `api-server/migrations/migrations/app/`).
+Tables were created by migration `V658_create_prompt_versioning_tables` (provider-scoped)
+and converted to model-scoping by `V916_convert_prompt_versioning_to_model_scoping`
+(Atlas, `api-server/migrations/migrations/app/`) — the `provider` column on each table
+was dropped and replaced with `model`.
 
 ---
 

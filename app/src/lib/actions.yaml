@@ -754,6 +754,29 @@ actions:
     permissions:
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: ai_get_cost_report_schedule
+    comment: Read this tenant's configured AI Cost Daily Report send hour (UTC), or the 06:00 default if unset
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_get_cost_report_schedule'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: ai_upsert_cost_report_schedule
+    comment: Set this tenant's AI Cost Daily Report send hour (UTC)
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_upsert_cost_report_schedule'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
   # Cross-tenant critique reads, no account/tenant scoping in the query.
   # Gated tenant_admin(_readonly)/super_admin(_readonly) — sees ALL tenants' data.
   - name: critiques_aggregate_all
@@ -1314,6 +1337,19 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
     comment: List all agents with their KB mapping counts
+  - name: ai_list_kb_agents
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: List the agents a knowledge base is mapped to
   - name: ai_list_gc
     definition:
       kind: "synchronous"
@@ -1355,6 +1391,19 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
     comment: Get load history for a knowledge base
+  - name: ai_list_kb_retrieval
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: List the knowledge base documents a query would retrieve, ranked, with whether each would reach the agent
   - name: ai_sync_kb
     definition:
       kind: synchronous
@@ -1779,6 +1828,18 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Update a knowledge base
+  - name: ai_update_kb_enabled
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Turn a knowledge base on or off without changing its content
   - name: ai_update_tool
     comment: Update a custom agent tool
     definition:
@@ -4238,6 +4299,20 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_usage
+  - name: observability_get_label_mapping
+    comment: Resolve the effective canonical to provider log field mapping, with the tier each value came from
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/provider'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
   - name: recommendation_export
     comment: Export recommendations to a downloadable file
     definition:

@@ -186,6 +186,11 @@ export default function OwnershipRuleModal({ open, onClose, rule }) {
       open={open}
       handleClose={() => (saving ? undefined : onClose(false))}
       title={rule ? 'Edit rule' : 'Add rule'}
+      subtitle={
+        rule
+          ? 'Ownership moved? Change what this rule matches and who it hands the resources to — they re-resolve on the next lookup.'
+          : 'Every resource deserves an owner. Match a namespace, workload label or cloud resource and hand it to a user or group.'
+      }
       width='sm'
       loader={saving}
       actionButtons={actionButtons}

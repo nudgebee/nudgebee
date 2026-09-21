@@ -179,16 +179,41 @@ func HandleGenerateEventAnalysisDigestApi(
 	// request's trace and logger values; the explicit timeout still bounds it.
 	detached, cancel := context.WithTimeout(
 		context.WithoutCancel(ctx.GetContext()), digestGenerationTimeout)
-	defer cancel()
 	genCtx := security.NewRequestContext(detached, sec, ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 
-	if genErr := generateDigestForPeriod(genCtx, period, events.DigestSourceOnDemand); genErr != nil {
-		return events.Digest{}, fmt.Errorf("HandleGenerateEventAnalysisDigestApi: %w", genErr)
-	}
+	// Started in the background and answered immediately rather than run inline.
+	// Waiting held the connection for the length of the run — up to the full
+	// generation bound — which spends one of the browser's handful of per-host
+	// slots, is far past any reverse proxy's read timeout, and pins a handler for
+	// a client that may already be gone. Nothing is lost by answering early: the
+	// stored row carries the outcome and the caller watches it.
+	go func() {
+		defer cancel()
+		// A panic in a detached goroutine takes the process down rather than
+		// failing one request, so it has to be caught here.
+		defer func() {
+			if r := recover(); r != nil {
+				genCtx.GetLogger().Error("digest: on-demand generation panicked",
+					"panic", r, "tenant_id", tenantID, "period_start", request.PeriodStart)
+			}
+		}()
+		if genErr := generateDigestForPeriod(genCtx, period, events.DigestSourceOnDemand); genErr != nil {
+			// Already recorded on the row by storeDigestFailure; logged so the run
+			// is greppable without reading the table.
+			genCtx.GetLogger().Error("digest: on-demand generation failed",
+				"error", genErr, "tenant_id", tenantID, "period_start", request.PeriodStart)
+		}
+	}()
 
+	// The row as it stands, which is the pre-run state. The caller polls it and
+	// treats a change to generated_at as the run having finished.
 	digest, err := events.GetDigest(ctx, tenantID, periodStart)
 	if err != nil {
-		return events.Digest{}, fmt.Errorf("HandleGenerateEventAnalysisDigestApi: reading back: %w", err)
+		// The run is already underway, so failing here would tell the caller
+		// nothing started. Report the accepted request and let the poll find it.
+		ctx.GetLogger().Warn("digest: started on-demand run but could not read the current row",
+			"error", err, "tenant_id", tenantID, "period_start", request.PeriodStart)
+		return events.Digest{}, nil
 	}
 	return digest, nil
 }

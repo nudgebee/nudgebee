@@ -93,7 +93,7 @@ const ImageScanEvidence = ({ recommendation, ruleName: _ruleName, estimatedSavin
                 fontSize: ds.text.bodyLg,
                 fontWeight: ds.weight.semibold,
                 color: severityColor(severity),
-                fontFamily: 'Roboto Mono, monospace',
+                fontFamily: ds.font.mono,
                 textDecoration: 'none',
                 '&:hover': { textDecoration: 'underline' },
               }}

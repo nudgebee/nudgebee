@@ -445,6 +445,12 @@ type Mutation {
 }
 
 type Mutation {
+  ai_update_kb_enabled(
+    request: UpdateKBEnabledRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
   ai_update_tool(
     request: UpdateToolRequest!
   ): UpdateToolResponse
@@ -1290,6 +1296,38 @@ type Query {
 }
 
 type Query {
+  observability_get_label_mapping(request: GetLabelMappingRequest!): LabelMappingResponse
+}
+
+input GetLabelMappingRequest {
+  account_id: String!
+  provider: String
+  provider_source: String
+  provider_type: String
+  draft_mappings: jsonb
+  draft_set: Boolean
+}
+
+type LabelMappingField {
+  canonical: String!
+  effective: String
+  winning_tier: String
+  contributions: jsonb
+}
+
+type LabelMappingResponse {
+  account_id: String!
+  provider: String
+  provider_source: String
+  provider_type: String
+  integration_saved: Boolean
+  draft_applied: Boolean
+  tier_order: [String!]
+  fields: [LabelMappingField!]
+  effective: jsonb
+}
+
+type Query {
   insights_list(
     where: InsightWhereRequest
     limit: Int
@@ -1346,6 +1384,7 @@ type Mutation {
     request: IntegrationTestConnectionConfigRequest!
   ): IntegrationTestConnectionResponse
 }
+
 
 type Mutation {
   integrations_upsert_discovery_target(
@@ -4127,11 +4166,14 @@ input AIFollowupRequest {
   agent_id: String!
   async: Boolean!
   config: AIConfigInput
+  resolution: String
+  reason: String
 }
 
 input AIConfigInput {
   llm_provider: String
   llm_model_name: String
+  event_id: String
 }
 
 input ApplicationDeploymentCompareRequest {
@@ -4497,10 +4539,12 @@ input FetchLogRequest {
 input FetchLogLabelRequest {
   account_id: String!
   log_provider: String
+  log_provider_source: String
   request: jsonb
   start_time: Float
   end_time: Float
   fetch_index: Boolean
+  integration_config_values: [IntegrationConfigValueInput]
 }
 
 input FetchLogLabelValuesRequest {
@@ -5164,6 +5208,8 @@ input KnowledgebaseInput {
   data: String!
   format: String!
   file_name: String!
+  note_category: String
+  context_tags: [String!]
 }
 
 input KnowledgebaseUpdateInput {
@@ -5173,6 +5219,8 @@ input KnowledgebaseUpdateInput {
   data: String
   format: String
   file_name: String
+  note_category: String
+  context_tags: [String!]
 }
 
 input CreateKBRequest {
@@ -5192,6 +5240,12 @@ input ListKBRequest {
 input UpdateKBRequest {
   account_id: String!
   knowledgebase: KnowledgebaseUpdateInput!
+}
+
+input UpdateKBEnabledRequest {
+  account_id: String!
+  kb_id: String!
+  enabled: Boolean!
 }
 
 input DeleteKBRequest {
@@ -8190,6 +8244,8 @@ type ProviderCapabilities {
   supports_cross_zone_communication: Boolean!
   supported_operators: [String]
   supported_operator_descriptors: [OperatorDescriptor!]
+  label_mappings: jsonb
+  default_index: String
 }
 
 type OperatorDescriptor {
@@ -8507,6 +8563,7 @@ type WorkflowExecutionCountResponse {
 type WorkflowUser {
   id: String
   display_name: String
+  username: String
 }
 
 type Workflow {
@@ -9227,6 +9284,8 @@ type KnowledgebaseOutput {
   updated_at: timestamp
   document_count: Int
   last_loaded_at: timestamp
+  note_category: String
+  context_tags: [String!]
 }
 
 type CreateKBResponse {
@@ -9245,6 +9304,11 @@ type ListKBResponse {
 }
 
 type UpdateKBResponse {
+  data: jsonb
+  errors: [Error]
+}
+
+type UpdateKBEnabledResponse {
   data: jsonb
   errors: [Error]
 }
@@ -10288,6 +10352,7 @@ type AISaveRcaFormatResponse {
 type AIGetRcaFormatResponseData {
   is_default: Boolean
   format: String
+  default_format: String
 }
 
 type AISaveRcaFormatResponseData {

@@ -139,7 +139,8 @@ export function CostReportTabDisabled() {
         <Card variant='outlined' size='sm' elevation='flat'>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
             <InfoRow icon={<ScheduleOutlinedIcon sx={{ fontSize: 18 }} />} label='Delivery schedule'>
-              Posted daily at 6:00 AM UTC (~11:30 AM IST), once the previous day is fully complete.
+              Posted daily, once the previous day is fully complete, at a UTC hour you can configure once AI Cost Report is enabled (defaults to 6:00
+              AM UTC).
             </InfoRow>
             <InfoRow icon={<TagOutlinedIcon sx={{ fontSize: 18 }} />} label='Where it goes'>
               <WhereItGoes status={channelStatus} />

@@ -451,8 +451,55 @@ func TestAmazonFargateRecommendationCoverage(t *testing.T) {
 }
 
 func TestFargateServiceFiltersByLaunchType(t *testing.T) {
-	// Test that the service properly filters for Fargate launch type
-	// This would require mocking AWS SDK responses
-	// For now, we just verify the constants are correct
-	assert.Equal(t, types.LaunchTypeFargate, types.LaunchTypeFargate)
+	name := func(s string) *string { return &s }
+	strategy := func(providers ...string) []types.CapacityProviderStrategyItem {
+		items := make([]types.CapacityProviderStrategyItem, 0, len(providers))
+		for _, p := range providers {
+			items = append(items, types.CapacityProviderStrategyItem{CapacityProvider: name(p)})
+		}
+		return items
+	}
+
+	t.Run("service", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			service types.Service
+			want    bool
+		}{
+			{"explicit fargate launch type", types.Service{LaunchType: types.LaunchTypeFargate}, true},
+			{"explicit ec2 launch type", types.Service{LaunchType: types.LaunchTypeEc2}, false},
+			// A capacity provider strategy leaves LaunchType empty, so the strategy
+			// is the only signal that the service runs on Fargate.
+			{"FARGATE capacity provider", types.Service{CapacityProviderStrategy: strategy("FARGATE")}, true},
+			{"FARGATE_SPOT capacity provider", types.Service{CapacityProviderStrategy: strategy("FARGATE_SPOT")}, true},
+			{"mixed strategy with fargate", types.Service{CapacityProviderStrategy: strategy("my-asg", "FARGATE_SPOT")}, true},
+			{"ec2 capacity provider only", types.Service{CapacityProviderStrategy: strategy("my-asg")}, false},
+			{"nothing set", types.Service{}, false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				assert.Equal(t, tt.want, isFargateService(tt.service))
+			})
+		}
+	})
+
+	t.Run("task", func(t *testing.T) {
+		tests := []struct {
+			name string
+			task types.Task
+			want bool
+		}{
+			{"explicit fargate launch type", types.Task{LaunchType: types.LaunchTypeFargate}, true},
+			{"explicit ec2 launch type", types.Task{LaunchType: types.LaunchTypeEc2}, false},
+			{"FARGATE capacity provider", types.Task{CapacityProviderName: name("FARGATE")}, true},
+			{"FARGATE_SPOT capacity provider", types.Task{CapacityProviderName: name("FARGATE_SPOT")}, true},
+			{"ec2 capacity provider", types.Task{CapacityProviderName: name("my-asg")}, false},
+			{"nothing set", types.Task{}, false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				assert.Equal(t, tt.want, isFargateTask(tt.task))
+			})
+		}
+	})
 }

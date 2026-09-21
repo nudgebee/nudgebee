@@ -1,100 +1,12 @@
 package tools
 
 import (
-	"reflect"
 	"testing"
 
 	jira "github.com/andygrunwald/go-jira"
 	"github.com/trivago/tgo/tcontainer"
 )
 
-func TestBuildADFDocument(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []map[string]any
-	}{
-		{
-			name: "single line",
-			in:   "hello world",
-			want: []map[string]any{
-				{
-					"type": "paragraph",
-					"content": []map[string]any{
-						{"type": "text", "text": "hello world"},
-					},
-				},
-			},
-		},
-		{
-			name: "multi line",
-			in:   "a\nb\nc",
-			want: []map[string]any{
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "a"}}},
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "b"}}},
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "c"}}},
-			},
-		},
-		{
-			name: "blank line preserved",
-			in:   "a\n\nb",
-			want: []map[string]any{
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "a"}}},
-				{"type": "paragraph", "content": []map[string]any{}},
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "b"}}},
-			},
-		},
-		{
-			name: "crlf normalized",
-			in:   "a\r\nb",
-			want: []map[string]any{
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "a"}}},
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "b"}}},
-			},
-		},
-		{
-			name: "lone cr normalized",
-			in:   "a\rb",
-			want: []map[string]any{
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "a"}}},
-				{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": "b"}}},
-			},
-		},
-		{
-			name: "empty string",
-			in:   "",
-			want: []map[string]any{
-				{"type": "paragraph", "content": []map[string]any{}},
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := buildADFDocument(tc.in)
-
-			if got["type"] != "doc" {
-				t.Errorf("type = %v, want %q", got["type"], "doc")
-			}
-			if got["version"] != 1 {
-				t.Errorf("version = %v, want 1", got["version"])
-			}
-
-			content, ok := got["content"].([]map[string]any)
-			if !ok {
-				t.Fatalf("content type = %T, want []map[string]any", got["content"])
-			}
-			if !reflect.DeepEqual(content, tc.want) {
-				t.Errorf("content mismatch\n  got  %#v\n  want %#v", content, tc.want)
-			}
-		})
-	}
-}
-
-// build produces a CreateMetaInfo with one project and one issue type, mirroring the
-// shape that the go-jira JSON decoder yields. Inner field values are stored as plain
-// map[string]interface{} (not tcontainer.MarshalMap) so the production type assertion
-// `field.(map[string]interface{})` matches what JSON unmarshaling actually produces.
 func TestSanitizeJiraMeta(t *testing.T) {
 	build := func(fields map[string]map[string]interface{}) *jira.CreateMetaInfo {
 		f := tcontainer.MarshalMap{}

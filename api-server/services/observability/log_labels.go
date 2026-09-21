@@ -3,7 +3,6 @@ package observability
 import (
 	"encoding/json"
 	"log/slog"
-	"maps"
 	"time"
 
 	"nudgebee/services/common"
@@ -159,28 +158,107 @@ type DynamicLabelMappingSource interface {
 	GetDynamicLabelMapping(ctx *security.RequestContext, accountId string) map[string]string
 }
 
-// getMergedLabelMapping returns the provider's static label mapping merged with
-// tenant-wide, account-specific, and (optionally) integration-dynamic overrides.
-// Precedence (highest → lowest): dynamic (integration config) > account > tenant > static.
-func getMergedLabelMapping(ctx *security.RequestContext, accountId string, source LogSource) map[string]string {
-	staticMap := source.GetLabelMapping()
-	tenantId := ctx.GetSecurityContext().GetTenantId()
-	tenantMap := getTenantLogLabels(ctx, tenantId)
-	accountMap := getCustomLogLabels(ctx, accountId)
+// knownCanonicalLogFields is the vocabulary the Advanced Settings panel advertises
+// as mappable, so an operator can see what they COULD map and not only what some
+// tier already sets.
+//
+// It is display metadata, nothing more: it does not gate resolution (any key an
+// operator types is honoured) and it is deliberately NOT a canonical-field
+// dictionary of the kind traces carry — logs have no types, descriptions or
+// per-field operator derivation, and inventing half of that here would be worse than
+// leaving it to the dedicated change. Sourced from the names the log pipeline
+// actually builds filters from: buildWorkloadLogWhereClause ("app", "namespace"),
+// autoExecuteByTraceID ("trace_id"), LogsFilterMap ("content"), and the Pinot/Hive
+// column mappings.
+var knownCanonicalLogFields = []string{
+	"app",
+	"container",
+	"content",
+	"level",
+	"message",
+	"namespace",
+	"pod",
+	"timestamp",
+	"trace_id",
+}
 
-	var dynamicMap map[string]string
+// labelMappingOverride replaces the integration tier with caller-supplied rows, so
+// the Advanced Settings panel can preview a mapping the operator has typed but not
+// yet saved.
+//
+// Set is load-bearing and separate from a nil/empty Mappings: Set=true with no rows
+// means "the operator deleted every row, so the integration tier contributes
+// nothing", which is a different answer from a nil override ("read what is saved").
+// Same distinction the frontend's previouslySet rule solves on the save side.
+type labelMappingOverride struct {
+	Set      bool
+	Mappings map[string]string
+}
+
+// resolveLogLabelMapping is the single implementation of the canonical -> provider
+// field merge. getMergedLabelMapping projects it for query execution and
+// GetLogLabelMapping projects it for the Advanced Settings panel, so the mapping an
+// operator is shown is by construction the mapping their queries will use.
+//
+// Precedence is declared once, in labelMappingTierOrder. Every tier fails open to an
+// empty map, so a missing integration or an unreachable DB degrades the answer
+// rather than failing the query.
+func resolveLogLabelMapping(ctx *security.RequestContext, accountId string,
+	source LogSource, draft *labelMappingOverride) ResolvedLabelMapping {
+	// The source names the integration it reads from, so nothing upstream has to
+	// thread it: every log source is dispatched for exactly one (provider, source)
+	// pair, and knows which.
+	ref := source.ProviderRef()
+	byTier := map[LabelMappingTier]map[string]string{
+		LabelTierProviderDefault: source.GetLabelMapping(),
+		LabelTierTenant:          getTenantLogLabels(ctx, ctx.GetSecurityContext().GetTenantId()),
+		LabelTierAccount:         getCustomLogLabels(ctx, accountId),
+	}
+
 	if dyn, ok := source.(DynamicLabelMappingSource); ok {
-		dynamicMap = dyn.GetDynamicLabelMapping(ctx, accountId)
+		byTier[LabelTierProviderConfig] = dyn.GetDynamicLabelMapping(ctx, accountId)
 	}
 
-	if len(tenantMap) == 0 && len(accountMap) == 0 && len(dynamicMap) == 0 {
-		return staticMap
+	switch {
+	case draft != nil && draft.Set:
+		byTier[LabelTierIntegration] = sanitizeLabelMapping(draft.Mappings)
+	default:
+		byTier[LabelTierIntegration] = getIntegrationLogLabels(ctx, accountId, ref)
 	}
 
-	merged := make(map[string]string, len(staticMap)+len(tenantMap)+len(accountMap)+len(dynamicMap))
-	maps.Copy(merged, staticMap)
-	maps.Copy(merged, tenantMap)
-	maps.Copy(merged, accountMap)
-	maps.Copy(merged, dynamicMap)
-	return merged
+	return newResolvedLabelMapping(byTier)
+}
+
+// getMergedLabelMapping returns the canonical -> provider field map queries are
+// rewritten with. Keep this body a single projection of resolveLogLabelMapping: the
+// moment it re-implements any part of the merge, the Advanced Settings panel starts
+// lying about what queries actually do.
+func getMergedLabelMapping(ctx *security.RequestContext, accountId string, source LogSource) map[string]string {
+	return resolveLogLabelMapping(ctx, accountId, source, nil).Effective
+}
+
+// InvalidateLogLabelsCacheForAccount drops the cached account-level log labels and
+// every cached integration-level mapping for this account.
+//
+// Without this, an edit to cloud_account_attrs.log_labels took up to the 10 min TTL
+// to apply — and the Advanced Settings panel would keep reporting the old answer
+// right after a save, which is precisely when someone is looking at it.
+func InvalidateLogLabelsCacheForAccount(accountId string) {
+	if accountId == "" {
+		return
+	}
+	if err := common.CacheDelete(logLabelsCacheNamespace, accountId); err != nil {
+		slog.Warn("InvalidateLogLabelsCacheForAccount: failed to invalidate", "account_id", accountId, "error", err)
+	}
+	InvalidateLogLabelMappingsCache(accountId)
+}
+
+// InvalidateLogLabelsCacheForTenant drops the cached tenant-level log labels.
+func InvalidateLogLabelsCacheForTenant(tenantId string) {
+	if tenantId == "" {
+		return
+	}
+	if err := common.CacheDelete(logLabelsCacheNamespace, tenantCacheKeyPrefix+tenantId); err != nil {
+		slog.Warn("InvalidateLogLabelsCacheForTenant: failed to invalidate", "tenant_id", tenantId, "error", err)
+	}
 }

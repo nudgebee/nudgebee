@@ -580,8 +580,8 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {filtersRow}
-        <Skeleton height={120} />
-        <Skeleton height={280} />
+        <Skeleton shape='rect' height={120} />
+        <Skeleton shape='rect' height={280} />
       </Box>
     );
   }

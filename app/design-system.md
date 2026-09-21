@@ -1097,6 +1097,8 @@ Form-field value picker. Single by default; `multiple` discriminates a union. Bu
 | `loading`                  | `boolean`                    | —                     | —                                                       |
 | `disablePortal`            | `boolean`                    | —                     | —                                                       |
 
+`onCreateOption?: (value: string) => boolean | void` opts into custom values: search is always shown, and unmatched trimmed text gets an Add row or can be added with Enter. The caller validates and persists the value; return `false` to keep invalid text for correction. Existing pickers are unchanged when omitted.
+
 **Single** (`multiple` omitted/`false`): `value: string \| null` (✓), `onChange: (next: string) => void` (✓).
 **Multi** (`multiple: true`): `value: string[]` (✓), `onChange: (next: string[]) => void` (✓), `maxChips?` (default 2), `hideOptionCheckbox?`.
 `SelectOption`: `{ value (✓), label?, icon?, disabled? }`.
@@ -1595,3 +1597,12 @@ These live under `@shared/*` and are kept here because §1–§3 reference them.
 ---
 
 _End of guide._
+
+### DropdownMenu: staged selection
+
+`closeOnSelect` defaults to `true`; ordinary action menus are unchanged. Set it to
+`false` for a single staged setting and provide `footer={(close) => ...}` with
+explicit Save/Cancel controls. Cancel calls `close`; the caller owns draft state
+and resets it from the saved value on the next trigger click. Dismissal must not
+persist the draft. The footer is outside the options scroll region. Use wrapped
+React-node descriptions for long text; keep menus to a few choices.

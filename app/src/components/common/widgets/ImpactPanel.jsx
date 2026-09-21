@@ -102,7 +102,7 @@ const AggChip = ({ label }) => (
   <Box
     component='span'
     sx={{
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontFamily: 'var(--ds-font-mono)',
       fontSize: 10.5,
       color: 'var(--ds-gray-600)',
       bgcolor: 'var(--ds-background-100)',
@@ -168,7 +168,7 @@ const TierRow = ({ item, color, goTo, showRarity, isChange, folded, seedName }) 
               fontWeight: 600,
               color: badge.fg,
               bgcolor: badge.bg,
-              borderRadius: '999px',
+              borderRadius: 'var(--ds-radius-pill)',
             }}
           >
             {badge.label}

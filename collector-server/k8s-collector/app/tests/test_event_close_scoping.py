@@ -129,10 +129,14 @@ class TestDiscoveryCleanupScoping(unittest.TestCase):
 
 
 class TestWorkloadRecoveryClose(unittest.TestCase):
-    """The recovery close is DEFAULT OFF (see Configs.EVENT_CLOSE_ON_WORKLOAD_RECOVERY):
-    the readiness signal it uses closes live crashloops. These tests pin the predicate
-    it will use once a sound signal replaces `ready_pods == total_pods`, so the
-    scoping work already done is not lost when it is re-enabled.
+    """The recovery close is DEFAULT ON (see Configs.EVENT_CLOSE_ON_WORKLOAD_RECOVERY).
+
+    The readiness signal it uses is a single sample and closes some live crashloops:
+    measured on dev, 39 of the 43 events it closed went within ten minutes of being
+    raised and 17 re-fired within two hours. It is on anyway, by product decision --
+    without it the agent's findings have no resolve path at all. These tests pin the
+    scoping that keeps the damage bounded, and stay valid for the sound signal
+    (ready AND no restart since the previous snapshot) when it replaces the sample.
     """
 
     def setUp(self):
@@ -222,12 +226,14 @@ class TestWorkloadRecoveryClose(unittest.TestCase):
             dh.close_events_for_recovered_workloads(ACCOUNT, [self._workload(LIVE_RESOURCE, 1, 1)])
         closer.assert_not_called()
 
-    def test_flag_is_off_by_default(self):
-        """Readiness alone closes live crashloops -- nothing may close on it until a
-        sound recovery signal replaces it."""
+    def test_flag_is_on_by_default(self):
+        """Pins the deliberate default. Flipping it is a product decision with a
+        measured false-close rate on both sides -- off means agent findings never
+        resolve, on means some live crashloops close early -- so neither value may
+        change silently as a side effect of another edit."""
         from config import Settings
 
-        self.assertFalse(Settings.model_fields["EVENT_CLOSE_ON_WORKLOAD_RECOVERY"].default)
+        self.assertTrue(Settings.model_fields["EVENT_CLOSE_ON_WORKLOAD_RECOVERY"].default)
 
 
 class TestLegacyStatusUpdate(unittest.TestCase):
@@ -245,3 +251,77 @@ class TestLegacyStatusUpdate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeletedResourceClose(unittest.TestCase):
+    """process_deleted_resources must close the deleted resource's events.
+
+    Regression cover for #38238: the close matched on `service_key` alone, which the
+    Go agent's discovery writes as `<ns>/<Kind>/<name>` while the agent's own findings
+    write `<ns>/<name>`. The two never matched, so a deleted workload kept its alerts
+    open forever -- 2,288 of them on production against 1,509 resources that no longer
+    existed, and only 5 `resource_deleted` closes in the lifetime of the table.
+    """
+
+    # `_id` = uuid5(service_key + account), written as both cloud_resourses.id and
+    # external_resource_id by process_service_discovery.
+    GONE_ID = "b0000000-0000-0000-0000-00000000dead"
+    # What discovery calls the resource...
+    DISCOVERY_KEY = "ns/Deployment/report-worker"
+
+    def _run(self, deleted):
+        rec = _Recorder([])
+        with mock.patch.object(dh.database, "run_query", side_effect=rec), mock.patch.object(
+            dh, "close_events_with_history"
+        ) as closer:
+            dh.process_deleted_resources(ACCOUNT, deleted, TENANT)
+        return rec, closer
+
+    def test_close_is_keyed_on_the_resource_id(self):
+        """The id arm is what makes the close work across the two key formats."""
+        _, closer = self._run({self.GONE_ID: self.DISCOVERY_KEY})
+        closer.assert_called_once()
+        kwargs = closer.call_args.kwargs
+        self.assertIn("cloud_resource_id = ANY(%s::uuid[])", kwargs["where_conditions"])
+        self.assertEqual(kwargs["params"][0], [self.GONE_ID])
+        self.assertEqual(kwargs["closing_reason"], "resource_deleted")
+
+    def test_service_key_arm_is_retained_for_robusta_clusters(self):
+        """Robusta writes both sides in the same format; that arm still closes there."""
+        _, closer = self._run({self.GONE_ID: self.DISCOVERY_KEY})
+        kwargs = closer.call_args.kwargs
+        self.assertIn("service_key = ANY(%s)", kwargs["where_conditions"])
+        self.assertEqual(kwargs["params"][1], [self.DISCOVERY_KEY])
+
+    def test_close_uses_the_same_ids_as_the_inventory_updates(self):
+        """The ids are already correct here -- k8s_pods/k8s_workloads key on them."""
+        rec, closer = self._run({self.GONE_ID: self.DISCOVERY_KEY})
+        inventory_params = [
+            values for stmt, values in rec.queries if "UPDATE k8s_pods" in stmt or "UPDATE k8s_workloads" in stmt
+        ]
+        self.assertEqual(len(inventory_params), 2)
+        for values in inventory_params:
+            self.assertEqual(values[-1], closer.call_args.kwargs["params"][0])
+
+    def test_nothing_deleted_touches_nothing(self):
+        rec, closer = self._run({})
+        closer.assert_not_called()
+        self.assertEqual(rec.queries, [])
+
+    def test_emitted_sql_binds_params_in_predicate_order(self):
+        """Guards the ordering between the two %s placeholders and params."""
+        rec = _Recorder([])
+        with mock.patch.object(dh.database, "run_query", side_effect=rec), mock.patch.object(
+            dh.database, "insert_data"
+        ):
+            dh.process_deleted_resources(ACCOUNT, {self.GONE_ID: self.DISCOVERY_KEY}, TENANT)
+
+        updates = [(q, v) for q, v in rec.queries if "UPDATE events SET status = 'CLOSED'" in q]
+        self.assertEqual(len(updates), 1)
+        statement, values = updates[0]
+        self.assertIn(
+            "WHERE cloud_account_id = %s AND (cloud_resource_id = ANY(%s::uuid[]) "
+            "OR service_key = ANY(%s)) AND status != 'CLOSED'",
+            statement,
+        )
+        self.assertEqual(values, [ACCOUNT, [self.GONE_ID], [self.DISCOVERY_KEY]])

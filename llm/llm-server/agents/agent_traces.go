@@ -57,11 +57,19 @@ func newTracesAgent(ctx *security.RequestContext, accountId string, primaryAgent
 	// they stay on their dedicated agents like ClickHouse/Datadog.
 	isCloudCLI := provider == "gcp" || provider == "azure" || provider == "aws"
 
-	// Integration-agnostic (v2) routing: when enabled, every where-clause-capable
-	// provider goes through the canonical TracesDefaultAgentV2 (llm-server emits one
-	// canonical query; services-server translates it per provider). ClickHouse (raw-SQL
-	// aggregations) and Datadog (facet syntax) can't be expressed canonically, so they
-	// stay on their dedicated agents. Flag off → the v1 switch below, byte-identical.
+	// Integration-agnostic (v2) routing: when enabled, a where-clause-capable provider goes
+	// through the canonical TracesDefaultAgentV2 (llm-server emits one canonical query;
+	// services-server translates it per provider).
+	//
+	// ClickHouse and Datadog are excluded — but NOT because their queries cannot be
+	// expressed canonically. Canonical FILTERING works for both today: each source
+	// implements the canonical where-clause path, and DatadogTraceSource.GetLabelMapping
+	// is a complete canonical→facet translation table. What the canonical request cannot
+	// express is a free-form aggregate projection (e.g. quantile(0.95)(duration_ns)
+	// GROUP BY endpoint), which is what these providers' dedicated agents are kept for.
+	// Narrowing this carve-out to aggregation-shaped questions is tracked in #36875.
+	//
+	// Flag off → the v1 switch below, byte-identical.
 	if traceAgentV2Enabled() && !isClickhouse && !isDatadog && !isCloudCLI {
 		return &fallbackTracesAgent{
 			accountId: accountId,
@@ -194,6 +202,8 @@ func (f *fallbackTracesAgent) Execute(ctx *security.RequestContext, query core.N
 			InheritSkillsFromAgents: append(query.InheritSkillsFromAgents, f.GetName()),
 			OriginalQuery:           query.OriginalQuery,
 			SelectedSkillIds:        query.SelectedSkillIds,
+			KnowledgePolicy:         string(query.KnowledgePolicy),
+			KnowledgePolicyResolved: query.KnowledgePolicyResolved,
 		}
 
 		nbToolCallRequest := toolcore.NBToolCallRequest{}

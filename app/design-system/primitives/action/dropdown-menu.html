@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="ds-last-changed-on" content="2026-09-06" />
+    <title>DropdownMenu — staged selection</title>
+  </head>
+  <body>
+    <h1>DropdownMenu</h1>
+    <p>Uses the shared overlay surface, item, separator, and scrolling primitives. Default action menus close immediately on selection.</p>
+    <h2>Staged selection</h2>
+    <p>
+      Set <code>closeOnSelect=false</code> to keep the menu open while changing a draft. Supply <code>footer(close)</code> for Save and Cancel
+      controls beneath the scrollable options. Saving is explicit; Cancel and dismissal never persist changes. The consumer resets draft state when
+      reopening.
+    </p>
+    <h2>Interaction</h2>
+    <p>
+      The trigger exposes expanded state. Items retain keyboard navigation and disabled states. Keep Save disabled while saving or when unchanged;
+      show errors within the open menu. Existing menu behavior is unchanged when these optional props are omitted.
+    </p>
+  </body>
+</html>

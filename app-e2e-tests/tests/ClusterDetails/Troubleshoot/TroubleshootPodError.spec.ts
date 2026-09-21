@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { TroubleshootTabLocator } from "./TroubleshootTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-test("Graphql testing Cluster Details->Troubleshoot-> Pod Errors", async ({ page }, testInfo) => {
+test("Graphql testing Cluster Details->Troubleshoot-> Pod Errors", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

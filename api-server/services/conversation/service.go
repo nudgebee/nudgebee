@@ -160,6 +160,7 @@ WHERE c.tenant_id = $1::uuid
   AND c.account_id = $2
   AND ($3::uuid IS NULL OR c.id = $3::uuid)
   AND ($4::text IS NULL OR c.session_id = $4::text)
+ORDER BY c.updated_at DESC
 LIMIT 1
 `
 

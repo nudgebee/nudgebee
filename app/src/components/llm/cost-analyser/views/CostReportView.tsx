@@ -13,7 +13,8 @@
  */
 import * as React from 'react';
 import dayjs from 'dayjs';
-import { Box } from '@mui/material';
+import { Box, IconButton, Tooltip } from '@mui/material';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import CustomTable2 from '@shared/tables/CustomTable';
 import CustomDateTimePicker from '@shared/widgets/CustomDateTimePicker';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -23,10 +24,12 @@ import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { CostCallout } from '@ui/CostCallout';
 import { EmptyState } from '@ui/EmptyState';
+import { isSuperAdmin, isTenantAdmin } from '@lib/auth';
 import HeaderLabel from '../components/HeaderLabel';
 import SectionHeader from '../components/Section';
 import { fmtCost, fmtPct } from '../format';
 import { makeSeverity, SeverityCell, type Severity } from '../components/severity';
+import CostReportScheduleModal from './CostReportScheduleModal';
 import {
   aggregateAccountCostReport,
   type AiCostAccountRow,
@@ -51,13 +54,18 @@ const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', 
 
 const H = {
   account: <HeaderLabel label='Account' info='The account the cost was incurred on.' />,
-  daily: <HeaderLabel label='Daily' info='Total AI cost for the date selected in the picker above.' />,
+  daily: (
+    <HeaderLabel
+      label='Daily'
+      info='Total AI cost for the 24 hours starting at your configured send hour on the selected date — see the schedule gear above for that hour.'
+    />
+  ),
   mtd: <HeaderLabel label='MTD' info='Total AI cost from the 1st of the month through the selected date.' />,
   prevMonth: <HeaderLabel label='Prev month' info='Total AI cost for the entire previous calendar month.' />,
   avgThisMonth: <HeaderLabel label='Avg/day (this mo)' info='Month-to-date cost divided by days elapsed this month.' />,
   avgPrevMonth: <HeaderLabel label='Avg/day (prev mo)' info='Previous month’s total cost divided by days in that month.' />,
   delta: <HeaderLabel label='%Δ' info='Change in average daily spend, this month vs previous month.' />,
-  dailyDrivers: <HeaderLabel label='Top daily drivers' info='Top 5 cost contributors on the selected date, by model and by source.' />,
+  dailyDrivers: <HeaderLabel label='Top daily drivers' info='Top 5 cost contributors in that same 24-hour window, by model and by source.' />,
   mtdDrivers: (
     <HeaderLabel label='Top MTD drivers' info='Top 5 cost contributors month-to-date (through the selected date), by model and by source.' />
   ),
@@ -237,6 +245,7 @@ function toTopSourceRow(s: AiCostTopSourceRow) {
 
 export function CostReportView({ accountId, onAccountChange, accountOptions, referenceDate, onReferenceDateChange }: CostReportViewProps) {
   const [sort, setSort] = React.useState<{ name: string; order: 'asc' | 'desc' }>({ name: '', order: 'asc' });
+  const [scheduleModalOpen, setScheduleModalOpen] = React.useState(false);
   const [state, setState] = React.useState<{
     loading: boolean;
     error: string | null;
@@ -366,9 +375,17 @@ export function CostReportView({ accountId, onAccountChange, accountOptions, ref
                 size='sm'
                 width='160px'
               />
+              {(isTenantAdmin() || isSuperAdmin()) && (
+                <Tooltip title='Cost report schedule'>
+                  <IconButton id='cost-report-schedule-btn' size='small' onClick={() => setScheduleModalOpen(true)}>
+                    <SettingsOutlinedIcon sx={{ fontSize: '18px', color: 'var(--ds-gray-500)' }} />
+                  </IconButton>
+                </Tooltip>
+              )}
             </Box>
           }
         />
+        <CostReportScheduleModal open={scheduleModalOpen} onClose={() => setScheduleModalOpen(false)} />
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
           {state.error && <Banner tone='critical' title='Could not load account cost report' message={state.error} />}
 

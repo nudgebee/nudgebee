@@ -45,6 +45,7 @@ func TestLoadActiveGlobalContext_EmptyAccountID(t *testing.T) {
 }
 
 func TestLoadActiveGlobalContext_ExpiredCacheEntry(t *testing.T) {
+	registerUnavailableMetastore(t)
 	const accountID = "acct-cache-expired"
 	t.Cleanup(func() { InvalidateActiveGCCache(testTenantID, accountID) })
 
@@ -61,6 +62,7 @@ func TestLoadActiveGlobalContext_ExpiredCacheEntry(t *testing.T) {
 }
 
 func TestLoadActiveGlobalContext_TenantIsolation(t *testing.T) {
+	registerUnavailableMetastore(t)
 	// A cache entry stored under tenant A must not be returned when a
 	// request authenticated as tenant B loads the same account_id.
 	const accountID = "acct-shared"

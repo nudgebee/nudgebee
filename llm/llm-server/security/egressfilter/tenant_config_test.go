@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tmc/langchaingo/llms"
 )
 
 // installFakeLoaderForTest registers a loader function and restores the
@@ -357,4 +358,72 @@ func TestFilterPIIMappingByCategory(t *testing.T) {
 		assert.Len(t, kept, 4)
 		assert.Empty(t, unscrub)
 	})
+}
+
+// A gate in reverse: it TURNS OFF detection -> every uncertain path must
+// default to "not excluded".
+func TestAgentExcluded(t *testing.T) {
+	cases := []struct {
+		name  string
+		cfg   *TenantConfig
+		agent string
+		want  bool
+	}{
+		{"nil config excludes nothing", nil, "websearch", false},
+		{"empty list excludes nothing", &TenantConfig{}, "websearch", false},
+		{"exact match", &TenantConfig{DisabledAgents: []string{"websearch"}}, "websearch", true},
+		{"case-insensitive", &TenantConfig{DisabledAgents: []string{"WebSearch"}}, "websearch", true},
+		{"whitespace tolerated", &TenantConfig{DisabledAgents: []string{"  websearch  "}}, "websearch", true},
+		// Both sides trimmed -> a padded ctx value still matches.
+		{"whitespace on the incoming agent", &TenantConfig{DisabledAgents: []string{"websearch"}}, "  websearch  ", true},
+		{"whitespace-only agent never matches", &TenantConfig{DisabledAgents: []string{"websearch"}}, "   ", false},
+		{"different agent not excluded", &TenantConfig{DisabledAgents: []string{"websearch"}}, "k8s_orchestrator", false},
+		{"empty agent name never matches", &TenantConfig{DisabledAgents: []string{"websearch"}}, "", false},
+		// No substring match -> "websearch" must not disable "websearch_writer".
+		{"no substring match", &TenantConfig{DisabledAgents: []string{"web"}}, "websearch", false},
+		{"no prefix match", &TenantConfig{DisabledAgents: []string{"websearch"}}, "websearch_writer", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.cfg.AgentExcluded(tc.agent))
+		})
+	}
+}
+
+// Through the wrapper: excluded agent not scanned, another still is. Real
+// credential -> a failure means an unreported leak, not a counter diff.
+func TestWrapModel_AgentExclusionSkipsScan(t *testing.T) {
+	const leak = "leaked: ghp_Abcdefghijklmnopqrstuvwxyz0123456789"
+	tenant := uuid.New()
+
+	SetTenantConfigLoader(func(context.Context, uuid.UUID) (*TenantConfig, error) {
+		return &TenantConfig{
+			TenantID:       tenant,
+			Enabled:        true,
+			Mode:           ModeDetect,
+			DisabledAgents: []string{"websearch"},
+		}, nil
+	})
+	t.Cleanup(func() { SetTenantConfigLoader(nil); invalidateAllTenantConfigsForTest() })
+	invalidateAllTenantConfigsForTest()
+
+	run := func(agent string) *FilterEvent {
+		inner := &fakeModel{respText: "ok"}
+		wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeDetect)
+		var got *FilterEvent
+		ctx := WithTenantID(context.Background(), tenant)
+		ctx = WithAgentName(ctx, agent)
+		ctx = WithFilterEventReporter(ctx, func(e FilterEvent) { got = &e })
+		_, err := wrapped.GenerateContent(ctx,
+			[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, leak)})
+		require.NoError(t, err)
+		return got
+	}
+
+	assert.Nil(t, run("websearch"), "excluded agent must produce no event — scan skipped")
+
+	ev := run("k8s_orchestrator")
+	require.NotNil(t, ev, "a non-excluded agent must still be scanned")
+	assert.Contains(t, ev.RuleIDs, "github-pat",
+		"exclusion must be per-agent, not a global off switch")
 }

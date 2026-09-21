@@ -29,6 +29,7 @@ const (
 	MetricKeyTrigger        = "trigger"
 	MetricKeyOutcome        = "outcome"
 	MetricKeyUnresolved     = "unresolved"
+	MetricKeyBaseSynced     = "base_synced"
 	MetricKeyResult         = "result"
 )
 
@@ -491,13 +492,17 @@ func MetricsPRFollowupDispatch(ctx context.Context, table, trigger string) {
 // "success", "no_op", or "failed". unresolved is true only for a no_op where the
 // agent had actionable input (review comments / CI failure) but couldn't apply a
 // change — the churn signal that is otherwise indistinguishable from "nothing to do".
-func MetricsPRFollowupOutcome(ctx context.Context, outcome string, unresolved bool) {
+// baseSynced is true when the run merged the PR's base branch into the PR branch
+// and pushed it (#36864), which separates base syncs from real comment/CI fixes —
+// most of them are "success" runs that never invoked the planner at all.
+func MetricsPRFollowupOutcome(ctx context.Context, outcome string, unresolved, baseSynced bool) {
 	if metricsPRFollowupOutcomeTotal == nil {
 		return
 	}
 	metricsPRFollowupOutcomeTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(MetricKeyOutcome, outcome),
 		attribute.Bool(MetricKeyUnresolved, unresolved),
+		attribute.Bool(MetricKeyBaseSynced, baseSynced),
 	))
 }
 

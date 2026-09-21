@@ -501,6 +501,7 @@ const apiAccount = {
         'solarwinds',
         'solarwinds_webhook',
         'elasticsearch_webhook',
+        'openobserve_webhook',
         'workflow_webhook',
         'google_chat_space',
         'slack',
@@ -648,6 +649,11 @@ const apiAccount = {
       }
       if (update.data) {
         object.data = update.data;
+      }
+      // Compared against undefined, not truthiness: an empty array clears the
+      // AWS region allowlist (back to auto-discovery) and must reach the server.
+      if (update.regions !== undefined) {
+        object.regions = update.regions;
       }
       const response = await queryGraphQL(UPDATE_ACCOUNT, 'UpdateCloudAccount', { object });
       return response;

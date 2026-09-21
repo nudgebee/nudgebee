@@ -11,6 +11,16 @@ package core
 // 6. ENV tier-specific (e.g., LLM_TIER_PROVIDER_REASONING).
 // 7. ENV Global (e.g., LLM_PROVIDER).
 //
+// Escape hatch: setting LLM_CONFIG_IGNORE_DB=true drops layers 2-4 entirely, so
+// the ENV layers decide. Off by default; intended for local runs against a DB
+// whose tenant config points at models the operator has no credentials for.
+// It covers layers 2-4 only, by short-circuiting getLLMIntegrationConfig. Layer
+// 1 still reads the DB through two paths that fetch independently of it:
+// GetConversationOverride (reads llm_conversations) and integrationConfigForPin
+// (a pinned llm_config_source=db:<uuid>, via getLLMIntegrationsForAccount). So
+// resuming a stored conversation still resolves that conversation's model even
+// with the flag set.
+//
 // **DB always beats ENV at any specificity.** Rationale: multi-tenant clients
 // onboard via UI, which writes to integration_config_values. ENV is the
 // operator process-level default. When DB has a value it is the tenant's
@@ -322,9 +332,11 @@ type ForwardedLLMConfig struct {
 // ResolveLLMConfigForForwarding resolves the full, decrypted LLM config for the
 // given account/agent in one call, reusing the canonical resolvers (which apply
 // the DB-beats-ENV precedence and decrypt secrets). It returns nil (no error)
-// only when no provider resolves at all, in which case the caller omits the
-// block and the pod falls back to its global LLM_* secret env. The returned
-// ApiKey is plaintext and MUST NOT be logged.
+// only when no provider resolves at all. The workspace pod carries no
+// LLM_PROVIDER_API_KEY fallback (#38009), so both current callers
+// (agents/agent_code2.go, via resolveLLMConfigForDispatch) treat a nil result
+// the same as an error: dispatch is aborted rather than silently proceeding.
+// The returned ApiKey is plaintext and MUST NOT be logged.
 //
 // A missing API key is NOT a reason to skip forwarding. Keyless providers are
 // legitimate — Bedrock authenticates through the AWS credential chain, not an
@@ -336,8 +348,8 @@ type ForwardedLLMConfig struct {
 // let the pod fail on the real problem instead.
 func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agentName, conversationId string) (*ForwardedLLMConfig, error) {
 	// Fail-safe: without a tenant/account scope there is nothing tenant-specific
-	// to forward (and we must never run an unscoped tenant lookup). Skip
-	// forwarding so the pod uses its global LLM_* fallback.
+	// to forward (and we must never run an unscoped tenant lookup). Callers
+	// treat this nil result as fatal (#38009), not as a signal to fall back.
 	if accountId == "" {
 		return nil, nil
 	}

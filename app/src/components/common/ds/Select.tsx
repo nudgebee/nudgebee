@@ -108,6 +108,8 @@ interface SelectBaseProps {
    * to override.
    */
   searchable?: boolean;
+  /** Opt-in custom value creation. Return false to retain the search after validation fails. */
+  onCreateOption?: (value: string) => boolean | void;
   /** Placeholder for the search input. Default `'Search…'`. */
   searchPlaceholder?: string;
   /** Show a skeleton placeholder list in the popup while options load. */
@@ -272,6 +274,7 @@ export function Select(props: SelectProps) {
     minWidth,
     popoverWidth,
     searchable,
+    onCreateOption,
     searchPlaceholder = 'Search…',
     loading = false,
     grouped = false,
@@ -310,7 +313,15 @@ export function Select(props: SelectProps) {
   const toggleGroup = (header: string) => setOpenGroups((prev) => ({ ...prev, [header]: !prev[header] }));
 
   // Auto-show search when there are many options; `searchable` prop overrides.
-  const showSearch = searchable ?? options.length > 8;
+  const showSearch = !!onCreateOption || (searchable ?? options.length > 8);
+  const customValue = search.trim();
+  const canCreate =
+    !!onCreateOption &&
+    !!customValue &&
+    !options.some((option) => typeof option?.value === 'string' && option.value.toLowerCase() === customValue.toLowerCase());
+  const createOption = () => {
+    if (canCreate && onCreateOption?.(customValue) !== false) setSearch('');
+  };
 
   // Reset search + group expansion whenever the popup closes, so each open
   // starts from the same collapsed-groups baseline (FilterDropdown's grouped
@@ -601,7 +612,7 @@ export function Select(props: SelectProps) {
           {help}
         </Box>
       )}
-      {hasError && (
+      {hasError && !(open && onCreateOption) && (
         <Box component='span' id={errorId} role='alert' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)' }}>
           {error}
         </Box>
@@ -619,9 +630,36 @@ export function Select(props: SelectProps) {
       >
         {/* Search input — pinned at the top, outside the scroll area, so it
             stays visible while the user scrolls through long option lists. */}
-        {showSearch && <OverlaySearch value={search} onChange={setSearch} placeholder={searchPlaceholder} />}
+        {showSearch && (
+          <OverlaySearch
+            value={search}
+            onChange={setSearch}
+            placeholder={searchPlaceholder}
+            onKeyDown={
+              onCreateOption
+                ? (event) => {
+                    if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      createOption();
+                    }
+                  }
+                : undefined
+            }
+          />
+        )}
 
+        {hasError && onCreateOption && (
+          <Box id={errorId} role='alert' sx={{ padding: ds.space[2], fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)' }}>
+            {error}
+          </Box>
+        )}
         <OverlayScrollBox>
+          {canCreate && (
+            <OverlayItem size='md' onClick={createOption}>
+              Add “{customValue}”
+            </OverlayItem>
+          )}
           {/* Select-all / Clear-all row — multi mode only, hidden while loading */}
           {!loading && showOptionCheckbox && filteredOptions.length > 0 && (
             <OverlaySelectAll
@@ -645,7 +683,7 @@ export function Select(props: SelectProps) {
                 textAlign: 'center',
               }}
             >
-              {options.length === 0 ? 'No options available' : 'No results found'}
+              {canCreate ? 'No matching suggestions' : options.length === 0 ? 'No options available' : 'No results found'}
             </Box>
           ) : effectiveGrouped && groupedFilteredOptions ? (
             // Grouped mode: collapsible section per group, collapsed by

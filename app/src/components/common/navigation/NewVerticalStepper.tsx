@@ -52,7 +52,7 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({ steps, 
           </Box>
           <Typography
             variant='h6'
-            fontFamily={`"Poppins", sans-serif`}
+            fontFamily={ds.font.display}
             sx={{
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-semibold)',

@@ -747,6 +747,26 @@ func isDescriptiveText(input string) bool {
 	return false
 }
 
+// idLookupPredicateRe extracts the UUID literal out of a single `id = '<uuid>'`
+// (or `id='<uuid>'`) equality predicate.
+var idLookupPredicateRe = regexp.MustCompile(`(?i)\bid\s*=\s*'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'`)
+
+// injectIdPredicate pushes an id-lookup's uuid literal into the view's inner
+// WHERE, typed as ::uuid. Without this the id filter only lands in the outer
+// wrapper against the view's id::text output column, which defeats
+// events_pkey and (combined with the unbounded date range for id lookups)
+// falls back to a full BRIN scan of the account's event history. Only
+// applies for a single unambiguous id equality; anything else (IN-lists,
+// multiple ids) is left unoptimized rather than risk mis-scoping it.
+func injectIdPredicate(resolvedView, command string) string {
+	matches := idLookupPredicateRe.FindAllStringSubmatch(command, -1)
+	if len(matches) != 1 {
+		return resolvedView
+	}
+	return strings.Replace(resolvedView, "FROM events WHERE cloud_account_id",
+		"FROM events WHERE id = '"+matches[0][1]+"'::uuid AND cloud_account_id", 1)
+}
+
 // bareTimestampRe matches ISO 8601 timestamps that are NOT already inside single quotes.
 // Captures: optional comparison operator + bare timestamp like 2025-01-25T13:00:00Z or 2025-01-25 13:00:00
 var bareTimestampRe = regexp.MustCompile(`([><=!]+\s*)(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)`)
@@ -838,6 +858,9 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	}
 
 	eventsView1 = resolveEventsViewPlaceholders(eventsView1, nbRequestContext.AccountId, isIdLookup)
+	if isIdLookup {
+		eventsView1 = injectIdPredicate(eventsView1, input.Command)
+	}
 
 	input.Command = strings.TrimSuffix(input.Command, ";")
 	input.Command = fixBareTimestamps(input.Command)

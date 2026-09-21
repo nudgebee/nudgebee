@@ -3,7 +3,7 @@ import { LoginPage } from "../../../../pages/LoginPage";
 import { AWSLocators } from "../AWSLocators";
 import { waitForGraphQLAndValidate } from "../../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cloud Account -> AWS RDS -> Summary", async ({
+test("API testing Cloud Account -> AWS RDS -> Summary", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);

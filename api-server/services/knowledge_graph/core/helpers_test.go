@@ -1,6 +1,8 @@
 package core
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -752,5 +754,64 @@ func TestExtractNodeLocation(t *testing.T) {
 				t.Errorf("extractNodeLocation() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractNodeNamespace(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]interface{}
+		want       string
+	}{
+		{"Namespaced K8s workload", map[string]interface{}{"namespace": "nudgebee"}, "nudgebee"},
+		{"Cluster-scoped resource has none", map[string]interface{}{"name": "ip-172-31-13-41.ec2.internal"}, ""},
+		{"External sentinel is not a namespace", map[string]interface{}{"namespace": externalNamespaceSentinel}, ""},
+		{"Empty namespace", map[string]interface{}{"namespace": ""}, ""},
+		{"Nil properties", nil, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractNodeNamespace(tt.properties); got != tt.want {
+				t.Errorf("extractNodeNamespace() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The graph UI reads the namespace straight off the slim wire payload, so assert on the
+// marshalled JSON rather than the struct: a namespaced K8s node carries it, a cluster-scoped
+// one omits the key entirely.
+func TestConvertKgNodeToKgNodeSlimNamespace(t *testing.T) {
+	namespaced := ConvertKgNodeToKgNodeSlim(KgNode{
+		ID:       "n1",
+		NodeType: NodeTypeWorkload,
+		Properties: map[string]interface{}{
+			"name":      "workflow-server",
+			"namespace": "nudgebee",
+		},
+	})
+	if namespaced.Namespace != "nudgebee" {
+		t.Errorf("Namespace = %q, want %q", namespaced.Namespace, "nudgebee")
+	}
+	payload, err := json.Marshal(namespaced)
+	if err != nil {
+		t.Fatalf("marshal namespaced node: %v", err)
+	}
+	if !strings.Contains(string(payload), `"namespace":"nudgebee"`) {
+		t.Errorf("slim payload missing namespace: %s", payload)
+	}
+
+	clusterScoped := ConvertKgNodeToKgNodeSlim(KgNode{
+		ID:         "n2",
+		NodeType:   NodeTypeNode,
+		Properties: map[string]interface{}{"name": "ip-172-31-13-41.ec2.internal"},
+	})
+	payload, err = json.Marshal(clusterScoped)
+	if err != nil {
+		t.Fatalf("marshal cluster-scoped node: %v", err)
+	}
+	if strings.Contains(string(payload), `"namespace"`) {
+		t.Errorf("cluster-scoped node should omit namespace: %s", payload)
 	}
 }

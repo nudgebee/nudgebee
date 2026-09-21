@@ -203,6 +203,16 @@ branding:
 
 annotations: {}
 
+# -- Webhook paths the nginx sidecar proxies to sibling services. Turn a route
+# off when its chart is installed with `enabled: false` — nginx resolves
+# proxy_pass hostnames at startup, so a route to an absent Service crashes the
+# sidecar and the app with it.
+webhookRouting:
+  # -- Route /webhooks/slack/* to the notifications chart. Pair with `notifications.enabled`.
+  notifications: true
+  # -- Route /api/webhooks/* to the services-server chart.
+  servicesServer: true
+
 nginx:
   image:
     # Override registry for enterprise via values-enterprise.yaml (e.g.

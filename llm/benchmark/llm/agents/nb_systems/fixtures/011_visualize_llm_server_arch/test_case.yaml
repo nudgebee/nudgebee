@@ -1,0 +1,16 @@
+user_prompt: "Visualize the architecture of llm-server deployment in nudgebee namespace using a diagram"
+expected_output:
+  - |
+    The agent should invoke the visualizer tool (backed by real kubectl_execute
+    lookups of the llm-server Deployment and Service in namespace nudgebee) and
+    produce a diagram (e.g. mermaid or similar graph) of the actual deployment
+    topology. It must include the "llm-server" Deployment and the "llm-server"
+    Service, connected on container port 8000 (the Service exposes 8000/TCP to
+    the "http" container port). It should reflect the deployment's current
+    replica count rather than inventing one. The neighboring real "llm-gateway"
+    deployment may optionally appear but must not be confused with llm-server
+    itself. Cite [kubectl_execute] and/or [visualizer].
+tags:
+  - kubernetes
+  - visualization
+  - orchestrator

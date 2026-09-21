@@ -93,19 +93,18 @@ func TestResolveToolLoopOutcome_AbortedMutationNotSaved(t *testing.T) {
 	assert.Equal(t, answer, prose)
 }
 
-// Type coercion applied by validate/dry_run on the shared state must NOT count
-// as a change: the snapshot itself normalizes, so a definition loaded with
-// float-typed integers compares equal before and after a coercing read-only
-// tool ran.
-func TestResolveToolLoopOutcome_CoercionIsNotAChange(t *testing.T) {
+// A definition carrying float-typed integers — what json.Unmarshal always produces — must snapshot
+// as plain integers and must not register as a change across a read-only turn. This is what makes
+// the removed float64 → int coercion pass unnecessary: whole-number floats marshal identically to
+// ints, so nothing downstream can tell the two apart (#31500).
+func TestResolveToolLoopOutcome_FloatTypedIntegersAreNotAChange(t *testing.T) {
 	agent := outcomeTestAgent(true)
 	def := agent.state.WorkingWorkflow["definition"].(map[string]interface{})
 	tasks := def["tasks"].([]interface{})
 	tasks[0].(map[string]interface{})["params"].(map[string]interface{})["count"] = 5.0
 
 	before := agent.workflowSnapshot()
-	// Simulate toolValidate / toolDryRun normalizing the shared state mid-loop.
-	coerceWorkflowTypes(agent.state.WorkingWorkflow)
+	assert.Contains(t, before, `"count":5`, "a whole-number float must marshal without a decimal point")
 
 	workflowJSON, prose := agent.resolveToolLoopOutcome("No changes needed.", before)
 
