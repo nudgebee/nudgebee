@@ -1,13 +1,13 @@
 # Why related alerts are not grouped, and what to do about it
 
-Part of epic #34655. Written 2026-09-08, after checking real data on the Rackspace tenant.
+Part of epic #34655. Written 2026-09-08, after checking real data on an anonymized production tenant.
 
 ## What is broken
 
 When several alerts fire on the same machine, we should show them as one incident. Mostly
 we do not.
 
-In the last 24 hours on Rackspace, 19 machines had more than one kind of alert firing at
+In the last 24 hours in an anonymized production tenant, 19 machines had more than one kind of alert firing at
 the same time. For 16 of them we grouped nothing at all.
 
 Here is one case. EC2 instance `i-0dcee3621b8456783` has two alerts firing:
@@ -86,7 +86,7 @@ one group today. Whether they do is luck.
 
 The obvious fix is to widen the 15-minute window. The data says no.
 
-Over 14 days on Rackspace there are 1.84 million pairs of different alerts on the same
+Over 14 days in an anonymized production tenant there are 1.84 million pairs of different alerts on the same
 machine. Grouped by how far apart they started:
 
 | started within | pairs |

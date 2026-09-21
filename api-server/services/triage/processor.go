@@ -65,7 +65,7 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 	// not only the first. Grouping used to be gated on occurrence == 1, which meant
 	// it ran once per alert and never again; where alerts fire continuously the
 	// chain never breaks, so for most live alerts the check had already run days
-	// earlier and could never run again. Measured on the Rackspace tenant over 24
+	// earlier and could never run again. Measured on an anonymized production tenant over 24
 	// hours: 19 machines had several alert types firing, 16 grouped nothing, and 10
 	// of those were blocked purely because every alert was a re-fire.
 	//

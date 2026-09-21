@@ -537,14 +537,19 @@ func markAbandonedPRCreationsInTables(ctx *security.RequestContext, dbms *databa
 // whenever this row happened to be lazily created; pass the zero time to fall
 // back to now() (used by callers that only know the PR URL, not a specific
 // resolution row's created_at).
-func findOrCreatePRFollowup(dbms *database.DatabaseManager, prURL, tenantID string, createdAt time.Time) (id string, err error) {
+//
+// Also returns the row's addressed_comments (#36865) — the set of comments a
+// previous run already answered. It rides on this statement's RETURNING rather
+// than a second SELECT because every dispatch path already calls this, and the
+// followup request needs the set anyway.
+func findOrCreatePRFollowup(dbms *database.DatabaseManager, prURL, tenantID string, createdAt time.Time) (id string, addressed json.RawMessage, err error) {
 	return findOrCreatePRFollowupInTable(dbms, prFollowupTable, prURL, tenantID, createdAt)
 }
 
 // findOrCreatePRFollowupInTable is the table-parameterized core of
 // findOrCreatePRFollowup, split out so the SQL can be exercised against a
 // throwaway table in tests.
-func findOrCreatePRFollowupInTable(dbms *database.DatabaseManager, table, prURL, tenantID string, createdAt time.Time) (id string, err error) {
+func findOrCreatePRFollowupInTable(dbms *database.DatabaseManager, table, prURL, tenantID string, createdAt time.Time) (id string, addressed json.RawMessage, err error) {
 	var dbCreatedAt *time.Time
 	if !createdAt.IsZero() {
 		dbCreatedAt = &createdAt
@@ -553,13 +558,13 @@ func findOrCreatePRFollowupInTable(dbms *database.DatabaseManager, table, prURL,
 		INSERT INTO %s (pr_url, tenant_id, created_at)
 		VALUES ($1, $2, COALESCE($3, now()))
 		ON CONFLICT (pr_url) DO UPDATE SET pr_url = %s.pr_url
-		RETURNING id`, table, table)
+		RETURNING id, addressed_comments`, table, table)
 	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
 	defer cancel()
-	if err := dbms.Db.QueryRowContext(dbCtx, query, prURL, tenantID, dbCreatedAt).Scan(&id); err != nil {
-		return "", fmt.Errorf("failed to find-or-create %s row: %w", table, err)
+	if err := dbms.Db.QueryRowContext(dbCtx, query, prURL, tenantID, dbCreatedAt).Scan(&id, &addressed); err != nil {
+		return "", nil, fmt.Errorf("failed to find-or-create %s row: %w", table, err)
 	}
-	return id, nil
+	return id, addressed, nil
 }
 
 // claimOrMarkResolution performs the atomic claim-or-mark and returns the row's
@@ -688,7 +693,7 @@ func dispatchPRFollowup(ctx *security.RequestContext, dbms *database.DatabaseMan
 		}
 	}
 
-	followupID, err := findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
+	followupID, addressedComments, err := findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
 	if err != nil {
 		return err
 	}
@@ -727,7 +732,8 @@ func dispatchPRFollowup(ctx *security.RequestContext, dbms *database.DatabaseMan
 	common.MetricsPRFollowupDispatch(ctx.GetContext(), prFollowupTable, trigger)
 
 	chatRequest := buildPRFollowupChatRequest(meta, gitToken,
-		fmt.Sprintf("Follow up on PR %s — address CI failures and review comments", meta.PRURL))
+		fmt.Sprintf("Follow up on PR %s — address CI failures and review comments", meta.PRURL),
+		addressedComments)
 
 	runPRFollowupAgent(ctx, tenantID, chatRequest, "pr_url", prURL, func(tenantCtx *security.RequestContext, response *llm.ChatCompletionResponse, err error) {
 		var outcome followupOutcome
@@ -741,9 +747,10 @@ func dispatchPRFollowup(ctx *security.RequestContext, dbms *database.DatabaseMan
 				"response_status", response.Status,
 				"outcome", outcome.name,
 				"unresolved", outcome.unresolved,
+				"base_synced", outcome.baseSynced,
 				"new_state", outcome.newState)
 		}
-		common.MetricsPRFollowupOutcome(tenantCtx.GetContext(), outcome.name, outcome.unresolved)
+		common.MetricsPRFollowupOutcome(tenantCtx.GetContext(), outcome.name, outcome.unresolved, outcome.baseSynced)
 
 		// Finalize atomically and learn whether a new actionable signal arrived
 		// while this run was in flight (pr_followup_pending). If so, re-dispatch
@@ -817,6 +824,19 @@ func applyFollowupOutcome(ctx *security.RequestContext, dbms *database.DatabaseM
 	if outcome.resetCounter {
 		counterExpr = "0"
 	}
+	// addressed_comments accumulates in the SAME locked statement rather than a
+	// follow-up UPDATE, so a concurrent claim can never interleave between the
+	// finalize and the record and lose entries (#36865). The union is by
+	// (source, comment_id) with the newest addressed_at winning, so a comment
+	// answered again in a later run updates its action instead of duplicating.
+	// $3 is a jsonb array; an empty array makes the whole expression a no-op.
+	const addressedExpr = `(
+		SELECT COALESCE(jsonb_agg(s.v ORDER BY s.v->>'addressed_at'), '[]'::jsonb) FROM (
+			SELECT DISTINCT ON (e->>'source', e->>'comment_id') e AS v
+			FROM jsonb_array_elements(COALESCE(t.addressed_comments, '[]'::jsonb) || $3::jsonb) e
+			ORDER BY e->>'source', e->>'comment_id', e->>'addressed_at' DESC
+		) s
+	)`
 	query := fmt.Sprintf(`
 		WITH cur AS (
 			SELECT pr_followup_pending AS was_pending, pr_lifecycle_state AS st
@@ -828,15 +848,17 @@ func applyFollowupOutcome(ctx *security.RequestContext, dbms *database.DatabaseM
 					THEN t.pr_lifecycle_state ELSE $2 END,
 				pr_iteration_count = CASE WHEN cur.st IN ('closed', 'merged', 'unresolvable')
 					THEN t.pr_iteration_count ELSE %s END,
+				addressed_comments = CASE WHEN cur.st IN ('closed', 'merged', 'unresolvable')
+					THEN t.addressed_comments ELSE %s END,
 				last_pr_check_at = now(),
 				pr_followup_pending = false
 			FROM cur WHERE t.id = $1
 			RETURNING cur.was_pending
 		)
-		SELECT was_pending FROM upd`, tableName, tableName, counterExpr)
+		SELECT was_pending FROM upd`, tableName, tableName, counterExpr, addressedExpr)
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), prDBOpTimeout)
 	defer cancel()
-	if err := dbms.Db.QueryRowContext(dbCtx, query, id, outcome.newState).
+	if err := dbms.Db.QueryRowContext(dbCtx, query, id, outcome.newState, outcome.addressedCommentsJSON()).
 		Scan(&wasPending); err != nil {
 		ctx.GetLogger().Error("pr_lifecycle: failed to apply outcome",
 			"id", id, "outcome", outcome.name, "error", err)
@@ -1097,7 +1119,7 @@ func markResolutionRowUnresolvable(ctx *security.RequestContext, dbms *database.
 // permanently-abandoned one.
 func markPRFollowupUnresolvableByURL(ctx *security.RequestContext, dbms *database.DatabaseManager, prURL, tenantID string, createdAt time.Time, reason string) {
 	msg := "pr_lifecycle followup unresolvable: " + reason
-	followupID, err := findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
+	followupID, _, err := findOrCreatePRFollowup(dbms, prURL, tenantID, createdAt)
 	if err != nil {
 		ctx.GetLogger().Error("pr_lifecycle: failed to find-or-create pr_followup for unresolvable mark", "pr_url", prURL, "error", err)
 		return
@@ -1144,7 +1166,11 @@ func markPRFollowupUnresolvableByURL(ctx *security.RequestContext, dbms *databas
 // it to address CI failures and review comments, while a value refresh asks it to
 // apply changed rightsizing numbers (#34959). Keeping one builder means both get
 // the same branch fallback and credential handling.
-func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt string) llm.ConversationApiRequest {
+// addressedComments is the set a previous run already answered (#36865),
+// forwarded so code-analysis — which has no metastore access — can use it as a
+// fallback skip source alongside GitHub's own resolved-thread state. Omitted
+// from the payload when empty, so nothing changes for a PR with no history.
+func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt string, addressedComments json.RawMessage) llm.ConversationApiRequest {
 	prBranch := meta.PRBranch
 	if prBranch == "" {
 		prBranch = meta.Branch
@@ -1157,6 +1183,15 @@ func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt string) llm.Co
 		"git_repo":  meta.RepoURL,
 		"pr_branch": prBranch,
 		"git_token": gitToken,
+	}
+	// json.RawMessage marshals through verbatim, so the array is embedded as an
+	// array rather than a quoted string. Guarded on a non-empty array so a fresh
+	// row's '[]' does not add noise to every request. Trimmed before comparing
+	// so the check doesn't depend on the driver/column always returning compact
+	// jsonb — cheap, and removes that assumption entirely.
+	trimmed := strings.TrimSpace(string(addressedComments))
+	if trimmed != "" && trimmed != "[]" && trimmed != "null" {
+		followupQuery["addressed_comments"] = addressedComments
 	}
 	followupQueryJSON, _ := json.Marshal(followupQuery)
 
@@ -1220,6 +1255,32 @@ type followupOutcome struct {
 	// NOT change counterDelta/newState — surfaced via the outcome metric so the
 	// otherwise-invisible "97% no_op is mostly couldn't-apply" churn is measurable.
 	unresolved bool
+	// addressed carries the comments this run actually answered on the PR, to be
+	// merged into pr_followup.addressed_comments by applyFollowupOutcome (#36865).
+	// Populated from the agent's additive `addressed_comments` response field;
+	// nil for an older agent that does not emit it, which makes the merge a no-op.
+	addressed []models.AddressedComment
+	// baseSynced marks a run that merged the PR's base branch into the PR branch
+	// and pushed it (#36864). Like unresolved, observability-only: a base sync is
+	// a real change to the PR and is classified "success" on that basis, so this
+	// only tags the metric. Most base syncs never invoke the planner at all, so
+	// without this tag they would be indistinguishable from real comment/CI fixes.
+	baseSynced bool
+}
+
+// addressedCommentsJSON renders the run's addressed comments as the jsonb
+// argument applyFollowupOutcome merges. Always a valid JSON array — an empty
+// one when there is nothing to record, which makes the merge expression a
+// no-op rather than a NULL that would wipe the column.
+func (o followupOutcome) addressedCommentsJSON() []byte {
+	if len(o.addressed) == 0 {
+		return []byte("[]")
+	}
+	b, err := json.Marshal(o.addressed)
+	if err != nil {
+		return []byte("[]")
+	}
+	return b
 }
 
 var (
@@ -1253,6 +1314,62 @@ var (
 // cap before any reviewer feedback could arrive. The execution_status field
 // is what the followup handler actually emits; reading it here closes that
 // gap. Do not revert to the bare "success" key without adding a producer.
+// parseAddressedComments converts the agent's additive `addressed_comments`
+// response field into typed entries (#36865).
+//
+// Deliberately lenient: this is a bookkeeping record, never a correctness gate,
+// so a malformed or absent field yields nil and the merge becomes a no-op
+// rather than failing an otherwise-successful run. Entries missing a source, a
+// comment id, or an action are dropped individually — a partial record is worth
+// more than none, and a half-identified entry could not be matched back to a
+// comment anyway. A missing addressed_at is stamped now() so the merge's
+// newest-wins ordering still has something to sort on.
+func parseAddressedComments(raw any) []models.AddressedComment {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var out []models.AddressedComment
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		source, _ := m["source"].(string)
+		action, _ := m["action"].(string)
+		// JSON numbers decode as float64 through map[string]any, which is the
+		// normal case here (our own agent marshals an int64 field). Also accept a
+		// string, in case this ever reads a hand-built or LLM-composed payload
+		// that quoted the id — well under 2^53 either way, so the round-trip is
+		// exact.
+		var commentID int64
+		switch id := m["comment_id"].(type) {
+		case float64:
+			commentID = int64(id)
+		case string:
+			commentID, _ = strconv.ParseInt(id, 10, 64)
+		}
+		if source == "" || action == "" || commentID <= 0 {
+			continue
+		}
+		entry := models.AddressedComment{
+			Source:    source,
+			CommentID: commentID,
+			Action:    action,
+		}
+		if ts, ok := m["addressed_at"].(string); ok {
+			if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+				entry.AddressedAt = parsed.UTC()
+			}
+		}
+		if entry.AddressedAt.IsZero() {
+			entry.AddressedAt = time.Now().UTC()
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func classifyFollowupOutcome(responses []string) followupOutcome {
 	if len(responses) == 0 {
 		return followupOutcomeFailed
@@ -1261,12 +1378,28 @@ func classifyFollowupOutcome(responses []string) followupOutcome {
 	if err := common.UnmarshalJson([]byte(responses[0]), &agentResp); err != nil {
 		return followupOutcomeFailed
 	}
+	// addressed_comments is additive and may be absent (older agent). Parsed
+	// outside the status switch: a run can answer comments and still finish as a
+	// no_op (every reply skipped as unverified), and that record is worth keeping
+	// either way.
+	addressed := parseAddressedComments(agentResp["addressed_comments"])
+	// followup_base_synced is additive and may be absent (older agent). It is
+	// read outside the status switch because a base sync can be the run's only
+	// work — a "success" that never ran the planner — or can ride along with a
+	// normal comment/CI fix.
+	baseSynced, _ := agentResp["followup_base_synced"].(bool)
+
 	status, _ := agentResp["execution_status"].(string)
 	switch status {
 	case "success", "partial_success":
-		return followupOutcomeSuccess
+		outcome := followupOutcomeSuccess
+		outcome.addressed = addressed
+		outcome.baseSynced = baseSynced
+		return outcome
 	case "no_op":
 		outcome := followupOutcomeNoOp
+		outcome.addressed = addressed
+		outcome.baseSynced = baseSynced
 		// followup_unresolved is additive and may be absent (older agent) — a
 		// missing/false value keeps the plain no_op semantics.
 		if unresolved, ok := agentResp["followup_unresolved"].(bool); ok && unresolved {

@@ -85,6 +85,14 @@ func (s *OpenObserveLogSource) ProviderRef() providerRef {
 	return providerRef{Provider: "openobserve", Source: "user"}
 }
 
+func (s *SplunkEnterpriseLogSource) ProviderRef() providerRef {
+	return providerRef{Provider: "splunk_enterprise", Source: "user"}
+}
+
+func (s *CubeAPMLogSource) ProviderRef() providerRef {
+	return providerRef{Provider: "cubeapm", Source: "user"}
+}
+
 // HiveSource is implemented but deliberately absent from getLogSource — the matching
 // hive_query / hive_schema agent actions do not exist yet (see the switch's comment). It
 // still has to satisfy LogSource, and names the pair it will be dispatched for.

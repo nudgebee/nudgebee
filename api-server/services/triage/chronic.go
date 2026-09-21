@@ -44,7 +44,7 @@ type ChronicStats struct {
 // alongside others, and it still surfaces as context.
 //
 // It used to gate membership as well, with a burst escape for pairs firing far
-// past their own baseline. Both were removed: measured on the Rackspace tenant,
+// past their own baseline. Both were removed: measured on an anonymized production tenant,
 // the gate left machines whose every alert was chronic unable to form a group at
 // all, and the escape's floor of three firings in an hour was never reached by
 // the alerts it would have had to rescue, which average under two.

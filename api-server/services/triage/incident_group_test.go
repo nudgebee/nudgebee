@@ -120,7 +120,7 @@ func TestDecideSameSubjectAttach_OldLeaderStillLiveWhileMembersFire(t *testing.T
 // TestDecideSameSubjectAttach_ChronicJoinsButNeverLeads pins the membership rule
 // that replaced the old "chronic never groups" one.
 //
-// Gating membership on the firing rate was measured against the Rackspace tenant
+// Gating membership on the firing rate was measured against an anonymized production tenant
 // and left the reported machines ungrouped: payment (17 and 11 firings/week) and
 // inventory (15 and 11) have no non-chronic alert at all, so nothing could ever
 // found a group on them, and order qualified only because one counter sat at 9
@@ -440,7 +440,7 @@ func TestSubjectKey_OwnerHashStripped(t *testing.T) {
 }
 
 // TestPoolConnectedMembers_GroupsTheWholeConnectedSet is the a-b-c case, built
-// from the topology actually stored on the Rackspace scenario-lab account:
+// from the topology actually stored on an anonymized production scenario:
 // payment and inventory both call order, and all three call database.
 //
 // The rule this replaces joined the single most recently active neighbour, so
@@ -613,7 +613,7 @@ func TestDecideSameSubjectAttach_ChronicOutranksCause(t *testing.T) {
 //
 // Before, a link pointed at the event an alert FIRST ever produced, so a group
 // never ended: any member firing held it open while the alert that named it
-// could have stopped days earlier. Measured on the Rackspace tenant over 14
+// could have stopped days earlier. Measured on an anonymized production tenant over 14
 // days — 1,337 of 1,445 links (93%) named a headline quiet for an average of
 // 38.8 hours, one group had 17 members, one headline was 158 days old, and none
 // of it was visible in a time-scoped view because the events predated the window.

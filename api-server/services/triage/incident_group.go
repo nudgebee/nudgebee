@@ -31,7 +31,7 @@ import (
 // Links used to hang off each alert's first-ever event instead, which made a
 // group a permanent association rather than an incident. It never ended: any
 // member firing held it open while the alert that named it could have stopped
-// days ago. Measured on the Rackspace tenant over 14 days — 1,337 of 1,445 links
+// days ago. Measured on an anonymized production tenant over 14 days — 1,337 of 1,445 links
 // (93%) named a headline whose alert had not fired in the preceding 15 minutes,
 // average 38.8 hours quiet; one group had collected 17 members, one headline was
 // 158 days old, and none of it was visible in a time-scoped view because the
@@ -60,6 +60,13 @@ const (
 	// topologyGroupingEnvFlag kills only the cross-service (stored-map) attach
 	// path; same-subject grouping keeps its own switch above.
 	topologyGroupingEnvFlag = "INCIDENT_TOPOLOGY_GROUPING"
+	// unlocatedGroupingEnvFlag kills the co-timing attach for alerts that have
+	// no position in the graph at all. Defaults on like the other two, so the
+	// narrowness has to come from the rule rather than from the switch: it fires
+	// only when nothing else matched, only into an existing incident, and only
+	// when exactly one is open. This is the flag to pull first if grouping ever
+	// looks too eager.
+	unlocatedGroupingEnvFlag = "INCIDENT_UNLOCATED_GROUPING"
 	// incidentCandidateLimit bounds the window fetch; one subject+namespace
 	// rarely has more than a handful of distinct fingerprints in 90 minutes.
 	incidentCandidateLimit = 200
@@ -67,7 +74,7 @@ const (
 	// started the group. One hop misses a calling c through b, which is the shape
 	// of the reported case (payment and inventory both call order, and all three
 	// call database). More than two swallows an estate: node degree on the
-	// Rackspace tenant is median 1 but one node has 1,047 edges.
+	// anonymized production tenant is median 1 but one node has 1,047 edges.
 	maxIncidentHops = 2
 	// incidentGroupSubjectCap bounds how many machines one incident can span.
 	// Across 14 days the number of subjects alerting at once in a 15-minute window
@@ -130,7 +137,7 @@ type groupCandidate struct {
 //     chronic. They do NOT decide membership — a chronic alert firing alongside
 //     others on one subject is part of that incident and an operator wants to see
 //     it. They only lose the leader election, so a flapper never becomes the
-//     headline. Measured on the Rackspace tenant: gating membership on the rate
+//     headline. Measured on an anonymized production tenant: gating membership on the rate
 //     left two of three reported machines unable to form a group at all, because
 //     every alert on them was chronic, and the third qualified only because one
 //     counter sat at 9 against a threshold of 10.
@@ -265,7 +272,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	// Anchoring on the chain's first event made a group a permanent association
 	// rather than an incident. It never ended: any member firing held it open,
 	// while the alert that named it could have stopped days ago. Measured on the
-	// Rackspace tenant over 14 days, 1,337 of 1,445 links (93%) named a headline
+	// anonymized production tenant over 14 days, 1,337 of 1,445 links (93%) named a headline
 	// whose alert had not fired in the preceding 15 minutes, average 38.8 hours
 	// quiet; one group had collected 17 members and one headline was 158 days
 	// old. It also made the group invisible to any time-scoped view, because the
@@ -330,7 +337,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	}
 	// Candidates are alerts that FIRED inside the attach window, not alerts whose
 	// chain started inside it. That is the whole point of the change: on the
-	// Rackspace tenant the two chains in the reported case opened 19 hours apart
+	// anonymized production tenant the two chains in the reported case opened 19 hours apart
 	// and have been firing every few minutes ever since, so a start-time search
 	// could never pair them however wide the window got. Widening was measured
 	// and rejected — 15 minutes to 24 hours multiplies candidate pairs 96x, and
@@ -415,7 +422,21 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		chronicPairs[k] = true
 	}
 	if len(members) == 0 {
-		return false, nil
+		// Nothing the graph or the subject could pair this alert with. If we
+		// could not place it at all, co-timing is the only evidence left — and
+		// only when it points at exactly one incident.
+		leaderID, offset, ok, err := attachUnlocatedIncident(ctx, db, event, start)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+		if err := insertGroupLink(ctx, db, event, seedChainID, leaderID, offset, 0,
+			"no topology position; sole incident open in the attach window"); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	leaderID, offset, ok, err := resolveOpenGroupLeader(ctx, db, event, seed, members, memberStarts, chronicPairs, pool.dependedOnBy)
@@ -539,6 +560,88 @@ func insertGroupLink(ctx context.Context, db sqlx.ExtContext, event *models.Even
 func topologyGroupingEnabled() bool {
 	v := strings.TrimSpace(os.Getenv(topologyGroupingEnvFlag))
 	return !strings.EqualFold(v, "false") && v != "0"
+}
+
+// unlocatedGroupingEnabled defaults to true; only an explicit "false"/"0"
+// disables, matching the other two grouping switches — a default-off flag
+// nobody flips leaves the path dead in config.
+func unlocatedGroupingEnabled() bool {
+	v := strings.TrimSpace(os.Getenv(unlocatedGroupingEnvFlag))
+	return !strings.EqualFold(v, "false") && v != "0"
+}
+
+// attachUnlocatedIncident is the last resort for an alert that the graph cannot
+// place at all: a CloudWatch alarm on a custom namespace dimensioned by a
+// logical service ("Service=nginx") resolves to no node, gets no service-map
+// evidence, and is therefore invisible to both the same-subject and the
+// connected-set pools. It is not that such an alert belongs to nothing — the one
+// that prompted this ran on a host whose load balancer and target groups were
+// alarming in the same two minutes — it is that we have no edge to prove it.
+//
+// So this groups on co-timing. That is the weakest claim this file makes, and it
+// runs by default, so the narrowness lives in the rule: it refuses every case
+// where co-timing is not decisive.
+//
+//   - It runs only when the seed reached this point with no members of its own.
+//     An alert we can place is never routed through here.
+//   - It joins an EXISTING incident; it never starts one. A group founded on an
+//     alert we cannot locate would have nothing holding it together.
+//   - Exactly one open incident in the window, or it declines. Two incidents
+//     means co-timing does not identify which one, and picking either would
+//     attach the alert to a story it may have no part in — the same reason
+//     resourceDimensionIndex drops a dimension its namespaces disagree about.
+//
+// Returns the leader to attach to and whether to attach.
+func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *models.Event, start time.Time) (string, time.Duration, bool, error) {
+	// The account guard is redundant against today's only caller, which rejects
+	// an event without one before it gets this far. Repeated anyway because the
+	// query below is account-scoped and nothing else bounds it: reached with an
+	// empty account it would scan every correlation in the table and answer
+	// about someone else's incidents.
+	if !unlocatedGroupingEnabled() || event == nil ||
+		event.CloudAccountId == nil || *event.CloudAccountId == "" {
+		return "", 0, false, nil
+	}
+
+	// Leaders of groups that had any member firing inside the attach window.
+	// Restricted to the seed's own account: co-timing across accounts is not
+	// even weak evidence, it is coincidence.
+	//
+	// LIMIT 2 is the whole question. The rule below attaches on exactly one open
+	// incident and declines otherwise, so "two" and "two hundred" are the same
+	// answer and there is no reason to fetch the difference.
+	type leaderRow struct {
+		ID       string    `db:"id"`
+		StartsAt time.Time `db:"starts_at"`
+	}
+	var leaders []leaderRow
+	err := sqlx.SelectContext(ctx, db, &leaders, `
+		SELECT DISTINCT l.id, l.starts_at
+		FROM event_correlations ec
+		JOIN events m ON m.id = ec.event_id
+		JOIN events l ON l.id = ec.related_event_id
+		WHERE ec.correlation_type = $1
+		  AND ec.cloud_account_id = $2
+		  AND m.starts_at >= $3
+		  AND m.starts_at <= $4
+		LIMIT 2`,
+		SameIncidentCorrelationType, *event.CloudAccountId,
+		start.Add(-IncidentAttachWindow), start,
+	)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("failed to load open incidents for unlocated attach: %w", err)
+	}
+
+	if len(leaders) != 1 {
+		// 0: nothing open to join. >1: co-timing cannot choose between them.
+		if len(leaders) > 1 {
+			slog.InfoContext(ctx, "Unlocated alert not grouped: several open incidents in window",
+				"event_id", event.Id, "incidents", len(leaders))
+		}
+		return "", 0, false, nil
+	}
+
+	return leaders[0].ID, start.Sub(leaders[0].StartsAt), true, nil
 }
 
 // ownerElseName mirrors the SQL identity the chronic rate query groups on:
