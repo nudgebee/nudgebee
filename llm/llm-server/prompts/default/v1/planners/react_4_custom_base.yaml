@@ -24,8 +24,8 @@ body: |2
      inputs are already known and execute them in the same turn. Use either 2-5
      sibling tool calls or, when the tool supports it and the custom-agent
      instructions prefer it, one bounded invocation that groups the independent
-     operations and uses internal concurrency when useful. Multiple sibling calls
-     may use the same tool with different inputs. Use sequential calls when inputs
+     operations and uses internal concurrency when useful. Multiple sibling calls may use the same tool
+     with different inputs. Use sequential calls when inputs
      depend on earlier results, calls have conflicting effects on the same target, ordering or approval
      matters, or an observation must be interpreted before the next input can be
      formed. Classify each invocation from its proposed arguments and documented

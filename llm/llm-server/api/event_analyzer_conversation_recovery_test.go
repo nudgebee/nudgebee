@@ -1,12 +1,75 @@
 package api
 
 import (
-	"testing"
-
-	"nudgebee/llm/agents/core"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/events"
+	"os"
+	"regexp"
+	"testing"
+	"time"
 )
+
+func TestShouldRecoverStageFromConversation(t *testing.T) {
+	repo := events.NewEventAnalysisRepository(nil)
+	repo.SetAnalysisFreshness(24 * time.Hour)
+
+	tests := []struct {
+		name       string
+		analysis   *events.EventAnalysis
+		regenerate bool
+		want       bool
+	}{
+		{name: "missing row recovers an interrupted database write", want: true},
+		{
+			name:     "fresh row may recover conversation history",
+			analysis: &events.EventAnalysis{UpdatedAt: time.Now().Add(-time.Hour)},
+			want:     true,
+		},
+		{
+			name:     "stale row must rerun the stage",
+			analysis: &events.EventAnalysis{UpdatedAt: time.Now().Add(-25 * time.Hour), Status: string(events.AnalysisStatusCompleted)},
+			want:     false,
+		},
+		{
+			name:     "in-progress row waiting past freshness window recovers completed conversation",
+			analysis: &events.EventAnalysis{UpdatedAt: time.Now().Add(-25 * time.Hour), Status: string(events.AnalysisStatusInProgress)},
+			want:     true,
+		},
+		{
+			name:       "explicit regeneration never recovers history",
+			analysis:   &events.EventAnalysis{UpdatedAt: time.Now().Add(-time.Hour)},
+			regenerate: true,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, shouldRecoverStageFromConversation(repo, tt.analysis, tt.regenerate))
+		})
+	}
+}
+
+// Keep the three automatic-analysis stages on the freshness-aware recovery
+// path. The remaining direct call is RCA, whose user-triggered regeneration
+// semantics are intentionally separate from the automatic freshness window.
+func TestAutomaticStageRecoveryUsesFreshnessGuard(t *testing.T) {
+	source, err := os.ReadFile("event_analyzer.go")
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	directCalls := regexp.MustCompile(`(?i)getAgentResponseFromConversation\s*\(\s*ctx\s*,`).FindAll(source, -1)
+	require.GreaterOrEqual(t, len(directCalls), 5, "conversation recovery call pattern must still match the expected sites")
+	assert.Len(t, directCalls, 5,
+		"RCA and the four guarded automatic-stage lookups (summary, investigation, code analysis, synthesis) must remain the only direct recovery sites")
+	guardSites := regexp.MustCompile(`(?i)shouldRecoverStageFromConversation\s*\(`).FindAll(source, -1)
+	require.GreaterOrEqual(t, len(guardSites), 5, "freshness guard pattern must still match the helper and automatic stages")
+	assert.Len(t, guardSites, 5,
+		"the helper definition plus summary, investigation, code-analysis, and synthesis gates must remain present")
+}
 
 // Reproduces event a1ffed9c: the debug agent paused on a tool-approval
 // followup, the user answered "yes", and stage recovery stored that "yes" as

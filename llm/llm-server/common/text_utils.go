@@ -183,6 +183,39 @@ func truncateAtWord(s string, maxRunes int) string {
 	return strings.TrimRight(cut, " ") + "…"
 }
 
+// canonicalModelRegionPrefixes and canonicalModelVendorPrefixes are stripped, in
+// order, by CanonicalModelID. Each list is checked with HasPrefix and stops at
+// the first match.
+var canonicalModelRegionPrefixes = []string{"us.", "eu.", "apac.", "jp.", "au.", "ca.", "global."}
+var canonicalModelVendorPrefixes = []string{"anthropic.", "amazon.", "meta.", "google.", "vertex.", "vertex/", "openai.", "azure.", "mistral.", "cohere.", "ai21.", "models/"}
+
+var trailingInvocationVersionRE = regexp.MustCompile(`-v\d+$`)
+var versionSeparatorRE = regexp.MustCompile(`(\d)-(\d)`)
+
+// CanonicalModelID reduces a provider-qualified, deployment-specific model ID
+// to a bare, comparable form.
+func CanonicalModelID(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.IndexByte(m, ':'); i >= 0 {
+		m = m[:i]
+	}
+	for _, p := range canonicalModelRegionPrefixes {
+		if strings.HasPrefix(m, p) {
+			m = strings.TrimPrefix(m, p)
+			break
+		}
+	}
+	for _, p := range canonicalModelVendorPrefixes {
+		if strings.HasPrefix(m, p) {
+			m = strings.TrimPrefix(m, p)
+			break
+		}
+	}
+	m = trailingInvocationVersionRE.ReplaceAllString(m, "")
+	m = versionSeparatorRE.ReplaceAllString(m, "$1.$2")
+	return m
+}
+
 // TruncateHead truncates s to at most maxBytes from the start, ensuring the cut
 // does not split a multi-byte UTF-8 character.
 func TruncateHead(s string, maxBytes int) string {

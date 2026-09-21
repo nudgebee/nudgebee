@@ -680,7 +680,7 @@ func LLMSecretEnvVars(secretName string) []corev1.EnvVar {
 		}}}
 	}
 	return []corev1.EnvVar{
-		ref("LLM_PROVIDER"), ref("LLM_MODEL_NAME"), ref("LLM_PROVIDER_API_KEY"),
+		ref("LLM_PROVIDER"), ref("LLM_MODEL_NAME"),
 		ref("LLM_PROVIDER_API_ENDPOINT"), ref("LLM_PROVIDER_REGION"),
 		ref("LLM_PROVIDER_API_VERSION"), ref("LLM_PROVIDER_API_TYPE"),
 		ref("LLM_PROVIDER_MAX_RETRIES"), ref("BASE_URL"),
@@ -1361,13 +1361,9 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 		reqProxy.Param(k, v)
 	}
 
-	if bodyReader != nil {
-		reader, err := rewind()
-		if err != nil {
-			return nil, err
-		}
-		reqProxy.Body(reader)
-		reqProxy.SetHeader("Content-Type", contentType)
+	if bodyBytes != nil {
+		reqProxy.Body(bodyBytes)
+		reqProxy.SetHeader("Content-Type", "application/json")
 	}
 	reqProxy.SetHeader("X-Workspace-Token", workspaceToken)
 
@@ -1391,13 +1387,15 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 	logger := ctx.GetLogger()
 	logger.Debug("workspace: calling API with custom client", "method", method, "endpoint", endpoint, "account_id", accountId)
 
+	var bodyBytes []byte
 	var bodyReader io.ReadSeeker
 	contentType := "application/json"
 	if stream, ok := body.(io.ReadSeeker); ok {
 		bodyReader = stream
 		contentType = "application/octet-stream"
 	} else if body != nil {
-		bodyBytes, err := json.Marshal(body)
+		var err error
+		bodyBytes, err = json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal body: %w", err)
 		}
@@ -1554,9 +1552,13 @@ func (w *workspaceManager) callWorkspaceAPIWithClient(ctx *security.RequestConte
 		reqProxy.Param(k, v)
 	}
 
-	if bodyBytes != nil {
-		reqProxy.Body(bodyBytes)
-		reqProxy.SetHeader("Content-Type", "application/json")
+	if bodyReader != nil {
+		reader, err := rewind()
+		if err != nil {
+			return nil, err
+		}
+		reqProxy.Body(reader)
+		reqProxy.SetHeader("Content-Type", contentType)
 	}
 	reqProxy.SetHeader("X-Workspace-Token", workspaceToken)
 

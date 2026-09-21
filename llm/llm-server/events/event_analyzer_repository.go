@@ -159,6 +159,64 @@ type EventAnalysis struct {
 	UpdatedAt time.Time
 }
 
+type EventAnalysisEventVersion struct {
+	EventID          string    `db:"event_id"`
+	RelatedEventID   string    `db:"related_event_id"`
+	VersionRank      int       `db:"version_rank"`
+	GeneratedAt      time.Time `db:"generated_at"`
+	Summary          string    `db:"summary"`
+	Investigation    string    `db:"investigation"`
+	Analysis         string    `db:"analysis"`
+	DetailedResponse string    `db:"detailed_response"`
+}
+
+const eventAnalysisHistoryLimit = 5
+
+// ListCompletedEventAnalysisVersions assembles full historical versions from
+// the rows already retained in event_log_analysis. Ranking within each
+// (event, analysis type) aligns the four stages from the same generation while
+// leaving event_analysis_mapping free to keep pointing at only the live rows.
+func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *security.RequestContext, fingerprint, accountID, aggKey string) ([]EventAnalysisEventVersion, error) {
+	var versions []EventAnalysisEventVersion
+	err := r.dbManager.Db.Select(&versions, `
+		WITH ranked AS (
+			SELECT
+				a.*,
+				ROW_NUMBER() OVER (
+					PARTITION BY a.event_id, a.analysis_type
+					ORDER BY COALESCE(a.updated_at, a.recorded_at) DESC, a.id DESC
+				) AS version_rank
+			FROM event_log_analysis a
+			WHERE a.event_fingerprint = $1
+			  AND a.cloud_account_id = $2
+			  AND a.event_aggregation_key = $3
+			  AND a.analysis_type IN ($4, $5, $6, $7)
+			  AND a.status = $8
+			  AND a.event_id IS NOT NULL
+		)
+		SELECT
+			a.event_id,
+			a.event_id::text AS related_event_id,
+			a.version_rank,
+			MAX(COALESCE(a.updated_at, a.recorded_at)) AS generated_at,
+			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $4), '') AS summary,
+			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $5), '') AS investigation,
+			COALESCE(MAX(a.analysis) FILTER (WHERE a.analysis_type = $6), '') AS analysis,
+			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $7), '') AS detailed_response
+		FROM ranked a
+		GROUP BY a.event_id, a.version_rank
+		HAVING COUNT(DISTINCT a.analysis_type) = 4
+		ORDER BY generated_at DESC
+		LIMIT $9`, fingerprint, accountID, aggKey,
+		AnalysisTypeSummary, AnalysisTypeInvestigation, AnalysisTypeLog, AnalysisTypeDetailedResponse,
+		AnalysisStatusCompleted, eventAnalysisHistoryLimit)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to list mapped analysis versions", "error", err, "event_fingerprint", fingerprint)
+		return nil, fmt.Errorf("ListCompletedEventAnalysisVersions: %w", err)
+	}
+	return versions, nil
+}
+
 // GetEventInfo fetches basic event details (ID, fingerprint, aggregation key) from the database.
 func (r *EventAnalysisRepository) GetEventInfo(ctx *security.RequestContext, eventId string, accountId string) (*EventInfo, error) {
 	eventSqlQuery := `SELECT id, fingerprint, aggregation_key, created_at FROM events WHERE id = $1 and cloud_account_id = $2;`

@@ -1,15 +1,18 @@
 package core
 
 import (
-	"nudgebee/llm/config"
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildKBSearchQuery(t *testing.T) {
@@ -77,6 +80,17 @@ func TestBuildKBSearchQuery(t *testing.T) {
 			},
 		},
 		{
+			name: "delegated task augments original user intent",
+			request: NBAgentRequest{
+				OriginalQuery: "why is checkout failing",
+				Query:         "inspect prometheus histogram checkout_latency_seconds",
+			},
+			check: func(t *testing.T, got string) {
+				assert.Contains(t, got, "why is checkout failing")
+				assert.Contains(t, got, "inspect prometheus histogram checkout_latency_seconds")
+			},
+		},
+		{
 			name:    "empty when there is no question at all",
 			request: NBAgentRequest{},
 			check: func(t *testing.T, got string) {
@@ -97,63 +111,214 @@ func TestBuildKBSearchQueryCappedLength(t *testing.T) {
 	assert.LessOrEqual(t, len(got), kbPrestepMaxQueryLen)
 }
 
-func TestBuildSkillListsMenu(t *testing.T) {
-	t.Run("active KBs render with names and descriptions when hasRetrievedKnowledge is true", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{
-			{Name: "Pod Restart Runbook", Description: "Steps to safely restart a crashlooping pod", Status: "active"},
-			{Name: "Database Troubleshooting", Description: "Common database connection issues", Status: "active"},
+func TestRetrieveKnowledgeDocsPartialTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		slowAccount bool
+		slowMapped  bool
+		slowSibling bool
+		want        []string
+	}{
+		{"slow account", true, false, false, []string{"mapped"}},
+		{"slow mapped", false, true, false, []string{"account"}},
+		{"all slow", true, true, false, nil},
+		{"all complete", false, false, false, []string{"mapped", "account"}},
+		{"one mapped sibling slow", false, false, true, []string{"mapped", "account"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldAccount, oldCollection := queryAccountKnowledgeFn, queryCollectionKnowledgeFn
+			release := make(chan struct{})
+			kbs := []toolcore.Knowledgebase{{Id: "mapped", Name: "memory runbook", Status: "active", Enabled: true, KBType: "manual"}}
+			if tc.slowSibling {
+				kbs = append(kbs, toolcore.Knowledgebase{Id: "sibling", Name: "memory runbook sibling", Status: "active", Enabled: true, KBType: "manual"})
+			}
+			finished := make(chan struct{}, len(kbs)+1)
+			t.Cleanup(func() {
+				close(release)
+				for range len(kbs) + 1 {
+					<-finished
+				}
+				queryAccountKnowledgeFn, queryCollectionKnowledgeFn = oldAccount, oldCollection
+			})
+			queryAccountKnowledgeFn = func(_ context.Context, _, _, _, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+				defer func() { finished <- struct{}{} }()
+				if tc.slowAccount {
+					<-release
+				}
+				return toolcore.RAGSearchResults{{Document: "account"}}
+			}
+			queryCollectionKnowledgeFn = func(_ context.Context, _, _, _, _, collection string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+				defer func() { finished <- struct{}{} }()
+				if tc.slowMapped || collection == "kb_sibling" {
+					<-release
+				}
+				return toolcore.RAGSearchResults{{Document: "mapped"}}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			docs := retrieveKnowledgeDocs(ctx, NBAgentRequest{}, "memory runbook", kbs)
+			var got []string
+			for _, doc := range docs {
+				got = append(got, doc.Document)
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestRetrieveKnowledgeDocsExcludesDisabledMappedKB(t *testing.T) {
+	previousAccount := queryAccountKnowledgeFn
+	previousCollection := queryCollectionKnowledgeFn
+	t.Cleanup(func() {
+		queryAccountKnowledgeFn = previousAccount
+		queryCollectionKnowledgeFn = previousCollection
+	})
+	queryAccountKnowledgeFn = func(_ context.Context, _, _, _, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		return nil
+	}
+	collectionCalled := false
+	queryCollectionKnowledgeFn = func(_ context.Context, _, _, _, _, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		collectionCalled = true
+		return nil
+	}
+	disabled := toolcore.Knowledgebase{Id: "disabled", Name: "disabled runbook", Status: "active", Enabled: false}
+	retrieveKnowledgeDocs(context.Background(), NBAgentRequest{}, "disabled runbook", []toolcore.Knowledgebase{disabled})
+	assert.False(t, collectionCalled, "a user-disabled mapped KB must not be searched")
+}
+
+func TestRetrieveRelevantKB_DelegatedAgentReservesMappedCandidate(t *testing.T) {
+	oldResolver := resolveManualKnowledgeFn
+	resolveManualKnowledgeFn = func(_ *security.RequestContext, account string, docs toolcore.RAGSearchResults) toolcore.RAGSearchResults {
+		assert.Equal(t, "account-36421", account)
+		for i := range docs {
+			if docs[i].Metadata["collection"] == "kb_mapped-runbook" {
+				docs[i].Metadata["kb_id"] = "mapped-runbook"
+				docs[i].Metadata["kb_name"] = "es_metrics_discovery"
+			}
 		}
-		got := BuildSkillListsMenu(kbs, true)
-		assert.Contains(t, got, "<skill-lists>")
-		assert.Contains(t, got, "</skill-lists>")
-		assert.Contains(t, got, "Additional knowledge bases available for this account. Relevant knowledge has already been retrieved for you above; use the load_skills tool to load one of these by name ONLY if you need expert guidance the retrieved knowledge does not cover.")
-		assert.Contains(t, got, "name: Pod Restart Runbook - description: Steps to safely restart a crashlooping pod")
-		assert.Contains(t, got, "name: Database Troubleshooting - description: Common database connection issues")
+		return docs
+	}
+	t.Cleanup(func() { resolveManualKnowledgeFn = oldResolver })
+
+	previousAccountQuery := queryAccountKnowledgeFn
+	previousCollectionQuery := queryCollectionKnowledgeFn
+	previousListAccountKBs := listAccountKBsFn
+	t.Cleanup(func() {
+		queryAccountKnowledgeFn = previousAccountQuery
+		queryCollectionKnowledgeFn = previousCollectionQuery
+		listAccountKBsFn = previousListAccountKBs
 	})
 
-	t.Run("sub-agent / no retrieved knowledge renders proactive lazy load instructions", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{
-			{Name: "es_metrics_discovery", Description: "Elasticsearch metrics discovery runbook", Status: "active"},
+	mapped := toolcore.Knowledgebase{
+		Id:          "mapped-runbook",
+		Name:        "es_metrics_discovery",
+		Description: "Discover Elasticsearch metric field names before querying",
+		Status:      "active",
+		Enabled:     true,
+		KBType:      "manual",
+	}
+	queryAccountKnowledgeFn = func(_ context.Context, _, _, _, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		docs := make(toolcore.RAGSearchResults, 0, kbPrestepTopK)
+		for i := range kbPrestepTopK {
+			docs = append(docs, toolcore.RAGSearchResult{
+				Document: fmt.Sprintf("Generic Confluence page %d", i),
+				Metadata: map[string]any{"title": fmt.Sprintf("Generic page %d", i), "url": fmt.Sprintf("https://confluence/page/%d", i), "collection": "global_docs"},
+			})
 		}
-		got := BuildSkillListsMenu(kbs, false)
-		assert.Contains(t, got, "<skill-lists>")
-		assert.Contains(t, got, "</skill-lists>")
-		assert.Contains(t, got, "The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis.")
-		assert.NotContains(t, got, "already been retrieved for you above")
-		assert.Contains(t, got, "name: es_metrics_discovery - description: Elasticsearch metrics discovery runbook")
-	})
+		return docs
+	}
+	queryCollectionKnowledgeFn = func(_ context.Context, _, _, _, _, collection string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		assert.Equal(t, "kb_mapped-runbook", collection)
+		return toolcore.RAGSearchResults{{
+			Document: "First discover fields such as service_name before issuing the Elasticsearch metrics query.",
+			Metadata: map[string]any{"title": "es_metrics_discovery", "collection": collection},
+		}}
+	}
+	listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
+		return []toolcore.Knowledgebase{mapped}, nil
+	}
 
-	t.Run("empty description does not emit dangling description suffix", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{
-			{Name: "unannotated_skill", Description: "", Status: "active"},
-			{Name: "whitespace_desc_skill", Description: "   ", Status: "active"},
+	request := NBAgentRequest{
+		AccountId:      "account-36421",
+		ConversationId: "conversation-36421",
+		MessageId:      "message-36421",
+		AgentId:        "elastic-search-metrics-agent",
+		OriginalQuery:  "why are Elasticsearch metrics missing",
+		Query:          "inspect available metric fields",
+	}
+	result := retrieveRelevantKB(security.NewRequestContextForSuperAdmin(), request, []toolcore.Knowledgebase{mapped})
+
+	require.Contains(t, result.menu, "es_metrics_discovery")
+	require.Contains(t, result.menu, "knowledge:")
+	start := strings.Index(result.menu, "knowledge:")
+	candidate, ok := toolcore.LoadKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, result.menu[start:start+len("knowledge:")+16])
+	require.True(t, ok)
+	assert.Equal(t, "mapped-runbook", candidate.KBID)
+	assert.Empty(t, candidate.Content, "manual bodies load by canonical ID")
+	require.NotEmpty(t, result.references)
+	assert.Contains(t, result.references[0].ReferenceID, "mapped-runbook")
+}
+
+func TestBuildKnowledgeCandidateMenuIsCompactAndLoadable(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	request := NBAgentRequest{
+		AccountId:      "account-index-test",
+		ConversationId: "conversation-index-test",
+		MessageId:      "message-index-test",
+	}
+	fullBody := "Tenant convention: query checkout logs with service_name=checkout-api. " + strings.Repeat("detail ", 2000)
+	docs := toolcore.RAGSearchResults{{
+		Document: fullBody,
+		Metadata: map[string]any{
+			"title":  "Checkout logging conventions",
+			"source": "servicenow",
+			"url":    "https://servicenow.example/kb/KB001",
+		},
+	}}
+
+	menu := buildKnowledgeCandidateMenu(ctx, request, docs, nil)
+	assert.Contains(t, menu, "<skill-lists>")
+	assert.Contains(t, menu, "source: servicenow")
+	assert.Contains(t, menu, "id: knowledge:")
+	assert.NotContains(t, menu, strings.Repeat("detail ", 100), "the full article must stay out of the prompt index")
+
+	idStart := strings.Index(menu, "knowledge:")
+	require.NotEqual(t, -1, idStart)
+	id := menu[idStart : idStart+len("knowledge:")+16]
+	candidate, ok := toolcore.LoadKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, id)
+	require.True(t, ok)
+	assert.Equal(t, TruncateHead(strings.TrimSpace(fullBody), toolcore.KnowledgeExcerptBytes), candidate.Content)
+	assert.True(t, candidate.ExcerptOnly)
+}
+
+func TestBuildKnowledgeCandidateMenuKeepsSectionsFromSameURLLoadable(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	request := NBAgentRequest{
+		AccountId:      "account-section-test",
+		ConversationId: "conversation-section-test",
+		MessageId:      "message-section-test",
+	}
+	docs := toolcore.RAGSearchResults{
+		{Document: "Section one procedure", Metadata: map[string]any{"url": "https://docs.example/runbook"}},
+		{Document: "Section two procedure", Metadata: map[string]any{"url": "https://docs.example/runbook"}},
+	}
+
+	menu := buildKnowledgeCandidateMenu(ctx, request, docs, nil)
+	var ids []string
+	for _, line := range strings.Split(menu, "\n") {
+		if _, rest, ok := strings.Cut(line, "id: "); ok {
+			ids = append(ids, strings.Fields(rest)[0])
 		}
-		got := BuildSkillListsMenu(kbs, false)
-		assert.Contains(t, got, "name: unannotated_skill\n")
-		assert.Contains(t, got, "name: whitespace_desc_skill\n")
-		assert.NotContains(t, got, "description:")
-	})
+	}
+	require.Len(t, ids, 2)
+	assert.NotEqual(t, ids[0], ids[1])
 
-	t.Run("inactive KBs are excluded", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{
-			{Name: "Active KB", Description: "d", Status: "active"},
-			{Name: "Processing KB", Description: "d", Status: "processing"},
-		}
-		got := BuildSkillListsMenu(kbs, false)
-		assert.Contains(t, got, "Active KB")
-		assert.NotContains(t, got, "Processing KB")
-	})
-
-	t.Run("no active KBs returns empty string", func(t *testing.T) {
-		kbs := []toolcore.Knowledgebase{{Name: "x", Status: "processing"}}
-		assert.Equal(t, "", BuildSkillListsMenu(kbs, true))
-		assert.Equal(t, "", BuildSkillListsMenu(kbs, false))
-	})
-
-	t.Run("empty slice returns empty string", func(t *testing.T) {
-		assert.Equal(t, "", BuildSkillListsMenu(nil, true))
-		assert.Equal(t, "", BuildSkillListsMenu(nil, false))
-	})
+	first, ok := toolcore.LoadKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, ids[0])
+	require.True(t, ok)
+	second, ok := toolcore.LoadKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, ids[1])
+	require.True(t, ok)
+	assert.Equal(t, "Section one procedure", first.Content)
+	assert.Equal(t, "Section two procedure", second.Content)
 }
 
 func TestFormatRetrievedKBBlock(t *testing.T) {
@@ -200,38 +365,47 @@ func TestMergeAccountIntegrationKBs(t *testing.T) {
 	t.Run("active integration KBs are added to mapped candidates", func(t *testing.T) {
 		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
 			return []toolcore.Knowledgebase{
-				{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+				{Id: "kb-conf", Name: "dev-confluence", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 				{Id: "kb-arch", Name: "old-confluence", Status: "archived", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
-				{Id: "kb-man", Name: "manual-notes", Status: "active", KBType: toolcore.KBTypeManual},
+				{Id: "kb-man", Name: "manual-notes", Status: "active", Enabled: true, KBType: toolcore.KBTypeManual},
+				{Id: "kb-off", Name: "disabled-notes", Status: "active", Enabled: false, KBType: toolcore.KBTypeManual},
 			}, nil
 		}
-		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Name: "mapped", Status: "active", KBType: toolcore.KBTypeManual}}
+		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Name: "mapped", Status: "active", Enabled: true, KBType: toolcore.KBTypeManual}}
 		got := mergeAccountIntegrationKBs(ctx, "acct", mapped)
 		ids := make([]string, 0, len(got))
 		for _, kb := range got {
 			ids = append(ids, kb.Id)
 		}
-		// Mapped KB retained, active integration KB added; archived and
-		// account-wide manual KBs excluded.
-		assert.Equal(t, []string{"kb-mapped", "kb-conf"}, ids)
+		// Mapped KB retained; every active account KB is eligible regardless
+		// of agent mapping. Archived KBs remain excluded.
+		assert.Equal(t, []string{"kb-mapped", "kb-conf", "kb-man"}, ids)
 	})
 
 	t.Run("duplicate ids are not added twice", func(t *testing.T) {
 		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
 			return []toolcore.Knowledgebase{
-				{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+				{Id: "kb-conf", Name: "dev-confluence", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 			}, nil
 		}
-		mapped := []toolcore.Knowledgebase{{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")}}
+		mapped := []toolcore.Knowledgebase{{Id: "kb-conf", Name: "dev-confluence", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")}}
 		got := mergeAccountIntegrationKBs(ctx, "acct", mapped)
 		assert.Len(t, got, 1)
+	})
+
+	t.Run("disabled account KBs are not added", func(t *testing.T) {
+		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
+			return []toolcore.Knowledgebase{{Id: "kb-off", Name: "disabled", Status: "active", Enabled: false}}, nil
+		}
+		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Status: "active", Enabled: true}}
+		assert.Equal(t, mapped, mergeAccountIntegrationKBs(ctx, "acct", mapped))
 	})
 
 	t.Run("listing failure falls back to mapped KBs only", func(t *testing.T) {
 		listAccountKBsFn = func(_ *security.RequestContext, _ string) ([]toolcore.Knowledgebase, error) {
 			return nil, assert.AnError
 		}
-		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Status: "active", KBType: toolcore.KBTypeManual}}
+		mapped := []toolcore.Knowledgebase{{Id: "kb-mapped", Status: "active", Enabled: true, KBType: toolcore.KBTypeManual}}
 		got := mergeAccountIntegrationKBs(ctx, "acct", mapped)
 		assert.Len(t, got, 1)
 		assert.Equal(t, "kb-mapped", got[0].Id)
@@ -255,7 +429,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 			},
 		}
 		kbs := []toolcore.Knowledgebase{
-			{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+			{Id: "kb-conf", Name: "dev-confluence", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 		}
 		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Len(t, refs, 2)
@@ -285,7 +459,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 			{Document: "SOP content.", Metadata: map[string]any{"source": "confluence", "url": "https://example.atlassian.net/wiki/pages/999"}, SimilarityScore: 0.86},
 		}
 		kbs := []toolcore.Knowledgebase{
-			{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+			{Id: "kb-conf", Name: "dev-confluence", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 		}
 		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Len(t, refs, 1)
@@ -297,7 +471,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 			{Document: "kb article body", Metadata: map[string]any{"source": "servicenow"}, SimilarityScore: 0.88},
 		}
 		kbs := []toolcore.Knowledgebase{
-			{Id: "kb-snow", Name: "snow", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
+			{Id: "kb-snow", Name: "snow", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
 		}
 		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Len(t, refs, 1)
@@ -311,7 +485,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 			{Document: "content", Metadata: map[string]any{"source": "confluence"}, SimilarityScore: 0.9},
 		}
 		kbs := []toolcore.Knowledgebase{
-			{Id: "kb-snow", Name: "snow", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
+			{Id: "kb-snow", Name: "snow", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("servicenow")},
 		}
 		refs, _, _ := attributeKBReferences(ctx, "acct", docs, kbs)
 		assert.Empty(t, refs)
@@ -324,7 +498,7 @@ func TestAttributeKBReferencesUnmappedIntegrationKB(t *testing.T) {
 func TestAttributionDropCountExcludesDuplicates(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 	kbs := []toolcore.Knowledgebase{
-		{Id: "kb-conf", Name: "dev-confluence", Status: "active", KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
+		{Id: "kb-conf", Name: "dev-confluence", Status: "active", Enabled: true, KBType: toolcore.KBTypeIntegration, KBSource: strPtr("confluence")},
 	}
 	// Deliberately raw (undeduplicated) input, which is the only way the two
 	// exclusion reasons can both occur in one call.
@@ -411,9 +585,9 @@ func TestKBPrestepTimeoutConfigurable(t *testing.T) {
 	// Unset / invalid values fall back to the default instead of a zero
 	// timeout (which would make every retrieval fail open instantly).
 	config.Config.LlmServerKBPrestepTimeoutSeconds = 0
-	assert.Equal(t, 12*time.Second, kbPrestepTimeout())
+	assert.Equal(t, 3*time.Second, kbPrestepTimeout())
 	config.Config.LlmServerKBPrestepTimeoutSeconds = -3
-	assert.Equal(t, 12*time.Second, kbPrestepTimeout())
+	assert.Equal(t, 3*time.Second, kbPrestepTimeout())
 }
 
 // TestClassifyCollection pins the collection-name contract rag-server reports on

@@ -581,6 +581,9 @@ type appConfig struct {
 	// given up and the result would never reach the LLM.
 	LlmServerWorkspaceCommandTimeout string `mapstructure:"llm_server_workspace_command_timeout"`
 
+	// LlmServerKnowledgeWorkspaceEnabled enables exact document materialization and selective reads.
+	LlmServerKnowledgeWorkspaceEnabled bool `mapstructure:"llm_server_knowledge_workspace_enabled"`
+
 	// LlmServerFsEvidenceRecallEnabled gates the FS evidence-recall layer: when a
 	// large observation is compressed in the scratchpad, replace the dead-end
 	// truncation marker with a live handle to the workspace file the tool already
@@ -1381,6 +1384,7 @@ func init() {
 	// comments above — this default is computed, not hand-picked, so it can't
 	// silently drift out of sync with the HTTP client timeout it must stay under.
 	viper.SetDefault("llm_server_workspace_command_timeout", (WorkspaceHTTPClientTimeout - workspaceCommandTimeoutBuffer).String())
+	viper.SetDefault("llm_server_knowledge_workspace_enabled", true)
 	viper.SetDefault("llm_server_fs_evidence_recall_enabled", true)
 	viper.SetDefault("llm_server_event_evidence_overflow_threshold", 2000)
 	viper.SetDefault("llm_server_log_agent_v2_enabled", true)
