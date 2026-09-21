@@ -84,7 +84,9 @@ def _drop_dead_kb_collections(collections, account_id, tenant_id):
     return kept
 
 
-def _filter_collections_for_module_and_account(collections, module, account_id, collection_name, tenant_id=None):
+def _filter_collections_for_module_and_account(
+    collections, module, account_id, collection_name, tenant_id=None, restrict_to_collection=False
+):
     """Filter collections by module + visibility scope.
 
     A collection is included when its ``module`` tag matches AND at least one
@@ -103,6 +105,12 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
     ``_drop_dead_kb_collections`` when its knowledge base is unavailable. An
     explicitly requested collection may bypass the module tag, but never the
     visibility scope or live-KB gate.
+
+    ``restrict_to_collection`` inverts that last rule: instead of ADDING the
+    named collection to the discovered set, it narrows the search down to it.
+    The narrowing intersects with what was already visible, so a caller can
+    only restrict to a collection it could already have searched — naming
+    another tenant's collection yields an empty search, never a targeted read.
     """
     matched = []
     for collection in collections:
@@ -110,7 +118,7 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
         if not metadata:
             continue
 
-        explicit = collection.name == collection_name
+        explicit = collection.name == collection_name and not restrict_to_collection
         if metadata.get("module") != module and not explicit:
             continue
 
@@ -124,6 +132,17 @@ def _filter_collections_for_module_and_account(collections, module, account_id, 
             matched.append(collection)
 
     collection_names = _drop_dead_kb_collections(matched, account_id, tenant_id)
+    if collection_name and restrict_to_collection:
+        if collection_name in collection_names:
+            return [collection_name]
+        logger.info(
+            "Restricted search requested for collection %s, which is not visible to account %s / tenant %s - "
+            "returning no collections",
+            collection_name,
+            account_id,
+            tenant_id,
+        )
+        return []
     return collection_names
 
 
@@ -219,6 +238,7 @@ def get_matching_documents(
     metadata_filter: Optional[Dict] = None,
     use_reranking: bool = False,
     tenant_id: Optional[str] = None,
+    restrict_to_collection: bool = False,
 ):
     """
     Returns:
@@ -242,7 +262,12 @@ def get_matching_documents(
         logger.info(f"Listing collections for module {module}, account {account_id}, tenant {tenant_id}")
         collections = list_collections_optimized()
         collection_names = _filter_collections_for_module_and_account(
-            collections, module, account_id, collection_name, tenant_id=tenant_id
+            collections,
+            module,
+            account_id,
+            collection_name,
+            tenant_id=tenant_id,
+            restrict_to_collection=restrict_to_collection,
         )
         logger.info(
             f"Found {len(collection_names)} collections for module {module}, account {account_id}, "
