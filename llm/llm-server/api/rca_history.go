@@ -121,10 +121,6 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 	c.JSON(200, buildApiResponse(response, nil))
 }
 
-func isRCAAnalysisType(t events.EventAnalysisType) bool {
-	return t == events.AnalysisTypeRCA || t == events.AnalysisTypeRCAAttempt
-}
-
 func rcaRecoverySession(a events.InProgressAnalysis) string {
 	if a.AnalysisType == events.AnalysisTypeRCAAttempt {
 		return events.RCAAttemptSessionID(a.ID)
