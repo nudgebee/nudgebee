@@ -103,6 +103,12 @@ func containsRegion(regions []string, region string) bool {
 // It merges because the data blob is shared — it also carries the CUR billing
 // config — so writing a regions-only object would silently drop cost settings.
 func mergeAccountRegions(dbms *database.DatabaseManager, accountId, tenantId string, regions []string, overrides map[string]any) (map[string]any, string, error) {
+	if accountId == "" {
+		return nil, "", fmt.Errorf("account: accountId is empty")
+	}
+	if tenantId == "" {
+		return nil, "", fmt.Errorf("account: tenantId is empty")
+	}
 	normalized, err := normalizeAWSRegions(regions)
 	if err != nil {
 		return nil, "", err
@@ -166,6 +172,12 @@ func carryForwardRegions(dbms *database.DatabaseManager, accountId, tenantId str
 	// don't second-guess it.
 	if _, ok := data[AccountRegionsKey]; ok {
 		return data, nil
+	}
+	if accountId == "" {
+		return nil, fmt.Errorf("account: accountId is empty")
+	}
+	if tenantId == "" {
+		return nil, fmt.Errorf("account: tenantId is empty")
 	}
 
 	var existingJSON *string

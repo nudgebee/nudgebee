@@ -186,6 +186,9 @@ func readLogIntegrationConfigValue(ctx *security.RequestContext, accountId, logP
 // and returns a nil DTO even though the integration exists. The listing below is the
 // authority.
 func lookupLogIntegrationConfigs(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) ([]core.IntegrationConfigValue, bool) {
+	if accountId == "" {
+		return nil, false
+	}
 	provider, source, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, logProvider, "logs", logProviderSource)
 	if err != nil || provider == "" {
 		return nil, false

@@ -2,6 +2,7 @@ package reports
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
@@ -61,6 +62,9 @@ func toAnySlice(in any) ([]interface{}, error) {
 // Returns a GqlResponse-shaped result so existing payload handling (filtering,
 // isPayloadEmpty, MQ publish) continues to work unchanged.
 func fetchDailyK8sInsights(tenantId string) (common.GqlResponse, error) {
+	if tenantId == "" {
+		return common.GqlResponse{}, fmt.Errorf("fetchDailyK8sInsights: tenantId is empty")
+	}
 	dbm, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return common.GqlResponse{}, err

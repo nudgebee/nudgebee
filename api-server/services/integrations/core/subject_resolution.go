@@ -453,6 +453,11 @@ func lookupLearnedSubject(sc *security.RequestContext, title string) string {
 	if strings.TrimSpace(title) == "" {
 		return ""
 	}
+	tenantId := sc.GetSecurityContext().GetTenantId()
+	if tenantId == "" {
+		sc.GetLogger().Warn("subject_resolution: tenantId is empty")
+		return ""
+	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		sc.GetLogger().Warn("subject_resolution: failed to get database manager for learned-mapping lookup", "error", err)
@@ -462,7 +467,7 @@ func lookupLearnedSubject(sc *security.RequestContext, title string) string {
 	if err := dbms.Db.Select(&serviceLists,
 		`SELECT services FROM webhook_subject_mappings
 		 WHERE tenant_id = $1 AND attr_key = ANY($2) AND lower(title) = lower($3)`,
-		sc.GetSecurityContext().GetTenantId(), pq.Array(webhookSubjectMappingAttrKeys), title,
+		tenantId, pq.Array(webhookSubjectMappingAttrKeys), title,
 	); err != nil {
 		sc.GetLogger().Error("subject_resolution: learned-mapping lookup failed", "error", err)
 		return ""

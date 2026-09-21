@@ -88,6 +88,10 @@ func ListLinkedCloudAccountIDsByIntegrationID(
 	if integrationId == "" {
 		return nil, nil
 	}
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	if tenantId == "" {
+		return nil, fmt.Errorf("ListLinkedCloudAccountIDsByIntegrationID: tenantId is empty")
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -100,7 +104,7 @@ func ListLinkedCloudAccountIDsByIntegrationID(
 		JOIN integrations_cloud_accounts ica ON ica.integration_id = i.id
 		WHERE i.tenant_id = $1
 		  AND i.id = $2
-	`, ctx.GetSecurityContext().GetTenantId(), integrationId)
+		`, tenantId, integrationId)
 	if err != nil {
 		return nil, fmt.Errorf("ListLinkedCloudAccountIDsByIntegrationID: query failed: %w", err)
 	}

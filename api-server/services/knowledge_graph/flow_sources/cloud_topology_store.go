@@ -89,6 +89,9 @@ func NewCloudTopologyStore(tenantID string, logger *slog.Logger) (*CloudTopology
 	if !CloudTopologyFromDBEnabled() {
 		return nil, nil
 	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("failed to build cloud topology store: tenantID is empty")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
