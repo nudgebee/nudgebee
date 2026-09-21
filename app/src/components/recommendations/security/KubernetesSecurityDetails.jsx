@@ -37,6 +37,7 @@ import apiTickets from '@api1/tickets';
 import k8sApi from '@api1/kubernetes';
 import { PrOpenIcon } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
+import { detectGitProvider } from '@components/optimise-new/gitProvider';
 
 const KubernetesSecurityDetails = (props) => {
   // Rows carry their own account_id; in cross-account mode (the /optimise
@@ -77,15 +78,6 @@ const KubernetesSecurityDetails = (props) => {
   // The finding whose detail panel is open. Rows used to expand into an
   // accordion; a single finding now opens the side panel instead.
   const [panelFinding, setPanelFinding] = useState(null);
-
-  // Helper to detect git provider from repo URL
-  const detectGitProvider = (repoUrl) => {
-    if (!repoUrl) return null;
-    const url = repoUrl.toLowerCase();
-    if (url.includes('github.com')) return 'github';
-    if (url.includes('gitlab')) return 'gitlab';
-    return null;
-  };
 
   // Filter integrations based on the repo URL in annotations
   const filteredGitIntegrations = useMemo(() => {
@@ -210,7 +202,7 @@ const KubernetesSecurityDetails = (props) => {
         const annotations = workloads[0].meta?.config?.annotations || {};
         // For security recommendations, we need workloads.nudgebee.com (source code repo) or ci.nudgebee.com or argocd
         const filteredKeys = Object.keys(annotations).filter(
-          (key) => key.startsWith(WORKLOADS_PREFIX) || key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io')
+          (key) => key.startsWith(WORKLOADS_PREFIX) || key.startsWith(CI_PREFIX) || key.startsWith('argocd.argoproj.io/')
         );
         if (filteredKeys.length > 0) {
           const filtered = {};

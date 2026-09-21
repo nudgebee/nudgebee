@@ -281,7 +281,8 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
 
       if (toolCall.agentName === 'loganalysis' || jsonParsed.stdout || jsonParsed.stderr) {
         const toShowData = jsonParsed.response || jsonParsed.stdout || jsonParsed.stderr;
-        return <MarkDowns data={toShowData.replace(/~/g, '\\~')} sx={{ width: '100%', overflowX: 'auto', p: 0 }} onLinkClick={onLinkClickProp} />;
+        const escapedMarkdown = toShowData.replace(/\\/g, '\\\\').replace(/~/g, '\\~');
+        return <MarkDowns data={escapedMarkdown} sx={{ width: '100%', overflowX: 'auto', p: 0 }} onLinkClick={onLinkClickProp} />;
       }
       const { headers, tableData } = getTableDataFromArrayOfObject(jsonParsed);
       if (headers.length > 0) {

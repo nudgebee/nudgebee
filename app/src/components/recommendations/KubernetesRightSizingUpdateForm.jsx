@@ -20,15 +20,7 @@ import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { colors, ds } from 'src/utils/colors';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
-
-// Helper to detect git provider from repo URL
-const detectGitProvider = (repoUrl) => {
-  if (!repoUrl) return null;
-  const url = repoUrl.toLowerCase();
-  if (url.includes('github.com')) return 'github';
-  if (url.includes('gitlab')) return 'gitlab';
-  return null;
-};
+import { detectGitProvider } from '@components/optimise-new/gitProvider';
 
 // Detects whether a workload is declaratively managed (GitOps / Helm / Argo CD /
 // Flux) so a manual "Update" — which patches the live pods directly — can warn

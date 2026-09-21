@@ -26,12 +26,6 @@ INTERNAL_ACCOUNT_HEADER = "X-NB-Account-Id"
 
 cred_cache = CredCache()
 
-# How much of the agent access_key to put in logs. The key is the identifier
-# half of the credential pair (the secret is never logged), but there is no
-# reason to print it in full -- 8 chars is enough for a
-# `select ... from agent where access_key like 'prefix%'` lookup.
-KEY_LOG_PREFIX_LEN = 8
-
 
 def _caller() -> str:
     """Who is failing auth, for logs. Without this an auth failure names nobody."""
@@ -124,8 +118,7 @@ class AuthTokenMiddleware(BaseController):
             }
         else:
             logging.warning(
-                "Agent auth failed: no k8s agent with access_key '%s...' (%s)",
-                key[:KEY_LOG_PREFIX_LEN],
+                "Agent auth failed: no matching k8s agent (%s)",
                 _caller(),
             )
             raise UnauthorizedError("Invalid key")
@@ -208,17 +201,15 @@ class AuthTokenMiddleware(BaseController):
             access_secret_v2 = value.get("access_secret_v2") or ""
             if not access_secret_v2:
                 logging.warning(
-                    "Agent auth failed: agent %s (key '%s...') has no access_secret_v2 (%s)",
+                    "Agent auth failed: agent %s has no access_secret_v2 (%s)",
                     value.get("agent_id"),
-                    key[:KEY_LOG_PREFIX_LEN],
                     _caller(),
                 )
                 raise UnauthorizedError(INVALID_SECRET)
             if not validate_key(api_secret, access_secret_v2):
                 logging.warning(
-                    "Agent auth failed: secret mismatch for agent %s (key '%s...') (%s)",
+                    "Agent auth failed: secret mismatch for agent %s (%s)",
                     value.get("agent_id"),
-                    key[:KEY_LOG_PREFIX_LEN],
                     _caller(),
                 )
                 raise UnauthorizedError(INVALID_SECRET)
