@@ -91,9 +91,9 @@ func TestNeighbourTypesHaveNoDuplicates(t *testing.T) {
 // stops there. A GCP load balancer reaches its instances only through
 // LoadBalancer -> BackendPool -> ComputeInstance, so leaving BackendPool out cut
 // every one of them off at the first hop while the graph itself held the full
-// chain. Measured on the Rackspace tenant: 21 active BackendPool nodes carrying
-// ROUTES_TO edges to their instances, none of them reachable from the balancer's
-// evidence. AWS target groups and Azure backend pools map to the same type, so
+// chain. This was reproduced with active BackendPool nodes carrying ROUTES_TO
+// edges to their instances, none of them reachable from the balancer's evidence.
+// AWS target groups and Azure backend pools map to the same type, so
 // the same hole opens there as soon as either materializes the tier.
 func TestNeighbourTypesIncludeBackendPool(t *testing.T) {
 	if !neighbourTypeSet()[NodeTypeBackendPool] {
