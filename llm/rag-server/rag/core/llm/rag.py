@@ -65,8 +65,7 @@ def _drop_dead_kb_collections(collections, account_id, tenant_id):
     live_names = get_live_kb_collection_names(account_id, tenant_id)
     if live_names is None:
         logger.warning(
-            "Could not resolve live knowledge bases for account %s / tenant %s - "
-            "excluding %d KB-backed collections",
+            "Could not resolve live knowledge bases for account %s / tenant %s - " "excluding %d KB-backed collections",
             account_id,
             tenant_id,
             len(kb_backed),
