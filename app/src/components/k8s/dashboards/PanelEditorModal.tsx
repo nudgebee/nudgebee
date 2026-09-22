@@ -13,6 +13,8 @@ import { Form } from '@shared/forms/Form';
 import { ds } from '@utils/colors';
 import {
   isCommandDatasource,
+  isKubernetesOnlyDatasource,
+  KUBERNETES_ACCOUNT_KIND,
   type AccountOption,
   type Panel,
   type PanelColumn,
@@ -68,6 +70,7 @@ const DATASOURCES: { label: string; value: PanelDatasource }[] = [
   { label: 'Redis', value: 'redis' },
   { label: 'RabbitMQ', value: 'rabbitmq' },
   { label: 'PostgreSQL', value: 'postgresql' },
+  { label: 'kubectl', value: 'kubectl' },
   { label: 'Nudgebee (events)', value: 'nudgebee' },
 ];
 
@@ -89,6 +92,12 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
     allowed:
       'a single read-only statement starting with SELECT, WITH, SHOW, EXPLAIN, TABLE or VALUES. No writes anywhere in it (including data-modifying CTEs), no ";", no double quotes — single quotes for values are fine',
     example: "SELECT state, count(*) FROM pg_stat_activity WHERE state = 'active' GROUP BY state",
+  },
+  kubectl: {
+    placeholder: 'get pods -n kube-system',
+    allowed:
+      'get, describe, logs, top, explain, api-resources, api-versions, version, cluster-info, with read flags only (-n, -A, -o, -l, --field-selector, --sort-by, -c, --tail, --since …). No secrets, no exec or port-forward, no file or template paths, and no quotes, pipes or redirects — `kubectl` itself is added by the server',
+    example: 'get pods -n kube-system -o wide',
   },
 };
 
@@ -199,24 +208,42 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     []
   );
 
+  /**
+   * The accounts this panel's datasource can actually be served by.
+   *
+   * kubectl runs against an account's own agent, so a cloud account has nothing
+   * to answer with — offering one would save a scope that can only fail at
+   * render. Scoped by `kind` (what the account MANAGES) rather than
+   * `cloud_provider`: a `vm` fleet reaches an agent too, and that agent has no
+   * kubectl.
+   */
+  const draftDatasource = draft?.datasource;
+  const scopedAccountOptions = useMemo(
+    () =>
+      draftDatasource && isKubernetesOnlyDatasource(draftDatasource)
+        ? accountOptions.filter((o) => o.kind === KUBERNETES_ACCOUNT_KIND)
+        : accountOptions,
+    [accountOptions, draftDatasource]
+  );
+
   const accountTypeOptions = useMemo(() => {
     const seen = new Set<string>();
-    for (const o of accountOptions) {
+    for (const o of scopedAccountOptions) {
       if (o.cloud_provider) seen.add(o.cloud_provider);
     }
     return [...seen].sort().map((t) => ({ label: t, value: t }));
-  }, [accountOptions]);
+  }, [scopedAccountOptions]);
 
   // The account picker lists only the chosen providers' accounts — an unfiltered list mixes clusters with
   // cloud accounts and is unreadable past a handful — sectioned by provider when it spans more than one.
-  const accountsForTypes = useMemo(() => accountPickerOptions(accountTypes, accountOptions), [accountOptions, accountTypes]);
+  const accountsForTypes = useMemo(() => accountPickerOptions(accountTypes, scopedAccountOptions), [scopedAccountOptions, accountTypes]);
 
   // The accounts this panel will actually query, resolved exactly as the panel
   // itself resolves them at render — the provider row must not be able to
   // disagree with the requests usePanelData goes on to make.
   const providerAccounts = useMemo(
-    () => resolvePanelAccounts(panelScopeFromTypes(accountTypes, accountIds, accountOptions), accountOptions),
-    [accountTypes, accountIds, accountOptions]
+    () => resolvePanelAccounts(panelScopeFromTypes(accountTypes, accountIds, scopedAccountOptions), scopedAccountOptions),
+    [accountTypes, accountIds, scopedAccountOptions]
   );
   // A text panel queries nothing, and the Source card it would sit in is hidden.
   const providerType = draft && draft.type !== 'text' ? providerTypeOf(draft.datasource) : undefined;
@@ -290,7 +317,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     setAccountTypes(next);
     // Selections from a provider that is no longer chosen would be invisible in
     // the filtered list yet still scope the panel, so drop them.
-    const kept = new Set(accountsOfTypes(next, accountOptions).map((o) => o.value));
+    const kept = new Set(accountsOfTypes(next, scopedAccountOptions).map((o) => o.value));
     setAccountIds((prev) => prev.filter((id) => kept.has(id)));
     // The provider was chosen from what the OLD accounts had configured, and a
     // different account type resolves an entirely different set — an AWS panel
@@ -325,10 +352,24 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     // grant. Falls back to it when none are readable, which is the honest state.
     const entityStart = defaultDraft(entity ? (queryableTables(datasourceTables)[0] || datasourceTables[0]).value : datasource);
     if (entity) setEntityDraft(entityStart);
-    // Only `nudgebee` reads across providers, so leaving a second one selected
-    // on the way out would save a scope the single control cannot show — the
-    // field would read "AWS" while the panel quietly queried AWS and GCP.
-    if (datasource !== 'nudgebee') changeAccountTypes(accountTypes.slice(0, 1));
+    // A kubectl panel can only be scoped to clusters, so a scope the new
+    // datasource cannot serve is dropped here rather than saved and failed at
+    // render. Where the panel was already on clusters the scope is kept; where
+    // it was on AWS it falls back to the one provider clusters have.
+    if (isKubernetesOnlyDatasource(datasource)) {
+      const clusters = accountOptions.filter((o) => o.kind === KUBERNETES_ACCOUNT_KIND);
+      const providers = [...new Set(clusters.map((o) => o.cloud_provider).filter(Boolean))];
+      const kept = accountTypes.filter((t) => providers.includes(t));
+      setAccountTypes((kept.length > 0 ? kept : providers).slice(0, 1));
+      const keptIds = new Set(clusters.map((o) => o.value));
+      setAccountIds((prev) => prev.filter((id) => keptIds.has(id)));
+      patch({ provider: undefined, provider_index: undefined });
+    } else if (datasource !== 'nudgebee') {
+      // Only `nudgebee` reads across providers, so leaving a second one selected
+      // on the way out would save a scope the single control cannot show — the
+      // field would read "AWS" while the panel quietly queried AWS and GCP.
+      changeAccountTypes(accountTypes.slice(0, 1));
+    }
     setDraft((prev) =>
       prev
         ? {
@@ -505,7 +546,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                 >
                   <Form.Section>
                     <Form.Field label='Data source'>
-                      <Select value={draft.datasource} options={datasourceOptions} onChange={changeDatasource} />
+                      <Select value={draft.datasource} options={datasourceOptions} onChange={changeDatasource} id='panel-datasource-select' />
                     </Form.Field>
                     <Form.Row ratio={[1, 1]}>
                       <Form.Field label={multiType ? 'Account types' : 'Account type'} required>
@@ -645,7 +686,11 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                           <Form.Field
                             label={draft.datasource === 'postgresql' ? 'Query' : 'Command'}
                             required
-                            description={`Runs against this account's ${draft.datasource} integration. Read-only only — the credentials and connection flags are added by the server.`}
+                            description={
+                              draft.datasource === 'kubectl'
+                                ? "Runs in this account's cluster through its agent. Read-only only — `kubectl` itself is added by the server."
+                                : `Runs against this account's ${draft.datasource} integration. Read-only only — the credentials and connection flags are added by the server.`
+                            }
                           >
                             <Input value={expr} onChange={(v) => patchTarget({ expr: v })} placeholder={commandHelp.placeholder} />
                           </Form.Field>

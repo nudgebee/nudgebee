@@ -9,13 +9,16 @@ import (
 // the account; `nudgebee` routes to the internal query engine (events,
 // recommendations, spend, tickets) and needs no external provider at all.
 //
-// `redis`, `rabbitmq` and `postgresql` are a different shape: they run a
-// READ-ONLY command against the account's integration through the relay and
-// tabulate the output. They return a snapshot, not a series, so they render as a
-// table and ignore the dashboard's time range. See integration_query.go.
+// `redis`, `rabbitmq`, `postgresql` and `kubectl` are a different shape: they run
+// a READ-ONLY command in the account's cluster through the relay and tabulate the
+// output. They return a snapshot, not a series, so they render as a table and
+// ignore the dashboard's time range. See integration_query.go.
 //
-// Each value doubles as the INTEGRATION TYPE looked up for the account, so it
-// must match the name the integration registers (`postgresql`, not `postgres`).
+// The first three double as the INTEGRATION TYPE looked up for the account, so
+// they must match the name the integration registers (`postgresql`, not
+// `postgres`). `kubectl` is the exception: there is no kubectl integration — it
+// runs against the account's own agent, which is why it is restricted to
+// Kubernetes accounts.
 const (
 	DatasourceMetrics  = "metrics"
 	DatasourceLogs     = "logs"
@@ -24,6 +27,7 @@ const (
 	DatasourceRedis    = "redis"
 	DatasourceRabbitMQ = "rabbitmq"
 	DatasourcePostgres = "postgresql"
+	DatasourceKubectl  = "kubectl"
 )
 
 // IsProviderDatasource reports whether a panel resolves an observability provider
@@ -37,7 +41,8 @@ func IsProviderDatasource(datasource string) bool {
 // IsCommandDatasource reports whether a panel's data comes from running a
 // command through the relay rather than from an observability provider.
 func IsCommandDatasource(datasource string) bool {
-	return datasource == DatasourceRedis || datasource == DatasourceRabbitMQ || datasource == DatasourcePostgres
+	return datasource == DatasourceRedis || datasource == DatasourceRabbitMQ ||
+		datasource == DatasourcePostgres || datasource == DatasourceKubectl
 }
 
 // Panel visualisation types supported by the renderer. Kept deliberately small —

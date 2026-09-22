@@ -43,7 +43,7 @@ var (
 		DatasourceMetrics: true, DatasourceLogs: true,
 		DatasourceTraces: true, DatasourceNudgebee: true,
 		DatasourceRedis: true, DatasourceRabbitMQ: true,
-		DatasourcePostgres: true,
+		DatasourcePostgres: true, DatasourceKubectl: true,
 	}
 )
 
@@ -107,6 +107,13 @@ func ValidateDefinition(def Definition) error {
 		}
 		if !hasType && !hasIds {
 			return fmt.Errorf("panel %q: an account type or at least one account is required", p.Title)
+		}
+		// kubectl runs against the account's own agent, which only a Kubernetes
+		// account has. A type-scoped panel can be checked here; an id-scoped one
+		// is checked in ExecuteQuery, which has the request context this does not
+		// and can read the account itself.
+		if p.Datasource == DatasourceKubectl && hasType && !strings.EqualFold(p.AccountType, KubernetesAccountProvider) {
+			return fmt.Errorf("panel %q: a kubectl panel runs on Kubernetes accounts only", p.Title)
 		}
 		// A provider names the query language the panel's expression is written in,
 		// which only means something where a provider is resolved per account.

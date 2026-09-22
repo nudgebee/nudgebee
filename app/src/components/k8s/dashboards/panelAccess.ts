@@ -7,7 +7,7 @@
  *   metrics                     metrics_list          → metrics:Read
  *   logs                        logs_list             → logs:Read
  *   traces                      traces_grouping_v3    → traces:Read
- *   redis / rabbitmq / postgresql  dashboards_execute_query        → dashboards:Execute
+ *   redis / rabbitmq / postgresql / kubectl  dashboards_execute_query → dashboards:Execute
  *   nudgebee                    dashboards_execute_entity_query → dashboards:Execute,
  *                               then the query engine's own per-table module
  *                               (`PermissionModule` in query/metadata.go, mirrored
@@ -45,6 +45,7 @@ const DATASOURCE_PERMISSION: Record<string, string> = {
   redis: 'dashboards:Execute',
   rabbitmq: 'dashboards:Execute',
   postgresql: 'dashboards:Execute',
+  kubectl: 'dashboards:Execute',
   nudgebee: 'dashboards:Execute',
   // `text` renders authored prose and reads nothing, so it is never gated.
 };

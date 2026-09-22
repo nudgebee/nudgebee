@@ -51,6 +51,7 @@ describe('usesManualRun', () => {
     expect(usesManualRun('redis')).toBe(true);
     expect(usesManualRun('rabbitmq')).toBe(true);
     expect(usesManualRun('postgresql')).toBe(true);
+    expect(usesManualRun('kubectl')).toBe(true);
   });
 
   it('lets the read-only datasources preview as you type', () => {

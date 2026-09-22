@@ -32,6 +32,8 @@ jest.mock('@api1/dashboards', () => ({
   default: { updateDashboard: jest.fn(), createDashboard: jest.fn() },
   EMPTY_DEFINITION: { panels: [] },
   isCommandDatasource: () => false,
+  isKubernetesOnlyDatasource: () => false,
+  KUBERNETES_ACCOUNT_KIND: 'kubernetes',
 }));
 
 // Counts renders of the charts on the GRID. The editor's preview draws its own

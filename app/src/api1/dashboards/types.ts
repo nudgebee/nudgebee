@@ -1,16 +1,30 @@
 /**
- * `redis`, `rabbitmq` and `postgresql` are command datasources: they run a
- * read-only command through the relay and tabulate its output. They return a
- * snapshot rather than a series, so those panels are always tables and ignore
+ * `redis`, `rabbitmq`, `postgresql` and `kubectl` are command datasources: they
+ * run a read-only command through the relay and tabulate its output. They return
+ * a snapshot rather than a series, so those panels are always tables and ignore
  * the time range.
  *
- * Each value is also the integration type looked up for the account, which is
- * why it is `postgresql` rather than `postgres`.
+ * The first three are also the integration type looked up for the account, which
+ * is why it is `postgresql` rather than `postgres`. `kubectl` has no integration
+ * — it runs against the account's own agent, so it is offered on Kubernetes
+ * accounts only.
  */
-export type PanelDatasource = 'metrics' | 'logs' | 'traces' | 'nudgebee' | 'redis' | 'rabbitmq' | 'postgresql';
+export type PanelDatasource = 'metrics' | 'logs' | 'traces' | 'nudgebee' | 'redis' | 'rabbitmq' | 'postgresql' | 'kubectl';
 export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'text';
 
-export const COMMAND_DATASOURCES: PanelDatasource[] = ['redis', 'rabbitmq', 'postgresql'];
+export const COMMAND_DATASOURCES: PanelDatasource[] = ['redis', 'rabbitmq', 'postgresql', 'kubectl'];
+
+/**
+ * What a kubectl panel's accounts must be: `AccountOption.kind`, which says what
+ * an account MANAGES — not `cloud_provider`, which says who runs it. A `vm`
+ * fleet also reaches an agent, and that agent has no kubectl.
+ */
+export const KUBERNETES_ACCOUNT_KIND = 'kubernetes';
+
+/** Panels on this datasource may only be scoped to Kubernetes accounts. */
+export function isKubernetesOnlyDatasource(datasource: PanelDatasource): boolean {
+  return datasource === 'kubectl';
+}
 
 export function isCommandDatasource(datasource: PanelDatasource): boolean {
   return COMMAND_DATASOURCES.includes(datasource);
