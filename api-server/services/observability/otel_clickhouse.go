@@ -750,6 +750,13 @@ func MapGroupingRowToTraceGroupingValues(row map[string]interface{}) (TraceGroup
 	trace.P99Latency = clickhouseInt64(row["p99_latency"])
 	trace.P95Latency = clickhouseInt64(row["p95_latency"])
 	trace.MaxLatency = clickhouseInt64(row["max_latency"])
+	// workload_name is both selected and grouped on, but was never read off the
+	// row, so every ClickHouse grouped row carried an empty Workload while the
+	// namespace beside it was populated. Every other provider's grouping mapper
+	// sets it.
+	if v, ok := row["workload_name"].(string); ok {
+		trace.WorkloadName = v
+	}
 	if v, ok := row["workload_namespace"].(string); ok {
 		trace.WorkloadNamespace = v
 	}
