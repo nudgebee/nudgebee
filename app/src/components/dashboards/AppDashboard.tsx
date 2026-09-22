@@ -2,14 +2,14 @@ import PropTypes from 'prop-types';
 import Chart from '@ui/Chart';
 import { Grid, Typography } from '@mui/material';
 import ListingLayout from '@ui/ListingLayout';
+import { Link } from '@ui/Link';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { useEffect, useState } from 'react';
 import CustomTable from '@shared/tables/CustomTable';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { getLast24Hrs } from '@lib/datetime';
 import Heading from '@components/common/Heading';
-import EmptyData from '@shared/EmptyData';
-import { DataNotAvailable } from '@assets';
+import { EmptyState } from '@ui/EmptyState';
 import Loader from '@shared/Loader';
 import observability from '@api1/observability';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -252,6 +252,11 @@ function DashboardPanel({
       return;
     }
 
+    // Panels refetch on every date-range change; without this guard a slower
+    // earlier response can land after a newer one and leave the panel showing
+    // a range the reader has already moved off.
+    let cancelled = false;
+
     async function pullData() {
       const datasource = evaluateTemplate(config.datasource ?? 'prometheus', templateConfig);
       const targets =
@@ -262,10 +267,16 @@ function DashboardPanel({
           };
         }) ?? [];
       const targetsData: any[] = await fetchAndBuildData(targets, datasource);
-      setData(targetsData);
+      if (!cancelled) {
+        setData(targetsData);
+      }
     }
 
     pullData();
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, namespaceName, workloadName, podName, dateRange.startDate, dateRange.endDate]);
 
   return (
@@ -458,25 +469,38 @@ function AppDashboard({
     if (workloadAppType && workloadDashboardName) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     getDashboardStats({ accountId, namespaceName, workloadName, podName })
       .then((availabelData) => {
+        if (cancelled) return;
         if (availabelData.available) {
           setWorkloadAppType(availabelData.lang);
           setWorkloadDashboardName(availabelData?.dashboardName ?? '');
         }
       })
       .finally(() => {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [workloadAppType, accountId, namespaceName, workloadName]);
 
   useEffect(() => {
     if (!workloadAppType) {
       return;
     }
+    let cancelled = false;
+
     async function loadDashboard() {
       const data = await getDashboardData(workloadAppType!, workloadDashboardName);
+      if (cancelled) {
+        return;
+      }
       if (data != null) {
         data.__inputs = data.__inputs || [];
         if (podName) {
@@ -581,6 +605,10 @@ function AppDashboard({
       setTemplateData(newTemplateData);
     }
     loadDashboard();
+
+    return () => {
+      cancelled = true;
+    };
   }, [workloadAppType]);
 
   const renderingContent = () => {
@@ -631,14 +659,22 @@ function AppDashboard({
     return (
       <ListingLayout id='appDashboardNoData'>
         <ListingLayout.Body>
-          <EmptyData img={DataNotAvailable} heading='No Dashboard Available' id={'app-dashboard'}>
+          <EmptyState illustration='first-time' title='No Dashboard Available' id={'app-dashboard'}>
             <Typography>
-              For Python, Java, NodeJs, Golang configure <a href='https://opentelemetry.io/docs/languages/'>OpenTelemetry exporter</a>.
+              For Python, Java, NodeJs, Golang configure{' '}
+              <Link href='https://opentelemetry.io/docs/languages/' openInNew>
+                OpenTelemetry exporter
+              </Link>
+              .
             </Typography>
             <Typography>
-              For Postgres, Mysql, MongoDB etc configure <a href='https://prometheus.io/docs/instrumenting/exporters/'>Prometheus exporter</a>.
+              For Postgres, Mysql, MongoDB etc configure{' '}
+              <Link href='https://prometheus.io/docs/instrumenting/exporters/' openInNew>
+                Prometheus exporter
+              </Link>
+              .
             </Typography>
-          </EmptyData>
+          </EmptyState>
         </ListingLayout.Body>
       </ListingLayout>
     );

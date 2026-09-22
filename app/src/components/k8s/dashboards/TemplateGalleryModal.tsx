@@ -74,8 +74,8 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
   const visible = useMemo(() => (role === ALL_ROLES ? DASHBOARD_TEMPLATES : DASHBOARD_TEMPLATES.filter((t) => t.roles.includes(role))), [role]);
   const roleOptions = useMemo(() => [{ value: ALL_ROLES, label: 'All' }, ...TEMPLATE_ROLES.map((r) => ({ value: r.value, label: r.label }))], []);
 
-  const widgets = selected ? templateWidgets(selected) : [];
-  const scopes = widgets.map((widget) => defaultWidgetScope(widget, accountOptions));
+  const widgets = useMemo(() => (selected ? templateWidgets(selected) : []), [selected]);
+  const scopes = useMemo(() => widgets.map((widget) => defaultWidgetScope(widget, accountOptions)), [widgets, accountOptions]);
 
   /**
    * Per template: the distinct grants its panels need and how many panels remain
@@ -99,7 +99,7 @@ const TemplateGalleryModal: React.FC<Props> = ({ open, accountOptions, onClose, 
   }, []);
 
   /** The grant each widget in the SELECTED template needs, by position. */
-  const widgetGrants = widgets.map((widget) => missingPanelGrant(widget.panel));
+  const widgetGrants = useMemo(() => widgets.map((widget) => missingPanelGrant(widget.panel)), [widgets]);
   const selectedAccess = selected ? access[selected.id] : undefined;
 
   /**

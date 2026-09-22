@@ -187,7 +187,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "nodejs_eventloop_lag_seconds{namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "nodejs_eventloop_lag_seconds{namespace=\"$namespaceName\", $podNameFilter} or nodejs_eventloop_delay_mean{namespace=\"$namespaceName\", $podNameFilter} or nodejs_eventloop_delay_p99{namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
@@ -441,14 +441,14 @@
           "refId": "A"
         },
         {
-          "expr": "nodejs_heap_size_total_bytes{namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "nodejs_heap_size_total_bytes{namespace=\"$namespaceName\", $podNameFilter} or v8js_memory_heap_limit{namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
           "refId": "B"
         },
         {
-          "expr": "nodejs_heap_size_used_bytes{namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "nodejs_heap_size_used_bytes{namespace=\"$namespaceName\", $podNameFilter} or v8js_memory_heap_used{namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
@@ -635,7 +635,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "nodejs_heap_space_size_total_bytes{namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "nodejs_heap_space_size_total_bytes{namespace=\"$namespaceName\", $podNameFilter} or v8js_memory_heap_space_physical_size{namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
@@ -722,7 +722,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "nodejs_heap_space_size_used_bytes{namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "nodejs_heap_space_size_used_bytes{namespace=\"$namespaceName\", $podNameFilter} or v8js_memory_heap_used{namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",
@@ -809,7 +809,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "nodejs_heap_space_size_available_bytes{namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "nodejs_heap_space_size_available_bytes{namespace=\"$namespaceName\", $podNameFilter} or v8js_memory_heap_space_available_size{namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "pod",

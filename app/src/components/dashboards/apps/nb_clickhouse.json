@@ -261,7 +261,7 @@
             "type": "prometheus",
             "uid": "P4169E866C3094E38"
           },
-          "expr": "rate(sum(container_clikhouse_queries_duration_seconds_total_sum{destination_workload_namespace=\"$namespaceName\", destination_workload_name=\"$workloadName\"}[5m]))",
+          "expr": "rate(sum(container_clickhouse_queries_duration_seconds_total_sum{destination_workload_namespace=\"$namespaceName\", destination_workload_name=\"$workloadName\"}[5m]))",
           "format": "time_series",
           "instant": true,
           "intervalFactor": 1,

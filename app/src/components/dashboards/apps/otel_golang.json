@@ -89,45 +89,45 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_alloc|process_runtime_go_mem_heap_alloc_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_alloc|process_runtime_go_mem_heap_alloc|process_runtime_go_mem_heap_alloc_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "legendFormat": "__name__",
           "intervalFactor": 1,
           "refId": "B"
         },
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys|process_runtime_go_mem_heap_sys_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "legendFormat": "__name__",
           "intervalFactor": 1,
           "refId": "A"
         },
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_idle|process_runtime_go_mem_heap_idle_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_idle|process_runtime_go_mem_heap_idle|process_runtime_go_mem_heap_idle_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "legendFormat": "__name__",
           "intervalFactor": 1,
           "refId": "C"
         },
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_inuse|process_runtime_go_mem_heap_inuse_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_inuse|process_runtime_go_mem_heap_inuse|process_runtime_go_mem_heap_inuse_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "__name__",
           "refId": "D"
         },
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_released|process_runtime_go_mem_heap_released_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_released|process_runtime_go_mem_heap_released|process_runtime_go_mem_heap_released_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "intervalFactor": 1,
           "legendFormat": "__name__",
           "refId": "E"
         },
         {
-          "expr": "{__name__=~\"go.memory.used|go_memory_used_bytes\", type=\"heap\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "sum without(go_memory_type) ({__name__=~\"go.memory.used|go_memory_used|go_memory_used_bytes\", namespace=\"$namespaceName\", $podNameFilter})",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "go.memory.used (heap)",
+          "legendFormat": "go.memory.used (total)",
           "refId": "F"
         }
       ],
@@ -212,23 +212,23 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_inuse|process_runtime_go_mem_heap_inuse_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_inuse|process_runtime_go_mem_heap_inuse|process_runtime_go_mem_heap_inuse_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "legendFormat": "__name__",
           "intervalFactor": 1,
           "refId": "A"
         },
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys|process_runtime_go_mem_heap_sys_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
           "legendFormat": "__name__",
           "intervalFactor": 1,
           "refId": "B"
         },
         {
-          "expr": "{__name__=~\"go.memory.used|go_memory_used_bytes\", type=\"heap\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"go.memory.used|go_memory_used|go_memory_used_bytes\", go_memory_type=\"stack\", namespace=\"$namespaceName\", $podNameFilter}",
           "format": "time_series",
-          "legendFormat": "go.memory.used (heap)",
+          "legendFormat": "go.memory.used (stack)",
           "intervalFactor": 1,
           "refId": "C"
         }
@@ -314,15 +314,15 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "{__name__=~\"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
+          "expr": "{__name__=~\"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys|process_runtime_go_mem_heap_sys_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "legendFormat": "__name__",
           "format": "time_series",
           "intervalFactor": 1,
           "refId": "A"
         },
         {
-          "expr": "{__name__=~\"go.memory.used|go_memory_used_bytes\", type=\"heap\", namespace=\"$namespaceName\", $podNameFilter}",
-          "legendFormat": "go.memory.used (heap)",
+          "expr": "sum without(go_memory_type) ({__name__=~\"go.memory.used|go_memory_used|go_memory_used_bytes\", namespace=\"$namespaceName\", $podNameFilter})",
+          "legendFormat": "go.memory.used (total)",
           "format": "time_series",
           "intervalFactor": 1,
           "refId": "B"
@@ -500,7 +500,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "rate({__name__=~\"process.runtime.go.mem.heap_objects|process_runtime_go_mem_heap_objects\",namespace=\"$namespaceName\", $podNameFilter}[1m])",
+          "expr": "rate({__name__=~\"process.runtime.go.mem.heap_objects|process_runtime_go_mem_heap_objects\",namespace=\"$namespaceName\", $podNameFilter}[1m]) or rate({__name__=~\"go.memory.allocations|go_memory_allocations_total\", namespace=\"$namespaceName\", $podNameFilter}[1m])",
           "format": "time_series",
           "legendFormat": "__name__",
           "intervalFactor": 1,
@@ -553,7 +553,7 @@
       "bars": false,
       "dashLength": 10,
       "dashes": false,
-      "description": "go_memstats_lookups_total – counts how many pointer dereferences happened. This is a counter value so you can use rate() to lookups/s.",
+      "description": "Go runtime memory used (stack + other) vs the soft memory limit (GOMEMLIMIT), from the OTel go.* runtime convention. Replaces the deprecated pointer-lookups metric, which Go always reports as 0.",
       "fill": 1,
       "fillGradient": 0,
       "gridPos": {
@@ -589,7 +589,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "rate({__name__=~\"process.runtime.go.mem.lookups|process_runtime_go_mem_lookups_total\", namespace=\"$namespaceName\", $podNameFilter}[1m])",
+          "expr": "{__name__=~\"go.memory.used|go_memory_used|go_memory_used_bytes\", namespace=\"$namespaceName\", $podNameFilter} or {__name__=~\"go.memory.limit|go_memory_limit_bytes\", namespace=\"$namespaceName\", $podNameFilter}",
           "legendFormat": "__name__",
           "format": "time_series",
           "intervalFactor": 1,
@@ -600,7 +600,7 @@
       "timeFrom": null,
       "timeRegions": [],
       "timeShift": null,
-      "title": "Rate of a Pointer Dereferences",
+      "title": "Memory Used vs Limit",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -616,7 +616,7 @@
       },
       "yaxes": [
         {
-          "format": "ops",
+          "format": "decbytes",
           "label": null,
           "logBase": 1,
           "max": null,
@@ -765,14 +765,14 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "rate({__name__=~\"process.runtime.go.mem.heap_alloc|process_runtime_go_mem_heap_alloc_bytes\", namespace=\"$namespaceName\", $podNameFilter}[1m])",
+          "expr": "rate({__name__=~\"process.runtime.go.mem.heap_alloc|process_runtime_go_mem_heap_alloc|process_runtime_go_mem_heap_alloc_bytes\", namespace=\"$namespaceName\", $podNameFilter}[1m])",
           "legendFormat": "__name__",
           "format": "time_series",
           "intervalFactor": 1,
           "refId": "A"
         },
         {
-          "expr": "rate({__name__=~\"go.memory.allocated|go_memory_allocated_bytes\", namespace=\"$namespaceName\", $podNameFilter}[1m])",
+          "expr": "rate({__name__=~\"go.memory.allocated|go_memory_allocated|go_memory_allocated_bytes_total\", namespace=\"$namespaceName\", $podNameFilter}[1m])",
           "legendFormat": "go.memory.allocated (rate)",
           "format": "time_series",
           "intervalFactor": 1,
