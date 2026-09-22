@@ -159,7 +159,7 @@ func getRecencyBoost(createdAt *time.Time) int {
 		return 8
 	case daysSince < 7:
 		return 5
-	case daysSince < 30:
+	case daysSince < recencyBoostLastStepDays:
 		return 2
 	default:
 		return 0
@@ -307,6 +307,17 @@ func UpdateFinOpsScoreForRecommendation(ctx *security.RequestContext, dbms *data
 	return nil
 }
 
+// recencyBoostLastStepDays is the age at which getRecencyBoost reaches zero.
+// The recompute's "can this row still change" predicate is derived from it, so
+// the two cannot drift apart.
+const recencyBoostLastStepDays = 30
+
+// recencyRescoreGraceDays keeps a row in the daily walk for this long after
+// its boost reached zero, so a run of missed daily passes (a tick skipped while
+// a pass is in flight, a pod restart) still lands the final rewrite instead of
+// leaving the row one step short forever.
+const recencyRescoreGraceDays = 7
+
 // RecomputeAllFinOpsScores recomputes scores for all open recommendations.
 // Called by the finops-score-recompute cron every 6 hours. This is the only
 // path that writes scores for existing rows — scanner upserts intentionally
@@ -316,55 +327,86 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	if err != nil {
 		return err
 	}
+	_, err = recomputeFinOpsScoresWith(ctx, dbms, 0)
+	return err
+}
 
-	// Collect all computed scores in memory for batch update
-	type scoreRow struct {
-		id        string
-		score     int
-		band      string
-		breakdown string
-	}
-	var batch []scoreRow
+// recRow is one Open recommendation as the recompute reads it. Only the class
+// of a pod_right_sizing payload is kept, never the payload itself.
+type recRow struct {
+	id                string
+	tenantID          string
+	cloudAccountID    *string
+	category          string
+	ruleName          string
+	severity          *string
+	estimatedSavings  *float32
+	createdAt         *time.Time
+	resourceName      *string
+	resourceNamespace *string
+	resourceID        *string
+	changeClass       ChangeClass
+}
 
-	// The scan loop below does nothing but read rows, so each SELECT's cursor is
-	// released as soon as its last row lands. Scoring and blast-radius annotation
-	// run afterwards, in a second pass: annotation issues its own knowledge-graph
-	// queries on this same pool, and doing that from inside `rows.Next()` pinned
-	// the connection for the whole recompute — Postgres bills time blocked on a
-	// slow client to the statement, so this SELECT was logging multi-minute
-	// durations against the slow-query alert while the query itself is a PK-keyed
-	// join over an indexed `status = 'Open'` scan.
-	type recRow struct {
-		id                string
-		tenantID          string
-		cloudAccountID    *string
-		category          string
-		ruleName          string
-		severity          *string
-		estimatedSavings  *float32
-		createdAt         *time.Time
-		resourceName      *string
-		resourceNamespace *string
-		resourceID        *string
-		changeClass       ChangeClass
-	}
-	var recs []recRow
+// scoreRow is a scored recommendation ready for the batched UPDATE.
+type scoreRow struct {
+	id        string
+	score     int
+	band      string
+	breakdown string
+}
 
-	errCount := 0
+// recomputeStats is what one pass reports. unchanged counts rows the UPDATE
+// probed and left alone because their stored values already matched.
+type recomputeStats struct {
+	scanned     int
+	updated     int
+	unchanged   int
+	writeFailed int
+	errors      int
+	resolved    int
+	unresolved  int
+	pages       int
+}
+
+// recomputeFinOpsScoresWith is the walk itself, on the given database so a
+// test can point it at a scratch schema. Each keyset page is read, closed,
+// scored, annotated and written before the next page is fetched, so memory is
+// bounded by one page rather than by the size of the Open set, and no SELECT
+// cursor is ever held open across the knowledge-graph queries annotation
+// issues on this same pool.
+func recomputeFinOpsScoresWith(ctx *security.RequestContext, dbms *database.DatabaseManager, window time.Duration) (recomputeStats, error) {
+	tStart := time.Now()
+	var stats recomputeStats
+	var readDuration, annotateDuration, updateDuration time.Duration
+
 	// Read the Open set in bounded keyset pages rather than one unbounded
-	// statement. The cron still scores every Open row, but a single ~180k-row
-	// SELECT ran ~69s — long enough to trip the slow-query alert and to pin one
-	// snapshot open across the whole read, holding back vacuum on a table this
-	// size. Paging on (created_at, id) rides idx_recommendation_open_created_at_id
+	// statement. Paging on (created_at, id) rides idx_recommendation_open_created_at_id
 	// (migration V749, partial on status='Open'), the same cursor pattern
 	// runbook-server's WorkflowDao.FindNewRecommendations already uses, so each
 	// page is an ordered range scan that short-circuits at LIMIT.
 	//
 	// readUntil pins the upper bound at start: rows created while the walk is in
 	// flight are out of scope for this run (they were scored at insert time) and
-	// pinning it makes termination independent of the insert rate.
+	// pinning it makes termination independent of the insert rate. readSince is
+	// the zero time for the full pass, which the same range predicate turns into
+	// "every Open row", so both passes share one query shape and one index path.
+	//
+	// mutableSince bounds the recency boost: past recencyBoostLastStepDays the
+	// boost is zero and stays zero, so a row older than that can only change if
+	// it has a resource to re-annotate, or its scoring inputs moved since it was
+	// last scored, or it was never scored. The WHERE below spells that out, so
+	// the rows that dominate the Open set — image-scan findings with no resource
+	// and no savings — drop out of the walk once their boost has decayed instead
+	// of being read, scored and probed every day for nothing. The predicate is a
+	// filter over the same index walk, not a second index.
 	const readPageSize = 2000
 	readUntil := time.Now()
+	var readSince time.Time
+	if window > 0 {
+		readSince = readUntil.Add(-window)
+	}
+	mutableSince := readUntil.Add(-(recencyBoostLastStepDays + recencyRescoreGraceDays) * 24 * time.Hour)
 	var (
 		cursorCreatedAt time.Time
 		cursorID        string
@@ -376,6 +418,12 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 	// JSONB's shape varies per rule type and usually omits the namespace entirely
 	// (e.g. pod_right_sizing keys by workload name and carries no namespace at all),
 	// so parsing it resolves nothing.
+	//
+	// The stored breakdown records the severity and savings the score was computed
+	// from, so comparing those against the row is what detects a producer's
+	// re-scan upsert having changed either. Every producer refreshes severity and
+	// savings on conflict; none of them touches finops_*, and this check is what
+	// keeps that contract from needing to change per producer.
 	const recomputeSelect = `
 		SELECT
 			r.id, r.tenant_id, r.cloud_account_id, r.category, r.rule_name,
@@ -398,28 +446,43 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 			END AS change_payload
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
-		WHERE r.status = 'Open' AND r.created_at <= $1`
+		WHERE r.status = 'Open' AND r.created_at > $1 AND r.created_at <= $2
+		  AND (
+		    r.resource_id IS NOT NULL
+		    OR r.created_at > $3
+		    OR r.finops_score_breakdown ->> 'version' IS NULL
+		    OR COALESCE(r.finops_score_breakdown -> 'factors' ->> 'severity', '')
+		       IS DISTINCT FROM COALESCE(r.severity, '')
+		    OR COALESCE((r.finops_score_breakdown -> 'factors' ->> 'estimated_savings')::float4, 0)
+		       IS DISTINCT FROM COALESCE(r.estimated_savings, 0)::float4
+		  )`
+
+	kgService := core.NewService(ctx, ctx.GetLogger(), dbms)
+	impactCache := map[string]*core.ImpactSummary{}
+	page := make([]recRow, 0, readPageSize)
 
 	for {
+		tRead := time.Now()
 		var (
 			rows *sqlx.Rows
 			qerr error
 		)
 		if hasCursor {
 			rows, qerr = dbms.Db.Queryx(recomputeSelect+`
-			  AND (r.created_at, r.id) > ($2, $3::uuid)
+			  AND (r.created_at, r.id) > ($4, $5::uuid)
 			ORDER BY r.created_at ASC, r.id ASC
-			LIMIT $4`, readUntil, cursorCreatedAt, cursorID, readPageSize)
+			LIMIT $6`, readSince, readUntil, mutableSince, cursorCreatedAt, cursorID, readPageSize)
 		} else {
 			rows, qerr = dbms.Db.Queryx(recomputeSelect+`
 			ORDER BY r.created_at ASC, r.id ASC
-			LIMIT $2`, readUntil, readPageSize)
+			LIMIT $4`, readSince, readUntil, mutableSince, readPageSize)
 		}
 		if qerr != nil {
 			ctx.GetLogger().Error("error querying recommendations for score recompute", "error", qerr)
-			return qerr
+			return stats, qerr
 		}
 
+		page = page[:0]
 		pageCount := 0
 		advanced := false
 		for rows.Next() {
@@ -429,26 +492,37 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 			pageCount++
 			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID, &changePayload); err != nil {
 				ctx.GetLogger().Error("error scanning recommendation row", "error", err)
-				errCount++
+				stats.errors++
 				continue
 			}
 			r.createdAt = &createdAt
 			// Classify here and keep only the class, so the payload bytes never
-			// outlive the scan — the recs slice holds every Open row in memory.
+			// outlive the scan.
 			r.changeClass = ClassifyChange(r.ruleName, changePayload)
 			cursorCreatedAt, cursorID, hasCursor, advanced = createdAt, r.id, true, true
-			recs = append(recs, r)
+			page = append(page, r)
 		}
 		if err := rows.Err(); err != nil {
 			ctx.GetLogger().Error("error iterating recommendation rows for score recompute", "error", err)
 			if cerr := rows.Close(); cerr != nil {
 				ctx.GetLogger().Error("error closing rows", "error", cerr)
 			}
-			return err
+			return stats, err
 		}
 		if cerr := rows.Close(); cerr != nil {
 			ctx.GetLogger().Error("error closing rows", "error", cerr)
 		}
+		readDuration += time.Since(tRead)
+		stats.pages++
+		stats.scanned += len(page)
+
+		annotated, written, updated, writeFailed, errs := scoreAndWritePage(ctx, dbms, kgService, impactCache, page)
+		annotateDuration += annotated
+		updateDuration += written
+		stats.updated += updated
+		stats.writeFailed += writeFailed
+		stats.errors += errs
+		stats.unchanged += len(page) - errs - updated
 
 		if pageCount < readPageSize {
 			break
@@ -456,19 +530,47 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		if !advanced {
 			// Every row in a full page failed to scan, so the cursor did not move
 			// and the next page would re-read the same rows forever. Bail out.
-			return fmt.Errorf("finops score recompute: no scannable rows in a full page of %d; aborting", readPageSize)
+			return stats, fmt.Errorf("finops score recompute: no scannable rows in a full page of %d; aborting", readPageSize)
 		}
 	}
 
-	// Blast-radius annotation: resolve each recommendation to its knowledge-graph
-	// node — a k8s workload by (namespace, name), or a cloud resource by resource_id —
-	// and stamp a safety band into the breakdown JSONB. Always on; cost is bounded
-	// (recs whose resource isn't in the graph are skipped, and results are memoized
-	// per resource so each is resolved + traversed at most once per run).
-	kgService := core.NewService(ctx, ctx.GetLogger(), dbms)
-	impactCache := map[string]*core.ImpactSummary{}
+	for _, imp := range impactCache {
+		if imp != nil {
+			stats.resolved++
+		} else {
+			stats.unresolved++
+		}
+	}
 
-	for _, r := range recs {
+	ctx.GetLogger().Info("finops score recompute complete",
+		"window", window,
+		"scanned", stats.scanned,
+		"updated", stats.updated,
+		"unchanged", stats.unchanged,
+		"pages", stats.pages,
+		"resources_resolved", stats.resolved,
+		"resources_unresolved", stats.unresolved,
+		"errors", stats.errors,
+		"read_duration", readDuration,
+		"annotate_duration", annotateDuration,
+		"update_duration", updateDuration,
+		"total_duration", time.Since(tStart),
+	)
+	return stats, nil
+}
+
+// scoreAndWritePage scores and blast-radius-annotates one page of rows and
+// writes the results. Annotation resolves each recommendation to its
+// knowledge-graph node — a k8s workload by (namespace, name), or a cloud
+// resource by resource_id — and stamps a safety band into the breakdown JSONB.
+// Results are memoized in cache per resource across pages, so each resource is
+// resolved + traversed at most once per run. Returns the time spent scoring and
+// writing, the rows the UPDATE changed, the rows whose write failed, and the
+// error count (which includes the failed writes).
+func scoreAndWritePage(ctx *security.RequestContext, dbms *database.DatabaseManager, kg *core.Service, cache map[string]*core.ImpactSummary, page []recRow) (annotateDuration, updateDuration time.Duration, updated, writeFailed, errCount int) {
+	tAnnotate := time.Now()
+	batch := make([]scoreRow, 0, len(page))
+	for _, r := range page {
 		savings := float32(0)
 		if r.estimatedSavings != nil {
 			savings = *r.estimatedSavings
@@ -479,7 +581,7 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		if r.cloudAccountID != nil {
 			accountID = *r.cloudAccountID
 		}
-		// Identity comes from the cloud_resourses join above; annotate no-ops when it
+		// Identity comes from the cloud_resourses join; annotate no-ops when it
 		// resolves to no graph node (k8s workload or cloud resource absent from the
 		// graph, or an account-level rec with a null resource_id).
 		ns, name, resID := "", "", ""
@@ -492,14 +594,13 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 		if r.resourceID != nil {
 			resID = *r.resourceID
 		}
-		annotateBreakdownWithImpact(kgService, r.tenantID, accountID, ns, name, resID, r.changeClass, result.Breakdown, impactCache)
+		annotateBreakdownWithImpact(kg, r.tenantID, accountID, ns, name, resID, r.changeClass, result.Breakdown, cache)
 
 		breakdownJSON, err := json.Marshal(result.Breakdown)
 		if err != nil {
 			errCount++
 			continue
 		}
-
 		batch = append(batch, scoreRow{
 			id:        r.id,
 			score:     result.Score,
@@ -507,10 +608,21 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 			breakdown: string(breakdownJSON),
 		})
 	}
+	annotateDuration = time.Since(tAnnotate)
 
-	// Batch update using unnest — single query for all rows
+	// Batch update using unnest — one statement per chunk. The IS DISTINCT FROM
+	// guard turns a rewrite of already-stored values into a read, so a revisit
+	// leaves no dead tuples. Two breakdown fields are masked out of the
+	// comparison because they change on every computation without the score
+	// having moved: impact_summary.computed_at is stamped with now() on every
+	// annotation, and factors.recency_days is the row's age in whole days, which
+	// ticks over daily for every row and would otherwise turn the daily pass
+	// into a rewrite of the whole Open set. Nothing reads either back; the
+	// stored recency_days is therefore only current as of the row's last real
+	// change, and factors.recency_boost — which is what moves the score — stays
+	// in the comparison.
+	tUpdate := time.Now()
 	const batchSize = 500
-	updated := 0
 	for i := 0; i < len(batch); i += batchSize {
 		end := i + batchSize
 		if end > len(batch) {
@@ -529,25 +641,33 @@ func RecomputeAllFinOpsScores(ctx *security.RequestContext) error {
 			breakdowns[j] = row.breakdown
 		}
 
-		_, err := dbms.Db.Exec(`
+		res, err := dbms.Db.Exec(`
 			UPDATE recommendation AS r
 			SET finops_score = v.score,
 			    finops_band = v.band,
 			    finops_score_breakdown = v.breakdown::jsonb
 			FROM unnest($1::uuid[], $2::int[], $3::text[], $4::text[])
 			    AS v(id, score, band, breakdown)
-			WHERE r.id = v.id`,
+			WHERE r.id = v.id
+			  AND (r.finops_score IS DISTINCT FROM v.score
+			    OR r.finops_band IS DISTINCT FROM v.band
+			    OR (r.finops_score_breakdown #- '{impact_summary,computed_at}' #- '{factors,recency_days}')
+			       IS DISTINCT FROM (v.breakdown::jsonb #- '{impact_summary,computed_at}' #- '{factors,recency_days}'))`,
 			pq.Array(ids), pq.Array(scores), pq.Array(bands), pq.Array(breakdowns))
 		if err != nil {
 			ctx.GetLogger().Error("error batch updating finops scores", "error", err, "batch_start", i)
 			errCount += len(chunk)
+			writeFailed += len(chunk)
 			continue
 		}
-		updated += len(chunk)
+		if n, err := res.RowsAffected(); err == nil {
+			updated += int(n)
+		} else {
+			updated += len(chunk)
+		}
 	}
-
-	ctx.GetLogger().Info("finops score recompute complete", "updated", updated, "errors", errCount)
-	return nil
+	updateDuration = time.Since(tUpdate)
+	return annotateDuration, updateDuration, updated, writeFailed, errCount
 }
 
 // ComputeAndSetFinOpsScoreFields calculates the finops score and returns the values
