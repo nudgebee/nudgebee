@@ -354,7 +354,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
               items.map((item: any) => {
                 const logReferenceId = item.pattern_hash;
                 const existingTicket = ticketMap.get(logReferenceId);
-                const MENU_ITEMS: any = [{ icon: TicketsIcon, label: 'Create Ticket', id: 0, disabled: !!existingTicket }];
+                const MENU_ITEMS: any = [{ icon: TicketsIcon, label: 'Create Ticket', id: 'create-ticket', disabled: !!existingTicket }];
                 const { namespace: namespaceName, workload: app } = parseLogGroupItem(item);
                 const logQuery = `{"namespaceName": "${namespaceName}", "workloadName": "${app}"}`;
                 return [
