@@ -4560,9 +4560,6 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 		tasks = append(tasks, *task)
 	}
 
-	// Redact secret values from task inputs before returning to API
-	RedactSecretsFromTasks(tasks, wfDef)
-
 	// Virtualize container tasks. We detect containers by parameter shape so any
 	// task adopting these conventions is handled uniformly:
 	//   - `Tasks` / `params["tasks"]` — task lists embedded directly (group, foreach).
@@ -4879,6 +4876,10 @@ func (s *Service) processWorkflowHistory(ctx *security.RequestContext, accountID
 	}
 
 	workflowDetails.Tasks = tasks
+
+	// Redact after virtualization so synthesized and skipped rows are covered and
+	// task IDs are exact definition IDs.
+	RedactSecretsFromTasks(workflowDetails.Tasks, wfDef)
 
 	var sanitizeTaskExecutionDetails func([]model.TaskExecutionDetails)
 	sanitizeTaskExecutionDetails = func(tasks []model.TaskExecutionDetails) {

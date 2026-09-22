@@ -253,3 +253,123 @@ func TestProcessWorkflowHistoryKeepsDashedTaskIDs(t *testing.T) {
 	assert.True(t, ok, "a defined task id containing a dash must not be split into a switch branch")
 	assert.NotContains(t, byID, "report")
 }
+
+// A branch the switch skipped surfaces the definition params as its Input
+// (service.go:5000) so the run view does not render every field as N/A. Those
+// synthesized rows are appended after RedactSecretsFromTasks used to run, so
+// an unselected branch leaked its resolved secret param in the clear.
+func TestProcessWorkflowHistoryRedactsSkippedBranchSecrets(t *testing.T) {
+	dc := converter.GetDefaultDataConverter()
+	mockTemporalClient := new(MockTemporalClient)
+	service := &Service{temporalClient: mockTemporalClient, dataConverter: dc}
+	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+
+	mockTemporalClient.On("DescribeWorkflowExecution", mock.Anything, "parent-wf-dispatch-call_k8s-1234", "child-run").Return(
+		&workflowservice.DescribeWorkflowExecutionResponse{
+			WorkflowExecutionInfo: &workflowapi.WorkflowExecutionInfo{
+				Memo: &commonapi.Memo{Fields: map[string]*commonapi.Payload{
+					"parent_task_id":      payloadOf(t, dc, "dispatch-call_k8s").GetPayloads()[0],
+					"child_definition_id": payloadOf(t, dc, "inline-call_k8s-1234").GetPayloads()[0],
+				}},
+			},
+		}, nil)
+	mockTemporalClient.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{}, nil)
+
+	def := switchWorkflowDefinition()
+	for i := range def.Tasks {
+		if def.Tasks[i].ID == "call_aws" {
+			def.Tasks[i].Params["auth_token"] = "{{ Secrets['aws_token'] }}"
+		}
+	}
+
+	events := switchHistoryEvents(t, dc, enums.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED)
+	details, err := service.processWorkflowHistory(sc, "test-account", newHistoryIterator(events), def)
+	assert.NoError(t, err)
+
+	skipped, ok := tasksByID(details.Tasks)["call_aws"]
+	assert.True(t, ok, "unselected branch must be reported")
+	assert.Equal(t, model.TaskStatusSkipped, skipped.Status)
+	assert.Equal(t, RedactedValue, skipped.Input["auth_token"],
+		"a skipped branch must not surface its resolved secret param")
+
+	// The skipped row's Input aliases the definition, so redaction must not have
+	// blanked the template text the canvas renders from.
+	for _, task := range def.Tasks {
+		if task.ID == "call_aws" {
+			assert.Equal(t, "{{ Secrets['aws_token'] }}", task.Params["auth_token"],
+				"redaction must not mutate the workflow definition")
+		}
+	}
+}
+
+// End-to-end proof for the reported bug: an activity that ran carries its
+// resolved params in the history, and processWorkflowHistory copies them into
+// both Input and RenderedParams (service.go:4264-4278). The executions panel
+// renders rendered_params in preference to input, so both must be redacted.
+func TestProcessWorkflowHistoryRedactsResolvedSecretParams(t *testing.T) {
+	dc := converter.GetDefaultDataConverter()
+	mockTemporalClient := new(MockTemporalClient)
+	service := &Service{temporalClient: mockTemporalClient, dataConverter: dc}
+	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+
+	def := model.WorkflowDefinition{
+		Tasks: []model.Task{
+			{ID: "notify", Type: "http.request", Params: map[string]any{
+				"webhook": "https://hooks.example.com/abc",
+				"headers": map[string]any{
+					"Authorization": "Bearer {{ Secrets['slack_token'] }}",
+					"Accept":        "application/json",
+				},
+			}},
+		},
+	}
+
+	events := []*historyapi.HistoryEvent{
+		{
+			EventId:   5,
+			EventType: enums.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
+			Attributes: &historyapi.HistoryEvent_ActivityTaskScheduledEventAttributes{
+				ActivityTaskScheduledEventAttributes: &historyapi.ActivityTaskScheduledEventAttributes{
+					ActivityId:   "notify",
+					ActivityType: &commonapi.ActivityType{Name: "http.request"},
+					Input: payloadOf(t, dc, map[string]any{
+						"webhook": "https://hooks.example.com/abc",
+						"headers": map[string]any{
+							"Authorization": "Bearer xoxb-Zx9-canary-7Qw",
+							"Accept":        "application/json",
+						},
+						"__tenant_id": "test-tenant",
+					}),
+				},
+			},
+		},
+		{
+			EventId:   6,
+			EventType: enums.EVENT_TYPE_ACTIVITY_TASK_COMPLETED,
+			Attributes: &historyapi.HistoryEvent_ActivityTaskCompletedEventAttributes{
+				ActivityTaskCompletedEventAttributes: &historyapi.ActivityTaskCompletedEventAttributes{
+					ScheduledEventId: 5,
+					Result:           payloadOf(t, dc, map[string]any{"status": 200}),
+				},
+			},
+		},
+	}
+
+	details, err := service.processWorkflowHistory(sc, "test-account", newHistoryIterator(events), def)
+	assert.NoError(t, err)
+
+	notify, ok := tasksByID(details.Tasks)["notify"]
+	assert.True(t, ok)
+
+	renderedHeaders, ok := notify.RenderedParams["headers"].(map[string]any)
+	assert.True(t, ok, "rendered_params must survive as a map")
+	assert.Equal(t, RedactedValue, renderedHeaders["Authorization"],
+		"rendered_params is what the executions panel renders")
+	assert.Equal(t, "application/json", renderedHeaders["Accept"])
+	assert.Equal(t, "https://hooks.example.com/abc", notify.RenderedParams["webhook"])
+
+	inputHeaders, ok := notify.Input["headers"].(map[string]any)
+	assert.True(t, ok)
+	assert.Equal(t, RedactedValue, inputHeaders["Authorization"])
+}

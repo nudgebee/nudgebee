@@ -91,7 +91,7 @@ func TestBuildSecretParamKeys(t *testing.T) {
 	assert.NotContains(t, result, "t3")
 }
 
-func TestRedactTaskInput(t *testing.T) {
+func TestRedactTaskParams(t *testing.T) {
 	t.Run("basic redaction", func(t *testing.T) {
 		input := map[string]any{
 			"url":   "https://api.example.com",
@@ -99,20 +99,20 @@ func TestRedactTaskInput(t *testing.T) {
 		}
 		secretKeys := map[string]bool{"token": true}
 
-		redacted := redactTaskInput(input, secretKeys)
+		redacted := redactTaskParams(input, secretKeys)
 
 		assert.Equal(t, "https://api.example.com", redacted["url"])
 		assert.Equal(t, RedactedValue, redacted["token"])
 	})
 
 	t.Run("nil input", func(t *testing.T) {
-		result := redactTaskInput(nil, map[string]bool{"token": true})
+		result := redactTaskParams(nil, map[string]bool{"token": true})
 		assert.Nil(t, result)
 	})
 
 	t.Run("empty secret keys", func(t *testing.T) {
 		input := map[string]any{"token": "secret"}
-		result := redactTaskInput(input, nil)
+		result := redactTaskParams(input, nil)
 		assert.Equal(t, "secret", result["token"])
 	})
 
@@ -120,7 +120,7 @@ func TestRedactTaskInput(t *testing.T) {
 		input := map[string]any{"token": "secret", "url": "http://example.com"}
 		secretKeys := map[string]bool{"token": true}
 
-		redacted := redactTaskInput(input, secretKeys)
+		redacted := redactTaskParams(input, secretKeys)
 
 		assert.Equal(t, "secret", input["token"]) // original unchanged
 		assert.Equal(t, RedactedValue, redacted["token"])
@@ -207,8 +207,11 @@ func TestRedactSecretsFromTasks_NestedParamDefinition(t *testing.T) {
 
 	RedactSecretsFromTasks(tasks, wfDef)
 
-	// "headers" key in definition contains nested secret ref → entire field redacted
-	assert.Equal(t, RedactedValue, tasks[0].Input["headers"])
+	// Redaction is deep: only the secret-referencing leaf blanks, and "headers"
+	// stays a map so its non-secret siblings remain readable.
+	headers, ok := tasks[0].Input["headers"].(map[string]any)
+	assert.True(t, ok)
+	assert.Equal(t, RedactedValue, headers["Authorization"])
 	assert.Equal(t, "https://example.com", tasks[0].Input["url"])
 }
 

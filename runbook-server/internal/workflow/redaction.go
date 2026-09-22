@@ -52,8 +52,51 @@ func buildTaskDefinitionMap(tasks []model.Task) map[string]*model.Task {
 	return m
 }
 
+// collectSecretParamKeys records, by name, every key whose leaf value references Secrets.
+// Returns true when a reference sits where no key can address it, so the caller blanks the container.
+func collectSecretParamKeys(value any, out map[string]bool) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		unaddressable := false
+		for k, val := range v {
+			if containsSecretReference(k) { // the resolved key is the secret
+				unaddressable = true
+			}
+			switch val.(type) {
+			case map[string]any, []any:
+				if collectSecretParamKeys(val, out) {
+					out[k] = true
+				}
+			default:
+				if containsSecretReference(val) {
+					out[k] = true
+				}
+			}
+		}
+		return unaddressable
+	case []any:
+		unaddressable := false
+		for _, val := range v {
+			switch val.(type) {
+			case map[string]any, []any:
+				if collectSecretParamKeys(val, out) {
+					unaddressable = true
+				}
+			default:
+				// a bare element has no key of its own
+				if containsSecretReference(val) {
+					unaddressable = true
+				}
+			}
+		}
+		return unaddressable
+	}
+	return false
+}
+
 // buildSecretParamKeys identifies which param keys in each task definition
-// contain references to Secrets. Returns taskID -> set of param keys.
+// contain references to Secrets, at any nesting depth.
+// Returns taskID -> set of param keys.
 func buildSecretParamKeys(taskDefs map[string]*model.Task) map[string]map[string]bool {
 	result := make(map[string]map[string]bool)
 	for taskID, task := range taskDefs {
@@ -61,11 +104,9 @@ func buildSecretParamKeys(taskDefs map[string]*model.Task) map[string]map[string
 			continue
 		}
 		secretKeys := make(map[string]bool)
-		for key, val := range task.Params {
-			if containsSecretReference(val) {
-				secretKeys[key] = true
-			}
-		}
+		// A secret as a top-level param key has no container to blank; only value
+		// scrubbing reaches it, and allowedParams validation should prevent the shape.
+		_ = collectSecretParamKeys(task.Params, secretKeys)
 		if len(secretKeys) > 0 {
 			result[taskID] = secretKeys
 		}
@@ -73,19 +114,39 @@ func buildSecretParamKeys(taskDefs map[string]*model.Task) map[string]map[string
 	return result
 }
 
-// redactTaskInput replaces secret-containing fields in a task input map
-// with RedactedValue.
-func redactTaskInput(input map[string]any, secretKeys map[string]bool) map[string]any {
-	if len(secretKeys) == 0 || input == nil {
-		return input
-	}
-	redacted := make(map[string]any, len(input))
-	for k, v := range input {
-		if secretKeys[k] {
-			redacted[k] = RedactedValue
-		} else {
-			redacted[k] = v
+// redactDeep copies value, blanking secret-keyed fields through maps and slices.
+// Copy-on-write is load-bearing: synthesized and skipped task Inputs alias the definition.
+func redactDeep(value any, secretKeys map[string]bool) any {
+	switch v := value.(type) {
+	case map[string]any:
+		redacted := make(map[string]any, len(v))
+		for k, val := range v {
+			if secretKeys[k] {
+				redacted[k] = RedactedValue
+				continue
+			}
+			redacted[k] = redactDeep(val, secretKeys)
 		}
+		return redacted
+	case []any:
+		redacted := make([]any, len(v))
+		for i, val := range v {
+			redacted[i] = redactDeep(val, secretKeys)
+		}
+		return redacted
+	default:
+		return value
+	}
+}
+
+// redactTaskParams blanks secret-containing fields at any depth, returning a fresh copy.
+func redactTaskParams(params map[string]any, secretKeys map[string]bool) map[string]any {
+	if len(secretKeys) == 0 || params == nil {
+		return params
+	}
+	redacted, ok := redactDeep(params, secretKeys).(map[string]any)
+	if !ok {
+		return params
 	}
 	return redacted
 }
@@ -108,9 +169,8 @@ func resolveSecretKeysForTask(taskID string, secretParamKeys map[string]map[stri
 	return nil
 }
 
-// RedactSecretsFromTasks redacts secret values from task inputs in workflow
-// execution details, based on which params in the workflow definition
-// reference Secrets templates.
+// RedactSecretsFromTasks blanks resolved secrets in task Input and RenderedParams.
+// RenderedParams matters because ExecutionsView renders `rendered_params ?? input`.
 func RedactSecretsFromTasks(tasks []model.TaskExecutionDetails, wfDef model.WorkflowDefinition) {
 	taskDefs := buildTaskDefinitionMap(wfDef.Tasks)
 	secretParamKeys := buildSecretParamKeys(taskDefs)
@@ -123,10 +183,9 @@ func RedactSecretsFromTasks(tasks []model.TaskExecutionDetails, wfDef model.Work
 	redactRecursive = func(tasks []model.TaskExecutionDetails) {
 		for i := range tasks {
 			task := &tasks[i]
-			if task.Input != nil {
-				if keys := resolveSecretKeysForTask(task.ID, secretParamKeys); keys != nil {
-					task.Input = redactTaskInput(task.Input, keys)
-				}
+			if keys := resolveSecretKeysForTask(task.ID, secretParamKeys); keys != nil {
+				task.Input = redactTaskParams(task.Input, keys)
+				task.RenderedParams = redactTaskParams(task.RenderedParams, keys)
 			}
 			if len(task.Children) > 0 {
 				redactRecursive(task.Children)
