@@ -8,6 +8,7 @@ import (
 	"nudgebee/runbook/services/cloud"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"strings"
+	"time"
 )
 
 // RunScriptTask implements the Task interface for executing shell commands.
@@ -230,6 +231,18 @@ func (t *RunScriptTask) Execute(taskCtx types.TaskContext, params map[string]any
 		return nil, fmt.Errorf("failed to create executor: %w", err)
 	}
 
+	// A script that runs on our own infrastructure gets the selected account's
+	// credentials. Without them the cloud SDKs fall back to whatever identity
+	// the pod happens to have, which is ours — the failure customers see as
+	// "not authorized" naming a Nudgebee role (#39059). Scripts that run on the
+	// customer's own machines (the agent, SSM, Azure Run Command, GCP SSH, SSH)
+	// already act as that machine, and are left alone.
+	if _, runsOnOurCluster := executor.(*executors.KubernetesExecutor); runsOnOurCluster && accountId != "" {
+		if err := applyAccountCredentials(taskCtx, &config, accountId); err != nil {
+			return nil, err
+		}
+	}
+
 	output, err := executor.Execute(taskCtx, config)
 	if err != nil {
 		return nil, fmt.Errorf("script execution failed: %w\nOutput:\n%s", err, output)
@@ -447,4 +460,56 @@ func countMatches(script string, indicators []string) int {
 		}
 	}
 	return count
+}
+
+// getAccountCredentials is a variable so tests can supply credentials without a
+// cloud-collector to call.
+var getAccountCredentials = cloud.GetAccountCredentials
+
+// applyAccountCredentials fetches credentials for the account the step names and
+// merges them into the script's environment.
+//
+// Values the step set itself win: a workflow carrying its own credentials keeps
+// working exactly as before, and this never silently swaps them for different
+// ones.
+func applyAccountCredentials(taskCtx types.TaskContext, config *executors.ExecutionConfig, accountId string) error {
+	duration := credentialDurationFor(taskCtx)
+	credentials, err := getAccountCredentials(taskCtx.GetNewRequestContext(), accountId, duration)
+	if err != nil {
+		// Failing here is the point: the alternative is running as Nudgebee and
+		// reporting a permissions error that looks like the customer's fault.
+		return fmt.Errorf("this account could not supply credentials for a script running on Nudgebee: %w", err)
+	}
+
+	if config.Env == nil {
+		config.Env = make(map[string]string, len(credentials.Env))
+	}
+	for k, v := range credentials.Env {
+		if _, set := config.Env[k]; !set {
+			config.Env[k] = v
+		}
+	}
+	// With real credentials present, a fall back to the host's identity can only
+	// mask a mistake, so turn it off for both providers that offer one.
+	if _, set := config.Env["AWS_EC2_METADATA_DISABLED"]; !set {
+		config.Env["AWS_EC2_METADATA_DISABLED"] = "true"
+	}
+
+	taskCtx.GetLogger().Info("script will run with the selected account's credentials",
+		"account_id", accountId,
+		"expires", credentials.Expiring(),
+	)
+	return nil
+}
+
+// credentialDurationFor asks for credentials that outlast the step. The
+// provider clamps this to what the account's credential type allows, so a long
+// step on a role-based account gets the maximum rather than an error.
+func credentialDurationFor(taskCtx types.TaskContext) time.Duration {
+	if deadline, ok := taskCtx.GetContext().Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			return remaining
+		}
+	}
+	return 0
 }
