@@ -66,6 +66,11 @@ export const getUpstreamSuggestedValues = (expression: string, nodes: Node[], _e
     const configuredOptions = taskConfig.config?.approval_options;
     if (Array.isArray(configuredOptions) && configuredOptions.length > 0) {
       rawValues = configuredOptions.map((o: any) => String(o)).filter((o: string) => o.trim().length > 0);
+    } else if (typeof configuredOptions === 'string' && configuredOptions.includes('{{')) {
+      // The options are templated off an upstream task, so the real values only
+      // exist at run time. Suggest nothing rather than the approve/reject default,
+      // which would be confidently wrong for this task.
+      rawValues = null;
     } else {
       rawValues = ['approve', 'reject'];
     }

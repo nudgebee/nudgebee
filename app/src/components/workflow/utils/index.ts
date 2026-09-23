@@ -2,6 +2,7 @@ export { getTaskDescription } from './taskDescription';
 export { sanitizeTaskId, parseDurationToSeconds } from './taskUtils';
 export { spliceEdgesOnNodeDelete } from './spliceNode';
 export { generateUniqueId } from './idUtils';
+export { resolveApprovalOptions } from './approvalOptions';
 export {
   parseAIWorkflowResponse,
   buildWorkflowFromAIResponse,
