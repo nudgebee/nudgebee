@@ -22,6 +22,7 @@ import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
 import PanelGauge from './PanelGauge';
+import { hasThresholds, panelBreach, thresholdTone } from './panelThresholds';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
@@ -300,6 +301,32 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     return undefined;
   };
 
+  /**
+   * The one number a stat or gauge panel shows: every account that answered,
+   * added up. Computed here rather than inside `drawing` because the threshold
+   * tint colours the FRAME — the border and the header band, both outside the
+   * body `drawing` returns.
+   *
+   * Null for every other panel, and for a command datasource's table, which
+   * comes back as rows whatever the panel type says.
+   */
+  const stat = React.useMemo(() => {
+    if (!data || data.table || !hasThresholds(panel.type) || data.series.length === 0) return null;
+    return statTotal(
+      data.series,
+      (panel.targets || []).map((t) => t.ref_id || 'A'),
+      data.failedAccounts || []
+    );
+  }, [panel, data]);
+
+  /**
+   * The threshold this panel's value has crossed, and how to draw it. A panel
+   * with no thresholds — which is every panel authored before this — resolves to
+   * undefined and keeps its plain frame.
+   */
+  const breach = panelBreach(panel, stat?.total);
+  const tone = breach ? thresholdTone(breach.color) : undefined;
+
   /*
    * The drawing, rebuilt only when the data or the panel changes. The chart
    * props below are new arrays each time this runs, and react-chartjs-2
@@ -400,11 +427,11 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         // four clusters used to render series[0], which reads as the total and is
         // one cluster's figure. The breakdown behind it is on hover, because a
         // total nobody can take apart is a number nobody can check.
-        const stat = statTotal(
-          data.series,
-          (panel.targets || []).map((t) => t.ref_id || 'A'),
-          data.failedAccounts || []
-        );
+        //
+        // Computed above the memo: the same total decides the threshold tint on
+        // the frame. It is non-null on exactly the branch this is, so the guard
+        // is for the type checker rather than for a case that happens.
+        if (!stat) return null;
         const answered = stat.rows.filter((r) => !r.failed).length;
         // "2 of 3 accounts" is the partial total's caveat, in the place the viewer
         // already reads the account count; the hover names the account that did
@@ -505,7 +532,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         );
       }
     }
-  }, [panel, data]);
+  }, [panel, data, stat]);
 
   const body = () => {
     if (panel.type === 'text') {
@@ -538,17 +565,36 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
       ref={panelRef}
       data-testid={`dashboard-panel-${panel.id}`}
       data-loaded={panel.type === 'text' ? undefined : seen}
+      // The crossed step's colour, for anything reading the rendered dashboard —
+      // absent on a panel drawing normally, which is what "no breach" looks like.
+      data-threshold={breach?.color}
       {...{ [PANEL_PENDING_ATTR]: String(pending) }}
       sx={{
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        border: `1px solid ${ds.gray[300]}`,
+        border: `1px solid ${tone ? tone.border : ds.gray[300]}`,
+        // A ring rather than a thicker border: panels sit in a grid, and growing
+        // the border by a pixel would shift everything inside one the moment a
+        // threshold trips. A shadow takes no space.
+        ...(tone ? { boxShadow: `inset 0 0 0 1px ${tone.border}` } : {}),
         borderRadius: ds.radius.lg,
         background: ds.background[100],
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.25, py: 1, borderBottom: `1px solid ${ds.gray[200]}` }}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          px: 1.25,
+          py: 1,
+          borderBottom: `1px solid ${tone ? tone.border : ds.gray[200]}`,
+          // The band is square-cornered; unclipped, its tint would paint over the
+          // frame's rounded top corners.
+          ...(tone ? { background: tone.tint, borderTopLeftRadius: ds.radius.lg, borderTopRightRadius: ds.radius.lg } : {}),
+        }}
+      >
         {/* The title's own tooltip is for a title clipped by a narrow panel, so
             it repeats the title rather than standing in for the description. */}
         <Tooltip title={panel.title}>
@@ -579,6 +625,18 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               data-testid={`panel-gauge-info-${panel.id}`}
             >
               <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+            </Box>
+          </Tooltip>
+        )}
+        {/* Colour alone does not say WHAT was crossed, and a viewer who cannot
+            tell amber from red is left with a panel that looks merely decorated.
+            The badge names the step; the hover reads it back as a sentence. */}
+        {breach && tone && (
+          <Tooltip title={`${formatValue(stat?.total, panel.unit)} is at or above the ${breach.value} threshold.`}>
+            <Box component='span' data-testid={`panel-threshold-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone={tone.chip}>
+                {`≥ ${breach.value}`}
+              </Chip>
             </Box>
           </Tooltip>
         )}

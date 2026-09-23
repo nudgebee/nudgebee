@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
@@ -20,6 +20,8 @@ import {
   type PanelColumn,
   type PanelDatasource,
   type PanelTarget,
+  type PanelThresholdColor,
+  type PanelThresholdStep,
   type PanelType,
 } from '@api1/dashboards';
 import EntityQueryBuilder from './EntityQueryBuilder';
@@ -32,6 +34,7 @@ import { ES_PROVIDER, providerChoices, providerLabel, providerTypeOf, useEsIndex
 import FilterDropdown from '@ui/FilterDropdown';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import PanelProviderRow from './PanelProviderRow';
+import { hasThresholds, isCompleteStep, panelThresholdStepsOf, THRESHOLD_COLORS, thresholdTone } from './panelThresholds';
 import { referencedVariables, type VariableValues } from './templating';
 
 interface Props {
@@ -101,6 +104,9 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
   },
 };
 
+/** What a threshold step paints the panel in. */
+const THRESHOLD_COLOR_OPTIONS = THRESHOLD_COLORS.map((color) => ({ label: `${color[0].toUpperCase()}${color.slice(1)}`, value: color }));
+
 /**
  * The link picker's stand-in for "attach to nothing, add a column of my own".
  * A Select renders its PLACEHOLDER for an empty value, so the option cannot be
@@ -108,6 +114,46 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
  * it is mapped back to an absent `column` before the panel is stored.
  */
 const NEW_COLUMN = '__new_column__';
+
+/** A threshold's number as typed. Empty reads as NaN — a step the author has not finished. */
+const parseThreshold = (text: string): number => (text.trim() === '' ? Number.NaN : Number(text));
+
+/** NaN never equals itself, and "still empty" has to count as unchanged. */
+const sameThreshold = (a: number, b: number): boolean => (Number.isNaN(a) && Number.isNaN(b)) || a === b;
+
+/**
+ * The threshold's value field.
+ *
+ * It holds the TEXT the author typed and reports the number that text parses to,
+ * rather than re-deriving the text from the number on every keystroke. That
+ * round trip — `String(Number(text))` — is what made `1.05` land as `15` and
+ * `-0.5` as `0.5`: it rewrites the field mid-entry, and a `type='number'` input
+ * discards whatever partial value it was still holding when it is rewritten.
+ * Verified in Chromium, not jsdom, which does not sanitise a number input.
+ *
+ * Re-seeds only when the step's value stops agreeing with the text, so removing
+ * the row above this one refreshes it while typing never does.
+ */
+const ThresholdValue: React.FC<{ value: number; index: number; onChange: (next: number) => void }> = ({ value, index, onChange }) => {
+  const [text, setText] = useState(() => (Number.isFinite(value) ? String(value) : ''));
+
+  useEffect(() => {
+    setText((current) => (sameThreshold(parseThreshold(current), value) ? current : Number.isFinite(value) ? String(value) : ''));
+  }, [value]);
+
+  return (
+    <Input
+      type='number'
+      value={text}
+      onChange={(next: string) => {
+        setText(next);
+        onChange(parseThreshold(next));
+      }}
+      placeholder='80'
+      data-testid={`threshold-value-${index}`}
+    />
+  );
+};
 
 /**
  * A ref id no other query on the panel holds. The metrics request is keyed by
@@ -313,6 +359,30 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       return { ...prev, options };
     });
 
+  /** Threshold steps, under the same "an empty list is no list" rule as the columns above. */
+  const patchThresholds = (next: PanelThresholdStep[]) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const options: Record<string, unknown> = { ...(prev.options || {}), thresholds: next };
+      if (next.length === 0) delete options.thresholds;
+      return { ...prev, options };
+    });
+
+  /**
+   * Only a stat or a gauge evaluates thresholds, so switching to any other
+   * visualisation drops them. Carrying them would leave the panel storing config
+   * nothing renders — and silently colouring itself again if it were ever
+   * switched back, long after whoever set the numbers had forgotten them.
+   */
+  const changeType = (next: PanelType) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      if (hasThresholds(next) || !prev.options?.thresholds) return { ...prev, type: next };
+      const options = { ...prev.options };
+      delete options.thresholds;
+      return { ...prev, type: next, options };
+    });
+
   const changeAccountTypes = (next: string[]) => {
     setAccountTypes(next);
     // Selections from a provider that is no longer chosen would be invisible in
@@ -431,6 +501,14 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   // renderer and set by import or by hand until this grows fields for them.
   const links = columns.filter((c) => Boolean(c.link));
   /**
+   * Read RAW, exactly as the links are: a step being typed is momentarily
+   * incomplete, and the render-time filter in panelThresholdsOf would delete the
+   * row out from under the author mid-keystroke.
+   */
+  const thresholds = panelThresholdStepsOf(draft);
+  /** A step that could not be drawn. Blocks Save, and says so rather than greying the button out. */
+  const unfinishedThresholds = thresholds.filter((step) => !isCompleteStep(step));
+  /**
    * What a link can be attached to: an existing column, whose own values become
    * the links, or a new column of its own.
    *
@@ -466,7 +544,10 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       (hasScope && (isEntity ? Boolean(targets[0]?.query) : targets.length > 0 && targets.every((t) => (t.expr || '').trim().length > 0)))) &&
     // The server refuses these too; catching them here saves a round trip that
     // comes back as a message about a panel the author can no longer see.
-    columns.every(isCompleteColumn);
+    columns.every(isCompleteColumn) &&
+    // Not a server rule — `options` is opaque to it — but a step with no number
+    // is a row the author is still filling in, and it would save as inert config.
+    unfinishedThresholds.length === 0;
 
   /** The draft as it would be stored — the preview runs this and the save sends it. */
   const resolvedDraft: Panel = { ...draft, ...panelScopeFromTypes(accountTypes, accountIds, accountOptions) };
@@ -803,11 +884,116 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                     <Select
                       value={draft.type}
                       options={commandHelp || isEntity || isLogs ? PANEL_TYPES.filter((t) => t.value === 'table') : PANEL_TYPES}
-                      onChange={(v: string) => patch({ type: v as PanelType })}
+                      onChange={(v: string) => changeType(v as PanelType)}
                     />
                   </Form.Field>
                 </Form.Section>
               </Card>
+
+              {hasThresholds(draft.type) && (
+                <Card
+                  variant='tinted'
+                  header={
+                    <GroupHeader
+                      title='Thresholds'
+                      description='Colour the panel when its number crosses a line — the border and the title band take the step’s colour, and the header names the threshold that was crossed.'
+                    />
+                  }
+                >
+                  <Form.Section>
+                    <Box>
+                      <Stack direction='row' alignItems='center' gap={ds.space[2]} sx={{ mb: ds.space[2] }}>
+                        <Typography sx={{ fontFamily: ds.font.display, fontSize: 13, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+                          Steps
+                        </Typography>
+                        <Box sx={{ flex: 1 }} />
+                        <Button
+                          tone='secondary'
+                          size='sm'
+                          // Red first: the first threshold anyone writes is the one
+                          // that means trouble, and a value of its own would be a
+                          // guess at the panel's scale.
+                          onClick={() => patchThresholds([...thresholds, { value: Number.NaN, color: 'red' }])}
+                          id='add-threshold'
+                        >
+                          Add threshold
+                        </Button>
+                      </Stack>
+
+                      {thresholds.length === 0 ? (
+                        <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                          No thresholds — the panel always draws plain.
+                        </Typography>
+                      ) : (
+                        <Stack gap={ds.space[2]}>
+                          {thresholds.map((step, i) => {
+                            const patchStep = (next: Partial<PanelThresholdStep>) =>
+                              patchThresholds(thresholds.map((other, j) => (j === i ? { ...other, ...next } : other)));
+                            return (
+                              // Indexed: two steps can hold the same value while one
+                              // is being typed, so neither value nor colour is a key.
+                              <Stack key={i} direction='row' gap={ds.space[2]} alignItems='center'>
+                                <Box
+                                  sx={{
+                                    width: 14,
+                                    height: 14,
+                                    flexShrink: 0,
+                                    borderRadius: ds.radius.sm,
+                                    background: thresholdTone(step.color).border,
+                                  }}
+                                />
+                                <Box sx={{ flex: 1 }}>
+                                  <Select
+                                    value={step.color}
+                                    options={THRESHOLD_COLOR_OPTIONS}
+                                    onChange={(v: string) => patchStep({ color: v as PanelThresholdColor })}
+                                    id={`threshold-color-${i}`}
+                                  />
+                                </Box>
+                                <Box sx={{ flex: 1 }}>
+                                  <ThresholdValue value={step.value} index={i} onChange={(next) => patchStep({ value: next })} />
+                                </Box>
+                                <Button
+                                  tone='ghost'
+                                  composition='icon-only'
+                                  aria-label={`Remove threshold ${i + 1}`}
+                                  icon={<DeleteOutlineIcon sx={{ fontSize: 18 }} />}
+                                  onClick={() => patchThresholds(thresholds.filter((_, j) => j !== i))}
+                                  id={`remove-threshold-${i}`}
+                                />
+                              </Stack>
+                            );
+                          })}
+                        </Stack>
+                      )}
+
+                      {thresholds.length > 0 && (
+                        <Typography variant='caption' sx={{ display: 'block', mt: ds.space[2], color: ds.gray[500] }}>
+                          A value at or above a step takes its colour, and the highest step it crosses wins. Below every step the panel draws plain,
+                          which is why there is no colour to set for that range. The number compared is the one the panel shows — on a panel scoped to
+                          several accounts, that is their total.
+                        </Typography>
+                      )}
+
+                      {unfinishedThresholds.length > 0 && (
+                        <Box
+                          sx={{
+                            mt: ds.space[2],
+                            p: ds.space[3],
+                            border: `1px solid ${ds.amber[300]}`,
+                            background: ds.amber[100],
+                            borderRadius: ds.radius.md,
+                          }}
+                        >
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            Every threshold needs a number to compare against. Fill it in, or remove the step.
+                          </Typography>
+                        </Box>
+                      )}
+                    </Box>
+                  </Form.Section>
+                </Card>
+              )}
 
               {isNudgebee && (
                 <Card

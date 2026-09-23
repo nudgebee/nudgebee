@@ -126,6 +126,41 @@ export interface PanelTableOptions {
   hidden_columns?: string[];
 }
 
+/**
+ * The colours a threshold step may take.
+ *
+ * A NAME, not a value: a stored panel is rendered by every viewer in whatever
+ * theme they are on, so it carries the intent and the renderer resolves the
+ * design-system token — see panelThresholds.ts.
+ */
+export type PanelThresholdColor = 'red' | 'amber' | 'green' | 'blue';
+
+/**
+ * One step of a panel's threshold scale, in Grafana's model: a colour that
+ * applies from `value` upwards.
+ *
+ * Absolute only. A percentage step is read against a field's min and max, which
+ * a panel holding one aggregated number does not have — and a gauge's scale IS
+ * 0 to 100, so an absolute step already reads as a percentage there.
+ *
+ * There is no base step either: below the lowest threshold the panel draws
+ * exactly as it always did, so a colour for that range would be stored config
+ * nothing ever renders.
+ */
+export interface PanelThresholdStep {
+  value: number;
+  color: PanelThresholdColor;
+}
+
+/**
+ * `options` on a panel that evaluates thresholds — `stat` and `gauge`, the two
+ * that show ONE number and so have something unambiguous to compare.
+ */
+export interface PanelThresholdOptions {
+  /** Stored in whatever order they were authored; the renderer sorts. */
+  thresholds?: PanelThresholdStep[];
+}
+
 export interface Panel {
   id: number;
   title: string;
@@ -171,7 +206,7 @@ export interface Panel {
   unit?: string;
   /** Backs the `text` panel type. */
   content?: string;
-  options?: PanelTableOptions & Record<string, unknown>;
+  options?: PanelTableOptions & PanelThresholdOptions & Record<string, unknown>;
 }
 
 export interface DashboardDefinition {
