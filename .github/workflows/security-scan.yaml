@@ -60,11 +60,7 @@ jobs:
           - image: cost-server
           - image: relay-server
           - image: workflow-server
-          # llm-gateway is deliberately absent: it is published by release.yaml
-          # but had no edge build until this change added it to edge.yaml, so
-          # `llm-gateway:edge` only exists from the first main build after this
-          # merges. Add `- image: llm-gateway` here once that tag is published —
-          # adding it now would fail this workflow's own pull_request run.
+          - image: llm-gateway
           - image: llm-server
           - image: rag-server
           - image: ml-k8s-server
