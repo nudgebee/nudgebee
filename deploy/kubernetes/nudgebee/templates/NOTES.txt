@@ -59,6 +59,56 @@ Offline render (Argo CD, Flux) must set agent.accessKey/accessSecret.
    bootstrap experience; production overlays should disable it explicitly.
 {{- end }}
 
+{{- /* Only fires on clusters that DO run the Prometheus Operator: there the
+       monitors are worth having, and the default (off, so the chart installs on
+       clusters without the CRDs) is the wrong choice. Silence for everyone
+       else. */}}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+{{- /* Per datastore: bundled here AND not being scraped. A release pointed at an
+       external Postgres has nothing for this chart to monitor.
+
+       Nested `with` rather than `dig`: Helm stores a subchart's values as
+       chartutil.Values, and dig's internal map[string]interface{} assertion
+       panics on that type - it took down every install with the clickhouse
+       subchart present once already (afdf7757). `with` is nil-safe on a partial
+       override and type-agnostic. */}}
+{{- $pgUnmonitored := false }}
+{{- with .Values.postgresql }}
+  {{- if .enabled }}
+    {{- $pgUnmonitored = true }}
+    {{- with .metrics }}{{- with .serviceMonitor }}{{- if .enabled }}
+    {{- $pgUnmonitored = false }}
+    {{- end }}{{- end }}{{- end }}
+  {{- end }}
+{{- end }}
+{{- $mqUnmonitored := false }}
+{{- with .Values.rabbitmq }}
+  {{- if .enabled }}
+    {{- $mqUnmonitored = true }}
+    {{- with .metrics }}{{- with .serviceMonitor }}{{- if .enabled }}
+    {{- $mqUnmonitored = false }}
+    {{- end }}{{- end }}{{- end }}
+  {{- end }}
+{{- end }}
+{{- if or $pgUnmonitored $mqUnmonitored }}
+
+ℹ️  This cluster has the Prometheus Operator, but the bundled Postgres and
+   RabbitMQ exporters are not being scraped: their ServiceMonitor and
+   PrometheusRule objects are off by default so the chart installs on clusters
+   without the operator CRDs. Turn them on with:
+
+     helm upgrade {{ .Release.Name }} ... \
+       --set postgresql.metrics.serviceMonitor.enabled=true \
+       --set postgresql.metrics.prometheusRule.enabled=true \
+       --set rabbitmq.metrics.serviceMonitor.enabled=true \
+       --set rabbitmq.metrics.prometheusRule.enabled=true
+
+   The same four values ship as values-monitoring.yaml inside the chart, if you
+   install from a checkout or keep your own values file.
+
+{{- end }}
+{{- end }}
+
 {{- $existing := lookup "v1" "Secret" .Release.Namespace "nudgebee" }}
 {{- if $existing }}
 {{- $existingKey := "" }}

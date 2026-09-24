@@ -134,10 +134,24 @@ postgresql:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
       tag: 'v0.20.1-nb1'
+    # ServiceMonitor and PrometheusRule are Prometheus Operator CRDs
+    # (monitoring.coreos.com/v1). A cluster without the operator installed has
+    # no such kinds, and the install fails with `no matches for kind
+    # "ServiceMonitor"` - so these default to false and the chart installs
+    # anywhere. The exporter sidecar above stays on either way: metrics are
+    # still served on /metrics, they are just not auto-discovered.
+    #
+    # Turn them on with the ready-made overlay, which flips postgres and
+    # rabbitmq together:
+    #   helm install ... -f values-monitoring.yaml
+    #
+    # Bitnami's templates gate on these values only, never on
+    # .Capabilities.APIVersions, so this cannot be auto-detected from the
+    # cluster the way our own charts do it.
     serviceMonitor:
-      enabled: true
+      enabled: false
     prometheusRule:
-      enabled: true
+      enabled: false
       additionalRules:
         - name: postgres.rules
           groups:
@@ -229,11 +243,14 @@ rabbitmq:
     existingErlangSecret: 'rabbitmq'
   metrics:
     enabled: true
+    # Off for the same reason as postgresql above: these are Prometheus
+    # Operator CRDs, and a cluster without the operator cannot install them.
+    # Enable both with `-f values-monitoring.yaml`.
     serviceMonitor:
-      enabled: true
+      enabled: false
       path: /metrics/per-object
     prometheusRule:
-      enabled: true
+      enabled: false
       rules:
         - alert: RabbitmqNodeDown
           expr: 'sum(rabbitmq_build_info{namespace="{{ .Release.Namespace }}"}) < {{ .Values.replicaCount }}'
