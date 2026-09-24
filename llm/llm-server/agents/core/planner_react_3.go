@@ -1425,7 +1425,7 @@ func (o *NBReActPlanner3) processToolActions(output string) []NBAgentPlannerTool
 			toolInput = o.request.Query
 		}
 
-		toolInput = common.SubstituteDateMacros(toolInput)
+		toolInput = resolveToolInputMacros(toolInput)
 		toolInput = o.normalizeToolInput(toolName, toolInput)
 		if isEmptyShellExecutionAction(toolName, toolInput) {
 			continue
@@ -1499,7 +1499,7 @@ func (o *NBReActPlanner3) processToolAction(output string) []NBAgentPlannerToolA
 		toolInput = o.request.Query
 	}
 
-	toolInput = common.SubstituteDateMacros(toolInput)
+	toolInput = resolveToolInputMacros(toolInput)
 	toolInput = o.normalizeToolInput(toolName, toolInput)
 	if isEmptyShellExecutionAction(toolName, toolInput) {
 		return nil

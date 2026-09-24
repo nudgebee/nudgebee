@@ -1084,7 +1084,7 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		args, memoryRefs := extractReact4MemoryAttribution(args)
 		// Keep the model's original arguments for replay and stable synthesized IDs,
 		// but execute with the same expanded time macros as ReAct3.
-		executionArgs := common.SubstituteDateMacros(args)
+		executionArgs := resolveToolInputMacros(args)
 		if actionThought == "" {
 			actionThought = thought
 		}

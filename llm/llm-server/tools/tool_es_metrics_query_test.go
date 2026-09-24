@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/tools/core"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestESMetricsQueryTool_InputWrapping(t *testing.T) {
@@ -34,6 +38,65 @@ func TestESMetricsQueryTool_InputWrapping(t *testing.T) {
 	if !strings.HasPrefix(got, `{"query":`) {
 		t.Fatalf("expected query to start with {\"query\":, got: %s", got)
 	}
+}
+
+// A `[[Time:...]]` macro must be resolved to a real timestamp before the DSL is
+// parsed. Left literal, it reaches the ES range filter verbatim, matches nothing
+// and still returns HTTP 200 — an empty result the caller reads as "no data in
+// this environment". Reproduced against a live index that returned 10,000
+// documents for the same query without the macro and 0 with it.
+func TestESMetricsQueryTool_SubstitutesTimeMacros(t *testing.T) {
+	input := `{"index":"metrics-*","query":{"bool":{"filter":[` +
+		`{"range":{"@timestamp":{"gte":"[[Time:-24h]]","lte":"[[Time:Now]]"}}}]}}}`
+
+	// Through the real parse path the tool uses, so deleting the substitution call
+	// fails this test rather than leaving it green against the helper.
+	_, queryObj, userMsg, err := parseESMetricsQueryInput(input)
+	if err != nil {
+		t.Fatalf("parse failed: %v (%s)", err, userMsg)
+	}
+
+	marshalled, err := json.Marshal(queryObj)
+	if err != nil {
+		t.Fatalf("failed to marshal parsed query: %v", err)
+	}
+	if strings.Contains(string(marshalled), "[[Time:") {
+		t.Fatalf("macro survived parsing and would reach Elasticsearch verbatim: %s", marshalled)
+	}
+
+	// The bound must also be readable as a real instant — a macro replaced by
+	// anything ES cannot parse as a date is the same silent-zero in a new costume.
+	// Decoded into a typed struct rather than chained map[string]any assertions so
+	// a change to the wrapping shape fails by name here instead of panicking.
+	var decoded struct {
+		Query struct {
+			Bool struct {
+				Filter []struct {
+					Range map[string]struct {
+						Gte string `json:"gte"`
+						Lte string `json:"lte"`
+					} `json:"range"`
+				} `json:"filter"`
+			} `json:"bool"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(marshalled, &decoded); err != nil {
+		t.Fatalf("parsed query is no longer valid JSON: %v\n%s", err, marshalled)
+	}
+
+	filters := decoded.Query.Bool.Filter
+	if len(filters) == 0 {
+		t.Fatalf("parsed query has no bool filter clause: %s", marshalled)
+	}
+	rng, ok := filters[0].Range["@timestamp"]
+	if !ok {
+		t.Fatalf("parsed query has no @timestamp range filter: %s", marshalled)
+	}
+
+	gte := rng.Gte
+	parsed, err := time.Parse(time.RFC3339, gte)
+	require.NoError(t, err, "gte %q is not an RFC3339 instant Elasticsearch can range on", gte)
+	assert.WithinDuration(t, time.Now().UTC().Add(-24*time.Hour), parsed, time.Minute)
 }
 
 // Regression tests for #36236: per-query errors carried in results[].Error

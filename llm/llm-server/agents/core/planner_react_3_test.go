@@ -2116,3 +2116,28 @@ func TestReAct3LeanSubagentPrompt(t *testing.T) {
 		assert.Contains(t, humanText, "slack channel context")
 	})
 }
+
+// Macro expansion is shared with ReAct4 through resolveToolInputMacros. ReAct3 has
+// always expanded (it is why the ReAct4 gap in #39201 was a regression rather than a
+// missing feature), but nothing pinned it — so unwiring ReAct3's side of the seam
+// would have been silent. A literal `[[Time:-24h]]` in an Elasticsearch range filter
+// matches nothing and still returns HTTP 200, which reads as "no data in this
+// environment" rather than as a malformed query.
+func TestReAct3ExpandsTimeMacrosInToolInput(t *testing.T) {
+	output := `<thought_action>
+		<thought>Checking the last day.</thought>
+		<action><tool_name>es_metrics_query</tool_name><tool_input>{"gte":"[[Time:-24h]]"}</tool_input></action>
+	</thought_action>`
+
+	planner := &NBReActPlanner3{}
+	actions := planner.processToolAction(output)
+
+	require.Len(t, actions, 1)
+	assert.NotContains(t, actions[0].ToolInput, "[[Time:",
+		"macro survived into the execution input and would reach the backend verbatim")
+
+	// parseFirstTime is the helper #39241 added alongside the ReAct4 test; both
+	// planners assert the same shape, so they share it.
+	assert.WithinDuration(t, time.Now().UTC().Add(-24*time.Hour),
+		parseFirstTime(t, actions[0].ToolInput), time.Minute)
+}
