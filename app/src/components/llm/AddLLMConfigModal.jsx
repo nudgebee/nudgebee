@@ -10,6 +10,7 @@ import { Modal } from '@ui/Modal';
 import { Banner } from '@ui/Banner';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import { Checkbox } from '@ui/Checkbox';
 import { Button } from '@ui/Button';
 import { Divider } from '@ui/Divider';
@@ -160,6 +161,75 @@ const API_TYPE_OPTIONS = [
   { value: 'azure_ad', label: 'Azure AD (Bearer token)' },
 ];
 
+// The integration's one configured fallback (#36339): none, a reference to an
+// existing configured model slot, or a fallback-owned slot with its own credentials.
+const FALLBACK_MODE_OPTIONS = [
+  { value: 'none', label: 'No fallback' },
+  { value: 'existing', label: 'Existing configured model' },
+  { value: 'new', label: 'Configure new' },
+];
+const fallbackOptionValue = (source, model) => `${source}|${model}`;
+// Scopes that can carry a configured fallback: the integration ('') and each category.
+const FALLBACK_SCOPES = ['', 'reasoning', 'retrieval', 'summary'];
+// Config key of a fallback field for a scope: llm_fallback_model / llm_fallback_model_reasoning.
+const fallbackKeyFor = (base, scope) => (scope ? `${base}_${scope}` : base);
+const emptyFallback = () => ({ mode: 'none', ref: { source: '', model: '' }, new: emptyConfig() });
+const emptyFallbacks = () => Object.fromEntries(FALLBACK_SCOPES.map((scope) => [scope, emptyFallback()]));
+const loadFallback = (cfg, scope) => {
+  const k = (base) => cfg[fallbackKeyFor(base, scope)] || '';
+  if (k('llm_fallback_ref_source')) {
+    return { ...emptyFallback(), mode: 'existing', ref: { source: k('llm_fallback_ref_source'), model: k('llm_fallback_ref_model') } };
+  }
+  if (k('llm_fallback_provider')) {
+    return {
+      ...emptyFallback(),
+      mode: 'new',
+      new: {
+        ...emptyConfig(),
+        provider: k('llm_fallback_provider'),
+        model: k('llm_fallback_model'),
+        apiEndpoint: k('llm_fallback_api_endpoint'),
+        apiVersion: k('llm_fallback_api_version'),
+        apiType: k('llm_fallback_api_type'),
+        region: k('llm_fallback_region'),
+        contextSize: k('llm_fallback_context_size'),
+      },
+    };
+  }
+  return emptyFallback();
+};
+// The slot a scope's fallback belongs to — never offered as its own fallback.
+const ownSlotFor = (integrationId, scope) => {
+  if (!integrationId) {
+    return '';
+  }
+  return scope ? `db:${integrationId}:tier:${scope}` : `db:${integrationId}`;
+};
+// A saved reference no longer listed (deleted, disabled, re-linked) is surfaced, never swapped.
+const fallbackRefIsAvailable = (state, options) => {
+  if (!state.ref.source || !options) {
+    return true;
+  }
+  const value = fallbackOptionValue(state.ref.source, state.ref.model);
+  return options.some((m) => fallbackOptionValue(m.llm_config_source, m.model) === value);
+};
+
+// Connection fields a new fallback's provider cannot work without, beyond the
+// secrets validateOverrideCreds checks — mirrors providerRequiredFields in
+// api-server integrations/llm.go.
+const requiredConnFieldError = (row) => {
+  if (['azure', 'custom', 'sagemaker'].includes(row.provider) && !(row.apiEndpoint || '').trim()) {
+    return 'API Endpoint is required for the selected provider';
+  }
+  if (row.provider === 'azure' && !(row.apiVersion || '').trim()) {
+    return 'API Version is required for Azure';
+  }
+  if (['bedrock', 'sagemaker'].includes(row.provider) && !(row.region || '').trim()) {
+    return 'Region is required for the selected provider';
+  }
+  return null;
+};
+
 // providerFieldShape returns which credential inputs apply for a given provider.
 // Mirrors the global section's showsApiKey / showsApiEndpoint / ... booleans so
 // the tier and agent cards can render the same provider-conditional inputs.
@@ -241,6 +311,180 @@ SecretInput.propTypes = {
   required: PropTypes.bool,
 };
 
+// FallbackModelEditor edits one configured fallback (#36339): the integration's
+// (scope '') or a category's. 'existing' references a configured slot; 'new' owns its fields.
+const FallbackModelEditor = ({
+  scope,
+  state,
+  options,
+  optionsError,
+  errors,
+  secretsConfigured,
+  noAccounts,
+  onModeChange,
+  onPickRef,
+  onUpdateNew,
+}) => {
+  const idFor = (base) => (scope ? `${base}-${scope}` : base);
+  const refValue = state.ref.source ? fallbackOptionValue(state.ref.source, state.ref.model) : '';
+  const refAvailable = fallbackRefIsAvailable(state, options);
+  const shape = providerFieldShape(state.new.provider);
+  return (
+    <Stack spacing='var(--ds-space-2)'>
+      <ToggleGroup
+        id={idFor('llm-fallback-mode')}
+        selection='single'
+        size='sm'
+        ariaLabel={scope ? `${TIER_LABELS[scope]} fallback model` : 'Fallback model'}
+        value={state.mode}
+        onChange={onModeChange}
+        options={FALLBACK_MODE_OPTIONS}
+      />
+      {state.mode === 'existing' && (
+        <Select
+          id={idFor('llm-fallback-existing-model')}
+          label='Configured model'
+          size='sm'
+          required
+          value={refValue}
+          onChange={onPickRef}
+          disabled={noAccounts}
+          placeholder={noAccounts ? 'Select an account first' : options === null ? 'Loading configured models…' : 'Select a configured model'}
+          options={[
+            ...(options || []).map((m) => ({
+              value: fallbackOptionValue(m.llm_config_source, m.model),
+              label: `${m.model} · ${m.provider} · ${m.config_name || m.llm_config_source}`,
+            })),
+            ...(refAvailable || !refValue
+              ? []
+              : [{ value: refValue, label: `${state.ref.model} · ${state.ref.source} (unavailable)`, disabled: true }]),
+          ]}
+          error={optionsError || (state.ref.source ? errors.ref : undefined) || undefined}
+          help={(() => {
+            const picked = (options || []).find((m) => fallbackOptionValue(m.llm_config_source, m.model) === refValue);
+            return picked
+              ? `Runs through “${picked.config_name || picked.llm_config_source}” (${
+                  picked.llm_config_source
+                }) with that configuration’s own provider and credentials — nothing is copied.`
+              : 'Only models every selected account can use are listed. The fallback uses that configuration’s provider and credentials.';
+          })()}
+        />
+      )}
+      {state.mode === 'new' && (
+        <>
+          <Select
+            id={idFor('llm-fallback-new-provider')}
+            label='Provider'
+            size='sm'
+            required
+            value={state.new.provider}
+            onChange={(value) => onUpdateNew('provider', value)}
+            options={PROVIDERS}
+            help='The fallback keeps its own credentials; nothing is inherited from the primary.'
+          />
+          <Input
+            label='Model'
+            size='sm'
+            required
+            value={state.new.model}
+            data-testid={idFor('llm-fallback-new-model')}
+            placeholder={state.new.provider ? `e.g. ${(PROVIDER_EXAMPLES[state.new.provider] || {}).retrieval || 'model name'}` : undefined}
+            onChange={(value) => onUpdateNew('model', value)}
+            error={state.new.provider ? errors.model || undefined : undefined}
+          />
+          {state.new.provider && errors.creds && <Box sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)' }}>✗ {errors.creds}</Box>}
+          {shape.showsApiKey && (
+            <SecretInput
+              label='API Key'
+              value={state.new.apiKey}
+              onChange={(value) => onUpdateNew('apiKey', value)}
+              isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_api_key', scope)]}
+              helperText='API key for the fallback provider (for a gateway, the gateway key).'
+              required
+            />
+          )}
+          {shape.showsApiEndpoint && (
+            <Input
+              label='API Endpoint'
+              size='sm'
+              value={state.new.apiEndpoint}
+              data-testid={idFor('llm-fallback-new-endpoint')}
+              onChange={(value) => onUpdateNew('apiEndpoint', value)}
+              required={['azure', 'custom', 'sagemaker'].includes(state.new.provider)}
+              help={
+                state.new.provider === 'custom'
+                  ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1.'
+                  : 'Custom API endpoint — e.g. your LLM gateway. Optional.'
+              }
+            />
+          )}
+          {shape.showsApiVersion && (
+            <Input label='API Version' size='sm' required value={state.new.apiVersion} onChange={(value) => onUpdateNew('apiVersion', value)} />
+          )}
+          {shape.showsRegion && (
+            <Input label='Region' size='sm' required value={state.new.region} onChange={(value) => onUpdateNew('region', value)} />
+          )}
+          {shape.showsBedrockKeys && (
+            <>
+              <SecretInput
+                label='AWS Access Key'
+                value={state.new.accessKey}
+                onChange={(value) => onUpdateNew('accessKey', value)}
+                isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_access_key', scope)]}
+                required
+              />
+              <SecretInput
+                label='AWS Secret Key'
+                value={state.new.secretKey}
+                onChange={(value) => onUpdateNew('secretKey', value)}
+                isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_secret_key', scope)]}
+                required
+              />
+            </>
+          )}
+          {shape.showsApiType && state.new.provider === 'custom' && (
+            <Select
+              label='API Type'
+              size='sm'
+              value={state.new.apiType}
+              onChange={(value) => onUpdateNew('apiType', value)}
+              options={API_TYPE_OPTIONS}
+              placeholder='Default (OpenAI-style)'
+            />
+          )}
+          {shape.showsApiType && state.new.provider !== 'custom' && (
+            <Input label='API Type' size='sm' value={state.new.apiType} onChange={(value) => onUpdateNew('apiType', value)} />
+          )}
+          {showsContextSize(state.new.provider) && (
+            <Input
+              label='Context window (tokens)'
+              size='sm'
+              type='number'
+              inputMode='numeric'
+              value={state.new.contextSize}
+              onChange={(value) => onUpdateNew('contextSize', value)}
+              help="This model's total input+output window. Optional — blank uses the model's built-in default."
+            />
+          )}
+        </>
+      )}
+    </Stack>
+  );
+};
+
+FallbackModelEditor.propTypes = {
+  scope: PropTypes.string.isRequired,
+  state: PropTypes.object.isRequired,
+  options: PropTypes.array,
+  optionsError: PropTypes.string,
+  errors: PropTypes.object.isRequired,
+  secretsConfigured: PropTypes.object.isRequired,
+  noAccounts: PropTypes.bool,
+  onModeChange: PropTypes.func.isRequired,
+  onPickRef: PropTypes.func.isRequired,
+  onUpdateNew: PropTypes.func.isRequired,
+};
+
 const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const isEdit = !!editData?.id;
 
@@ -289,6 +533,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [provider, setProvider] = useState('');
   const [model, setModel] = useState('');
   const [fallbacks, setFallbacks] = useState('');
+  // Legacy comma-separated fallback list: only shown when the loaded integration
+  // already has one, so existing configs keep working and stay editable.
+  const [legacyFallbacksPresent, setLegacyFallbacksPresent] = useState({});
+  // Configured fallbacks by scope ('' = integration, or a category): 'existing'
+  // references a configured slot by its llm_config_source id; 'new' owns its fields.
+  const [fallbackCfg, setFallbackCfg] = useState(emptyFallbacks());
+  // Configured models usable by EVERY selected account (a reference must resolve
+  // for all of them at runtime). null = not loaded yet.
+  const [fallbackOptions, setFallbackOptions] = useState(null);
+  const [fallbackOptionsError, setFallbackOptionsError] = useState('');
 
   // Provider-specific credentials (shape mirrors integrations/llm.go schema —
   // see ShowWhen/RequiredWhen rules there for each field's provider mapping).
@@ -520,6 +774,59 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     };
   }, [open, accountId]);
 
+  // Existing-model fallback options: the configured slots every selected account
+  // can resolve (runtime resolves the reference per account). Each scope then
+  // drops its own slot (ownSlotFor) — falling back to itself is a no-op.
+  const selectedAccountsKey = selectedAccountIds.slice().sort().join(',');
+  const anyExistingFallback = Object.values(fallbackCfg).some((f) => f.mode === 'existing');
+  useEffect(() => {
+    if (!open || !anyExistingFallback || selectedAccountIds.length === 0) {
+      setFallbackOptions(null);
+      setFallbackOptionsError('');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const perAccount = await Promise.all(selectedAccountIds.map((id) => apiAskNudgebee.listModels(id)));
+        if (cancelled) {
+          return;
+        }
+        const failed = perAccount.find((r) => r?.errors?.length || !r?.data);
+        if (failed) {
+          setFallbackOptions([]);
+          setFallbackOptionsError('Could not load configured models for the selected accounts.');
+          return;
+        }
+        const rowsFor = (res) => (res.data.models || []).filter((m) => m.llm_config_source && !m.llm_config_source.endsWith(':all'));
+        const [first, ...others] = perAccount.map(rowsFor);
+        const keysOf = (rows) => new Set(rows.map((m) => fallbackOptionValue(m.llm_config_source, m.model)));
+        const otherKeys = others.map(keysOf);
+        const seen = new Set();
+        const shared = first.filter((m) => {
+          const key = fallbackOptionValue(m.llm_config_source, m.model);
+          if (seen.has(key) || !otherKeys.every((k) => k.has(key))) {
+            return false;
+          }
+          seen.add(key);
+          return true;
+        });
+        setFallbackOptions(shared);
+        setFallbackOptionsError('');
+      } catch {
+        if (!cancelled) {
+          setFallbackOptions([]);
+          setFallbackOptionsError('Could not load configured models for the selected accounts.');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // selectedAccountsKey stands in for selectedAccountIds (a new array each render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, anyExistingFallback, selectedAccountsKey]);
+
   // Reset / pre-fill the form whenever the modal opens or editData changes.
   useEffect(() => {
     if (!open) {
@@ -560,6 +867,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setProvider(cfg.llm_provider || '');
       setModel(cfg.llm_model_name || '');
       setFallbacks(cfg.llm_model_fallbacks || '');
+      setLegacyFallbacksPresent(
+        Object.fromEntries(
+          FALLBACK_SCOPES.map((scope) => [scope, !!(cfg[scope ? `llm_tier_model_fallbacks_${scope}` : 'llm_model_fallbacks'] || '').trim()])
+        )
+      );
+      setFallbackCfg(Object.fromEntries(FALLBACK_SCOPES.map((scope) => [scope, loadFallback(cfg, scope)])));
       // Secret fields: keep the form input blank. The stored value is never
       // surfaced — the SecretInput renders "✓ Configured" when blank +
       // secretsConfigured[name] is true. User-typed values override on save.
@@ -599,6 +912,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         llm_provider_secret_key: !!hasValueByName.llm_provider_secret_key,
         llm_oauth_client_secret: !!hasValueByName.llm_oauth_client_secret,
       };
+      FALLBACK_SCOPES.forEach((scope) => {
+        ['llm_fallback_api_key', 'llm_fallback_access_key', 'llm_fallback_secret_key'].forEach((base) => {
+          const key = fallbackKeyFor(base, scope);
+          secretsCfg[key] = !!hasValueByName[key];
+        });
+      });
       ['reasoning', 'retrieval', 'summary'].forEach((t) => {
         secretsCfg[`llm_tier_api_key_${t}`] = !!hasValueByName[`llm_tier_api_key_${t}`];
         secretsCfg[`llm_tier_access_key_${t}`] = !!hasValueByName[`llm_tier_access_key_${t}`];
@@ -698,7 +1017,10 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         key.startsWith('llm_provider_access_key') ||
         key.startsWith('llm_provider_secret_key') ||
         key.startsWith('llm_provider_session_token') ||
-        key.startsWith('llm_oauth_client_secret');
+        key.startsWith('llm_oauth_client_secret') ||
+        key.startsWith('llm_fallback_api_key') ||
+        key.startsWith('llm_fallback_access_key') ||
+        key.startsWith('llm_fallback_secret_key');
       const seedKeys = new Set();
       Object.keys(cfg).forEach((key) => {
         if (isLLMSecretKey(key)) {
@@ -706,6 +1028,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         }
         if (
           key.startsWith('llm_tier_') ||
+          // The configured fallback's keys: switching mode or clearing it must
+          // delete the ones no longer written.
+          key.startsWith('llm_fallback_') ||
           (key.startsWith('llm_provider_') && key !== 'llm_provider') ||
           (key.startsWith('llm_model_name_') && key !== 'llm_model_name') ||
           (key.startsWith('llm_model_fallbacks_') && key !== 'llm_model_fallbacks') ||
@@ -751,6 +1076,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setProvider('');
       setModel('');
       setFallbacks('');
+      setLegacyFallbacksPresent({});
+      setFallbackCfg(emptyFallbacks());
       setApiKey('');
       setApiEndpoint('');
       setApiVersion('');
@@ -856,7 +1183,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     // populated for the OLD provider's secret fields and the save-gate
     // would treat the new provider's blank credentials as already
     // configured, letting the form submit without re-entry.
-    setSecretsConfigured({});
+    // The configured fallback is its own slot, independent of the primary's
+    // provider, so its "✓ Configured" flags survive the switch.
+    setSecretsConfigured((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => k.startsWith('llm_fallback_'))));
     // Category-tier and per-agent overrides reference provider-specific
     // model names (e.g. gemini-3-flash-preview, claude-3-5-sonnet,
     // gpt-4o). They are invalid for the new provider, so clear both so
@@ -958,6 +1287,35 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           : row
       )
     );
+    setTestStatus('idle');
+    setTestMessage('');
+  };
+
+  const updateFallback = (scope, patch) => {
+    setFallbackCfg((prev) => ({ ...prev, [scope]: { ...prev[scope], ...patch } }));
+    setTestStatus('idle');
+    setTestMessage('');
+  };
+
+  const pickFallbackRef = (scope, value) => {
+    const [source, ...rest] = (value || '').split('|');
+    updateFallback(scope, { ref: { source: source || '', model: rest.join('|') } });
+  };
+
+  const updateFallbackNew = (scope, field, value) => {
+    setFallbackCfg((prev) => ({
+      ...prev,
+      [scope]: { ...prev[scope], new: { ...prev[scope].new, [field]: value, ...(field === 'provider' ? credResetForProvider : {}) } },
+    }));
+    if (field === 'provider') {
+      // A stored key belongs to the previous provider; never let it ride along.
+      setSecretsConfigured((prev) => ({
+        ...prev,
+        [fallbackKeyFor('llm_fallback_api_key', scope)]: false,
+        [fallbackKeyFor('llm_fallback_access_key', scope)]: false,
+        [fallbackKeyFor('llm_fallback_secret_key', scope)]: false,
+      }));
+    }
     setTestStatus('idle');
     setTestMessage('');
   };
@@ -1153,6 +1511,31 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // override but is missing the credentials that provider requires. Without
   // this gate the user could Save a Bedrock-tier override with no AWS keys
   // and only discover the misconfig on the next runtime call's 401.
+  // Options each scope may reference: shared by every selected account, minus the scope's own slot.
+  const fallbackOptionsFor = (scope) => fallbackOptions && fallbackOptions.filter((m) => m.llm_config_source !== ownSlotFor(editData?.id, scope));
+  const fallbackErrorsFor = (scope) => {
+    const f = fallbackCfg[scope];
+    if (f.mode === 'existing') {
+      if (!f.ref.source) {
+        return { ref: 'Select a configured model' };
+      }
+      return {
+        ref: fallbackRefIsAvailable(f, fallbackOptionsFor(scope))
+          ? null
+          : 'This model is no longer available to every selected account — pick another',
+      };
+    }
+    if (f.mode === 'new') {
+      return {
+        provider: f.new.provider ? null : 'Provider is required',
+        model: !f.new.model.trim() ? 'Model is required' : validateModelName(f.new.model),
+        creds: validateOverrideCreds(f.new, (c) => fallbackKeyFor(`llm_fallback_${c}`, scope)) || requiredConnFieldError(f.new),
+      };
+    }
+    return {};
+  };
+  const fallbackErrors = Object.fromEntries(FALLBACK_SCOPES.map((scope) => [scope, fallbackErrorsFor(scope)]));
+
   const errors = {
     accounts: selectedAccountIds.length === 0 ? 'At least one account must be selected' : null,
     model: validateModelName(model),
@@ -1196,6 +1579,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     !!errors.fallbacks ||
     !!errors.oauthTokenUrl ||
     !!errors.extraHeaders ||
+    Object.values(fallbackErrors).some((e) => Object.values(e).some(Boolean)) ||
     Object.values(errors.tierModels).some(Boolean) ||
     Object.values(errors.tierFallbacks).some(Boolean) ||
     Object.values(errors.tierProviderModel).some(Boolean) ||
@@ -1283,6 +1667,30 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushPlain(azureShapedCustom, 'llm_provider_deployment_name', deploymentName);
     pushPlain(showsAdapter, 'llm_provider_adapter_id', adapterId);
     pushPlain(showsAdapter, 'llm_provider_require_adapter_id', requireAdapterId);
+    // Configured fallbacks (integration + each category): a reference (credentials stay
+    // in the referenced slot) or its own slot. Keys of the mode not written are deleted below.
+    FALLBACK_SCOPES.forEach((scope) => {
+      const f = fallbackCfg[scope];
+      const k = (base) => fallbackKeyFor(base, scope);
+      if (f.mode === 'existing' && f.ref.source) {
+        out.push({ name: k('llm_fallback_ref_source'), value: f.ref.source });
+        out.push({ name: k('llm_fallback_ref_model'), value: f.ref.model });
+      }
+      if (f.mode === 'new' && f.new.provider) {
+        const n = f.new;
+        const shape = providerFieldShape(n.provider);
+        out.push({ name: k('llm_fallback_provider'), value: n.provider });
+        out.push({ name: k('llm_fallback_model'), value: n.model.trim() });
+        pushSecret(shape.showsApiKey, k('llm_fallback_api_key'), n.apiKey);
+        pushPlain(shape.showsApiEndpoint, k('llm_fallback_api_endpoint'), n.apiEndpoint);
+        pushPlain(shape.showsApiVersion, k('llm_fallback_api_version'), n.apiVersion);
+        pushPlain(shape.showsRegion, k('llm_fallback_region'), n.region);
+        pushSecret(shape.showsBedrockKeys, k('llm_fallback_access_key'), n.accessKey);
+        pushSecret(shape.showsBedrockKeys, k('llm_fallback_secret_key'), n.secretKey);
+        pushPlain(shape.showsApiType, k('llm_fallback_api_type'), n.apiType);
+        pushPlain(showsContextSize(n.provider), k('llm_fallback_context_size'), n.contextSize);
+      }
+    });
     // Per-tier — write provider + model + fallbacks, plus credentials when the
     // tier overrides the provider. When the user picked "Inherit" (form
     // provider is empty), we still write the tier_provider key as the global
@@ -1350,6 +1758,21 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     });
     return out;
   };
+
+  const renderFallbackEditor = (scope) => (
+    <FallbackModelEditor
+      scope={scope}
+      state={fallbackCfg[scope]}
+      options={fallbackOptionsFor(scope)}
+      optionsError={fallbackOptionsError}
+      errors={fallbackErrors[scope]}
+      secretsConfigured={secretsConfigured}
+      noAccounts={selectedAccountIds.length === 0}
+      onModeChange={(mode) => updateFallback(scope, { mode })}
+      onPickRef={(value) => pickFallbackRef(scope, value)}
+      onUpdateNew={(field, value) => updateFallbackNew(scope, field, value)}
+    />
+  );
 
   const handleTest = async () => {
     if (!canTest) {
@@ -1747,15 +2170,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             required
           />
 
-          <Input
-            label='LLM Model Fallbacks'
-            size='sm'
-            value={fallbacks}
-            onChange={setConnField(setFallbacks)}
-            onBlur={trimOnBlur(fallbacks, setFallbacks)}
-            error={errors.fallbacks}
-            help='Comma-separated list of fallback model names tried in order when the primary fails. Optional.'
-          />
+          {legacyFallbacksPresent[''] && (
+            <Input
+              label='Additional fallback models (legacy)'
+              size='sm'
+              value={fallbacks}
+              onChange={setConnField(setFallbacks)}
+              onBlur={trimOnBlur(fallbacks, setFallbacks)}
+              error={errors.fallbacks}
+              data-testid='llm-legacy-fallbacks'
+              help='Same-provider models tried in order with the primary’s credentials, before the fallback model below. Kept for this existing configuration; clear it to stop using it.'
+            />
+          )}
 
           {/* Provider-specific credentials — visibility driven by selected provider */}
           {provider === 'custom' && (
@@ -2113,6 +2539,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
 
         <Divider />
 
+        {/* ---------- Fallback model ---------- */}
+        <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 'var(--ds-space-2)' }}>
+          Fallback model
+        </Typography>
+        <Typography variant='caption' sx={{ display: 'block', mb: 'var(--ds-space-3)', color: 'var(--ds-gray-500)' }}>
+          Used when the primary model fails (quota, outage, timeouts). It runs with its own provider and credentials — pick a model you have already
+          configured, or configure a new one.
+        </Typography>
+        <Box sx={{ mb: 'var(--ds-space-4)' }}>{renderFallbackEditor('')}</Box>
+
+        <Divider />
+
         {/* ---------- Categories ---------- */}
         <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 'var(--ds-space-2)' }}>
           Categories
@@ -2152,14 +2590,30 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                     onChange={(value) => updateTier(tierKey, 'model', value)}
                     error={errors.tierModels[tierKey] || errors.tierProviderModel[tierKey]}
                   />
-                  <Input
-                    label='Fallbacks'
-                    size='sm'
-                    value={t.fallbacks}
-                    placeholder='comma-separated'
-                    onChange={(value) => updateTier(tierKey, 'fallbacks', value)}
-                    error={errors.tierFallbacks[tierKey]}
-                  />
+                  {legacyFallbacksPresent[tierKey] && (
+                    <Input
+                      label='Fallbacks (legacy)'
+                      size='sm'
+                      value={t.fallbacks}
+                      placeholder='comma-separated'
+                      onChange={(value) => updateTier(tierKey, 'fallbacks', value)}
+                      error={errors.tierFallbacks[tierKey]}
+                      help='Same-provider models tried in order before this category’s fallback model. Clear it to stop using it.'
+                    />
+                  )}
+                  <Box>
+                    <Typography
+                      variant='caption'
+                      sx={{ display: 'block', mb: 'var(--ds-space-1)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}
+                    >
+                      Fallback model
+                    </Typography>
+                    <Typography variant='caption' sx={{ display: 'block', mb: 'var(--ds-space-2)', color: 'var(--ds-gray-500)' }}>
+                      Optional. Replaces the fallback model above for {TIER_LABELS[tierKey].toLowerCase()} calls; leave as No fallback to use that
+                      one.
+                    </Typography>
+                    {renderFallbackEditor(tierKey)}
+                  </Box>
                   {showsContextSize(t.provider || provider) && (
                     <Input
                       label='Context window (tokens)'

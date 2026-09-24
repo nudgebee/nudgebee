@@ -39,6 +39,16 @@ var llmSecretFieldPrefixes = []string{
 	"llm_tier_secret_key",
 	"llm_tier_session_token",
 	"llm_tier_oauth_client_secret",
+	// The integration's configured fallback slot (#36339).
+	"llm_fallback_api_key",
+	"llm_fallback_access_key",
+	"llm_fallback_secret_key",
+}
+
+// LLMSecretFieldPrefixes returns a copy of the secret prefixes, so other
+// packages can check their own lists (e.g. the list-API redaction) stay in sync.
+func LLMSecretFieldPrefixes() []string {
+	return append([]string(nil), llmSecretFieldPrefixes...)
 }
 
 // IsLLMSecretFieldName reports whether the given integration_config_values
@@ -74,8 +84,8 @@ func isLLMOverrideKeyForDelete(name string) bool {
 	if IsLLMSecretFieldName(name) {
 		return false
 	}
-	// Tier overrides.
-	if strings.HasPrefix(name, "llm_tier_") {
+	// Tier overrides, and the configured fallback's non-secret keys (#36339).
+	if strings.HasPrefix(name, "llm_tier_") || strings.HasPrefix(name, "llm_fallback_") {
 		return true
 	}
 	// Per-agent overrides — distinguished from globals by the trailing

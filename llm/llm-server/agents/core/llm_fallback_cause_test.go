@@ -64,7 +64,7 @@ func TestHandleQuotaErrorNamesTheRealCause(t *testing.T) {
 // "already tried" error, so we reach the exhaustion path without an LLM call.
 func TestHandleQuotaErrorExhaustedFallbacksNamesTheRealCause(t *testing.T) {
 	upstream := errors.New("huggingface endpoint circuit open (service unavailable) for model Qwen/Test")
-	fallbacks := []string{"gpt-4o-mini", "gpt-3.5"}
+	fallbacks := []FallbackModel{{Model: "gpt-4o-mini"}, {Model: "gpt-3.5"}}
 
 	newRC := func() *retryContext {
 		return &retryContext{
@@ -74,8 +74,8 @@ func TestHandleQuotaErrorExhaustedFallbacksNamesTheRealCause(t *testing.T) {
 			currentProvider: "huggingface",
 			lastErr:         upstream,
 			triedModels: map[string]bool{
-				fallbacks[0]: true,
-				fallbacks[1]: true,
+				fallbacks[0].Model: true,
+				fallbacks[1].Model: true,
 			},
 		}
 	}
@@ -135,7 +135,7 @@ func TestHandleQuotaErrorNilLastErrDoesNotRenderPercentBangW(t *testing.T) {
 	})
 
 	t.Run("exhausted fallbacks", func(t *testing.T) {
-		fallbacks := []string{"a", "b"}
+		fallbacks := []FallbackModel{{Model: "a"}, {Model: "b"}}
 		rc := newRC()
 		rc.triedModels = map[string]bool{"a": true, "b": true}
 		_, meta, err := handleQuotaError(rc, fallbacks, false, fallbackCauseUnavailable)

@@ -134,6 +134,14 @@ func GetLlmConcurrencyStats() map[string]LlmConcurrencyStats {
 	return stats
 }
 
+// ForgetLLMIntegrationsList drops only accountId's cached integration list — what
+// a referenced fallback resolves against — without the tenant-wide sweep below.
+func ForgetLLMIntegrationsList(accountId string) {
+	llmIntegrationsCacheMutex.Lock()
+	delete(llmIntegrationsCache, accountId)
+	llmIntegrationsCacheMutex.Unlock()
+}
+
 func InvalidateLLMIntegrationConfigCache(accountId string) {
 	slog.Info("Invalidating LLM integration config cache for account", "accountId", accountId)
 	llmIntegrationConfigCacheMutex.Lock()
@@ -1955,11 +1963,49 @@ func recordAbandonedAttempt(rc *retryContext, model, provider string, cause erro
 		}, cause)
 }
 
-func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.ContentResponse, error) {
+// fallbackChain returns the untried attempts for rc: the legacy list raw (unchanged
+// behaviour, primary's creds), then the integration's configured fallback on its own
+// slot. A configured fallback that no longer resolves is logged & recorded, never substituted.
+func fallbackChain(rc *retryContext, raw string) []FallbackModel {
+	fallbacks := parseFallbackModels(raw)
+	if fb, err := configuredFallback(rc.ctx, rc.accountId, rc.resolution); err != nil {
+		rc.ctx.GetLogger().Error("Configured fallback unavailable", "error", err)
+		rc.errorHistory = append(rc.errorHistory, err.Error())
+	} else if fb != nil {
+		fallbacks = append(fallbacks, *fb)
+	}
+	out := fallbacks[:0]
+	for _, fb := range fallbacks {
+		if !rc.triedModels[fb.key()] {
+			out = append(out, fb)
+		}
+	}
+	return out
+}
+
+// withFallbackMaxTokens caps a configured fallback's max_tokens at its own model's limit:
+// options are sized for the primary (Gemini 65536 -> gpt-4o-mini rejects >16384).
+func withFallbackMaxTokens(opts []llms.CallOption, accountId string, fb FallbackModel) []llms.CallOption {
+	limit := ResolveMaxOutputTokens(accountId, fb.Provider, fb.Model)
+	if limit <= 0 {
+		limit = DefaultMaxOutputTokensFloor
+	}
+	var current llms.CallOptions
+	for _, o := range opts {
+		o(&current)
+	}
+	if current.MaxTokens > 0 && current.MaxTokens <= limit {
+		return opts
+	}
+	return append(append([]llms.CallOption(nil), opts...), llms.WithMaxTokens(limit))
+}
+
+func tryFallbackModel(rc *retryContext, next FallbackModel, attempt int) (*llms.ContentResponse, error) {
 	if rc == nil || rc.ctx == nil {
 		return nil, errors.New("invalid retry context")
 	}
-	if nextModel == "" || rc.triedModels[nextModel] {
+	nextModel := next.Model
+	if nextModel == "" || rc.triedModels[next.key()] {
 		return nil, errors.New("invalid or already tried model")
 	}
 
@@ -1967,6 +2013,8 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 	previousModel := rc.currentModel
 	previousLLM := rc.llm
 	previousProvider := rc.currentProvider
+	previousResolution := rc.resolution
+	previousOptions := rc.options
 
 	// The model we are leaving behind failed; record that attempt before its latency
 	// and error are overwritten by the fallback's own result. A TTFT timeout is skipped
@@ -1975,15 +2023,23 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 		recordAbandonedAttempt(rc, previousModel, previousProvider, rc.lastErr)
 	}
 
-	rc.triedModels[nextModel] = true
+	rc.triedModels[next.key()] = true
 	rc.ctx.GetLogger().Info("Trying fallback model",
 		"previousError", safeError(rc.lastErr),
 		"previousModel", previousModel,
 		"nextModel", nextModel,
+		"nextProvider", next.Provider,
 		"attempt", attempt+1)
 
-	provider := GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
-	newLLM, err := GetLLMModel(provider, nextModel, rc.agentName, false, rc.accountId, rc.resolution)
+	// Legacy entry -> primary's provider & resolution. Configured fallback -> its own
+	// slot's resolution, so client, cache-path key & context size all use that slot.
+	provider, resolution := next.Provider, rc.resolution
+	if next.Resolution != nil {
+		resolution = next.Resolution
+	} else {
+		provider = GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
+	}
+	newLLM, err := newLLMModel(provider, nextModel, rc.agentName, false, rc.accountId, resolution)
 	if err != nil {
 		rc.ctx.GetLogger().Warn("Failed to create fallback model",
 			"model", nextModel,
@@ -1996,7 +2052,11 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 	// Update state and track fallback
 	rc.currentModel = nextModel
 	rc.currentProvider = provider
+	rc.resolution = resolution
 	rc.llm = newLLM
+	if next.Resolution != nil {
+		rc.options = withFallbackMaxTokens(rc.options, rc.accountId, next)
+	}
 	rc.fallbackFromModel = &previousModel                      // Track immediate previous model
 	rc.fallbackChain = append(rc.fallbackChain, previousModel) // Add to chain
 
@@ -2005,6 +2065,8 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 		// Revert state on failure
 		rc.currentModel = previousModel
 		rc.currentProvider = previousProvider
+		rc.resolution = previousResolution
+		rc.options = previousOptions
 		rc.llm = previousLLM
 		rc.fallbackFromModel = nil                                    // Clear immediate fallback
 		rc.fallbackChain = rc.fallbackChain[:len(rc.fallbackChain)-1] // Remove last from chain
@@ -2532,7 +2594,7 @@ func (c fallbackCause) reason() string {
 
 // handleQuotaError handles quota/rate limit errors by trying fallback models
 // STRATEGY 2: Try each configured fallback model until one succeeds
-func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHit bool, cause fallbackCause) (*llms.ContentResponse, *LLMCallMetadata, error) {
+func handleQuotaError(rc *retryContext, fallbackModels []FallbackModel, recordPrimaryHit bool, cause fallbackCause) (*llms.ContentResponse, *LLMCallMetadata, error) {
 	ctx := rc.ctx
 
 	// Record rate limit hit to open circuit breaker for the primary model.
@@ -2569,22 +2631,24 @@ func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHi
 	}
 
 	// Try each fallback model
-	for i, model := range fallbackModels {
+	for i, fb := range fallbackModels {
+		model := fb.Model
 		ctx.GetLogger().Info("Attempting fallback model",
 			"fallbackModel", model,
+			"fallbackProvider", fb.Provider,
 			"attemptNumber", i+1,
 			"totalFallbacks", len(fallbackModels),
 			"primaryModel", rc.currentModel)
 
 		// Skip if already tried
-		if rc.triedModels[model] {
+		if rc.triedModels[fb.key()] {
 			ctx.GetLogger().Debug("Skipping already tried model",
 				"model", model)
 			continue
 		}
 
 		// Try this fallback model
-		completion, err := tryFallbackModel(rc, model, i)
+		completion, err := tryFallbackModel(rc, fb, i)
 
 		if err == nil {
 			// Success!
@@ -2598,7 +2662,10 @@ func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHi
 		// Analyze failure reason
 		if isQuotaError(err) {
 			// Record rate limit hit for the fallback model too
-			fallbackProvider := GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
+			fallbackProvider := fb.Provider
+			if fallbackProvider == "" {
+				fallbackProvider = GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
+			}
 			RecordModelRateLimitHit(fallbackProvider, model, err)
 			common.MetricsLLMRateLimitHitsTotal(fallbackProvider, model, rc.accountId)
 			ctx.GetLogger().Warn("Fallback model also has quota issues, trying next",
@@ -2772,15 +2839,9 @@ func handleTransientError(rc *retryContext, maxAttempts int) (*llms.ContentRespo
 			}
 
 			// Get fallback models (skip if conversation has explicit model)
-			fallbackModelsRaw := getLLMFallbackModelName(rc.accountId, rc.agentName, modelTierFromContext(rc.ctx), true)
-			var fallbackModels []string
-			if fallbackModelsRaw != "" && !conversationHasExplicitModel {
-				for model := range strings.SplitSeq(fallbackModelsRaw, ",") {
-					trimmed := strings.TrimSpace(model)
-					if trimmed != "" && trimmed != rc.currentModel {
-						fallbackModels = append(fallbackModels, trimmed)
-					}
-				}
+			var fallbackModels []FallbackModel
+			if !conversationHasExplicitModel {
+				fallbackModels = fallbackChain(rc, getLLMFallbackModelName(rc.accountId, rc.agentName, modelTierFromContext(rc.ctx), true))
 			}
 			return handleQuotaError(rc, fallbackModels, true, fallbackCauseQuota) // actual quota error mid-retry
 		}
@@ -2806,30 +2867,21 @@ tryFallbacks:
 		"maxAttempts", maxAttempts,
 		"model", rc.currentModel)
 
-	fallbackModelsRaw := getLLMFallbackModelName(rc.accountId, rc.agentName, modelTierFromContext(rc.ctx), true)
-	if fallbackModelsRaw != "" {
-		var fallbackModels []string
-		for model := range strings.SplitSeq(fallbackModelsRaw, ",") {
-			trimmed := strings.TrimSpace(model)
-			if trimmed != "" && !rc.triedModels[trimmed] {
-				fallbackModels = append(fallbackModels, trimmed)
-			}
-		}
-		if len(fallbackModels) > 0 {
-			// Delegate to handleQuotaError to try fallback models.
-			// Termination is guaranteed:
-			//   1. fallbackModels is a finite, pre-filtered list (triedModels excludes already-attempted models).
-			//   2. handleQuotaError iterates the list once; errors from each fallback (quota, transient,
-			//      token-limit, non-retryable) are handled with a `continue` or an early return — it never
-			//      re-enters generateLLMContentWithRetry's strategy-routing loop.
-			//   3. When all fallbacks are exhausted, handleQuotaError returns an error directly.
-			//
-			// Note: handleQuotaError calls RecordModelRateLimitHit for the primary model.
-			// When invoked from this transient-error path that label is semantically imprecise
-			// (timeouts ≠ rate limits), but the circuit-breaker backpressure it introduces is
-			// still a useful safety net while the model is in a degraded state.
-			return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable) // transient exhaustion (timeouts, not quota) — do not trip circuit
-		}
+	// No legacy list still leaves the integration's configured fallback to try.
+	if fallbackModels := fallbackChain(rc, getLLMFallbackModelName(rc.accountId, rc.agentName, modelTierFromContext(rc.ctx), true)); len(fallbackModels) > 0 {
+		// Delegate to handleQuotaError to try fallback models.
+		// Termination is guaranteed:
+		//   1. fallbackModels is a finite, pre-filtered list (triedModels excludes already-attempted models).
+		//   2. handleQuotaError iterates the list once; errors from each fallback (quota, transient,
+		//      token-limit, non-retryable) are handled with a `continue` or an early return — it never
+		//      re-enters generateLLMContentWithRetry's strategy-routing loop.
+		//   3. When all fallbacks are exhausted, handleQuotaError returns an error directly.
+		//
+		// Note: handleQuotaError calls RecordModelRateLimitHit for the primary model.
+		// When invoked from this transient-error path that label is semantically imprecise
+		// (timeouts ≠ rate limits), but the circuit-breaker backpressure it introduces is
+		// still a useful safety net while the model is in a degraded state.
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable) // transient exhaustion (timeouts, not quota) — do not trip circuit
 	}
 
 	// No fallbacks available
@@ -2932,15 +2984,11 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 
 	// Parse and validate fallback models
 	fallbackModelsRaw := getLLMFallbackModelName(accountId, rc.agentName, modelTierFromContext(rc.ctx), true, res)
-	var fallbackModels []string
-	if fallbackModelsRaw != "" && !conversationHasExplicitModel {
-		for model := range strings.SplitSeq(fallbackModelsRaw, ",") {
-			trimmed := strings.TrimSpace(model)
-			if trimmed != "" && trimmed != rc.currentModel {
-				fallbackModels = append(fallbackModels, trimmed)
-			}
-		}
-	} else if conversationHasExplicitModel {
+	var fallbackModels []FallbackModel
+	if !conversationHasExplicitModel {
+		// Built even with no legacy list: it still carries the configured fallback.
+		fallbackModels = fallbackChain(rc, fallbackModelsRaw)
+	} else {
 		ctx.GetLogger().Info("Skipping fallback models because conversation has explicit model configuration")
 		disableRetry = true
 	}
@@ -3094,16 +3142,16 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		// This recovers the "intermittent empty → internal error" case (e.g. a simple
 		// follow-up on a large scratchpad) instead of hard-failing. tryFallbackModel
 		// reverts rc state on failure, so a fallback that also empties just moves on.
-		for i, model := range fallbackModels {
-			if rc.triedModels[model] {
+		for i, fb := range fallbackModels {
+			if rc.triedModels[fb.key()] {
 				continue
 			}
 			ctx.GetLogger().Warn("Empty response persisted on primary; escalating to fallback model",
-				"primaryModel", rc.currentModel, "fallbackModel", model, "agentId", agentId)
-			completion, fbErr := tryFallbackModel(rc, model, i)
+				"primaryModel", rc.currentModel, "fallbackModel", fb.Model, "fallbackProvider", fb.Provider, "agentId", agentId)
+			completion, fbErr := tryFallbackModel(rc, fb, i)
 			if fbErr == nil {
 				ctx.GetLogger().Info("STRATEGY 3a SUCCESS: fallback model produced content after empty primary",
-					"fallbackModel", model, "agentId", agentId)
+					"fallbackModel", fb.Model, "fallbackProvider", fb.Provider, "agentId", agentId)
 				return completion, buildCallMetadata(rc, true), nil
 			}
 			rc.lastErr = fbErr

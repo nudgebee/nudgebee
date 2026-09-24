@@ -530,6 +530,8 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 		}
 	}
 
+	errs = append(errs, validateConfiguredFallback(securityContext, cfg, accountId)...)
+
 	// Summarization model contract.
 	if cfg["add_model_for_summarization"] == "true" {
 		sProvider := cfg["llm_provider_summary_agent"]
@@ -601,7 +603,32 @@ type llmProbeResultJSON struct {
 //
 // Untestable targets (vertexai) count as success — the resolver still picks
 // them at runtime; only structural validation has run for them here.
-func (m LLM) TestConnection(rc *security.RequestContext, values []core.IntegrationConfigValue, _ string) error {
+// TestConnection probes a stored integration; accountId comes from its own links.
+func (m LLM) TestConnection(rc *security.RequestContext, values []core.IntegrationConfigValue, accountId string) error {
+	var ids []string
+	if accountId != "" {
+		ids = []string{accountId}
+	}
+	return m.testConnection(rc, values, ids)
+}
+
+// TestConnectionForAccounts probes an unsaved config for each account it's saved for. The
+// ids come from the request and llm-server trusts them, so each is access-checked first.
+func (m LLM) TestConnectionForAccounts(rc *security.RequestContext, values []core.IntegrationConfigValue, accountIds []string) error {
+	var ids []string
+	for _, id := range accountIds {
+		if id == "" {
+			continue
+		}
+		if rc == nil || rc.GetSecurityContext() == nil || !rc.GetSecurityContext().HasAccountAccess(id, security.SecurityAccessTypeRead) {
+			return fmt.Errorf("no access to account %s", id)
+		}
+		ids = append(ids, id)
+	}
+	return m.testConnection(rc, values, ids)
+}
+
+func (m LLM) testConnection(rc *security.RequestContext, values []core.IntegrationConfigValue, ids []string) error {
 	if config.Config.LLMServerEndpoint == "" {
 		return fmt.Errorf("llm_server_endpoint not configured; cannot run connectivity test")
 	}
@@ -627,7 +654,7 @@ func (m LLM) TestConnection(rc *security.RequestContext, values []core.Integrati
 
 	resp, err := common.HttpPost(url,
 		common.HttpWithContext(reqCtx),
-		common.HttpWithJsonBody(map[string]any{"config": cfg}),
+		common.HttpWithJsonBody(map[string]any{"config": cfg, "account_ids": ids}),
 		common.HttpWithHeaders(headers),
 		// 90s: 5-way parallel probe across ~25 models, 15s per-probe budget on
 		// llm-server side, with slack for queueing and the response trip.
@@ -1012,6 +1039,8 @@ func (m LLM) AllowsDynamicKey(name string) bool {
 		"llm_model_name_",
 		"llm_model_fallbacks_",
 		"llm_model_context_size_",
+		// The configured fallback (#36339): ref_source/ref_model, or its own slot.
+		"llm_fallback_",
 	}
 	for _, p := range overridePrefixes {
 		if strings.HasPrefix(name, p) && len(name) > len(p) {
@@ -1019,4 +1048,116 @@ func (m LLM) AllowsDynamicKey(name string) bool {
 		}
 	}
 	return false
+}
+
+// llmFallbackRefConfig is core.LLMFallbackRefConfig; a var so tests can stub the DB.
+var llmFallbackRefConfig = core.LLMFallbackRefConfig
+
+// validateConfiguredFallback checks each configured fallback (#36339) — the
+// integration's and each category's (_<tier> keys): a reference to an existing
+// slot or a slot of its own, never both.
+func validateConfiguredFallback(sc *security.SecurityContext, cfg map[string]string, accountId string) []error {
+	var errs []error
+	for _, tier := range []string{"", "reasoning", "retrieval", "summary"} {
+		k := func(base string) string {
+			if tier == "" {
+				return base
+			}
+			return base + "_" + tier
+		}
+		// The slot this fallback belongs to; referencing it would be a no-op.
+		ownSlot := ""
+		if id := cfg[core.IntegrationID]; id != "" {
+			ownSlot = "db:" + id
+			if tier != "" {
+				ownSlot += ":tier:" + tier
+			}
+		}
+		ref, provider := cfg[k("llm_fallback_ref_source")], cfg[k("llm_fallback_provider")]
+		switch {
+		case ref != "" && provider != "":
+			errs = append(errs, fmt.Errorf("configure the %s as an existing model or as a new one, not both", fallbackLabel(tier)))
+		case provider != "":
+			if !isLLMProvider(provider) {
+				errs = append(errs, fmt.Errorf("%s %q is invalid; must be one of %s", k("llm_fallback_provider"), provider, strings.Join(llmProviders, ", ")))
+				continue
+			}
+			if cfg[k("llm_fallback_model")] == "" {
+				errs = append(errs, fmt.Errorf("%s is required when %s is set", k("llm_fallback_model"), k("llm_fallback_provider")))
+			}
+			for _, f := range providerRequiredFields(provider) {
+				if key := k(strings.Replace(f, "llm_provider_", "llm_fallback_", 1)); cfg[key] == "" {
+					errs = append(errs, fmt.Errorf("%s is required when %s is %q", key, k("llm_fallback_provider"), provider))
+				}
+			}
+			if ep := cfg[k("llm_fallback_api_endpoint")]; ep != "" && !isValidHTTPURL(ep) {
+				errs = append(errs, fmt.Errorf("%s %q must be a valid http(s) URL", k("llm_fallback_api_endpoint"), ep))
+			}
+			if err := validateAWSRegion(k("llm_fallback_region"), provider, cfg[k("llm_fallback_region")]); err != nil {
+				errs = append(errs, err)
+			}
+		case ref != "":
+			if ownSlot != "" && ref == ownSlot {
+				errs = append(errs, fmt.Errorf("the %s cannot be the model it falls back from", fallbackLabel(tier)))
+				continue
+			}
+			if err := validateFallbackRef(sc, ref, cfg[k("llm_fallback_ref_model")], k("llm_fallback_ref_model"), accountId); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errs
+}
+
+func fallbackLabel(tier string) string {
+	if tier == "" {
+		return "fallback"
+	}
+	return tier + " fallback"
+}
+
+// validateFallbackRef checks a reference resolves for accountId the way
+// llm-server will resolve it: a real slot of an enabled, visible integration
+// that still serves the model.
+func validateFallbackRef(sc *security.SecurityContext, ref, model, modelKey, accountId string) error {
+	if model == "" {
+		return fmt.Errorf("%s is required for the fallback %q", modelKey, ref)
+	}
+	parts := strings.Split(ref, ":")
+	scope := ""
+	switch {
+	case len(parts) == 2 && parts[0] == "env" && parts[1] == "global":
+		return nil // ENV slots live in llm-server; it validates them at runtime and in Test Connection.
+	case len(parts) == 3 && parts[0] == "env" && (parts[1] == "tier" || parts[1] == "agent") && parts[2] != "":
+		return nil
+	case len(parts) == 2 && parts[0] == "db":
+		scope = "global"
+	case len(parts) == 4 && parts[0] == "db" && (parts[2] == "tier" || parts[2] == "agent") && parts[3] != "":
+		scope = parts[2]
+	default:
+		return fmt.Errorf("llm_fallback_ref_source %q is not a single configured slot", ref)
+	}
+	if sc == nil {
+		return errors.New("llm_fallback_ref_source requires a tenant context")
+	}
+	name, refCfg, err := llmFallbackRefConfig(sc.GetTenantId(), parts[1], accountId)
+	if err != nil {
+		return fmt.Errorf("llm_fallback_ref_source %q is not an enabled LLM integration available to account %s", ref, accountId)
+	}
+	slotModel, slotFallbacks := refCfg["llm_model_name"], refCfg["llm_model_fallbacks"]
+	switch scope {
+	case "tier":
+		slotModel, slotFallbacks = refCfg["llm_tier_model_"+parts[3]], refCfg["llm_tier_model_fallbacks_"+parts[3]]
+	case "agent":
+		slotModel, slotFallbacks = refCfg["llm_model_name_"+parts[3]], refCfg["llm_model_fallbacks_"+parts[3]]
+	}
+	if model == slotModel {
+		return nil
+	}
+	for _, m := range strings.Split(slotFallbacks, ",") {
+		if strings.TrimSpace(m) == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q does not serve model %q", name, model)
 }

@@ -86,6 +86,9 @@ type probeTarget struct {
 	// builders. Inherits global creds; overlays agent-specific creds when the
 	// source is an agent that has its own llm_provider_api_key_<agent> etc.
 	cfg map[string]string
+	// err marks a target that could not even be resolved (e.g. a fallback
+	// reference an account cannot see); it is reported without dialing anything.
+	err error
 }
 
 // TestLLMProviderConnection probes the primary (provider, model) pair from cfg.
@@ -116,11 +119,15 @@ func TestLLMProviderConnection(ctx context.Context, cfg map[string]string) error
 // request-time probe is not meaningful. Vertex AI targets are flagged
 // Untestable=true with OK=true so the aggregate count doesn't dock them as
 // failures.
-func TestLLMProviderConnectionAll(ctx context.Context, cfg map[string]string) ([]ProbeResult, error) {
+//
+// accountIds are the accounts the configuration is saved for; a fallback that
+// references an existing slot is resolved for each of them exactly as runtime does.
+func TestLLMProviderConnectionAll(ctx context.Context, cfg map[string]string, accountIds []string) ([]ProbeResult, error) {
 	targets := enumerateProbeTargets(cfg)
 	if len(targets) == 0 {
 		return nil, errors.New("no probe targets — llm_provider and llm_model_name are required")
 	}
+	targets = append(targets, fallbackProbeTargets(cfg, accountIds)...)
 
 	results := make([]ProbeResult, len(targets))
 	sem := make(chan struct{}, probeConcurrency)
@@ -157,6 +164,9 @@ func TestLLMProviderConnectionAll(ctx context.Context, cfg map[string]string) ([
 // config. Vertex AI returns Untestable=true OK=true; everything else returns
 // the raw SDK error (api-server humanizes downstream).
 func probeOne(ctx context.Context, t probeTarget) ProbeResult {
+	if t.err != nil {
+		return ProbeResult{Provider: t.provider, Model: t.model, Source: t.source, OK: false, Error: t.err.Error()}
+	}
 	if t.provider == "vertexai" {
 		return ProbeResult{
 			Provider: t.provider, Model: t.model, Source: t.source,
@@ -579,4 +589,69 @@ func newGoogleAIFromConfig(model string, cfg map[string]string) (llms.Model, err
 		opts = append(opts, googleai.WithBaseURL(endpoint))
 	}
 	return googleai.New(context.Background(), opts...)
+}
+
+// fallbackProbeTargets returns every configured fallback in cfg (the integration's
+// and each category's) as probe targets, built by the readers runtime uses: the
+// fallback-owned slot, or — for a reference — the referenced slot per account.
+func fallbackProbeTargets(cfg map[string]string, accountIds []string) []probeTarget {
+	var out []probeTarget
+	seen := map[string]bool{}
+	add := func(t probeTarget) {
+		if key := t.provider + "|" + t.model + "|" + credFingerprint(t.cfg) + "|" + fmt.Sprint(t.err); !seen[key] {
+			seen[key] = true
+			out = append(out, t)
+		}
+	}
+	for _, scope := range []ModelTier{"", ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
+		source := "fallback"
+		if scope != "" {
+			source = "tier-" + string(scope) + "-fallback"
+		}
+		if src := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefSourceKey, scope)]); src != "" {
+			model := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefModelKey, scope)])
+			if len(accountIds) == 0 {
+				add(probeTarget{model: model, source: source, err: fmt.Errorf("select an account to test the fallback %s", src)})
+			}
+			for _, acct := range accountIds {
+				res, err := resolveFallbackRef(nil, src, model, acct, scope)
+				if err != nil {
+					add(probeTarget{model: model, source: source, err: fmt.Errorf("account %s cannot use fallback %s: %w", acct, src, err)})
+					continue
+				}
+				add(probeTarget{provider: res.Provider, model: res.Model, source: source, cfg: probeCfgFromResolution(res)})
+			}
+			continue
+		}
+		if strings.TrimSpace(cfg[fallbackKey(llmFallbackProviderKey, scope)]) == "" {
+			continue
+		}
+		res := &LLMConfigResolution{}
+		if _, err := readDbSlotInto(res, cfg, &parsedConfigSource{Layer: "db", Scope: "fallback", Name: string(scope)}); err != nil {
+			add(probeTarget{provider: cfg[fallbackKey(llmFallbackProviderKey, scope)], model: cfg[fallbackKey(llmFallbackModelKey, scope)], source: source, err: err})
+			continue
+		}
+		add(probeTarget{provider: res.Provider, model: res.Model, source: source, cfg: probeCfgFromResolution(res)})
+	}
+	return out
+}
+
+// probeCfgFromResolution turns a resolved slot back into the config shape the
+// probe's client builders read. Empty fields are left out so builder defaults apply.
+func probeCfgFromResolution(res *LLMConfigResolution) map[string]string {
+	out := map[string]string{}
+	for k, v := range map[string]string{
+		cfgKeyProvider: res.Provider, cfgKeyModel: res.Model,
+		cfgKeyAPIKey: res.PinnedApiKey, cfgKeyAPIEndpoint: res.PinnedEndpoint,
+		cfgKeyAPIVersion: res.PinnedApiVersion, cfgKeyAPIType: res.PinnedApiType, cfgKeyRegion: res.PinnedRegion,
+		cfgKeyAccessKey: res.PinnedAccessKey, cfgKeySecretKey: res.PinnedSecretKey, cfgKeySessionToken: res.PinnedSessionToken,
+		llmAuthTypeKey: res.PinnedAuthType, llmOAuthTokenURLKey: res.PinnedOAuthTokenURL, llmOAuthClientIDKey: res.PinnedOAuthClientID,
+		llmOAuthClientSecretKey: res.PinnedOAuthClientSecret, llmOAuthScopeKey: res.PinnedOAuthScope,
+		llmExtraHeadersKey: res.PinnedExtraHeaders, llmDeploymentNameKey: res.PinnedDeploymentName,
+	} {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
 }

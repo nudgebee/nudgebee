@@ -660,6 +660,125 @@ func getLLMFallbackModelName(accountId, agentName string, tier ModelTier, append
 	return modelName
 }
 
+// Configured fallback (#36339): either ref_* (a reference to an existing slot) or a
+// fallback-owned slot (provider/model + llm_fallback_* creds, readDbSlotInto "fallback").
+// One for the integration; each category may set its own via the _<tier> suffix.
+const (
+	llmFallbackRefSourceKey   = "llm_fallback_ref_source"
+	llmFallbackRefModelKey    = "llm_fallback_ref_model"
+	llmFallbackProviderKey    = "llm_fallback_provider"
+	llmFallbackModelKey       = "llm_fallback_model"
+	llmFallbackContextSizeKey = "llm_fallback_context_size"
+)
+
+// FallbackModel is one fallback attempt. A legacy *_fallbacks entry is a bare
+// Model on the primary's provider and resolution; the configured fallback also
+// carries the provider and resolution of its own slot.
+type FallbackModel struct {
+	Model      string
+	Provider   string               // "" -> primary's provider
+	Resolution *LLMConfigResolution // nil -> primary's resolution
+}
+
+// key identifies the attempt in retryContext.triedModels. Legacy entries key on
+// the bare model, as they always have.
+func (f FallbackModel) key() string {
+	if f.Resolution == nil {
+		return f.Model
+	}
+	return f.Provider + ":" + f.Model
+}
+
+// parseFallbackModels splits a legacy comma-separated *_fallbacks value.
+func parseFallbackModels(raw string) []FallbackModel {
+	var out []FallbackModel
+	for m := range strings.SplitSeq(raw, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, FallbackModel{Model: m})
+		}
+	}
+	return out
+}
+
+// fallbackKey is a configured-fallback field's key for a scope: the integration's
+// (scope "") or a category's ("llm_fallback_model" -> "llm_fallback_model_reasoning").
+func fallbackKey(base string, scope ModelTier) string {
+	if scope == "" {
+		return base
+	}
+	return base + "_" + string(scope)
+}
+
+func fallbackConfigured(cfg map[string]string, scope ModelTier) bool {
+	return strings.TrimSpace(cfg[fallbackKey(llmFallbackRefSourceKey, scope)]) != "" ||
+		strings.TrimSpace(cfg[fallbackKey(llmFallbackProviderKey, scope)]) != ""
+}
+
+// configuredFallback resolves the configured fallback for this call: its category's
+// if that category sets one, else the integration's. (nil, nil) -> none configured.
+// An error names the broken configuration; the caller must not substitute anything.
+func configuredFallback(ctx *security.RequestContext, accountId string, res *LLMConfigResolution) (*FallbackModel, error) {
+	var dbConfig map[string]string
+	var tier ModelTier
+	if res != nil {
+		dbConfig, tier = res.dbConfig, res.Tier
+	}
+	cfg, err := getLLMIntegrationConfig(ctx, accountId, dbConfig)
+	if err != nil || cfg == nil {
+		return nil, err
+	}
+	scope := ModelTier("")
+	if tier != "" && fallbackConfigured(cfg, tier) {
+		scope = tier
+	}
+
+	if src := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefSourceKey, scope)]); src != "" {
+		model := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefModelKey, scope)])
+		fbRes, err := resolveFallbackRef(ctx, src, model, accountId, tier)
+		if err != nil {
+			return nil, fmt.Errorf("configured fallback %q (%s) is unavailable: %w", model, src, err)
+		}
+		return &FallbackModel{Model: fbRes.Model, Provider: fbRes.Provider, Resolution: fbRes}, nil
+	}
+
+	if strings.TrimSpace(cfg[fallbackKey(llmFallbackProviderKey, scope)]) == "" {
+		return nil, nil
+	}
+	label := strings.TrimSuffix("db-fallback:"+string(scope), ":")
+	fbRes := &LLMConfigResolution{Source: label, AccountId: accountId, Tier: tier, PinnedConfigSource: label}
+	if _, err := readDbSlotInto(fbRes, cfg, &parsedConfigSource{Layer: "db", Scope: "fallback", Name: string(scope)}); err != nil {
+		return nil, fmt.Errorf("configured fallback is incomplete: %w", err)
+	}
+	return &FallbackModel{Model: fbRes.Model, Provider: fbRes.Provider, Resolution: fbRes}, nil
+}
+
+// resolveFallbackRef resolves a referenced slot exactly as a pinned request
+// would (visibility enforced for accountId) and checks it still serves model —
+// the slot's primary or one of its same-provider fallbacks.
+func resolveFallbackRef(ctx *security.RequestContext, sourceId, model, accountId string, tier ModelTier) (*LLMConfigResolution, error) {
+	parsed, err := parseConfigSourceId(sourceId)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Scope == "all" {
+		return nil, fmt.Errorf("a whole-config source cannot be a fallback; pick one slot")
+	}
+	fbRes, slotFallbacks, pinConfig, err := readPinnedSlot(ctx, sourceId, parsed, accountId, tier)
+	if err != nil {
+		return nil, err
+	}
+	if model == "" {
+		model = fbRes.Model
+	}
+	if model != fbRes.Model && !containsString(slotFallbacks, model) {
+		return nil, fmt.Errorf("slot no longer serves model %q (serves %q)", model, fbRes.Model)
+	}
+	fbRes.Model = model
+	fbRes.MaxContext = resolveModelContextMap(pinConfig)[model]
+	fbRes.Tier = tier
+	return fbRes, nil
+}
+
 // readENVTierCredential returns the ENV-tier value for the given credential key
 // format (e.g. llmTierApiKeyFormat), but only when the tier's own ENV provider
 // matches `provider`. That match guard prevents a Bedrock-tier API key from
@@ -3053,48 +3172,12 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 	if err != nil {
 		return nil, err
 	}
-
-	res := &LLMConfigResolution{
-		Source:             "pinned:" + sourceId,
-		AccountId:          accountId,
-		IsOverridden:       true,
-		PinnedConfigSource: sourceId,
-		Hierarchy: []LLMConfigLayer{{
-			Level:  "pinned:" + sourceId,
-			Active: true,
-		}},
-	}
-
-	// Recorded before the switch rewrites Scope to the concrete slot.
+	// Recorded before readPinnedSlot rewrites Scope to the concrete slot.
 	wholeConfig := parsed.Scope == "all"
 
-	var slotFallbacks []string
-	var pinConfig map[string]string // db integration config (nil for env pins)
-	switch parsed.Layer {
-	case "env":
-		var err error
-		if parsed.Scope == "all" {
-			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
-				return config.Config.GetString(fmt.Sprintf(llmTierModelFormat, t), "") != ""
-			})
-		}
-		if slotFallbacks, err = readEnvSlotInto(res, parsed); err != nil {
-			return nil, err
-		}
-	case "db":
-		var err error
-		pinConfig, err = integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
-		if err != nil {
-			return nil, err
-		}
-		if parsed.Scope == "all" {
-			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
-				return pinConfig[fmt.Sprintf(llmTierModelFormat, t)] != ""
-			})
-		}
-		if slotFallbacks, err = readDbSlotInto(res, pinConfig, parsed); err != nil {
-			return nil, err
-		}
+	res, slotFallbacks, pinConfig, err := readPinnedSlot(ctx, sourceId, parsed, accountId, tier)
+	if err != nil {
+		return nil, err
 	}
 
 	// Reconcile with request-level provider/model overrides.
@@ -3152,6 +3235,51 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 		"tier", string(tier),
 		"accountId", accountId)
 	return res, nil
+}
+
+// readPinnedSlot reads the slot sourceId names into a pinned resolution (no request
+// reconciliation), shared by pinned requests & referenced fallbacks. Also returns the
+// slot's same-provider fallback models and, for db slots, the integration config.
+func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parsedConfigSource, accountId string, tier ModelTier) (*LLMConfigResolution, []string, map[string]string, error) {
+	res := &LLMConfigResolution{
+		Source:             "pinned:" + sourceId,
+		AccountId:          accountId,
+		IsOverridden:       true,
+		PinnedConfigSource: sourceId,
+		Hierarchy: []LLMConfigLayer{{
+			Level:  "pinned:" + sourceId,
+			Active: true,
+		}},
+	}
+
+	var slotFallbacks []string
+	var pinConfig map[string]string // db integration config (nil for env pins)
+	var err error
+	switch parsed.Layer {
+	case "env":
+		if parsed.Scope == "all" {
+			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
+				return config.Config.GetString(fmt.Sprintf(llmTierModelFormat, t), "") != ""
+			})
+		}
+		if slotFallbacks, err = readEnvSlotInto(res, parsed); err != nil {
+			return nil, nil, nil, err
+		}
+	case "db":
+		pinConfig, err = integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if parsed.Scope == "all" {
+			parsed = slotForWholeConfig(parsed, tier, func(t string) bool {
+				return pinConfig[fmt.Sprintf(llmTierModelFormat, t)] != ""
+			})
+		}
+		if slotFallbacks, err = readDbSlotInto(res, pinConfig, parsed); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return res, slotFallbacks, pinConfig, nil
 }
 
 // integrationConfigForPin returns the config map of the integration a db:<uuid>
@@ -3274,6 +3402,23 @@ func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string,
 func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedConfigSource) ([]string, error) {
 	var fallbackStr string
 	switch p.Scope {
+	case "fallback":
+		// Returns before the integration-wide thinking/OAuth/headers/deployment reads and
+		// inheritSlotDefaults below: those are the primary's and must not reach this endpoint.
+		k := func(base string) string { return cfg[fallbackKey(base, ModelTier(p.Name))] }
+		res.Provider = k(llmFallbackProviderKey)
+		res.Model = k(llmFallbackModelKey)
+		res.PinnedEndpoint = k("llm_fallback_api_endpoint")
+		res.PinnedApiKey = k("llm_fallback_api_key")
+		res.PinnedApiType = k("llm_fallback_api_type")
+		res.PinnedApiVersion = k("llm_fallback_api_version")
+		res.PinnedRegion = k("llm_fallback_region")
+		res.PinnedAccessKey = k("llm_fallback_access_key")
+		res.PinnedSecretKey = k("llm_fallback_secret_key")
+		if n, err := strconv.Atoi(strings.TrimSpace(k(llmFallbackContextSizeKey))); err == nil && n > 0 {
+			res.MaxContext = n
+		}
+		return finishSlotRead(res, p, "")
 	case "global":
 		res.Provider = cfg["llm_provider"]
 		res.Model = cfg["llm_model_name"]

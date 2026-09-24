@@ -67,7 +67,10 @@ const (
 	DefaultLLMProvider    = "default_llm_provider"
 	AccountId             = "account_id"
 	IntegrationConfigName = "integration_config_name"
-	AuthType              = "auth_type"
+	// IntegrationID is added to the validation-only view on an update (never
+	// persisted), so ValidateConfig can recognise a reference to the row itself.
+	IntegrationID = "integration_id"
+	AuthType      = "auth_type"
 
 	// IntegrationConfigRCAWritebackEnabled is the per-tenant toggle that opts a
 	// ticketing integration (e.g. ZenDuty) into posting NudgeBee RCA analysis
@@ -396,6 +399,9 @@ func CreateIntegrationConfig(
 				Name:  IntegrationConfigName,
 				Value: integrationConfigName,
 			})
+			if isUpdate {
+				configForValidation = append(configForValidation, IntegrationConfigValue{Name: IntegrationID, Value: integrationId})
+			}
 			validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configForValidation, accId)
 			if len(validationErrors) > 0 {
 				return IntegrationDto{}, validationErrors[0]
@@ -1335,6 +1341,70 @@ func loadIntegrationConfigValues(dbms *database.DatabaseManager, integrationId s
 	return values, nil
 }
 
+// checkLLMFallbackNotReferenced blocks delete/disable of an LLM integration another one
+// uses as its fallback (#36339) — else that fallback breaks unnoticed until the outage.
+// Edits are deliberately not blocked, even ones that stop serving a referenced model:
+// the dependent goes stale, llm-server skips it at runtime ("Configured fallback
+// unavailable"), and the dependent's next save rejects it by name. Covered by
+// TestReferencedIntegrationEditLeavesDependentStaleUntilResaved.
+func checkLLMFallbackNotReferenced(tx *sqlx.Tx, integrationType, integrationId, tenantId, action string) error {
+	if integrationType != "llm" {
+		return nil
+	}
+	var name string
+	err := tx.QueryRowx(`
+		SELECT i.name FROM integrations i
+		JOIN integration_config_values icv ON icv.integration_id = i.id
+		WHERE i.tenant_id = $2::uuid AND i.type = 'llm' AND i.status = 'enabled' AND i.id <> $1::uuid
+		  AND icv.name LIKE 'llm_fallback_ref_source%'
+		  AND (icv.value = 'db:' || $1 OR icv.value LIKE 'db:' || $1 || ':%')
+		LIMIT 1
+	`, integrationId, tenantId).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("cannot %s this LLM integration: %q uses it as its fallback model. Change that integration's fallback first", action, name)
+}
+
+// LLMFallbackRefConfig returns the name & non-secret config of a referenced LLM integration
+// if accountId can use it — llm-server getLLMIntegrationsForAccount's visibility rule.
+func LLMFallbackRefConfig(tenantId, integrationId, accountId string) (string, map[string]string, error) {
+	if _, err := uuid.Parse(integrationId); err != nil {
+		return "", nil, fmt.Errorf("not an integration id: %q", integrationId)
+	}
+	if _, err := uuid.Parse(accountId); err != nil {
+		return "", nil, fmt.Errorf("not an account id: %q", accountId)
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", nil, err
+	}
+	var name string
+	err = dbms.Db.QueryRowx(`
+		SELECT i.name FROM integrations i
+		WHERE i.id = $1::uuid AND i.tenant_id = $2::uuid AND i.type = 'llm' AND i.status = 'enabled'
+		  AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id AND ia.cloud_account_id = $3::uuid)
+		       OR NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id))
+	`, integrationId, tenantId, accountId).Scan(&name)
+	if err != nil {
+		return "", nil, err
+	}
+	values, err := loadIntegrationConfigValues(dbms, integrationId)
+	if err != nil {
+		return "", nil, err
+	}
+	cfg := map[string]string{}
+	for _, v := range values {
+		if !IsLLMSecretFieldName(v.Name) {
+			cfg[v.Name] = v.Value
+		}
+	}
+	return name, cfg, nil
+}
+
 // checkWorkflowWebhookNotInUse blocks delete/disable of a workflow_webhook
 // integration when the workflow it references still exists. The frontend has
 // the same guard but is bypassable via direct GraphQL calls.
@@ -1494,6 +1564,9 @@ func DeleteIntegrationConfig(
 		return err
 	}
 
+	if err = checkLLMFallbackNotReferenced(tx, integrationType, integrationId, tenantId, "delete"); err != nil {
+		return err
+	}
 	if err = checkWorkflowWebhookNotInUse(tx, integrationType, integrationId, tenantId, "delete"); err != nil {
 		return err
 	}
@@ -1777,6 +1850,9 @@ func UpdateIntegrationConfigStatus(
 	}
 
 	if integrationStatus == "disabled" {
+		if err = checkLLMFallbackNotReferenced(tx, integrationType, integrationId, tenantId, "disable"); err != nil {
+			return err
+		}
 		if err = checkWorkflowWebhookNotInUse(tx, integrationType, integrationId, tenantId, "disable"); err != nil {
 			return err
 		}
@@ -2058,6 +2134,9 @@ func TestIntegrationConnectionByConfig(
 		slog.Warn("integrations: dual-mode type routed to K8s validation instead of proxy test",
 			"type", integrationType, "source", source)
 	}
+	if integrationID != "" {
+		configValues = append(configValues, IntegrationConfigValue{Name: IntegrationID, Value: integrationID})
+	}
 	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountID)
 	if len(validationErrors) > 0 {
 		return nil, validationErrors[0]
@@ -2067,7 +2146,11 @@ func TestIntegrationConnectionByConfig(
 	// TestableIntegration interface), run it on top of structural validation.
 	// Today only LLM uses this — for everything else this is a no-op cast and
 	// we keep the prior "validation == success" behaviour.
-	if testable, ok := integration.(TestableIntegration); ok {
+	if multi, ok := integration.(MultiAccountConnectionTester); ok {
+		if testErr := multi.TestConnectionForAccounts(ctx, configValues, accountIds); testErr != nil {
+			return nil, testErr
+		}
+	} else if testable, ok := integration.(TestableIntegration); ok {
 		if testErr := testable.TestConnection(ctx, configValues, accountID); testErr != nil {
 			return nil, testErr
 		}
