@@ -1082,6 +1082,9 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		nativeArgs := tc.FunctionCall.Arguments
 		args, actionThought := extractReact4Thought(nativeArgs)
 		args, memoryRefs := extractReact4MemoryAttribution(args)
+		// Keep the model's original arguments for replay and stable synthesized IDs,
+		// but execute with the same expanded time macros as ReAct3.
+		executionArgs := common.SubstituteDateMacros(args)
 		if actionThought == "" {
 			actionThought = thought
 		}
@@ -1120,7 +1123,7 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		}
 		actions = append(actions, NBAgentPlannerToolAction{
 			Tool:             name,
-			ToolInput:        args,
+			ToolInput:        executionArgs,
 			NativeToolInput:  nativeArgs,
 			ToolID:           id,
 			Log:              actionThought,
