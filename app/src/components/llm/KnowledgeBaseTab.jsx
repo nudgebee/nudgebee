@@ -32,6 +32,7 @@ import MentionContentInput from '@components/llm/MentionContentInput';
 import ScopeChip from '@components/llm/ScopeChip';
 import KnowledgePolicySettings from '@components/llm/KnowledgePolicySettings';
 import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/kbLoadHistoryFormat';
+import KBDocumentsModal from '@components/llm/KBDocumentsModal';
 
 const MAX_CONTENT_LENGTH = 5000;
 
@@ -1091,6 +1092,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyKB, setHistoryKB] = useState(null);
+  const [documentsKB, setDocumentsKB] = useState(null);
   const [activeTab, setActiveTab] = useState('manual');
   const [agents, setAgents] = useState([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
@@ -1451,11 +1453,23 @@ const KnowledgeBaseTab = ({ accountId }) => {
         key: 'document_count',
         label: 'Docs',
         type: 'count',
-        render: (kb) => (
-          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
-            {kb.document_count != null ? kb.document_count : '—'}
-          </Typography>
-        ),
+        render: (kb) =>
+          kb.document_count > 0 ? (
+            <Button
+              tone='link'
+              size='sm'
+              tooltip='View documents'
+              aria-label={`View ${kb.document_count} documents of knowledge base ${kb.name}`}
+              onClick={() => setDocumentsKB(kb)}
+              data-testid='kb-documents-count-btn'
+            >
+              {kb.document_count}
+            </Button>
+          ) : (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
+              {kb.document_count != null ? kb.document_count : '—'}
+            </Typography>
+          ),
       },
       ...(isTenantWide
         ? [
@@ -1939,6 +1953,18 @@ const KnowledgeBaseTab = ({ accountId }) => {
         accountId={accountId}
         kbId={historyKB?.id}
         kbName={historyKB?.name}
+      />
+
+      {/* Documents drilldown. Tenant-wide rows carry their own account_id; a
+          grouped integration row resolves to its first member, whose KB reads
+          the same shared integration collection. */}
+      <KBDocumentsModal
+        open={Boolean(documentsKB)}
+        onClose={() => setDocumentsKB(null)}
+        accountId={accountId || documentsKB?.account_id}
+        kbId={documentsKB?.id}
+        kbName={documentsKB?.name}
+        canEdit={hasAccess}
       />
     </Box>
   );

@@ -346,6 +346,24 @@ type Query {
   ): GetKBLoadHistoryResponse
 }
 
+type Query {
+  ai_list_kb_documents(
+    request: ListKBDocumentsRequest!
+  ): ListKBDocumentsResponse
+}
+
+type Query {
+  ai_get_kb_document(
+    request: GetKBDocumentRequest!
+  ): GetKBDocumentResponse
+}
+
+type Mutation {
+  ai_upsert_kb_document_category(
+    request: UpsertKBDocumentCategoryRequest!
+  ): UpsertKBDocumentCategoryResponse
+}
+
 type Mutation {
   ai_sync_kb(
     request: RetriggerKBRequest!
@@ -9395,6 +9413,62 @@ type KBLoadHistoryEntry {
 
 type GetKBLoadHistoryResponse {
   data: [KBLoadHistoryEntry]
+  errors: [Error]
+}
+
+input ListKBDocumentsRequest {
+  account_id: String!
+  kb_id: String!
+  limit: Int
+  offset: String
+}
+
+input GetKBDocumentRequest {
+  account_id: String!
+  kb_id: String!
+  document_id: String!
+}
+
+type KBDocument {
+  id: String!
+  title: String!
+  url: String
+  document_key: String!
+  note_category: String
+  content: String
+}
+
+input UpsertKBDocumentCategoryRequest {
+  account_id: String!
+  kb_id: String!
+  document_key: String!
+  note_category: String
+}
+
+type UpsertKBDocumentCategoryResult {
+  status: String
+  kb_id: String
+  document_key: String
+  note_category: String
+}
+
+type UpsertKBDocumentCategoryResponse {
+  data: UpsertKBDocumentCategoryResult
+  errors: [Error]
+}
+
+type KBDocumentsPage {
+  items: [KBDocument!]!
+  next_offset: String
+}
+
+type ListKBDocumentsResponse {
+  data: KBDocumentsPage
+  errors: [Error]
+}
+
+type GetKBDocumentResponse {
+  data: KBDocument
   errors: [Error]
 }
 

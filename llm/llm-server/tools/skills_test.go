@@ -42,6 +42,48 @@ func TestSearchSkills_CandidatesLoadExactChunks(t *testing.T) {
 	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
 }
 
+// A page marked SOP must reach the agent as a procedure however its candidate
+// was built — including load_skills naming an integration knowledge base, which
+// caches candidates without going through search_skills.
+func TestCachedCandidatesCarryDocumentMarks(t *testing.T) {
+	useLegacySkillLoading(t)
+	previous := resolveDocumentCategoriesFn
+	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs core.RAGSearchResults) core.RAGSearchResults {
+		out := make(core.RAGSearchResults, len(docs))
+		for i, doc := range docs {
+			metadata := map[string]any{}
+			for k, v := range doc.Metadata {
+				metadata[k] = v
+			}
+			if metadata["page_id"] == "101" {
+				metadata[core.DocumentNoteCategoryKey] = core.KBNoteCategorySOP
+			}
+			doc.Metadata = metadata
+			out[i] = doc
+		}
+		return out
+	}
+	t.Cleanup(func() { resolveDocumentCategoriesFn = previous })
+
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
+		AccountId: "marked-candidates-account", ConversationId: "conversation", MessageId: "message"}
+	docs := core.RAGSearchResults{
+		{Document: "runbook steps", Metadata: map[string]any{"collection": "integration-a_knowledge_base", "page_id": "101", "title": "Runbook", "url": "https://wiki.test/101"}},
+		{Document: "background", Metadata: map[string]any{"collection": "integration-a_knowledge_base", "page_id": "102", "title": "Notes", "url": "https://wiki.test/102"}},
+	}
+	results := cacheSearchKnowledgeCandidates(ctx, docs)
+	require.Len(t, results, 2)
+	var purposes []core.KnowledgeContentPurpose
+	for _, result := range results {
+		match := regexp.MustCompile(`id="(knowledge:[a-f0-9]+)"`).FindStringSubmatch(result)
+		require.Len(t, match, 2)
+		candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, match[1])
+		require.True(t, ok)
+		purposes = append(purposes, candidate.Purpose)
+	}
+	assert.Equal(t, []core.KnowledgeContentPurpose{core.KnowledgePurposeProcedure, core.KnowledgePurposeReference}, purposes)
+}
+
 func TestLoadSkillsTool_MixedValidAndExpiredCandidatesReportsMissing(t *testing.T) {
 	useLegacySkillLoading(t)
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),

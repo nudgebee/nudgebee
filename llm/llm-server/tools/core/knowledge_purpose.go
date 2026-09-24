@@ -9,7 +9,8 @@ const (
 )
 
 // KnowledgePurpose derives runtime treatment from trusted manual KB metadata.
-// Integration documents and legacy categories remain reference material.
+// Legacy categories, and integration documents nobody has marked individually,
+// remain reference material.
 func KnowledgePurpose(kbType, category string) KnowledgeContentPurpose {
 	if kbType == "manual" && category == "sop" {
 		return KnowledgePurposeProcedure
@@ -32,6 +33,17 @@ func KnowledgePurposeGuidance(purpose KnowledgeContentPurpose) string {
 }
 
 func KnowledgeDocumentPurpose(doc RAGSearchResult) KnowledgeContentPurpose {
+	// A category a user put on this exact document wins over its knowledge
+	// base's default, whatever kind of knowledge base that is: it is an
+	// explicit per-document statement, and only ResolveDocumentCategories
+	// writes this key, from the marks table. That is what makes a marked
+	// Confluence or ServiceNow page a procedure when a scraped one is not.
+	switch category, _ := doc.Metadata[DocumentNoteCategoryKey].(string); category {
+	case KBNoteCategorySOP:
+		return KnowledgePurposeProcedure
+	case KBNoteCategoryFact:
+		return KnowledgePurposeReference
+	}
 	if ManualKnowledgeID(doc) != "" {
 		category, _ := doc.Metadata["note_category"].(string)
 		return KnowledgePurpose("manual", category)

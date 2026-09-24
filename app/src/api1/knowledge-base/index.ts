@@ -33,6 +33,7 @@ interface KnowledgeBaseOutput {
  * llm_kb_agent_mappings, and every agent resolves it alongside its own name.
  */
 export const KB_AGENT_WILDCARD = '*';
+export const KB_DOCUMENTS_PAGE_SIZE = 50;
 
 interface CreateKnowledgeBasePayload {
   name: string;
@@ -706,6 +707,136 @@ const apiKnowledgeBase = {
     } catch (error) {
       console.error('Error fetching KB load history:', error);
       return { data: [], errors: [{ message: 'An error occurred while fetching load history' }] };
+    }
+  },
+
+  /**
+   * List one page of a knowledge base's stored documents (title and link, no
+   * content). Pass the returned nextOffset back to fetch the next page.
+   */
+  getKBDocuments: async (accountId: string, kbId: string, offset?: string | null) => {
+    const LIST_KB_DOCUMENTS = `
+      query ListKBDocuments($request: ListKBDocumentsRequest!) {
+        ai_list_kb_documents(request: $request) {
+          data {
+            items {
+              id
+              title
+              url
+              document_key
+              note_category
+            }
+            next_offset
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: { items: [], nextOffset: null }, errors: [] };
+      }
+      const response = await queryGraphQL(LIST_KB_DOCUMENTS, 'ListKBDocuments', {
+        request: { account_id: accountId, kb_id: kbId, limit: KB_DOCUMENTS_PAGE_SIZE, offset: offset || '' },
+      });
+      const result = response?.data?.data?.ai_list_kb_documents;
+      if (result?.errors?.length) {
+        return { data: null, errors: result.errors };
+      }
+      if (result?.data) {
+        return { data: { items: result.data.items || [], nextOffset: result.data.next_offset || null }, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to fetch documents') }] };
+    } catch (error) {
+      console.error('Error fetching KB documents:', error);
+      return { data: null, errors: [{ message: 'An error occurred while fetching documents' }] };
+    }
+  },
+
+  /**
+   * Fetch one stored document of a knowledge base with its full content.
+   */
+  getKBDocument: async (accountId: string, kbId: string, documentId: string) => {
+    const GET_KB_DOCUMENT = `
+      query GetKBDocument($request: GetKBDocumentRequest!) {
+        ai_get_kb_document(request: $request) {
+          data {
+            id
+            title
+            url
+            document_key
+            note_category
+            content
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(GET_KB_DOCUMENT, 'GetKBDocument', {
+        request: { account_id: accountId, kb_id: kbId, document_id: documentId },
+      });
+      const result = response?.data?.data?.ai_get_kb_document;
+      if (result?.errors?.length) {
+        return { data: null, errors: result.errors };
+      }
+      if (result?.data) {
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to fetch document') }] };
+    } catch (error) {
+      console.error('Error fetching KB document:', error);
+      return { data: null, errors: [{ message: 'An error occurred while fetching document' }] };
+    }
+  },
+
+  /**
+   * Mark one document of a knowledge base as a procedure ('sop') or reference
+   * material ('fact'). An empty category clears the mark.
+   *
+   * Keyed on documentKey, not the document id: ids are content hashes the next
+   * sync replaces, so a mark stored against one would quietly detach.
+   */
+  setKBDocumentCategory: async (accountId: string, kbId: string, documentKey: string, noteCategory: string) => {
+    const SET_KB_DOCUMENT_CATEGORY = `
+      mutation UpsertKBDocumentCategory($request: UpsertKBDocumentCategoryRequest!) {
+        ai_upsert_kb_document_category(request: $request) {
+          data {
+            status
+            document_key
+            note_category
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(SET_KB_DOCUMENT_CATEGORY, 'UpsertKBDocumentCategory', {
+        request: { account_id: accountId, kb_id: kbId, document_key: documentKey, note_category: noteCategory },
+      });
+      const result = response?.data?.data?.ai_upsert_kb_document_category;
+      if (result?.errors?.length) {
+        return { data: null, errors: result.errors };
+      }
+      if (result?.data) {
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to update document category') }] };
+    } catch (error) {
+      console.error('Error setting KB document category:', error);
+      return { data: null, errors: [{ message: 'An error occurred while updating the document category' }] };
     }
   },
 

@@ -1391,6 +1391,44 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
     comment: Get load history for a knowledge base
+  - name: ai_list_kb_documents
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: List a page of the stored documents of a knowledge base (title and link)
+  - name: ai_get_kb_document
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: Get one stored document of a knowledge base with its content
+  - name: ai_upsert_kb_document_category
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Mark one document of a knowledge base as a procedure (sop) or reference material (fact)
   - name: ai_list_kb_retrieval
     definition:
       kind: "synchronous"
