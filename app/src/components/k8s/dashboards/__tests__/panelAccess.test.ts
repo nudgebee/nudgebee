@@ -41,6 +41,7 @@ describe('missingDatasourceGrant', () => {
     expect(missingDatasourceGrant('redis')).toBe('dashboards:Execute');
     expect(missingDatasourceGrant('rabbitmq')).toBe('dashboards:Execute');
     expect(missingDatasourceGrant('postgresql')).toBe('dashboards:Execute');
+    expect(missingDatasourceGrant('kubectl')).toBe('dashboards:Execute');
     expect(missingDatasourceGrant('nudgebee')).toBe('dashboards:Execute');
   });
 
@@ -58,7 +59,7 @@ describe('missingDatasourceGrant', () => {
 
   it('gates nothing for a user with a built-in role', () => {
     builtInRoleUser();
-    for (const datasource of ['metrics', 'logs', 'traces', 'redis', 'rabbitmq', 'postgresql', 'nudgebee']) {
+    for (const datasource of ['metrics', 'logs', 'traces', 'redis', 'rabbitmq', 'postgresql', 'kubectl', 'nudgebee']) {
       expect(missingDatasourceGrant(datasource)).toBeUndefined();
     }
   });

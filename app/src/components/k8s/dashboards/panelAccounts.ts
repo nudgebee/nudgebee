@@ -1,4 +1,5 @@
 import type { AccountOption, Panel } from '@api1/dashboards';
+import { isDisabledAccount } from './panelProviders';
 
 /** The account-scope half of a panel — what the editor commits on save. */
 export type PanelScope = Pick<Panel, 'account_type' | 'account_ids'>;
@@ -58,6 +59,41 @@ export function panelScope(accountType: string, accountIds: string[]): PanelScop
 }
 
 /** Every account belonging to any of these providers, in account-list order. */
+/** One row of the editor's Accounts picker. */
+export interface AccountPickerOption {
+  label: string;
+  value: string;
+  /** The provider its section is headed by, when the picker spans more than one. */
+  group: string;
+}
+
+/**
+ * The Accounts picker's rows for the chosen provider types.
+ *
+ * Sectioned by provider rather than suffixed with it: "aws-demo (AWS)" repeated
+ * down a mixed list makes the reader parse the same word on every row to find
+ * the two that differ, and the provider is the first thing you filter by when a
+ * panel spans two of them. The section header carries it once, so the row is
+ * back to being just the account's name.
+ *
+ * Sorted by provider then name so the sections have a stable order and the rows
+ * inside one are scannable; the picker re-sorts selected rows to the top of
+ * their own section on open.
+ *
+ * A disabled account stays listed and says so. It is a legitimate thing to leave
+ * on a saved panel while it is temporarily off, and a genuinely disabled OPTION
+ * in a multi-select cannot be deselected once chosen.
+ */
+export function accountPickerOptions(types: string[], accounts: AccountOption[]): AccountPickerOption[] {
+  return accountsOfTypes(types, accounts)
+    .map((o) => ({
+      label: isDisabledAccount(o) ? `${o.label} — disabled` : o.label,
+      value: o.value,
+      group: o.cloud_provider,
+    }))
+    .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+}
+
 export function accountsOfTypes(types: string[], accounts: AccountOption[]): AccountOption[] {
   const wanted = new Set(types.filter(Boolean));
   return accounts.filter((a) => wanted.has(a.cloud_provider));

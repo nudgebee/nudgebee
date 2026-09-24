@@ -2594,7 +2594,7 @@ actions:
       - role: tenant_admin
       - role: account_admin
   - name: dashboards_execute_query
-    comment: Run one dashboard panel's read-only redis/rabbitmq command against an account (server enforces a read-only command allowlist plus account read access)
+    comment: Run one dashboard panel's read-only redis/rabbitmq/postgresql/kubectl command against an account (server enforces a read-only command allowlist plus account read access)
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/dashboard'

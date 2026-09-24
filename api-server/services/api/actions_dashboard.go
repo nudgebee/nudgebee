@@ -283,10 +283,10 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 		c.JSON(200, resp)
 		return
 
-	// Runs a read-only redis / rabbitmq command for one panel. Unlike the other
-	// dashboard actions this reaches into the account's cluster, so it takes the
-	// account check directly rather than relying on the per-panel provider call
-	// to 403 later.
+	// Runs a read-only redis / rabbitmq / postgresql / kubectl command for one
+	// panel. Unlike the other dashboard actions this reaches into the account's
+	// cluster, so it takes the account check directly rather than relying on the
+	// per-panel provider call to 403 later.
 	case "dashboards_execute_query":
 		var req dashboard.ExecuteQueryRequest
 		if err := common.UnmarshalMapToStruct(input, &req); err != nil {

@@ -409,7 +409,7 @@ export function usePanelData({
       return stop;
     }
 
-    // redis / rabbitmq run a command through the relay instead of querying a provider.
+    // redis / rabbitmq / postgresql / kubectl run a command through the relay instead of querying a provider.
     if (isCommandDatasource(panel.datasource)) {
       setLoading(true);
       setError(null);

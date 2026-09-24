@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
@@ -35,6 +35,15 @@ type ImportFormat = 'nudgebee' | 'grafana';
 const KEEP = 'keep';
 
 /**
+ * Cap on an uploaded file. The editor holds the whole text and the conversion
+ * re-runs on every change, so an oversized file freezes the modal rather than
+ * failing cleanly — every dashboard this app exports is orders of magnitude
+ * smaller than this.
+ */
+const MAX_UPLOAD_MB = 2;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+/**
  * Imports a dashboard from pasted JSON — either a Grafana export or a file
  * exported from here.
  *
@@ -52,6 +61,16 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
   const [saving, setSaving] = useState(false);
   /** Source scope key → chosen target, as the encoded value of the row's Select. */
   const [mappingChoice, setMappingChoice] = useState<Record<string, string>>({});
+  /** Name of the file the editor was last filled from, so a mis-pick is visible. */
+  const [fileName, setFileName] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * Bumped by every upload and every reset. A `FileReader` finishes a tick or
+   * more after the pick, and this modal stays mounted between openings, so a
+   * read that lands after Cancel would otherwise re-fill a modal the user just
+   * cleared — and re-arm Import with content they never chose this time.
+   */
+  const uploadSeq = useRef(0);
 
   const accountTypes = useMemo(() => {
     const seen = new Set<string>();
@@ -182,8 +201,43 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
     }
   }, [json, format, accountType, accountIds, baseTitle, mappings]);
 
+  /**
+   * Fills the editor from a picked file. An upload is another way to fill the
+   * same textarea rather than a second import path, so everything downstream —
+   * format toggle, preview, warnings, mapping rows — is untouched.
+   *
+   * The name is checked as well as the MIME type: `accept` is only a hint the
+   * file dialog may be told to ignore ("All files"), and a `.json` file arrives
+   * with an empty `type` on some platforms.
+   */
+  const handleFileUpload = (file: File | undefined) => {
+    if (!file) return;
+    if (!/\.json$/i.test(file.name) && file.type !== 'application/json') {
+      snackbar.error('Only a .json file can be uploaded.');
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      snackbar.error(`"${file.name}" is larger than ${MAX_UPLOAD_MB} MB. Paste the dashboard instead.`);
+      return;
+    }
+    const seq = ++uploadSeq.current;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (seq !== uploadSeq.current) return;
+      setJson(String(reader.result ?? ''));
+      setFileName(file.name);
+    };
+    reader.onerror = () => {
+      if (seq !== uploadSeq.current) return;
+      snackbar.error(`Could not read "${file.name}".`);
+    };
+    reader.readAsText(file);
+  };
+
   const reset = () => {
+    uploadSeq.current += 1;
     setJson('');
+    setFileName('');
     setFormat('nudgebee');
     setAccountType('');
     setAccountIds([]);
@@ -255,6 +309,7 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
       title='Import dashboard'
       width='md'
       backdropClickClose={false}
+      loader={saving}
       actionButtons={
         // Full width so the reason can sit left of the buttons — DialogActions
         // right-aligns its single child.
@@ -302,11 +357,40 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
               onChange={(next) => setFormat(next as ImportFormat)}
               id='import-format-toggle'
             />
+            <Button
+              tone='secondary'
+              size='sm'
+              onClick={() => fileInputRef.current?.click()}
+              id='import-upload-json-btn'
+              data-testid='import-upload-json-btn'
+            >
+              Upload JSON file
+            </Button>
+            {/* Hidden rather than styled: a native file input cannot be given DS
+                chrome, and `accept` still narrows what the picker offers. */}
+            <input
+              ref={fileInputRef}
+              type='file'
+              accept='application/json,.json'
+              hidden
+              data-testid='import-json-file-input'
+              onChange={(e) => {
+                handleFileUpload(e.target.files?.[0]);
+                // Cleared so re-picking the SAME file fires `change` again —
+                // uploading again after editing the text is a real case.
+                e.target.value = '';
+              }}
+            />
+            {fileName && (
+              <Typography variant='caption' sx={{ color: ds.gray[500] }} data-testid='import-file-name' noWrap title={fileName}>
+                Loaded {fileName}
+              </Typography>
+            )}
           </Stack>
           <Typography variant='caption' sx={{ color: ds.gray[500] }}>
             {format === 'grafana'
-              ? "Paste the output of Grafana's Share → Export → View JSON. Only Prometheus panels come across."
-              : 'Paste a dashboard or a single panel exported from the listing or a panel’s menu.'}
+              ? "Paste the output of Grafana's Share → Export → View JSON, or upload the saved file. Only Prometheus panels come across."
+              : 'Paste — or upload — a dashboard or a single panel exported from the listing or a panel’s menu.'}
           </Typography>
           <CodeEditor
             value={json}
