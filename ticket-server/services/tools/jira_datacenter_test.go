@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"nudgebee/tickets-server/models"
 	"reflect"
+	"strings"
 	"testing"
 
 	jira "github.com/andygrunwald/go-jira"
@@ -23,9 +25,10 @@ func mustEqual(t *testing.T, what string, got, want interface{}) {
 // either deployment. Unknown paths redirect to the login page, which is how
 // Data Center answers endpoints it lacks.
 type fakeJira struct {
-	cloud   bool
-	hits    map[string]int
-	lastPUT map[string]interface{}
+	cloud       bool
+	hits        map[string]int
+	lastPUT     map[string]interface{}
+	searchPages []interface{}
 }
 
 func (f *fakeJira) handler(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +51,26 @@ func (f *fakeJira) handler(w http.ResponseWriter, r *http.Request) {
 		default:
 			_, _ = w.Write([]byte(`[]`))
 		}
+	case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search/jql" && f.cloud:
+		var body struct {
+			MaxResults    int    `json:"maxResults"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		f.searchPages = append(f.searchPages, body.MaxResults)
+		// Four issues served two per page regardless of the requested size.
+		switch body.NextPageToken {
+		case "":
+			_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-1","fields":{"summary":"a"}},{"key":"PROJ-2","fields":{"summary":"b"}}],"nextPageToken":"p2"}`))
+		case "p2":
+			_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-3","fields":{"summary":"c"}},{"key":"PROJ-4","fields":{"summary":"d"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	case r.Method == http.MethodGet && r.URL.Path == "/rest/api/2/search" && !f.cloud:
+		f.searchPages = append(f.searchPages, r.URL.Query().Get("startAt")+"/"+r.URL.Query().Get("maxResults"))
+		_, _ = w.Write([]byte(`{"startAt":2,"maxResults":2,"total":7,"issues":[{"key":"PROJ-3","fields":{"summary":"c"}},{"key":"PROJ-4","fields":{"summary":"d"}}]}`))
 	case r.Method == http.MethodPut && r.URL.Path == "/rest/api/2/issue/PROJ-1":
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &f.lastPUT)
@@ -186,4 +209,97 @@ func TestFetchJiraPages_FailsWhenPagingNeverEnds(t *testing.T) {
 		t.Fatal("expected an error when paging never reports isLast")
 	}
 	mustEqual(t, "requests made", calls, 50)
+}
+
+func listKeys(t *models.ListResult) []string {
+	keys := make([]string, 0, len(t.Tickets))
+	for _, tk := range t.Tickets {
+		keys = append(keys, tk.TicketID)
+	}
+	return keys
+}
+
+func TestJiraList_CloudWalksCursorToServeOffsetWindow(t *testing.T) {
+	tests := []struct {
+		name          string
+		offset, limit int
+		wantKeys      []string
+		wantHasMore   bool
+		wantTotal     int
+		wantRequests  int
+	}{
+		{"window inside first page", 0, 1, []string{"PROJ-1"}, true, 0, 1},
+		{"window spans pages", 1, 2, []string{"PROJ-2", "PROJ-3"}, true, 0, 2},
+		{"window reaches the end", 2, 2, []string{"PROJ-3", "PROJ-4"}, false, 4, 2},
+		{"offset beyond the end", 6, 2, []string{}, false, 4, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, ts := startFakeJira(t, true)
+			config := models.TicketConfigurations{URL: ts.URL, Username: "u", Password: "p"}
+
+			got, err := (&JiraService{}).List(nil, config, models.ListParams{ProjectKey: "PROJ", Offset: tt.offset, Limit: tt.limit})
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			mustEqual(t, "keys", listKeys(got), tt.wantKeys)
+			mustEqual(t, "has_more", got.HasMore, tt.wantHasMore)
+			mustEqual(t, "total", got.Total, tt.wantTotal)
+			mustEqual(t, "search requests", len(f.searchPages), tt.wantRequests)
+			mustEqual(t, "legacy search never called", f.hits["/rest/api/2/search"], 0)
+		})
+	}
+}
+
+func TestJiraList_DataCenterUsesOffsetSearch(t *testing.T) {
+	f, ts := startFakeJira(t, false)
+	config := models.TicketConfigurations{URL: ts.URL, Username: "u", Password: "p"}
+
+	got, err := (&JiraService{}).List(nil, config, models.ListParams{ProjectKey: "PROJ", Offset: 2, Limit: 2})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	mustEqual(t, "keys", listKeys(got), []string{"PROJ-3", "PROJ-4"})
+	mustEqual(t, "total", got.Total, 7)
+	mustEqual(t, "has_more", got.HasMore, true)
+	mustEqual(t, "search request", f.searchPages, []interface{}{"2/2"})
+	mustEqual(t, "cloud search never called", f.hits["/rest/api/2/search/jql"], 0)
+}
+
+func TestUsersToFieldValues_DataCenterIdentityAndEmailLookup(t *testing.T) {
+	f, ts := startFakeJira(t, false)
+	client, err := jira.NewClient(ts.Client(), ts.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	// A picker result without an email, as privacy settings can hide it.
+	resp := &jira.Response{Response: &http.Response{Body: io.NopCloser(strings.NewReader(`[{"name":"jdoe","displayName":"jdoe@example.com"}]`))}}
+
+	got, err := usersToFieldValues(client, resp, nil)
+	if err != nil {
+		t.Fatalf("usersToFieldValues: %v", err)
+	}
+	mustEqual(t, "values", got, []models.FieldValue{{ID: "jdoe", Name: "jdoe@example.com", Value: "jdoe@example.com"}})
+	mustEqual(t, "lookup used the data center parameter", f.hits["/rest/api/2/user/search"], 1)
+}
+
+func TestSearchJiraCloudPage_FailsWhenOffsetIsBeyondThePageCap(t *testing.T) {
+	calls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		// One issue per page with a cursor that never ends.
+		_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-1"}],"nextPageToken":"more"}`))
+	}))
+	defer ts.Close()
+	client, err := jira.NewClient(ts.Client(), ts.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	issues, hasMore, _, err := searchJiraCloudPage(context.Background(), client, "project = PROJ", 50, 10)
+	if err == nil {
+		t.Fatalf("expected an error, got %d issues has_more=%v", len(issues), hasMore)
+	}
+	mustEqual(t, "pages walked before giving up", calls, 20)
 }

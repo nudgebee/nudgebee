@@ -883,7 +883,11 @@ func handleV2ListTickets(ctx core.NbToolContext, req TicketV2OperationRequest) (
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Found %d ticket(s) (showing %d–%d):\n\n", result.Total, result.Offset+1, result.Offset+len(result.Tickets))
+	if result.Total > 0 {
+		fmt.Fprintf(&sb, "Found %d ticket(s) (showing %d–%d):\n\n", result.Total, result.Offset+1, result.Offset+len(result.Tickets))
+	} else {
+		fmt.Fprintf(&sb, "Showing tickets %d–%d:\n\n", result.Offset+1, result.Offset+len(result.Tickets))
+	}
 
 	for _, t := range result.Tickets {
 		fmt.Fprintf(&sb, "- **%s** — %s", t.TicketID, t.Title)
@@ -902,7 +906,7 @@ func handleV2ListTickets(ctx core.NbToolContext, req TicketV2OperationRequest) (
 		sb.WriteString("\n")
 	}
 
-	if result.Total > result.Offset+len(result.Tickets) {
+	if result.HasMore || result.Total > result.Offset+len(result.Tickets) {
 		fmt.Fprintf(&sb, "\n_Use offset=%d to see the next page._", result.Offset+len(result.Tickets))
 	}
 
@@ -1506,6 +1510,7 @@ type ticketServerListResponse struct {
 	Total   int                    `json:"total"`
 	Limit   int                    `json:"limit"`
 	Offset  int                    `json:"offset"`
+	HasMore bool                   `json:"has_more"`
 	Error   string                 `json:"error,omitempty"`
 }
 

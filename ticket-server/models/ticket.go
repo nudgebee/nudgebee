@@ -189,12 +189,15 @@ type ListParams struct {
 	SortOrder     string `json:"sort_order,omitempty"`     // "asc" or "desc" (default: "desc")
 }
 
-// ListResult is the normalized response from listing tickets.
+// ListResult is the normalized response from listing tickets. HasMore is the
+// authoritative "another page exists" signal; Total is 0 when the platform
+// cannot count the full result set cheaply (cursor-paged APIs).
 type ListResult struct {
 	Tickets []Ticket `json:"tickets"`
 	Total   int      `json:"total"`
 	Limit   int      `json:"limit"`
 	Offset  int      `json:"offset"`
+	HasMore bool     `json:"has_more"`
 }
 
 // ListTicketsRequest is the request payload for the list tickets endpoint.
