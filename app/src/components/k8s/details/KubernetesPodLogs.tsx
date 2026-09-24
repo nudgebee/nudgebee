@@ -38,7 +38,6 @@ const KubernetesPodLogs: React.FC<KubernetesPodLogsProps> = ({ podData }) => {
       }
       isFirstCallRef.current = false;
       if (accountId && Object.keys(query).length > 0) {
-        setText((prevText) => prevText.replace('No newer logs at this moment', ''));
         setLoading(true);
         const requestBody = {
           no_sinks: true,
@@ -49,7 +48,6 @@ const KubernetesPodLogs: React.FC<KubernetesPodLogsProps> = ({ podData }) => {
               name: query.subject_name,
               namespace: query.subject_namespace,
               previous: getPrevious,
-              since_time: isFirstCallRef.current ? undefined : interval,
               container_name: selectedContainer,
             },
             origin: 'Nudgebee UI',
@@ -61,6 +59,11 @@ const KubernetesPodLogs: React.FC<KubernetesPodLogsProps> = ({ podData }) => {
             if (res?.data?.success) {
               const sampleFileName = query.subject_namespace + '_' + query.subject_name + '_' + Date.now();
               const findings = res?.data.findings;
+              // logs_enricher returns the container's full log snapshot on every call, so each
+              // response replaces the view. Appending stacked a fresh full copy on every refresh
+              // (the same startup banner + warnings piling up over and over).
+              let snapshot = '';
+              let hasSnapshot = false;
               if (findings && findings.length > 0) {
                 for (const element of findings) {
                   if (element?.evidence.length > 0) {
@@ -71,8 +74,8 @@ const KubernetesPodLogs: React.FC<KubernetesPodLogsProps> = ({ podData }) => {
                           if (d.type === 'gz') {
                             setFileName(d?.filename || sampleFileName);
                             const gzippedDataBuffer = Buffer.from(d.data.slice(2, -1), 'base64');
-                            const decompressedData = zlib.unzipSync(gzippedDataBuffer).toString('utf8');
-                            setText((prevText) => prevText + decompressedData);
+                            snapshot += zlib.unzipSync(gzippedDataBuffer).toString('utf8');
+                            hasSnapshot = true;
                             break;
                           }
                         }
@@ -80,13 +83,15 @@ const KubernetesPodLogs: React.FC<KubernetesPodLogsProps> = ({ podData }) => {
                     }
                   }
                 }
-              } else {
-                setText((prevText) => {
-                  if (!prevText.includes('No newer logs at this moment')) {
-                    return prevText.concat('No newer logs at this moment');
-                  }
-                  return prevText;
-                });
+              }
+              // Keep the logs already on screen when an auto-refresh poll (interval > 0) comes back
+              // empty, but clear them on an initial or manual fetch (interval undefined — e.g.
+              // toggling Get Previous Logs when there are none) so the previous state's logs aren't
+              // left on screen as if they were the requested ones.
+              if (hasSnapshot) {
+                setText(snapshot);
+              } else if (!interval) {
+                setText('');
               }
             } else {
               setErrorMsg('Failed to fetch Logs');
