@@ -27,6 +27,7 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
+import SearchIcon from '@mui/icons-material/Search';
 import BackButton from '@shared/buttons/BackButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -40,6 +41,7 @@ import PanelEditorModal from './PanelEditorModal';
 import PanelLibraryModal from './PanelLibraryModal';
 import { blankPanel, panelSpan } from './panelDefaults';
 import { resolvePanelAccounts } from './panelAccounts';
+import { PANEL_PARAM, withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -66,6 +68,9 @@ const APP_HEADER_HEIGHT = `calc(${ds.space.mul(0, 28)} + 2px)`;
 
 /** Gap between panels, in px. */
 const GRID_GAP = 10;
+
+/** How long a panel stays outlined after a jump lands on it. */
+const HIGHLIGHT_MS = 2000;
 
 /**
  * Where the author was headed when the unsaved-changes prompt stopped them.
@@ -189,6 +194,60 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const [pendingDelete, setPendingDelete] = useState<Panel | null>(null);
   /** The panel under the cursor mid-drag; drives the DragOverlay. */
   const [activeId, setActiveId] = useState<number | null>(null);
+
+  /*
+   * Jumping to a panel — from the toolbar's picker, or a link carrying the panel parameter. A dashboard of a
+   * few dozen panels is several screens tall, and scrolling for one by eye is the slow way to find it.
+   */
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const [highlightedId, setHighlightedId] = useState<number | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The linked panel already scrolled to, so the link is followed once. */
+  const followedLink = useRef('');
+  useEffect(
+    () => () => {
+      if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    },
+    []
+  );
+
+  const scrollToPanel = useCallback((id: number) => {
+    const node = gridRef.current?.querySelector<HTMLElement>(`[data-testid="sortable-panel-${id}"]`);
+    if (!node) return;
+    // Lands below the sticky toolbar rather than under it: where the bar sits once stuck (its `top`), plus its
+    // height — measured, because it wraps on narrow screens. Not its current edge, which is lower until it sticks.
+    const toolbar = toolbarRef.current;
+    const stuckBottom = toolbar ? (parseFloat(window.getComputedStyle(toolbar).top) || 0) + toolbar.offsetHeight : 0;
+    node.style.scrollMarginTop = `${stuckBottom + GRID_GAP}px`;
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // The outline says which of the panels now on screen was the one asked for.
+    setHighlightedId(id);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightedId(null), HIGHLIGHT_MS);
+  }, []);
+
+  /** Jumps, and names the panel in the URL so the address bar is a link to it. */
+  const jumpToPanel = (id: number) => {
+    scrollToPanel(id);
+    // Already there — the link effect below must not scroll to it a second time when the URL catches up.
+    followedLink.current = String(id);
+    // `replace`: a jump is moving around one page, not a step Back should walk through.
+    const url = new URL(withPanelParam(window.location.href, String(id)));
+    router.replace(`${url.pathname}${url.search}${url.hash}`, undefined, { shallow: true, scroll: false });
+  };
+
+  // A link naming a panel scrolls to it once the dashboard has drawn — once, so a later render (a refresh,
+  // leaving edit mode) does not yank the viewer back to it.
+  const linkedPanel = router.isReady && typeof router.query[PANEL_PARAM] === 'string' ? (router.query[PANEL_PARAM] as string) : '';
+  useEffect(() => {
+    if (!linkedPanel || editing || followedLink.current === linkedPanel) return undefined;
+    const target = savedPanels.find((p) => String(p.id) === linkedPanel);
+    if (!target) return undefined;
+    followedLink.current = linkedPanel;
+    // One frame, so the grid has laid out before it is measured.
+    const frame = requestAnimationFrame(() => scrollToPanel(target.id));
+    return () => cancelAnimationFrame(frame);
+  }, [linkedPanel, editing, savedPanels, scrollToPanel]);
 
   /** Writes the dashboard back. */
   const persist = async (change: { title?: string; description?: string; panels?: Panel[] }): Promise<boolean> => {
@@ -492,6 +551,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           editing={editing}
           forceLoad={capturing}
           resizing={resizingId === panel.id}
+          highlighted={highlightedId === panel.id}
           onResizeStart={resizeFrom}
           onEdit={canEdit ? openPanelEditor : undefined}
           onDelete={requestDelete}
@@ -546,6 +606,26 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     <Stack direction='row' gap={1} alignItems='center'>
       {!editing && (
         <>
+          {/* A menu, not a filter: picking a panel moves the page to it and leaves every panel showing. */}
+          {panels.length > 1 && (
+            <DropdownMenu
+              align='end'
+              searchable
+              searchPlaceholder='Search panels…'
+              minWidth={280}
+              trigger={
+                <Button tone='secondary' icon={<SearchIcon sx={{ fontSize: 16 }} />} id='dashboard-jump-btn' data-testid='dashboard-jump-btn'>
+                  Jump to panel
+                </Button>
+              }
+              items={panels.map((p) => ({
+                id: `jump-to-panel-${p.id}`,
+                label: p.title || 'Untitled panel',
+                searchText: `${p.title || ''} ${p.description || ''}`,
+                onSelect: () => jumpToPanel(p.id),
+              }))}
+            />
+          )}
           {accountFilterOptions.length > 1 && (
             <FilterDropdown
               id='dashboard-account-filter'
@@ -636,6 +716,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
        * below it so the two read as one piece of chrome.
        */}
       <Box
+        ref={toolbarRef}
         id='dashboard-toolbar'
         sx={{
           position: 'sticky',

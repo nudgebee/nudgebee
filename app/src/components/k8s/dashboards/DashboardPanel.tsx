@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Typography } from '@mui/material';
 import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import LinkIcon from '@mui/icons-material/Link';
 import Chart from '@ui/Chart';
 import { Chip } from '@ui/Chip';
 import { Link } from '@ui/Link';
@@ -28,6 +29,7 @@ import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, typ
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
 import { consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
+import { withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
 
 /** Plot height, excluding the legend the chart renders beneath it. */
@@ -220,11 +222,12 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // A text panel has nothing to fetch, so Refresh would be a no-op on it — but it is still editable, so the
   // menu itself is not conditional on the type.
   const menuItems = React.useMemo(() => {
-    const items: { id: string; label: string; icon: unknown }[] = [];
+    const items: { id: string; label: string; icon?: unknown; reactIcon?: React.ReactNode }[] = [];
     if (panel.type !== 'text') items.push({ id: 'refresh', label: 'Refresh', icon: RefreshIcon });
     if (onEdit) items.push({ id: 'edit', label: 'Edit', icon: writeIconLight });
     items.push({ id: 'export', label: 'Export JSON', icon: downloadIcon });
     if (panel.type !== 'text') items.push({ id: 'export-png', label: 'Export PNG', icon: downloadIcon });
+    items.push({ id: 'copy-link', label: 'Copy link', reactIcon: <LinkIcon sx={{ fontSize: 18 }} /> });
     return items;
   }, [panel.type, onEdit]);
 
@@ -240,6 +243,16 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     } catch (err) {
       console.error('panel export failed', err);
       snackbar.error('Could not export this panel as an image.');
+    }
+  };
+
+  /** The page's own address, naming this panel — opening it scrolls straight here. */
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(withPanelParam(window.location.href, String(panel.id)));
+      snackbar.success('Link to this panel copied.');
+    } catch {
+      snackbar.error('Could not copy the link.');
     }
   };
 
@@ -693,6 +706,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
                 // dashboard's `panels` array, account scope and all.
                 if (item?.id === 'export') downloadJsonFile(panel, `${filenameSlug(panel.title, 'panel')}-panel`);
                 if (item?.id === 'export-png') exportPng();
+                if (item?.id === 'copy-link') copyLink();
               }}
             />
           </Box>
