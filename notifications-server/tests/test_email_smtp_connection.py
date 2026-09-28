@@ -57,6 +57,8 @@ def _message():
         ("auto", "465", "ssl"),
         ("auto", "587", "starttls"),
         ("auto", "25", None),
+        ("auto", 465, "ssl"),
+        ("auto", 587, "starttls"),
         ("none", "25", "none"),
         ("NONE", "25", "none"),
         (" starttls ", "2525", "starttls"),

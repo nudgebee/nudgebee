@@ -31,6 +31,7 @@ def _resolve_tls_mode(port):
         return mode
     if mode != TLS_AUTO:
         return None
+    port = str(port)
     if port == SMTP_SSL_PORT:
         return TLS_SSL
     if port == SMTP_STARTTLS_PORT:
