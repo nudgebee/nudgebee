@@ -16,6 +16,7 @@ from notifications_server.emailer.template_params import get_default_template
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr, parseaddr
 from dateutil import parser
 
 LOG = logging.getLogger(__name__)
@@ -131,6 +132,14 @@ def _generate_context(template_params):
     return update_template(default_template, template_params)
 
 
+def format_from_header(frm):
+    """Apply EMAIL_FROM_NAME as the display name when set; otherwise return the address unchanged."""
+    name = settings.email.from_name
+    if not name or not frm:
+        return frm
+    return formataddr((name, parseaddr(frm)[1] or frm))
+
+
 def generate_email(
     to,
     subject,
@@ -150,7 +159,7 @@ def generate_email(
     """
     msg = MIMEMultipart("related")
     msg["Subject"] = subject
-    msg["From"] = frm
+    msg["From"] = format_from_header(frm)
     msg["To"] = ", ".join(to) if isinstance(to, list) else to
     if cc:
         msg["Cc"] = ", ".join(cc) if isinstance(cc, list) else cc

@@ -208,9 +208,11 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 |---|---|
 | `EMAIL_SERVER_HOST` | SMTP host |
 | `EMAIL_SERVER_PORT` | SMTP port |
-| `EMAIL_SERVER_USER` | SMTP username |
-| `EMAIL_SERVER_PASSWORD` | SMTP password |
+| `EMAIL_SERVER_TLS` | `auto` (default: SSL on 465, STARTTLS on 587), `ssl`, `starttls`, or `none` for a plain-SMTP relay |
+| `EMAIL_SERVER_USER` | SMTP username (optional; leave empty for relays that don't require auth) |
+| `EMAIL_SERVER_PASSWORD` | SMTP password (optional) |
 | `EMAIL_FROM` | Default From address |
+| `EMAIL_FROM_NAME` | Optional display name for the From header |
 | `EMAIL_MAX_CONCURRENT_SENDS` | Concurrency limit (default 10) |
 
 ### Upstream service URLs

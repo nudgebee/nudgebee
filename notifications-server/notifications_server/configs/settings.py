@@ -596,6 +596,9 @@ class EmailSettings(BaseSettings):
     server_user: str = Field("", validation_alias=AliasChoices("EMAIL_SERVER_USER", "email_server_user"))
     server_password: str = Field("", validation_alias=AliasChoices("EMAIL_SERVER_PASSWORD", "email_server_password"))
     from_address: str = Field("", validation_alias=AliasChoices("EMAIL_FROM", "email_from"))
+    from_name: str = Field("", validation_alias=AliasChoices("EMAIL_FROM_NAME", "email_from_name"))
+    # auto | ssl | starttls | none. "auto" picks SSL for 465 and STARTTLS for 587.
+    server_tls: str = Field("auto", validation_alias=AliasChoices("EMAIL_SERVER_TLS", "email_server_tls"))
     max_concurrent_sends: int = Field(
         10, validation_alias=AliasChoices("EMAIL_MAX_CONCURRENT_SENDS", "email_max_concurrent_sends")
     )
@@ -604,8 +607,8 @@ class EmailSettings(BaseSettings):
 
     @property
     def is_configured(self) -> bool:
-        """Check if SMTP is configured."""
-        return bool(self.server_host and self.server_user and self.server_password and self.from_address)
+        """Check if SMTP is configured. Credentials are optional for relays that don't require auth."""
+        return bool(self.server_host and self.from_address)
 
     def get_smtp_params(self) -> Optional[List[str]]:
         """Return SMTP params in legacy format for backward compatibility."""
