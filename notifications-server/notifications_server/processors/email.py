@@ -7,6 +7,7 @@ from notifications_server.configs.settings import get_smtp_params, settings
 from notifications_server.exceptions.common_exc import WrongArgumentsException
 from notifications_server.processors.base import BaseProcessor
 from notifications_server.emailer import (
+    format_from_header,
     generate_email,
     generate_event_template_params,
     render_template_html,
@@ -52,7 +53,7 @@ class EmailProcessor(BaseProcessor):
         for email_address in email_list:
             msg = MIMEMultipart("related")
             msg["Subject"] = subject
-            msg["From"] = from_email
+            msg["From"] = format_from_header(from_email)
             msg["To"] = email_address
             if reply_to_email:
                 msg["reply-to"] = reply_to_email

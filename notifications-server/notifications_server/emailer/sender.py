@@ -4,33 +4,74 @@ import smtplib
 import ssl
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from email.utils import getaddresses
+from email.utils import getaddresses, parseaddr
 
 from notifications_server.configs.settings import get_smtp_params, settings
 from notifications_server.utils.encode_utils import is_valid_port
 
 LOG = logging.getLogger(__name__)
 
-# SMTP ports for the two supported secure connection types.
+# Default ports used to infer the connection type when EMAIL_SERVER_TLS is "auto".
 SMTP_SSL_PORT = "465"
 SMTP_STARTTLS_PORT = "587"
 
+TLS_AUTO = "auto"
+TLS_SSL = "ssl"
+TLS_STARTTLS = "starttls"
+TLS_NONE = "none"
+
+# Bounds every blocking socket operation so an unresponsive server can't pin an email worker thread.
+SMTP_TIMEOUT_SECONDS = 60
+
+
+def _resolve_tls_mode(port):
+    """Return the connection type for this send, or None when it can't be determined."""
+    mode = (settings.email.server_tls or TLS_AUTO).strip().lower()
+    if mode in (TLS_SSL, TLS_STARTTLS, TLS_NONE):
+        return mode
+    if mode != TLS_AUTO:
+        return None
+    if port == SMTP_SSL_PORT:
+        return TLS_SSL
+    if port == SMTP_STARTTLS_PORT:
+        return TLS_STARTTLS
+    return None
+
 
 def _create_smtp_connection(server, port, context):
-    """Create an SMTP connection for the given port.
+    """Create an SMTP connection using the configured EMAIL_SERVER_TLS mode.
 
     Returns a connected ``smtplib.SMTP``/``SMTP_SSL`` instance (with STARTTLS
-    already negotiated for port 587), or ``None`` when the port is not one of
-    the supported secure ports (465 for implicit SSL, 587 for STARTTLS).
+    already negotiated when requested), or ``None`` when the mode is invalid or
+    is "auto" with a port other than 465/587.
     """
-    if port == SMTP_SSL_PORT:
-        return smtplib.SMTP_SSL(server, port, context=context)
-    if port == SMTP_STARTTLS_PORT:
-        smtp_server = smtplib.SMTP(server, port)
+    mode = _resolve_tls_mode(port)
+    if mode == TLS_SSL:
+        return smtplib.SMTP_SSL(server, port, context=context, timeout=SMTP_TIMEOUT_SECONDS)
+    if mode == TLS_STARTTLS:
+        smtp_server = smtplib.SMTP(server, port, timeout=SMTP_TIMEOUT_SECONDS)
         smtp_server.starttls(context=context)
         return smtp_server
-    LOG.error("Unsupported port: %s. Use port 465 for SSL or 587 for STARTTLS.", port)
+    if mode == TLS_NONE:
+        return smtplib.SMTP(server, port, timeout=SMTP_TIMEOUT_SECONDS)
+    LOG.error(
+        "Cannot determine SMTP connection type for port %s (EMAIL_SERVER_TLS=%s). "
+        "Set EMAIL_SERVER_TLS to ssl, starttls or none.",
+        port,
+        settings.email.server_tls,
+    )
     return None
+
+
+def _login_if_configured(smtp_server, email, password):
+    """Authenticate only when credentials are set; open relays accept mail without AUTH."""
+    if email and password:
+        smtp_server.login(email, password)
+
+
+def _envelope_sender(from_email):
+    """Return the bare address for MAIL FROM, even if a display name was configured."""
+    return parseaddr(from_email)[1] or from_email
 
 
 def _envelope_from_message(message):
@@ -91,8 +132,8 @@ def _send_email_to_user_smtp(server, port, email, password, message, from_email,
         if smtp_server is None:
             return
         with smtp_server:
-            smtp_server.login(email, password)
-            smtp_server.sendmail(from_email, rcpt, message.as_string())
+            _login_if_configured(smtp_server, email, password)
+            smtp_server.sendmail(_envelope_sender(from_email), rcpt, message.as_string())
 
         LOG.info(f"Email sent successfully. from: {from_email}")
 
@@ -140,10 +181,10 @@ def send_email_batch(messages):
                 return
 
             with smtp_server:
-                smtp_server.login(email, password)
+                _login_if_configured(smtp_server, email, password)
                 for message in messages:
                     try:
-                        smtp_server.sendmail(from_email, message.get("To"), message.as_string())
+                        smtp_server.sendmail(_envelope_sender(from_email), message.get("To"), message.as_string())
                     except Exception as e:
                         LOG.warning("Failed to send email to %s: %s", message.get("To"), e)
             LOG.info("Batch of %d emails sent successfully via SMTP", len(messages))
