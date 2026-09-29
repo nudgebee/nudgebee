@@ -1,6 +1,7 @@
 import type { DashboardDefinition, Panel, PanelDatasource, PanelTarget, PanelType } from '@api1/dashboards';
 import type { PanelScope } from './panelAccounts';
 import type { GrafanaImportResult } from './grafanaImport';
+import { providerTypeOf } from './panelProviders';
 import { referencedVariables } from './templating';
 
 /**
@@ -171,7 +172,8 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
     );
   }
 
-  const definition: DashboardDefinition = { panels };
+  // The dashboard-level settings travel with it; a panel import has none.
+  const definition: DashboardDefinition = { panels, ...(singlePanel ? {} : definitionSettings(model.definition)) };
   return {
     title: importTitle(model, singlePanel),
     description: typeof model.description === 'string' && !singlePanel ? model.description : '',
@@ -179,6 +181,14 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
     definition,
     warnings,
   };
+}
+
+/** The definition's own settings — its default time range and refresh interval — when the file carries them. */
+function definitionSettings(definition: any): Pick<DashboardDefinition, 'time_from' | 'refresh'> {
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const timeFrom = text(definition?.time_from);
+  const refresh = text(definition?.refresh);
+  return { ...(timeFrom ? { time_from: timeFrom } : {}), ...(refresh ? { refresh } : {}) };
 }
 
 function importTitle(model: any, singlePanel: boolean): string {
@@ -237,10 +247,28 @@ function convertPanel(source: any, scope: PanelScope, usedIds: Set<number>, warn
     // The file's own scope is dropped in favour of the importer's choice.
     ...scope,
     grid_pos,
+    ...providerOf(source, datasource),
     targets,
     unit: typeof source.unit === 'string' ? source.unit : '',
     ...(source.options && typeof source.options === 'object' ? { options: source.options } : {}),
   };
+}
+
+/**
+ * The backend a panel's expression is written for, and the Elasticsearch index
+ * it reads — kept, because without them a panel exported from an account whose
+ * default is Prometheus comes back querying Prometheus with an Elasticsearch
+ * expression.
+ *
+ * Kept only where the server would accept them: a provider on a datasource that
+ * resolves one per account (metrics, logs, traces), and an index only beside a
+ * provider. Anything else would reject the whole import at save.
+ */
+function providerOf(source: any, datasource: PanelDatasource): Pick<Panel, 'provider' | 'provider_index'> {
+  const provider = typeof source.provider === 'string' ? source.provider.trim() : '';
+  if (!provider || !providerTypeOf(datasource)) return {};
+  const index = typeof source.provider_index === 'string' ? source.provider_index.trim() : '';
+  return { provider, ...(index ? { provider_index: index } : {}) };
 }
 
 function convertTargets(targets: any, datasource: PanelDatasource): PanelTarget[] {

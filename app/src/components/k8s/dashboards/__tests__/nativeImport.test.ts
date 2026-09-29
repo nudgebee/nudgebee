@@ -98,6 +98,37 @@ describe('convertNativeDashboard', () => {
     expect(result.definition.panels[0].account_type).toBeUndefined();
   });
 
+  /*
+   * A panel names the backend its expression is written for. Dropped on
+   * import, an Elasticsearch panel came back querying each account's default —
+   * Prometheus, usually — with a Lucene expression.
+   */
+  it('keeps the provider and index a panel was written for', () => {
+    const es = { ...PANEL, datasource: 'logs', provider: 'ES', provider_index: 'logs-*' };
+    const [panel] = convertNativeDashboard({ ...DASHBOARD, definition: { panels: [es] } }, SCOPE).definition.panels;
+    expect(panel).toMatchObject({ provider: 'ES', provider_index: 'logs-*' });
+  });
+
+  it('drops a provider the server would reject, rather than failing the whole import', () => {
+    // A command panel has no provider to pin, and an index needs a provider.
+    const kubectl = { ...PANEL, type: 'table', datasource: 'kubectl', provider: 'ES', targets: [{ ref_id: 'A', expr: 'get pods' }] };
+    const orphanIndex = { ...PANEL, id: 4, provider_index: 'logs-*' };
+    const panels = convertNativeDashboard({ ...DASHBOARD, definition: { panels: [kubectl, orphanIndex] } }, SCOPE).definition.panels;
+    expect(panels.map((p) => [p.provider, p.provider_index])).toEqual([
+      [undefined, undefined],
+      [undefined, undefined],
+    ]);
+  });
+
+  it('keeps the dashboard’s default time range and refresh interval', () => {
+    const result = convertNativeDashboard({ ...DASHBOARD, definition: { panels: [PANEL], time_from: 'now-24h', refresh: '1m' } }, SCOPE);
+    expect(result.definition).toMatchObject({ time_from: 'now-24h', refresh: '1m' });
+    // A hand-edited blank is no setting at all.
+    const blank = convertNativeDashboard({ ...DASHBOARD, definition: { panels: [PANEL], time_from: '  ', refresh: ' 5m ' } }, SCOPE);
+    expect(blank.definition).not.toHaveProperty('time_from');
+    expect(blank.definition.refresh).toBe('5m');
+  });
+
   it('clamps a hand-edited geometry back into the grid', () => {
     const wide = { ...PANEL, grid_pos: { x: -2, y: 1, w: 40, h: 0 } };
     const result = convertNativeDashboard({ title: 'Wide', definition: { panels: [wide] } }, SCOPE);
