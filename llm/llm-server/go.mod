@@ -35,7 +35,7 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/lib/pq v1.12.3
 	github.com/lithammer/fuzzysearch v1.1.8
-	github.com/mark3labs/mcp-go v0.58.0
+	github.com/mark3labs/mcp-go v1.1.1
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/mxschmitt/playwright-go v0.6201.1
 	github.com/nudgebee/logparser v0.0.0-20260218041043-99ea4437d928
