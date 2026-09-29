@@ -20,6 +20,10 @@ const (
 	// on, as {provider, name, account_id}, when that is not the conversation's
 	// own default. The conversation view shows it per step.
 	MetadataExecutedTarget = "nb_executed_target"
+	// MetadataApprovedByRule records the tool approval rule that waived this
+	// call's confirmation, as {rule_id, rule_name, rule_revision}. The
+	// conversation view shows it per step.
+	MetadataApprovedByRule = "nb_approved_by_rule"
 )
 
 // WithExecutedTarget records where a call ran in its response details.

@@ -182,7 +182,12 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Gateway', path: '/user-management#ai-tools/gateway' },
   // EE-only sub-tabs (`eeOnly` in aiToolsConfig.js) are dropped from the Admin
   // page on OSS, so their search rows go too: a hit would land on an empty tab.
-  ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Egress Filter', path: '/user-management#ai-tools/egress-filter' }]),
+  ...(isOSSDeploymentMode()
+    ? []
+    : [
+        { group: 'Admin', label: 'Security — Egress Filter', path: '/user-management#ai-tools/egress-filter' },
+        { group: 'Admin', label: 'Security — Tool Approvals', path: '/user-management#ai-tools/egress-filter/tool-approvals' },
+      ]),
   { group: 'Admin', label: 'Budgets & Limits', path: '/user-management#ai-tools/budgets-limits' },
   ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Memory Policy', path: '/user-management#ai-tools/memory-policy' }]),
   { group: 'Admin', label: 'RCA Format', path: '/user-management#ai-tools/rca-format' },

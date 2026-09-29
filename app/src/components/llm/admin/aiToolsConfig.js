@@ -8,7 +8,7 @@ import AgentsAdminTab from './AgentsAdminTab';
 import ToolsAndMCPAdminTab from './ToolsAndMCPAdminTab';
 import ProvidersAdminTab from './ProvidersAdminTab';
 import GatewayAdminTab from './GatewayAdminTab';
-import EgressFilterAdminTab from './EgressFilterAdminTab';
+import SecurityAdminTab from './SecurityAdminTab';
 import BudgetsAndLimitsAdminTab from './BudgetsAndLimitsAdminTab';
 import MemoryPolicyAdminTab from './MemoryPolicyAdminTab';
 import RCAFormatAdminTab from './RCAFormatAdminTab';
@@ -20,7 +20,7 @@ import AccountContextAdminTab from './AccountContextAdminTab';
 // of their custom-SVG siblings (Agents, Tools & MCP, …) in the same list.
 const ProvidersIcon = withBrandBlue(SettingsOutlinedIcon);
 const GatewayIcon = withBrandBlue(HubOutlinedIcon);
-const EgressFilterIcon = withBrandBlue(ShieldOutlinedIcon);
+const SecurityIcon = withBrandBlue(ShieldOutlinedIcon);
 const MemoryPolicyIcon = withBrandBlue(LockOutlinedIcon);
 
 /**
@@ -38,7 +38,9 @@ const MemoryPolicyIcon = withBrandBlue(LockOutlinedIcon);
  * `integrations` (same integrations_list/_aggregate actions Admin →
  * Integrations already gates on); Gateway reuses `llm` (llm_gateway_* —
  * same module Settings' own hasPermission('llm', 'Read') check already
- * names); Egress Filter reuses `egressfilter`.
+ * names); Security reuses `egressfilter` for its outer egress entry, while its
+ * Tool Approvals subsection is shown only to tenant-wide admin roles and keeps
+ * separate read/write enforcement in the RPC and handler.
  *
  * `legacyOnly: true` (Memory, Account Context) marks the two sub-tabs that
  * only make sense for a tenant that doesn't have b-Cortex — permanently
@@ -89,12 +91,14 @@ export const AI_TOOLS_SUB_TABS = [
     requiresUiFeature: 'llmGateway',
   },
   {
-    id: 'egress-filter',
+    id: 'security',
     fragment: 'egress-filter',
-    text: 'Egress Filter',
-    icon: EgressFilterIcon,
-    Body: EgressFilterAdminTab,
+    text: 'Security',
+    icon: SecurityIcon,
+    Body: SecurityAdminTab,
     module: 'egressfilter',
+    // Tool Approvals inside is new; Beta leaves room to change it.
+    betaIcon: true,
     // EE-only body (app/src/ee/), stripped on OSS — callers drop the tab there. enterprise#37063.
     eeOnly: true,
   },

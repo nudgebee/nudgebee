@@ -1177,9 +1177,18 @@ func queryTenantAccountConfigs(dbms *common.DatabaseManager, tenantId string, to
 }
 
 func accountIDOf(c ToolConfig) string {
+	return ToolConfigID(c)
+}
+
+// ToolConfigID returns the stable backing record/account ID. Older config
+// sources populate it in Values while newer integration sources use Id.
+func ToolConfigID(c ToolConfig) string {
+	if strings.TrimSpace(c.Id) != "" {
+		return strings.TrimSpace(c.Id)
+	}
 	for _, v := range c.Values {
 		if v.Name == "id" {
-			return v.Value
+			return strings.TrimSpace(v.Value)
 		}
 	}
 	return ""

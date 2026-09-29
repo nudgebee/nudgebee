@@ -30,6 +30,7 @@ const (
 	EventChatActions               EventCategory = "NOTIFICATIONS_CHAT_ACTIONS"
 	// EventCategoryChatActions buckets in-app ("Nubi") web chat interactions (follow-up answers, delete); distinct from EventChatActions ("NOTIFICATIONS_CHAT_ACTIONS"), the messaging-platform transport layer.
 	EventCategoryChatActions EventCategory = "CHAT_ACTIONS"
+	EventCategorySecurity    EventCategory = "SECURITY"
 	EventAgentToken          EventCategory = "AGENT_TOKEN"
 	EventCategoryIntegration EventCategory = "INTEGRATIONS"
 	EventCategoryTriage      EventCategory = "TRIAGE"

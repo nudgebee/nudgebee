@@ -1221,6 +1221,87 @@ actions:
     permissions:
       - role: tenant_admin
     comment: Clear the tenant's egress-filter override so env defaults apply
+  - name: toolapproval_list
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List tool approval rules for the current tenant
+  - name: toolapproval_create
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Add a tool approval rule to one or more accounts in a single transaction
+  - name: toolapproval_upsert
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Create or update a tool approval rule
+  - name: toolapproval_delete
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Delete a tool approval rule
+  - name: toolapproval_check_match
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Check whether a sample invocation matches a proposed tool approval rule
+  - name: toolapproval_list_options
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Resolve named execution configurations for tool approval rule editing
+  - name: toolapproval_list_tools
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List tools shared by the selected accounts for tool approval rule editing
   - name: ai_get_gc
     definition:
       kind: "synchronous"

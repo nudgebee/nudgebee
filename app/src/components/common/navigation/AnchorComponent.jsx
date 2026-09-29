@@ -261,6 +261,7 @@ const AnchorComponent = ({
         <Box component='span' sx={{ flex: 1, fontSize: 'var(--ds-text-body)', color: 'inherit' }}>
           {item.text}
         </Box>
+        {item.betaIcon && <SafeIcon src={BetaIcon} alt='Beta icon' style={{ height: ds.space.mul(0, 10), width: ds.space.mul(0, 10) }} />}
       </MenuItem>
     );
   };

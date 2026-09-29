@@ -413,7 +413,8 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
 
         // A finished turn hides its task cards, followups included; the pill keeps
         // what the user was asked — and what they chose or approved — one click away.
-        const followups = response ? tasks.filter(isFollowupTask) : [];
+        // Approvals a rule granted without asking are listed alongside the answered ones.
+        const followups = response ? [...tasks.filter(isFollowupTask), ...(response.autoApprovals || [])] : [];
         const followupSummary = summarizeFollowups(followups);
 
         const responseTokenData = response ? itemProps.messageTokenData?.[response.id] || itemProps.messageTokenData?.[response.messageId] : null;

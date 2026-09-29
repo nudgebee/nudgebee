@@ -321,6 +321,12 @@ type appConfig struct {
 	// only). See egressfilter.RedactToolOutput.
 	LlmServerEgressFilterToolOutputRedactEnabled bool `mapstructure:"llm_server_egressfilter_tool_output_redact_enabled"`
 
+	// LlmServerToolApprovalPolicyEnabled enables tenant-admin managed rules
+	// that waive interactive confirmation for matching invocations. Existing
+	// authorization, validation and execution safeguards remain in force.
+	// Default false for staged rollout.
+	LlmServerToolApprovalPolicyEnabled bool `mapstructure:"llm_server_tool_approval_policy_enabled"`
+
 	// LlmServerEgressFilterAllowlist is a comma-separated list of values that
 	// will be excluded from detection even when they match a rule. Typical
 	// use is canonical docs samples (AWS's AKIAIOSFODNN7EXAMPLE, a GCP
@@ -1574,6 +1580,7 @@ func init() {
 	viper.SetDefault("llm_server_mcp_discovery_timeout_seconds", 15)
 	viper.SetDefault("llm_server_mcp_execution_timeout_seconds", 120)
 	viper.SetDefault("llm_server_tool_circuit_breaker_enabled", false)
+	viper.SetDefault("llm_server_tool_approval_policy_enabled", false)
 	viper.SetDefault("llm_server_tool_circuit_breaker_failure_threshold", 3)
 	viper.SetDefault("llm_server_tool_circuit_breaker_cooldown_seconds", 60)
 

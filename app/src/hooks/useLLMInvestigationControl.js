@@ -9,6 +9,7 @@ import { getUserSession } from '@lib/auth';
 import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
+import { collectAutoApprovals } from '@components/llm/utils/followupRecord';
 
 // metadata arrives as a JSON string or an already-parsed object.
 const parseMessageMetadata = (metadata) => {
@@ -608,6 +609,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           // Full per-call tree for the Tasks drawer (every agent + tool call, parent-linked). The
           // inline stream renders the curated task cards above; the drawer renders this fuller view.
           drawerTasks: buildDrawerTasks(conversationMessage.llm_conversation_agents, conversationMessage),
+          // Writes an approval rule let run without asking; listed with the turn's approvals.
+          autoApprovals: collectAutoApprovals(conversationMessage.llm_conversation_agents),
         };
       }
       const finalData = messageSequence.map((s) => toolRequestResponse[s]).filter(Boolean);

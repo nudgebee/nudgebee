@@ -27,6 +27,7 @@ import { Chip } from '@ui/Chip';
 import { convertToReadableFormat } from 'src/utils/common';
 import { executionBatchLabel, executionBatchTone, executionBatchTooltip, parseExecutionBatchMetadata } from './executionBatch';
 import ExecutedTargetChip, { targetKey } from './ExecutedTargetChip';
+import ApprovedByRuleChip from './ApprovedByRuleChip';
 
 const FRIENDLY_TOOL_NAMES = {
   react_critique: 'Critique Feedback',
@@ -1155,6 +1156,7 @@ const ToolCallSection = ({ tc, index, accountId, reasoning, showExecutionBatch }
         </Typography>
         <StatusBadge status={tcStatus} />
         <ExecutedTargetChip metadata={tc.metadata} status={tcStatus} />
+        <ApprovedByRuleChip metadata={tc.metadata} />
         {executionBatch && (
           <Tooltip title={executionBatchTooltip(executionBatch)} placement='top'>
             <Box component='span' sx={{ display: 'inline-flex' }}>
@@ -1457,6 +1459,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
         )}
         <StatusBadge status={status} />
         <ExecutedTargetChip metadata={headerTargetMetadata} status={status} />
+        {!hasMultipleToolCalls && <ApprovedByRuleChip metadata={headerMetadata} />}
         {headerBatch && (
           <Tooltip title={executionBatchTooltip(headerBatch)} placement='top'>
             <Box component='span' sx={{ display: 'inline-flex' }}>

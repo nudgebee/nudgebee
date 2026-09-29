@@ -2639,6 +2639,9 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}
 	}
 
+	// Set when an approval rule waived this call's confirmation; recorded on
+	// the step so the conversation shows it ran without asking.
+	var approvedByRule map[string]any
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
 		if writeConfirmationRequired(tool, requestType, action) {
@@ -2692,6 +2695,24 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 					Status:      ToolStatusFailure,
 				}, nil, nil
 			}
+
+			// Read-only runs refuse writes above, before any rule is consulted:
+			// a rule only removes the prompt, it never permits a write in a run
+			// that must not change anything.
+			if !isFollowupFound && config.Config.LlmServerToolApprovalPolicyEnabled {
+				// Policy matching and its audit fingerprint use the same normalized
+				// payload Call() will receive. Keep action.ToolInput unchanged here:
+				// manual confirmation keys intentionally use the original input so
+				// historical resumes do not re-prompt after scalar-array repair.
+				policyInput, _ := toolcore.CoerceScalarArrays(tool, action.ToolInput)
+				target := e.toolApprovalTarget(tool, action)
+				if match := e.approvedByToolPolicy(action, tool.Name(), policyInput, target); match != nil {
+					isFollowupFound = true
+					approvedByRule = policyApprovalMetadata(match)
+					e.ctx.GetLogger().Info("plannerexecutor: confirmation waived by tool approval policy", "tool", action.Tool, "policy_rule", policyApprovalLogValue(match))
+				}
+			}
+
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool)
 				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion, destination.followupTarget(), target != nil)
@@ -2904,6 +2925,12 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	}
 
 	if e.toolCallbackHandler != nil {
+		if approvedByRule != nil {
+			if observation.AdditionalDetails == nil {
+				observation.AdditionalDetails = map[string]any{}
+			}
+			observation.AdditionalDetails[toolcore.MetadataApprovedByRule] = approvedByRule
+		}
 		e.toolCallbackHandler.AfterToolCallResponse(action, observation)
 	}
 
