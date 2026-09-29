@@ -91,6 +91,11 @@ export interface GrafanaImportResult {
   definition: DashboardDefinition;
   /** Everything the import could not carry over, in the order it was found. */
   warnings: string[];
+  /**
+   * The subset of `warnings` naming a panel that was left out entirely. An
+   * import can go ahead without them; an edit cannot — see dashboardJson.ts.
+   */
+  skipped?: string[];
 }
 
 /** Parses pasted text, with a message aimed at whoever pasted it. */

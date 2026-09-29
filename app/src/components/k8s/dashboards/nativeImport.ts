@@ -133,6 +133,7 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
 
   const panels: Panel[] = [];
   const usedIds = new Set<number>();
+  const skipped: string[] = [];
   // Reported once rather than per panel: a 15-panel export names the same
   // account on every one of them.
   let defaulted = false;
@@ -143,8 +144,10 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
     const key = panelSourceKey(source);
     const mapped = key ? mappings[key] : undefined;
     if (!mapped && key) defaulted = true;
+    const before = warnings.length;
     const panel = convertPanel(source, mapped || scope, usedIds, warnings);
     if (panel) panels.push(panel);
+    else skipped.push(...warnings.slice(before));
   }
 
   if (panels.length === 0) {
@@ -180,6 +183,7 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
     tags: Array.isArray(model.tags) ? model.tags.filter((t: unknown) => typeof t === 'string') : [],
     definition,
     warnings,
+    skipped,
   };
 }
 
