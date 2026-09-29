@@ -135,21 +135,42 @@ export interface PanelTableOptions {
  */
 export type PanelThresholdColor = 'red' | 'amber' | 'green' | 'blue';
 
+/** How a threshold compares: the value is above, at or above, below, or at or below it. */
+export type PanelThresholdOp = 'gt' | 'gte' | 'lt' | 'lte';
+
 /**
- * One step of a panel's threshold scale, in Grafana's model: a colour that
- * applies from `value` upwards.
+ * Which number a threshold step is about, on a panel scoped to several accounts.
+ *
+ * - `shown` — the number the panel shows: the accounts' total, or one account's
+ *   figure when the view is narrowed to it. What every step meant before this
+ *   field existed, so an absent value reads as this.
+ * - `every` — each account's own figure, checked on its own; covers accounts a
+ *   type-scoped panel picks up later.
+ * - `account` — one account's figure, named by `account_id`.
+ */
+export type PanelThresholdAppliesTo = 'shown' | 'every' | 'account';
+
+/**
+ * One step of a panel's threshold scale: a colour for a value on one side of a
+ * line.
  *
  * Absolute only. A percentage step is read against a field's min and max, which
  * a panel holding one aggregated number does not have — and a gauge's scale IS
  * 0 to 100, so an absolute step already reads as a percentage there.
  *
- * There is no base step either: below the lowest threshold the panel draws
- * exactly as it always did, so a colour for that range would be stored config
- * nothing ever renders.
+ * There is no base step either: a value no step matches draws exactly as it
+ * always did, so a colour for that range would be stored config nothing ever
+ * renders.
  */
 export interface PanelThresholdStep {
   value: number;
   color: PanelThresholdColor;
+  /** Absent means `gte` — Grafana's model, and every step written before this field. */
+  op?: PanelThresholdOp;
+  /** Absent means `shown`. */
+  applies_to?: PanelThresholdAppliesTo;
+  /** The account an `account` step is about. Ignored for the other two. */
+  account_id?: string;
 }
 
 /**

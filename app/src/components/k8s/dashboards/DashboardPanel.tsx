@@ -24,9 +24,9 @@ import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
-import PanelAccountBreakdown, { BreakdownRows, breakdownPlacement } from './PanelAccountBreakdown';
+import PanelAccountBreakdown, { BreakdownRows, breachedPlacement, breakdownPlacement } from './PanelAccountBreakdown';
 import PanelGauge from './PanelGauge';
-import { hasThresholds, panelBreach, thresholdTone } from './panelThresholds';
+import { hasThresholds, OP_PHRASE, OP_SYMBOL, opOf, panelBreaches, thresholdTone, type Breach } from './panelThresholds';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
@@ -141,6 +141,18 @@ function formatValue(value: number | null | undefined, unit?: string): string {
   const abs = Math.abs(value);
   const rounded = abs >= 100 ? value.toFixed(0) : abs >= 1 ? value.toFixed(2) : value.toPrecision(3);
   return unit ? `${rounded} ${unit}` : rounded;
+}
+
+/** The badge's text: the crossed line, and whose number crossed it when that is not the one on the card. */
+function breachLabel(b: Breach): string {
+  const line = `${OP_SYMBOL[opOf(b.step)]} ${b.step.value}`;
+  return b.account ? `${b.account} ${line}` : line;
+}
+
+/** The badge's hover: the same breach as a sentence, with the number that crossed. */
+function breachSentence(b: Breach, unit?: string): string {
+  const phrase = `${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
+  return b.account ? `${b.account} is at ${formatValue(b.value, unit)}, ${phrase}` : `${formatValue(b.value, unit)} is ${phrase}`;
 }
 
 const NUMBER_CELL_SX = { textAlign: 'right', fontSize: ds.text.caption, fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' };
@@ -302,7 +314,10 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * The full scope stays on hover.
    */
   const scopeLabel = describePanelScope(panel, accounts);
-  const shownAccounts = effectiveAccountId ? panelAccounts.filter((a) => a.value === effectiveAccountId) : panelAccounts;
+  const shownAccounts = React.useMemo(
+    () => (effectiveAccountId ? panelAccounts.filter((a) => a.value === effectiveAccountId) : panelAccounts),
+    [effectiveAccountId, panelAccounts]
+  );
   const narrowed = shownAccounts.length > 0 && shownAccounts.length < scopedAccounts.length;
   const shownLabel = !narrowed
     ? scopeLabel
@@ -344,11 +359,13 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   }, [panel, data]);
 
   /**
-   * The threshold this panel's value has crossed, and how to draw it. A panel
-   * with no thresholds — which is every panel authored before this — resolves to
-   * undefined and keeps its plain frame.
+   * Every threshold this panel has crossed — on the number it shows, or on one
+   * of its accounts' — and the one the frame is drawn for. A panel with no
+   * thresholds, which is every panel authored before them, resolves to nothing
+   * and keeps its plain frame.
    */
-  const breach = panelBreach(panel, stat?.total);
+  const breaches = React.useMemo(() => panelBreaches(panel, stat, shownAccounts), [panel, stat, shownAccounts]);
+  const breach = breaches.frame?.step;
   const tone = breach ? thresholdTone(breach.color) : undefined;
 
   /*
@@ -465,16 +482,33 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // empty — and that the hover has the parts.
           const countCaption = stat.partial ? `${reporting} of ${stat.rows.length} reporting` : `${stat.rows.length} accounts`;
           const format = (value: number | undefined) => formatValue(value, panel.unit);
+          const flagged = breaches.rows;
+          // Accounts over a threshold first, each group in account order: the one
+          // in trouble is the first read, and a row only moves when it crosses a line.
+          const rows =
+            flagged.size === 0
+              ? stat.rows
+              : [...stat.rows.filter((r) => flagged.has(r.account)), ...stat.rows.filter((r) => !flagged.has(r.account))];
           const breakdown = stat.rows.length > 1 && (
             <Box sx={{ display: 'grid', py: ds.space[0] }}>
-              <BreakdownRows rows={stat.rows} format={format} />
+              <BreakdownRows rows={rows} format={format} flagged={flagged} />
             </Box>
           );
           // The View modal has the room the grid cell does not, so it lists every account.
           const placement = expanded ? (stat.rows.length > 1 ? 'under' : null) : breakdownPlacement(panel, stat.rows.length);
           const listed = placement !== null;
-          const breakdownList = placement && (
-            <PanelAccountBreakdown rows={stat.rows} placement={placement} format={format} testId={`panel-breakdown-${panel.id}`} />
+          // A card that cannot list every account still lists the ones over a
+          // threshold: they are the rows the list exists for.
+          const shownRows = listed ? rows : rows.filter((r) => flagged.has(r.account));
+          const shownPlacement = listed ? placement : stat.rows.length > 1 ? breachedPlacement(panel, shownRows.length) : null;
+          const breakdownList = shownPlacement && (
+            <PanelAccountBreakdown
+              rows={shownRows}
+              placement={shownPlacement}
+              format={format}
+              flagged={flagged}
+              testId={`panel-breakdown-${panel.id}`}
+            />
           );
           // The dial is a stat with a bounded scale, and takes the same total.
           if (panel.type === 'gauge') {
@@ -487,7 +521,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
                       caption={stat.rows.length > 1 && !listed ? countCaption : stat.caption}
                       // Rows under the dial come out of the dial's own height; a
                       // single-account gauge keeps the full-size dial.
-                      rowsBelow={listed && !expanded ? stat.rows.length : 0}
+                      rowsBelow={shownPlacement && !expanded ? shownRows.length : 0}
                     />
                   </Box>
                 </Tooltip>
@@ -498,7 +532,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           return (
             <Box
               data-testid={`panel-stat-${panel.id}`}
-              sx={placement === 'beside' ? { display: 'flex', alignItems: 'flex-start', gap: ds.space[4] } : undefined}
+              sx={shownPlacement === 'beside' ? { display: 'flex', alignItems: 'flex-start', gap: ds.space[4] } : undefined}
             >
               <Box sx={{ flexShrink: 0 }}>
                 <Tooltip title={breakdown || ''}>
@@ -576,7 +610,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         }
       }
     },
-    [panel, data, stat]
+    [panel, data, stat, breaches]
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
@@ -679,11 +713,24 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {/* Colour alone does not say WHAT was crossed, and a viewer who cannot
             tell amber from red is left with a panel that looks merely decorated.
             The badge names the step; the hover reads it back as a sentence. */}
-        {breach && tone && (
-          <Tooltip title={`${formatValue(stat?.total, panel.unit)} is at or above the ${breach.value} threshold.`}>
+        {breaches.frame && tone && (
+          <Tooltip
+            title={
+              breaches.all.length === 1 ? (
+                breachSentence(breaches.frame, panel.unit)
+              ) : (
+                <Box sx={{ display: 'grid', gap: ds.space[0] }}>
+                  {breaches.all.map((b, i) => (
+                    // Positional: the list is derived fresh from the data and never reordered in place.
+                    <span key={i}>{breachSentence(b, panel.unit)}</span>
+                  ))}
+                </Box>
+              )
+            }
+          >
             <Box component='span' data-testid={`panel-threshold-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
               <Chip size='2xs' tone={tone.chip}>
-                {`≥ ${breach.value}`}
+                {breachLabel(breaches.frame)}
               </Chip>
             </Box>
           </Tooltip>

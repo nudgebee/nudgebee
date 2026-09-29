@@ -25,9 +25,10 @@
 import React from 'react';
 import { Box } from '@mui/material';
 import { ds } from '@utils/colors';
-import type { Panel } from '@api1/dashboards';
+import type { Panel, PanelThresholdStep } from '@api1/dashboards';
 import { panelMinHeight } from './panelDefaults';
 import type { StatRow } from './panelSeries';
+import { thresholdTone } from './panelThresholds';
 
 /** One row's height. Fixed, so the budget below is arithmetic rather than a guess. */
 export const BREAKDOWN_ROW_PX = 18;
@@ -75,44 +76,89 @@ export type BreakdownPlacement = 'under' | 'beside';
 export function breakdownPlacement(panel: Panel, accounts: number): BreakdownPlacement | null {
   if (accounts < 2) return null;
   const body = panelMinHeight(panel) - PANEL_CHROME_PX;
-  const fits = (room: number) => accounts <= Math.floor(room / BREAKDOWN_ROW_PX);
-  if (panel.type === 'gauge') return accounts <= MAX_GAUGE_ROWS && fits(body - MIN_DIAL_PX) ? 'under' : null;
+  if (panel.type === 'gauge') return accounts <= MAX_GAUGE_ROWS && fitsRows(accounts, body - MIN_DIAL_PX) ? 'under' : null;
   const statBody = body - TITLE_WRAP_PX;
-  if (fits(statBody - STAT_FIGURE_PX)) return 'under';
-  return fits(statBody) ? 'beside' : null;
+  if (fitsRows(accounts, statBody - STAT_FIGURE_PX)) return 'under';
+  return fitsRows(accounts, statBody) ? 'beside' : null;
+}
+
+/**
+ * Where a card that cannot list every account lists the ones over a threshold —
+ * they are what the list is for — or null when even those do not fit. The
+ * account count stays under a stat's figure, so they go beside it; a gauge's go
+ * under its dial, within the gauge's usual cap.
+ */
+export function breachedPlacement(panel: Panel, accounts: number): BreakdownPlacement | null {
+  if (accounts < 1) return null;
+  const body = panelMinHeight(panel) - PANEL_CHROME_PX;
+  if (panel.type === 'gauge') return accounts <= MAX_GAUGE_ROWS && fitsRows(accounts, body - MIN_DIAL_PX) ? 'under' : null;
+  return fitsRows(accounts, body - TITLE_WRAP_PX) ? 'beside' : null;
+}
+
+function fitsRows(rows: number, room: number): boolean {
+  return rows <= Math.floor(room / BREAKDOWN_ROW_PX);
+}
+
+interface RowsProps {
+  rows: StatRow[];
+  format: (value: number | undefined) => string;
+  /** The threshold step each account crossed, keyed by account. Those rows take the step's colour. */
+  flagged?: Map<string, PanelThresholdStep>;
 }
 
 /**
  * The rows themselves, name on the left and figure on the right. Shared by the
  * card and by the hovers, so the two cannot drift into different layouts.
  */
-export const BreakdownRows: React.FC<{ rows: StatRow[]; format: (value: number | undefined) => string }> = ({ rows, format }) => (
+export const BreakdownRows: React.FC<RowsProps> = ({ rows, format, flagged }) => (
   <>
-    {rows.map((row) => (
-      <Box
-        key={row.account}
-        data-testid='panel-breakdown-row'
-        sx={{ display: 'flex', justifyContent: 'space-between', gap: ds.space[3], lineHeight: `${BREAKDOWN_ROW_PX}px`, minWidth: 0 }}
-      >
-        <Box component='span' sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {row.account}
+    {rows.map((row) => {
+      const step = flagged?.get(row.account);
+      const tone = step ? thresholdTone(step.color) : undefined;
+      return (
+        <Box
+          key={row.account}
+          data-testid='panel-breakdown-row'
+          data-threshold={step?.color}
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: ds.space[3],
+            lineHeight: `${BREAKDOWN_ROW_PX}px`,
+            minWidth: 0,
+            // A tinted band, not a bigger font: the row stays the height the
+            // panel budgeted for it. The band reaches past the text on both
+            // sides so the name and figure stay in line with the rows around it.
+            ...(tone
+              ? {
+                  background: tone.tint,
+                  color: tone.text,
+                  fontWeight: ds.weight.semibold,
+                  px: ds.space[1],
+                  mx: ds.space.mul(1, -1),
+                  borderRadius: ds.radius.sm,
+                }
+              : {}),
+          }}
+        >
+          <Box component='span' sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {row.account}
+          </Box>
+          <Box component='span' sx={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums', opacity: row.value === undefined ? 0.7 : 1 }}>
+            {row.failed ? 'no answer' : row.value === undefined ? 'no data' : format(row.value)}
+          </Box>
         </Box>
-        <Box component='span' sx={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums', opacity: row.value === undefined ? 0.7 : 1 }}>
-          {row.failed ? 'no answer' : row.value === undefined ? 'no data' : format(row.value)}
-        </Box>
-      </Box>
-    ))}
+      );
+    })}
   </>
 );
 
-interface Props {
-  rows: StatRow[];
+interface Props extends RowsProps {
   placement: BreakdownPlacement;
-  format: (value: number | undefined) => string;
   testId?: string;
 }
 
-const PanelAccountBreakdown: React.FC<Props> = ({ rows, placement, format, testId }) => (
+const PanelAccountBreakdown: React.FC<Props> = ({ rows, placement, format, flagged, testId }) => (
   <Box
     data-testid={testId}
     data-placement={placement}
@@ -120,7 +166,7 @@ const PanelAccountBreakdown: React.FC<Props> = ({ rows, placement, format, testI
     // list keeps its own height so the panel above it does not squeeze it.
     sx={{ fontSize: ds.text.small, color: ds.gray[600], minWidth: 0, ...(placement === 'beside' ? { flex: 1 } : { flexShrink: 0 }) }}
   >
-    <BreakdownRows rows={rows} format={format} />
+    <BreakdownRows rows={rows} format={format} flagged={flagged} />
   </Box>
 );
 
