@@ -4,6 +4,7 @@ Tests that every outgoing email carries Date and Message-ID headers, whichever p
 
 import socket
 from email import message_from_string
+from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.utils import parsedate_to_datetime
 from unittest.mock import MagicMock
@@ -79,6 +80,15 @@ def test_sendmail_fallback_also_gets_headers(monkeypatch):
     sender.send_email(_message(), envelope_recipients=["user@example.com"])
 
     assert captured[0]["Date"] and captured[0]["Message-ID"]
+
+
+def test_non_ascii_from_header_keeps_sender_domain(smtp):
+    msg = _message(frm=None)
+    msg["From"] = Header("Álice <alice@example.org>", "utf-8")
+
+    sender.send_email(msg, envelope_recipients=["user@example.com"])
+
+    assert _sent(smtp)["Message-ID"].endswith("@example.org>")
 
 
 def test_message_id_never_looks_up_the_hostname(smtp, monkeypatch):

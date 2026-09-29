@@ -83,7 +83,7 @@ def _ensure_standard_headers(message):
     if "Date" not in message:
         message["Date"] = formatdate(localtime=True)
     if "Message-ID" not in message:
-        domain = parseaddr(message.get("From", ""))[1].rpartition("@")[2]
+        domain = parseaddr(str(message.get("From") or ""))[1].rpartition("@")[2]
         message["Message-ID"] = make_msgid(domain=domain or "localhost")
 
 
