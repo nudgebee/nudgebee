@@ -181,7 +181,7 @@ describe('a metrics panel spanning several accounts', () => {
     await waitFor(() => expect(within(card).getByText(/^90/)).toBeInTheDocument());
     expect(within(card).queryByText('100')).not.toBeInTheDocument();
     // The caveat is the count under the number; the hover below names who is missing.
-    expect(within(card).getByText('2 of 3 accounts')).toBeInTheDocument();
+    expect(within(card).getByText('2 of 3 reporting')).toBeInTheDocument();
     expect(within(card).queryByText('*')).not.toBeInTheDocument();
     expect(within(card).queryByText(/No answer from/)).not.toBeInTheDocument();
     // And not in the banner above it either.
@@ -191,6 +191,23 @@ describe('a metrics panel spanning several accounts', () => {
     const tip = await screen.findByRole('tooltip');
     expect(within(tip).getByText('dev')).toBeInTheDocument();
     expect(within(tip).getByText('no answer')).toBeInTheDocument();
+  });
+
+  it('counts an account that answered with nothing, rather than dropping it from the card', async () => {
+    // The query ran and matched no series — not a failure, and not an account to forget.
+    metricsQuery.mockImplementation((req: { account_id: string }) =>
+      req.account_id === 'acc-3'
+        ? Promise.resolve({ data: { data: { metrics_list: { results: [{ query_key: 'A', payload: [] }] } } } })
+        : Promise.resolve(answerFor(req.account_id))
+    );
+    mount(['acc-1', 'acc-2', 'acc-3']);
+    const card = await screen.findByTestId('panel-stat-1');
+    await waitFor(() => expect(within(card).getByText('2 of 3 reporting')).toBeInTheDocument());
+
+    fireEvent.mouseOver(within(card).getByText(/^90/));
+    const tip = await screen.findByRole('tooltip');
+    expect(within(tip).getByText('dev')).toBeInTheDocument();
+    expect(within(tip).getByText('no data')).toBeInTheDocument();
   });
 
   it('keeps the "No answer" banner on a chart, which has nowhere else to say it', async () => {

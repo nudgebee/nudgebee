@@ -89,7 +89,7 @@ export interface StatTotal {
   rows: StatRow[];
   /** The single-account caption, per statCaption. '' whenever a breakdown is shown. */
   caption: string;
-  /** True when at least one account was asked and did not answer. */
+  /** True when at least one account asked has no value in the total — it failed, or reported nothing. */
   partial: boolean;
 }
 
@@ -98,7 +98,7 @@ export interface StatTotal {
  *
  * A stat is one number, so a panel spanning four clusters has to either pick one
  * of them — which reads as the total and is not — or add them. It adds them, and
- * `rows` is what the number breaks down into, shown on hover: a total nobody can
+ * `rows` is what the number breaks down into, shown under it: a total nobody can
  * take apart is a number nobody can check.
  *
  * `failed` is carried per account rather than folded into the sum, because a
@@ -112,7 +112,7 @@ export interface StatTotal {
  * which have no meaningful sum across clusters. The breakdown is what makes that
  * visible: the parts are on screen next to the total.
  */
-export function statTotal(series: PanelSeries[], refIds: string[], failedAccounts: string[] = []): StatTotal {
+export function statTotal(series: PanelSeries[], refIds: string[], failedAccounts: string[] = [], emptyAccounts: string[] = []): StatTotal {
   const order: string[] = [];
   const byAccount = new Map<string, number | undefined>();
 
@@ -130,18 +130,21 @@ export function statTotal(series: PanelSeries[], refIds: string[], failedAccount
   }
 
   const rows: StatRow[] = order.map((account) => ({ account, value: byAccount.get(account), failed: false }));
+  // Asked and answered with nothing: a row of its own, so every account the
+  // panel is scoped to is accounted for — not just the ones with data.
+  for (const account of emptyAccounts) rows.push({ account, value: undefined, failed: false });
   for (const account of failedAccounts) rows.push({ account, value: undefined, failed: true });
 
   const answered = rows.filter((r) => r.value !== undefined);
   const total = answered.length === 0 ? undefined : answered.reduce((sum, r) => sum + (r.value as number), 0);
 
   // One account has nothing to break down, so it keeps the caption it always had.
-  const single = order.length <= 1 && failedAccounts.length === 0;
+  const single = rows.length <= 1;
   return {
     total,
     rows,
     caption: single ? statCaption(series[0]?.label, refIds) : '',
-    partial: failedAccounts.length > 0,
+    partial: answered.length < rows.length,
   };
 }
 

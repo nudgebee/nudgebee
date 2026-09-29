@@ -24,6 +24,7 @@ import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
+import PanelAccountBreakdown, { BreakdownRows, breakdownPlacement } from './PanelAccountBreakdown';
 import PanelGauge from './PanelGauge';
 import { hasThresholds, panelBreach, thresholdTone } from './panelThresholds';
 import PanelState, { type PanelStateTone } from './PanelState';
@@ -337,7 +338,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     return statTotal(
       data.series,
       (panel.targets || []).map((t) => t.ref_id || 'A'),
-      data.failedAccounts || []
+      data.failedAccounts || [],
+      data.emptyAccounts || []
     );
   }, [panel, data]);
 
@@ -357,7 +359,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * full chart update and legend rebuild, on every panel at once.
    */
   const renderDrawing = React.useCallback(
-    (chartHeight: number) => {
+    (chartHeight: number, { expanded = false }: { expanded?: boolean } = {}) => {
       if (panel.type === 'text' || !data) return null;
       // A command datasource answers with a table, whatever the panel type says.
       if (data.table) {
@@ -448,62 +450,77 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         case 'gauge': {
           // One number, adding up every account that answered — a panel scoped to
           // four clusters used to render series[0], which reads as the total and is
-          // one cluster's figure. The breakdown behind it is on hover, because a
-          // total nobody can take apart is a number nobody can check.
+          // one cluster's figure. The breakdown behind it is on the card when the
+          // panel has room for every account, and on hover always — a total nobody
+          // can take apart is a number nobody can check.
           //
           // Computed above the memo: the same total decides the threshold tint on
           // the frame. It is non-null on exactly the branch this is, so the guard
           // is for the type checker rather than for a case that happens.
           if (!stat) return null;
-          const answered = stat.rows.filter((r) => !r.failed).length;
-          // "2 of 3 accounts" is the partial total's caveat, in the place the viewer
-          // already reads the account count; the hover names the account that did
-          // not answer. Neither a bare asterisk nor a banner above the card.
-          const countCaption = stat.partial ? `${answered} of ${stat.rows.length} accounts` : `${stat.rows.length} accounts`;
+          const reporting = stat.rows.filter((r) => r.value !== undefined).length;
+          // Only when the accounts are not listed: a list already says how many
+          // there are and which ones reported. Without one, this is what says the
+          // number is a sum — "2 of 5 reporting" when some failed or came back
+          // empty — and that the hover has the parts.
+          const countCaption = stat.partial ? `${reporting} of ${stat.rows.length} reporting` : `${stat.rows.length} accounts`;
+          const format = (value: number | undefined) => formatValue(value, panel.unit);
           const breakdown = stat.rows.length > 1 && (
-            <Box sx={{ display: 'grid', gap: 0.4, py: 0.25 }}>
-              {stat.rows.map((row) => (
-                <Box key={row.account} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                  <span>{row.account}</span>
-                  <span style={{ fontVariantNumeric: 'tabular-nums', opacity: row.failed ? 0.7 : 1 }}>
-                    {row.failed ? 'no answer' : formatValue(row.value, panel.unit)}
-                  </span>
-                </Box>
-              ))}
+            <Box sx={{ display: 'grid', py: ds.space[0] }}>
+              <BreakdownRows rows={stat.rows} format={format} />
             </Box>
+          );
+          // The View modal has the room the grid cell does not, so it lists every account.
+          const placement = expanded ? (stat.rows.length > 1 ? 'under' : null) : breakdownPlacement(panel, stat.rows.length);
+          const listed = placement !== null;
+          const breakdownList = placement && (
+            <PanelAccountBreakdown rows={stat.rows} placement={placement} format={format} testId={`panel-breakdown-${panel.id}`} />
           );
           // The dial is a stat with a bounded scale, and takes the same total.
           if (panel.type === 'gauge') {
             return (
-              <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%' }}>
+              <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                 <Tooltip title={breakdown || ''}>
-                  <Box sx={{ height: '100%' }}>
-                    <PanelGauge value={stat.total} caption={stat.partial ? countCaption : stat.caption} />
+                  <Box sx={{ flex: 1, minHeight: 0 }}>
+                    <PanelGauge
+                      value={stat.total}
+                      caption={stat.rows.length > 1 && !listed ? countCaption : stat.caption}
+                      // Rows under the dial come out of the dial's own height; a
+                      // single-account gauge keeps the full-size dial.
+                      rowsBelow={listed && !expanded ? stat.rows.length : 0}
+                    />
                   </Box>
                 </Tooltip>
+                {breakdownList}
               </Box>
             );
           }
           return (
-            <Box data-testid={`panel-stat-${panel.id}`}>
-              <Tooltip title={breakdown || ''}>
-                <Typography
-                  component='div'
-                  sx={{ fontSize: 28, fontWeight: 650, letterSpacing: '-0.02em', color: ds.gray[700], width: 'fit-content' }}
-                >
-                  {formatValue(stat.total, panel.unit)}
-                </Typography>
-              </Tooltip>
-              {stat.caption && (
-                <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-                  {stat.caption}
-                </Typography>
-              )}
-              {stat.rows.length > 1 && (
-                <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
-                  {countCaption}
-                </Typography>
-              )}
+            <Box
+              data-testid={`panel-stat-${panel.id}`}
+              sx={placement === 'beside' ? { display: 'flex', alignItems: 'flex-start', gap: ds.space[4] } : undefined}
+            >
+              <Box sx={{ flexShrink: 0 }}>
+                <Tooltip title={breakdown || ''}>
+                  <Typography
+                    component='div'
+                    sx={{ fontSize: 28, fontWeight: 650, letterSpacing: '-0.02em', color: ds.gray[700], width: 'fit-content' }}
+                  >
+                    {formatValue(stat.total, panel.unit)}
+                  </Typography>
+                </Tooltip>
+                {stat.caption && (
+                  <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                    {stat.caption}
+                  </Typography>
+                )}
+                {stat.rows.length > 1 && !listed && (
+                  <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
+                    {countCaption}
+                  </Typography>
+                )}
+              </Box>
+              {breakdownList}
             </Box>
           );
         }
@@ -563,7 +580,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
-  const viewDrawing = React.useMemo(() => (viewing ? renderDrawing(VIEW_CHART_HEIGHT) : null), [viewing, renderDrawing]);
+  const viewDrawing = React.useMemo(() => (viewing ? renderDrawing(VIEW_CHART_HEIGHT, { expanded: true }) : null), [viewing, renderDrawing]);
 
   const body = (content: React.ReactNode = drawing, chartHeight = CHART_HEIGHT) => {
     if (panel.type === 'text') {

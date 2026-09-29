@@ -69,6 +69,12 @@ export interface PanelData {
    * from it — `warning` says so in prose, this says so in parts.
    */
   failedAccounts?: string[];
+  /**
+   * Accounts that answered with no series at all. Not a failure — the query ran —
+   * but a stat that left them out would read as if they had never been asked,
+   * and a cluster reporting nothing is often the one worth looking at.
+   */
+  emptyAccounts?: string[];
 }
 
 interface Options {
@@ -517,6 +523,7 @@ export function usePanelData({
         if (cancelled) return;
         const raw: RawSeries[] = [];
         const failed: string[] = [];
+        const empty: string[] = [];
 
         settled.forEach((outcome, i) => {
           const account = resolved[i];
@@ -528,7 +535,9 @@ export function usePanelData({
             return;
           }
           const results = (outcome.value as any)?.data?.data?.metrics_list?.results || [];
-          for (const s of toRawSeries(results, legendByKey)) {
+          const answered = toRawSeries(results, legendByKey);
+          if (answered.length === 0) empty.push(account.label);
+          for (const s of answered) {
             raw.push(prefixWithAccount ? { ...s, label: accountPrefixed(account.label, s.label), accountLabel: account.label } : s);
           }
         });
@@ -561,7 +570,7 @@ export function usePanelData({
         // reports still sits at the right point on the shared axis.
         // The step the accounts were asked for is also what reconciles their
         // answers — see snapToStep, which no-ops on a single-account panel.
-        setData({ ...alignSeries(kept, step), failedAccounts: failed });
+        setData({ ...alignSeries(kept, step), failedAccounts: failed, emptyAccounts: empty });
       })
       .finally(settle);
 
