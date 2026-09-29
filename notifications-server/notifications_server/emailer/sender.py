@@ -4,7 +4,7 @@ import smtplib
 import ssl
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from email.utils import getaddresses, parseaddr
+from email.utils import formatdate, getaddresses, make_msgid, parseaddr
 
 from notifications_server.configs.settings import get_smtp_params, settings
 from notifications_server.utils.encode_utils import is_valid_port
@@ -75,6 +75,18 @@ def _envelope_sender(from_email):
     return parseaddr(from_email)[1] or from_email
 
 
+def _ensure_standard_headers(message):
+    """Add Date and Message-ID when missing; relays don't reliably add them and receivers may reject mail without them.
+
+    The Message-ID domain comes from the From address, which avoids make_msgid's hostname lookup.
+    """
+    if "Date" not in message:
+        message["Date"] = formatdate(localtime=True)
+    if "Message-ID" not in message:
+        domain = parseaddr(message.get("From", ""))[1].rpartition("@")[2]
+        message["Message-ID"] = make_msgid(domain=domain or "localhost")
+
+
 def _envelope_from_message(message):
     """Build a RCPT TO list from a message's To and Cc headers.
 
@@ -96,6 +108,7 @@ def send_email(message, envelope_recipients=None):
     that Bcc cannot be recovered this way (it is intentionally not in
     headers), so combined Cc/Bcc senders must always pass `envelope_recipients`.
     """
+    _ensure_standard_headers(message)
     rcpt = envelope_recipients if envelope_recipients else _envelope_from_message(message)
     smtp_params = get_smtp_params()
     if smtp_params is not None:
@@ -170,6 +183,9 @@ def send_email_batch(messages):
     """Send multiple emails over a single SMTP connection."""
     if not messages:
         return
+
+    for message in messages:
+        _ensure_standard_headers(message)
 
     smtp_params = get_smtp_params()
     if smtp_params is not None and _is_valid_smtp_params(smtp_params):
