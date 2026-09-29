@@ -159,8 +159,12 @@ func (s *CubeAPMTraceSource) GetLabelMapping() map[string]string {
 	return cubeAPMTraceLabelMapping
 }
 
+// _regex is advertised alongside _contains because cubeAPMTraceWhere keeps the two
+// distinct: _contains escapes the value into a literal, _regex passes the pattern
+// through to LogsQL. Without it a user wanting a pattern match is pushed to
+// _contains, which matches nothing as soon as the value carries a metacharacter.
 func (s *CubeAPMTraceSource) GetSupportedOperators() []string {
-	return []string{"_eq", "_neq", "_contains"}
+	return []string{"_eq", "_neq", "_contains", "_regex"}
 }
 
 // TraceRegexOperators: the where builder below has a case for _regex and none
