@@ -2,9 +2,12 @@ import React from 'react';
 import { Box, Typography } from '@mui/material';
 import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import LinkIcon from '@mui/icons-material/Link';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import Chart from '@ui/Chart';
 import { Chip } from '@ui/Chip';
 import { Link } from '@ui/Link';
+import { Modal } from '@ui/Modal';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Skeleton } from '@ui/Skeleton';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
@@ -21,17 +24,22 @@ import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
+import PanelAccountBreakdown, { BreakdownRows, breachedPlacement, breakdownPlacement } from './PanelAccountBreakdown';
 import PanelGauge from './PanelGauge';
-import { hasThresholds, panelBreach, thresholdTone } from './panelThresholds';
+import { hasThresholds, OP_PHRASE, OP_SYMBOL, opOf, panelBreaches, thresholdTone, type Breach } from './panelThresholds';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
 import { consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
+import { withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
 
 /** Plot height, excluding the legend the chart renders beneath it. */
 const CHART_HEIGHT = 160;
+
+/** The same plot in the View modal, which has the room the grid cell does not. */
+const VIEW_CHART_HEIGHT = 420;
 
 /** One shared empty list, so an absent dashboard filter is a stable prop for the memoised panel. */
 const NO_FILTER: string[] = [];
@@ -135,6 +143,18 @@ function formatValue(value: number | null | undefined, unit?: string): string {
   return unit ? `${rounded} ${unit}` : rounded;
 }
 
+/** The badge's text: the crossed line, and whose number crossed it when that is not the one on the card. */
+function breachLabel(b: Breach): string {
+  const line = `${OP_SYMBOL[opOf(b.step)]} ${b.step.value}`;
+  return b.account ? `${b.account} ${line}` : line;
+}
+
+/** The badge's hover: the same breach as a sentence, with the number that crossed. */
+function breachSentence(b: Breach, unit?: string): string {
+  const phrase = `${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
+  return b.account ? `${b.account} is at ${formatValue(b.value, unit)}, ${phrase}` : `${formatValue(b.value, unit)} is ${phrase}`;
+}
+
 const NUMBER_CELL_SX = { textAlign: 'right', fontSize: ds.text.caption, fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' };
 const NUMBER_CELL_SUFFIX_SX = { color: 'var(--ds-gray-700)', fontSize: ds.text.caption };
 
@@ -215,16 +235,21 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // Composite rather than a sum: either counter moving changes the key, and no
   // pair of values can collide the way `dashboard + panel` could.
   const [panelRefresh, setPanelRefresh] = React.useState(0);
+  // The View modal draws from this panel's own data rather than mounting a second panel, which would run the
+  // query again.
+  const [viewing, setViewing] = React.useState(false);
   const refreshKey = `${refreshToken}:${panelRefresh}`;
 
   // A text panel has nothing to fetch, so Refresh would be a no-op on it — but it is still editable, so the
   // menu itself is not conditional on the type.
   const menuItems = React.useMemo(() => {
-    const items: { id: string; label: string; icon: unknown }[] = [];
+    const items: { id: string; label: string; icon?: unknown; reactIcon?: React.ReactNode }[] = [];
+    items.push({ id: 'view', label: 'View', reactIcon: <VisibilityOutlinedIcon sx={{ fontSize: 18 }} /> });
     if (panel.type !== 'text') items.push({ id: 'refresh', label: 'Refresh', icon: RefreshIcon });
     if (onEdit) items.push({ id: 'edit', label: 'Edit', icon: writeIconLight });
     items.push({ id: 'export', label: 'Export JSON', icon: downloadIcon });
     if (panel.type !== 'text') items.push({ id: 'export-png', label: 'Export PNG', icon: downloadIcon });
+    items.push({ id: 'copy-link', label: 'Copy link', reactIcon: <LinkIcon sx={{ fontSize: 18 }} /> });
     return items;
   }, [panel.type, onEdit]);
 
@@ -240,6 +265,16 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     } catch (err) {
       console.error('panel export failed', err);
       snackbar.error('Could not export this panel as an image.');
+    }
+  };
+
+  /** The page's own address, naming this panel — opening it scrolls straight here. */
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(withPanelParam(window.location.href, String(panel.id)));
+      snackbar.success('Link to this panel copied.');
+    } catch {
+      snackbar.error('Could not copy the link.');
     }
   };
 
@@ -279,7 +314,10 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * The full scope stays on hover.
    */
   const scopeLabel = describePanelScope(panel, accounts);
-  const shownAccounts = effectiveAccountId ? panelAccounts.filter((a) => a.value === effectiveAccountId) : panelAccounts;
+  const shownAccounts = React.useMemo(
+    () => (effectiveAccountId ? panelAccounts.filter((a) => a.value === effectiveAccountId) : panelAccounts),
+    [effectiveAccountId, panelAccounts]
+  );
   const narrowed = shownAccounts.length > 0 && shownAccounts.length < scopedAccounts.length;
   const shownLabel = !narrowed
     ? scopeLabel
@@ -315,16 +353,19 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     return statTotal(
       data.series,
       (panel.targets || []).map((t) => t.ref_id || 'A'),
-      data.failedAccounts || []
+      data.failedAccounts || [],
+      data.emptyAccounts || []
     );
   }, [panel, data]);
 
   /**
-   * The threshold this panel's value has crossed, and how to draw it. A panel
-   * with no thresholds — which is every panel authored before this — resolves to
-   * undefined and keeps its plain frame.
+   * Every threshold this panel has crossed — on the number it shows, or on one
+   * of its accounts' — and the one the frame is drawn for. A panel with no
+   * thresholds, which is every panel authored before them, resolves to nothing
+   * and keeps its plain frame.
    */
-  const breach = panelBreach(panel, stat?.total);
+  const breaches = React.useMemo(() => panelBreaches(panel, stat, shownAccounts), [panel, stat, shownAccounts]);
+  const breach = breaches.frame?.step;
   const tone = breach ? thresholdTone(breach.color) : undefined;
 
   /*
@@ -334,207 +375,248 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * unrelated render (Edit pressed, the header's account filter opening) is a
    * full chart update and legend rebuild, on every panel at once.
    */
-  const drawing = React.useMemo(() => {
-    if (panel.type === 'text' || !data) return null;
-    // A command datasource answers with a table, whatever the panel type says.
-    if (data.table) {
-      if (data.table.rows.length === 0) {
-        return (
-          <Box sx={{ height: '100%' }}>
-            <PanelState tone='empty' title='Nothing came back' description='The query ran and returned no rows.' />
-          </Box>
-        );
-      }
-      const columns = data.table.columns;
-      const kinds = data.table.column_kinds || [];
-      // Headers are display labels on an entity panel ("Event id"), while the
-      // author configured columns by the QUERY's names (`id`) — so settings
-      // resolve against those, not against what is on screen.
-      const names = data.table.column_names || columns;
-      const panelColumns = panelColumnsOf(panel);
-      const settings = columnSettings(panelColumns);
-      // A hidden column is still QUERIED — it is what a link is built from — so
-      // it is dropped here rather than from the query.
-      const shown = columns
-        .map((label, index) => ({ label, index, column: settings.get(names[index]) }))
-        .filter((c) => c.column?.visibility !== 'hidden');
-      const added = addedColumns(panelColumns);
-      const headers = [...shown.map((c) => ({ name: c.column?.title || c.label })), ...added.map((c) => ({ name: c.title || '' }))];
-      // Timestamps go through the same Datetime component the traces and events listings use — relative text
-      // with the absolute time on hover — rather than showing the store's raw value.
-      const rows = data.table.rows.map((row) => [
-        ...shown.map(({ index, column }) => {
-          const cell = row[index];
-          // The registry decides how a value reads; a column may override it for
-          // the cases the registry cannot know, like a Postgres panel's own columns.
-          const content = renderTableCell(column?.format || kinds[index] || 'text', cell);
-          const href = column?.link ? renderRowUrl(column.link.url, names, row) : null;
-          // Linked or not, `value` stays the raw cell so sort and CSV export read
-          // the data rather than the markup.
-          if (href)
-            return {
-              // New tab, and the DS Link's arrow says so: a dashboard is something
-              // you watch, and following a row's link in place loses the page you
-              // were reading — along with its time range and account filter.
-              component: (
-                <Link href={href} openInNew>
-                  {content}
-                </Link>
-              ),
-              value: cell,
-            };
-          // A formatted cell is a component; plain text stays text so the table's
-          // own tooltip and truncation keep working on it.
-          return typeof content === 'string' ? { text: content, value: cell } : { component: content, value: cell };
-        }),
-        // An added column has no data of its own — every cell reads as its title.
-        // Never exported: a CSV of the same word repeated is noise.
-        ...added.map((column) => {
-          const href = column.link ? renderRowUrl(column.link.url, names, row) : null;
-          return {
-            component: href ? (
-              <Link href={href} openInNew>
-                {column.title}
-              </Link>
-            ) : null,
-            exportEnabled: false,
-          };
-        }),
-      ]);
-      return (
-        <Box>
-          <CustomTable headers={headers} tableData={rows} />
-          {data.table.truncated && (
-            <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-              Showing the first {data.table.rows.length} rows.
-            </Typography>
-          )}
-        </Box>
-      );
-    }
-    if (data.series.length === 0) {
-      return (
-        <Box sx={{ height: '100%' }}>
-          <PanelState tone='empty' title='No data in this range' description='The query ran but matched nothing. Try a wider time range.' />
-        </Box>
-      );
-    }
-
-    switch (panel.type) {
-      case 'stat':
-      case 'gauge': {
-        // One number, adding up every account that answered — a panel scoped to
-        // four clusters used to render series[0], which reads as the total and is
-        // one cluster's figure. The breakdown behind it is on hover, because a
-        // total nobody can take apart is a number nobody can check.
-        //
-        // Computed above the memo: the same total decides the threshold tint on
-        // the frame. It is non-null on exactly the branch this is, so the guard
-        // is for the type checker rather than for a case that happens.
-        if (!stat) return null;
-        const answered = stat.rows.filter((r) => !r.failed).length;
-        // "2 of 3 accounts" is the partial total's caveat, in the place the viewer
-        // already reads the account count; the hover names the account that did
-        // not answer. Neither a bare asterisk nor a banner above the card.
-        const countCaption = stat.partial ? `${answered} of ${stat.rows.length} accounts` : `${stat.rows.length} accounts`;
-        const breakdown = stat.rows.length > 1 && (
-          <Box sx={{ display: 'grid', gap: 0.4, py: 0.25 }}>
-            {stat.rows.map((row) => (
-              <Box key={row.account} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <span>{row.account}</span>
-                <span style={{ fontVariantNumeric: 'tabular-nums', opacity: row.failed ? 0.7 : 1 }}>
-                  {row.failed ? 'no answer' : formatValue(row.value, panel.unit)}
-                </span>
-              </Box>
-            ))}
-          </Box>
-        );
-        // The dial is a stat with a bounded scale, and takes the same total.
-        if (panel.type === 'gauge') {
+  const renderDrawing = React.useCallback(
+    (chartHeight: number, { expanded = false }: { expanded?: boolean } = {}) => {
+      if (panel.type === 'text' || !data) return null;
+      // A command datasource answers with a table, whatever the panel type says.
+      if (data.table) {
+        if (data.table.rows.length === 0) {
           return (
-            <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%' }}>
-              <Tooltip title={breakdown || ''}>
-                <Box sx={{ height: '100%' }}>
-                  <PanelGauge value={stat.total} caption={stat.partial ? countCaption : stat.caption} />
-                </Box>
-              </Tooltip>
+            <Box sx={{ height: '100%' }}>
+              <PanelState tone='empty' title='Nothing came back' description='The query ran and returned no rows.' />
             </Box>
           );
         }
+        const columns = data.table.columns;
+        const kinds = data.table.column_kinds || [];
+        // Headers are display labels on an entity panel ("Event id"), while the
+        // author configured columns by the QUERY's names (`id`) — so settings
+        // resolve against those, not against what is on screen.
+        const names = data.table.column_names || columns;
+        const panelColumns = panelColumnsOf(panel);
+        const settings = columnSettings(panelColumns);
+        // A hidden column is still QUERIED — it is what a link is built from — so
+        // it is dropped here rather than from the query.
+        const shown = columns
+          .map((label, index) => ({ label, index, column: settings.get(names[index]) }))
+          .filter((c) => c.column?.visibility !== 'hidden');
+        const added = addedColumns(panelColumns);
+        const headers = [...shown.map((c) => ({ name: c.column?.title || c.label })), ...added.map((c) => ({ name: c.title || '' }))];
+        // Timestamps go through the same Datetime component the traces and events listings use — relative text
+        // with the absolute time on hover — rather than showing the store's raw value.
+        const rows = data.table.rows.map((row) => [
+          ...shown.map(({ index, column }) => {
+            const cell = row[index];
+            // The registry decides how a value reads; a column may override it for
+            // the cases the registry cannot know, like a Postgres panel's own columns.
+            const content = renderTableCell(column?.format || kinds[index] || 'text', cell);
+            const href = column?.link ? renderRowUrl(column.link.url, names, row) : null;
+            // Linked or not, `value` stays the raw cell so sort and CSV export read
+            // the data rather than the markup.
+            if (href)
+              return {
+                // New tab, and the DS Link's arrow says so: a dashboard is something
+                // you watch, and following a row's link in place loses the page you
+                // were reading — along with its time range and account filter.
+                component: (
+                  <Link href={href} openInNew>
+                    {content}
+                  </Link>
+                ),
+                value: cell,
+              };
+            // A formatted cell is a component; plain text stays text so the table's
+            // own tooltip and truncation keep working on it.
+            return typeof content === 'string' ? { text: content, value: cell } : { component: content, value: cell };
+          }),
+          // An added column has no data of its own — every cell reads as its title.
+          // Never exported: a CSV of the same word repeated is noise.
+          ...added.map((column) => {
+            const href = column.link ? renderRowUrl(column.link.url, names, row) : null;
+            return {
+              component: href ? (
+                <Link href={href} openInNew>
+                  {column.title}
+                </Link>
+              ) : null,
+              exportEnabled: false,
+            };
+          }),
+        ]);
         return (
-          <Box data-testid={`panel-stat-${panel.id}`}>
-            <Tooltip title={breakdown || ''}>
-              <Typography component='div' sx={{ fontSize: 28, fontWeight: 650, letterSpacing: '-0.02em', color: ds.gray[700], width: 'fit-content' }}>
-                {formatValue(stat.total, panel.unit)}
-              </Typography>
-            </Tooltip>
-            {stat.caption && (
+          <Box>
+            <CustomTable headers={headers} tableData={rows} />
+            {data.table.truncated && (
               <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-                {stat.caption}
-              </Typography>
-            )}
-            {stat.rows.length > 1 && (
-              <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
-                {countCaption}
+                Showing the first {data.table.rows.length} rows.
               </Typography>
             )}
           </Box>
         );
       }
-      case 'table': {
-        // Several accounts: the account is its own column rather than a prefix
-        // folded into the series text, so it can be read — and scanned — as one.
-        const byAccount = data.series.some((s) => s.accountLabel);
-        const headers = byAccount
-          ? [
-              { name: 'Account', width: '25%' },
-              { name: 'Series', width: '45%' },
-              { name: 'Latest', width: '30%' },
-            ]
-          : [
-              { name: 'Series', width: '60%' },
-              { name: 'Latest', width: '40%' },
-            ];
-        const rows = data.series.map((s) => {
-          const latest = formatValue(lastValue(s.values), panel.unit);
-          const series = byAccount ? metricLabel(s) : s.label;
-          return [
-            ...(byAccount ? [{ text: s.accountLabel || '', value: s.accountLabel || '' }] : []),
-            { text: series, value: series },
-            { text: latest, value: latest },
-          ];
-        });
-        return <CustomTable headers={headers} tableData={rows} />;
-      }
-      case 'bar':
-        // Stacked, so on a multi-account panel each account is a segment and the
-        // stack's height is the consolidated view — no total series needed, and
-        // one would double the stack.
-        return <Chart.Bar data={data.series.map((s) => s.values)} labels={data.labels} chartLabel={data.series.map((s) => s.label)} />;
-      case 'timeseries':
-      default: {
-        // Each account's own lines, then the series that adds them up — dashed
-        // and heavier, so the total reads as a different kind of line from the
-        // parts it sums. Its colour is left to the chart, as every line's is:
-        // naming one colour would switch off the automatic palette for the rest.
-        const drawn = [...data.series, ...consolidatedSeries(data.series)];
-        // Chart.Line = @shared/charts/LineCharts (chart.js).
+      if (data.series.length === 0) {
         return (
-          <Chart.Line
-            dataset={drawn.map(lineDataset)}
-            labels={data.labels}
-            timestamps={data.timestamps}
-            chartLabel={drawn.map((s) => s.label)}
-            minHeight={CHART_HEIGHT}
-            dynamicHeight={false}
-            legendOptions={{ renderer: 'html', unit: panel.unit }}
-          />
+          <Box sx={{ height: '100%' }}>
+            <PanelState tone='empty' title='No data in this range' description='The query ran but matched nothing. Try a wider time range.' />
+          </Box>
         );
       }
-    }
-  }, [panel, data, stat]);
 
-  const body = () => {
+      switch (panel.type) {
+        case 'stat':
+        case 'gauge': {
+          // One number, adding up every account that answered — a panel scoped to
+          // four clusters used to render series[0], which reads as the total and is
+          // one cluster's figure. The breakdown behind it is on the card when the
+          // panel has room for every account, and on hover always — a total nobody
+          // can take apart is a number nobody can check.
+          //
+          // Computed above the memo: the same total decides the threshold tint on
+          // the frame. It is non-null on exactly the branch this is, so the guard
+          // is for the type checker rather than for a case that happens.
+          if (!stat) return null;
+          const reporting = stat.rows.filter((r) => r.value !== undefined).length;
+          // Only when the accounts are not listed: a list already says how many
+          // there are and which ones reported. Without one, this is what says the
+          // number is a sum — "2 of 5 reporting" when some failed or came back
+          // empty — and that the hover has the parts.
+          const countCaption = stat.partial ? `${reporting} of ${stat.rows.length} reporting` : `${stat.rows.length} accounts`;
+          const format = (value: number | undefined) => formatValue(value, panel.unit);
+          const flagged = breaches.rows;
+          // Accounts over a threshold first, each group in account order: the one
+          // in trouble is the first read, and a row only moves when it crosses a line.
+          const rows =
+            flagged.size === 0
+              ? stat.rows
+              : [...stat.rows.filter((r) => flagged.has(r.account)), ...stat.rows.filter((r) => !flagged.has(r.account))];
+          const breakdown = stat.rows.length > 1 && (
+            <Box sx={{ display: 'grid', py: ds.space[0] }}>
+              <BreakdownRows rows={rows} format={format} flagged={flagged} />
+            </Box>
+          );
+          // The View modal has the room the grid cell does not, so it lists every account.
+          const placement = expanded ? (stat.rows.length > 1 ? 'under' : null) : breakdownPlacement(panel, stat.rows.length);
+          const listed = placement !== null;
+          // A card that cannot list every account still lists the ones over a
+          // threshold: they are the rows the list exists for.
+          const shownRows = listed ? rows : rows.filter((r) => flagged.has(r.account));
+          const shownPlacement = listed ? placement : stat.rows.length > 1 ? breachedPlacement(panel, shownRows.length) : null;
+          const breakdownList = shownPlacement && (
+            <PanelAccountBreakdown
+              rows={shownRows}
+              placement={shownPlacement}
+              format={format}
+              flagged={flagged}
+              testId={`panel-breakdown-${panel.id}`}
+            />
+          );
+          // The dial is a stat with a bounded scale, and takes the same total.
+          if (panel.type === 'gauge') {
+            return (
+              <Box data-testid={`panel-gauge-${panel.id}`} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                <Tooltip title={breakdown || ''}>
+                  <Box sx={{ flex: 1, minHeight: 0 }}>
+                    <PanelGauge
+                      value={stat.total}
+                      caption={stat.rows.length > 1 && !listed ? countCaption : stat.caption}
+                      // Rows under the dial come out of the dial's own height; a
+                      // single-account gauge keeps the full-size dial.
+                      rowsBelow={shownPlacement && !expanded ? shownRows.length : 0}
+                    />
+                  </Box>
+                </Tooltip>
+                {breakdownList}
+              </Box>
+            );
+          }
+          return (
+            <Box
+              data-testid={`panel-stat-${panel.id}`}
+              sx={shownPlacement === 'beside' ? { display: 'flex', alignItems: 'flex-start', gap: ds.space[4] } : undefined}
+            >
+              <Box sx={{ flexShrink: 0 }}>
+                <Tooltip title={breakdown || ''}>
+                  <Typography
+                    component='div'
+                    sx={{ fontSize: 28, fontWeight: 650, letterSpacing: '-0.02em', color: ds.gray[700], width: 'fit-content' }}
+                  >
+                    {formatValue(stat.total, panel.unit)}
+                  </Typography>
+                </Tooltip>
+                {stat.caption && (
+                  <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                    {stat.caption}
+                  </Typography>
+                )}
+                {stat.rows.length > 1 && !listed && (
+                  <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block' }}>
+                    {countCaption}
+                  </Typography>
+                )}
+              </Box>
+              {breakdownList}
+            </Box>
+          );
+        }
+        case 'table': {
+          // Several accounts: the account is its own column rather than a prefix
+          // folded into the series text, so it can be read — and scanned — as one.
+          const byAccount = data.series.some((s) => s.accountLabel);
+          const headers = byAccount
+            ? [
+                { name: 'Account', width: '25%' },
+                { name: 'Series', width: '45%' },
+                { name: 'Latest', width: '30%' },
+              ]
+            : [
+                { name: 'Series', width: '60%' },
+                { name: 'Latest', width: '40%' },
+              ];
+          const rows = data.series.map((s) => {
+            const latest = formatValue(lastValue(s.values), panel.unit);
+            const series = byAccount ? metricLabel(s) : s.label;
+            return [
+              ...(byAccount ? [{ text: s.accountLabel || '', value: s.accountLabel || '' }] : []),
+              { text: series, value: series },
+              { text: latest, value: latest },
+            ];
+          });
+          return <CustomTable headers={headers} tableData={rows} />;
+        }
+        case 'bar':
+          // Stacked, so on a multi-account panel each account is a segment and the
+          // stack's height is the consolidated view — no total series needed, and
+          // one would double the stack.
+          return <Chart.Bar data={data.series.map((s) => s.values)} labels={data.labels} chartLabel={data.series.map((s) => s.label)} />;
+        case 'timeseries':
+        default: {
+          // Each account's own lines, then the series that adds them up — dashed
+          // and heavier, so the total reads as a different kind of line from the
+          // parts it sums. Its colour is left to the chart, as every line's is:
+          // naming one colour would switch off the automatic palette for the rest.
+          const drawn = [...data.series, ...consolidatedSeries(data.series)];
+          // Chart.Line = @shared/charts/LineCharts (chart.js).
+          return (
+            <Chart.Line
+              dataset={drawn.map(lineDataset)}
+              labels={data.labels}
+              timestamps={data.timestamps}
+              chartLabel={drawn.map((s) => s.label)}
+              minHeight={chartHeight}
+              dynamicHeight={false}
+              legendOptions={{ renderer: 'html', unit: panel.unit }}
+            />
+          );
+        }
+      }
+    },
+    [panel, data, stat, breaches]
+  );
+  const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
+  // Built only while the modal is open, so a closed one costs no second chart.
+  const viewDrawing = React.useMemo(() => (viewing ? renderDrawing(VIEW_CHART_HEIGHT, { expanded: true }) : null), [viewing, renderDrawing]);
+
+  const body = (content: React.ReactNode = drawing, chartHeight = CHART_HEIGHT) => {
     if (panel.type === 'text') {
       return (
         <Typography variant='body2' sx={{ whiteSpace: 'pre-wrap', color: ds.gray[600] }}>
@@ -555,9 +637,9 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
       );
     }
     if (loading || !data) {
-      return <Skeleton height={CHART_HEIGHT} width='100%' />;
+      return <Skeleton height={chartHeight} width='100%' />;
     }
-    return drawing;
+    return content;
   };
 
   return (
@@ -631,11 +713,24 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {/* Colour alone does not say WHAT was crossed, and a viewer who cannot
             tell amber from red is left with a panel that looks merely decorated.
             The badge names the step; the hover reads it back as a sentence. */}
-        {breach && tone && (
-          <Tooltip title={`${formatValue(stat?.total, panel.unit)} is at or above the ${breach.value} threshold.`}>
+        {breaches.frame && tone && (
+          <Tooltip
+            title={
+              breaches.all.length === 1 ? (
+                breachSentence(breaches.frame, panel.unit)
+              ) : (
+                <Box sx={{ display: 'grid', gap: ds.space[0] }}>
+                  {breaches.all.map((b, i) => (
+                    // Positional: the list is derived fresh from the data and never reordered in place.
+                    <span key={i}>{breachSentence(b, panel.unit)}</span>
+                  ))}
+                </Box>
+              )
+            }
+          >
             <Box component='span' data-testid={`panel-threshold-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
               <Chip size='2xs' tone={tone.chip}>
-                {`≥ ${breach.value}`}
+                {breachLabel(breaches.frame)}
               </Chip>
             </Box>
           </Tooltip>
@@ -687,12 +782,14 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               menuItems={menuItems}
               data={panel}
               onMenuClick={(item: any) => {
+                if (item?.id === 'view') setViewing(true);
                 if (item?.id === 'refresh') setPanelRefresh((n) => n + 1);
                 if (item?.id === 'edit') onEdit?.();
                 // The panel exactly as stored — it drops straight into another
                 // dashboard's `panels` array, account scope and all.
                 if (item?.id === 'export') downloadJsonFile(panel, `${filenameSlug(panel.title, 'panel')}-panel`);
                 if (item?.id === 'export-png') exportPng();
+                if (item?.id === 'copy-link') copyLink();
               }}
             />
           </Box>
@@ -714,6 +811,29 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           {body()}
         </Box>
       </Box>
+      {/* The whole panel with the room to show it: the grid cell's fixed height is what clips a long table
+          or a busy legend. Nothing here is cut short — rows wrap rather than ellipsise, and every row is
+          reachable through the table's pager. */}
+      <Modal open={viewing} handleClose={() => setViewing(false)} width='xl' title={panel.title} subtitle={panel.description || undefined}>
+        <Box data-testid={`panel-view-${panel.id}`} sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+          {panel.type !== 'text' && (
+            <Box sx={{ display: 'flex', gap: ds.space[1] }}>
+              <Chip size='2xs' tone='subtle'>
+                {panel.datasource}
+              </Chip>
+              <Chip size='2xs' tone='neutral'>
+                {shownLabel}
+              </Chip>
+            </Box>
+          )}
+          {warning && (
+            <Typography variant='caption' sx={{ color: ds.amber[600] }}>
+              {warning}
+            </Typography>
+          )}
+          {body(viewDrawing, VIEW_CHART_HEIGHT)}
+        </Box>
+      </Modal>
     </Box>
   );
 });

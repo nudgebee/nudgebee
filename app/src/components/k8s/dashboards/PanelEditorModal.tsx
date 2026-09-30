@@ -21,6 +21,7 @@ import {
   type PanelDatasource,
   type PanelTarget,
   type PanelThresholdColor,
+  type PanelThresholdOp,
   type PanelThresholdStep,
   type PanelType,
 } from '@api1/dashboards';
@@ -34,7 +35,19 @@ import { ES_PROVIDER, providerChoices, providerLabel, providerTypeOf, useEsIndex
 import FilterDropdown from '@ui/FilterDropdown';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import PanelProviderRow from './PanelProviderRow';
-import { hasThresholds, isCompleteStep, panelThresholdStepsOf, THRESHOLD_COLORS, thresholdTone } from './panelThresholds';
+import {
+  appliesToOf,
+  hasThresholds,
+  isCompleteStep,
+  OP_PHRASE,
+  OP_SYMBOL,
+  opOf,
+  panelThresholdStepsOf,
+  THRESHOLD_COLORS,
+  THRESHOLD_OPS,
+  thresholdOverlaps,
+  thresholdTone,
+} from './panelThresholds';
 import { referencedVariables, type VariableValues } from './templating';
 
 interface Props {
@@ -106,6 +119,16 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
 
 /** What a threshold step paints the panel in. */
 const THRESHOLD_COLOR_OPTIONS = THRESHOLD_COLORS.map((color) => ({ label: `${color[0].toUpperCase()}${color.slice(1)}`, value: color }));
+
+/** How a threshold step compares — the symbol the badge shows, spelled out. */
+const THRESHOLD_OP_OPTIONS = THRESHOLD_OPS.map((op) => ({ label: `${OP_SYMBOL[op]} ${OP_PHRASE[op]}`, value: op }));
+
+/**
+ * The "Applies to" picker's value for one account. The picker is one flat list —
+ * the shown number, every account, then each account — so an account's option
+ * carries its id behind a prefix the two fixed choices cannot collide with.
+ */
+const ACCOUNT_SUBJECT = 'account:';
 
 /**
  * The link picker's stand-in for "attach to nothing, add a column of my own".
@@ -509,6 +532,32 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   /** A step that could not be drawn. Blocks Save, and says so rather than greying the button out. */
   const unfinishedThresholds = thresholds.filter((step) => !isCompleteStep(step));
   /**
+   * A step naming an account the panel no longer covers — the account was
+   * removed from the scope, deleted, or the panel was imported from another
+   * tenant. It never fires, which is safe, so it does not block Save; it is
+   * flagged so the author can re-point it rather than keep a rule that is dead.
+   */
+  const coveredAccountIds = new Set(providerAccounts.map((a) => a.value));
+  const danglingThresholds = thresholds.filter((step) => appliesToOf(step) === 'account' && !coveredAccountIds.has(step.account_id || ''));
+  /**
+   * On a single-account panel every subject is the same number, so the picker
+   * would be a choice with no consequence — unless a step already names one,
+   * which has to stay fixable.
+   */
+  const showAppliesTo = providerAccounts.length > 1 || thresholds.some((step) => appliesToOf(step) !== 'shown');
+  /** Steps that apply to the same value with an outcome worth spelling out — a hint, never a Save blocker. */
+  const thresholdConflicts = thresholdOverlaps(thresholds, providerAccounts);
+  const appliesToOptions = [
+    { label: 'Shown number', value: 'shown' },
+    { label: 'Every account', value: 'every' },
+    ...providerAccounts.map((a) => ({ label: a.label, value: `${ACCOUNT_SUBJECT}${a.value}` })),
+    // One option per missing account, however many steps still name it.
+    ...[...new Set(danglingThresholds.map((step) => step.account_id || ''))].map((id) => ({
+      label: 'Account not available',
+      value: `${ACCOUNT_SUBJECT}${id}`,
+    })),
+  ];
+  /**
    * What a link can be attached to: an existing column, whose own values become
    * the links, or a new column of its own.
    *
@@ -896,7 +945,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                   header={
                     <GroupHeader
                       title='Thresholds'
-                      description='Colour the panel when its number crosses a line — the border and the title band take the step’s colour, and the header names the threshold that was crossed.'
+                      description='Colour the panel when a number crosses a line — the border and the title band take the step’s colour, and the header names the threshold that was crossed, and the account when it was one account’s.'
                     />
                   }
                 >
@@ -942,6 +991,35 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                                     background: thresholdTone(step.color).border,
                                   }}
                                 />
+                                {/* Read left to right as the rule: "Every account ≥ 80 → Red". */}
+                                {showAppliesTo && (
+                                  <Box sx={{ flex: 1.4, minWidth: 0 }}>
+                                    <Select
+                                      value={appliesToOf(step) === 'account' ? `${ACCOUNT_SUBJECT}${step.account_id || ''}` : appliesToOf(step)}
+                                      options={appliesToOptions}
+                                      onChange={(v: string) =>
+                                        v.startsWith(ACCOUNT_SUBJECT)
+                                          ? patchStep({ applies_to: 'account', account_id: v.slice(ACCOUNT_SUBJECT.length) })
+                                          : // "Shown number" is what an absent field means, so it is stored as one:
+                                            // the panel JSON stays what every step before this looked like.
+                                            patchStep({ applies_to: v === 'every' ? 'every' : undefined, account_id: undefined })
+                                      }
+                                      id={`threshold-applies-${i}`}
+                                    />
+                                  </Box>
+                                )}
+                                <Box sx={{ flex: 1 }}>
+                                  <Select
+                                    value={opOf(step)}
+                                    options={THRESHOLD_OP_OPTIONS}
+                                    // `gte` is what an absent field means; stored as absent for the same reason.
+                                    onChange={(v: string) => patchStep({ op: v === 'gte' ? undefined : (v as PanelThresholdOp) })}
+                                    id={`threshold-op-${i}`}
+                                  />
+                                </Box>
+                                <Box sx={{ flex: 1 }}>
+                                  <ThresholdValue value={step.value} index={i} onChange={(next) => patchStep({ value: next })} />
+                                </Box>
                                 <Box sx={{ flex: 1 }}>
                                   <Select
                                     value={step.color}
@@ -949,9 +1027,6 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                                     onChange={(v: string) => patchStep({ color: v as PanelThresholdColor })}
                                     id={`threshold-color-${i}`}
                                   />
-                                </Box>
-                                <Box sx={{ flex: 1 }}>
-                                  <ThresholdValue value={step.value} index={i} onChange={(next) => patchStep({ value: next })} />
                                 </Box>
                                 <Button
                                   tone='ghost'
@@ -969,9 +1044,10 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
 
                       {thresholds.length > 0 && (
                         <Typography variant='caption' sx={{ display: 'block', mt: ds.space[2], color: ds.gray[500] }}>
-                          A value at or above a step takes its colour, and the highest step it crosses wins. Below every step the panel draws plain,
-                          which is why there is no colour to set for that range. The number compared is the one the panel shows — on a panel scoped to
-                          several accounts, that is their total.
+                          A value past a step’s line takes its colour. Past several, the furthest wins — the highest of the ≥ and &gt; steps, the
+                          lowest of the ≤ and &lt; steps — and when one of each applies, the more severe colour. Past none, the panel draws plain.
+                          {showAppliesTo &&
+                            ' “Shown number” compares the number on the panel: the accounts’ total, or one account’s when the view is narrowed to it. “Every account” checks each account on its own, and names the one that crossed.'}
                         </Typography>
                       )}
 
@@ -987,6 +1063,45 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                         >
                           <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                             Every threshold needs a number to compare against. Fill it in, or remove the step.
+                          </Typography>
+                        </Box>
+                      )}
+
+                      {thresholdConflicts.length > 0 && (
+                        <Box
+                          data-testid='threshold-overlaps'
+                          sx={{
+                            mt: ds.space[2],
+                            p: ds.space[3],
+                            border: `1px solid ${ds.blue[300]}`,
+                            background: ds.blue[100],
+                            borderRadius: ds.radius.md,
+                            display: 'grid',
+                            gap: ds.space[1],
+                          }}
+                        >
+                          {thresholdConflicts.map((overlap) => (
+                            <Typography key={overlap.steps.join(':')} variant='body2' sx={{ color: ds.gray[700] }}>
+                              {overlap.message}
+                            </Typography>
+                          ))}
+                        </Box>
+                      )}
+
+                      {danglingThresholds.length > 0 && (
+                        <Box
+                          data-testid='threshold-dangling'
+                          sx={{
+                            mt: ds.space[2],
+                            p: ds.space[3],
+                            border: `1px solid ${ds.amber[300]}`,
+                            background: ds.amber[100],
+                            borderRadius: ds.radius.md,
+                          }}
+                        >
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            {danglingThresholds.length === 1 ? 'A threshold names' : `${danglingThresholds.length} thresholds name`} an account this
+                            panel no longer covers, so it never fires. Pick one of the panel’s accounts, or remove the step.
                           </Typography>
                         </Box>
                       )}

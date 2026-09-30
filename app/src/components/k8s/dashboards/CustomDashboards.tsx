@@ -23,6 +23,7 @@ import { ds } from '@utils/colors';
 import { downloadJsonFile, filenameSlug } from '@utils/fileDownload';
 import apiDashboards, { type AccountOption, type Dashboard, type DashboardBinding } from '@api1/dashboards';
 import DashboardView from './DashboardView';
+import { PANEL_PARAM } from './panelLink';
 import DashboardSkeleton from './DashboardSkeleton';
 import ImportDashboardModal from './ImportDashboardModal';
 import TemplateGalleryModal from './TemplateGalleryModal';
@@ -127,6 +128,8 @@ const CustomDashboards: React.FC = () => {
       const params = new URLSearchParams(queryString);
       if (id) params.set(DASHBOARD_PARAM, id);
       else params.delete(DASHBOARD_PARAM);
+      // A panel belongs to the dashboard it was linked on; the next one opens at its top.
+      params.delete(PANEL_PARAM);
       const query = params.toString();
       router.push(`${path}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`, undefined, { shallow: true });
     },

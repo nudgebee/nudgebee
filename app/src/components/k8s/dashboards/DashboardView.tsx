@@ -23,23 +23,28 @@ import { Modal } from '@ui/Modal';
 import { snackbar } from '@ui/Toast';
 import Tooltip from '@ui/Tooltip';
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
+import DataObjectOutlinedIcon from '@mui/icons-material/DataObjectOutlined';
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
+import SearchIcon from '@mui/icons-material/Search';
 import BackButton from '@shared/buttons/BackButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { downloadIcon, RefreshIcon, writeIconLight } from '@assets';
 import { ds } from '@utils/colors';
-import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type Panel } from '@api1/dashboards';
+import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type DashboardDefinition, type Panel } from '@api1/dashboards';
 import SortablePanel from './SortablePanel';
 import usePanelResize from './usePanelResize';
 import { downloadNodeAsPng, waitForPanels } from './panelImage';
+import EditDashboardJsonModal from './EditDashboardJsonModal';
+import type { EditableDashboard } from './dashboardJson';
 import PanelEditorModal from './PanelEditorModal';
 import PanelLibraryModal from './PanelLibraryModal';
 import { blankPanel, panelSpan } from './panelDefaults';
 import { resolvePanelAccounts } from './panelAccounts';
+import { PANEL_PARAM, withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -67,12 +72,18 @@ const APP_HEADER_HEIGHT = `calc(${ds.space.mul(0, 28)} + 2px)`;
 /** Gap between panels, in px. */
 const GRID_GAP = 10;
 
+/** How long a panel stays outlined after a jump lands on it. */
+const HIGHLIGHT_MS = 2000;
+
 /**
  * Where the author was headed when the unsaved-changes prompt stopped them.
  * `edit` is the toolbar's own Discard — it leaves edit mode without leaving the
  * screen; the other two leave the screen entirely.
  */
 type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string };
+
+/** The definition's settings beside its panels. */
+type DashboardSettings = Pick<DashboardDefinition, 'time_from' | 'refresh'>;
 
 const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, onChange, canEdit, initialEditing = false }) => {
   const router = useRouter();
@@ -154,6 +165,16 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   // and committed by the same Save as the layout — there is no separate rename.
   const [titleDraft, setTitleDraft] = useState(dashboard.title);
   const [descriptionDraft, setDescriptionDraft] = useState(dashboard.description || '');
+  /**
+   * The dashboard's own settings — default time range, refresh — when the draft
+   * changes them. Only the JSON editor edits these, so null (the usual case)
+   * means "as saved".
+   */
+  const [draftSettings, setDraftSettings] = useState<DashboardSettings | null>(null);
+  const settingsChanged =
+    draftSettings !== null &&
+    ((draftSettings.time_from || '') !== (dashboard.definition?.time_from || '') ||
+      (draftSettings.refresh || '') !== (dashboard.definition?.refresh || ''));
 
   const editing = draftPanels !== null;
   const panels = draftPanels ?? savedPanels;
@@ -164,6 +185,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     (isNew ||
       titleDraft !== dashboard.title ||
       descriptionDraft !== (dashboard.description || '') ||
+      settingsChanged ||
       JSON.stringify(draftPanels) !== JSON.stringify(savedPanels));
 
   /**
@@ -171,11 +193,18 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
    * the moment it opens — `isNew` forces that so Save always writes — but a
    * blank New dashboard nobody has typed into has nothing to warn about.
    */
-  const unsavedWork = editing && (isNew ? Boolean(titleDraft.trim() || descriptionDraft.trim() || panels.length) : dirty);
+  const unsavedWork = editing && (isNew ? Boolean(titleDraft.trim() || descriptionDraft.trim() || panels.length || settingsChanged) : dirty);
 
   const [editingPanel, setEditingPanel] = useState<Panel | null>(null);
   const [panelModalOpen, setPanelModalOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [jsonOpen, setJsonOpen] = useState(false);
+  /** Set when Save refused JSON the author applied: the editor reopens on it, with the reason. */
+  const [jsonReopen, setJsonReopen] = useState<{ error: string } | null>(null);
+  /** Whether JSON was applied to the draft since it was last saved or discarded. */
+  const jsonApplied = useRef(false);
+  /** Why the last save was refused, as the server put it. */
+  const lastSaveError = useRef('');
   const [saving, setSaving] = useState(false);
   /** Non-null while the leave prompt is up; holds the exit it is holding back. */
   const [pendingExit, setPendingExit] = useState<Exit | null>(null);
@@ -190,8 +219,62 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   /** The panel under the cursor mid-drag; drives the DragOverlay. */
   const [activeId, setActiveId] = useState<number | null>(null);
 
+  /*
+   * Jumping to a panel — from the toolbar's picker, or a link carrying the panel parameter. A dashboard of a
+   * few dozen panels is several screens tall, and scrolling for one by eye is the slow way to find it.
+   */
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const [highlightedId, setHighlightedId] = useState<number | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The linked panel already scrolled to, so the link is followed once. */
+  const followedLink = useRef('');
+  useEffect(
+    () => () => {
+      if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    },
+    []
+  );
+
+  const scrollToPanel = useCallback((id: number) => {
+    const node = gridRef.current?.querySelector<HTMLElement>(`[data-testid="sortable-panel-${id}"]`);
+    if (!node) return;
+    // Lands below the sticky toolbar rather than under it: where the bar sits once stuck (its `top`), plus its
+    // height — measured, because it wraps on narrow screens. Not its current edge, which is lower until it sticks.
+    const toolbar = toolbarRef.current;
+    const stuckBottom = toolbar ? (parseFloat(window.getComputedStyle(toolbar).top) || 0) + toolbar.offsetHeight : 0;
+    node.style.scrollMarginTop = `${stuckBottom + GRID_GAP}px`;
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // The outline says which of the panels now on screen was the one asked for.
+    setHighlightedId(id);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightedId(null), HIGHLIGHT_MS);
+  }, []);
+
+  /** Jumps, and names the panel in the URL so the address bar is a link to it. */
+  const jumpToPanel = (id: number) => {
+    scrollToPanel(id);
+    // Already there — the link effect below must not scroll to it a second time when the URL catches up.
+    followedLink.current = String(id);
+    // `replace`: a jump is moving around one page, not a step Back should walk through.
+    const url = new URL(withPanelParam(window.location.href, String(id)));
+    router.replace(`${url.pathname}${url.search}${url.hash}`, undefined, { shallow: true, scroll: false });
+  };
+
+  // A link naming a panel scrolls to it once the dashboard has drawn — once, so a later render (a refresh,
+  // leaving edit mode) does not yank the viewer back to it.
+  const linkedPanel = router.isReady && typeof router.query[PANEL_PARAM] === 'string' ? (router.query[PANEL_PARAM] as string) : '';
+  useEffect(() => {
+    if (!linkedPanel || editing || followedLink.current === linkedPanel) return undefined;
+    const target = savedPanels.find((p) => String(p.id) === linkedPanel);
+    if (!target) return undefined;
+    followedLink.current = linkedPanel;
+    // One frame, so the grid has laid out before it is measured.
+    const frame = requestAnimationFrame(() => scrollToPanel(target.id));
+    return () => cancelAnimationFrame(frame);
+  }, [linkedPanel, editing, savedPanels, scrollToPanel]);
+
   /** Writes the dashboard back. */
-  const persist = async (change: { title?: string; description?: string; panels?: Panel[] }): Promise<boolean> => {
+  const persist = async (change: { title?: string; description?: string; panels?: Panel[]; settings?: DashboardSettings }): Promise<boolean> => {
     setSaving(true);
     // A create answers with its new id and the host writes it into the URL. That
     // push is this screen's own doing, so the guard below must not hold it.
@@ -205,14 +288,21 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         description: change.description ?? dashboard.description,
         // Falls back to the SAVED panels, never the draft: renaming mid-edit
         // must not smuggle an unsaved layout along with the new title.
-        definition: { ...EMPTY_DEFINITION, ...(dashboard.definition || {}), panels: change.panels ?? savedPanels },
+        definition: {
+          ...EMPTY_DEFINITION,
+          ...(dashboard.definition || {}),
+          // Written field by field so a setting the draft removed is removed, not left as saved.
+          ...(change.settings ? { time_from: change.settings.time_from, refresh: change.settings.refresh } : {}),
+          panels: change.panels ?? savedPanels,
+        },
       });
 
       // The gateway reports handler failures in `errors`, not by throwing, so a
       // success toast keyed only on the absence of an exception would lie.
       if (res.errors || !res.data) {
         const message = Array.isArray(res.errors) ? (res.errors[0] as any)?.message : null;
-        snackbar.error(message || 'Could not save the dashboard.');
+        lastSaveError.current = message || 'Could not save the dashboard.';
+        snackbar.error(lastSaveError.current);
         // Nothing was written and nothing navigates — hand the pass back.
         allowNavigation.current = false;
         return false;
@@ -265,7 +355,31 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const enterEdit = () => {
     setTitleDraft(dashboard.title);
     setDescriptionDraft(dashboard.description || '');
+    setDraftSettings(null);
+    jsonApplied.current = false;
     setDraftPanels(savedPanels.slice());
+  };
+
+  /** What the JSON editor starts from: the draft, exactly as Save would send it. */
+  const jsonDraft = useMemo<EditableDashboard>(
+    () => ({
+      title: titleDraft,
+      description: descriptionDraft,
+      definition: { ...EMPTY_DEFINITION, ...(dashboard.definition || {}), ...(draftSettings ?? {}), panels },
+    }),
+    [titleDraft, descriptionDraft, dashboard.definition, draftSettings, panels]
+  );
+
+  /** The JSON editor's result replaces the draft; the canvas redraws from it and Save stores it. */
+  const applyJson = (next: EditableDashboard) => {
+    setTitleDraft(next.title);
+    setDescriptionDraft(next.description);
+    setDraftPanels(next.definition.panels);
+    setDraftSettings({ time_from: next.definition.time_from, refresh: next.definition.refresh });
+    jsonApplied.current = true;
+    setJsonReopen(null);
+    setJsonOpen(false);
+    snackbar.success('Applied to the draft. Save to keep it.');
   };
 
   /**
@@ -284,6 +398,8 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     }
     setTitleDraft(dashboard.title);
     setDescriptionDraft(dashboard.description || '');
+    setDraftSettings(null);
+    jsonApplied.current = false;
     setDraftPanels(null);
   };
 
@@ -301,7 +417,20 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       setDraftPanels(null);
       return true;
     }
-    if (!(await persist({ title, description: descriptionDraft.trim(), panels: draftPanels }))) return false;
+    if (!(await persist({ title, description: descriptionDraft.trim(), panels: draftPanels, settings: draftSettings ?? undefined }))) {
+      // Refused after a JSON apply: back to the JSON, where the fix is, rather
+      // than a toast about panel 7 over a grid of them.
+      // It reopens on the draft as it is now — the applied JSON plus anything
+      // edited on the canvas since — never on a stale copy of what was applied,
+      // which applied again would undo those edits.
+      if (jsonApplied.current) {
+        setJsonReopen({ error: lastSaveError.current });
+        setJsonOpen(true);
+      }
+      return false;
+    }
+    setDraftSettings(null);
+    jsonApplied.current = false;
     snackbar.success(isNew ? 'Dashboard created' : 'Dashboard saved');
     // On a create the host swaps this screen for the saved dashboard; dropping
     // the draft here is what returns it to read-only in both cases.
@@ -492,6 +621,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           editing={editing}
           forceLoad={capturing}
           resizing={resizingId === panel.id}
+          highlighted={highlightedId === panel.id}
           onResizeStart={resizeFrom}
           onEdit={canEdit ? openPanelEditor : undefined}
           onDelete={requestDelete}
@@ -546,6 +676,26 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     <Stack direction='row' gap={1} alignItems='center'>
       {!editing && (
         <>
+          {/* A menu, not a filter: picking a panel moves the page to it and leaves every panel showing. */}
+          {panels.length > 1 && (
+            <DropdownMenu
+              align='end'
+              searchable
+              searchPlaceholder='Search panels…'
+              minWidth={280}
+              trigger={
+                <Button tone='secondary' icon={<SearchIcon sx={{ fontSize: 16 }} />} id='dashboard-jump-btn' data-testid='dashboard-jump-btn'>
+                  Jump to panel
+                </Button>
+              }
+              items={panels.map((p) => ({
+                id: `jump-to-panel-${p.id}`,
+                label: p.title || 'Untitled panel',
+                searchText: `${p.title || ''} ${p.description || ''}`,
+                onSelect: () => jumpToPanel(p.id),
+              }))}
+            />
+          )}
           {accountFilterOptions.length > 1 && (
             <FilterDropdown
               id='dashboard-account-filter'
@@ -614,6 +764,16 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       {canEdit && editing && (
         <>
           {panels.length > 0 && addPanelMenu({ align: 'end', tone: 'secondary', size: 'md' })}
+          <Button
+            tone='secondary'
+            onClick={() => setJsonOpen(true)}
+            disabled={saving}
+            icon={<DataObjectOutlinedIcon sx={{ fontSize: 18 }} />}
+            id='dashboard-edit-json-btn'
+            data-testid='dashboard-edit-json-btn'
+          >
+            Edit JSON
+          </Button>
           <Button tone='secondary' onClick={requestExit} disabled={saving} id='dashboard-discard-btn' data-testid='dashboard-discard-btn'>
             Discard
           </Button>
@@ -636,6 +796,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
        * below it so the two read as one piece of chrome.
        */}
       <Box
+        ref={toolbarRef}
         id='dashboard-toolbar'
         sx={{
           position: 'sticky',
@@ -778,6 +939,17 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         )}
       </Box>
 
+      <EditDashboardJsonModal
+        open={jsonOpen}
+        current={jsonDraft}
+        accountOptions={accounts}
+        reopen={jsonReopen}
+        onClose={() => {
+          setJsonOpen(false);
+          setJsonReopen(null);
+        }}
+        onApply={applyJson}
+      />
       <PanelLibraryModal
         open={libraryOpen}
         existingPanels={panels}

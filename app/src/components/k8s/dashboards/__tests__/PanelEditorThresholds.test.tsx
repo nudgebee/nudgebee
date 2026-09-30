@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import PanelEditorModal from '../PanelEditorModal';
 import type { AccountOption, Panel, PanelThresholdStep } from '@api1/dashboards';
 
@@ -197,5 +197,86 @@ describe('PanelEditorModal — thresholds', () => {
     fireEvent.change(screen.getByTestId('threshold-value-0'), { target: { value: '' } });
     expect(screen.getByTestId('panel-save-btn')).toBeDisabled();
     expect(screen.getByTestId('threshold-value-0')).toHaveValue(null);
+  });
+});
+
+describe('PanelEditorModal — what a threshold compares, and against which account', () => {
+  const fleet = [
+    { value: 'acc-1', label: 'prod-eu', cloud_provider: 'K8s' },
+    { value: 'acc-2', label: 'prod-us', cloud_provider: 'K8s' },
+    { value: 'acc-3', label: 'dev', cloud_provider: 'K8s' },
+  ] as AccountOption[];
+
+  const fleetPanel = (thresholds: PanelThresholdStep[]): Panel =>
+    ({ ...panel('stat', thresholds), account_ids: ['acc-1', 'acc-2', 'acc-3'] } as unknown as Panel);
+
+  const renderFleet = (thresholds: PanelThresholdStep[]) => {
+    const onSave = jest.fn();
+    render(<PanelEditorModal open panel={fleetPanel(thresholds)} isEdit accountOptions={fleet} onClose={jest.fn()} onSave={onSave} />);
+    return onSave;
+  };
+
+  /** Opens a picker by its id and chooses an option by its text — the popup is a portalled menu. */
+  const pick = async (id: string, option: string) => {
+    fireEvent.click(document.getElementById(id) as HTMLElement);
+    fireEvent.click(within(await screen.findByRole('listbox', { hidden: true })).getByText(option));
+  };
+
+  it('stores a comparison other than the default, and leaves the default unwritten', async () => {
+    const onSave = renderEditor(panel('stat', [{ value: 2, color: 'red' }]));
+    await pick('threshold-op-0', '≤ at or below');
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 2, color: 'red', op: 'lte' }]);
+  });
+
+  it('has no account picker on a single-account panel, where every subject is the same number', () => {
+    renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
+    expect(document.getElementById('threshold-op-0')).not.toBeNull();
+    expect(document.getElementById('threshold-applies-0')).toBeNull();
+  });
+
+  it('scopes a step to every account', async () => {
+    const onSave = renderFleet([{ value: 80, color: 'red' }]);
+    await pick('threshold-applies-0', 'Every account');
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red', applies_to: 'every' }]);
+  });
+
+  it('scopes a step to one of the panel’s accounts, by id', async () => {
+    const onSave = renderFleet([{ value: 80, color: 'red' }]);
+    await pick('threshold-applies-0', 'prod-us');
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red', applies_to: 'account', account_id: 'acc-2' }]);
+  });
+
+  it('writes a step back to the shown number as a step that never had a subject', async () => {
+    const onSave = renderFleet([{ value: 80, color: 'red', applies_to: 'account', account_id: 'acc-2' }]);
+    await pick('threshold-applies-0', 'Shown number');
+    await save();
+    expect(JSON.parse(JSON.stringify(saved(onSave).options?.thresholds))).toEqual([{ value: 80, color: 'red' }]);
+  });
+
+  it('offers one "Account not available" however many steps name the missing account', () => {
+    renderFleet([
+      { value: 80, color: 'red', applies_to: 'account', account_id: 'acc-9' },
+      { value: 90, color: 'amber', applies_to: 'account', account_id: 'acc-9' },
+    ]);
+    fireEvent.click(document.getElementById('threshold-applies-0') as HTMLElement);
+    return screen.findByRole('listbox', { hidden: true }).then((list) => expect(within(list).getAllByText('Account not available')).toHaveLength(1));
+  });
+
+  it('spells out an overlap the author would not guess the outcome of, without holding Save', () => {
+    renderFleet([
+      { value: 80, color: 'red' },
+      { value: 90, color: 'green', op: 'lte' },
+    ]);
+    expect(screen.getByTestId('threshold-overlaps')).toHaveTextContent('Steps 1 and 2 both apply from 80 to 90 — Red wins there');
+    expect(screen.getByTestId('panel-save-btn')).not.toBeDisabled();
+  });
+
+  it('flags a step naming an account the panel no longer covers, without holding Save', () => {
+    renderFleet([{ value: 80, color: 'red', applies_to: 'account', account_id: 'acc-9' }]);
+    expect(screen.getByTestId('threshold-dangling')).toHaveTextContent('never fires');
+    expect(screen.getByTestId('panel-save-btn')).not.toBeDisabled();
   });
 });

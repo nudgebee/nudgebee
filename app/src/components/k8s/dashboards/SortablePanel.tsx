@@ -39,6 +39,8 @@ interface Props {
   onResizeStart: (panel: Panel, event: React.MouseEvent) => void;
   /** True while THIS panel is the one being resized. */
   resizing: boolean;
+  /** True for a moment after the viewer jumped to this panel, so they can see which one it was. */
+  highlighted?: boolean;
 }
 
 /**
@@ -66,6 +68,7 @@ const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
   onDelete,
   onResizeStart,
   resizing,
+  highlighted = false,
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: panel.id,
@@ -126,7 +129,8 @@ const SortablePanel: React.FC<Props> = React.memo(function SortablePanel({
         // The original stays in place as a ghost; the DragOverlay is what
         // follows the cursor.
         opacity: isDragging ? 0.4 : 1,
-        outline: resizing ? `2px solid ${ds.blue[500]}` : 'none',
+        outline: resizing || highlighted ? `2px solid ${ds.blue[500]}` : '2px solid transparent',
+        transition: 'outline-color 0.3s ease',
         outlineOffset: '-2px',
         borderRadius: ds.radius.lg,
         /*
