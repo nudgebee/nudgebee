@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -386,7 +387,8 @@ func TestOffloadEventEvidence_WorkspaceFileHoldsUncappedValidJSON(t *testing.T) 
 	require.True(t, ok)
 	assert.Contains(t, inlineStr, "Evidence saved to event_evt-1_evidence.json with every section complete")
 	assert.Contains(t, inlineStr, "evidence_type=logs", "log_data is reduced by enrichData, so the note must not claim the logs are complete")
-	assert.Contains(t, inlineStr, "... (truncated)", "inline preview is the capped view")
+	assert.Contains(t, inlineStr, "pod_metrics=", "preview lists the sections available in the file")
+	assert.NotContains(t, inlineStr, `"timestamps"`, "raw series stay in the file, not inline")
 	require.Len(t, refs, 1)
 	assert.Equal(t, "event_evt-1_evidence.json", refs[0].Url)
 }
@@ -446,4 +448,165 @@ func TestOffloadEventEvidence_SmallEvidenceStaysInlineWithoutSave(t *testing.T) 
 
 	assert.Nil(t, refs)
 	assert.Equal(t, evidence, inline)
+}
+
+// The inline result must stay small however heavy the evidence is: the file
+// holds the data, the preview only orients the model.
+func TestOffloadEventEvidence_InlinePreviewIsCompact(t *testing.T) {
+	sc := security.NewRequestContextForSuperAdmin()
+	errLines := make([]string, 500)
+	for i := range errLines {
+		errLines[i] = strings.Repeat("warning: previous definition ", 40)
+	}
+	evidence := events.InvestigateData{
+		LogData:      strings.Repeat("log line\n", 20000),
+		ErrorLogData: errLines,
+		PodMetrics:   []events.InvestigateDataInsight{{Data: metricSeriesJSON(t, 400)}},
+		PodEvents:    []events.InvestigateDataInsight{{Data: map[string]any{"reason": "BackOff", "message": strings.Repeat("Back-off restarting failed container ", 200)}}},
+		PodData:      events.InvestigateDataInsight{Data: map[string]any{"lastState": map[string]any{"terminated": map[string]any{"reason": "OOMKilled", "exitCode": 137}}}},
+	}
+	wm := &mockWorkspaceManager{
+		saveFileFunc: func(ctx *security.RequestContext, accountId, conversationId, path, content string) error { return nil },
+	}
+
+	inline, refs := offloadEventEvidence(sc, wm, "acct-1", "conv-1", "evt-1", evidence)
+
+	inlineStr, ok := inline.(string)
+	require.True(t, ok)
+	assert.Less(t, len(inlineStr), eventEvidencePreviewBytes+1500, "instruction text plus a preview bounded by eventEvidencePreviewBytes")
+	assert.Contains(t, inlineStr, "error_log_data (500 lines, 1 distinct patterns, first 1 of them)")
+	assert.Contains(t, inlineStr, "log_data[evidence_type=logs]=180000", "sizes come from the uncapped evidence")
+	assert.Contains(t, inlineStr, "evt-1_evidence.json")
+	assert.Contains(t, inlineStr, "pod_events: ", "root-cause slices are inlined so crash loops need no second call")
+	assert.Contains(t, inlineStr, "OOMKilled")
+	assert.Contains(t, inlineStr, "Sections in the file (bytes):")
+	assert.Contains(t, inlineStr, "log_data[evidence_type=logs]=180000", "section list is not cut off by the facts above it")
+	assert.Contains(t, inlineStr, "get_event_evidence")
+	assert.NotContains(t, inlineStr, "shell_execute", "the events agent has no shell_execute")
+	require.Len(t, refs, 1)
+}
+
+// get_event_evidence rejects names it does not know, and the model reads
+// "No evidence found" as "the data does not exist". Every section in the
+// preview must therefore carry a name the tool accepts, or say it is file-only.
+func TestEventEvidencePreview_SectionsNameValidEvidenceTypes(t *testing.T) {
+	big := events.InvestigateDataInsight{Data: strings.Repeat("x", 50)}
+	id := events.InvestigateData{
+		LogData:        "line",
+		MetricsData:    []events.InvestigateDataInsight{big},
+		RDBMSQueryData: []events.InvestigateDataInsight{big},
+		Markdowns:      []events.InvestigateDataInsight{big},
+		Others:         []events.InvestigateDataInsight{big},
+		NodeData:       big,
+		JobPodEvents:   big,
+		ServiceMap:     big,
+		PodMetrics:     []events.InvestigateDataInsight{big},
+	}
+	out := buildEventEvidencePreview(id)
+
+	for _, want := range []string{
+		"log_data[evidence_type=logs]=",
+		"metrics_queries_data[evidence_type=metrics_data]=",
+		"rdbms_query_data[evidence_type=rdbms_query_response]=",
+		"markdown_data[evidence_type=markdowns]=",
+		"others[file only]=",
+		"node_data[file only]=",
+		"job_pod_events[file only]=",
+		"service_map_data[file only]=",
+		" pod_metrics=",
+	} {
+		assert.Contains(t, out, want)
+	}
+	// Every named evidence_type must be one extractEvidenceByType handles.
+	for _, m := range regexp.MustCompile(`evidence_type=(\w+)\]`).FindAllStringSubmatch(out, -1) {
+		assert.NotNil(t, extractEvidenceByType(events.InvestigateData{
+			LogData: "x", MetricsData: id.MetricsData, RDBMSQueryData: id.RDBMSQueryData, Markdowns: id.Markdowns,
+		}, m[1]), "evidence_type %q is not accepted by get_event_evidence", m[1])
+	}
+}
+
+// The OOMKilled block is appended last and each block marshals its raw rows
+// before its insight, so a plain cut from the front loses the cause. The slice
+// must lead with the OOMKilled block and with insights, not rows.
+func TestRootCauseSlice_KeepsOOMKilledInsightFirst(t *testing.T) {
+	rows := strings.Repeat("row ", 500)
+	blocks := []events.InvestigateDataInsight{
+		{Title: "Pod events", Data: rows, Insight: []events.Insight{{Message: "pod restarted 5 times"}}},
+		{Title: oomKilledTitle, Data: rows, Insight: []events.Insight{{Message: "container killed: OOMKilled exit 137"}}},
+	}
+	out := rootCauseSlice(blocks, previewRootCauseChars)
+
+	assert.LessOrEqual(t, len(out), previewRootCauseChars)
+	assert.Contains(t, out, "OOMKilled exit 137")
+	assert.Contains(t, out, "pod restarted 5 times")
+	assert.Less(t, strings.Index(out, oomKilledTitle), strings.Index(out, "Pod events"), "OOMKilled block comes first")
+	assert.Contains(t, out, `data: "row`, "leftover budget carries raw rows")
+}
+
+// Sections whose raw data stays in the file (others, markdown_data, traces)
+// carry their lead in one-line insights, e.g. "Deployment occurred 48 minutes
+// before the event". Those must reach the model, worst first, without
+// duplicates, and without repeating what the pod slices already carry.
+func TestEventEvidencePreview_InlinesInsightsWorstFirst(t *testing.T) {
+	big := strings.Repeat("x", 5000)
+	id := events.InvestigateData{
+		Others: []events.InvestigateDataInsight{
+			{Data: big, Insight: []events.Insight{
+				{Message: "Found 4 deployment(s) in the 7 days before the event", Severity: "info"},
+				{Message: "Deployment occurred 48 minutes before the event - potentially related", Severity: "warning"},
+			}},
+			{Data: big, Insight: []events.Insight{{Message: "Found 4 deployment(s) in the 7 days before the event", Severity: "info"}}},
+		},
+		Traces:    events.InvestigateDataInsight{Data: big, Insight: []events.Insight{{Message: "1x [http] rag-server POST status=400", Severity: "Critical"}}},
+		PodEvents: []events.InvestigateDataInsight{{Data: big, Insight: []events.Insight{{Message: "pod restarted 5 times", Severity: "warning"}}}},
+	}
+	out := buildEventEvidencePreview(id)
+
+	assert.Contains(t, out, "[others] Deployment occurred 48 minutes before the event")
+	assert.Contains(t, out, "[traces] 1x [http] rag-server POST status=400")
+	assert.Equal(t, 1, strings.Count(out, "Found 4 deployment(s)"), "duplicate messages are dropped")
+	assert.Less(t, strings.Index(out, "[traces]"), strings.Index(out, "[others] Deployment occurred"), "critical before warning")
+	assert.Less(t, strings.Index(out, "[others] Deployment occurred"), strings.Index(out, "Found 4 deployment(s)"), "warning before info")
+	assert.NotContains(t, out, "[pod_events]", "pod_events insights are carried by rootCauseSlice")
+}
+
+func TestInsightHighlights_StaysWithinBudget(t *testing.T) {
+	var items []events.InvestigateDataInsight
+	for i := 0; i < 50; i++ {
+		items = append(items, events.InvestigateDataInsight{Insight: []events.Insight{{Message: strings.Repeat("m", 200) + string(rune('a'+i%26)) + strings.Repeat("n", i), Severity: "info"}}})
+	}
+	out := insightHighlights([]previewSection{{name: "others", items: items}}, previewInsightBytes)
+
+	assert.LessOrEqual(t, len(out), previewInsightBytes)
+	assert.NotEmpty(t, out)
+}
+
+// The first N raw error lines are usually one message repeated; the lines that
+// show other collections failing too come later. One line per distinct
+// pattern keeps them in view.
+func TestDistinctErrorLines_OneLinePerPattern(t *testing.T) {
+	mk := func(ts, trace, coll string) string {
+		return `2026-10-06T12:11:` + ts + `Z ERROR {"trace_id": "` + trace + `", "message": "Error searching collection ` + coll + `: 400"}`
+	}
+	var lines []string
+	for i := 0; i < 8; i++ {
+		lines = append(lines, mk("4"+string(rune('0'+i)), "ff77ce25e6f51ee9297027c0f963c7d5", "nudgebee_docs"))
+	}
+	lines = append(lines,
+		mk("50", "213ba7fe3ba205afd00aa4092b0a7f80", "6bb67903-bf24-4f18-ad55-4e874d9303d7_memory_patterns"),
+		mk("51", "2b3adbbee9acca99679a6e3fea8a4ef1", "6bb67903-bf24-4f18-ad55-4e874d9303d7_memory_decisions"),
+		mk("52", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "6bb67903-bf24-4f18-ad55-4e874d9303d7_memory_patterns"),
+	)
+
+	out, patterns := distinctErrorLines(lines, 10)
+
+	assert.Equal(t, 3, patterns)
+	require.Len(t, out, 3)
+	assert.Contains(t, out[0], "nudgebee_docs")
+	assert.Contains(t, out[1], "memory_patterns")
+	assert.Contains(t, out[2], "memory_decisions")
+
+	capped, total := distinctErrorLines(lines, 2)
+	assert.Len(t, capped, 2)
+	assert.Equal(t, 3, total, "the pattern count is not limited by the line limit")
 }

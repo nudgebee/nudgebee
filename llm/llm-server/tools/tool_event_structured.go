@@ -365,6 +365,9 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 		// Small enough to return whole: nothing to cap, nothing to save.
 		return investigateData, nil
 	}
+	// Built before capping: capInvestigateDataEvidence rewrites slices in
+	// place, and the section sizes in the preview must be the file's sizes.
+	preview := buildEventEvidencePreview(investigateData)
 	capInvestigateDataEvidence(&investigateData)
 
 	outputFile := EventEvidenceFileName(eventID)
@@ -373,15 +376,12 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 		return investigateData, nil
 	}
 
-	cappedBytes, err := common.MarshalJson(investigateData)
-	if err != nil {
-		ctx.GetLogger().Error("get_event_by_id: failed to marshal capped evidence preview", "error", err, "event_id", eventID)
-		cappedBytes = nil
-	}
-	inline := fmt.Sprintf("Output large (%d bytes). Evidence saved to %s with every section complete — read and parse that file. "+
-		"Logs are reduced here: error lines are in error_log_data, and log_data is empty or a short tail; use get_event_evidence with evidence_type=logs for the full log body. "+
-		"Fields ending in \"... (truncated)\" in the preview below are shortened and are not valid JSON on their own.\nPreview: %s",
-		len(fullBytes), outputFile, truncateUTF8Safe(string(cappedBytes), evidencePreviewBytes))
+	inline := fmt.Sprintf("Output large (%d bytes). Evidence saved to %s with every section complete — use the key facts below. "+
+		"To fetch another section call get_event_evidence with evidence_type set to the section name, or to the name in [evidence_type=...] when one is shown; "+
+		"sections marked [file only] cannot be fetched. query_mode=summary only shrinks metrics, traces and logs (other types come back in full); "+
+		"to page a list use query_mode=filter with offset and limit. "+
+		"Logs are reduced in the file: error lines are in error_log_data, and log_data is empty or a short tail; use get_event_evidence with evidence_type=logs for the full log body.\n%s",
+		len(fullBytes), outputFile, preview)
 	return inline, []core.NBToolResponseReference{{
 		Text:        "Full event evidence saved to workspace",
 		Url:         outputFile,
@@ -924,4 +924,251 @@ func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 		return resp, err
 	}
 	return resp, nil
+}
+
+const (
+	// eventEvidencePreviewBytes bounds the inline summary get_event_by_id
+	// returns once evidence is offloaded to the workspace file. The file is
+	// the source of truth; this only orients the model. It is deliberately not
+	// evidencePreviewBytes, which is sized to the whole scratchpad observation
+	// and let one event's log lines fill it.
+	eventEvidencePreviewBytes = 7500
+	previewErrorLines         = 10
+	previewErrorLineChars     = 300
+	previewFieldChars         = 1200
+	// previewRootCauseChars caps the pod_events / pod_data slices: for crash
+	// loops and OOMs they hold the restart reason and last state.
+	previewRootCauseChars = 1000
+	// previewInsightBytes / previewInsightChars bound the one-line insight
+	// messages inlined from every section (deployment correlation, trace
+	// errors, ...). They are already written as summaries, so they carry the
+	// lead even when the section's raw data stays in the file.
+	previewInsightBytes = 1500
+	previewInsightChars = 240
+)
+
+// buildEventEvidencePreview summarises offloaded evidence: log summary, the
+// first error lines, alert labels/data, then every other non-empty section
+// with its size so the model knows what to read from the file.
+func buildEventEvidencePreview(id events.InvestigateData) string {
+	// evType is the get_event_evidence evidence_type for the section; "" means
+	// the tool cannot return it and it is only in the file.
+	sections := []previewSection{
+		{"log_data", "logs", nil, len(id.LogData)},
+		{"pod_metrics", "pod_metrics", id.PodMetrics, 0},
+		{"node_metrics", "node_metrics", id.NodeMetrics, 0},
+		{"metrics_queries_data", "metrics_data", id.MetricsData, 0},
+		{"pod_events", "pod_events", id.PodEvents, 0},
+		{"node_events", "node_events", id.NodeEvents, 0},
+		{"noisy_neighbours", "noisy_neighbours", id.NoisyNeighbours, 0},
+		{"api_failures", "api_failures", id.ApiFailures, 0},
+		{"user_actions", "user_actions", id.UserActions, 0},
+		{"rdbms_query_data", "rdbms_query_response", id.RDBMSQueryData, 0},
+		{"markdown_data", "markdowns", id.Markdowns, 0},
+		{"others", "", id.Others, 0},
+		{"pod_data", "pod_data", []events.InvestigateDataInsight{id.PodData}, 0},
+		{"node_data", "", []events.InvestigateDataInsight{id.NodeData}, 0},
+		{"deployment", "deployment", []events.InvestigateDataInsight{id.Deployment}, 0},
+		{"job_information", "job_information", []events.InvestigateDataInsight{id.JobInformation}, 0},
+		{"job_events", "job_events", []events.InvestigateDataInsight{id.JobEvents}, 0},
+		{"job_pod_events", "", []events.InvestigateDataInsight{id.JobPodEvents}, 0},
+		{"related_events", "related_events", []events.InvestigateDataInsight{id.RelatedEvents}, 0},
+		{"container_metrics", "container_metrics", []events.InvestigateDataInsight{id.ContainerMetrics}, 0},
+		{"traces", "traces", []events.InvestigateDataInsight{id.Traces}, 0},
+		{"service_map_data", "", []events.InvestigateDataInsight{id.ServiceMap}, 0},
+	}
+	for i := range sections {
+		if sections[i].items != nil {
+			sections[i].size = insightSliceSize(sections[i].items)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("Key facts:\n")
+
+	if id.LogSummary != nil {
+		if raw, err := common.MarshalJson(id.LogSummary); err == nil {
+			fmt.Fprintf(&b, "log_summary: %s\n", truncateUTF8Safe(string(raw), previewFieldChars))
+		}
+	}
+	if h := insightHighlights(sections, previewInsightBytes); h != "" {
+		b.WriteString("insights (from sections whose data stays in the file):\n" + h)
+	}
+	if n := len(id.ErrorLogData); n > 0 {
+		distinct, patterns := distinctErrorLines(id.ErrorLogData, previewErrorLines)
+		fmt.Fprintf(&b, "error_log_data (%d lines, %d distinct patterns, first %d of them):\n", n, patterns, len(distinct))
+		for _, line := range distinct {
+			b.WriteString("  " + truncateUTF8Safe(line, previewErrorLineChars) + "\n")
+		}
+	}
+	if len(id.PodEvents) > 0 {
+		fmt.Fprintf(&b, "pod_events: %s\n", rootCauseSlice(id.PodEvents, previewRootCauseChars))
+	}
+	if id.PodData.Data != nil || len(id.PodData.Insight) > 0 {
+		fmt.Fprintf(&b, "pod_data: %s\n", rootCauseSlice([]events.InvestigateDataInsight{id.PodData}, previewRootCauseChars))
+	}
+	for _, f := range []struct {
+		name    string
+		insight events.InvestigateDataInsight
+	}{{"alert_labels", id.AlertLabels}, {"alert_data", id.AlertData}} {
+		if f.insight.Data == nil {
+			continue
+		}
+		if raw, err := common.MarshalJson(f.insight.Data); err == nil {
+			fmt.Fprintf(&b, "%s: %s\n", f.name, truncateUTF8Safe(string(raw), previewFieldChars))
+		}
+	}
+
+	sort.Slice(sections, func(i, j int) bool { return sections[i].size > sections[j].size })
+	var tail strings.Builder
+	tail.WriteString("Sections in the file (bytes):")
+	for _, s := range sections {
+		if s.size <= 0 {
+			continue
+		}
+		switch s.evType {
+		case "":
+			fmt.Fprintf(&tail, " %s[file only]=%d", s.name, s.size)
+		case s.name:
+			fmt.Fprintf(&tail, " %s=%d", s.name, s.size)
+		default:
+			fmt.Fprintf(&tail, " %s[evidence_type=%s]=%d", s.name, s.evType, s.size)
+		}
+	}
+	tail.WriteString("\n")
+
+	// The section list is what tells the model what else it can fetch, so
+	// it is reserved first and only the facts above it are trimmed.
+	return truncateUTF8Safe(b.String(), max(0, eventEvidencePreviewBytes-tail.Len())) + tail.String()
+}
+
+// previewSection is one evidence section as the preview sees it. items is nil
+// for log_data, whose size is its string length.
+type previewSection struct {
+	name   string
+	evType string
+	items  []events.InvestigateDataInsight
+	size   int
+}
+
+// errTemplateNoise matches what differs between otherwise identical log
+// lines: UUIDs, long hex ids (trace/span ids) and numbers.
+var errTemplateNoise = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,}|\d+`)
+
+// distinctErrorLines returns up to limit error lines, one per distinct
+// pattern in first-seen order, and how many distinct patterns there are. The
+// first N raw lines are usually one message repeated, which hides that other
+// collections, hosts or pods are failing too.
+func distinctErrorLines(lines []string, limit int) ([]string, int) {
+	seen := make(map[string]struct{}, len(lines))
+	var out []string
+	for _, line := range lines {
+		key := errTemplateNoise.ReplaceAllString(line, "#")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(out) < limit {
+			out = append(out, line)
+		}
+	}
+	return out, len(seen)
+}
+
+// insightHighlights inlines the one-line insight messages of every section
+// except pod_events/pod_data (rootCauseSlice already carries theirs). Critical
+// and warning messages come first, duplicates are dropped, and the result
+// stays within maxBytes.
+func insightHighlights(sections []previewSection, maxBytes int) string {
+	type entry struct {
+		rank int
+		line string
+	}
+	rank := func(sev string) int {
+		switch strings.ToLower(sev) {
+		case "critical", "error":
+			return 0
+		case "warning", "warn":
+			return 1
+		}
+		return 2
+	}
+	seen := map[string]struct{}{}
+	var entries []entry
+	for _, sec := range sections {
+		if sec.name == "pod_events" || sec.name == "pod_data" {
+			continue
+		}
+		for _, item := range sec.items {
+			for _, in := range item.Insight {
+				msg := strings.TrimSpace(in.Message)
+				if msg == "" {
+					continue
+				}
+				if _, dup := seen[msg]; dup {
+					continue
+				}
+				seen[msg] = struct{}{}
+				entries = append(entries, entry{rank(in.Severity), "  [" + sec.name + "] " + truncateUTF8Safe(msg, previewInsightChars) + "\n"})
+			}
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].rank < entries[j].rank })
+
+	var b strings.Builder
+	for _, e := range entries {
+		if b.Len()+len(e.line) > maxBytes {
+			break
+		}
+		b.WriteString(e.line)
+	}
+	return b.String()
+}
+
+// oomKilledTitle is the block tool_event.go appends to PodEvents for OOM
+// events; it is appended last, so a cut from the front would drop it.
+const oomKilledTitle = "*Pod and Node OOMKilled data*"
+
+// rootCauseSlice fits the part of pod_events / pod_data that explains a crash
+// into maxBytes. Each block's title and insight come first (the OOMKilled
+// block before the others), because the summary is what names the cause; raw
+// table rows only fill whatever budget is left. InvestigateDataInsight
+// marshals data first, so cutting its JSON from the front keeps the rows and
+// drops the summary.
+func rootCauseSlice(insights []events.InvestigateDataInsight, maxBytes int) string {
+	ordered := make([]events.InvestigateDataInsight, 0, len(insights))
+	for _, in := range insights {
+		if in.Title == oomKilledTitle {
+			ordered = append(ordered, in)
+		}
+	}
+	for _, in := range insights {
+		if in.Title != oomKilledTitle {
+			ordered = append(ordered, in)
+		}
+	}
+
+	var b strings.Builder
+	for _, in := range ordered {
+		if in.Title != "" {
+			b.WriteString(in.Title + " ")
+		}
+		if len(in.Insight) > 0 {
+			if raw, err := common.MarshalJson(in.Insight); err == nil {
+				b.WriteString(string(raw))
+			}
+		}
+		b.WriteString("; ")
+	}
+	out := truncateUTF8Safe(b.String(), maxBytes)
+	for _, in := range ordered {
+		left := maxBytes - len(out)
+		if left <= len("data:  ") || in.Data == nil {
+			continue
+		}
+		if raw, err := common.MarshalJson(in.Data); err == nil {
+			out += "data: " + truncateUTF8Safe(string(raw), left-len("data:  ")) + " "
+		}
+	}
+	return strings.TrimSpace(out)
 }
