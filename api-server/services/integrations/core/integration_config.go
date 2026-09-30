@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/query"
@@ -442,9 +443,11 @@ func CreateIntegrationConfig(
 		source = "user"
 	}
 
-	// Wrap the name-uniqueness check and INSERT/UPDATE in a transaction.
-	// SELECT ... FOR UPDATE locks any existing row with the same name, preventing
-	// concurrent requests from both passing the check and creating duplicates.
+	// One transaction covers every write of the save — the integrations row,
+	// account links, config values and default-provider flags — so a failure
+	// part-way leaves the pre-save state intact. SELECT ... FOR UPDATE locks any
+	// existing row with the same name, preventing concurrent requests from both
+	// passing the check and creating duplicates.
 	tx, txErr := dbms.BeginTx()
 	if txErr != nil {
 		return IntegrationDto{}, fmt.Errorf("failed to begin transaction: %w", txErr)
@@ -561,7 +564,9 @@ func CreateIntegrationConfig(
 		isNewIntegration = false
 	} else {
 		newId := uuid.NewString()
-		integrationResult, err := tx.Query(`
+		// QueryRow, not Query: an unclosed Rows would hold the transaction's
+		// connection and fail every later statement in this same tx.
+		err := tx.QueryRow(`
 			INSERT INTO integrations(id, tenant_id, type, source, name, status, created_at, updated_at, created_by, updated_by, labels)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id::text`,
@@ -576,7 +581,7 @@ func CreateIntegrationConfig(
 			ctx.GetSecurityContext().GetUserId(),
 			ctx.GetSecurityContext().GetUserId(),
 			string(labelsJson),
-		)
+		).Scan(&configId)
 		if err != nil {
 			var pqErr *pq.Error
 			if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -584,27 +589,8 @@ func CreateIntegrationConfig(
 			}
 			return IntegrationDto{}, fmt.Errorf("failed to create integration: %w", err)
 		}
-		defer func() {
-			if closeErr := integrationResult.Close(); closeErr != nil {
-				slog.Error("Error closing response body", "error", closeErr)
-			}
-		}()
-		configId = newId
-		if integrationResult.Next() {
-			if err := integrationResult.Scan(&configId); err != nil {
-				return IntegrationDto{}, fmt.Errorf("failed to scan integration id: %w", err)
-			}
-		}
-		if err := integrationResult.Err(); err != nil {
-			return IntegrationDto{}, fmt.Errorf("failed to iterate integration result: %w", err)
-		}
 		isNewIntegration = true
 	}
-
-	if err := tx.Commit(); err != nil {
-		return IntegrationDto{}, fmt.Errorf("failed to commit integration transaction: %w", err)
-	}
-	committed = true
 
 	if len(accountIds) > 0 {
 		query, args, err := sqlx.In(`
@@ -617,7 +603,7 @@ func CreateIntegrationConfig(
 		}
 		query = dbms.Db.Rebind(query)
 
-		_, err = dbms.Exec(query, args...)
+		_, err = tx.Exec(query, args...)
 		if err != nil {
 			return IntegrationDto{}, fmt.Errorf("failed to delete stale accounts: %w", err)
 		}
@@ -650,7 +636,7 @@ func CreateIntegrationConfig(
 		// integration is loaded. Secrets are handled by the omit-to-keep
 		// guard above and never reach here with value="".
 		if isUpdate && intgerationType == "llm" && value == "" && isLLMOverrideKeyForDelete(v.Name) {
-			if _, delErr := dbms.Exec(
+			if _, delErr := tx.Exec(
 				`DELETE FROM integration_config_values WHERE integration_id = $1 AND name = $2`,
 				configId, v.Name,
 			); delErr != nil {
@@ -666,7 +652,7 @@ func CreateIntegrationConfig(
 			// every external system pointed at that URL.
 			if isUpdate {
 				var existingToken string
-				scanErr := dbms.Db.QueryRow(`
+				scanErr := tx.QueryRow(`
 					SELECT value FROM integration_config_values
 					WHERE integration_id = $1 AND name = 'token'
 					LIMIT 1
@@ -684,7 +670,7 @@ func CreateIntegrationConfig(
 		// the filter_expression doesn't silently unbind the automation.
 		if value == "" && v.Name == "workflow_id" && isUpdate {
 			var existingWorkflowId string
-			scanErr := dbms.Db.QueryRow(`
+			scanErr := tx.QueryRow(`
 				SELECT value FROM integration_config_values
 				WHERE integration_id = $1 AND name = 'workflow_id'
 				LIMIT 1
@@ -703,7 +689,7 @@ func CreateIntegrationConfig(
 			// soon as Scan runs, so it needs no defer'd Close (a defer here binds
 			// to the whole function, not this loop iteration).
 			var dupID string
-			dupErr := dbms.Db.QueryRow(`
+			dupErr := tx.QueryRow(`
 				SELECT integration_id
 				FROM integration_config_values
 				WHERE value = $1 AND name = 'token'
@@ -742,7 +728,7 @@ func CreateIntegrationConfig(
 		}
 
 		if !slices.Contains(parameters, v.Name) {
-			_, err = dbms.Exec(`
+			_, err = tx.Exec(`
 			INSERT INTO integration_config_values(
 				id, integration_id, name, value, is_encrypted, created_at, updated_at, created_by, updated_by
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -781,7 +767,7 @@ func CreateIntegrationConfig(
 			column = "default_llm_provider"
 		}
 		if column == "default_llm_provider" {
-			skipAccountFlags, err := applyLLMTenantDefault(dbms, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId(), configId, value)
+			skipAccountFlags, err := applyLLMTenantDefault(tx, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId(), configId, value)
 			if err != nil {
 				return IntegrationDto{}, err
 			}
@@ -810,10 +796,14 @@ func CreateIntegrationConfig(
 				}
 			}
 
-			for accId, accValue := range perAccountValues {
+			// Sorted, not map order: these row locks are held until COMMIT, so
+			// concurrent saves over overlapping accounts must take them in the
+			// same order or Postgres deadlocks one of them.
+			for _, accId := range slices.Sorted(maps.Keys(perAccountValues)) {
+				accValue := perAccountValues[accId]
 				if accValue == "true" {
 					// upsert true
-					_, err = dbms.Exec(fmt.Sprintf(`
+					_, err = tx.Exec(fmt.Sprintf(`
 						INSERT INTO integrations_cloud_accounts (
 							integration_id, cloud_account_id, tenant_id, link_role, %s
 						)
@@ -830,7 +820,7 @@ func CreateIntegrationConfig(
 					}
 
 					// reset others
-					_, err = dbms.Exec(fmt.Sprintf(`
+					_, err = tx.Exec(fmt.Sprintf(`
 						UPDATE integrations_cloud_accounts
 						SET %s=false
 						WHERE cloud_account_id=$1 AND integration_id != $2`,
@@ -843,7 +833,7 @@ func CreateIntegrationConfig(
 					}
 				} else {
 					// explicitly set to false
-					_, err = dbms.Exec(fmt.Sprintf(`
+					_, err = tx.Exec(fmt.Sprintf(`
 						UPDATE integrations_cloud_accounts
 						SET %s=false
 						WHERE integration_id=$1 AND cloud_account_id=$2`,
@@ -861,7 +851,7 @@ func CreateIntegrationConfig(
 
 	if len(accountIds) > 0 {
 		for _, accId := range accountIds {
-			_, err = dbms.Exec(`
+			_, err = tx.Exec(`
 				INSERT INTO integrations_cloud_accounts (
 					integration_id, cloud_account_id, tenant_id, link_role
 				) VALUES ($1, $2, $3, 'own')
@@ -876,6 +866,13 @@ func CreateIntegrationConfig(
 			}
 		}
 	}
+
+	// Commit only once every account link, config value and default-provider
+	// flag is written: a multi-account save must land whole or not at all (#39690).
+	if err := tx.Commit(); err != nil {
+		return IntegrationDto{}, fmt.Errorf("failed to commit integration transaction: %w", err)
+	}
+	committed = true
 
 	// Link agent-sourced proxy datasources to their vm_agent integration
 	if source == "agent" {
@@ -1011,7 +1008,7 @@ func CreateIntegrationConfig(
 // was not the tenant default: that save is not an un-marking, so the
 // per-account flags it would otherwise clear are kept. A per-account JSON map
 // is the API-only form and leaves the tenant default untouched.
-func applyLLMTenantDefault(dbms *database.DatabaseManager, tenantId, userId, integrationId, value string) (skipAccountFlags bool, err error) {
+func applyLLMTenantDefault(dbms sqlx.Execer, tenantId, userId, integrationId, value string) (skipAccountFlags bool, err error) {
 	if strings.HasPrefix(strings.TrimSpace(value), "{") {
 		return false, nil
 	}
