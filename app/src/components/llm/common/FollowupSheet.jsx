@@ -304,8 +304,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
 
   // Soft-skips the current question without answering it: writes a dismissal marker
   // and ends the conversation (same terminal outcome as onStop, distinguished only by
-  // that marker). Gated server-side behind FollowupCancelEnabled — a disabled backend
-  // fails the request rather than the UI, so surface that as a toast instead of a crash.
+  // that marker). A failed request is surfaced as a toast instead of a crash.
   const cancelDismiss = useCallback(async () => {
     if (isSubmitting || isCancelling) {
       return;

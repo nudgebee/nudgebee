@@ -92,7 +92,7 @@ type ConversationApiRequest struct {
 	// it. Only "dismiss" is supported (soft-skip the question, then end the
 	// conversation with a structured marker — see handleFollowupCancel for
 	// why a hard terminate isn't duplicated here). Empty means answer
-	// normally. Gated by FollowupCancelEnabled.
+	// normally.
 	Resolution string `json:"resolution,omitempty"`
 	// Reason is an optional user-supplied note recorded with a "dismiss"
 	// Resolution. Ignored otherwise.

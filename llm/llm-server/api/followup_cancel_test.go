@@ -2,42 +2,17 @@ package api
 
 import (
 	"net/http"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-// TestHandleFollowupCancel_DisabledByFlag confirms the feature fails closed
-// when FollowupCancelEnabled is off (the default), before any other
-// validation runs. (#27582)
-func TestHandleFollowupCancel_DisabledByFlag(t *testing.T) {
-	origFlag := config.Config.FollowupCancelEnabled
-	config.Config.FollowupCancelEnabled = false
-	t.Cleanup(func() { config.Config.FollowupCancelEnabled = origFlag })
-
-	ctx := security.NewRequestContextForSuperAdmin()
-	resp, status, err := handleFollowupCancel(ctx, ConversationApiRequest{
-		ConversationId: "00000000-0000-0000-0000-000000000000",
-		Resolution:     "dismiss",
-	})
-	assert.Nil(t, resp)
-	assert.Equal(t, http.StatusNotFound, status)
-	if assert.Error(t, err) {
-		assert.Contains(t, err.Error(), "not enabled")
-	}
-}
-
 // Validation paths in handleFollowupCancel must reject bad input BEFORE the
 // DAO is consulted — otherwise a malformed client call would hit the DB
 // unnecessarily. These tests exercise only the short-circuit branches so
 // they can run without a live database. (#27582)
 func TestHandleFollowupCancel_Validation(t *testing.T) {
-	origFlag := config.Config.FollowupCancelEnabled
-	config.Config.FollowupCancelEnabled = true
-	t.Cleanup(func() { config.Config.FollowupCancelEnabled = origFlag })
-
 	ctx := security.NewRequestContextForSuperAdmin()
 
 	cases := []struct {

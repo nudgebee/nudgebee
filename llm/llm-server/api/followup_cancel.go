@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
 
@@ -28,9 +27,6 @@ const resolutionDismiss = "dismiss"
 // "idempotent": true marker is returned when the conversation is already in
 // a terminal state so retries from flaky clients are safe.
 func handleFollowupCancel(ctx *security.RequestContext, request ConversationApiRequest) (map[string]any, int, error) {
-	if !config.Config.FollowupCancelEnabled {
-		return nil, http.StatusNotFound, errors.New("api: followup cancel is not enabled")
-	}
 	if request.ConversationId == "" {
 		return nil, http.StatusBadRequest, errors.New("api: conversation_id is required for cancel")
 	}
