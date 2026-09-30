@@ -129,3 +129,63 @@ describe('Select grouped mode', () => {
     expect(screen.getByText('k8s-prod')).toBeInTheDocument();
   });
 });
+
+// #39691: the select-all state counted disabled options the action skips, and
+// the "Select All" row cleared once every visible option was picked.
+describe('Select multi select-all', () => {
+  const options = [
+    { value: 'a', label: 'Opt A' },
+    { value: 'b', label: 'Opt B' },
+    { value: 'c', label: 'Opt C', disabled: true },
+    { value: 'd', label: 'Other D' },
+  ];
+  const openWith = (value: string[], search = '') => {
+    const onChange = jest.fn();
+    render(<Select multiple searchable value={value} options={options} onChange={onChange} label='Opts' />);
+    fireEvent.click(screen.getByLabelText('Opts', { selector: 'button' }));
+    if (search) fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: search } });
+    return onChange;
+  };
+
+  it('Select All adds every enabled option, never a disabled one', () => {
+    const onChange = openWith([]);
+    fireEvent.click(screen.getByText('Select All'));
+    expect(onChange).toHaveBeenCalledWith(['a', 'b', 'd']);
+  });
+
+  it('Select All adds a value shared by two options only once', () => {
+    const onChange = jest.fn();
+    const dupes = [
+      { value: 'a', label: 'Opt A' },
+      { value: 'a', label: 'Opt A again' },
+    ];
+    render(<Select multiple value={[]} options={dupes} onChange={onChange} label='Opts' />);
+    fireEvent.click(screen.getByLabelText('Opts', { selector: 'button' }));
+    fireEvent.click(screen.getByText('Select All'));
+    expect(onChange).toHaveBeenCalledWith(['a']);
+  });
+
+  it('shows checked once every enabled option is picked', () => {
+    openWith(['a', 'b', 'd']);
+    expect(screen.getByText('Select All').querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('Select All on a filter whose options are all picked changes nothing', () => {
+    const onChange = openWith(['a', 'd'], 'opt a');
+    fireEvent.click(screen.getByText('Select All'));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('Clear All on a filter clears only its enabled options', () => {
+    const onChange = openWith(['a', 'c', 'd'], 'opt');
+    fireEvent.click(screen.getByText('Clear All'));
+    expect(onChange).toHaveBeenCalledWith(['c', 'd']);
+  });
+
+  it('offers no bulk action that cannot change the selection', () => {
+    openWith(['c']);
+    expect(screen.queryByText('Clear All')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'opt c' } });
+    expect(screen.queryByText('Select All')).not.toBeInTheDocument();
+  });
+});
