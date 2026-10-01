@@ -10,6 +10,7 @@ import {
   type EntityQueryDraft,
   type EntityTable,
 } from './entityQuery';
+import { narrowTraceWhere, type ViewerFilter } from './panelViewerFilters';
 
 /**
  * Runs a traces panel through the traces service (`/rpc/traces`) rather than
@@ -120,7 +121,13 @@ export function normaliseTraceTimestamp(value: unknown): string {
  * traces panel resolves to exactly one, auto-selected or picked in the panel's
  * Account filter.
  */
-export async function runTracePanel(draft: EntityQueryDraft, accountId: string, startMs: number, endMs: number): Promise<TracePanelResult> {
+export async function runTracePanel(
+  draft: EntityQueryDraft,
+  accountId: string,
+  startMs: number,
+  endMs: number,
+  viewerFilters: ViewerFilter[] = []
+): Promise<TracePanelResult> {
   const table = findTable(draft.table);
   const { where, unsupported } = toTraceWhere(table, draft.filters);
   // The API parses these back with `new Date(x).getTime()`.
@@ -128,8 +135,16 @@ export async function runTracePanel(draft: EntityQueryDraft, accountId: string, 
   const endDate = new Date(endMs).toISOString();
   const sortOrder = draft.sortDesc ? 'desc' : 'asc';
   const columns = draft.columns.filter((name) => table.columns.some((c) => c.name === name && !c.filterOnly));
+  const grouping = draft.table === 'traces_groupings_v2';
 
-  if (draft.table === 'traces_groupings_v2') {
+  // The viewer's filters and the author's leave nothing in common: answer that
+  // here, since the only clause that says so would be read as "every row".
+  if (!narrowTraceWhere(where, viewerFilters)) {
+    const shown = grouping ? columns.filter((name) => GROUPING_FIELDS.includes(name)) : columns;
+    return { ...toResult(table, shown, []), unsupported };
+  }
+
+  if (grouping) {
     // Every named parameter is passed empty: the filters are all in `where`.
     // '' rather than [] on the four list parameters is deliberate — the grouping
     // call branches on Array.isArray with no length check, so an empty array

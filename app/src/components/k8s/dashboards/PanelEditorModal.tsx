@@ -30,6 +30,7 @@ import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPrevie
 import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
 import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
 import { isCompleteColumn, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
+import { filterColumnsOf, savedFilterColumns } from './panelViewerFilters';
 import { accountPickerOptions, accountsOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
 import { ES_PROVIDER, providerChoices, providerLabel, providerTypeOf, useEsIndexes, usePanelProviders } from './panelProviders';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -382,6 +383,18 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       return { ...prev, options };
     });
 
+  /**
+   * The columns a viewer's "Filter by column" menu offers, under the same rule:
+   * none chosen is saved as no list, which offers every column.
+   */
+  const patchFilterColumns = (next: string[]) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const options: Record<string, unknown> = { ...(prev.options || {}), filter_columns: next };
+      if (next.length === 0) delete options.filter_columns;
+      return { ...prev, options };
+    });
+
   /** Threshold steps, under the same "an empty list is no list" rule as the columns above. */
   const patchThresholds = (next: PanelThresholdStep[]) =>
     setDraft((prev) => {
@@ -518,6 +531,10 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   // The editor reads the list RAW: an author typing a path has an incomplete
   // entry, and the render-time filter would delete the row out from under them.
   const columns = panelColumnsOf(draft);
+  const filterColumnOptions = isEntity ? filterColumnsOf(findTable(entityDraft.table)).map((c) => ({ label: c.label, value: c.name })) : [];
+  // Only names the table offers: an imported panel can carry ones it does not,
+  // which the menu ignores anyway — shown here they would read as choices.
+  const filterColumns = savedFilterColumns(draft).filter((name) => filterColumnOptions.some((o) => o.value === name));
   const hiddenColumns = columns.filter((c) => c.visibility === 'hidden' && c.name).map((c) => c.name as string);
   // Links are the only column setting the editor authors today. A column's other
   // settings — a title override, a format override — are honoured by the
@@ -798,19 +815,39 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                   {!isText && (
                     <>
                       {isEntity ? (
-                        <EntityQueryBuilder
-                          draft={entityDraft}
-                          tables={entityTables}
-                          onChange={(next, query, timeColumn) => {
-                            setEntityDraft(next);
-                            patchTarget({ query: query as any, time_column: timeColumn, expr: undefined });
-                            // Settings for a column the query no longer selects would come back
-                            // to life the moment the author selects it again — drop them, but
-                            // keep the added columns, which name no query column at all.
-                            const kept = columns.filter((c) => !c.name || next.columns.includes(c.name));
-                            if (kept.length !== columns.length) patchColumns(kept);
-                          }}
-                        />
+                        <>
+                          <EntityQueryBuilder
+                            draft={entityDraft}
+                            tables={entityTables}
+                            onChange={(next, query, timeColumn) => {
+                              setEntityDraft(next);
+                              patchTarget({ query: query as any, time_column: timeColumn, expr: undefined });
+                              // Settings for a column the query no longer selects would come back
+                              // to life the moment the author selects it again — drop them, but
+                              // keep the added columns, which name no query column at all.
+                              const kept = columns.filter((c) => !c.name || next.columns.includes(c.name));
+                              if (kept.length !== columns.length) patchColumns(kept);
+                              // A filter column belongs to the table, not to what it selects: only a
+                              // switch to another table can leave one behind.
+                              const offered = new Set(filterColumnsOf(findTable(next.table)).map((c) => c.name));
+                              const keptFilters = filterColumns.filter((name) => offered.has(name));
+                              if (keptFilters.length !== filterColumns.length) patchFilterColumns(keptFilters);
+                            }}
+                          />
+                          <Form.Field
+                            label='Columns viewers can filter by'
+                            description='What the panel’s Filter by column menu lists. Leave empty to offer every column.'
+                          >
+                            <Select
+                              multiple
+                              value={filterColumns}
+                              options={filterColumnOptions}
+                              onChange={(next: string[]) => patchFilterColumns(next)}
+                              placeholder='Every column'
+                              id='panel-filter-columns'
+                            />
+                          </Form.Field>
+                        </>
                       ) : commandHelp ? (
                         <>
                           <Form.Field
