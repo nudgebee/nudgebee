@@ -42,7 +42,7 @@ const CSV_SCHEMA = [
   {
     name: 'source_account_id',
     required: false,
-    purpose: 'AWS account number (strict qualifier — currently AWS-only; Azure/GCP narrow via region + resource ID).',
+    purpose: 'Connected account the resource is in: AWS account number, GCP project id or Azure subscription id (strict qualifier).',
     example: '123456789012',
   },
   { name: 'source_region', required: false, purpose: 'Cloud region (narrows ambiguous matches).', example: 'us-east-1 | eastus | us-central1' },
@@ -59,7 +59,7 @@ const CSV_SCHEMA = [
   {
     name: 'dest_account_id',
     required: false,
-    purpose: 'AWS account number (strict qualifier — currently AWS-only; Azure/GCP narrow via region + resource ID).',
+    purpose: 'Connected account the resource is in: AWS account number, GCP project id or Azure subscription id (strict qualifier).',
     example: '123456789012',
   },
   { name: 'dest_region', required: false, purpose: 'Cloud region (narrows ambiguous matches).', example: 'us-east-1 | eastus | us-central1' },
