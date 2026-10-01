@@ -43,6 +43,27 @@ describe('FilterDropdown', () => {
     expect(screen.getByTestId('opt-icon')).toBeInTheDocument();
   });
 
+  it('renders an icon-only trigger named by its label, and still opens the list', () => {
+    render(<FilterDropdown options={options} value='Apple' onSelect={jest.fn()} label='Fruit' icon={<span data-testid='trigger-icon' />} />);
+    const trigger = screen.getByRole('button', { name: 'Fruit' });
+    expect(trigger).toContainElement(screen.getByTestId('trigger-icon'));
+    // Neither the label nor the selection is drawn as text on the trigger.
+    expect(trigger).not.toHaveTextContent(/Fruit|Apple/);
+    fireEvent.click(trigger);
+    expect(screen.getByText('Banana')).toBeInTheDocument();
+  });
+
+  it('offers a clear row in place of the (x) an icon-only trigger has no room for', () => {
+    const onSelect = jest.fn();
+    const { rerender } = render(<FilterDropdown options={options} value={null} onSelect={onSelect} label='Fruit' icon={<span />} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Fruit' }));
+    expect(screen.queryByText('Clear selection')).not.toBeInTheDocument();
+
+    rerender(<FilterDropdown options={options} value='Apple' onSelect={onSelect} label='Fruit' icon={<span />} />);
+    fireEvent.click(screen.getByText('Clear selection'));
+    expect(onSelect).toHaveBeenCalledWith(expect.anything(), null);
+  });
+
   it('keeps the caret instead of a clear control when not clearable', () => {
     const { container } = render(<FilterDropdown options={options} value='Apple' onSelect={jest.fn()} label='Fruit' clearable={false} />);
     // The clear affordance is the only <line>-based svg in the trigger.

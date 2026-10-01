@@ -221,22 +221,15 @@ describe('the dashboard account filter', () => {
     expect(screen.getByTestId('panel-account-filter-1').getAttribute('data-selected')).toBe('');
   });
 
-  it('names the account a panel is showing on the panel itself', async () => {
+  it('names the datasource, not the scope, in the panel header — a pick shows on the panel filter', async () => {
     mount();
     await waitFor(() => expect(metricsQuery).toHaveBeenCalledTimes(4));
-    // Unfiltered, the chip says what the panel is scoped to.
-    expect(screen.getByTestId('panel-scope-1').textContent).toBe('All K8S');
+    expect(screen.getByTestId('dashboard-panel-1')).toHaveTextContent('metrics');
+    expect(screen.queryByTestId('panel-scope-1')).not.toBeInTheDocument();
 
     pick('dashboard-account-filter', 'k8s-2');
-    await waitFor(() => expect(screen.getByTestId('panel-scope-1').textContent).toBe('prod-us'));
-    // The AWS panel is unaffected by a K8S pick, and keeps its own name.
-    expect(screen.getByTestId('panel-scope-2').textContent).toBe('billing-aws');
-
-    // Two picked: both names. Three of three is the whole scope again.
-    pick('dashboard-account-filter', 'k8s-3');
-    await waitFor(() => expect(screen.getByTestId('panel-scope-1').textContent).toBe('prod-us, dev'));
-    pick('dashboard-account-filter', 'k8s-1');
-    await waitFor(() => expect(screen.getByTestId('panel-scope-1').textContent).toBe('All K8S'));
+    await waitFor(() => expect(screen.getByTestId('panel-account-filter-1').getAttribute('data-selected')).toBe('k8s-2'));
+    expect(screen.queryByTestId('panel-scope-1')).not.toBeInTheDocument();
   });
 
   it('is not offered when the dashboard reaches only one account', async () => {

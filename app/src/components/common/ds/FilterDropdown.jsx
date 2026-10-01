@@ -12,6 +12,11 @@
  *                                           to body — same prop as DropdownMenu/Select)
  *              showSelectedIcon = boolean  (single-select only; leads the trigger with
  *                                           the selected option's `icon`)
+ *              icon       = ReactNode      (icon-only trigger: a 24px square button
+ *                                           showing just this icon, `label` as its
+ *                                           aria-label. A selection shows as a blue
+ *                                           tint, border and ring, not as text — for
+ *                                           tight spots such as a panel header)
  *              clearable  = boolean        (default true; when false the trigger
  *                                           keeps its caret instead of swapping to
  *                                           a clear (x) once a value is selected —
@@ -790,6 +795,7 @@ function FilterDropdownButton({
   searchPlaceholder,
   required = false,
   size = 'sm',
+  icon,
 }) {
   const [anchorEl, setAnchorEl] = useState(null);
   const [search, setSearch] = useState('');
@@ -1084,104 +1090,125 @@ function FilterDropdownButton({
             borderColor: 'var(--ds-blue-500)',
             boxShadow: '0 0 0 3px var(--ds-blue-100)',
           }),
+          ...(icon && {
+            justifyContent: 'center',
+            minWidth: 0,
+            width: '24px',
+            height: '24px',
+            padding: 0,
+            flexShrink: 0,
+            borderRadius: 'var(--ds-radius-sm)',
+            color: hasSelection ? 'var(--ds-blue-600)' : 'var(--ds-gray-600)',
+            backgroundColor: hasSelection ? 'var(--ds-blue-100)' : 'var(--ds-background-100)',
+            '& svg': { fontSize: 14, width: 14, height: 14 },
+          }),
           ...sx,
         }}
+        aria-label={icon ? label : undefined}
       >
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: ds.space.mul(0, 3), flex: 1, overflow: 'hidden', minWidth: 0 }}>
-          {showSelectedIcon && selectedOption?.icon && (
-            // SafeIcon returns a JSX icon verbatim, so its own style prop can't size it —
-            // constrain from the wrapper to keep the trigger glyph consistent.
-            <Box
-              component='span'
-              sx={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                flexShrink: 0,
-                '& > *, & svg, & img': { width: 12, height: 12, objectFit: 'contain' },
-              }}
-            >
-              <SafeIcon src={selectedOption.icon} alt='' />
-            </Box>
-          )}
-          {(label || (!hasSelection && placeholder) || isOptionsLoading) && (
-            <span
-              style={{
-                color: 'var(--ds-gray-600)',
-                fontWeight: 'var(--ds-font-weight-regular)',
-                flexShrink: 0,
-              }}
-            >
-              {label || (!hasSelection ? placeholder : '')}
-              {required && (label || !hasSelection) && <span style={{ color: 'var(--ds-red-500)' }}> *</span>}
-              {isOptionsLoading && (
-                <span style={{ marginLeft: 'var(--ds-space-1)', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontWeight: 400 }}>
-                  ...
+        {icon ? (
+          icon
+        ) : (
+          <>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: ds.space.mul(0, 3), flex: 1, overflow: 'hidden', minWidth: 0 }}>
+              {showSelectedIcon && selectedOption?.icon && (
+                // SafeIcon returns a JSX icon verbatim, so its own style prop can't size it —
+                // constrain from the wrapper to keep the trigger glyph consistent.
+                <Box
+                  component='span'
+                  sx={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    flexShrink: 0,
+                    '& > *, & svg, & img': { width: 12, height: 12, objectFit: 'contain' },
+                  }}
+                >
+                  <SafeIcon src={selectedOption.icon} alt='' />
+                </Box>
+              )}
+              {(label || (!hasSelection && placeholder) || isOptionsLoading) && (
+                <span
+                  style={{
+                    color: 'var(--ds-gray-600)',
+                    fontWeight: 'var(--ds-font-weight-regular)',
+                    flexShrink: 0,
+                  }}
+                >
+                  {label || (!hasSelection ? placeholder : '')}
+                  {required && (label || !hasSelection) && <span style={{ color: 'var(--ds-red-500)' }}> *</span>}
+                  {isOptionsLoading && (
+                    <span
+                      style={{ marginLeft: 'var(--ds-space-1)', fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontWeight: 400 }}
+                    >
+                      ...
+                    </span>
+                  )}
                 </span>
               )}
-            </span>
-          )}
-          {hasSelection && selectedDisplayText && (
-            <>
-              {selectedDisplayText.labels.map((lbl, idx) => (
-                <React.Fragment key={lbl}>
-                  {idx > 0 && <span style={{ color: 'var(--ds-gray-700)', fontWeight: 400 }}>, </span>}
-                  <TruncatedLabel
-                    label={lbl}
-                    // A lone selection may use the whole trigger; several share it.
-                    maxWidth={selectedDisplayText.labels.length === 1 ? '100%' : '90px'}
-                    color='var(--ds-blue-500)'
-                    fontWeight={600}
-                  />
-                </React.Fragment>
-              ))}
-              {selectedDisplayText.extra > 0 && (
-                <CustomTooltip
-                  variant='interactive'
-                  title={
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
-                      {selectedDisplayText.hiddenLabels.map((lbl) => (
-                        <TruncatedLabel key={lbl} label={lbl} maxWidth='220px' color={'var(--ds-gray-700)'} fontWeight={400} placement='top' />
-                      ))}
-                    </Box>
-                  }
-                  placement='top'
-                >
-                  <Box
-                    component='span'
-                    sx={{
-                      backgroundColor: 'var(--ds-gray-100)',
-                      color: 'var(--ds-gray-700)',
-                      border: '1px solid var(--ds-gray-200)',
-                      borderRadius: ds.radius.sm,
-                      padding: `0 ${ds.space[1]}`,
-                      fontSize: 'var(--ds-text-caption)',
-                      fontWeight: 'var(--ds-font-weight-medium)',
-                      lineHeight: ds.space[4],
-                      display: 'inline-block',
-                      cursor: 'default',
-                    }}
-                  >
-                    +{selectedDisplayText.extra}
-                  </Box>
-                </CustomTooltip>
+              {hasSelection && selectedDisplayText && (
+                <>
+                  {selectedDisplayText.labels.map((lbl, idx) => (
+                    <React.Fragment key={lbl}>
+                      {idx > 0 && <span style={{ color: 'var(--ds-gray-700)', fontWeight: 400 }}>, </span>}
+                      <TruncatedLabel
+                        label={lbl}
+                        // A lone selection may use the whole trigger; several share it.
+                        maxWidth={selectedDisplayText.labels.length === 1 ? '100%' : '90px'}
+                        color='var(--ds-blue-500)'
+                        fontWeight={600}
+                      />
+                    </React.Fragment>
+                  ))}
+                  {selectedDisplayText.extra > 0 && (
+                    <CustomTooltip
+                      variant='interactive'
+                      title={
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+                          {selectedDisplayText.hiddenLabels.map((lbl) => (
+                            <TruncatedLabel key={lbl} label={lbl} maxWidth='220px' color={'var(--ds-gray-700)'} fontWeight={400} placement='top' />
+                          ))}
+                        </Box>
+                      }
+                      placement='top'
+                    >
+                      <Box
+                        component='span'
+                        sx={{
+                          backgroundColor: 'var(--ds-gray-100)',
+                          color: 'var(--ds-gray-700)',
+                          border: '1px solid var(--ds-gray-200)',
+                          borderRadius: ds.radius.sm,
+                          padding: `0 ${ds.space[1]}`,
+                          fontSize: 'var(--ds-text-caption)',
+                          fontWeight: 'var(--ds-font-weight-medium)',
+                          lineHeight: ds.space[4],
+                          display: 'inline-block',
+                          cursor: 'default',
+                        }}
+                      >
+                        +{selectedDisplayText.extra}
+                      </Box>
+                    </CustomTooltip>
+                  )}
+                </>
               )}
-            </>
-          )}
-        </span>
-        {hasSelection && clearable ? (
-          <svg
-            width='14'
-            height='14'
-            viewBox='0 0 12 12'
-            fill='none'
-            onClick={handleClear}
-            style={{ opacity: 0.4, cursor: 'pointer', flexShrink: 0 }}
-          >
-            <line x1='3' y1='3' x2='9' y2='9' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
-            <line x1='9' y1='3' x2='3' y2='9' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
-          </svg>
-        ) : (
-          <ChevronIcon open={open} />
+            </span>
+            {hasSelection && clearable ? (
+              <svg
+                width='14'
+                height='14'
+                viewBox='0 0 12 12'
+                fill='none'
+                onClick={handleClear}
+                style={{ opacity: 0.4, cursor: 'pointer', flexShrink: 0 }}
+              >
+                <line x1='3' y1='3' x2='9' y2='9' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+                <line x1='9' y1='3' x2='3' y2='9' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+              </svg>
+            ) : (
+              <ChevronIcon open={open} />
+            )}
+          </>
         )}
       </Box>
 
@@ -1301,6 +1328,37 @@ function FilterDropdownButton({
           </Box>
         )}
 
+        {/* An icon-only trigger has no clear (x) of its own, so the panel
+            carries it — otherwise a single pick could never be undone. */}
+        {icon && hasSelection && clearable && (
+          <Box
+            role='button'
+            tabIndex={0}
+            onClick={(e) => {
+              handleClear(e);
+              setAnchorEl(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleClear(e);
+                setAnchorEl(null);
+              }
+            }}
+            sx={{
+              padding: `${ds.space[2]} ${ds.space.mul(0, 7)}`,
+              cursor: 'pointer',
+              fontSize: 'var(--ds-text-body)',
+              fontWeight: 'var(--ds-font-weight-medium)',
+              color: 'var(--ds-blue-600)',
+              borderBottom: '0.5px solid var(--ds-gray-200)',
+              '&:hover': { backgroundColor: 'var(--ds-gray-100)' },
+            }}
+          >
+            Clear selection
+          </Box>
+        )}
+
         {/* Options */}
         {effectiveGrouped ? (
           <GroupedOptionsList
@@ -1391,6 +1449,7 @@ FilterDropdownButton.propTypes = {
   searchPlaceholder: PropTypes.string,
   required: PropTypes.bool,
   size: PropTypes.oneOf(['sm', 'md', 'lg']),
+  icon: PropTypes.node,
 };
 FilterDropdownButton.displayName = 'FilterDropdownButton';
 

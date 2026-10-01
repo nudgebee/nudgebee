@@ -5,6 +5,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkIcon from '@mui/icons-material/Link';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import Chart from '@ui/Chart';
+import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Link } from '@ui/Link';
 import { Modal } from '@ui/Modal';
@@ -680,7 +681,9 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {/* The title's own tooltip is for a title clipped by a narrow panel, so
             it repeats the title rather than standing in for the description. */}
         <Tooltip title={panel.title}>
-          <Typography sx={{ fontSize: 13, fontWeight: 620, color: ds.gray[700] }}>{panel.title}</Typography>
+          <Typography noWrap sx={{ fontSize: 13, fontWeight: 620, color: ds.gray[700], minWidth: 0 }} data-testid={`panel-title-${panel.id}`}>
+            {panel.title}
+          </Typography>
         </Tooltip>
         {/* A description hidden behind the title was undiscoverable — nothing
             distinguished a panel that has one from a panel that does not. The
@@ -735,22 +738,12 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             </Box>
           </Tooltip>
         )}
+        {/* No scope chip: the header is the title's, and the account a panel
+            is showing is the filter button's state. */}
         {panel.type !== 'text' && (
           <Chip size='2xs' tone='subtle'>
             {panel.datasource}
           </Chip>
-        )}
-        {/* Each panel names its own accounts, so a dashboard can mix them.
-            Showing the scope here is the only way to tell two otherwise
-            identical panels apart. */}
-        {panel.type !== 'text' && (
-          <Tooltip title={narrowed ? `Scope: ${scopeLabel}` : ''}>
-            <Box component='span' data-testid={`panel-scope-${panel.id}`} sx={{ display: 'inline-flex' }}>
-              <Chip size='2xs' tone='neutral'>
-                {shownLabel}
-              </Chip>
-            </Box>
-          </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
         {/* A toolbar filter, not a form field: empty means "no filter applied"
@@ -758,19 +751,27 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             even when the dashboard filter has narrowed it to one, so the
             viewer can see which account this panel is showing and why. */}
         {!editing && scopedAccounts.length > 1 && (
-          <FilterDropdown
-            id={`panel-account-filter-${panel.id}`}
-            label='Account'
-            size='sm'
-            grouped
-            // Panel headers clip their overflow, so the popover must portal.
-            disablePortal={false}
-            value={selectedOption}
-            options={filterOptions}
-            searchPlaceholder='Search accounts…'
-            // Single-select hands back the option object, or null when cleared.
-            onSelect={(_e: any, next: any) => setAccountId(next?.value ?? next ?? '')}
-          />
+          // An icon, not a labelled dropdown: a 150px trigger crowded the title
+          // out of a quarter-row panel. The pick shows as the button's blue
+          // state, and its tooltip names the account.
+          <Tooltip title={selectedOption ? `Showing ${selectedOption.label}` : 'Filter by account'}>
+            <Box component='span' {...{ [EXPORT_HIDE_ATTR]: 'true' }} sx={{ display: 'inline-flex', flexShrink: 0 }}>
+              <FilterDropdown
+                id={`panel-account-filter-${panel.id}`}
+                label='Filter by account'
+                icon={<FilterAltOutlinedIcon />}
+                grouped
+                // Panel headers clip their overflow, so the popover must portal.
+                disablePortal={false}
+                popoverAlign='right'
+                value={selectedOption}
+                options={filterOptions}
+                searchPlaceholder='Search accounts…'
+                // Single-select hands back the option object, or null when cleared.
+                onSelect={(_e: any, next: any) => setAccountId(next?.value ?? next ?? '')}
+              />
+            </Box>
+          </Tooltip>
         )}
         {/* ThreeDotsMenu only fires onMenuClick when `data` is set, and renders
             nothing at all for an empty item list. Excluded from an exported
@@ -797,19 +798,20 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {actions}
       </Box>
       <Box sx={{ p: 1.25, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        {/* Partial failure: some accounts answered, some did not. Saying which
-            beats silently charting an incomplete picture. */}
-        {warning && (
-          <Typography variant='caption' sx={{ color: ds.amber[600] }} data-testid={`panel-warning-${panel.id}`}>
-            {warning}
-          </Typography>
-        )}
         {/* `data-panel-body` is the hook edit mode uses to make the chart inert
             while the panel is being dragged or resized — a Chart.js canvas
             otherwise swallows the mousemove the gesture needs. */}
         <Box data-panel-body sx={{ flex: 1, minHeight: 0 }}>
           {body()}
         </Box>
+        {/* Partial failure: some accounts answered, some did not. Saying which
+            beats silently charting an incomplete picture — at the foot of the
+            panel, so the chart keeps its place at the top. */}
+        {warning && (
+          <Box data-testid={`panel-warning-${panel.id}`} sx={{ flexShrink: 0 }}>
+            <Banner tone='warning' surface='section' message={warning} />
+          </Box>
+        )}
       </Box>
       {/* The whole panel with the room to show it: the grid cell's fixed height is what clips a long table
           or a busy legend. Nothing here is cut short — rows wrap rather than ellipsise, and every row is
