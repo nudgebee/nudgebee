@@ -26,6 +26,7 @@ import ManualDependenciesTable from './ManualDependenciesTable';
 import ResolveAmbiguityPanel from './ResolveAmbiguityPanel';
 import CsvImportDialog from './CsvImportDialog';
 import EditManualDependencyDialog from './EditManualDependencyDialog';
+import EditManualNodeDialog from './EditManualNodeDialog';
 import ConfirmDialog from './ConfirmDialog';
 import { ds } from 'src/utils/colors';
 
@@ -64,6 +65,12 @@ const ManualDependenciesTab = ({ open }) => {
   // are only two destructive actions in this tab.
   const [confirmState, setConfirmState] = useState(null);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+
+  // "Declare node" on an unmatched endpoint: { row, side } while the node
+  // dialog is open. The schema says which node types can be declared.
+  const [declareFor, setDeclareFor] = useState(null);
+  const [nodeSchema, setNodeSchema] = useState([]);
+  const declarableTypes = useMemo(() => new Set(nodeSchema.flatMap((p) => (p.kinds ?? []).map((k) => k.node_type))), [nodeSchema]);
 
   const statusFilterArray = useMemo(() => {
     if (!statusFilter || statusFilter === 'all') {
@@ -106,6 +113,58 @@ const ManualDependenciesTab = ({ open }) => {
     }
     fetchRows();
   }, [open, fetchRows]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    apiKnowledgeGraph
+      .getManualNodeSchema()
+      .then((res) => {
+        const payload = res?.data?.data?.kg_get_manual_node_schema?.data;
+        setNodeSchema(Array.isArray(payload) ? payload : []);
+      })
+      .catch((err) => console.error('Failed to fetch the manual node schema:', err));
+  }, [open]);
+
+  // Pin the declaring row's unmatched side to a node — the one just declared,
+  // or the collected node the declaration turned out to duplicate.
+  const pinDeclaredNode = async (nodeId) => {
+    const { row, side } = declareFor;
+    setDeclareFor(null);
+    if (!nodeId) {
+      await fetchRows({ showLoader: false });
+      return;
+    }
+    try {
+      const res = await apiKnowledgeGraph.resolveManualDependency(
+        side === 'source' ? { id: row.id, sourceNodeId: nodeId } : { id: row.id, destinationNodeId: nodeId }
+      );
+      const errors = res?.data?.errors;
+      if (errors?.length) {
+        snackbar.error(`Node declared, but pinning the dependency failed: ${errors[0]?.message ?? 'Unknown error'}`);
+      } else {
+        snackbar.success('Dependency now points at the node.');
+      }
+    } catch (err) {
+      console.error('Pinning the dependency failed:', err);
+      snackbar.error('Node declared, but pinning the dependency failed.');
+    }
+    await fetchRows({ showLoader: false });
+  };
+
+  const declareInitial = useMemo(() => {
+    if (!declareFor) {
+      return null;
+    }
+    const { row, side } = declareFor;
+    return {
+      node_type: row[`${side}_node_type`],
+      name: row[`${side}_name`],
+      namespace: row[`${side}_namespace`],
+      region: row[`${side}_region`],
+    };
+  }, [declareFor]);
 
   // ---- Per-row handlers ------------------------------------------------
 
@@ -322,6 +381,8 @@ const ManualDependenciesTab = ({ open }) => {
               onEditClick={handleEditClick}
               onReresolveClick={handleReresolveClick}
               onDeleteClick={handleDeleteClick}
+              onDeclareNodeClick={(row, side) => setDeclareFor({ row, side })}
+              declarableTypes={declarableTypes}
             />
           )}
         </ListingLayout.Body>
@@ -336,6 +397,14 @@ const ManualDependenciesTab = ({ open }) => {
           setEditRow(null);
         }}
         onSaved={handleEditSaved}
+      />
+      <EditManualNodeDialog
+        open={Boolean(declareFor)}
+        initial={declareInitial}
+        schema={nodeSchema}
+        onClose={() => setDeclareFor(null)}
+        onSaved={(created) => pinDeclaredNode(created?.kg_node_id)}
+        onUseExisting={pinDeclaredNode}
       />
       <ConfirmDialog
         open={Boolean(confirmState)}

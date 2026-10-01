@@ -5,6 +5,8 @@
 //   single-section UI, extracted into KGCoverageTab.
 // - Tab 2 ("Manual Dependencies"): operator-declared CALLS / PUBLISHES_TO /
 //   SUBSCRIBES_TO rows, with CSV import + ambiguity resolve.
+// - Tab 3 ("Manual Nodes"): resources declared by hand so dependencies can
+//   point at what no collector has discovered.
 // - TODO Phase 2.5: 'Diff View' (declared vs auto-detected) and 'Activity'
 //   tabs slot in alongside.
 
@@ -13,17 +15,20 @@ import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
 import { Modal } from '@ui/Modal';
 import Tabs from '@shared/navigation/Tabs';
-import { DataBaseDark, GraphOutlineIcon } from '@assets';
+import { DataBaseDark, GraphOutlineIcon, NodesIcon } from '@assets';
 import KGCoverageTab from '@components/knowledge-graph/KGCoverageTab';
 import ManualDependenciesTab from '@components/knowledge-graph/ManualDependenciesTab';
+import ManualNodesTab from '@components/knowledge-graph/ManualNodesTab';
 import { ds } from 'src/utils/colors';
 
 const TAB_COVERAGE = 'coverage';
 const TAB_MANUAL_DEPENDENCIES = 'manual-dependencies';
+const TAB_MANUAL_NODES = 'manual-nodes';
 
 const TABS_CONFIG = [
   { id: TAB_COVERAGE, icon: DataBaseDark, label: 'Coverage', alt: 'coverage', size: 16 },
   { id: TAB_MANUAL_DEPENDENCIES, icon: GraphOutlineIcon, label: 'Manual Dependencies', alt: 'manual-dependencies', size: 16 },
+  { id: TAB_MANUAL_NODES, icon: NodesIcon, label: 'Manual Nodes', alt: 'manual-nodes', size: 16 },
   /* TODO Phase 2.5: { id: 'diff-view', icon: ..., label: 'Diff View',  alt: 'diff-view', size: 16 }, */
   /* TODO Phase 2.5: { id: 'activity',  icon: ..., label: 'Activity',   alt: 'activity',  size: 16 }, */
 ];
@@ -84,6 +89,8 @@ const KGSettings = ({ open, onClose, onSaved }) => {
           <KGCoverageTab open={open} onSaved={onSaved} onClose={onClose} />
         ) : typeSelected === TAB_MANUAL_DEPENDENCIES ? (
           <ManualDependenciesTab open={open} />
+        ) : typeSelected === TAB_MANUAL_NODES ? (
+          <ManualNodesTab open={open} />
         ) : null}
       </Box>
     </Modal>

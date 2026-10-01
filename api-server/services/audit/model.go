@@ -100,6 +100,12 @@ const (
 	EventTypeKGDependencyImport    EventType = "KG_DEPENDENCY_IMPORT"
 	EventTypeKGDependencyResolve   EventType = "KG_DEPENDENCY_RESOLVE"
 	EventTypeKGDependencyReresolve EventType = "KG_DEPENDENCY_RERESOLVE"
+	EventTypeKGNodeCreate          EventType = "KG_NODE_CREATE"
+	EventTypeKGNodeUpdate          EventType = "KG_NODE_UPDATE"
+	EventTypeKGNodeDelete          EventType = "KG_NODE_DELETE"
+	EventTypeKGNodeDeleteAll       EventType = "KG_NODE_DELETE_ALL"
+	EventTypeKGNodeImport          EventType = "KG_NODE_IMPORT"
+	EventTypeKGNodeMerge           EventType = "KG_NODE_MERGE"
 
 	EventTypeUserLogin       EventType = "USER_AUTH_LOGIN"
 	EventTypeUserLoginCreate EventType = "USER_AUTH_CREATE"

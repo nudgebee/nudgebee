@@ -27,8 +27,8 @@ var databaseSchemaProps = []core.PropertyDef{
 	{Name: "availability_zone", Indexed: true},
 	{Name: "dns_name", Indexed: true},
 	{Name: "vpc_id", Indexed: true},
-	{Name: "subnet_ids"},
-	{Name: "vpc_security_group_ids"},
+	{Name: "subnet_ids", Shape: core.PropertyShapeList},
+	{Name: "vpc_security_group_ids", Shape: core.PropertyShapeList},
 	{Name: "kms_key_id"},
 	{Name: "performance_insights_kms_key_id"},
 }

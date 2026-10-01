@@ -67,18 +67,34 @@ const CSV_SCHEMA = [
   { name: 'notes', required: false, purpose: 'Free-text reason / context for future readers.', example: 'declared for FK PoC' },
 ];
 
-const CSV_HEADER_ROW = CSV_SCHEMA.map((c) => c.name).join(',');
-
 // Lightweight client-side header check — surfaces obvious header mistakes
 // before round-tripping to the server. Returns the list of missing required
 // columns (empty when valid).
-const validateCsvHeader = (csv) => {
+const validateCsvHeader = (csv, requiredColumns) => {
   const firstLine = (csv || '').split(/\r?\n/)[0] || '';
   const headers = firstLine.split(',').map((h) => h.trim());
-  return REQUIRED_COLUMNS.filter((req) => !headers.includes(req));
+  return requiredColumns.filter((req) => !headers.includes(req));
 };
 
-const CsvImportDialog = ({ open, onClose, onImported }) => {
+// What the dialog imports. The default is the Manual Dependencies import; the
+// Manual Nodes tab passes MANUAL_NODES_CSV_CONFIG from ManualNodesTab. The
+// default's visible strings are matched by the kg-csv-import e2e locators —
+// keep them byte-identical.
+export const MANUAL_DEPENDENCIES_CSV_CONFIG = {
+  title: 'Import Manual Dependencies (CSV)',
+  schema: CSV_SCHEMA,
+  requiredColumns: REQUIRED_COLUMNS,
+  requiredNote: (
+    <>
+      Required columns: <strong>source_node_type</strong>, <strong>source_name</strong>, <strong>dest_node_type</strong>, <strong>dest_name</strong>.
+      Optional qualifiers narrow ambiguous matches. Relationship defaults to <code>CALLS</code> when blank.
+    </>
+  ),
+  importCsv: (csv) => apiKnowledgeGraph.importManualDependencies({ csv }),
+  resultKey: 'kg_import_manual_dependencies',
+};
+
+const CsvImportDialog = ({ open, onClose, onImported, config = MANUAL_DEPENDENCIES_CSV_CONFIG }) => {
   const [mode, setMode] = useState(MODE_PASTE);
   const [csvBody, setCsvBody] = useState('');
   const [fileName, setFileName] = useState('');
@@ -140,20 +156,20 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
       snackbar.error(`CSV exceeds the ${MAX_CSV_BYTES / 1024} KB limit (${Math.round(csvBytes / 1024)} KB).`);
       return;
     }
-    const missing = validateCsvHeader(csvBody);
+    const missing = validateCsvHeader(csvBody, config.requiredColumns);
     if (missing.length) {
       snackbar.error(`CSV header missing required columns: ${missing.join(', ')}`);
       return;
     }
     setSubmitting(true);
     try {
-      const res = await apiKnowledgeGraph.importManualDependencies({ csv: csvBody });
+      const res = await config.importCsv(csvBody);
       const errors = res?.data?.errors;
       if (errors?.length) {
         snackbar.error(`CSV import failed: ${errors[0]?.message ?? 'Unknown error'}`);
         return;
       }
-      const payload = res?.data?.data?.kg_import_manual_dependencies?.data ?? { imported: [], rejected: [] };
+      const payload = res?.data?.data?.[config.resultKey]?.data ?? { imported: [], rejected: [] };
       setResult(payload);
       const imported = payload.imported?.length ?? 0;
       const rejected = payload.rejected?.length ?? 0;
@@ -176,22 +192,21 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
   };
 
   return (
-    <Modal width='sm' title='Import Manual Dependencies (CSV)' open={open} handleClose={handleClose} onClose={handleClose} maxHeight='80vh'>
+    <Modal width='sm' title={config.title} open={open} handleClose={handleClose} onClose={handleClose} maxHeight='80vh'>
       {result ? (
         <ResultView result={result} onDone={handleDone} />
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3], p: ds.space[4] }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: ds.space[2] }}>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.5, flex: '1 1 0' }}>
-              Required columns: <strong>source_node_type</strong>, <strong>source_name</strong>, <strong>dest_node_type</strong>,{' '}
-              <strong>dest_name</strong>. Optional qualifiers narrow ambiguous matches. Relationship defaults to <code>CALLS</code> when blank.
-            </Typography>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.5, flex: '1 1 0' }}>{config.requiredNote}</Typography>
             <Button tone='secondary' size='xs' onClick={() => setShowSchema((v) => !v)}>
               {showSchema ? 'Hide schema' : 'View full schema'}
             </Button>
           </Box>
 
-          {showSchema && <CsvSchemaPanel />}
+          {showSchema && <CsvSchemaPanel schema={config.schema} />}
+          {/* Optional: the values a config's type columns accept. */}
+          {showSchema && config.valuesPanel}
 
           {/* Mode toggle: Paste vs Upload file. Kept compact on its own row
               so the textarea / drop zone below has the visual weight. */}
@@ -275,6 +290,14 @@ CsvImportDialog.propTypes = {
   open: PropTypes.bool.isRequired,
   onClose: PropTypes.func.isRequired,
   onImported: PropTypes.func.isRequired,
+  config: PropTypes.shape({
+    title: PropTypes.string.isRequired,
+    schema: PropTypes.array.isRequired,
+    requiredColumns: PropTypes.arrayOf(PropTypes.string).isRequired,
+    requiredNote: PropTypes.node.isRequired,
+    importCsv: PropTypes.func.isRequired,
+    resultKey: PropTypes.string.isRequired,
+  }),
 };
 
 // Per-row outcome viewer rendered after a successful import. Splits the
@@ -300,7 +323,8 @@ const ResultView = ({ result, onDone }) => {
                 <Typography sx={{ fontSize: ds.text.small }}>
                   Row #{r.row_index} → id {r.id}
                 </Typography>
-                <Label tone={r.status === 'resolved' ? 'success' : 'warning'}>{r.status?.replace(/_/g, ' ') ?? 'imported'}</Label>
+                {/* Dependency rows carry a resolution status; node rows are simply imported. */}
+                <Label tone={!r.status || r.status === 'resolved' ? 'success' : 'warning'}>{r.status?.replace(/_/g, ' ') ?? 'imported'}</Label>
               </Box>
             ))}
           </Box>
@@ -347,8 +371,28 @@ ResultView.propTypes = {
 
 // CsvSchemaPanel renders the full column reference (read-only). Operators
 // flip it open when they don't remember which qualifier narrows which side.
-// Sourced from CSV_SCHEMA so it can't drift from the validator.
-const CsvSchemaPanel = () => (
+// Sourced from the config's schema so it can't drift from the validator.
+// Shared by the column table below and any type-values panel a config adds.
+export const csvTableSx = {
+  width: '100%',
+  borderCollapse: 'collapse',
+  fontSize: ds.text.caption,
+  '& th, & td': {
+    textAlign: 'left',
+    verticalAlign: 'top',
+    padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
+    borderBottom: `1px solid ${ds.brand[200]}`,
+  },
+  '& th': {
+    fontWeight: ds.weight.semibold,
+    color: ds.brand[500],
+    backgroundColor: ds.background[100],
+    position: 'sticky',
+    top: 0,
+  },
+};
+
+const CsvSchemaPanel = ({ schema }) => (
   <Box
     sx={{
       border: `1px solid ${ds.brand[200]}`,
@@ -375,31 +419,11 @@ const CsvSchemaPanel = () => (
         wordBreak: 'break-all',
       }}
     >
-      {CSV_HEADER_ROW}
+      {schema.map((c) => c.name).join(',')}
     </Box>
 
     <Box sx={{ maxHeight: '240px', overflowY: 'auto', mt: ds.space[1] }}>
-      <Box
-        component='table'
-        sx={{
-          width: '100%',
-          borderCollapse: 'collapse',
-          fontSize: ds.text.caption,
-          '& th, & td': {
-            textAlign: 'left',
-            verticalAlign: 'top',
-            padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
-            borderBottom: `1px solid ${ds.brand[200]}`,
-          },
-          '& th': {
-            fontWeight: ds.weight.semibold,
-            color: ds.brand[500],
-            backgroundColor: ds.background[100],
-            position: 'sticky',
-            top: 0,
-          },
-        }}
-      >
+      <Box component='table' sx={csvTableSx}>
         <thead>
           <tr>
             <th>Column</th>
@@ -409,7 +433,7 @@ const CsvSchemaPanel = () => (
           </tr>
         </thead>
         <tbody>
-          {CSV_SCHEMA.map((col) => (
+          {schema.map((col) => (
             <tr key={col.name}>
               <td>
                 <code style={{ fontSize: ds.text.caption }}>{col.name}</code>
@@ -428,5 +452,9 @@ const CsvSchemaPanel = () => (
     </Box>
   </Box>
 );
+
+CsvSchemaPanel.propTypes = {
+  schema: PropTypes.array.isRequired,
+};
 
 export default CsvImportDialog;

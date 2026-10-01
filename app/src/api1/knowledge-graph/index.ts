@@ -85,6 +85,101 @@ export interface CsvImportResult {
   rejected: CsvImportRowResult[];
 }
 
+// Manually declared nodes. A node in a connected account carries the id the
+// collector writes for the same resource, so the two merge when it is
+// collected (status becomes 'adopted').
+export type ManualNodeStatus = 'active' | 'adopted' | 'possible_duplicate';
+
+export interface ManualNodeKeyField {
+  name: 'name' | 'region' | 'network' | 'namespace';
+  label: string;
+  hint?: string;
+  required: boolean;
+  // When set, the value is picked from the account's existing nodes of this type.
+  pick_node_type?: string;
+}
+
+// The shape a property's value is stored in — the collector's shape: a
+// key/value map (annotations), a list (subnet ids), or a single value (omitted).
+export type ManualNodePropertyShape = 'map' | 'list';
+
+export interface ManualNodeProperty {
+  name: string;
+  shape?: ManualNodePropertyShape;
+}
+
+export interface ManualNodeKind {
+  specific_type: string;
+  node_type: string;
+  key_fields: ManualNodeKeyField[];
+  properties: ManualNodeProperty[];
+}
+
+export type ManualNodePropertyValue = string | number | boolean | string[] | Record<string, string>;
+
+// cloud_provider 'external' with no cloud_account_id = outside any connected account.
+export interface ManualNodeSchemaAccount {
+  cloud_account_id?: string;
+  account_name?: string;
+  account_number?: string;
+  cloud_provider: string;
+  kinds: ManualNodeKind[];
+}
+
+export interface ManualNode {
+  id: number;
+  tenant_id: string;
+  cloud_account_id?: string;
+  cloud_provider?: string;
+  node_type: string;
+  specific_type: string;
+  name: string;
+  region?: string;
+  namespace?: string;
+  network_node_id?: string;
+  description?: string;
+  properties?: Record<string, ManualNodePropertyValue>;
+  labels?: Record<string, string>;
+  kg_node_id: string;
+  unique_key: string;
+  status: ManualNodeStatus;
+  duplicate_node_id?: string;
+  declared_by_user_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ManualNodeCreateRequest {
+  cloud_account_id?: string;
+  node_type?: string;
+  specific_type?: string;
+  name: string;
+  region?: string;
+  namespace?: string;
+  network_node_id?: string;
+  description?: string;
+  properties?: Record<string, ManualNodePropertyValue>;
+  labels?: Record<string, string>;
+}
+
+export interface ManualNodeDetailsPatch {
+  description?: string;
+  properties?: Record<string, ManualNodePropertyValue>;
+  labels?: Record<string, string>;
+}
+
+export interface ManualNodeCsvRowResult {
+  row_index: number;
+  id?: number;
+  error?: string;
+  node?: ManualNode;
+}
+
+export interface ManualNodeCsvResult {
+  imported: ManualNodeCsvRowResult[];
+  rejected: ManualNodeCsvRowResult[];
+}
+
 // -- GraphQL queries / mutations -------------------------------------------
 
 const KG_GET_COMPLETE_GRAPH = `
@@ -241,6 +336,65 @@ mutation KgDeleteAllManualDependencies {
   }
 }`;
 
+// Manual Nodes
+
+const KG_GET_MANUAL_NODE_SCHEMA = `
+query KgGetManualNodeSchema {
+  kg_get_manual_node_schema(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_LIST_MANUAL_NODES = `
+query KgListManualNodes {
+  kg_list_manual_nodes(request: __WHERE__) {
+    data
+    count
+  }
+}`;
+
+const KG_CREATE_MANUAL_NODE = `
+mutation KgCreateManualNode {
+  kg_create_manual_node(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_UPDATE_MANUAL_NODE = `
+mutation KgUpdateManualNode {
+  kg_update_manual_node(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_DELETE_MANUAL_NODE = `
+mutation KgDeleteManualNode {
+  kg_delete_manual_node(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_APPLY_MANUAL_NODE_MERGE = `
+mutation KgApplyManualNodeMerge {
+  kg_apply_manual_node_merge(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_IMPORT_MANUAL_NODES = `
+mutation KgImportManualNodes {
+  kg_import_manual_nodes(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_DELETE_ALL_MANUAL_NODES = `
+mutation KgDeleteAllManualNodes {
+  kg_delete_all_manual_nodes(request: __WHERE__) {
+    data
+  }
+}`;
+
 // -- API object ------------------------------------------------------------
 
 const apiKnowledgeGraph = {
@@ -390,6 +544,40 @@ const apiKnowledgeGraph = {
 
   deleteAllManualDependencies: async function () {
     return await queryGraphQL(KG_DELETE_ALL_MANUAL_DEPENDENCIES.replace('__WHERE__', gqlStringify({})), 'KgDeleteAllManualDependencies', {});
+  },
+
+  // ---- Manual Nodes -------------------------------------------------------
+
+  getManualNodeSchema: async function () {
+    return await queryGraphQL(KG_GET_MANUAL_NODE_SCHEMA.replace('__WHERE__', gqlStringify({})), 'KgGetManualNodeSchema', {});
+  },
+
+  listManualNodes: async function () {
+    return await queryGraphQL(KG_LIST_MANUAL_NODES.replace('__WHERE__', gqlStringify({})), 'KgListManualNodes', {});
+  },
+
+  createManualNode: async function (data: ManualNodeCreateRequest) {
+    return await queryGraphQL(KG_CREATE_MANUAL_NODE.replace('__WHERE__', gqlStringify(data)), 'KgCreateManualNode', {});
+  },
+
+  updateManualNode: async function (data: { id: number; node: ManualNodeDetailsPatch }) {
+    return await queryGraphQL(KG_UPDATE_MANUAL_NODE.replace('__WHERE__', gqlStringify(data)), 'KgUpdateManualNode', {});
+  },
+
+  deleteManualNode: async function (data: { id: number }) {
+    return await queryGraphQL(KG_DELETE_MANUAL_NODE.replace('__WHERE__', gqlStringify(data)), 'KgDeleteManualNode', {});
+  },
+
+  mergeManualNode: async function (data: { id: number }) {
+    return await queryGraphQL(KG_APPLY_MANUAL_NODE_MERGE.replace('__WHERE__', gqlStringify(data)), 'KgApplyManualNodeMerge', {});
+  },
+
+  importManualNodes: async function (data: { csv: string }) {
+    return await queryGraphQL(KG_IMPORT_MANUAL_NODES.replace('__WHERE__', gqlStringify({ csv: data.csv })), 'KgImportManualNodes', {});
+  },
+
+  deleteAllManualNodes: async function () {
+    return await queryGraphQL(KG_DELETE_ALL_MANUAL_NODES.replace('__WHERE__', gqlStringify({})), 'KgDeleteAllManualNodes', {});
   },
 };
 

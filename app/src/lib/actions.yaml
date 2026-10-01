@@ -4108,6 +4108,105 @@ actions:
     permissions:
       - role: tenant_admin
     comment: panic-button rollback. Soft-deletes every manual_dependencies row for the tenant AND removes every source='manual' edge from the KG. tenant_admin only.
+  - name: kg_get_manual_node_schema
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
+    comment: where nodes can be declared by hand (each connected cloud account, plus outside any connected account) and, per place, the declarable types with their compulsory key fields and optional schema properties. Drives the declare-node form.
+  - name: kg_list_manual_nodes
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
+    comment: list the tenant's manually declared KG nodes with status (active, adopted by a collector, possible_duplicate of a collected node).
+  - name: kg_create_manual_node
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: declare one KG node and write it into the graph at once. In a connected account the node gets the id the collector writes for the same resource, so it merges when collected; 409 when the resource is already in the graph.
+  - name: kg_update_manual_node
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: edit a declared node's description, optional properties and labels. Identity fields (account, type, name, region, network) cannot change - delete and declare again.
+  - name: kg_delete_manual_node
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: withdraw a declaration and retire its node with the edges touching it. An adopted node is left to the collector that now owns it.
+  - name: kg_apply_manual_node_merge
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: resolve a possible_duplicate declaration in favour of the collected node it matches - dependencies pinned to the declared node move to it and the declaration is withdrawn.
+  - name: kg_import_manual_nodes
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: bulk-declare nodes from CSV. Columns - name (required), specific_type (cloud) or node_type (outside an account), cloud_account (id or account number; blank means outside any account), region, network (VPC id or name), namespace, description, labels (k=v;k=v); any other column is an optional property of the type. Returns per-row imported/rejected.
+  - name: kg_delete_all_manual_nodes
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: panic-button rollback. Withdraws every manual node declaration for the tenant and retires every node still owned by one, with its edges. tenant_admin only.
   - name: insights_aggregate
     comment: Aggregate insights into counts and summaries
     definition:

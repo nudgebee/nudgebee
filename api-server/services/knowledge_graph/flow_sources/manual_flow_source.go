@@ -22,7 +22,7 @@ func init() {
 		func(logger *slog.Logger) (core.FlowSourceInterface, error) {
 			return NewManualFlowSource(logger), nil
 		},
-		"User-declared service-to-service dependencies (CSV upload / single-row form); supports cross-stack k8s<->AWS",
+		"User-declared nodes and service-to-service dependencies (CSV upload / single-row form); supports cross-stack k8s<->AWS",
 		string(core.FlowSourceCategoryManual),
 	)
 }
@@ -61,9 +61,11 @@ func (s *ManualFlowSource) Validate() error {
 	return s.BaseFlowSource.Validate()
 }
 
-// BuildFlowRelationships pulls active rows for the tenant, re-checks /
-// re-resolves each one, persists the updated resolution state, and returns
-// edges for resolved rows. It does not create any new nodes.
+// BuildFlowRelationships re-emits the tenant's declared nodes (see
+// ManualNodeRepository.RunCycle), then pulls active dependency rows,
+// re-checks / re-resolves each one, persists the updated resolution state, and
+// returns edges for resolved rows. Declared nodes are returned with the edges:
+// SaveEdges drops any edge whose endpoints are not in the build's node list.
 func (s *ManualFlowSource) BuildFlowRelationships(
 	reqCtx *security.RequestContext,
 	req *core.FlowSourceBuildRequest,
@@ -77,6 +79,29 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 		return nil, nil, fmt.Errorf("manual flow source: db manager unavailable: %w", err)
 	}
 
+	nodeIndex := buildNodeIndex(req.ExistingNodes)
+	declaredNodes := []*core.DbNode{}
+	cycle, err := NewManualNodeRepository(dbManager, s.logger).RunCycle(reqCtx.GetContext(), req.TenantID, nodeIndex)
+	if err != nil {
+		// Declared nodes are already in the graph and never swept, so a failed
+		// cycle only skips this build's refresh of them.
+		s.logger.Warn("manual flow source: declared node cycle failed; continuing with dependencies",
+			"tenant_id", req.TenantID, "error", err)
+		s.IncrementErrorCount()
+	} else {
+		declaredNodes = cycle.Nodes
+		for _, n := range declaredNodes {
+			nodeIndex[n.ID] = n
+		}
+		if len(declaredNodes) > 0 || cycle.Adopted > 0 || cycle.Duplicates > 0 {
+			s.logger.Info("manual flow source: declared nodes",
+				"tenant_id", req.TenantID,
+				"emitted", len(declaredNodes),
+				"adopted", cycle.Adopted,
+				"duplicate_flags_changed", cycle.Duplicates)
+		}
+	}
+
 	rows, err := loadActiveManualDependencies(reqCtx.GetContext(), dbManager, req.TenantID)
 	if err != nil {
 		s.IncrementErrorCount()
@@ -85,10 +110,9 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 
 	if len(rows) == 0 {
 		s.logger.Info("manual flow source: no active rows", "tenant_id", req.TenantID)
-		return []*core.DbEdge{}, []*core.DbNode{}, nil
+		return []*core.DbEdge{}, declaredNodes, nil
 	}
 
-	nodeIndex := buildNodeIndex(req.ExistingNodes)
 	resolver := NewManualEndpointResolver(dbManager, s.logger)
 
 	edges := make([]*core.DbEdge, 0, len(rows))
@@ -134,7 +158,7 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 		"edges_emitted", emittedCount,
 		"duration_seconds", time.Since(startTime).Seconds())
 
-	return edges, []*core.DbNode{}, nil
+	return edges, declaredNodes, nil
 }
 
 // processRow runs one row through the recheck-then-resolve pipeline and

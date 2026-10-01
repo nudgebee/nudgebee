@@ -25,7 +25,7 @@ var karpenterNodePoolSchema = core.SpecificTypeSchema{
 		{Name: "cpu_limit"},
 		{Name: "memory_limit"},
 		{Name: "consolidation_policy"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 	},
 }
 

@@ -23,7 +23,7 @@ var k8sSecretSchema = core.SpecificTypeSchema{
 		{Name: "key_count", Indexed: true},
 		{Name: "managed_by", Indexed: true},
 		{Name: "data_keys"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 		// Additional provider fields (not yet emitted by our extractor):
 		{Name: "composite_id"},
 		{Name: "creation_timestamp"},

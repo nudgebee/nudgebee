@@ -15,7 +15,7 @@ import { Label } from '@ui/Label';
 import Text from '@shared/format/Text';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import CustomTooltip from '@shared/CustomTooltip';
-import { DeleteIconRed, EditIcon, RefreshIcon, pmCheckCircle as ResolveIcon } from '@assets';
+import { DeleteIconRed, EditIcon, PlusIcon, RefreshIcon, pmCheckCircle as ResolveIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 
 dayjs.extend(relativeTime);
@@ -81,6 +81,25 @@ const MENU_ACTION_RESOLVE = 'resolve';
 const MENU_ACTION_EDIT = 'edit';
 const MENU_ACTION_RERESOLVE = 'reresolve';
 const MENU_ACTION_DELETE = 'delete';
+const MENU_ACTION_DECLARE = 'declare-node';
+
+// The side of an unmatched row that has no node to resolve to.
+const UNMATCHED_SIDE = { source_unmatched: 'source', dest_unmatched: 'dest' };
+
+// "Declare node" on an unmatched endpoint. An endpoint naming a Resource ID or
+// cloud account can never resolve to a declared node (the resolver matches
+// those against collected properties), so the item says what to fix instead.
+const declareNodeItem = (row, declarableTypes) => {
+  const side = UNMATCHED_SIDE[row.resolution_status];
+  if (!side || !declarableTypes.has(row[`${side}_node_type`])) {
+    return null;
+  }
+  const label = side === 'source' ? 'Declare source node' : 'Declare destination node';
+  if (row[`${side}_arn`] || row[`${side}_account_id`]) {
+    return { id: MENU_ACTION_DECLARE, label: `${label} (clear its Resource ID / account first)`, icon: PlusIcon, disabled: true };
+  }
+  return { id: MENU_ACTION_DECLARE, label, icon: PlusIcon };
+};
 
 // Builds the per-row menu items. Order matters — most-likely action first:
 //   - Resolve (only when ambiguous; lets the operator pick candidates)
@@ -89,10 +108,14 @@ const MENU_ACTION_DELETE = 'delete';
 //   - Reresolve (always; rerun the resolver, e.g. after the missing AWS
 //     resource finally got ingested)
 //   - Delete (always; destructive, last)
-const buildMenuItems = (row) => {
+const buildMenuItems = (row, declarableTypes) => {
   const items = [];
   if (AMBIGUOUS_STATUSES.has(row.resolution_status)) {
     items.push({ id: MENU_ACTION_RESOLVE, label: 'Resolve', icon: ResolveIcon });
+  }
+  const declare = declareNodeItem(row, declarableTypes);
+  if (declare) {
+    items.push(declare);
   }
   items.push({ id: MENU_ACTION_EDIT, label: 'Edit', icon: EditIcon });
   items.push({ id: MENU_ACTION_RERESOLVE, label: 'Re-resolve', icon: RefreshIcon });
@@ -100,7 +123,15 @@ const buildMenuItems = (row) => {
   return items;
 };
 
-const ManualDependenciesTable = ({ rows, onResolveClick, onEditClick, onReresolveClick, onDeleteClick }) => {
+const ManualDependenciesTable = ({
+  rows,
+  onResolveClick,
+  onEditClick,
+  onReresolveClick,
+  onDeleteClick,
+  onDeclareNodeClick = () => {},
+  declarableTypes = new Set(),
+}) => {
   if (!rows.length) {
     return (
       <Box sx={{ textAlign: 'center', py: 6 }}>
@@ -129,6 +160,9 @@ const ManualDependenciesTable = ({ rows, onResolveClick, onEditClick, onReresolv
         break;
       case MENU_ACTION_DELETE:
         onDeleteClick(row);
+        break;
+      case MENU_ACTION_DECLARE:
+        onDeclareNodeClick(row, UNMATCHED_SIDE[row.resolution_status]);
         break;
       default:
         break;
@@ -159,7 +193,7 @@ const ManualDependenciesTable = ({ rows, onResolveClick, onEditClick, onReresolv
       { component: <Text value={formatMatchCount(row)} sx={{ fontSize: '12px' }} /> },
       { component: <Text value={formatLastResolved(row.last_resolved_at)} sx={{ fontSize: '12px' }} /> },
       {
-        component: <ThreeDotsMenu menuItems={buildMenuItems(row)} onMenuClick={handleMenuAction} data={row} />,
+        component: <ThreeDotsMenu menuItems={buildMenuItems(row, declarableTypes)} onMenuClick={handleMenuAction} data={row} />,
       },
     ];
   });
@@ -188,6 +222,9 @@ ManualDependenciesTable.propTypes = {
   onEditClick: PropTypes.func.isRequired,
   onReresolveClick: PropTypes.func.isRequired,
   onDeleteClick: PropTypes.func.isRequired,
+  onDeclareNodeClick: PropTypes.func,
+  // Node types a user may declare (from kg_get_manual_node_schema).
+  declarableTypes: PropTypes.instanceOf(Set),
 };
 
 export default ManualDependenciesTable;

@@ -22,7 +22,7 @@ var k8sConfigMapSchema = core.SpecificTypeSchema{
 		{Name: "managed_by", Indexed: true},
 		{Name: "data_keys"},
 		{Name: "binary_data_keys"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 	},
 }
 
