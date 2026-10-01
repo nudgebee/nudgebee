@@ -36,6 +36,7 @@ import {
 import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
+import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
 
@@ -795,7 +796,7 @@ if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
         if (!credentials?.username) {
           throw Error('Invalid Username');
         }
-        const normalizedUsername = credentials.username.toLowerCase();
+        const normalizedUsername = credentials.username.trim().toLowerCase();
         // Refuse to authenticate when the configured password is empty or
         // still the .env.example placeholder — otherwise a fresh `cp
         // .env.example .env` would silently authenticate anyone typing the
@@ -813,10 +814,26 @@ if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
         if (pwdBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(pwdBuf, expectedBuf)) {
           throw Error('Invalid Passsword');
         }
+        // Pin the provider to the deployment's admin when it names one. Checked
+        // after the password so a wrong guess cannot probe for the address.
+        // Fail closed when the licence is unreadable: its fallback carries no
+        // address, which would leave the provider unpinned or pinned to the
+        // wrong one.
+        const license = await getLicenseDetails();
+        if (license.error) {
+          throw Error('Unable to verify the admin address: services-server is unreachable. Try again shortly.');
+        }
+        const adminEmail = dummyCredsAdminEmail(license.email);
+        if (adminEmail && normalizedUsername !== adminEmail) {
+          console.warn('[Security] dummy-creds login refused for', normalizedUsername, '— only the configured admin address may use this provider.');
+          throw Error('NO_TENANT_ACCESS');
+        }
         console.warn(
           '[Security] dummy-creds login succeeded for',
           normalizedUsername,
-          '— this provider accepts ANY email with the configured password and bypasses OAuth / LDAP / SSO. Disable NEXTAUTH_DUMMY_CREDS_ENABLED if this is a production deployment.'
+          adminEmail
+            ? '— this provider is pinned to the admin address and bypasses OAuth / LDAP / SSO.'
+            : '— this provider accepts ANY email with the configured password and bypasses OAuth / LDAP / SSO. Set admin.email (ADMIN_EMAIL) to pin it, or disable NEXTAUTH_DUMMY_CREDS_ENABLED if this is a production deployment.'
         );
         return await getOrCreateBootstrapAdminUser(normalizedUsername);
       },

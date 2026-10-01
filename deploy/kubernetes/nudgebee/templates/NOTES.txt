@@ -25,7 +25,8 @@ kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXT
 {{- if .Values.admin.email }}
 
 Sign in as {{ .Values.admin.email }} — the admin and its organisation were created
-during install, so there is nothing to set up on first login.
+during install, so there is nothing to set up on first login. The shared password
+works for this address only.
 {{- end }}
 
 {{- if .Values.agent.enabled }}

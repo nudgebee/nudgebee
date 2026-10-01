@@ -64,8 +64,17 @@ spec:
             - configMapRef:
                 name: {{ include "app.fullname" . }}-extra-env
             {{- end }}
-          {{- if or .Values.statusNotice.configMapName (and .Values.branding.enabled (or .Values.branding.defaultTenant .Values.branding.hostMap)) }}
+          {{- if or .Values.adminEmailSecret .Values.statusNotice.configMapName (and .Values.branding.enabled (or .Values.branding.defaultTenant .Values.branding.hostMap)) }}
           env:
+            {{- with .Values.adminEmailSecret }}
+            # Pins the dummy-credentials login to the admin address.
+            - name: ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: ADMIN_EMAIL
+                  optional: true
+            {{- end }}
             {{- if .Values.statusNotice.configMapName }}
             - name: STATUS_NOTICE_FILE
               value: /etc/nudgebee/status/notice.json
