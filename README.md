@@ -194,7 +194,7 @@ kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
 ```
 
-Open <http://localhost:3000> and sign in with any email + that password. See [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for production-grade configuration (ingress, TLS, external Postgres, ClickHouse, observability sidecars).
+Open <http://localhost:3000> and sign in as your `admin.email` with that password — the shared password works for that address only (or the licence address on a licensed install). See [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for production-grade configuration (ingress, TLS, external Postgres, ClickHouse, observability sidecars).
 
 ### First Run — what to do after you sign in
 

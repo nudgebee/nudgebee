@@ -380,6 +380,9 @@ relay-server:
 app:
   fullnameOverride: app
   replicaCount: 1
+  # Pins the dummy-credentials login to admin.email, so the shared password
+  # signs in only the admin rather than any address.
+  adminEmailSecret: 'nudgebee-bootstrap'
 notifications:
   enabled: true
   fullnameOverride: notifications

@@ -152,6 +152,13 @@ secretName: 'nudgebee'
 statusNotice:
   configMapName: ''
 
+# -- Secret holding the deployment's admin address under the key `ADMIN_EMAIL`.
+# When set, the dummy-credentials login accepts only that address instead of
+# any email. Only that one key is read, so the Secret's other values (the
+# bundled agent's credential) never reach this pod. Optional: a missing Secret
+# or key leaves the login unpinned.
+adminEmailSecret: ''
+
 # -- Tenant brand kits (white-label logo, favicon, assistant icons) mounted at
 # runtime. Brand assets are deliberately NOT baked into the image: only
 # `app/public/branding/default/` is committed (see `app/.gitignore`), so a
