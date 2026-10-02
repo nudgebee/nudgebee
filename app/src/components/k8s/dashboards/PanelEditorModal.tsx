@@ -616,7 +616,12 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     unfinishedThresholds.length === 0;
 
   /** The draft as it would be stored — the preview runs this and the save sends it. */
-  const resolvedDraft: Panel = { ...draft, ...panelScopeFromTypes(accountTypes, accountIds, accountOptions) };
+  const resolvedDraft: Panel = {
+    ...draft,
+    ...panelScopeFromTypes(accountTypes, accountIds, accountOptions),
+    // Trimmed here, not as it is typed, so a unit like "req / s" can still be typed.
+    ...(typeof draft.unit === 'string' ? { unit: draft.unit.trim() } : {}),
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -973,6 +978,17 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                       onChange={(v: string) => changeType(v as PanelType)}
                     />
                   </Form.Field>
+
+                  {/* The unit was only reachable through a template, an import or the JSON,
+                      so a number on the card could carry a suffix nobody could find to
+                      change. Offered where something reads it: a metrics stat, gauge, table
+                      or time series. A bar chart, a text panel — which keeps its datasource —
+                      and every other datasource's table do not. */}
+                  {draft.datasource === 'metrics' && draft.type !== 'bar' && !isText && (
+                    <Form.Field label='Unit' description='Shown after the numbers this panel draws — e.g. %, ms, req/s, pods. Leave empty for none.'>
+                      <Input value={draft.unit || ''} onChange={(v) => patch({ unit: v })} placeholder='None' id='panel-unit-input' />
+                    </Form.Field>
+                  )}
                 </Form.Section>
               </Card>
 
