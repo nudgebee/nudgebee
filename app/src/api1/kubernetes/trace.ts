@@ -297,6 +297,25 @@ const apiTrace = {
     });
     return response?.data?.data;
   },
+  /**
+   * The values one span column takes in a window — any column, unlike the two
+   * fixed sets above. What a dashboard panel's viewer filter lists. `limit`
+   * bounds the GROUP BY behind it, so a trace id column cannot return the store.
+   */
+  async traceLabelValues(accountId: string, label: string, startMs: number, endMs: number, limit: number): Promise<string[]> {
+    const TraceLabelValues = `
+    query TraceLabelValues($accountId: String!, $label: String, $startTime: Float, $endTime: Float, $limit: Int) {
+      traces_label_values(request: {account_id: $accountId, label: $label, start_time: $startTime, end_time: $endTime, query_request: {limit: $limit}}) {
+        values
+      }
+    }
+    `;
+    if (accountId === 'demo') return [];
+    const response = await queryGraphQL(TraceLabelValues, 'TraceLabelValues', { accountId, label, startTime: startMs, endTime: endMs, limit });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Could not list the values.');
+    return response?.data?.data?.traces_label_values?.values || [];
+  },
   async traceDistinctFilters(accountId: string, data: any) {
     let TraceListingFiltersV3 = `
     query TraceListingFiltersV3($accountId: String!, $startTime: Float, $endTime: Float) {

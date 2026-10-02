@@ -10,6 +10,7 @@ import { acquirePanelSlot } from './panelQueue';
 import { accountCappedWarning, capSeriesByAccount, MAX_CHART_SERIES, MAX_TABLE_SERIES, PANEL_TIMEOUT_MS, panelStep } from './panelBounds';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { renderTemplate, type VariableValues } from './templating';
+import { appliedViewerFilters, withViewerFilters, type ViewerFilter } from './panelViewerFilters';
 
 export interface PanelSeries {
   label: string;
@@ -83,6 +84,8 @@ interface Options {
   accounts: AccountOption[];
   /** Viewer's narrowing selection. Empty = no filter applied. */
   accountFilter?: string[];
+  /** The viewer's column filters — traces and `nudgebee` panels only. See panelViewerFilters.ts. */
+  viewerFilters?: ViewerFilter[];
   variables: VariableValues;
   startTime: number;
   endTime: number;
@@ -104,6 +107,7 @@ export function usePanelData({
   panel,
   accounts,
   accountFilter,
+  viewerFilters,
   variables,
   startTime,
   endTime,
@@ -141,6 +145,9 @@ export function usePanelData({
       t.hide,
     ])
   );
+  // Only the filters that narrow anything: adding a column with no value picked
+  // yet must not refetch an unchanged answer.
+  const viewerFiltersKey = JSON.stringify(appliedViewerFilters(viewerFilters || []));
 
   /**
    * Being on screen says the panel SHOULD load; the queue says when. Without it
@@ -283,7 +290,13 @@ export function usePanelData({
       // One account: the traces API takes a single accountId, which is why a
       // traces panel resolves to exactly one (auto-selected, or picked). The
       // traces client takes no signal, so the deadline is the only bound here.
-      runTracePanel(draftFromQuery(renderEntityQuery(stored, (v) => renderTemplate(v, variables))), resolved[0].value, startTime, endTime)
+      runTracePanel(
+        draftFromQuery(renderEntityQuery(stored, (v) => renderTemplate(v, variables))),
+        resolved[0].value,
+        startTime,
+        endTime,
+        viewerFilters
+      )
         .then((result) => {
           if (cancelled) return;
           if (result.unsupported.length > 0) {
@@ -304,7 +317,12 @@ export function usePanelData({
     // `nudgebee` panels read the internal query engine.
     if (panel.datasource === 'nudgebee') {
       const stored = targets[0]?.query;
-      const query = stored ? renderEntityQuery(stored, (v) => renderTemplate(v, variables)) : undefined;
+      const query = stored
+        ? withViewerFilters(
+            renderEntityQuery(stored, (v) => renderTemplate(v, variables)),
+            viewerFilters || []
+          )
+        : undefined;
       if (!query) {
         setError({ kind: 'config', message: 'This panel has no query' });
         return stop();
@@ -587,6 +605,7 @@ export function usePanelData({
     panel.provider,
     panel.provider_index,
     targetsKey,
+    viewerFiltersKey,
     startTime,
     endTime,
     refreshKey,

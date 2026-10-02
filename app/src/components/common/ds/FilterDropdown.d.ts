@@ -27,6 +27,9 @@ interface FilterDropdownProps {
   searchPlaceholder?: string;
   required?: boolean;
   selectionWithinGroup?: boolean;
+  popoverAlign?: 'left' | 'right';
+  /** Icon-only trigger: a 24px square showing just this icon; `label` becomes its aria-label. */
+  icon?: React.ReactNode;
 }
 
 declare const FilterDropdown: React.FC<FilterDropdownProps>;

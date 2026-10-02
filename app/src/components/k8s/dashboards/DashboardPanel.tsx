@@ -5,6 +5,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkIcon from '@mui/icons-material/Link';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import Chart from '@ui/Chart';
+import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Link } from '@ui/Link';
 import { Modal } from '@ui/Modal';
@@ -29,7 +30,9 @@ import PanelGauge from './PanelGauge';
 import { hasThresholds, OP_PHRASE, OP_SYMBOL, opOf, panelBreaches, thresholdTone, type Breach } from './panelThresholds';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
-import { applyAccountFilter, describePanelScope, effectiveFilterAccount, resolvePanelAccounts } from './panelAccounts';
+import { applyAccountFilter, describePanelScope, effectiveFilterAccount, panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
+import PanelColumnFilters, { PanelFilterMenu } from './PanelColumnFilters';
+import { appliedViewerFilters, loadViewerFilterValues, viewerFilterColumns, type ViewerFilter } from './panelViewerFilters';
 import { consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import { withPanelParam } from './panelLink';
@@ -43,6 +46,9 @@ const VIEW_CHART_HEIGHT = 420;
 
 /** One shared empty list, so an absent dashboard filter is a stable prop for the memoised panel. */
 const NO_FILTER: string[] = [];
+
+/** No viewer column filters — one shared list, for the same reason. */
+const NO_VIEWER_FILTERS: ViewerFilter[] = [];
 
 /** One Chart.js dataset for a timeseries panel's line. */
 function lineDataset(s: PanelSeries) {
@@ -208,6 +214,16 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * dashboard's picks every panel's accounts at once, the panel's picks one of those.
    */
   const [accountId, setAccountId] = React.useState('');
+  /*
+   * The Account funnel's hover label. The list the funnel opens is portaled, and
+   * React bubbles a portal's events through the component tree, not the DOM: its
+   * search box taking focus, and every pointer move over its rows, reached this
+   * tooltip as a hover on the trigger and re-opened it on top of the open list.
+   * So the label opens only for an event that is really on the trigger, and a
+   * click on it puts the label away.
+   */
+  const [accountTipOpen, setAccountTipOpen] = React.useState(false);
+  const accountTrigger = React.useRef<HTMLSpanElement>(null);
   const scopedAccounts = React.useMemo(() => resolvePanelAccounts(panel, accounts), [panel, accounts]);
   const panelAccounts = React.useMemo(() => applyAccountFilter(scopedAccounts, dashboardAccountIds), [scopedAccounts, dashboardAccountIds]);
   const filterOptions = React.useMemo(
@@ -231,6 +247,40 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     () => (effectiveAccountId ? [effectiveAccountId] : dashboardAccountIds),
     [effectiveAccountId, dashboardAccountIds]
   );
+
+  /*
+   * Column filters, beside the Account one: what a viewer narrows a traces or
+   * `nudgebee` panel to — this workload, that namespace. Panel state like the
+   * Account pick, never saved; see panelViewerFilters.ts.
+   */
+  const filterColumns = React.useMemo(() => viewerFilterColumns(panel), [panel]);
+  const [viewerFilters, setViewerFilters] = React.useState<ViewerFilter[]>(NO_VIEWER_FILTERS);
+  // The column added last, so its dropdown opens as it appears.
+  const [openColumn, setOpenColumn] = React.useState('');
+  // A filter on a column the panel no longer has — it was edited onto another
+  // table — would narrow by a column the query cannot name.
+  const activeFilters = React.useMemo(
+    () => (viewerFilters.length === 0 ? NO_VIEWER_FILTERS : viewerFilters.filter((f) => filterColumns.some((c) => c.name === f.column))),
+    [viewerFilters, filterColumns]
+  );
+  const filtering = appliedViewerFilters(activeFilters).length > 0;
+  const addViewerFilter = React.useCallback((column: string) => {
+    // A column added and left empty does nothing; the next pick tidies it away.
+    setViewerFilters((current) => [...current.filter((f) => f.values.length > 0), { column, values: [] }]);
+    setOpenColumn(column);
+  }, []);
+  // The accounts the values are listed for are the ones the panel is querying —
+  // its first account on a traces panel, all of them on a `nudgebee` one.
+  const queriedAccountIds = React.useMemo(
+    () => panelQueryAccounts(scopedAccounts, accountFilter, panel.datasource === 'nudgebee').accounts.map((a) => a.value),
+    [scopedAccounts, accountFilter, panel.datasource]
+  );
+  const loadFilterValues = React.useCallback(
+    (column: string) => loadViewerFilterValues({ panel, column, accountIds: queriedAccountIds, variables, startTime, endTime }),
+    [panel, queriedAccountIds, variables, startTime, endTime]
+  );
+  // A value list belongs to the accounts and the window it was read for.
+  const filterScopeKey = `${queriedAccountIds.join(',')}|${startTime}|${endTime}`;
 
   // Composite rather than a sum: either counter moving changes the key, and no
   // pair of values can collide the way `dashboard + panel` could.
@@ -287,6 +337,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     panel,
     accounts,
     accountFilter,
+    viewerFilters: activeFilters,
     variables,
     startTime,
     endTime,
@@ -383,7 +434,18 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         if (data.table.rows.length === 0) {
           return (
             <Box sx={{ height: '100%' }}>
-              <PanelState tone='empty' title='Nothing came back' description='The query ran and returned no rows.' />
+              {filtering ? (
+                // The viewer's own filters emptied it, so the way out is theirs to take.
+                <PanelState
+                  tone='empty'
+                  icon={<FilterAltOutlinedIcon sx={{ fontSize: 18 }} />}
+                  title='No rows match these filters'
+                  description='Nothing in this range has every value picked above.'
+                  action={{ label: 'Clear filters', onClick: () => setViewerFilters(NO_VIEWER_FILTERS) }}
+                />
+              ) : (
+                <PanelState tone='empty' title='Nothing came back' description='The query ran and returned no rows.' />
+              )}
             </Box>
           );
         }
@@ -610,7 +672,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         }
       }
     },
-    [panel, data, stat, breaches]
+    [panel, data, stat, breaches, filtering]
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
@@ -680,7 +742,9 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {/* The title's own tooltip is for a title clipped by a narrow panel, so
             it repeats the title rather than standing in for the description. */}
         <Tooltip title={panel.title}>
-          <Typography sx={{ fontSize: 13, fontWeight: 620, color: ds.gray[700] }}>{panel.title}</Typography>
+          <Typography noWrap sx={{ fontSize: 13, fontWeight: 620, color: ds.gray[700], minWidth: 0 }} data-testid={`panel-title-${panel.id}`}>
+            {panel.title}
+          </Typography>
         </Tooltip>
         {/* A description hidden behind the title was undiscoverable — nothing
             distinguished a panel that has one from a panel that does not. The
@@ -735,42 +799,60 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             </Box>
           </Tooltip>
         )}
+        {/* No scope chip: the header is the title's, and the account a panel
+            is showing is the filter button's state. */}
         {panel.type !== 'text' && (
           <Chip size='2xs' tone='subtle'>
             {panel.datasource}
           </Chip>
         )}
-        {/* Each panel names its own accounts, so a dashboard can mix them.
-            Showing the scope here is the only way to tell two otherwise
-            identical panels apart. */}
-        {panel.type !== 'text' && (
-          <Tooltip title={narrowed ? `Scope: ${scopeLabel}` : ''}>
-            <Box component='span' data-testid={`panel-scope-${panel.id}`} sx={{ display: 'inline-flex' }}>
-              <Chip size='2xs' tone='neutral'>
-                {shownLabel}
-              </Chip>
-            </Box>
-          </Tooltip>
-        )}
         <Box sx={{ flex: 1 }} />
+        {!editing && (
+          <PanelFilterMenu
+            panelId={panel.id}
+            columns={filterColumns.filter((c) => !activeFilters.some((f) => f.column === c.name))}
+            onAdd={addViewerFilter}
+          />
+        )}
         {/* A toolbar filter, not a form field: empty means "no filter applied"
             (DS §1.6). Hidden when the panel's own scope is one account. Shown
             even when the dashboard filter has narrowed it to one, so the
             viewer can see which account this panel is showing and why. */}
         {!editing && scopedAccounts.length > 1 && (
-          <FilterDropdown
-            id={`panel-account-filter-${panel.id}`}
-            label='Account'
-            size='sm'
-            grouped
-            // Panel headers clip their overflow, so the popover must portal.
-            disablePortal={false}
-            value={selectedOption}
-            options={filterOptions}
-            searchPlaceholder='Search accounts…'
-            // Single-select hands back the option object, or null when cleared.
-            onSelect={(_e: any, next: any) => setAccountId(next?.value ?? next ?? '')}
-          />
+          // An icon, not a labelled dropdown: a 150px trigger crowded the title
+          // out of a quarter-row panel. The pick shows as the button's blue
+          // state, and its tooltip names the account.
+          <Tooltip
+            title={selectedOption ? `Showing ${selectedOption.label}` : 'Filter by account'}
+            open={accountTipOpen}
+            onOpen={(event: React.SyntheticEvent) => {
+              if (accountTrigger.current?.contains(event.target as Node)) setAccountTipOpen(true);
+            }}
+            onClose={() => setAccountTipOpen(false)}
+          >
+            <Box
+              ref={accountTrigger}
+              component='span'
+              {...{ [EXPORT_HIDE_ATTR]: 'true' }}
+              onClickCapture={() => setAccountTipOpen(false)}
+              sx={{ display: 'inline-flex', flexShrink: 0 }}
+            >
+              <FilterDropdown
+                id={`panel-account-filter-${panel.id}`}
+                label='Filter by account'
+                icon={<FilterAltOutlinedIcon />}
+                grouped
+                // Panel headers clip their overflow, so the popover must portal.
+                disablePortal={false}
+                popoverAlign='right'
+                value={selectedOption}
+                options={filterOptions}
+                searchPlaceholder='Search accounts…'
+                // Single-select hands back the option object, or null when cleared.
+                onSelect={(_e: any, next: any) => setAccountId(next?.value ?? next ?? '')}
+              />
+            </Box>
+          </Tooltip>
         )}
         {/* ThreeDotsMenu only fires onMenuClick when `data` is set, and renders
             nothing at all for an empty item list. Excluded from an exported
@@ -796,20 +878,32 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         )}
         {actions}
       </Box>
+      {!editing && (
+        <PanelColumnFilters
+          panelId={panel.id}
+          columns={filterColumns}
+          filters={activeFilters}
+          onChange={setViewerFilters}
+          loadValues={loadFilterValues}
+          scopeKey={filterScopeKey}
+          openColumn={openColumn}
+        />
+      )}
       <Box sx={{ p: 1.25, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        {/* Partial failure: some accounts answered, some did not. Saying which
-            beats silently charting an incomplete picture. */}
-        {warning && (
-          <Typography variant='caption' sx={{ color: ds.amber[600] }} data-testid={`panel-warning-${panel.id}`}>
-            {warning}
-          </Typography>
-        )}
         {/* `data-panel-body` is the hook edit mode uses to make the chart inert
             while the panel is being dragged or resized — a Chart.js canvas
             otherwise swallows the mousemove the gesture needs. */}
         <Box data-panel-body sx={{ flex: 1, minHeight: 0 }}>
           {body()}
         </Box>
+        {/* Partial failure: some accounts answered, some did not. Saying which
+            beats silently charting an incomplete picture — at the foot of the
+            panel, so the chart keeps its place at the top. */}
+        {warning && (
+          <Box data-testid={`panel-warning-${panel.id}`} sx={{ flexShrink: 0 }}>
+            <Banner tone='warning' surface='section' message={warning} />
+          </Box>
+        )}
       </Box>
       {/* The whole panel with the room to show it: the grid cell's fixed height is what clips a long table
           or a busy legend. Nothing here is cut short — rows wrap rather than ellipsise, and every row is
@@ -824,6 +918,12 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               <Chip size='2xs' tone='neutral'>
                 {shownLabel}
               </Chip>
+              {/* The modal draws the filtered answer, so it says what it was filtered by. */}
+              {appliedViewerFilters(activeFilters).map((f) => (
+                <Chip key={f.column} size='2xs' tone='neutral'>
+                  {`${filterColumns.find((c) => c.name === f.column)?.label || f.column}: ${f.values.join(', ')}`}
+                </Chip>
+              ))}
             </Box>
           )}
           {warning && (

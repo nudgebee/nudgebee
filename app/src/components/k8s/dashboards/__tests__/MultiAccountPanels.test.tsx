@@ -215,7 +215,13 @@ describe('a metrics panel spanning several accounts', () => {
       req.account_id === 'acc-3' ? Promise.reject(new Error('unreachable')) : Promise.resolve(answerFor(req.account_id))
     );
     mount(['acc-1', 'acc-2', 'acc-3'], 'timeseries');
-    expect(await screen.findByTestId('panel-warning-1')).toHaveTextContent('No answer from dev — showing the rest.');
+    const warning = await screen.findByTestId('panel-warning-1');
+    expect(warning).toHaveTextContent('No answer from dev — showing the rest.');
+    // A warning Banner at the foot of the panel, below the chart — not a line of
+    // amber text pushing the chart down.
+    expect(within(warning).getByRole('alert')).toBeInTheDocument();
+    const body = screen.getByTestId('dashboard-panel-1').querySelector('[data-panel-body]')!;
+    expect(body.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('leaves a single-account stat exactly as it was — one number, no breakdown', async () => {

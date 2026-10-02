@@ -182,6 +182,19 @@ export interface PanelThresholdOptions {
   thresholds?: PanelThresholdStep[];
 }
 
+/**
+ * `options` on a traces or `nudgebee` table panel: which columns its "Filter by
+ * column" menu offers a viewer.
+ */
+export interface PanelFilterOptions {
+  /**
+   * Column names, in the order the menu lists them. Absent means every column
+   * the panel's table can be filtered by — what every panel offered before the
+   * author could choose. A name the table does not have is ignored.
+   */
+  filter_columns?: string[];
+}
+
 export interface Panel {
   id: number;
   title: string;
@@ -227,7 +240,7 @@ export interface Panel {
   unit?: string;
   /** Backs the `text` panel type. */
   content?: string;
-  options?: PanelTableOptions & PanelThresholdOptions & Record<string, unknown>;
+  options?: PanelTableOptions & PanelThresholdOptions & PanelFilterOptions & Record<string, unknown>;
 }
 
 export interface DashboardDefinition {
