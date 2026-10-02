@@ -122,6 +122,19 @@ const (
 	ModelTierReasoning ModelTier = "reasoning"
 	ModelTierRetrieval ModelTier = "retrieval"
 	ModelTierSummary   ModelTier = "summary"
+	// ModelTierClassification is used by core.Classify for fixed-choice decisions.
+	// It is configured like the other tiers (llm_tier_model_classification, …);
+	// when no classification model is configured it resolves as ModelTierSummary.
+	ModelTierClassification ModelTier = "classification"
+)
+
+// Resolution sources (LLMConfigResolution.Source) for the tier-specific layers:
+// the resolved model came from configuration that names the call's tier.
+const (
+	llmConfigSourceEnvTier             = "env-tier"
+	llmConfigSourceDBTier              = "db-tier"
+	llmConfigSourceConversationTier    = "conversation-tier"
+	llmConfigSourceContextOverrideTier = "context-override-tier"
 )
 
 type llmCacheEntry struct {
@@ -2303,7 +2316,7 @@ func resolveModelContextMap(dbConfig map[string]string) map[string]int {
 	put(dbStr("llm_model_name"), dbInt(contextSizeConfigKey))
 
 	// Per-tier (ENV then DB).
-	for _, t := range []string{"reasoning", "retrieval", "summary"} {
+	for _, t := range []string{"reasoning", "retrieval", "summary", string(ModelTierClassification)} {
 		put(config.Config.GetString(fmt.Sprintf(llmTierModelFormat, t), ""), config.Config.GetInt("llm_tier_context_size_"+t, 0))
 		put(dbStr(fmt.Sprintf(llmTierModelFormat, t)), dbInt("llm_tier_context_size_"+t))
 	}
@@ -2511,11 +2524,11 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 		envTierModel := config.Config.GetString(tierModelKey, "")
 		if envTierProvider != "" && envTierModel != "" {
 			result.Hierarchy = append(result.Hierarchy, LLMConfigLayer{
-				Level: "env-tier", Provider: envTierProvider, Model: envTierModel, Active: false,
+				Level: llmConfigSourceEnvTier, Provider: envTierProvider, Model: envTierModel, Active: false,
 			})
 			result.Provider = envTierProvider
 			result.Model = envTierModel
-			result.Source = "env-tier"
+			result.Source = llmConfigSourceEnvTier
 		} else if envTierProvider != "" || envTierModel != "" {
 			// Half-set tier config — provider OR model but not both. Layer
 			// silently no-ops; surface so an operator who forgot the matching
@@ -2591,11 +2604,11 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 		dbTierModel, hasModel := dbConfig[tierModelKey]
 		if hasProvider && dbTierProvider != "" && hasModel && dbTierModel != "" {
 			result.Hierarchy = append(result.Hierarchy, LLMConfigLayer{
-				Level: "db-tier", Provider: dbTierProvider, Model: dbTierModel, Active: false,
+				Level: llmConfigSourceDBTier, Provider: dbTierProvider, Model: dbTierModel, Active: false,
 			})
 			result.Provider = dbTierProvider
 			result.Model = dbTierModel
-			result.Source = "db-tier"
+			result.Source = llmConfigSourceDBTier
 		} else if (hasProvider && dbTierProvider != "") || (hasModel && dbTierModel != "") {
 			slog.Warn("ResolveLLMConfig: db-tier is half-set — provider/model must both be present, layer skipped",
 				"accountId", accountId,
@@ -2665,11 +2678,11 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 			if tier != "" {
 				if pick, ok := tierOverrides.Get(string(tier)); ok {
 					result.Hierarchy = append(result.Hierarchy, LLMConfigLayer{
-						Level: "conversation-tier", Provider: pick.Provider, Model: pick.Model, Active: false,
+						Level: llmConfigSourceConversationTier, Provider: pick.Provider, Model: pick.Model, Active: false,
 					})
 					result.Provider = pick.Provider
 					result.Model = pick.Model
-					result.Source = "conversation-tier"
+					result.Source = llmConfigSourceConversationTier
 					result.IsOverridden = true
 					slog.Debug("Found conversation per-tier override",
 						"conversationId", conversationId, "tier", string(tier),
@@ -2701,11 +2714,11 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 			if v, ok := ctx.GetContext().Value(ContextKeyLlmTierModelOverrides).(ConversationTierOverrides); ok {
 				if pick, ok := v.Get(string(tier)); ok {
 					result.Hierarchy = append(result.Hierarchy, LLMConfigLayer{
-						Level: "context-override-tier", Provider: pick.Provider, Model: pick.Model, Active: false,
+						Level: llmConfigSourceContextOverrideTier, Provider: pick.Provider, Model: pick.Model, Active: false,
 					})
 					result.Provider = pick.Provider
 					result.Model = pick.Model
-					result.Source = "context-override-tier"
+					result.Source = llmConfigSourceContextOverrideTier
 					result.IsOverridden = true
 				}
 			}
@@ -2866,7 +2879,7 @@ func buildConfiguredModels(withEnv bool, logId string, loadIntegrations func() (
 		}
 	}
 
-	tiers := []string{"reasoning", "retrieval", "summary"}
+	tiers := []string{"reasoning", "retrieval", "summary", string(ModelTierClassification)}
 
 	// ─── ENV ──────────────────────────────────────────────────────────────────
 	//
@@ -3132,7 +3145,7 @@ func isModelNamespaceSeparator(char byte) bool {
 //
 // Source-id schema: {layer}:{scope}[:{name}]
 //   env:global                    → LLM_PROVIDER / LLM_MODEL_NAME / LLM_PROVIDER_API_*
-//   env:tier:<t>                  → LLM_TIER_*_<T>   (t = reasoning|retrieval|summary)
+//   env:tier:<t>                  → LLM_TIER_*_<T>   (t = reasoning|retrieval|summary|classification)
 //   env:agent:<agent_name>        → LLM_*_<AGENT>
 //   env:all                       → the whole ENV config; each call reads its own tier
 //   db:<integration_uuid>[:tier:<t>|:agent:<a>]  → per-tenant integration row

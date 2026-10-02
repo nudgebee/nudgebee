@@ -249,10 +249,10 @@ func enumerateProbeTargets(cfg map[string]string) []probeTarget {
 		addTarget(provider, fb, "global-fallback", cfg)
 	}
 
-	// 2) Per-tier (reasoning / retrieval / summary). Mirror per-agent semantics
+	// 2) Per-tier (reasoning / retrieval / summary / classification). Mirror per-agent semantics
 	// for credentials: a tier-scoped api_key / endpoint / region / version / aws
 	// key overrides the global value for probes against that tier's provider.
-	for _, tier := range []string{"reasoning", "retrieval", "summary"} {
+	for _, tier := range []string{"reasoning", "retrieval", "summary", string(ModelTierClassification)} {
 		tierProvider := cfg["llm_tier_provider_"+tier]
 		if tierProvider == "" {
 			tierProvider = provider
@@ -610,7 +610,7 @@ func fallbackProbeTargets(cfg map[string]string, accountIds []string, tenantId s
 			out = append(out, t)
 		}
 	}
-	for _, scope := range []ModelTier{"", ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
+	for _, scope := range []ModelTier{"", ModelTierReasoning, ModelTierRetrieval, ModelTierSummary, ModelTierClassification} {
 		source := "fallback"
 		if scope != "" {
 			source = "tier-" + string(scope) + "-fallback"

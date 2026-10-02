@@ -1346,7 +1346,8 @@ func resolveThinkingBudget(tier ModelTier) int {
 	switch tier {
 	case ModelTierReasoning:
 		tierBudget = config.Config.LlmThinkingBudgetReasoning
-	case ModelTierSummary:
+	case ModelTierSummary, ModelTierClassification:
+		// Classification is a lightweight tier that otherwise resolves as summary.
 		tierBudget = config.Config.LlmThinkingBudgetSummary
 	default:
 		tierBudget = config.Config.LlmThinkingBudgetRetrieval
