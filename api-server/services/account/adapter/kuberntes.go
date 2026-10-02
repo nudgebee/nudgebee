@@ -307,7 +307,7 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 		}
 		containers := []any{}
 		resourceMeta := request.Resource.Meta.Object().(map[string]any)
-		resourceMeta["controller"] = request.Resource.Name
+		resourceMeta["controller"] = lo.FromPtr(request.Resource.Name)
 		containerAnnotations := []map[string]string{}
 		for key, value := range request.Data {
 			resourceData, ok := value.(map[string]any)
