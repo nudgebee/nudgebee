@@ -66,6 +66,7 @@ import { validateWorkflowForSave, wouldCreateCycle } from './utils/workflowValid
 import { parseDurationToSeconds } from './utils/taskUtils';
 import { extractTriggersFromNodes, extractTasksFromWorkflowNodes, getPreviousNodesOutputSchemas } from './utils/workflowTaskExtraction';
 import { disableTask, enableTask } from './utils/toggleTaskDisable';
+import { reconcileTriggerEdges } from './utils/triggerEdges';
 import { defaultVersionStatus, VERSION_STATUS_HELP, type VersionStatus } from './utils/versionStatus';
 import { toRunTaskOutcome, type RunTaskOutcome } from './utils/runTaskResult';
 import {
@@ -1331,6 +1332,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     },
     [setEdges]
   );
+
+  // A step with no incoming step edge runs as soon as the automation is
+  // triggered, so draw it attached to the trigger the moment it becomes one
+  // (edge deleted, step above it removed, step added or pasted), as a reload
+  // already does. Returns the same array when nothing changes, so this settles.
+  useEffect(() => {
+    setEdges((eds: Edge[]) => reconcileTriggerEdges(nodes, eds));
+  }, [nodes, edges]);
 
   const onConnect = useCallback(
     (connection: any) => {

@@ -11,6 +11,7 @@ interface DeletableEdgeProps extends EdgeProps {
 
 const DeletableEdge: React.FC<DeletableEdgeProps> = ({
   id,
+  source,
   sourceX,
   sourceY,
   targetX,
@@ -21,8 +22,9 @@ const DeletableEdge: React.FC<DeletableEdgeProps> = ({
   markerEnd,
   onAddOnEdge,
 }) => {
-  const { edgePath, labelX, labelY, isHovered, isEditorMode, onEdgeClick, hoverHandlers } = useEdgeInteraction({
+  const { edgePath, labelX, labelY, isHovered, isEditorMode, canDelete, onEdgeClick, hoverHandlers } = useEdgeInteraction({
     id,
+    source,
     sourceX,
     sourceY,
     targetX,
@@ -76,14 +78,16 @@ const DeletableEdge: React.FC<DeletableEdgeProps> = ({
                 }}
               />
             )}
-            <Button
-              composition='icon-only'
-              tone='danger'
-              size='xs'
-              aria-label='Delete edge'
-              icon={<Close fontSize='small' />}
-              onClick={onEdgeClick}
-            />
+            {canDelete && (
+              <Button
+                composition='icon-only'
+                tone='danger'
+                size='xs'
+                aria-label='Delete edge'
+                icon={<Close fontSize='small' />}
+                onClick={onEdgeClick}
+              />
+            )}
           </Box>
         )}
       </EdgeLabelRenderer>
