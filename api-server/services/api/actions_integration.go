@@ -237,6 +237,14 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		// The form offers the Log Label Mapping editor iff the property survives here,
+		// so the decision lives in one place and the frontend needs no provider list of
+		// its own. Category alone is too coarse — jaeger and otel_clickhouse carry a log
+		// category but serve traces only, and an editor there would be dead config.
+		// Accepting the key stays broader than offering it (see CreateIntegrationConfig):
+		// an already-saved mapping must not become unsaveable.
+		resp = withLogLabelMappingOffer(resp, request["integration_name"], request["source"])
+
 		c.JSON(200, map[string]any{
 			"data": resp,
 		})
@@ -698,4 +706,34 @@ func classifyIntegrationDiagnosisError(err error) (stage, reasonCode, summary, r
 	default:
 		return "connection", "CONNECTION_FAILED", "The integration connection test failed.", "Review the integration configuration and provider availability, then retry."
 	}
+}
+
+// withLogLabelMappingOffer decides whether the integration form shows the Log Label
+// Mapping editor, by removing the auto-injected config property from the schema when
+// this provider has no log source. Lives in the api layer because it is the only one
+// that may import both the integration registry and the observability source registry.
+//
+// Returns the schema with a cloned Properties map — ConfigSchema() implementations
+// commonly hand back a shared/static map, and deleting a key in place would strip the
+// property from every later caller.
+func withLogLabelMappingOffer(schema core.IntegrationSchema, integrationName, source string) core.IntegrationSchema {
+	if _, offered := schema.Properties[core.LogLabelMappingsConfigName]; !offered {
+		return schema
+	}
+	if source == "" {
+		source = "user"
+	}
+	if observability.SupportsLogSource(integrationName, source) {
+		return schema
+	}
+
+	cloned := make(map[string]core.IntegrationSchemaProperty, len(schema.Properties))
+	for k, v := range schema.Properties {
+		if k == core.LogLabelMappingsConfigName {
+			continue
+		}
+		cloned[k] = v
+	}
+	schema.Properties = cloned
+	return schema
 }
