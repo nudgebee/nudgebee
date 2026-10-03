@@ -901,8 +901,11 @@ func collectWhereFieldValues(where query.QueryWhereClause, out map[string][]wher
 				}
 				if sqlLikeIsAnchored(raw) {
 					// No wildcards at all: LIKE is equality, so the exact path applies
-					// and gives the better (closest-value) diagnosis.
-					add(field, whereFieldValue{Raw: raw})
+					// and gives the better (closest-value) diagnosis. Fold still travels —
+					// an anchored ILIKE is case-INSENSITIVE equality, and dropping that
+					// made `_ilike "payments"` get checked case-sensitively against a
+					// backend storing "Payments", i.e. a correct filter reported as wrong.
+					add(field, whereFieldValue{Raw: raw, Fold: op == query.ILike})
 					continue
 				}
 				add(field, whereFieldValue{Raw: raw, Segments: segments, Fold: op == query.ILike})
@@ -1186,22 +1189,34 @@ func validateReferencedLabels(ctx *security.RequestContext, source LogSource, fe
 // is a time-range problem handled separately.
 const valueValidationLookback = 7 * 24 * 60 * 60 // seconds
 
-// labelValuesPageSize is the shared page size used by log providers when
-// enumerating field values. Keeping the provider limits and the completeness
-// guard tied to one value prevents a truncated page from being treated as the
-// complete value set.
+// labelValuesPageSize is the page every LOG provider's QueryLabelValues asks its backend for —
+// the ES terms-agg size, the SQL LIMIT the Pinot/Hive/OpenObserve listings carry, and the NRQL
+// uniques() cap. One constant rather than a number repeated per provider, so the invariant on
+// maxLabelValuesToScan below holds by construction instead of by comment: the log providers
+// paged at 100 (Dynatrace at 50) while the guard stayed at 1000, so a truncated page never
+// tripped it and was read as the label's complete value set.
+//
+// It is a PAGE size, not "every value the label has". No backend enumerates a high-cardinality
+// label (pod names, request ids) cheaply, and none is asked to — what the diagnosis needs is a
+// page that is either complete or DETECTABLY truncated.
 const labelValuesPageSize = 1000
 
 // maxLabelValuesToScan caps how many values we pull per label before giving up on value
 // suggestion. High-cardinality labels (pod names, request ids) can have thousands of values;
 // scanning them all wastes latency and tokens, and an equality filter on such a label is
-// rarely a typo. At or above the cap we fail open (no diagnosis).
+// rarely a typo.
 //
 // INVARIANT: this must stay <= the smallest per-provider value-page cap, and the check
 // must be >= (not >). A provider that truncates its own response returns exactly its page
 // size; treating that truncated page as the complete value universe would report a REAL
-// value as unknown — the precise false positive this cap exists to prevent. The binding
-// cap today is Elasticsearch's esLabelValuesTermsSize (elasticsearch_saas.go).
+// value as unknown — the precise false positive this cap exists to prevent. Pinned to
+// labelValuesPageSize so the log providers cannot drift away from it again.
+//
+// The two validators read it differently, because they have different evidence available.
+// The LOG path can confirm a value against the backend (labelValueExists), so a page at the
+// cap only costs it the closest-match suggestions, not the verdict. The TRACE path has no
+// such probe, so there a page at the cap still fails open outright — and its providers page
+// far below this number, which is what CompleteTraceLabelValuesSource exists to handle.
 const maxLabelValuesToScan = labelValuesPageSize
 
 // unknownValueError builds the actionable message returned when a query filters a label to a
@@ -1239,6 +1254,80 @@ func unknownValueError(noun, providerNoun, label, value string, candidates []str
 		return fmt.Errorf("no %s matched: value %q for label %q not found; closest valid value(s): %v", noun, value, label, suggestions)
 	}
 	return fmt.Errorf("no %s matched: value %q for label %q was not found for this %s provider; verify the value is correct or remove this filter", noun, value, label, providerNoun)
+}
+
+// labelValueExists reports whether a single label filter matches anything at all over the
+// widened window — one query with that filter and nothing else, capped at one row.
+//
+// It exists because a value's absence from QueryLabelValues is weak evidence. Every log
+// provider's listing is a page (labelValuesPageSize) or, for Splunk/Dynatrace/SolarWinds/
+// Loggly, a sample of recent log lines, so "not in the page" and "not in the backend" are
+// different claims — and acting on the first as if it were the second is what produced
+// `value "x" for label "y" not found` for values that plainly exist. The listing stays the
+// SUGGESTION source (a partial list ranks closest-matches perfectly well); this is what
+// decides whether there is anything to suggest about.
+//
+// The trace side answers the same question with CompleteTraceLabelValuesSource, a marker that
+// simply switches the diagnosis off for sources that cannot enumerate. That is the right
+// trade there, where most sources cannot enumerate at all; it would be the wrong one here,
+// where it would disable the diagnosis for every log provider except Elasticsearch.
+//
+// Fails OPEN — reports the value as existing — on every error: an unconfirmable value must
+// never be blamed.
+func labelValueExists(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, label string, want whereFieldValue, startTime, endTime int64) bool {
+	// Reconstruct the operator the caller actually used, or the probe answers a different
+	// question than the one that was asked: an unanchored `%auth%` probed with _eq looks up
+	// the literal string "%auth%" and always comes back empty, and a case-insensitive filter
+	// probed case-sensitively misses the very value that makes it correct.
+	op := query.Eq
+	switch {
+	case len(want.Segments) > 0 && want.Fold:
+		op = query.ILike
+	case len(want.Segments) > 0:
+		op = query.Like
+	case want.Fold:
+		// Anchored ILIKE — no wildcards, so this is case-insensitive equality.
+		op = query.ILike
+	}
+
+	probe := FetchLogRequest{
+		AccountId:         fetchLogRequest.AccountId,
+		LogProvider:       fetchLogRequest.LogProvider,
+		LogProviderSource: fetchLogRequest.LogProviderSource,
+		StartTime:         startTime,
+		EndTime:           endTime,
+		Limit:             1,
+		// Same index the log query used — nil for every non-ES provider, matching what
+		// the value listing is given.
+		Request: labelDiscoveryRequest(fetchLogRequest.Request),
+	}
+	probe.QueryRequest.Where = query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{label: {op: want.Raw}},
+	}
+
+	// applyLabelDataTypes renders the value as its column's native type. This one is
+	// load-bearing: a numeric column compared against a quoted string matches nothing, and an
+	// unconfirmed value is exactly what gets blamed. Its own hot-path guard skips discovery
+	// for the ordinary `namespace = "payments"` case, so it usually costs nothing. An error
+	// means the operator cannot apply to that type at all — not something to blame a value for.
+	//
+	// The account's default log filters are deliberately NOT applied: leaving them off can
+	// only widen the probe, and a wider probe only ever fails open. Applying them would add an
+	// integration lookup per probe to narrow a query whose only job is to answer "does this
+	// value appear anywhere".
+	if err := applyLabelDataTypes(ctx, source, &probe); err != nil {
+		return true
+	}
+
+	if generated, err := source.GetQuery(ctx, probe); err == nil && generated != "" {
+		probe.Query = generated
+	}
+
+	logs, err := source.QueryLogs(ctx, probe)
+	if err != nil {
+		return true
+	}
+	return len(logs) > 0
 }
 
 // validateReferencedLabelValues checks, for a query that returned no logs, whether an equality
@@ -1290,27 +1379,61 @@ func validateReferencedLabelValues(ctx *security.RequestContext, source LogSourc
 			// what preserves their existing (window-driven) value discovery.
 			Request: labelDiscoveryRequest(fetchLogRequest.Request),
 		})
-		// Unknown label, discovery failure, empty or truncated/high-cardinality value set → fail open.
-		if err != nil || len(labelValues) == 0 || len(labelValues) >= maxLabelValuesToScan {
+		// Unknown label or discovery failure → fail open; an empty listing usually means the
+		// lookup itself is broken, not that the label has no values.
+		if err != nil || len(labelValues) == 0 {
 			continue
 		}
-		valueSet := make(map[string]struct{}, len(labelValues))
-		candidates := make([]string, len(labelValues))
-		for i, v := range labelValues {
-			valueSet[v.Value] = struct{}{}
-			candidates[i] = v.Value
+		// A page returned at exactly the cap is truncated. Its values are still real, so a
+		// filter missing from it is still worth confirming — but the closest match to a wrong
+		// value may be one of the ones we never saw, so it must not be offered as a suggestion.
+		suggestable := len(labelValues) < maxLabelValuesToScan
+		if err := unmatchedValueError(ctx, source, fetchLogRequest, label, referencedValues[label], labelValues, suggestable, startTime, endTime); err != nil {
+			return err
 		}
-		for _, want := range referencedValues[label] {
-			if len(want.Segments) > 0 {
-				if !anyCandidateContainsAll(candidates, want.Segments, want.Fold) {
-					return unknownPatternValueError("logs", "log", label, want.Raw, strings.Join(want.Segments, ""), candidates)
-				}
+	}
+	return nil
+}
+
+// unmatchedValueError checks one label's filters against the values the provider listed for it
+// and returns the actionable error for the first filter no listed value can satisfy — but only
+// once labelValueExists has confirmed the backend really holds nothing for it. Split out of
+// validateReferencedLabelValues so the "which filter is wrong" decision reads on its own,
+// separate from the per-label window and listing setup.
+//
+// Matching always uses the full listing, so a value present on even a truncated page is
+// confirmed for free with no probe. suggestable=false withholds only the closest-match list;
+// both error builders already fall back to their action-agnostic wording on empty candidates.
+func unmatchedValueError(ctx *security.RequestContext, source LogSource, fetchLogRequest FetchLogRequest, label string, wants []whereFieldValue, labelValues []OutputLogLabelValue, suggestable bool, startTime, endTime int64) error {
+	valueSet := make(map[string]struct{}, len(labelValues))
+	candidates := make([]string, len(labelValues))
+	for i, v := range labelValues {
+		valueSet[v.Value] = struct{}{}
+		candidates[i] = v.Value
+	}
+	suggestions := candidates
+	if !suggestable {
+		suggestions = nil
+	}
+
+	for _, want := range wants {
+		isPattern := len(want.Segments) > 0
+		if isPattern {
+			if anyCandidateContainsAll(candidates, want.Segments, want.Fold) {
 				continue
 			}
-			if _, ok := valueSet[want.Raw]; !ok {
-				return unknownValueError("logs", "log", label, want.Raw, candidates)
-			}
+		} else if _, ok := valueSet[want.Raw]; ok {
+			continue
 		}
+		// The listed values cannot satisfy this filter — but that listing is capped, and for
+		// several providers sampled, so confirm against the backend before blaming it.
+		if labelValueExists(ctx, source, fetchLogRequest, label, want, startTime, endTime) {
+			continue
+		}
+		if isPattern {
+			return unknownPatternValueError("logs", "log", label, want.Raw, strings.Join(want.Segments, ""), suggestions)
+		}
+		return unknownValueError("logs", "log", label, want.Raw, suggestions)
 	}
 	return nil
 }
