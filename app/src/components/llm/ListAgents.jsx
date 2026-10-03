@@ -578,10 +578,10 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
     const hasExtensions = extensionsMap[agent.name]?.length > 0;
     const menuItems = [];
 
-    // Manage KBs
+    // Prioritize knowledge
     menuItems.push({
       id: 'add-kb',
-      label: 'Manage KBs',
+      label: 'Prioritize knowledge',
       icon: DataBaseDark,
     });
 
@@ -818,7 +818,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         width={'lg'}
         open={isKbSelectionModalOpen}
         handleClose={handleCloseKbSelectionModal}
-        title={`Manage Knowledge Bases for ${selectedAgent?.aliases?.[0] || selectedAgent?.name || 'Agent'}`}
+        title={`Prioritize knowledge for ${selectedAgent?.aliases?.[0] || selectedAgent?.name || 'Agent'}`}
         actionButtons={
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[3], width: '100%' }}>
             <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
@@ -856,6 +856,13 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             </Box>
           ) : (
             <Box sx={{ pt: 2 }}>
+              {/* A mapping is a priority boost, not access (#39919): every agent
+                  searches all of the account's active knowledge bases, and the ones
+                  mapped here get reserved space in this agent's results. */}
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], mb: ds.space[3] }}>
+                Every agent can use all of this account's knowledge bases. Prioritized ones get reserved space in this agent's search results, so a
+                specialist runbook is not crowded out by larger knowledge bases.
+              </Typography>
               <ListingLayout id='kb-selection-list'>
                 <ListingLayout.Toolbar>
                   <SearchInput
@@ -897,7 +904,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
                               <Text value={kb.name} sx={{ fontWeight: ds.weight.medium }} />
                               {isMappedToAllAgents && <Label text='All agents' tone='info' />}
-                              {isAlreadyMapped && !isMappedToAllAgents && <Label text='Mapped' tone='success' />}
+                              {isAlreadyMapped && !isMappedToAllAgents && <Label text='Prioritized' tone='success' />}
                             </Box>
                           ),
                         },
@@ -1210,7 +1217,11 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                     { name: 'Status', width: '10%' },
                     { name: 'Tools', width: '10%' },
                     { name: 'Usage', width: '5%', info: USAGE_COLUMN_INFO },
-                    { name: 'KB', width: '5%', info: 'Knowledge Base count - Click to view or manage knowledge bases mapped to this agent' },
+                    {
+                      name: 'KB',
+                      width: '5%',
+                      info: "Knowledge bases prioritized for this agent. Every agent can use all of the account's knowledge bases; click to change which are prioritized",
+                    },
                     { name: 'Action', width: '5%' },
                   ]
             }

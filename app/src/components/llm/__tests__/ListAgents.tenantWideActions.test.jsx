@@ -120,7 +120,7 @@ describe('ListAgents tenant-wide Action column', () => {
     await waitFor(() => expect(apiAskNudgebee.deleteAgent).toHaveBeenCalledWith('acct-9', 'my-agent'));
   });
 
-  it("loads and saves Manage KBs against the agent's own account", async () => {
+  it("loads and saves prioritized knowledge against the agent's own account", async () => {
     apiKnowledgeBase.getKnowledgeBases.mockResolvedValue({
       data: [
         { id: 'kb-1', name: 'Runbooks' },
@@ -132,10 +132,14 @@ describe('ListAgents tenant-wide Action column', () => {
     apiKnowledgeBase.unmapKnowledgeBaseFromAgent.mockResolvedValue({});
     renderList('');
 
-    fireEvent.click(within(await screen.findByTestId('actions-my-agent')).getByText('Manage KBs'));
+    fireEvent.click(within(await screen.findByTestId('actions-my-agent')).getByText('Prioritize knowledge'));
 
     await waitFor(() => expect(apiKnowledgeBase.getKnowledgeBases).toHaveBeenCalledWith('acct-9'));
     expect(apiKnowledgeBase.getAgentKnowledgeBases).toHaveBeenCalledWith('acct-9', 'my-agent');
+    // #39919: the dialog says what a mapping does: every agent can use every
+    // knowledge base, and the ticked ones are prioritized for this agent.
+    expect(await screen.findByText(/Every agent can use all of this account's knowledge bases/)).toBeInTheDocument();
+    expect(screen.getByText('Prioritized')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Runbooks' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Postmortems' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
