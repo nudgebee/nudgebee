@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { FormControlLabel, Box, Typography, Grid, Collapse } from '@mui/material';
