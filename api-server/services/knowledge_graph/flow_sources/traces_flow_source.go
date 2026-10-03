@@ -501,7 +501,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 					// caller is sourceNode, so its namespace scopes bare
 					// pod-name resolution (StatefulSet ordinals the string
 					// heuristic above leaves unchanged).
-					upstreamNode = s.tryMatchExternalService(matchName, targetKind, account.CloudAccountID,
+					upstreamNode = s.tryMatchExternalService(matchName, targetKind, targetNamespace, account.CloudAccountID,
 						stringProp(sourceNode, "namespace"), podIPResolver)
 					if upstreamNode == nil {
 						// No match found - create external service node
@@ -591,7 +591,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 					// First try to match by name/kind to existing nodes. The
 					// caller (this downstream) has no known namespace here, so
 					// pod-name resolution falls back to global-unique.
-					downstreamNode = s.tryMatchExternalService(matchName, downstreamKind, account.CloudAccountID,
+					downstreamNode = s.tryMatchExternalService(matchName, downstreamKind, downstreamNamespace, account.CloudAccountID,
 						"", podIPResolver)
 					if downstreamNode == nil {
 						// No match found - create external service node
@@ -842,16 +842,18 @@ func (s *TracesFlowSource) matchK8sInternalDNSToNode(name, k8sAccountID string) 
 		}
 	}
 
-	// Try matching with service name only (same account, then any account)
+	// Try matching with service name only (same account, then any account).
+	// The parsed namespace still scopes the candidates: a name the DNS put in
+	// one known namespace must not bind to a same-named service in another.
 	if parsedDNS.ServiceName != "" {
-		if node := s.matchByNameOnly(matcher, parsedDNS.ServiceName, k8sAccountID, k8sNodeTypes, true); node != nil {
+		if node := s.matchByNameOnly(matcher, parsedDNS.ServiceName, parsedDNS.Namespace, k8sAccountID, k8sNodeTypes, true); node != nil {
 			s.logger.Debug("matched K8s DNS by parsed service name (same account)",
 				"original_name", name,
 				"parsed_service", parsedDNS.ServiceName,
 				"node", node.UniqueKey)
 			return node
 		}
-		if node := s.matchByNameOnly(matcher, parsedDNS.ServiceName, "", k8sNodeTypes, false); node != nil {
+		if node := s.matchByNameOnly(matcher, parsedDNS.ServiceName, parsedDNS.Namespace, k8sAccountID, k8sNodeTypes, false); node != nil {
 			s.logger.Debug("matched K8s DNS by parsed service name (any account)",
 				"original_name", name,
 				"parsed_service", parsedDNS.ServiceName,
@@ -904,16 +906,19 @@ func (s *TracesFlowSource) matchByNamespaceAndName(
 	return nil
 }
 
-// matchByNameOnly is a helper that matches nodes by name only
+// matchByNameOnly is a helper that matches nodes by name only, refusing a
+// candidate in a known namespace other than observedNamespace.
 func (s *TracesFlowSource) matchByNameOnly(
 	matcher *NodeMatcher,
-	serviceName, accountID string,
+	serviceName, observedNamespace, accountID string,
 	nodeTypes []core.NodeType,
 	filterByAccount bool,
 ) *core.DbNode {
 	for _, nt := range nodeTypes {
 		criteria := MatchCriteria{
-			NodeType: nt,
+			NodeType:           nt,
+			ObservedNamespace:  observedNamespace,
+			ObservingAccountID: accountID,
 			PropertyMatches: []PropertyMatch{
 				{
 					PropertyPath:  "name",
@@ -1015,12 +1020,15 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 		}
 	}
 
-	// Strategy 2: Exact match by name and kind (same account)
+	// Strategy 2: Exact match by name and kind (same account). The observed
+	// namespace keeps a same-named workload in another namespace from
+	// answering for this service (nb-39546).
 	if name != "" {
 		for _, nt := range nodeTypesToTry {
 			result, err := matcher.FindNode(MatchCriteria{
-				AccountID: k8sAccountID,
-				NodeType:  nt,
+				AccountID:         k8sAccountID,
+				NodeType:          nt,
+				ObservedNamespace: app.Id.Namespace,
 				PropertyMatches: []PropertyMatch{
 					{
 						PropertyPath:  "name",
@@ -1069,10 +1077,15 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 		}
 	}
 
-	// Strategy 4: Exact match by name (any account, inferred type only)
+	// Strategy 4: Exact match by name (any account, inferred type only).
+	// ObservingAccountID lets the namespace guard know the observed namespace
+	// from this cluster, so the candidate strategy 2 refused here is not
+	// accepted from another one.
 	if name != "" {
 		result, err := matcher.FindNode(MatchCriteria{
-			NodeType: nodeType,
+			NodeType:           nodeType,
+			ObservedNamespace:  app.Id.Namespace,
+			ObservingAccountID: k8sAccountID,
 			PropertyMatches: []PropertyMatch{
 				{
 					PropertyPath:  "name",
@@ -1094,6 +1107,8 @@ func (s *TracesFlowSource) matchServiceApplicationToNode(
 	// Strategy 5: Match by service name in labels
 	if serviceName, ok := app.Labels["service"]; ok && serviceName != "" {
 		result, err := matcher.FindNode(MatchCriteria{
+			ObservedNamespace:  app.Id.Namespace,
+			ObservingAccountID: k8sAccountID,
 			PropertyMatches: []PropertyMatch{
 				{
 					PropertyPath:  "properties.service_name",
@@ -1285,9 +1300,11 @@ func isReplicaSetHashName(name string) bool {
 	return len(hash) >= 8 && len(hash) <= 10 && core.IsAlphanumeric(hash)
 }
 
-// tryMatchExternalService attempts to match an external service to existing nodes
+// tryMatchExternalService attempts to match an external service to existing nodes.
+// targetNamespace is the namespace the trace reported for the target itself
+// (often empty for external services); it scopes the name-only match below.
 func (s *TracesFlowSource) tryMatchExternalService(
-	name, kind, k8sAccountID, callerNamespace string,
+	name, kind, targetNamespace, k8sAccountID, callerNamespace string,
 	podIPResolver *PodIPResolver,
 ) *core.DbNode {
 	// Bare pod hostname (e.g. a StatefulSet ordinal like "redis-master-0") ->
@@ -1318,6 +1335,8 @@ func (s *TracesFlowSource) tryMatchExternalService(
 
 	// Try to match by name across all node types
 	result, err := matcher.FindNode(MatchCriteria{
+		ObservedNamespace:  targetNamespace,
+		ObservingAccountID: k8sAccountID,
 		PropertyMatches: []PropertyMatch{
 			{
 				PropertyPath:  "name",

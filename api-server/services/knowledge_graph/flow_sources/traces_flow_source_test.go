@@ -616,7 +616,7 @@ func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
 	})
 
 	// Caller in namespace "redis" -> resolves to the StatefulSet, not an ExternalService.
-	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "redis", resolver)
+	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "", "acct1", "redis", resolver)
 	if got == nil {
 		t.Fatalf("expected redis-master-0 to resolve to the redis-master StatefulSet, got nil (would create an ExternalService)")
 		return
@@ -627,7 +627,7 @@ func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
 
 	// Caller in a namespace with no such pod: no pod match, and no DNS/name match
 	// either -> nil, so the caller falls back to an ExternalService (status quo).
-	if miss := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "payments", resolver); miss != nil {
+	if miss := source.tryMatchExternalService("redis-master-0", "ExternalService", "", "acct1", "payments", resolver); miss != nil {
 		t.Errorf("bare pod name unknown in caller ns must NOT match, got %q", miss.UniqueKey)
 	}
 }
