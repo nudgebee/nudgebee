@@ -423,7 +423,7 @@ const validateProps = (props: ChipProps, variant: ChipVariant, isIconOnly: boole
   for (const rule of VALIDATION_RULES) {
     if (rule.test({ ...props, _variant: variant, _isIconOnly: isIconOnly })) {
       // eslint-disable-next-line no-console
-      console.warn(`[Chip] ${rule.message}`, props);
+      console.warn('[Chip] invalid props', { message: rule.message, props });
     }
   }
 };

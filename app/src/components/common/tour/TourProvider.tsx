@@ -275,7 +275,7 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
           // Side-effect failed (e.g. trigger missing) — keep advancing so
           // the tour doesn't dead-end. goTo() waits for the next step's
           // element and ends the tour if a required step never mounts.
-          console.warn(`[tour] onBeforeNext failed on "${tourId}" step ${from + 1} (${steps[from].element})`, err);
+          console.warn('[tour] onBeforeNext failed', { tourId, step: from + 1, element: steps[from].element, err });
         }
         // No explicit wait here: goTo() already waits for the next step's
         // element to mount before highlighting it.

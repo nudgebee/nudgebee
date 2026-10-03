@@ -357,6 +357,7 @@ function Field({ label, description, required, badge, helperText, error, id, chi
         (children.type as any)?.displayName ?? (children.type as any)?.name ?? 'inner control';
       // eslint-disable-next-line no-console
       console.warn(
+        '%s',
         `[ds/Form.Field] Double label detected. <Form.Field label=${JSON.stringify(label)}> ` +
           `wraps <${childName} label=${JSON.stringify(childLabel)}>. ` +
           `Inside Form.Field the inner control must not set \`label\` — remove it from the child. ` +

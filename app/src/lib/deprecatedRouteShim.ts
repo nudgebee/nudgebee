@@ -28,7 +28,7 @@ export function createDeprecatedShim(handler: NextApiHandler, newUrl: string): N
     res.setHeader('Link', `<${newUrl}>; rel="successor-version"`);
     // Single-line log so ops can grep + count occurrences over time.
     // Once this is silent for ~30 days, the shim file can be deleted.
-    console.warn(`[deprecated-endpoint] ${req.method} ${req.url} → ${newUrl}`);
+    console.warn('%s', `[deprecated-endpoint] ${req.method} ${req.url} → ${newUrl}`);
     return handler(req, res);
   };
 }

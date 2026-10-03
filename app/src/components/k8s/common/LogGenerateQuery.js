@@ -271,7 +271,7 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
       const { label, operator, value } = filter;
       const apiOperator = operatorMap[operator];
       if (!apiOperator) {
-        console.warn(`Unsupported operator: ${operator}`);
+        console.warn('Unsupported operator', { operator });
         return null; // or throw new Error(...)
       }
       return {
@@ -321,7 +321,7 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
               },
             });
           } else {
-            console.warn(`Unsupported line operation operator: ${op.op}`);
+            console.warn('Unsupported line operation operator', { operator: op.op });
           }
         });
     }

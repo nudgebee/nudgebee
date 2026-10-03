@@ -297,7 +297,7 @@ const KubernetesClusterSummaryUtilization = ({ accountId }) => {
           if (result.status === 'fulfilled') {
             apiCalls[index].process(result.value);
           } else {
-            console.error(`API call ${index} failed:`, result.reason);
+            console.error('API call failed', { index, reason: result.reason });
           }
         });
         setHasEventAutoPilotFetched(true);

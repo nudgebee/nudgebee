@@ -860,7 +860,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                           succeeded.push(account.project_id);
                         } catch (err) {
                           failed.push(account.project_id);
-                          console.error(`Webhook setup failed for ${account.project_id}:`, err);
+                          console.error('Webhook setup failed', { projectId: account.project_id, err });
                         }
                       }
                       setWebhookSetupResult({ succeeded, failed });

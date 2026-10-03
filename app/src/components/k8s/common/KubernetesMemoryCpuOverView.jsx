@@ -428,7 +428,7 @@ const KubernetesMemoryCpuOverView = ({
 
       return data;
     } catch (error) {
-      console.error(`Error fetching ${apiType} data:`, error);
+      console.error('Error fetching data', { apiType, error });
       return {};
     } finally {
       setLoadingStates((prev) => ({ ...prev, [apiType]: false }));

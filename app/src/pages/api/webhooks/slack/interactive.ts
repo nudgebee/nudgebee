@@ -7,7 +7,7 @@ export const config = { api: { bodyParser: false } };
 
 export default async function trigger(req: NextApiRequest, res: NextApiResponse) {
   try {
-    console.debug(`Incoming request to interactive slack api - Method: ${req.method}`);
+    console.debug('Incoming request to interactive slack api', { method: req.method });
 
     const verified = await verifySlackRequest(req);
     if (!verified.ok) {
@@ -27,7 +27,7 @@ export default async function trigger(req: NextApiRequest, res: NextApiResponse)
       headers: { 'X-ACTION-TOKEN': process.env.ACTION_API_SERVER_TOKEN ?? '' },
       timeout: 5000,
     });
-    console.log(`Response from notification service - Status Code: ${response.status}, Response Body: ${response.data}`);
+    console.log('Response from notification service', { status: response.status, body: response.data });
     return;
   } catch (err: any) {
     console.error(err);

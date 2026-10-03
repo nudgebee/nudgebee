@@ -469,7 +469,7 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
     // upstream is the thing that broke.
     if (rawBody.trim() === '') {
       const detail = `upstream returned ${upstream.status} with an empty body`;
-      console.error(`[graphql-gateway] upstream_empty_body method=${opts.method} url=${upstreamUrl} status=${upstream.status}`);
+      console.error('%s', `[graphql-gateway] upstream_empty_body method=${opts.method} url=${upstreamUrl} status=${upstream.status}`);
       return {
         ok: false,
         error: {
@@ -786,17 +786,17 @@ function forwardErrorMessage(err: ForwardError): string {
     case 'handler_unresolved':
       // The missing variable names go to the server log only — the client message
       // stays generic, as it does for the other upstream-side failures.
-      console.error(`[graphql-gateway] handler_unresolved method=${err.method} handler=${err.handler} missingEnv=${err.missingEnv.join(',')}`);
+      console.error('%s', `[graphql-gateway] handler_unresolved method=${err.method} handler=${err.handler} missingEnv=${err.missingEnv.join(',')}`);
       return `Handler URL unresolved for ${err.method}`;
     case 'no_tenant_role':
       return NO_TENANT_ROLE_MESSAGE;
     case 'forbidden':
       return err.role ? `Role '${err.role}' is not permitted to invoke '${err.method}'` : `Your permissions do not allow '${err.method}'`;
     case 'upstream_unreachable':
-      console.error(`[graphql-gateway] upstream_unreachable method=${err.method} url=${err.url} detail=${err.detail}`);
+      console.error('%s', `[graphql-gateway] upstream_unreachable method=${err.method} url=${err.url} detail=${err.detail}`);
       return `Upstream unreachable for ${err.method}`;
     case 'upstream_parse_failed':
-      console.error(`[graphql-gateway] upstream_parse_failed method=${err.method} url=${err.url} detail=${err.detail}`);
+      console.error('%s', `[graphql-gateway] upstream_parse_failed method=${err.method} url=${err.url} detail=${err.detail}`);
       return `Upstream response parse failed for ${err.method}`;
     case 'upstream_error':
       return extractUpstreamErrorDetail(err.payload) || genericMessageForStatus(err.status);

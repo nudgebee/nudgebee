@@ -99,7 +99,7 @@ export async function register() {
             const dur = ((s.endTime[0] - s.startTime[0]) * 1000 + (s.endTime[1] - s.startTime[1]) / 1e6).toFixed(1);
             const route = (s.attributes['next.route'] || s.attributes['http.target'] || s.attributes['url.path'] || '') as string;
             const ok = s.status.code === 2 ? 'ERR' : 'OK';
-            console.log(`[otel] ${ok} ${dur}ms ${s.name}${route ? ` (${route})` : ''} trace=${s.spanContext().traceId.slice(0, 8)}`);
+            console.log('%s', `[otel] ${ok} ${dur}ms ${s.name}${route ? ` (${route})` : ''} trace=${s.spanContext().traceId.slice(0, 8)}`);
           }
           cb({ code: 0 });
         },
@@ -140,6 +140,6 @@ export async function register() {
     });
 
     sdk.start();
-    console.log(`✅ OpenTelemetry instrumentation started using "${exporterType}" exporter`);
+    console.log('✅ OpenTelemetry instrumentation started', { exporterType });
   }
 }

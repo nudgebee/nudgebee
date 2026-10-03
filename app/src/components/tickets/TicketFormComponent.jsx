@@ -287,7 +287,7 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
             );
           default:
             // Type outside the vocabulary = backend/frontend drift; surface it.
-            console.warn(`TicketFormComponent: no renderer for field type "${field.type}" (${field.key})`);
+            console.warn('TicketFormComponent: no renderer for field type', { type: field.type, key: field.key });
             return null;
         }
       });

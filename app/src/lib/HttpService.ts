@@ -274,11 +274,11 @@ export const queryGraphQLParallel = async (
       Object.assign(mergedData, result.value.data.data);
       if (result.value?.data?.errors) allErrors.push(...result.value.data.errors);
     } else if (result.status === 'fulfilled' && result.value?.data?.errors) {
-      console.error(`[queryGraphQLParallel] GraphQL error in "${opName}":`, result.value.data.errors);
+      console.error('[queryGraphQLParallel] GraphQL error', { opName, errors: result.value.data.errors });
       allErrors.push(...result.value.data.errors);
       if (!firstError) firstError = result.value;
     } else if (result.status === 'rejected') {
-      console.error(`[queryGraphQLParallel] Network error in "${opName}":`, result.reason);
+      console.error('[queryGraphQLParallel] Network error', { opName, reason: result.reason });
       if (!firstError) firstError = result.reason;
     }
   }

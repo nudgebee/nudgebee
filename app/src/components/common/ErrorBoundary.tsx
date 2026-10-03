@@ -92,7 +92,8 @@ function FullPageFallback({ onGoHome }: Readonly<{ onGoHome: () => void }>) {
 // ─── Centralized error reporter ──────────────────────────────────────────────
 
 function reportError(error: Error, info: React.ErrorInfo, boundary: string) {
-  console.error(`[${boundary}]`, error.message, {
+  console.error('[ErrorBoundary]', error.message, {
+    boundary,
     componentStack: info.componentStack,
     error,
   });
@@ -111,7 +112,7 @@ function reportError(error: Error, info: React.ErrorInfo, boundary: string) {
  * observability path even when they cannot bubble to the boundary naturally.
  */
 export function reportHandledError(error: Error, context: string, metadata?: Record<string, unknown>) {
-  console.error(`[${context}]`, error.message, { error, ...metadata });
+  console.error('[handled-error]', error.message, { context, error, ...metadata });
   reportClientError({
     kind: 'handled',
     message: error.message,

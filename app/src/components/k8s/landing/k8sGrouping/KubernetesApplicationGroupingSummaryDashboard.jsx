@@ -253,7 +253,7 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
                 const processedData = processLatencyResponse(response, labelName);
                 processedLatencyData.push(processedData);
               } else {
-                console.error(`Error fetching latency data for ${latencyApiCalls[index].labelName}:`, result.reason);
+                console.error('Error fetching latency data', { labelName: latencyApiCalls[index].labelName, reason: result.reason });
               }
             });
 
@@ -350,7 +350,7 @@ const KubernetesApplicationGroupingSummaryDashboard = ({ accountId, applications
               updateChartData(key, seriesData);
             })
             .catch((error) => {
-              console.error(`Error fetching ${key} data:`, error);
+              console.error('Error fetching data', { key, error });
               handleError(key, error);
             });
         });

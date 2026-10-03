@@ -458,7 +458,7 @@ const QueryModeSwitcher = ({
             },
           });
         } else {
-          console.warn(`Unsupported line operation operator: ${op.op}`);
+          console.warn('Unsupported line operation operator', { operator: op.op });
         }
       });
 

@@ -52,14 +52,25 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
     }
     let current = obj;
 
+    // The upfront check above already rejects these keys, so the per-key checks
+    // below never fire; they are kept inline at each write so CodeQL's
+    // js/prototype-pollution-utility query recognises the guard (alert #345).
     for (let i = 0; i < keys.length - 1; i++) {
-      if (!current[keys[i]] || typeof current[keys[i]] !== 'object') {
-        current[keys[i]] = {};
+      const key = keys[i];
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        return;
       }
-      current = current[keys[i]];
+      if (!current[key] || typeof current[key] !== 'object') {
+        current[key] = {};
+      }
+      current = current[key];
     }
 
-    current[keys[keys.length - 1]] = value;
+    const lastKey = keys[keys.length - 1];
+    if (lastKey === '__proto__' || lastKey === 'constructor' || lastKey === 'prototype') {
+      return;
+    }
+    current[lastKey] = value;
   };
 
   // Helper function to get default value based on field type
@@ -138,7 +149,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
               possible_values: generatedValues,
             };
           } catch (error) {
-            console.error(`Failed to generate values for ${key}:`, error);
+            console.error('Failed to generate values', { key, error });
           }
         }
       }

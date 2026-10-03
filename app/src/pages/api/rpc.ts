@@ -161,6 +161,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             return;
           case 'handler_unresolved':
             console.error(
+              '%s',
               `[rpc-proxy] handler_unresolved method=${method} handler=${result.error.handler} missingEnv=${result.error.missingEnv.join(',')}`
             );
             res.status(500).json(rpcError(rpcId, RPC_INTERNAL_ERROR, `Handler URL unresolved for ${method}`));
@@ -177,15 +178,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             );
             return;
           case 'upstream_unreachable':
-            console.error(`[rpc-proxy] upstream_unreachable method=${result.error.method} url=${result.error.url} detail=${result.error.detail}`);
+            console.error(
+              '%s',
+              `[rpc-proxy] upstream_unreachable method=${result.error.method} url=${result.error.url} detail=${result.error.detail}`
+            );
             res.status(502).json(rpcError(rpcId, RPC_UPSTREAM_ERROR, 'upstream_unreachable', { method: result.error.method }));
             return;
           case 'upstream_parse_failed':
-            console.error(`[rpc-proxy] upstream_parse_failed method=${result.error.method} url=${result.error.url} detail=${result.error.detail}`);
+            console.error(
+              '%s',
+              `[rpc-proxy] upstream_parse_failed method=${result.error.method} url=${result.error.url} detail=${result.error.detail}`
+            );
             res.status(502).json(rpcError(rpcId, RPC_UPSTREAM_ERROR, 'upstream_parse_failed', { method: result.error.method }));
             return;
           case 'upstream_error':
-            console.error(`[rpc-proxy] upstream_error method=${result.error.method} url=${result.error.url} status=${result.error.status}`);
+            console.error('%s', `[rpc-proxy] upstream_error method=${result.error.method} url=${result.error.url} status=${result.error.status}`);
             res.status(result.error.status).json(
               rpcError(rpcId, RPC_UPSTREAM_ERROR, `upstream_${result.error.status}`, {
                 method: result.error.method,
@@ -201,7 +208,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       res.status(200).json(rpcResult(rpcId, result.payload));
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (err: any) {
-      console.error(`[rpc-proxy] unhandled error method=${methodForLog}`, err);
+      console.error('%s', `[rpc-proxy] unhandled error method=${methodForLog}`, err);
       span.recordException(err);
       span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
       if (!res.headersSent) {

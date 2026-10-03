@@ -213,7 +213,7 @@ const KubernetesApplicationGrouping = () => {
 
         return { accountId, events: response?.data?.event_groupings || [] };
       } catch (error) {
-        console.error(`Error fetching event data for account ${accountId}:`, error);
+        console.error('Error fetching event data', { accountId, error });
         return { accountId, events: [] };
       }
     });
@@ -260,7 +260,7 @@ const KubernetesApplicationGrouping = () => {
         }
         return { accountId, errorRate: [] };
       } catch (err) {
-        console.error(`Error fetching event data for account ${accountId}:`, err);
+        console.error('Error fetching event data', { accountId, err });
         return { accountId, errorRate: [] };
       }
     });

@@ -236,7 +236,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
 
       if (result?.success) {
         // optimistic update already applied — no snackbar needed
-        console.log(`System rule "${rule.name || 'Unnamed'}" override toggled to ${newDisabledState ? 'disabled' : 'enabled'}`);
+        console.log('System rule override toggled', { rule: rule.name || 'Unnamed', state: newDisabledState ? 'disabled' : 'enabled' });
       } else {
         patchRule(rule.id, { is_overridden: previousOverriddenState }); // revert on failure response
         snackbar.error(result?.error || 'Failed to toggle system rule');
@@ -426,7 +426,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
       const result = await apiTriage.deleteTriageRule({ cloud_account_id: ruleAccountId, rule_id: rule.id, hard_delete: false });
       if (result?.success) {
         // optimistic update already applied — no snackbar needed
-        console.log(`Rule "${rule.name || 'Unnamed'}" disabled`);
+        console.log('Rule disabled', { rule: rule.name || 'Unnamed' });
       } else {
         patchRule(rule.id, { enabled: true }); // revert
         snackbar.error(result?.error || 'Failed to update rule');
