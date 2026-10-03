@@ -84,7 +84,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/configservice v1.66.0
 	github.com/aws/aws-sdk-go-v2/service/costandusagereportservice v1.35.5
 	github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.2
-	github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.22.10
+	github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.24.1
 	github.com/aws/aws-sdk-go-v2/service/directconnect v1.38.19
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.59.0
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.300.0
@@ -115,7 +115,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/securityhub v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/ses v1.36.1
 	github.com/aws/aws-sdk-go-v2/service/sfn v1.42.1
-	github.com/aws/aws-sdk-go-v2/service/sns v1.39.1
+	github.com/aws/aws-sdk-go-v2/service/sns v1.40.2
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.67.4
 	github.com/aws/aws-sdk-go-v2/service/sts v1.43.3
@@ -143,7 +143,7 @@ require (
 	github.com/samber/slog-gin v1.21.1
 	github.com/spf13/viper v1.19.0
 	github.com/stretchr/testify v1.11.1
-	github.com/wagslane/go-rabbitmq v0.15.0
+	github.com/wagslane/go-rabbitmq v0.16.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.68.0
 	go.opentelemetry.io/otel v1.44.0

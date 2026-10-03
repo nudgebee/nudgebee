@@ -217,8 +217,8 @@ github.com/aws/aws-sdk-go-v2/service/costandusagereportservice v1.35.5 h1:Zo7mPS
 github.com/aws/aws-sdk-go-v2/service/costandusagereportservice v1.35.5/go.mod h1:p2TV61UOTUi5OOSSC2YghJu6kvr7oUNnLO546GnjXKw=
 github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.2 h1:GLNyMrPeF5Rm96RVzGISsSBShRyb14YgobDX+aVvrI8=
 github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.2/go.mod h1:Er9VGaPQuVRK3T33JkY6yWJGKTSVrddaHbBoSYazIxI=
-github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.22.10 h1:ZbXEmYQ2SuF9LXqdHAgcx5ThxphG2OxiiVsnQ7TrHAQ=
-github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.22.10/go.mod h1:deL+2XD+z69IsKSRyxo+9/4xlRVdg9uL+B4RJW+t4RY=
+github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.24.1 h1:HwCQ7iIIlAZRTVZg50R4mrl0jAAIEig7h3RxmvDRM4k=
+github.com/aws/aws-sdk-go-v2/service/costoptimizationhub v1.24.1/go.mod h1:l9Uk5LVWSFowa26e3gViJIBet0Vk0uOyccT5hKikY9Q=
 github.com/aws/aws-sdk-go-v2/service/directconnect v1.38.19 h1:c6zEo2Bhm2f2githcMp3Anw3BmSg/U7qtoFV+Fo7pr0=
 github.com/aws/aws-sdk-go-v2/service/directconnect v1.38.19/go.mod h1:/FJ8omiyfI65ZDJYsyWBBishf2DMu8aFAtXCwHR3aGw=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.59.0 h1:S1qETDbdXKZMYVveuxACCKuRqnAt2NlnmYnlq5SeuMY=
@@ -291,8 +291,8 @@ github.com/aws/aws-sdk-go-v2/service/sfn v1.42.1 h1:+pPMGNr7k43poIi5ZVkhBkICQRm9
 github.com/aws/aws-sdk-go-v2/service/sfn v1.42.1/go.mod h1:Fu6JluWBq/0BpjfWhZJ63ThW2g21XHxFxanmOPts47I=
 github.com/aws/aws-sdk-go-v2/service/signin v1.0.11 h1:TdJ+HdzOBhU8+iVAOGUTU63VXopcumCOF1paFulHWZc=
 github.com/aws/aws-sdk-go-v2/service/signin v1.0.11/go.mod h1:R82ZRExE/nheo0N+T8zHPcLRTcH8MGsnR3BiVGX0TwI=
-github.com/aws/aws-sdk-go-v2/service/sns v1.39.1 h1:GKg/7I4IGRrAm0j5Hwxrk8B9LXhzfxyDoDazW5XB7Ew=
-github.com/aws/aws-sdk-go-v2/service/sns v1.39.1/go.mod h1:jQSGNtQAakrW+5vvUF5398mxsHryy0rsYWUXIQoHDAw=
+github.com/aws/aws-sdk-go-v2/service/sns v1.40.2 h1:00dZG/qsR/Uwn5SSF6DKnV2uazRaI8JA7kS+nV4sg30=
+github.com/aws/aws-sdk-go-v2/service/sns v1.40.2/go.mod h1:V9szvM64GdG5VJUeDRstvLmt/ozgWiSNg3gYnp3mSkk=
 github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25 h1:8Bv3TQ1Cob6HLlpUbAnWxeHhAkYScJO9RIHh2WPXaxw=
 github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25/go.mod h1:eDstEbM0OEnBUnNQxIA7j74Jy61cCU1S4EMlCtdMwzs=
 github.com/aws/aws-sdk-go-v2/service/ssm v1.67.4 h1:pOwUUY5FzKUsxtxGR6qsczZP7MuZMVlMbAOPQOcmJlo=
@@ -596,8 +596,8 @@ github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
 github.com/ugorji/go/codec v1.3.1 h1:waO7eEiFDwidsBN6agj1vJQ4AG7lh2yqXyOXqhgQuyY=
 github.com/ugorji/go/codec v1.3.1/go.mod h1:pRBVtBSKl77K30Bv8R2P+cLSGaTtex6fsA2Wjqmfxj4=
-github.com/wagslane/go-rabbitmq v0.15.0 h1:KibShYLLeDYc3C5fnx+BjiHJLJdL6D5/BysgcRJknRE=
-github.com/wagslane/go-rabbitmq v0.15.0/go.mod h1:ts7Di9tkLMyI0Z6/aA6T78zQkKDNrtApVis1qqMjqu4=
+github.com/wagslane/go-rabbitmq v0.16.1 h1:24sZtBsMjZTL1566qtMebQE/q/YyV5Y19e5auStm0+s=
+github.com/wagslane/go-rabbitmq v0.16.1/go.mod h1:t31dapQDZh9O0knPAc0R5ujxLTWzmQ7IyqImBkBzuW4=
 github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=
 github.com/xdg-go/scram v1.1.1/go.mod h1:RaEWvsqvNKKvBPvcKeFjrG2cJqOkHTiyTpzz23ni57g=
 github.com/xdg-go/stringprep v1.0.3/go.mod h1:W3f5j4i+9rC0kuIEJL0ky1VpHXQU3ocBgklLGvcBnW8=
