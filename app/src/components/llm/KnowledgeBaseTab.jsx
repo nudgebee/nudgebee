@@ -8,12 +8,14 @@ import { Chip } from '@ui/Chip';
 import CustomTable from '@shared/tables/CustomTable';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import Tooltip from '@ui/Tooltip';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import HistoryIcon from '@mui/icons-material/History';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import apiKnowledgeBase, { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import apiKubernetes from '@api1/kubernetes';
 import Loader from '@shared/Loader';
 import { toast as snackbar } from '@ui/Toast';
 import Text from '@shared/format/Text';
@@ -29,12 +31,29 @@ import WidgetCard from '@ui/WidgetCard';
 import Tabs from '@shared/navigation/Tabs';
 import { MemoryTable } from '@components/llm/MemoryTable';
 import MentionContentInput from '@components/llm/MentionContentInput';
+import KnowledgeContextTags from '@components/llm/KnowledgeContextTags';
 import ScopeChip from '@components/llm/ScopeChip';
 import KnowledgePolicySettings from '@components/llm/KnowledgePolicySettings';
 import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/kbLoadHistoryFormat';
 import KBDocumentsModal from '@components/llm/KBDocumentsModal';
 
 const MAX_CONTENT_LENGTH = 5000;
+
+// Note type — manual knowledge treatment; does not affect agent routing or retrieval.
+const NOTE_CATEGORY_OPTIONS = [
+  { value: 'fact', label: 'Fact' },
+  { value: 'sop', label: 'SOP' },
+];
+const DEFAULT_NOTE_CATEGORY = 'fact';
+
+// Context-tag options are built from the account's real resources: Service = k8s
+// workloads, Namespace = k8s namespaces. The full "Group: value" string is what
+// gets stored in the note's context_tags. (Cluster is the account itself, so it's
+// dropped; Database is a follow-up.)
+const buildContextTagOptions = ({ services = [], namespaces = [] }) => [
+  ...services.map((value) => ({ value: `service: ${value}`, label: value, group: 'Service' })),
+  ...namespaces.map((value) => ({ value: `namespace: ${value}`, label: value, group: 'Namespace' })),
+];
 
 // Shown as placeholder text, not pre-filled content: the only way left to tell
 // people they can @-mention an agent or #-mention a tool right in the note now
@@ -211,6 +230,8 @@ const KnowledgeBaseFormModal = ({
   agentsLoading = false,
   tools = [],
   toolsLoading = false,
+  contextTagOptions = [],
+  contextTagsLoading = false,
   initialAgentIds = [],
 }) => {
   const [name, setName] = useState('');
@@ -225,6 +246,8 @@ const KnowledgeBaseFormModal = ({
   // menu and load_skills cannot fetch it — which is why creates default to 'all'.
   const [agentMode, setAgentMode] = useState('all');
   const [selectedAgentIds, setSelectedAgentIds] = useState([]);
+  const [noteCategory, setNoteCategory] = useState(DEFAULT_NOTE_CATEGORY);
+  const [contextTags, setContextTags] = useState([]);
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
 
@@ -233,10 +256,14 @@ const KnowledgeBaseFormModal = ({
       setName(editKnowledgeBase.name || '');
       setDescription(editKnowledgeBase.description || '');
       setContent(editKnowledgeBase.content || '');
+      setNoteCategory(editKnowledgeBase.note_category || DEFAULT_NOTE_CATEGORY);
+      setContextTags(editKnowledgeBase.context_tags || []);
     } else {
       setName('');
       setDescription('');
       setContent('');
+      setNoteCategory(DEFAULT_NOTE_CATEGORY);
+      setContextTags([]);
     }
     setSelectedFile(null);
     setFileContent('');
@@ -378,6 +405,8 @@ const KnowledgeBaseFormModal = ({
       name: trimmedName,
       description: description.trim(),
       content: selectedFile ? fileContent.trim() : content.trim(),
+      noteCategory,
+      contextTags,
       agentIds: agentMode === 'all' ? [KB_AGENT_WILDCARD] : selectedAgentIds,
     });
   };
@@ -386,16 +415,81 @@ const KnowledgeBaseFormModal = ({
   const contentOverLimit = !fileContent && !isEditWithOverflow && contentOverBy > 0;
 
   return (
-    <Modal open={open} handleClose={onClose} title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'} width='md'>
+    <Modal
+      open={open}
+      handleClose={onClose}
+      title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'}
+      subtitle='Provide account-level knowledge that will be used by the AI for more precise responses.'
+      width='md'
+    >
       <Box sx={{ padding: ds.space[5] }}>
-        <Text
-          value='Provide account-level knowledge that will be used by the AI for more precise responses.'
-          sx={{
-            fontSize: 'var(--ds-text-body)',
-            color: 'var(--ds-gray-700)',
-            marginBottom: ds.space.mul(1, 5),
-          }}
-        />
+        {/* Type Field — knowledge treatment; does not change agent routing */}
+        <Box sx={{ marginBottom: ds.space[4] }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: ds.space.mul(0, 3), gap: ds.space[1] }}>
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-body)',
+                fontWeight: 'var(--ds-font-weight-medium)',
+                color: 'var(--ds-blue-500)',
+              }}
+            >
+              Type
+            </Typography>
+            <Tooltip
+              title={
+                <div style={{ padding: `${ds.space[0]} 0` }}>
+                  <div
+                    style={{
+                      fontWeight: 'var(--ds-font-weight-semibold)',
+                      fontSize: 'var(--ds-text-small)',
+                      marginBottom: ds.space.mul(0, 3),
+                      color: 'var(--ds-brand-600)',
+                    }}
+                  >
+                    What kind of knowledge this is
+                  </div>
+                  {[
+                    { label: 'Fact', value: "background that's true (e.g. an etcd quorum limit)" },
+                    { label: 'SOP', value: 'how to do something, step by step' },
+                  ].map(({ label, value }, i) => (
+                    <div
+                      key={label}
+                      style={{ display: 'flex', gap: ds.space.mul(0, 3), alignItems: 'flex-start', marginBottom: i < 2 ? ds.space[1] : 0 }}
+                    >
+                      <span style={{ color: 'var(--ds-blue-500)', fontWeight: 'var(--ds-font-weight-semibold)', flexShrink: 0 }}>·</span>
+                      <span style={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>
+                        <span style={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>{label}:</span> {value}
+                      </span>
+                    </div>
+                  ))}
+                  <div
+                    style={{
+                      marginTop: ds.space[2],
+                      padding: `${ds.space[1]} ${ds.space[2]}`,
+                      background: 'var(--ds-brand-100)',
+                      borderRadius: ds.radius.sm,
+                      fontSize: 'var(--ds-text-caption)',
+                      color: 'var(--ds-brand-400)',
+                    }}
+                  >
+                    Fact provides reference information. SOP guides agents through applicable steps, subject to existing permissions and approvals.
+                  </div>
+                </div>
+              }
+              placement='right'
+            >
+              <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-700)', cursor: 'pointer' }} />
+            </Tooltip>
+          </Box>
+          <ToggleGroup
+            selection='single'
+            size='sm'
+            ariaLabel='Note type'
+            value={noteCategory}
+            onChange={(next) => setNoteCategory(next)}
+            options={NOTE_CATEGORY_OPTIONS}
+          />
+        </Box>
 
         {/* Name Field */}
         <Box sx={{ marginBottom: ds.space[4] }}>
@@ -718,6 +812,69 @@ const KnowledgeBaseFormModal = ({
           </MentionContentInput>
         </Box>
 
+        {/* Context Tags — scope labels folded into searchable text to sharpen
+            retrieval; they don't restrict which agents can see the note. */}
+        <Box sx={{ marginBottom: ds.space[5] }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: ds.space.mul(0, 3), gap: ds.space[1] }}>
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-body)',
+                fontWeight: 'var(--ds-font-weight-medium)',
+                color: 'var(--ds-blue-500)',
+              }}
+            >
+              Context tags
+            </Typography>
+            <Tooltip
+              title={
+                <div style={{ padding: `${ds.space[0]} 0` }}>
+                  <div
+                    style={{
+                      fontWeight: 'var(--ds-font-weight-semibold)',
+                      fontSize: 'var(--ds-text-small)',
+                      marginBottom: ds.space.mul(0, 3),
+                      color: 'var(--ds-brand-600)',
+                    }}
+                  >
+                    Pin this note to a situation
+                  </div>
+                  {[
+                    { label: 'What', value: 'services, namespaces, topics or other context this note is about' },
+                    { label: 'Why', value: "added to the note's searchable text so the right note surfaces for the right question" },
+                    { label: 'Note', value: "sharpens matching only — doesn't restrict which agents can see it" },
+                  ].map(({ label, value }, i) => (
+                    <div
+                      key={label}
+                      style={{ display: 'flex', gap: ds.space.mul(0, 3), alignItems: 'flex-start', marginBottom: i < 2 ? ds.space[1] : 0 }}
+                    >
+                      <span style={{ color: 'var(--ds-blue-500)', fontWeight: 'var(--ds-font-weight-semibold)', flexShrink: 0 }}>·</span>
+                      <span style={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>
+                        <span style={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>{label}:</span> {value}
+                      </span>
+                    </div>
+                  ))}
+                  <div
+                    style={{
+                      marginTop: ds.space[2],
+                      padding: `${ds.space[1]} ${ds.space[2]}`,
+                      background: 'var(--ds-brand-100)',
+                      borderRadius: ds.radius.sm,
+                      fontSize: 'var(--ds-text-caption)',
+                      color: 'var(--ds-brand-400)',
+                    }}
+                  >
+                    Choose services and namespaces, or add your own tags. Tag changes refresh search indexing.
+                  </div>
+                </div>
+              }
+              placement='right'
+            >
+              <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-700)', cursor: 'pointer' }} />
+            </Tooltip>
+          </Box>
+          <KnowledgeContextTags value={contextTags} options={contextTagOptions} loading={contextTagsLoading} onChange={setContextTags} />
+        </Box>
+
         {/* Agent mapping has no control here. A create maps to every agent via
             the wildcard row; an edit keeps whatever mapping the knowledge base
             already had — both seeded into state above from `initialAgentIds`. */}
@@ -752,6 +909,8 @@ KnowledgeBaseFormModal.propTypes = {
   agentsLoading: PropTypes.bool,
   tools: PropTypes.array,
   toolsLoading: PropTypes.bool,
+  contextTagOptions: PropTypes.array,
+  contextTagsLoading: PropTypes.bool,
   initialAgentIds: PropTypes.array,
 };
 
@@ -1098,6 +1257,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [tools, setTools] = useState([]);
   const [toolsLoading, setToolsLoading] = useState(false);
+  const [contextTagOptions, setContextTagOptions] = useState([]);
+  const [contextTagsLoading, setContextTagsLoading] = useState(false);
   // agent ids the KB being edited is already mapped to; [KB_AGENT_WILDCARD] means
   // all agents. Fetched before the modal opens so the picker never flips under
   // the user mid-edit.
@@ -1252,6 +1413,33 @@ const KnowledgeBaseTab = ({ accountId }) => {
     };
   }, [accountId, isTenantWide]);
 
+  // Context-tag options — the account's real k8s resources (workloads shown as
+  // "Service", namespaces as "Namespace"). Fetched once per account so the
+  // create/edit modal opens with the picker ready. Skipped in tenant-wide mode.
+  useEffect(() => {
+    if (isTenantWide || !accountId) return undefined;
+    let cancelled = false;
+    setContextTagsLoading(true);
+    Promise.all([apiKubernetes.getK8sWorkloadNames({ accountId }), apiKubernetes.getK8sNamespaceNames(accountId)])
+      .then(([workloadsRes, namespacesRes]) => {
+        if (cancelled) return;
+        const services = [...new Set(workloadsRes?.data?.workloadNames || [])].sort((a, b) => a.localeCompare(b));
+        const namespaces = [...new Set(namespacesRes?.data?.namespaces || [])].sort((a, b) => a.localeCompare(b));
+        setContextTagOptions(buildContextTagOptions({ services, namespaces }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Error fetching context-tag options:', err);
+        setContextTagOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setContextTagsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, isTenantWide]);
+
   // Poll every 60s so async KB status changes (processing -> active) appear
   // without a manual reload. Skipped in tenant-wide mode — that surface is
   // read-only, so the per-row status doesn't transition under the user.
@@ -1390,23 +1578,53 @@ const KnowledgeBaseTab = ({ accountId }) => {
           return (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
               {logo && <SafeIcon src={logo} alt={kb.kb_source || 'integration'} width={18} height={18} style={{ flexShrink: 0 }} />}
-              <Typography
-                sx={{
-                  fontSize: 'var(--ds-text-body)',
-                  fontWeight: 'var(--ds-font-weight-medium)',
-                  color: 'var(--ds-gray-700)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {kb.name}
-              </Typography>
-              {kb.kb_type === 'manual' && (
-                <Box component='span' sx={{ display: 'inline-flex', flexShrink: 0 }}>
-                  <Label text={kb.note_category === 'sop' ? 'SOP' : 'Fact'} tone='neutral' />
+              <Box sx={{ minWidth: 0 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      fontSize: 'var(--ds-text-body)',
+                      fontWeight: 'var(--ds-font-weight-medium)',
+                      color: 'var(--ds-gray-700)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {kb.name}
+                  </Typography>
+                  {kb.kb_type === 'manual' && (
+                    <Box component='span' sx={{ display: 'inline-flex', flexShrink: 0 }}>
+                      <Label text={kb.note_category === 'sop' ? 'SOP' : 'Fact'} tone='neutral' />
+                    </Box>
+                  )}
                 </Box>
-              )}
+                {kb.context_tags?.length > 0 && (
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1], marginTop: ds.space[1] }}>
+                    {kb.context_tags.slice(0, 2).map((tag) => (
+                      <Chip
+                        key={tag}
+                        variant='tag'
+                        size='xs'
+                        hue='blue'
+                        sx={{ fontSize: 'var(--ds-text-caption)' }}
+                        displayTooltip
+                        tooltipCharLimit={24}
+                      >
+                        {tag}
+                      </Chip>
+                    ))}
+                    {kb.context_tags.length > 2 && (
+                      <Tooltip title={kb.context_tags.slice(2).join(', ')}>
+                        <Box component='span' tabIndex={0} aria-label={`${kb.context_tags.length - 2} more tags`} sx={{ display: 'inline-flex' }}>
+                          <Chip variant='count' size='xs' tone='info' sx={{ fontSize: 'var(--ds-text-caption)' }}>
+                            +{kb.context_tags.length - 2}
+                          </Chip>
+                        </Box>
+                      </Tooltip>
+                    )}
+                  </Box>
+                )}
+              </Box>
             </Box>
           );
         },
@@ -1883,6 +2101,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
         agentsLoading={agentsLoading}
         tools={tools}
         toolsLoading={toolsLoading}
+        contextTagOptions={contextTagOptions}
+        contextTagsLoading={contextTagsLoading}
         initialAgentIds={formAgentIds}
       />
 

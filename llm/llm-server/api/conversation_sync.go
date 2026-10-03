@@ -10,6 +10,7 @@ import (
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -298,6 +299,10 @@ func syncStuckEventAnalyses() error {
 	// Use a system request context for the job
 	ctx := security.NewRequestContextForSuperAdmin()
 
+	// Pending workflow tokens remain eligible after the last stage becomes
+	// terminal, including when the immediate confirmation read failed.
+	syncPendingEventAnalysisTerminals(ctx, dbManager, publishAnalysisCompletedTerminal)
+
 	analyses, err := repo.ListInProgressAnalysis(ctx)
 	if err != nil {
 		return err
@@ -358,7 +363,10 @@ func syncStuckEventAnalyses() error {
 			break
 		}
 
-		k := key{a.EventFingerprint, a.AccountId, a.AnalysisType == events.AnalysisTypeRCA}
+		k := key{a.EventFingerprint, a.AccountId, isRCAAnalysisType(a.AnalysisType)}
+		if a.AnalysisType == events.AnalysisTypeRCAAttempt {
+			k.eventFingerprint = a.ID
+		}
 		if processed[k] {
 			continue
 		}
@@ -373,8 +381,8 @@ func syncStuckEventAnalyses() error {
 
 		// Check conversation status
 		parentSessionId := events.SessionIdPrefixEvent + a.EventFingerprint
-		if a.AnalysisType == events.AnalysisTypeRCA {
-			parentSessionId = events.SessionIdPrefixEventRCA + a.EventFingerprint
+		if isRCAAnalysisType(a.AnalysisType) {
+			parentSessionId = rcaRecoverySession(a)
 		}
 
 		conv, err := core.GetConversationDao().GetConversationBySession(a.AccountId, parentSessionId)
@@ -411,15 +419,12 @@ func syncStuckEventAnalyses() error {
 				"event_id", a.EventId, "session", parentSessionId, "conv_status", conv.Status,
 				"updated_at", a.UpdatedAt, "age", time.Since(a.UpdatedAt).Round(time.Minute))
 			failCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
-			if updateErr := repo.UpdateEventAnalysisStatusById(failCtx, a.ID, string(events.AnalysisStatusFailed), "recovery abandoned: analysis stuck for over 24 hours"); updateErr != nil {
-				slog.Error("sync: failed to mark stale analysis as failed", "error", updateErr, "event_id", a.EventId)
+			failResp, terminal, failErr := failAbandonedEventAnalysis(failCtx, a, dbManager)
+			if failErr != nil {
+				slog.Error("sync: failed to mark stale analysis as failed", "error", failErr, "event_id", a.EventId)
+			} else if terminal {
+				publishAnalysisCompletedTerminal(context.WithoutCancel(failCtx.GetContext()), a.AccountId, a.EventId, failResp, failResp.Status)
 			}
-			failResp := EventAnalysisResponse{
-				EventId:      a.EventId,
-				Status:       string(events.AnalysisStatusFailed),
-				StatusReason: "recovery abandoned: analysis stuck for over 24 hours",
-			}
-			publishAnalysisCompletedTerminal(context.WithoutCancel(failCtx.GetContext()), a.AccountId, a.EventId, failResp, string(events.AnalysisStatusFailed))
 			continue
 		}
 
@@ -438,11 +443,16 @@ func syncStuckEventAnalyses() error {
 				defer cancel()
 				newCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
 
-				if a.AnalysisType == events.AnalysisTypeRCA {
+				if isRCAAnalysisType(a.AnalysisType) {
 					req := EventRCAAnalysisRequest{
 						EventId:   a.EventId,
 						AccountId: a.AccountId,
 						UserId:    security.GetSystemUserId(),
+					}
+					if a.AnalysisType == events.AnalysisTypeRCAAttempt {
+						req.AttemptID = a.ID
+					} else {
+						req.LegacyAnalysisID = a.ID
 					}
 					_, _ = analyzeEventRCAUsingAgentsAndUpdateDb(newCtx, req)
 				} else {
@@ -454,35 +464,13 @@ func syncStuckEventAnalyses() error {
 					recoveredResp, recErr := analyzeEventUsingAgentsAndUpdateDb(newCtx, req)
 					if recErr != nil {
 						slog.Error("sync: event analysis recovery failed", "error", recErr, "event_id", a.EventId)
-						// Check if failure is confirmed terminal in the database (or explicit terminal failure status returned)
-						// rather than a transient error (e.g. DB connection blip, rate limit, event fetch failure).
-						// Retryable transient errors preserve pending tokens for the next sync cycle.
-						isTerminalFailure := false
-						if strings.EqualFold(recoveredResp.Status, string(events.AnalysisStatusFailed)) {
-							isTerminalFailure = true
-						} else {
-							row, rerr := repo.GetEventAnalysis(newCtx, a.EventId, a.EventFingerprint, a.EventAggregationKey, a.AccountId, a.AnalysisType)
-							if rerr == nil && row != nil && strings.EqualFold(row.Status, string(events.AnalysisStatusFailed)) {
-								isTerminalFailure = true
-							}
-						}
-						if isTerminalFailure {
-							failResp := EventAnalysisResponse{
-								EventId:      a.EventId,
-								Status:       string(events.AnalysisStatusFailed),
-								StatusReason: recErr.Error(),
-							}
-							publishAnalysisCompletedTerminal(context.WithoutCancel(newCtx.GetContext()), a.AccountId, a.EventId, failResp, string(events.AnalysisStatusFailed))
-						} else {
-							slog.Warn("sync: recovery encountered retryable error, preserving pending tokens for next sync cycle",
-								"error", recErr, "event_id", a.EventId)
-						}
-					} else if strings.EqualFold(recoveredResp.Status, string(events.AnalysisStatusCompleted)) ||
-						strings.EqualFold(recoveredResp.Status, string(events.AnalysisStatusFailed)) {
-						terminalStatus := recoveredResp.Status
-						publishAnalysisCompletedTerminal(context.WithoutCancel(newCtx.GetContext()), a.AccountId, a.EventId, recoveredResp, terminalStatus)
+					}
+					// A worker response cannot prove persistence or sibling-stage completion.
+					// Use the same database confirmation as the normal MQ completion path.
+					if confirmed, terminal := getConfirmedTerminalAnalysis(newCtx, req, dbManager); terminal {
+						publishAnalysisCompletedTerminal(context.WithoutCancel(newCtx.GetContext()), a.AccountId, a.EventId, confirmed, confirmed.Status)
 					} else {
-						slog.Info("sync: recovery returned non-terminal status, preserving pending tokens",
+						slog.Info("sync: recovery not confirmed terminal, preserving pending tokens",
 							"event_id", a.EventId, "status", recoveredResp.Status)
 					}
 				}
@@ -499,4 +487,74 @@ func syncStuckEventAnalyses() error {
 
 	slog.Info("sync: recovery cycle completed", "submitted", submitted, "total_stuck", len(analyses))
 	return nil
+}
+
+// failAbandonedEventAnalysis persists abandonment before checking the normal pipeline.
+// RCA uses a separate conversation and must never drain normal investigation tokens.
+func failAbandonedEventAnalysis(ctx *security.RequestContext, analysis events.InProgressAnalysis, dbManager *common.DatabaseManager) (EventAnalysisResponse, bool, error) {
+	repo := events.NewEventAnalysisRepository(dbManager)
+	const reason = "recovery abandoned: analysis stuck for over 24 hours"
+	switch analysis.AnalysisType {
+	case events.AnalysisTypeRCAAttempt:
+		return EventAnalysisResponse{}, false, repo.UpdateRCAAttemptStatus(ctx, analysis.ID, analysis.EventId, analysis.AccountId, string(events.AnalysisStatusFailed), reason)
+	case events.AnalysisTypeRCA:
+		return EventAnalysisResponse{}, false, repo.UpdateLegacyRCAStatus(ctx, analysis.ID, analysis.EventId, analysis.AccountId, string(events.AnalysisStatusFailed), reason)
+	}
+	if err := repo.UpdateEventAnalysisStatusById(ctx, analysis.ID, string(events.AnalysisStatusFailed), reason); err != nil {
+		return EventAnalysisResponse{}, false, err
+	}
+	response, terminal := getConfirmedTerminalAnalysis(ctx, EventAnalysisRequest{EventId: analysis.EventId, AccountId: analysis.AccountId}, dbManager)
+	return response, terminal, nil
+}
+
+var pendingAnalysisScan struct {
+	sync.Mutex
+	cursor uint64
+}
+
+// syncPendingEventAnalysisTerminals does not restart agents or consume tokens
+// until the normal investigation pipeline is confirmed terminal in Postgres.
+func syncPendingEventAnalysisTerminals(ctx *security.RequestContext, db *common.DatabaseManager, publish func(context.Context, string, string, EventAnalysisResponse, string)) {
+	scanCtx, cancel := context.WithTimeout(ctx.GetContext(), 5*time.Second)
+	defer cancel()
+	// MATCH filters after Redis scans the shared database. Traverse multiple
+	// pages per tick so unrelated cache keys do not postpone retries past the
+	// token TTL, while bounding Redis work and wall time per recovery tick.
+	pendingAnalysisScan.Lock()
+	ids := make([]string, 0)
+	seen := make(map[string]bool)
+	for page := 0; page < 100; page++ {
+		batch, next, err := common.ScanPendingTokenEvents(scanCtx, pendingAnalysisScan.cursor)
+		if err != nil {
+			ctx.GetLogger().Warn("sync: unable to enumerate pending investigation tokens", "error", err)
+			break
+		}
+		pendingAnalysisScan.cursor = next
+		for _, id := range batch {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+		if next == 0 || scanCtx.Err() != nil {
+			break
+		}
+	}
+	pendingAnalysisScan.Unlock()
+	for _, id := range ids {
+		reconcilePendingEventAnalysisTerminal(ctx, db, id, publish)
+	}
+}
+
+func reconcilePendingEventAnalysisTerminal(ctx *security.RequestContext, db *common.DatabaseManager, eventID string, publish func(context.Context, string, string, EventAnalysisResponse, string)) {
+	// Tokens already identify a globally unique event. Resolve its account from
+	// the authoritative event row rather than changing the shared registry shape.
+	var accountID string
+	if err := db.Db.GetContext(ctx.GetContext(), &accountID, "SELECT cloud_account_id FROM events WHERE id = $1", eventID); err != nil {
+		ctx.GetLogger().Warn("sync: unable to resolve pending investigation account", "event_id", eventID, "error", err)
+		return
+	}
+	if response, terminal := getConfirmedTerminalAnalysis(ctx, EventAnalysisRequest{EventId: eventID, AccountId: accountID}, db); terminal {
+		publish(context.WithoutCancel(ctx.GetContext()), accountID, eventID, response, response.Status)
+	}
 }
