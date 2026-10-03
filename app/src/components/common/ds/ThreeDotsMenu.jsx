@@ -17,6 +17,13 @@
  * mapped to the DS `items` field, which DropdownMenu renders as an inline
  * expand/collapse group with a chevron. Per the DS spec, nesting caps at one level,
  * so sub-items must not themselves declare a `subMenu`.
+ *
+ * `disablePortal` defaults to `true` (menu renders inline next to its trigger),
+ * matching legacy behaviour for the dozens of table call sites. Pass `false` to
+ * portal the menu to `<body>` — needed when the trigger lives inside a deeply
+ * nested `overflow:auto` + `position:sticky` stack (e.g. a sticky-column cell in
+ * a scrollable table inside a fixed-height modal), where Safari mis-lays-out the
+ * inline popover surface. Portaling escapes that stack entirely.
  */
 import React from 'react';
 import PropTypes from 'prop-types';
@@ -41,6 +48,7 @@ function resolveIconNode(item) {
  *   lightIcon?: string,
  *   className?: string,
  *   menuWidth?: string | number,
+ *   disablePortal?: boolean,
  * }} props
  */
 const ThreeDotsMenu = ({
@@ -49,6 +57,7 @@ const ThreeDotsMenu = ({
   menuItems = [],
   data,
   menuWidth,
+  disablePortal = true,
   sx: _sx = {},
   lightIcon: _lightIcon = '',
   className: _className = '',
@@ -93,7 +102,7 @@ const ThreeDotsMenu = ({
       size='sm'
       minWidth={menuWidth ?? 160}
       items={dsItems}
-      disablePortal={true}
+      disablePortal={disablePortal}
       keepMounted={true}
       trigger={
         <DsButton id={id || 'three-dot-menu'} tone='secondary' size='xs' composition='icon-only' icon={<MoreVert />} aria-label='More actions' />
@@ -111,6 +120,7 @@ ThreeDotsMenu.propTypes = {
   lightIcon: PropTypes.string,
   className: PropTypes.string,
   menuWidth: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+  disablePortal: PropTypes.bool,
 };
 
 export default ThreeDotsMenu;

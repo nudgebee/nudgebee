@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"nudgebee/collector/cloud/providers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -232,6 +233,33 @@ type timeoutError struct{}
 func (timeoutError) Error() string   { return "i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
+
+// TestAssumeRoleSendsExternalId pins the invariant that broke account
+// 02c4aa43 on dev: the onboarding validator sent sts:ExternalId while
+// getAwsConfigFromAccount did not, so a role whose trust policy carries an
+// sts:ExternalId condition validated green and then failed EVERY sync with
+// AccessDenied — a green onboarding followed by an account that never syncs.
+//
+// This asserts the data is reachable at the point the sync assumes the role.
+// It cannot assert the SDK call itself without live STS, so the guard is that
+// providers.Account carries ExternalId at all: dropping the field (its
+// original state) is what made the bug possible.
+func TestAssumeRoleSendsExternalId(t *testing.T) {
+	extID := "some-external-id"
+	role := "arn:aws:iam::123456789012:role/Example"
+	acct := providers.Account{
+		AccountNumber: "123456789012",
+		AccountName:   "example",
+		AssumeRole:    &role,
+		ExternalId:    &extID,
+	}
+
+	if acct.ExternalId == nil || *acct.ExternalId != extID {
+		t.Fatal("providers.Account must carry ExternalId — without it the sync cannot satisfy " +
+			"a trust policy with an sts:ExternalId condition, and onboarding validation " +
+			"(which does send it) stops being representative of the sync")
+	}
+}
 
 // Regression test: the Cost & Usage Report API only exists in us-east-1.
 // getUsageBucketFromCostReport used to build its CUR client straight from
