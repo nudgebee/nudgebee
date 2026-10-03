@@ -148,9 +148,18 @@ export const buildEventTriggerMock = (phase: string = DEFAULT_LIFECYCLE_PHASE, o
   };
 };
 
+// A rule that belongs to each non-default category, so a sample with a category picked but
+// no rule doesn't pair that category with the Right Sizing default.
+const SAMPLE_RULE_BY_CATEGORY: Record<string, string> = {
+  InfraUpgrade: 'aws_elasticache_instance_generation',
+  Configuration: 'aws_elasticache_auto_minor_upgrade',
+  K8sSpotRecommendation: 'Spot instance recommendation',
+};
+
 /** Builds the mock payload an optimization trigger receives for a new recommendation. */
 export const buildOptimizationTriggerMock = (overrides: OptimizationMockOverrides = {}): Record<string, any> => {
   const cloudAccountId = overrides.cloud_account_id || 'd47a1e93-2b60-4c85-9f31-6e0a8b5c2d17';
+  const category = overrides.category || 'RightSizing';
 
   return {
     event_type: 'optimization.recommendation',
@@ -158,8 +167,8 @@ export const buildOptimizationTriggerMock = (overrides: OptimizationMockOverride
     // The poller sets account_id to the same cloud account id.
     account_id: cloudAccountId,
     tenant_id: '8c1b7e40-5f2a-4d93-8b16-0a7e4c9d3f52',
-    category: overrides.category || 'RightSizing',
-    rule_name: overrides.rule_name || 'AWS Ec2 Idle Instance',
+    category,
+    rule_name: overrides.rule_name || SAMPLE_RULE_BY_CATEGORY[category] || 'AWS Ec2 Idle Instance',
     resource_id: 'i-0a1b2c3d4e5f67890',
     severity: 'High',
     estimated_savings: 142.5,

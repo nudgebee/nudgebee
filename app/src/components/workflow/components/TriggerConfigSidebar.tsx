@@ -38,6 +38,8 @@ import {
 import { useAccountOptions } from '../hooks/useAccountOptions';
 import { DEFAULT_LIFECYCLE_PHASE, buildTriggerMock, eventAccountOverrides } from '../utils/triggerPayloadMock';
 import { useFilterLiveValidation } from '../hooks/useFilterLiveValidation';
+import { sameProviderAccountIds } from '../utils/optimizationRules';
+import { useLatestRequest } from '@components/vm/common';
 import TriggerSimulatorPanel from './TriggerSimulatorPanel';
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
 import { validateCron } from '@utils/cron';
@@ -569,16 +571,33 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  const fetchOptimizationRuleOptions = async () => {
+  // Rules are offered per provider: with an account picked, only rules seen on accounts of
+  // that provider (an AWS account is never offered GCP rules, a cluster only Kubernetes ones).
+  const optimizationRuleAccountIds = useMemo(
+    () => sameProviderAccountIds(optimizationClusters[0] || '', accountOptions),
+    [optimizationClusters, accountOptions]
+  );
+  const optimizationRuleScopeKey = optimizationRuleAccountIds.join(',');
+  const beginOptimizationRulesRequest = useLatestRequest();
+
+  const fetchOptimizationRuleOptions = async (accountIds: string[]) => {
+    // The scope changes while an earlier request is still in flight (the account list
+    // resolves after the sidebar opens, or the user picks another account), so only the
+    // latest response may land. Drop the previous scope's rules while this one loads.
+    const isLatest = beginOptimizationRulesRequest();
     setIsLoadingOptimizationRules(true);
+    setOptimizationRulePairs([]);
     try {
-      const pairs = await recommendationApi.getDistinctOptimizationRules();
-      setOptimizationRulePairs(pairs || []);
+      const pairs = await recommendationApi.getDistinctOptimizationRules(accountIds);
+      if (isLatest()) {
+        setOptimizationRulePairs(pairs || []);
+      }
     } catch (error) {
       console.error('Failed to fetch optimization rule options:', error);
-      setOptimizationRulePairs([]);
     } finally {
-      setIsLoadingOptimizationRules(false);
+      if (isLatest()) {
+        setIsLoadingOptimizationRules(false);
+      }
     }
   };
 
@@ -586,10 +605,15 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     if (open && triggerType === 'event') {
       fetchEventFilterOptions();
     }
-    if (open && triggerType === 'optimization') {
-      fetchOptimizationRuleOptions();
-    }
+    // filterScopeKey is in the deps so switching the Cluster picker re-scopes the
+    // namespace/service and event-type lists to that account.
   }, [open, triggerType, filterScopeKey]);
+
+  useEffect(() => {
+    if (open && triggerType === 'optimization') {
+      fetchOptimizationRuleOptions(optimizationRuleAccountIds);
+    }
+  }, [open, triggerType, optimizationRuleScopeKey]);
 
   const fetchWebhookIntegrationInfo = async () => {
     if (!workflowId) {
@@ -1062,7 +1086,16 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           const value = e.target.value || '';
           const newClusters = value ? [value] : [];
           setOptimizationClusters(newClusters);
-          updateOptimizationTrigger({ clusters: newClusters });
+          // Rule options follow the account's provider, so a rule picked for another
+          // provider would save and never fire. Same-provider switches keep the rule; coming
+          // from no (or an unknown) account clears it too, since that rule came from the
+          // tenant-wide list and may belong to any provider.
+          const newProvider = providerOf(value);
+          const dropRule = !!newProvider && newProvider !== providerOf(optimizationClusters[0]);
+          if (dropRule) {
+            setOptimizationRuleNames([]);
+          }
+          updateOptimizationTrigger(dropRule ? { clusters: newClusters, rule_names: [] } : { clusters: newClusters });
         }}
         placeholder='Select cluster'
         required={false}

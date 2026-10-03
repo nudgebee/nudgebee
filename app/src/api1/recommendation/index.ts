@@ -2963,10 +2963,15 @@ const apiRecommendations = {
   // tenant's optimization recommendation data. Used to populate filter dropdowns
   // (e.g. the Optimization Trigger config) directly from real data instead of a
   // hardcoded list that silently drifts as new rules are added on the backend.
-  async getDistinctOptimizationRules(): Promise<{ category: string; rule_name: string }[]> {
+  // `accountIds` narrows the rules to those seen on these accounts; empty = whole tenant.
+  async getDistinctOptimizationRules(accountIds: string[] = []): Promise<{ category: string; rule_name: string }[]> {
+    const where: Record<string, any> = { category: { _in: ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] } };
+    if (accountIds.length > 0) {
+      where.account_id = { _in: accountIds };
+    }
     const query = `
     query GetDistinctOptimizationRules {
-      recommendation_groupings_v2(where: {category: {_in: ["RightSizing", "InfraUpgrade", "Configuration", "K8sSpotRecommendation"]}}, group_by: ["category", "rule_name"]) {
+      recommendation_groupings_v2(where: ${gqlStringify(where)}, group_by: ["category", "rule_name"]) {
         rows {
           category
           rule_name
