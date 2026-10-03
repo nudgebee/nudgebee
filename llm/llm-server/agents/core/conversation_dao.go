@@ -306,10 +306,10 @@ type IConversationDao interface {
 	GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error)
 	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
-	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
-	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
+	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
+	ResolveSessionId(idOrSessionId string) string
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error)
@@ -1826,22 +1826,23 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 	return nil
 }
 
-var (
-	conversationStatusUpdateWorkerPool *common.WorkerPool
-	onceStatusUpdateWorkerPool         sync.Once
-)
-
-func getStatusUpdateWorkerPool() *common.WorkerPool {
-	onceStatusUpdateWorkerPool.Do(func() {
-		// Dedicated pool for fast DB I/O (status updates).
-		// We use a high queue size (500) as these are non-blocking, quick operations.
-		conversationStatusUpdateWorkerPool = common.NewWorkerPool("conversation_status_updates", config.Config.AsyncPlanExecutionWorkerCount, 500)
-	})
-	return conversationStatusUpdateWorkerPool
-}
-
-// UpdateConversationMessageMetadata merges subsystem-owned top-level keys into
-// the message metadata without overwriting metadata written by another subsystem.
+// UpdateConversationMessageMetadata merges the supplied keys into the
+// metadata jsonb column on the llm_conversation_messages row. The column
+// is a generic per-message attachment slot — first consumer is the
+// outbound egressfilter (writes under the "egressfilter" key); future
+// per-message subsystems (e.g. PII tokenization) write under their own
+// top-level keys. The column was added in migration V761
+// (1781680308449_V761_add_metadata_to_llm_conversation_messages).
+//
+// We MERGE rather than overwrite (`COALESCE(metadata, '{}') || $2::jsonb`)
+// because multiple subsystems can each write independently for the same
+// message; a `SET metadata = $2` would let a later writer wipe an earlier
+// writer's namespace. The merge is shallow (top-level keys), which matches
+// the convention: each subsystem owns one top-level key and the value
+// underneath is opaque to other subsystems.
+//
+// An empty or nil metadata is treated as a no-op so callers can call
+// unconditionally without an empty-check at the call site.
 func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metadata map[string]any) error {
 	if id == "" || len(metadata) == 0 {
 		return nil
@@ -1858,6 +1859,20 @@ func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metada
 		return fmt.Errorf("history: failed to update message metadata: %w", err)
 	}
 	return nil
+}
+
+var (
+	conversationStatusUpdateWorkerPool *common.WorkerPool
+	onceStatusUpdateWorkerPool         sync.Once
+)
+
+func getStatusUpdateWorkerPool() *common.WorkerPool {
+	onceStatusUpdateWorkerPool.Do(func() {
+		// Dedicated pool for fast DB I/O (status updates).
+		// We use a high queue size (500) as these are non-blocking, quick operations.
+		conversationStatusUpdateWorkerPool = common.NewWorkerPool("conversation_status_updates", config.Config.AsyncPlanExecutionWorkerCount, 500)
+	})
+	return conversationStatusUpdateWorkerPool
 }
 
 func (chat *ConversationDao) UpdateConversationMessageAsync(id, response string, status ConversationStatus) {
@@ -3774,9 +3789,19 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		)
 	`
 
+	// Background-job rows (memory consolidators, maintenance) have no owning
+	// conversation or account — they're system cost, not customer-billable.
+	// Pass NULL for those columns so the insert succeeds; V760 made both
+	// nullable on llm_conversation_token_usage. Budget rollups that INNER
+	// JOIN llm_conversations naturally exclude these rows.
+	convID := nullableUUID(record.ConversationID)
+	acctID := nullableUUID(record.AccountID)
+	msgID := nullableUUID(record.MessageID)
+	usrID := nullableUUID(record.UserID)
+
 	_, err := chat.dbManager.Db.Exec(query,
-		record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
-		record.AccountID, record.UserID,
+		convID, msgID, record.AgentID, record.AgentName,
+		acctID, usrID,
 		record.LLMProvider, record.LLMModel,
 		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 		record.IsCacheHit, record.CacheHitRate,
@@ -3798,8 +3823,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			slog.Warn("InsertTokenUsage: agent_id FK violation, retrying with NULL agent_id", "agent_id", *record.AgentID, "agent_name", record.AgentName)
 			record.AgentID = nil
 			_, retryErr := chat.dbManager.Db.Exec(query,
-				record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
-				record.AccountID, record.UserID,
+				convID, msgID, record.AgentID, record.AgentName,
+				acctID, usrID,
 				record.LLMProvider, record.LLMModel,
 				record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 				record.IsCacheHit, record.CacheHitRate,
@@ -3822,6 +3847,16 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 	}
 
 	return nil
+}
+
+// nullableUUID converts an empty string to a nil interface so the postgres
+// driver inserts SQL NULL instead of trying to parse "" as a uuid.
+// Returns the original string when non-empty.
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, accountId string) (Conversation, error) {
@@ -4321,14 +4356,4 @@ func (chat *ConversationDao) ListToolCallOutcomesByMessage(messageId string) ([]
 		return nil, fmt.Errorf("history: failed to list tool call outcomes for message: %w", err)
 	}
 	return outcomes, nil
-}
-
-// nullableUUID converts an empty string to a nil interface so the postgres
-// driver inserts SQL NULL instead of trying to parse "" as a uuid.
-// Returns the original string when non-empty.
-func nullableUUID(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
