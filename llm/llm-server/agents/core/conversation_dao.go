@@ -4322,3 +4322,13 @@ func (chat *ConversationDao) ListToolCallOutcomesByMessage(messageId string) ([]
 	}
 	return outcomes, nil
 }
+
+// nullableUUID converts an empty string to a nil interface so the postgres
+// driver inserts SQL NULL instead of trying to parse "" as a uuid.
+// Returns the original string when non-empty.
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
