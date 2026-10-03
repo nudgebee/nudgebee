@@ -541,7 +541,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         if (result.rule) {
           patchRule(rule.id, result.rule);
         }
-        console.log(`Rule "${rule.name || 'Unnamed'}" enabled`);
+        console.log('Rule enabled', { name: rule.name || 'Unnamed' });
       } else {
         patchRule(rule.id, { enabled: false }); // revert
         snackbar.error(result?.error || 'Failed to enable rule');
