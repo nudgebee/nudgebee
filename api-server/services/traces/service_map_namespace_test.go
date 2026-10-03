@@ -345,6 +345,54 @@ func TestResolveEndpointNamespace(t *testing.T) {
 	}
 }
 
+// TestResolveEndpointNamespace_BarePeerNamespaceFlag covers the rules
+// TRACES_SERVICE_MAP_BARE_PEER_NAMESPACE_ENABLED adds: with it on, a bare
+// net_peer follows the caller's search path and loopback / metadata hosts stay
+// external; with it off, every case resolves exactly as before the flag.
+func TestResolveEndpointNamespace_BarePeerNamespaceFlag(t *testing.T) {
+	serviceStats := map[string]*serviceMetrics{
+		serviceKey("payments", "ledger"): {ServiceName: "ledger", Namespace: "payments"},
+	}
+
+	type want struct{ namespace, kind string }
+	tests := []struct {
+		name          string
+		target        string
+		peerNamespace string
+		depType       string
+		on, off       want
+	}{
+		{"bare net_peer target follows the caller's search path", "ledger", "demo", "net_peer", want{"demo", "Service"}, want{"", "ExternalService"}},
+		{"dotted net_peer target is external", "api.stripe.com", "demo", "net_peer", want{"", "ExternalService"}, want{"", "ExternalService"}},
+		{"net_peer IP address is external", "10.0.0.5", "demo", "net_peer", want{"", "ExternalService"}, want{"", "ExternalService"}},
+		{"localhost is never a namespaced service", "localhost", "demo", "http_client", want{"", "ExternalService"}, want{"demo", "Service"}},
+		{"localhost with a port is never a namespaced service", "localhost:8080", "demo", "http_client", want{"", "ExternalService"}, want{"demo", "Service"}},
+		{"cloud metadata host is never a namespaced service", "metadata", "demo", "net_peer", want{"", "ExternalService"}, want{"", "ExternalService"}},
+		{"IPv6 loopback is never a namespaced service", "::1", "demo", "http_client", want{"", "ExternalService"}, want{"demo", "Service"}},
+		{"net_peer from a node-level caller stays external", "collector", "node", "net_peer", want{"", "ExternalService"}, want{"", "ExternalService"}},
+	}
+
+	for _, flag := range []string{"true", "false"} {
+		t.Run("flag="+flag, func(t *testing.T) {
+			t.Setenv(barePeerNamespaceEnvEnabled, flag)
+			builder := NewTraceServiceMapBuilder()
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					w := tt.off
+					if flag == "true" {
+						w = tt.on
+					}
+					ns, kind := builder.resolveEndpointNamespace(tt.target, tt.peerNamespace, tt.depType, serviceStats, namespacesByName(serviceStats), map[string]*ExternalServiceInfo{})
+					if ns != w.namespace || kind != w.kind {
+						t.Errorf("resolveEndpointNamespace(%q, %q, %q) = (%q, %q), want (%q, %q)",
+							tt.target, tt.peerNamespace, tt.depType, ns, kind, w.namespace, w.kind)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestParseUpstreamId locks the namespace-returning signature.
 func TestParseUpstreamId(t *testing.T) {
 	tests := []struct {
@@ -425,4 +473,394 @@ func allIDs(sm *ServiceMap) []string {
 		out = append(out, app.Id.Namespace+":"+app.Id.Kind+":"+app.Id.Name)
 	}
 	return out
+}
+
+// clientSpan builds an OTel HTTP-client span the way the Tempo converter
+// delivers it: the callee is named only by net.peer.name, which the converter
+// also copies into DestinationName.
+func clientSpan(traceID, spanID, parentSpanID, service, namespace, peer string) TraceSpan {
+	s := span(traceID, spanID, parentSpanID, service, namespace)
+	s.SpanName = "POST"
+	s.DestinationName = peer
+	s.SpanAttributes["net.peer.name"] = peer
+	s.SpanAttributes["http.method"] = "POST"
+	return s
+}
+
+// linkID renders an application id the way an UpstreamLink id is minted.
+func linkID(id ServiceApplicationId) string {
+	return id.Namespace + ":" + id.Kind + ":" + id.Name
+}
+
+// assertLinksResolve fails for any link whose target id no application carries:
+// KubernetesServiceMap draws a phantom node for each one.
+func assertLinksResolve(t *testing.T, sm *ServiceMap) {
+	t.Helper()
+	ids := make(map[string]bool, len(sm.Applications))
+	for _, app := range sm.Applications {
+		ids[linkID(app.Id)] = true
+	}
+	for _, app := range sm.Applications {
+		for _, u := range app.Upstreams {
+			if !ids[u.Id] {
+				t.Errorf("%s has an upstream link to %q, which no application carries; applications = %v", linkID(app.Id), u.Id, allIDs(sm))
+			}
+		}
+		for _, d := range app.Downstreams {
+			if !ids[linkID(d.Id)] {
+				t.Errorf("%s has a downstream link to %q, which no application carries; applications = %v", linkID(app.Id), linkID(d.Id), allIDs(sm))
+			}
+		}
+	}
+}
+
+// appsNamed returns every application with the given name, whatever its namespace.
+func appsNamed(sm *ServiceMap, name string) []*ServiceApplication {
+	var out []*ServiceApplication
+	for i := range sm.Applications {
+		if sm.Applications[i].Id.Name == name {
+			out = append(out, &sm.Applications[i])
+		}
+	}
+	return out
+}
+
+// TestBuildServiceMap_WorkloadFilterKeepsCalleeNamespace reproduces the Tempo
+// service map under a workload filter. frontend -> payments -> ledger all run in
+// "demo". Unfiltered, ledger's own spans are loaded. Filtered by "payments", the
+// focused queries load only spans whose source or destination is payments, so
+// ledger is known solely as net.peer.name on payments' client span. Both maps
+// must show one demo/ledger that payments' link points at.
+func TestBuildServiceMap_WorkloadFilterKeepsCalleeNamespace(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	frontendServer := span("t1", "s1", "", "frontend", "demo")
+	frontendClient := clientSpan("t1", "s2", "s1", "frontend", "demo", "payments")
+	paymentsServer := span("t1", "s3", "s2", "payments", "demo")
+	paymentsClient := clientSpan("t1", "s4", "s3", "payments", "demo", "ledger")
+	ledgerServer := span("t1", "s5", "s4", "ledger", "demo")
+
+	shapes := map[string][]TraceSpan{
+		"unfiltered": {frontendServer, frontendClient, paymentsServer, paymentsClient, ledgerServer},
+		// workload_name = payments, plus destination_workload_name = payments.
+		"filtered by payments": {frontendClient, paymentsServer, paymentsClient},
+	}
+
+	for name, spans := range shapes {
+		t.Run(name, func(t *testing.T) {
+			builder := NewTraceServiceMapBuilder()
+			builder.AddSpans(spans)
+			sm, err := builder.BuildServiceMap()
+			if err != nil {
+				t.Fatalf("BuildServiceMap() error = %v", err)
+			}
+
+			ledgers := appsNamed(sm, "ledger")
+			if len(ledgers) != 1 {
+				t.Fatalf("got %d ledger applications, want exactly 1; applications = %v", len(ledgers), allIDs(sm))
+			}
+			ledger := ledgers[0]
+			if ledger.Id.Namespace != "demo" || ledger.Id.Kind != "Service" {
+				t.Errorf("ledger application id = %s, want demo:Service:ledger", linkID(ledger.Id))
+			}
+
+			payments := appFor(sm, "demo", "payments")
+			if payments == nil {
+				t.Fatalf("no payments application in demo; applications = %v", allIDs(sm))
+			}
+			found := false
+			for _, id := range upstreamIDs(payments) {
+				if id == "demo:Service:ledger" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("payments upstreams = %v, want one equal to demo:Service:ledger", upstreamIDs(payments))
+			}
+
+			backToPayments := false
+			for _, d := range ledger.Downstreams {
+				if d.Id == (ServiceApplicationId{Name: "payments", Kind: "Service", Namespace: "demo"}) {
+					backToPayments = true
+				}
+			}
+			if !backToPayments {
+				t.Errorf("ledger has no downstream link to demo:Service:payments; downstreams = %v", ledger.Downstreams)
+			}
+
+			// The KG merges per-service maps and must tell ledger's synthesized
+			// copy (payments' map) from its observed one (ledger's own map).
+			if got, want := IsSynthesizedApplication(ledger), name == "filtered by payments"; got != want {
+				t.Errorf("IsSynthesizedApplication(ledger) = %v, want %v", got, want)
+			}
+			if IsSynthesizedApplication(payments) {
+				t.Errorf("IsSynthesizedApplication(payments) = true, want false: payments emitted its own spans")
+			}
+
+			assertLinksResolve(t, sm)
+		})
+	}
+}
+
+// TestBuildServiceMap_UnobservedTargetIdentity covers targets that emit no spans
+// of their own: exactly one application must carry each, and the caller's link
+// must point at that application's id. localhost is the exception to "exactly
+// one": it is a real host, and the resolver may report it as its own CNAME,
+// which mints a second :ExternalService:localhost node, so that case only
+// asserts it never becomes a namespaced service.
+func TestBuildServiceMap_UnobservedTargetIdentity(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	httpClient := func(host string) TraceSpan {
+		s := span("t1", "s1", "", "checkout", "demo")
+		s.SpanAttributes["http.host"] = host
+		s.SpanAttributes["http.method"] = "GET"
+		return s
+	}
+	dbClient := clientSpan("t1", "s1", "", "checkout", "demo", "redis")
+	dbClient.SpanAttributes["db.system"] = "redis"
+
+	tests := []struct {
+		name        string
+		span        TraceSpan
+		target      string
+		wantID      string
+		specialHost bool
+	}{
+		{"bare http host is the caller's namespace", httpClient("inventory"), "inventory", "demo:Service:inventory", false},
+		{"localhost is never a namespaced service", httpClient("localhost"), "localhost", ":ExternalService:localhost", true},
+		{"dotted external host stays external", httpClient("api.stripe.invalid"), "api.stripe.invalid", ":ExternalService:api.stripe.invalid", false},
+		{"database peer named by net.peer.name stays external", dbClient, "redis", ":ExternalService:redis", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewTraceServiceMapBuilder()
+			builder.AddSpans([]TraceSpan{tt.span})
+			sm, err := builder.BuildServiceMap()
+			if err != nil {
+				t.Fatalf("BuildServiceMap() error = %v", err)
+			}
+
+			checkout := appFor(sm, "demo", "checkout")
+			if checkout == nil {
+				t.Fatalf("no checkout application; applications = %v", allIDs(sm))
+			}
+
+			if tt.specialHost {
+				// Independent of the resolver's CNAME answer for the host.
+				for _, app := range appsNamed(sm, tt.target) {
+					if app.Id.Namespace != "" || app.Id.Kind != "ExternalService" {
+						t.Errorf("%s became %s, want only %s", tt.target, linkID(app.Id), tt.wantID)
+					}
+				}
+				ids := upstreamIDs(checkout)
+				if len(ids) != 1 || ids[0] != tt.wantID {
+					t.Errorf("checkout upstreams = %v, want [%s]", ids, tt.wantID)
+				}
+				return
+			}
+
+			apps := appsNamed(sm, tt.target)
+			if len(apps) != 1 {
+				t.Fatalf("got %d %s applications, want exactly 1; applications = %v", len(apps), tt.target, allIDs(sm))
+			}
+			if got := linkID(apps[0].Id); got != tt.wantID {
+				t.Errorf("%s application id = %s, want %s", tt.target, got, tt.wantID)
+			}
+			if ids := upstreamIDs(checkout); len(ids) != 1 || ids[0] != tt.wantID {
+				t.Errorf("checkout upstreams = %v, want [%s]", ids, tt.wantID)
+			}
+			assertLinksResolve(t, sm)
+		})
+	}
+}
+
+func TestDetectDependencyType_DatabasePeerWinsOverNetPeer(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	builder := NewTraceServiceMapBuilder()
+	s := clientSpan("t1", "s1", "", "checkout", "demo", "redis")
+	s.SpanAttributes["db.system"] = "redis"
+	parsed, _ := builder.parseSpanAttributes(s.SpanAttributes)
+	if got := builder.detectDependencyType(s, parsed.Structured); got != "db_connection" {
+		t.Errorf("detectDependencyType(net.peer.name=redis, db.system=redis) = %q, want db_connection", got)
+	}
+}
+
+// A span whose only hint is a database-looking destination name (no attributes
+// at all, as some eBPF-fed providers deliver it) must stay a namespace-less
+// ExternalService with its database/cache identity, as it was while every
+// net_peer target was namespace-opaque.
+func TestBuildServiceMap_BareDatabaseNamedPeerStaysExternal(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	s := span("t1", "s1", "", "checkout", "demo")
+	s.SpanName = "redis GET"
+	s.DestinationName = "redis-master"
+	s.SpanAttributes = map[string]string{}
+
+	builder := NewTraceServiceMapBuilder()
+	builder.AddSpans([]TraceSpan{s})
+	sm, err := builder.BuildServiceMap()
+	if err != nil {
+		t.Fatalf("BuildServiceMap() error = %v", err)
+	}
+
+	apps := appsNamed(sm, "redis-master")
+	if len(apps) != 1 {
+		t.Fatalf("got %d redis-master applications, want exactly 1; applications = %v", len(apps), allIDs(sm))
+	}
+	redis := apps[0]
+	if got := linkID(redis.Id); got != ":ExternalService:redis-master" {
+		t.Errorf("redis-master application id = %s, want :ExternalService:redis-master", got)
+	}
+	if got := redis.Labels["protocol"]; got != "Redis" {
+		t.Errorf("redis-master protocol label = %q, want Redis", got)
+	}
+	hasType := func(want string) bool {
+		for _, typ := range redis.Type {
+			if typ == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasType("redis") || !hasType("cache") {
+		t.Errorf("redis-master types = %v, want redis and cache", redis.Type)
+	}
+	assertLinksResolve(t, sm)
+}
+
+// A bare net.peer.name called from a node-level caller (host network, kubelet)
+// has no namespace search path to follow, so it stays namespace-opaque as it was
+// before net_peer followed the search path: one ExternalService application,
+// which the caller's link points at (not a synthesized node:Node:<name>, which
+// the KG would read as a worker node).
+func TestBuildServiceMap_NodeCallerTargetIsNotSynthesized(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	s := clientSpan("t1", "s1", "", "gke-pool-node-1", workloadNamespaceSentinelNode, "collector")
+
+	builder := NewTraceServiceMapBuilder()
+	builder.AddSpans([]TraceSpan{s})
+	sm, err := builder.BuildServiceMap()
+	if err != nil {
+		t.Fatalf("BuildServiceMap() error = %v", err)
+	}
+
+	apps := appsNamed(sm, "collector")
+	if len(apps) != 1 {
+		t.Fatalf("got %d collector applications, want exactly 1; applications = %v", len(apps), allIDs(sm))
+	}
+	if got := linkID(apps[0].Id); got != ":ExternalService:collector" {
+		t.Errorf("collector application id = %s, want :ExternalService:collector", got)
+	}
+
+	caller := appFor(sm, workloadNamespaceSentinelNode, "gke-pool-node-1")
+	if caller == nil {
+		t.Fatalf("no node-level caller application; applications = %v", allIDs(sm))
+	}
+	if ids := upstreamIDs(caller); len(ids) != 1 || ids[0] != ":ExternalService:collector" {
+		t.Errorf("caller upstreams = %v, want [:ExternalService:collector]", ids)
+	}
+	assertLinksResolve(t, sm)
+}
+
+// TestBuildServiceMap_WorkloadFilterBarePeerFlag is the Tempo service map
+// filtered by payments (frontend -> payments -> ledger, all in "demo"), where
+// ledger is known only as net.peer.name on payments' client span. Off, the map
+// keeps its pre-flag shape: ledger is :ExternalService:ledger and nothing is
+// synthesized into a namespace, so the KG merge's observed-over-synthesized
+// preference has nothing namespaced to act on. On, ledger is one demo Service.
+func TestBuildServiceMap_WorkloadFilterBarePeerFlag(t *testing.T) {
+	filtered := []TraceSpan{
+		clientSpan("t1", "s2", "s1", "frontend", "demo", "payments"),
+		span("t1", "s3", "s2", "payments", "demo"),
+		clientSpan("t1", "s4", "s3", "payments", "demo", "ledger"),
+	}
+
+	tests := []struct {
+		flag   string
+		wantID string
+	}{
+		{"false", ":ExternalService:ledger"},
+		{"true", "demo:Service:ledger"},
+	}
+	for _, tt := range tests {
+		t.Run("flag="+tt.flag, func(t *testing.T) {
+			t.Setenv(barePeerNamespaceEnvEnabled, tt.flag)
+			builder := NewTraceServiceMapBuilder()
+			builder.AddSpans(filtered)
+			sm, err := builder.BuildServiceMap()
+			if err != nil {
+				t.Fatalf("BuildServiceMap() error = %v", err)
+			}
+
+			ledgers := appsNamed(sm, "ledger")
+			if len(ledgers) != 1 {
+				t.Fatalf("got %d ledger applications, want exactly 1; applications = %v", len(ledgers), allIDs(sm))
+			}
+			if got := linkID(ledgers[0].Id); got != tt.wantID {
+				t.Errorf("ledger application id = %s, want %s", got, tt.wantID)
+			}
+
+			payments := appFor(sm, "demo", "payments")
+			if payments == nil {
+				t.Fatalf("no payments application in demo; applications = %v", allIDs(sm))
+			}
+			found := false
+			for _, id := range upstreamIDs(payments) {
+				if id == tt.wantID {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("payments upstreams = %v, want one equal to %s", upstreamIDs(payments), tt.wantID)
+			}
+
+			if tt.flag == "false" {
+				for i := range sm.Applications {
+					app := &sm.Applications[i]
+					if IsSynthesizedApplication(app) && (app.Id.Namespace != "" || app.Id.Kind != "ExternalService") {
+						t.Errorf("flag off synthesized %s; only namespace-less ExternalService applications may be synthesized", linkID(app.Id))
+					}
+				}
+			}
+			assertLinksResolve(t, sm)
+		})
+	}
+}
+
+// TestDetectDependencyType_BarePeerFlag pins the dependency-type ordering to
+// the flag: off, net.peer.name wins over db.system and a redis-/postgres-/
+// mysql- peer is net_peer, as before the flag; on, both are db_connection.
+func TestDetectDependencyType_BarePeerFlag(t *testing.T) {
+	redisMaster := span("t1", "s1", "", "checkout", "demo")
+	redisMaster.SpanName = "redis GET"
+	redisMaster.DestinationName = "redis-master"
+	redisMaster.SpanAttributes = map[string]string{}
+
+	dbClient := clientSpan("t1", "s1", "", "checkout", "demo", "redis")
+	dbClient.SpanAttributes["db.system"] = "redis"
+
+	tests := []struct {
+		name    string
+		span    TraceSpan
+		on, off string
+	}{
+		{"redis-master peer", redisMaster, "db_connection", "net_peer"},
+		{"net.peer.name with db.system", dbClient, "db_connection", "net_peer"},
+	}
+	for _, flag := range []string{"true", "false"} {
+		t.Run("flag="+flag, func(t *testing.T) {
+			t.Setenv(barePeerNamespaceEnvEnabled, flag)
+			builder := NewTraceServiceMapBuilder()
+			for _, tt := range tests {
+				want := tt.off
+				if flag == "true" {
+					want = tt.on
+				}
+				parsed, _ := builder.parseSpanAttributes(tt.span.SpanAttributes)
+				if got := builder.detectDependencyType(tt.span, parsed.Structured); got != want {
+					t.Errorf("%s: detectDependencyType = %q, want %q", tt.name, got, want)
+				}
+			}
+		})
+	}
 }

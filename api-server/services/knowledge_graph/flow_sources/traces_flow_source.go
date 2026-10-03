@@ -1892,6 +1892,19 @@ func (s *TracesFlowSource) mergeServiceMaps(serviceMaps []*traces.ServiceMap) *t
 
 // mergeApplicationData merges data from a source application into an existing application
 func (s *TracesFlowSource) mergeApplicationData(existing, source *traces.ServiceApplication) {
+	// A callee is synthesized, with default metadata, in each caller's
+	// per-service map and observed in its own. The maps arrive in goroutine
+	// completion order, so the observed copy's classification must win
+	// whichever came first. Two synthesized copies keep the first, as before.
+	if traces.IsSynthesizedApplication(existing) && !traces.IsSynthesizedApplication(source) {
+		existing.Type = source.Type
+		existing.TypeEvidence = source.TypeEvidence
+		existing.CreationEvidence = source.CreationEvidence
+		existing.UncertainMatch = source.UncertainMatch
+		existing.Category = source.Category
+		existing.Indicators = source.Indicators
+	}
+
 	// Merge upstreams - deduplicate by ID
 	upstreamMap := make(map[string]traces.UpstreamLink)
 	for _, u := range existing.Upstreams {
