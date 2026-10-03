@@ -47,7 +47,7 @@ func TestAgentPromptsIncludeScopedNudgebeeHealthGate(t *testing.T) {
 	for _, name := range []string{"k8s_native", "k8s_lean", "aws_lean", "azure_lean", "gcp_lean"} {
 		t.Run(name, func(t *testing.T) {
 			resp, err := loader.GetPrompt(context.Background(), PromptRequest{
-				Name: name, Category: CategoryAgents, Provider: "default",
+				Name: name, Category: CategoryAgents, Model: "default",
 			})
 			require.NoError(t, err)
 			assert.Contains(t, resp.Content, "inspect the current account only")
