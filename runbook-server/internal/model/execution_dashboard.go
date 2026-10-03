@@ -67,11 +67,16 @@ const (
 	// DefaultTopFailedLimit is the leaderboard length.
 	DefaultTopFailedLimit = 5
 	MaxTopFailedLimit     = 20
+	// DryRunWorkflowIDPrefix starts the synthetic nb_workflow_id every dry run
+	// is stamped with ("dry-run-<uuid>"). The leaderboard ranks all dry runs
+	// under the bare prefix, since none has an automation of its own.
+	DryRunWorkflowIDPrefix = "dry-run-"
 )
 
 // FailedExecutionStatuses are the statuses that count as "did not succeed" on
-// the dashboard. A cancelled run is deliberately excluded — it failed to
-// finish, but not because the automation broke.
+// the dashboard: the aggregate's `failed`, the most-failed leaderboard and the
+// list's failure reasons all use this set. A cancelled run is deliberately
+// excluded — it failed to finish, but not because the automation broke.
 var FailedExecutionStatuses = []WorkflowExecutionStatus{
 	WorkflowExecutionStatusFailed,
 	WorkflowExecutionStatusTerminated,
@@ -148,6 +153,8 @@ type AggregateExecutionsRequest struct {
 
 // FailedAutomationCount is one row of the most-failed leaderboard.
 type FailedAutomationCount struct {
+	// WorkflowID is the automation's id, or DryRunWorkflowIDPrefix for the one
+	// row that groups every dry run. That row has no automation to filter by.
 	WorkflowID   string `json:"workflow_id"`
 	WorkflowName string `json:"workflow_name,omitempty"`
 	FailureCount int64  `json:"failure_count"`
@@ -156,11 +163,22 @@ type FailedAutomationCount struct {
 type AggregateExecutionsResponse struct {
 	Total     int64 `json:"total"`
 	Succeeded int64 `json:"succeeded"`
-	Failed    int64 `json:"failed"`
-	Running   int64 `json:"running"`
+	// Failed counts every run that did not succeed (FailedExecutionStatuses):
+	// FAILED + TERMINATED + TIMED_OUT. It is summed from those three counts, so
+	// Failed - TimedOut - Terminated is exactly the FAILED-status count, which
+	// is what the table's Status = Failed filter lists.
+	Failed  int64 `json:"failed"`
+	Running int64 `json:"running"`
 	// TimedOut is a subset of Failed, broken out because "ran too long" and
 	// "the automation broke" are different problems with different fixes.
 	TimedOut int64 `json:"timed_out"`
+	// Terminated is a subset of Failed: runs stopped from outside, by a cancel
+	// that had to force the stop, a schedule's TerminateOther overlap policy,
+	// or a parent run closing.
+	Terminated int64 `json:"terminated"`
+	// Canceled is not part of Failed. With it, every closed run lands in
+	// exactly one of Succeeded, Failed and Canceled.
+	Canceled int64 `json:"canceled"`
 	// CountsAreApproximate mirrors Temporal's own caveat on CountWorkflow.
 	CountsAreApproximate bool                    `json:"counts_are_approximate"`
 	TopFailed            []FailedAutomationCount `json:"top_failed"`
