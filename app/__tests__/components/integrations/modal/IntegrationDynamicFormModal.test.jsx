@@ -56,16 +56,46 @@ jest.mock('@ui/Switch', () => ({
 
 jest.mock('@ui/FilterDropdown', () => ({
   __esModule: true,
-  default: ({ label, options = [], value, onSelect }) => (
-    <select aria-label={label || 'dropdown'} value={value || ''} onChange={(e) => onSelect?.(e, { value: e.target.value, label: e.target.value })}>
-      <option value=''>Select</option>
-      {(options || []).map((o) => (
-        <option key={typeof o === 'string' ? o : o.value} value={typeof o === 'string' ? o : o.value}>
-          {typeof o === 'string' ? o : o.label}
-        </option>
-      ))}
-    </select>
-  ),
+  default: ({ label, options = [], value, onSelect }) => {
+    const opts = (Array.isArray(options) ? options : []).map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+    // freeSolo: the real control displays a value that is not in the option list —
+    // a saved filter column the backend probe did not return, which is exactly the
+    // state an edit form opens in. A <select> can only show what it has an option
+    // for, so give it one. Primitives only: this same component is used multi-select
+    // with an array value, and unshifting that would render an array as an <option>.
+    const isPrimitive = typeof value === 'string' || typeof value === 'number';
+    if (isPrimitive && value !== '' && !opts.some((o) => o.value === value)) {
+      opts.unshift({ value, label: value });
+    }
+    // Multi-select with saved values the option list doesn't carry yet (e.g.
+    // page IDs before the backend picker answers) — same reason as above.
+    const isMulti = Array.isArray(value);
+    if (isMulti) {
+      value.filter((v) => !opts.some((o) => o.value === v)).forEach((v) => opts.unshift({ value: v, label: v }));
+    }
+    return (
+      <select
+        aria-label={label || 'dropdown'}
+        multiple={isMulti}
+        value={isMulti ? value : value || ''}
+        onChange={(e) =>
+          isMulti
+            ? onSelect?.(
+                e,
+                Array.from(e.target.selectedOptions).map((o) => o.value)
+              )
+            : onSelect?.(e, { value: e.target.value, label: e.target.value })
+        }
+      >
+        <option value=''>Select</option>
+        {opts.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  },
 }));
 
 jest.mock('@shared/buttons/CopyButton', () => ({
