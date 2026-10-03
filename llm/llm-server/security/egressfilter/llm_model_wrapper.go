@@ -90,6 +90,13 @@ func (w *wrappedModel) scanAndDecide(
 		return nil, nil
 	}
 
+	// Agent excluded by tenant -> skip. Recorded as its own outcome, never
+	// silent: a silent skip reads exactly like a clean payload.
+	if agent, ok := AgentNameFromContext(ctx); ok && tcfg.AgentExcluded(agent) {
+		recordScan(ctx, w.provider, w.model, w.mode, "skipped_agent", len(payload), 0, nil)
+		return nil, nil
+	}
+
 	result := Scan(payload)
 	// Per-tenant custom patterns run alongside the built-in corpus. Their
 	// hits carry the constant custom-pattern rule id and flow through the
