@@ -23,10 +23,10 @@ const markdownEvidence = {
 
 const jsonEvidence = {
   type: 'json',
-  title: 'Deployment',
+  title: 'Deployment spec',
   data: '{"image":"api:1.4.2","replicas":3}',
-  filename: 'deployment.json',
-  additional_info: { actual_action_name: 'workflow_evidence', title: 'Deployment', severity: 'Info' },
+  filename: 'deployment-spec.json',
+  additional_info: { actual_action_name: 'workflow_evidence', title: 'Deployment spec', severity: 'Info' },
 };
 
 const tableEvidence = {
@@ -65,7 +65,8 @@ describe('cards for automation-written evidence', () => {
     const card = new ShowingObjectCard(jsonEvidence, {}, 0);
     await expect(card.canRenderContent()).resolves.toBe(true);
     expect(card.authoredByAutomation).toBe(true);
-    expect(card.text).toBe('Deployment');
+    // The author's title, not a re-capitalised "Deployment Spec".
+    expect(card.text).toBe('Deployment spec');
     expect(card.tableData.headers).toEqual(['Key', 'Value']);
     expect(card.tableData.tableData).toHaveLength(2);
   });
@@ -74,9 +75,22 @@ describe('cards for automation-written evidence', () => {
     const card = new ShowingTableCard(tableEvidence, 0);
     await expect(card.canRenderContent()).resolves.toBe(true);
     expect(card.authoredByAutomation).toBe(true);
-    expect(card.text).toBe('Restarting Pods');
+    expect(card.text).toBe('Restarting pods');
     expect(card.tableData.headers).toEqual(['Pod', 'Reason']);
     expect(card.tableData.tableData).toHaveLength(2);
+  });
+});
+
+describe('titles of evidence an enricher wrote', () => {
+  // These are identifiers, not something a person typed, so they stay tidied.
+  it('title-cases a table name and drops its markdown', () => {
+    const card = new ShowingTableCard({ type: 'table', data: { headers: ['a'], rows: [], table_name: '*Alert labels*' } }, 0);
+    expect(card.text).toBe('Alert Labels');
+  });
+
+  it('title-cases an action name', () => {
+    const card = new ShowingObjectCard({ type: 'json', data: '{}', additional_info: { action_name: 'argocd_app_history' } }, {}, 0);
+    expect(card.text).toBe('Argocd App History');
   });
 });
 

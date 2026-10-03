@@ -6,7 +6,12 @@ import LogsIcon from '@assets/investigation/logs-blue.svg';
 class ShowingTableCard {
   constructor(data, index) {
     this.id = `TableCard_${index}`;
-    this.text = titleCase(data?.data?.table_name?.replaceAll(':', '')?.replaceAll('*', '') || '') || `Diagnostic Summary`;
+    // A title an automation author typed is shown as written. Enricher table names are
+    // identifiers with markdown around them ("*Alert labels*"), so those are tidied.
+    this.text =
+      (data?.additional_info?.actual_action_name === 'workflow_evidence'
+        ? data?.data?.table_name
+        : titleCase(data?.data?.table_name?.replaceAll(':', '')?.replaceAll('*', '') || '')) || `Diagnostic Summary`;
     this.icon = LogsIcon;
     this.resolveButton = false;
     this.insightData = [];

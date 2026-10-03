@@ -19,6 +19,7 @@ import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TriageScore from '@shared/widgets/TriageScore';
 import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
 import { EventOccurrenceRows, EventStateRows, useEventOccurrence } from '@components/k8s/investigate/EventStateRows';
+import { eventWhen } from '@components/k8s/investigate/eventState';
 import k8sApi from '@api1/kubernetes';
 import { SOURCE_SEVERITY_INFO } from '@api1/triage';
 import { describeContainerMemory } from '@components/k8s/investigate/podFacts';
@@ -250,6 +251,7 @@ function InvestigateSidebar({
   };
 
   const detailsPathPrefix = isCloud ? '/cloud-account/details' : '/kubernetes/details';
+  const when = eventWhen(row);
 
   const fitCustomLabelStyles = useMemo(
     () => ({
@@ -454,17 +456,11 @@ function InvestigateSidebar({
           <Row label='When'>
             {/* Relative answers "is this fresh", the clock time "which moment"; the
                 full form with timezone and year is the hover. */}
-            {row?.starts_at && (
-              <Datetime value={row?.starts_at} sx={{ fontSize: ds.text.small }} sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }} />
-            )}
-            {formatClockCompact(row?.starts_at) && (
-              <Tooltip title={formatClock(row.starts_at)} arrow placement='bottom'>
+            {when && <Datetime value={when} sx={{ fontSize: ds.text.small }} sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }} />}
+            {formatClockCompact(when) && (
+              <Tooltip title={formatClock(when)} arrow placement='bottom'>
                 <Box component='span' sx={{ display: 'inline-flex' }}>
-                  <Text
-                    value={`· ${formatClockCompact(row.starts_at)}`}
-                    secondaryText
-                    sx={{ ...valueTextSx, whiteSpace: 'nowrap', cursor: 'default' }}
-                  />
+                  <Text value={`· ${formatClockCompact(when)}`} secondaryText sx={{ ...valueTextSx, whiteSpace: 'nowrap', cursor: 'default' }} />
                 </Box>
               </Tooltip>
             )}
@@ -688,8 +684,12 @@ function InvestigateSidebar({
                 openInNew={true}
                 id='rule-automation-link'
               >
+                {/* An automation's name is what its author typed: shown as stored, so it can be
+                    searched for. The aggregation_key fallback is an identifier and keeps Label's
+                    default capitalisation, like the rule names below. */}
                 <Label
                   text={row.labels.automation_name || row?.aggregation_key || '-'}
+                  textTransform={row.labels.automation_name ? 'none' : undefined}
                   margin='0'
                   height='auto'
                   wordBreak='break-word'

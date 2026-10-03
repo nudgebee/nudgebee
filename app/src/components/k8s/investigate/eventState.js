@@ -45,6 +45,14 @@ const toMs = (value) => {
 };
 
 /**
+ * The moment the sidebar's "When" row shows: when the event started, or, when the source gave no
+ * start (an automation's Store Event step with Starts At left empty), when it was recorded. These
+ * are the same two fields the Events list takes its time from, so the row is never blank for an
+ * event the list shows a time for.
+ */
+export const eventWhen = (row) => row?.starts_at || row?.created_at || null;
+
+/**
  * Describe the event's own lifecycle state.
  *
  * @returns {null | { state: 'open'|'ended', label: string, tone: string, detail: string, hint?: string, endedAgo?: string }}
