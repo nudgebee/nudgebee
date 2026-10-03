@@ -678,6 +678,10 @@ helm show values {chart}
 - [ ] Create values.yaml with image, resources, service config
 - [ ] Create environment values (values-dev.yaml, values-test.yaml, values-prod.yaml)
 - [ ] Create templates (deployment, service, helpers)
+- [ ] If the chart creates a `ServiceMonitor` / `PrometheusRule` / any CRD-backed kind:
+      gate it on `.Capabilities.APIVersions.Has "<group>/<version>"` as well as its value
+      flag, so a cluster without that operator installs instead of failing with
+      `no matches for kind` (see `k8s-collector/templates/servicemonitor.yaml`)
 - [ ] If the chart creates a PVC: honour `global.storageClass` (it wins; the chart's own
       `persistence.storageClass` is the fallback, and `"-"` renders `storageClassName: ""`)
       so operators set the class once for the whole stack — same precedence as the bitnami

@@ -1,4 +1,10 @@
-{{- if .Values.metrics.enabled }}
+{{- /* ServiceMonitor is a Prometheus Operator CRD. Skip it when the cluster has
+       no monitoring.coreos.com/v1, so enabling metrics on a cluster without the
+       operator degrades to "no auto-discovery" instead of failing the install
+       with `no matches for kind "ServiceMonitor"`. Offline renders (helm
+       template, Argo CD) see no API versions, so pass
+       --api-versions=monitoring.coreos.com/v1 there. */}}
+{{- if and .Values.metrics.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
