@@ -67,6 +67,7 @@ import { parseDurationToSeconds } from './utils/taskUtils';
 import { extractTriggersFromNodes, extractTasksFromWorkflowNodes, getPreviousNodesOutputSchemas } from './utils/workflowTaskExtraction';
 import { disableTask, enableTask } from './utils/toggleTaskDisable';
 import { defaultVersionStatus, VERSION_STATUS_HELP, type VersionStatus } from './utils/versionStatus';
+import { toRunTaskOutcome, type RunTaskOutcome } from './utils/runTaskResult';
 import {
   cleanupSwitchReferencesAfterDelete,
   findExecutionTaskForNode,
@@ -2947,7 +2948,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
   // Run a single task in isolation (real execution)
   const handleRunTask = useCallback(
-    async (taskType: string, params: any): Promise<any> => {
+    async (taskType: string, params: any): Promise<RunTaskOutcome> => {
       try {
         const response: any = await apiWorkflow.triggerTask(accountId, taskType, params);
 
@@ -2957,11 +2958,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           return { error: errorMessage };
         }
 
-        const taskResult = response?.data?.workflow_execute_task;
-        if (taskResult?.status === 'FAILED') {
-          return { error: taskResult.error || 'Task execution failed' };
-        }
-        return taskResult?.result ?? taskResult;
+        return toRunTaskOutcome(response?.data?.workflow_execute_task);
       } catch (error: any) {
         console.error('Failed to run task:', error);
         return { error: error?.message || 'Failed to run task' };

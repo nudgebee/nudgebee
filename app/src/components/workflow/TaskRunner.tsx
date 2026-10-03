@@ -15,6 +15,7 @@ import { hasWriteAccess } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { generateNodeCategories } from './constants/nodeCategories';
 import { renderCategoryOrTaskIcon } from './utils/taskIcon';
+import { toRunTaskOutcome, type RunTaskOutcome } from './utils/runTaskResult';
 import ActionDetailsSidebar from './ActionDetailsSidebar';
 import type { TaskDefinition } from '@components/workflow/types';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -115,7 +116,7 @@ const TaskRunner: React.FC = () => {
   };
 
   const handleRunTask = useCallback(
-    async (taskType: string, params: any): Promise<any> => {
+    async (taskType: string, params: any): Promise<RunTaskOutcome> => {
       if (!accountId) {
         return { error: 'Select an account to run this task against' };
       }
@@ -125,11 +126,7 @@ const TaskRunner: React.FC = () => {
         if (errorMessage) {
           return { error: errorMessage };
         }
-        const taskResult = response?.data?.workflow_execute_task;
-        if (taskResult?.status === 'FAILED') {
-          return { error: taskResult.error || 'Task execution failed' };
-        }
-        return taskResult?.result ?? taskResult;
+        return toRunTaskOutcome(response?.data?.workflow_execute_task);
       } catch (error: any) {
         console.error('Failed to run task:', error);
         return { error: error?.message || 'Failed to run task' };

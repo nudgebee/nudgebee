@@ -44,6 +44,7 @@ import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import { EVENT_ACCOUNT_TEMPLATE, listensToSeveralAccounts } from './utils/listenAccounts';
 import { triggerInputFields } from './utils/triggerPayloadMock';
 import { describeScriptRunLocation, executorSupportsAccount, scriptLogin, ScriptAccountProvider } from './utils/scriptRunLocation';
+import type { RunTaskOutcome } from './utils/runTaskResult';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
 import { isTenantAdmin } from '@lib/auth';
@@ -185,7 +186,7 @@ interface ActionDetailsSidebarProps {
   accountId?: string;
   onRunPreviousSteps?: (taskId: string) => Promise<Record<string, any>>;
   onDryRunToTask?: (taskId: string, unsavedConfig?: any) => Promise<any>;
-  onRunTask?: (taskType: string, params: any) => Promise<any>;
+  onRunTask?: (taskType: string, params: any) => Promise<RunTaskOutcome>;
   workflowInputs?: Array<{ id: string; type: string; description?: string; default?: any }>;
   workflowTimeout?: string;
   onToggleDisable?: (disable: boolean) => void;
@@ -1359,24 +1360,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       // Use localData which contains the current task configuration
       const result = await onRunTask(selectedActionType, localData);
 
-      if (result?.output !== undefined) {
+      // The status is the run's, set by the caller (see toRunTaskOutcome);
+      // never guess it from the shape of the task's output.
+      if ('status' in result) {
         setRunTaskResult({
-          status: result.status || 'COMPLETED',
+          status: result.status,
           output: result.output,
           error: result.error,
         });
-      } else if (result?.error) {
+      } else {
         setRunTaskResult({
           status: 'FAILED',
           output: null,
           error: result.error,
-        });
-      } else {
-        // Successful execution with the full result
-        setRunTaskResult({
-          status: 'COMPLETED',
-          output: result,
-          error: undefined,
         });
       }
     } catch (error: any) {
