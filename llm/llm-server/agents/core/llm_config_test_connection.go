@@ -30,8 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/anthropic"
-
+	"nudgebee/llm/llms/anthropic"
 	"nudgebee/llm/llms/openai"
 )
 

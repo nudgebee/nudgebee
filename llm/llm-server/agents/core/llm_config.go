@@ -60,8 +60,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/anthropic"
-
+	"nudgebee/llm/llms/anthropic"
 	"nudgebee/llm/llms/openai"
 )
 
@@ -2805,6 +2804,10 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 // IsOpenAIModelWithoutStopSupport checks if the model doesn't support the 'stop' parameter
 // OpenAI's reasoning models (o1, o3) and newer GPT-5 series don't support stop words
 func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
+	// The o1/o3/gpt-5 families reject `stop` whoever serves them: OpenAI direct,
+	// or an OpenAI-compatible gateway on the custom provider. Both route through
+	// the same client, so gating on provider identity alone silently re-enables
+	// stop words for gateway-served models.
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai", "custom":
 	default:

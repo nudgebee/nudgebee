@@ -490,6 +490,7 @@ function GroupedOptionsList({
   onSelect,
   groupIcon,
   selectionWithinGroup,
+  forceOpen,
 }) {
   const groups = useMemo(() => {
     const groupMap = new Map();
@@ -576,7 +577,9 @@ function GroupedOptionsList({
         const selectedInGroup = groupOptions.filter(isSelected);
         const unselectedInGroup = groupOptions.filter((opt) => !isSelected(opt));
         const hasGroupSelection = selectedInGroup.length > 0;
-        const isOpen = !!openGroups[groupName];
+        // While searching, a group that survived filtering matched at least one of its
+        // options — auto-expand it so the match is visible without an extra click.
+        const isOpen = forceOpen || !!openGroups[groupName];
 
         return (
           <Box key={groupName}>
@@ -736,6 +739,7 @@ GroupedOptionsList.propTypes = {
   onSelect: PropTypes.func,
   groupIcon: PropTypes.func,
   selectionWithinGroup: PropTypes.bool,
+  forceOpen: PropTypes.bool,
 };
 
 function TruncatedLabel({ label, maxWidth = '90px', color, fontWeight = 500, placement = 'top' }) {
@@ -1412,6 +1416,7 @@ function FilterDropdownButton({
             onSelect={onSelect}
             groupIcon={groupIcon}
             selectionWithinGroup={selectionWithinGroup}
+            forceOpen={!!search.trim()}
           />
         ) : (
           <OptionsList

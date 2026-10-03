@@ -16,6 +16,7 @@ export const DEFAULT_ACCOUNT_ENV = ACCOUNT_ENV_NON_PROD;
  *  only resolved once /api/public/app_config has landed. */
 export const accountEnvTooltip = () =>
   `Determines how ${getBrandTitle()} prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight, and workloads running in them count as production in blast-radius safety checks. You can change this anytime later.`;
+export const ACCOUNT_ENV_TOOLTIP = accountEnvTooltip();
 
 /**
  * Environment picker shared by every account onboarding flow (K8s and cloud).
