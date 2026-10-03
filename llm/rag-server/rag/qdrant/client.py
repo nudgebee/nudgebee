@@ -193,9 +193,11 @@ def _process_collection(client: QdrantClient, collection_name: str, result: Dict
 
     except Exception as e:
         collection_detail["status"] = "failed"
-        collection_detail["error"] = str(e)
+        # Raw exception text stays in the log; the API response only carries a
+        # generic message (CodeQL py/stack-trace-exposure, alert #373).
+        collection_detail["error"] = "Failed to configure on-disk storage"
         result["failed"] += 1
-        logger.warning(f"Failed to configure on-disk storage for {collection_name}: {e}")
+        logger.warning(f"Failed to configure on-disk storage for {collection_name}: {e}", exc_info=True)
 
     return collection_detail
 
@@ -251,8 +253,8 @@ def _configure_ondisk_storage(client: QdrantClient) -> Dict[str, Any]:
         )
 
     except Exception as e:
-        logger.error(f"Error configuring on-disk storage: {e}")
-        result["error"] = str(e)
+        logger.error(f"Error configuring on-disk storage: {e}", exc_info=True)
+        result["error"] = "Failed to configure on-disk storage"
 
     return result
 
