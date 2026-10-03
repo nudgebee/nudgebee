@@ -101,3 +101,16 @@ func TestAnomalyReturnedDigestIsOffByDefaultAndReadFromTheEnvironment(t *testing
 		t.Error("default feature_anomaly_returned_digest_enabled = true, want false")
 	}
 }
+
+// Announcing a recovered SLO in the SLO digest is opt-in: an environment turns
+// it on only once its notifications-server lists resolved items. On by default,
+// a notifications-server a release behind would show every recovery as one more
+// breaching SLO.
+func TestSLOResolvedDigestDisabledByDefault(t *testing.T) {
+	if v, ok := os.LookupEnv("FEATURE_SLO_RESOLVED_DIGEST_ENABLED"); ok {
+		t.Skipf("FEATURE_SLO_RESOLVED_DIGEST_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureSLOResolvedDigestEnabled {
+		t.Error("default feature_slo_resolved_digest_enabled = true, want false")
+	}
+}

@@ -5,6 +5,12 @@ from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip
 from notifications_server.message_templates.slack.slo import SLOAlertParams
+from notifications_server.message_templates.slack.grouped_anomaly_notification import (
+    MAX_RESOLVED_ITEMS,
+    counts_phrase,
+    split_resolved,
+)
+from notifications_server.message_templates.slack.grouped_slo_notification import resolved_slo_line
 from notifications_server.message_templates.base import Emojis, format_burn_rate
 
 
@@ -17,14 +23,19 @@ def get_grouped_slo_alerts_ms_teams_template(input_data: List[SLOAlertParams]) -
         raise TypeError("Expected SLOAlertSummaryParams with an events list")
     alerts: List[SLOAlertParams] = input_data.events
 
+    firing, resolved = split_resolved(alerts)
     grouped: Dict[str, List[SLOAlertParams]] = defaultdict(list)
-    for alert in alerts:
+    for alert in firing:
         grouped[alert.account_name].append(alert)
 
+    resolved_only = bool(resolved) and not firing
+    emoji = Emojis.Resolved.value if resolved_only else Emojis.Alert.value
+    counts = counts_phrase(len(firing), len(resolved), "SLO Breach Alerts", "")
+    total_accounts = len({alert.account_name for alert in alerts})
     body: List[Dict[str, Any]] = [
         {
             "type": "TextBlock",
-            "text": f"{Emojis.Alert.value} **{len(alerts)} SLO Breach Alerts across {len(grouped)} accounts**",
+            "text": f"{emoji} **{counts} across {total_accounts} accounts**",
             "size": "Large",
             "weight": "Bolder",
             "wrap": True,
@@ -76,13 +87,31 @@ def get_grouped_slo_alerts_ms_teams_template(input_data: List[SLOAlertParams]) -
         body.append({"type": "TextBlock", "text": "", "separator": True})
 
         # Footer
-    body.append(
-        {
-            "type": "TextBlock",
-            "text": f"{Emojis.Event.value} Review impacted workloads to restore SLO compliance.",
-            "wrap": True,
-        }
-    )
+    if not resolved_only:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"{Emojis.Event.value} Review impacted workloads to restore SLO compliance.",
+                "wrap": True,
+            }
+        )
+
+    if resolved:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"{Emojis.Resolved.value} **Resolved**",
+                "weight": "Bolder",
+                "wrap": True,
+                "spacing": "Medium",
+            }
+        )
+        for alert in resolved[:MAX_RESOLVED_ITEMS]:
+            body.append({"type": "TextBlock", "text": f"- {resolved_slo_line(alert, '**')}", "wrap": True})
+        if len(resolved) > MAX_RESOLVED_ITEMS:
+            body.append(
+                {"type": "TextBlock", "text": f"+{len(resolved) - MAX_RESOLVED_ITEMS} more resolved", "wrap": True}
+            )
 
     card_payload: Dict[str, Any] = {
         "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",

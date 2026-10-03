@@ -44,6 +44,7 @@ from notifications_server.message_templates.slack.weekly_digest_events import di
 from notifications_server.services.slack.slack import retriable_slack_api_error, slack_channel_not_found_error
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
+from notifications_server.message_templates.base import is_resolved
 from notifications_server.message_templates.ms_teams.finding import get_ms_teams_finding_message_template
 from notifications_server.services.ms_teams import card_actions
 from notifications_server.services.ms_teams.bot_sender import (
@@ -842,8 +843,10 @@ class GroupedMessageHandler:
                     for ip, channel, indexes in routes:
                         self.message_service.point_at(installed_platforms, ip, channel)
                         events = [batch[index]["parameters"] for index in indexes]
-                        if orig_type == "anomaly" and settings.notifications.digest_resolved_enabled:
-                            # A firing anomaly and its resolve in one window show once, as resolved.
+                        if orig_type in ("anomaly", "slo_alert") and settings.notifications.digest_resolved_enabled:
+                            # A firing alert and its resolve in one window show once, as resolved;
+                            # an SLO's hourly repeats show once too. SLO items carry no updated_at,
+                            # so the newest queued one is the state shown.
                             events = latest_per_key(events)
                         params = {"events": events}
                         platform_responses.extend(
@@ -1000,6 +1003,15 @@ class MessageService:
 
     async def _maybe_handle_grouped_message(self, source, parameters, tenant_id, kwargs):
         if source and source.lower() == "slo":
+            if is_resolved(parameters.get("status")):
+                # A recovered SLO is a line of the digest's Resolved section and
+                # nothing else. With the section off, or when it cannot be
+                # queued, it is dropped: carried on, it would go out as a breach.
+                if not settings.notifications.digest_resolved_enabled:
+                    return [system_response("dropped", "The SLO digest lists resolved SLOs only when enabled")]
+                return await self.group_handler.enqueue(kwargs) or [
+                    system_response("dropped", "Resolved SLO could not be queued for the digest")
+                ]
             return await self.group_handler.enqueue(kwargs)
 
         return await self._maybe_enqueue_anomaly(parameters, tenant_id)

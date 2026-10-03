@@ -11,6 +11,13 @@ PNG_SUFFIX = ".png"
 SVG_SUFFIX = ".svg"
 PUBLIC_IP = public_ip()
 
+# Statuses a grouped digest lists under "Resolved" instead of as firing.
+RESOLVED_STATUSES = ("resolved", "closed")
+
+
+def is_resolved(status: object) -> bool:
+    return str(status or "").strip().lower() in RESOLVED_STATUSES
+
 
 class BaseBlock(BaseModel):
     hidden: bool = False

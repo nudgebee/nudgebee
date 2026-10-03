@@ -748,6 +748,7 @@ class NotificationSettings(BaseSettings):
     )
     # An anomaly that clears joins the next grouped anomaly digest, in a
     # "Resolved" section. Off: its resolve looks for a Slack thread, as before.
+    # An SLO that recovers joins the SLO digest the same way. Off: it is dropped.
     digest_resolved_enabled: bool = Field(
         False, validation_alias=AliasChoices("DIGEST_RESOLVED_ENABLED", "digest_resolved_enabled")
     )

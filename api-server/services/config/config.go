@@ -311,6 +311,14 @@ type appConfig struct {
 	// Default off.
 	FeatureAnomalyReturnedDigestEnabled bool `mapstructure:"feature_anomaly_returned_digest_enabled"`
 
+	// When true, an SLO that recovers is published to notifications-server as a
+	// RESOLVED item of the SLO digest, which lists it under "Resolved" (issue
+	// #40006). Default off: turn it on only once notifications-server runs a
+	// build that knows resolved digest items — an older one shows the item as
+	// one more breaching SLO. That build lists the item when its
+	// DIGEST_RESOLVED_ENABLED is on, and drops it when off.
+	FeatureSLOResolvedDigestEnabled bool `mapstructure:"feature_slo_resolved_digest_enabled"`
+
 	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
 	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
 	FeatureLLMTriageScoringEnabled bool `mapstructure:"feature_llm_triage_scoring_enabled"`
@@ -595,6 +603,7 @@ func init() {
 	// Off by default, but declared: Unmarshal skips a key with no default, so
 	// without this line the environment variable could never turn it on.
 	viper.SetDefault("feature_anomaly_returned_digest_enabled", false)
+	viper.SetDefault("feature_slo_resolved_digest_enabled", false)
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
